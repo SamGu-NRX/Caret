@@ -3,8 +3,9 @@
 // redactWindow, so no extraction path has a secret filter of its own and none can miss one. Per-path filters did not
 // converge: each round of review found another path (a field's label, its nearest label, a block head, a cell) or
 // another format (a marker after the label, "pin#", a quoted value). The rule is the marker word (memory/sensitive.ts
-// markerWord) or a value Caret never types (valueKind); a request that still carries either is refused before it is
-// sent (privacy.ts assertNoSecrets).
+// markerWord) or a value Caret never types (valueKind). SC1: a request carries only text minted from this view
+// (privacy/disclosure.ts), and the client refuses a value in a format Caret never carries (privacy.ts
+// assertNoExcludedValue).
 //
 // What the view drops:
 //   - every line that holds a marker word or such a value, anywhere in it, whatever follows; a marker split by a line
@@ -22,6 +23,7 @@ import type { WindowState } from "../model.ts";
 import type { Node, TypedValue } from "../protocol.ts";
 import { markerAcross, markerEnds, PEM_BEGIN, PEM_END, secretText } from "../memory/sensitive.ts";
 import { nodesLabelledBy } from "./descriptor.ts";
+import { withholdValues } from "../privacy/exclude.ts";
 
 export { secretText };
 
@@ -38,8 +40,7 @@ function opensValue(line: string): boolean {
  * opener above it takes it: an opener ("Password:", "my private key", "PIN is") takes the next line that is not blank,
  * the blank ones between with it, and a line it takes opens in turn ("Password:" then "PIN:" then "violet-orchard-seven").
  */
-function keptText(text: string): { kept: string; dropped: Set<number> } {
-  const lines = text.split(/\r?\n/u);
+function droppedLines(lines: readonly string[], continues: readonly boolean[] = [], physicalLines: readonly number[] = []): Set<number> {
   const secret = lines.map((l) => secretText(l));
   for (let i = 1; i < lines.length; i++) {
     if (!secret[i - 1] && !secret[i] && markerAcross(lines[i - 1] as string, lines[i] as string)) secret[i - 1] = secret[i] = true;
@@ -55,7 +56,7 @@ function keptText(text: string): { kept: string; dropped: Set<number> } {
     }
     i = j;
   }
-  if (!secret.some((x) => x)) return { kept: text, dropped: new Set() };
+  if (!secret.some((x) => x)) return new Set();
   const dropped = new Set<number>();
   for (let i = 0; i < lines.length; i++) {
     if (!secret[i]) continue;
@@ -63,18 +64,90 @@ function keptText(text: string): { kept: string; dropped: Set<number> } {
     // The opener reads the line as a whole, a marker that ran across from the line above included.
     let open = opensValue(lines[i] as string) || (i > 0 && secret[i - 1] === true && !PEM_END.test(lines[i] as string) && opensValue(`${lines[i - 1]} ${lines[i]}`));
     let j = i;
-    while (open && j + 1 < lines.length) {
+    while (open && j + 1 < lines.length && continues[j] !== false) {
       j++;
       dropped.add(j);
-      if ((lines[j] as string).trim() === "") continue;
-      open = opensValue(lines[j] as string);
+      let taken = lines[j] as string;
+      // An opener consumes the whole following physical line, including any clause separators in its value.
+      while (physicalLines[j] !== undefined && j + 1 < lines.length && physicalLines[j + 1] === physicalLines[j]) {
+        j++;
+        dropped.add(j);
+        taken += ` ${lines[j]}`;
+      }
+      if (taken.trim() === "") continue;
+      open = opensValue(taken);
     }
     i = Math.max(i, j);
   }
+  return dropped;
+}
+
+function keptText(text: string): { kept: string; dropped: Set<number> } {
+  const dropped = droppedLines(text.split(/\r?\n/u));
+  if (dropped.size === 0) return { kept: text, dropped };
   const parts = text.split(/(\r?\n)/u);
   const out: string[] = [];
   for (let k = 0; k < parts.length; k += 2) if (!dropped.has(k / 2)) out.push(parts[k] as string, parts[k + 1] ?? "");
   return { kept: out.join("").replace(/\r?\n$/u, ""), dropped };
+}
+
+const WITHHELD_INSTRUCTION = "[a field Caret leaves to you]";
+
+/** Instruction clauses are line units for the same drop rule as window text. Quoted values stay whole.
+ * Retained spans remain separate so extraction cannot join text across a removed clause into a new literal.
+ */
+export function instructionView(text: string): { text: string; retained: string[] } {
+  const units: { text: string; separator: string; line: number }[] = [];
+  let start = 0;
+  let line = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (quote !== null) {
+      if (c === "\\") { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "“" || c === "‘" || (c === "'" && (i === 0 || /[\s(=:]/u.test(text[i - 1]!)))) {
+      quote = c === "“" ? "”" : c === "‘" ? "’" : c;
+      continue;
+    }
+    // Match the planner's assignment-clause heads, not every "and" inside an unquoted value.
+    const separator = /^(?:\r?\n|;|\s+(?:and|then)\s+(?=(?:the|my|our|set|put|write|enter|type|change|make|fill|add|use|copy|paste|insert|attach|upload|send|submit|press|click|open)\b))/iu.exec(text.slice(i))?.[0];
+    if (separator === undefined) continue;
+    units.push({ text: text.slice(start, i), separator, line });
+    if (/\r?\n/u.test(separator)) line++;
+    i += separator.length - 1;
+    start = i + 1;
+  }
+  units.push({ text: text.slice(start), separator: "", line });
+  // A real line break lets an opener take its next value. An explicit new clause does not.
+  const dropped = droppedLines(units.map((u) => u.text), units.map((u) => /\r?\n/u.test(u.separator)), units.map((u) => u.line));
+  if (dropped.size === 0) return { text, retained: [text] };
+  const retained: string[] = [];
+  let span = "";
+  for (const [i, unit] of units.entries()) {
+    if (dropped.has(i)) continue;
+    span += unit.text;
+    if (!dropped.has(i + 1)) span += unit.separator;
+    else { retained.push(span); span = ""; }
+  }
+  if (span !== "") retained.push(span);
+  let shown = "";
+  for (const [i, unit] of units.entries()) {
+    if (!dropped.has(i)) shown += unit.text;
+    else if (i === 0 || !dropped.has(i - 1)) shown += WITHHELD_INSTRUCTION;
+    if (!dropped.has(i) || !dropped.has(i + 1)) shown += unit.separator;
+  }
+  return { text: shown, retained };
+}
+
+/**
+ * Model-facing instruction text; raw text remains local for refusal and provenance checks. A value in a format Caret
+ * never carries (privacy/exclude.ts) is withheld in the clauses kept, as it is in a window read in (SC1 2a).
+ */
+export function instructionForModel(text: string): string {
+  return withholdValues(instructionView(text).text);
 }
 
 /**
@@ -112,6 +185,19 @@ function valueGoes(texts: readonly { text: string; dropped: ReadonlySet<number> 
 const TEXT_ROLES: ReadonlySet<string> = new Set(["AXStaticText", "AXCell", "AXHeading", "AXLink", "AXTextArea", "AXTextField"]);
 
 const views = new WeakMap<WindowState, { at: number; view: WindowState }>();
+/** Every window object redactWindow returned: the only windows a Disclosure mints screen text from (privacy/disclosure.ts). */
+const REDACTED = new WeakSet<WindowState>();
+
+/** Whether `w` is a view redactWindow returned (the window itself, when its redaction removed nothing). */
+export function isRedacted(w: WindowState): boolean {
+  return REDACTED.has(w);
+}
+
+/**
+ * SCP1: Accessibility roles that group what they hold, so a heading in one ends with it (fill/ask-scope.ts windowOutline).
+ * Redaction keeps a removed one as structure only, as it keeps a removed heading.
+ */
+export const SECTION_BOUNDARY_ROLES: ReadonlySet<string> = new Set(["AXGroup", "AXRadioGroup", "AXWebArea", "AXScrollArea", "AXSplitGroup", "AXTabGroup", "AXLayoutArea", "AXSheet"]);
 
 /**
  * The window as fill may read it: a WindowState of its own, built once per window state the model holds (each snapshot
@@ -123,12 +209,48 @@ export function redactWindow(w: WindowState): WindowState {
   if (hit !== undefined && hit.at === w.updatedAt) return hit.view;
   const view = build(w);
   views.set(w, { at: w.updatedAt, view });
+  REDACTED.add(view);
   return view;
 }
 
+/** Marker halves can be separate AX text nodes. Join only consecutive document text with adjacent positions. */
+function splitTextNodes(w: WindowState): Set<string> {
+  const out = new Set<string>();
+  let previous: Node | undefined;
+  for (const n of w.nodes.values()) {
+    if (!TEXT_ROLES.has(n.role) || (n.value ?? n.label ?? "").trim() === "") continue;
+    if (previous !== undefined) {
+      const a = previous.frame;
+      const b = n.frame;
+      const nearby = a === undefined || b === undefined || (
+        // Use nearestLabel's existing 260/48-pixel neighborhood, not a new distance heuristic.
+        // A following text on the same row, or on the next row in the same column.
+        (Math.abs(a[1] + a[3] / 2 - (b[1] + b[3] / 2)) <= Math.max(a[3], b[3]) / 2 && b[0] >= a[0] && b[0] - (a[0] + a[2]) <= 260) ||
+        (b[1] >= a[1] + a[3] && b[1] - (a[1] + a[3]) <= 48 && a[0] <= b[0] + b[2] && b[0] <= a[0] + a[2])
+      );
+      const first = (previous.value ?? previous.label ?? "").split(/\r?\n/u).at(-1)!;
+      const second = (n.value ?? n.label ?? "").split(/\r?\n/u)[0]!;
+      if (nearby && markerAcross(first, second)) { out.add(previous.key); out.add(n.key); }
+    }
+    previous = n;
+  }
+  return out;
+}
+
+/**
+ * SC1 step 3's evidence (PV2, Sam's decision through the coordinator): with CARET_TEST_MARKERS_OFF=1 the view applies none
+ * of the marker heuristics above (the line drops, the cross-node joining, the nearest-label and own-label drops, the title
+ * drop), so tests and evaluations measure what the structural path alone (privacy/exclude.ts on read, the Disclosure, the
+ * formats, the shapes, the budgets) withholds. A test-only switch: the helper refuses to start with it set (main.ts).
+ */
+export const MARKERS_OFF_ENV = "CARET_TEST_MARKERS_OFF";
+const markersOff = (): boolean => process.env[MARKERS_OFF_ENV] === "1";
+
 function build(w: WindowState): WindowState {
-  if (secretText(w.window.title)) return { ...w, nodes: new Map(), values: [] };
-  const dropped = nodesLabelledBy(w, secretText);
+  if (markersOff()) return w;
+  if (secretText(w.window.title)) return { ...w, window: { ...w.window, title: "" }, nodes: new Map(), values: [] };
+  const split = splitTextNodes(w);
+  const dropped = nodesLabelledBy(w, secretText, split);
   const nodes = new Map<string, Node>();
   /** Each kept node's texts, with the lines each lost, which no typed value of it may stand on. */
   const lost = new Map<string, { text: string; dropped: Set<number> }[]>();
@@ -140,7 +262,14 @@ function build(w: WindowState): WindowState {
     // has that label as its content, redacted line by line below, as any document's.
     // A text's label is its content; a container's (a group, a list) is its name, an attribute (G2 round 7 review).
     const labelIsContent = n.editable !== true && n.value === undefined && TEXT_ROLES.has(n.role);
-    if ((n.parent !== null && gone.has(n.parent)) || dropped.has(n.key) || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
+    // AX can split a marker between its own attributes, such as label "API" and value "key: ...".
+    const attrs = [n.label, n.placeholder, n.value].filter((t): t is string => t !== undefined && t.trim() !== "");
+    const splitMarker = attrs.some((a, i) => attrs.some((b, j) => i !== j && markerAcross(a, b)));
+    if (n.parent !== null && gone.has(n.parent)) {
+      gone.add(n.key);
+      continue;
+    }
+    if (dropped.has(n.key) || split.has(n.key) || splitMarker || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
       gone.add(n.key);
       continue;
     }
@@ -152,21 +281,67 @@ function build(w: WindowState): WindowState {
     const texts = [...(v === undefined || n.value === undefined ? [] : [{ text: n.value, dropped: v.dropped }]), ...(l === undefined || n.label === undefined ? [] : [{ text: n.label, dropped: l.dropped }])];
     if (texts.some((x) => x.dropped.size > 0)) lost.set(n.key, texts);
     const had = (n.value ?? "") !== "" || (n.label ?? "") !== "";
-    if (had && (value ?? "") === "" && (label ?? "") === "" && n.editable !== true) continue;
-    if (value === n.value && label === n.label) nodes.set(n.key, n);
+    if (had && (value ?? "") === "" && (label ?? "") === "" && n.editable !== true) {
+      gone.add(n.key);
+      continue;
+    }
+    // SCP1: a page's heading or section text that names a secret is left out, as a label that names one is. A section
+    // keeps its place in the outline without its text, so it still ends the section before it.
+    const headings = n.headings?.filter((h) => !secretText(h));
+    const outline = n.outline?.some((o) => o.text !== undefined && secretText(o.text)) === true ? n.outline.map((o) => (o.text !== undefined && secretText(o.text) ? { key: o.key, heading: o.heading, ...(o.name === undefined ? {} : { name: o.name }) } : o)) : n.outline;
+    if (value === n.value && label === n.label && headings?.length === n.headings?.length && outline === n.outline) nodes.set(n.key, n);
     else {
       const m: Node = { ...n };
       if (value === undefined) delete m.value;
       else m.value = value;
       if (label === undefined) delete m.label;
       else m.label = label;
+      if (headings === undefined || headings.length === 0) delete m.headings;
+      else m.headings = headings;
+      if (outline === undefined) delete m.outline;
+      else m.outline = outline;
       nodes.set(n.key, m);
     }
+  }
+  // AX snapshots need not list parents before children. Close the removed set over the original tree.
+  const children = new Map<string, string[]>();
+  for (const n of w.nodes.values()) {
+    if (n.parent === null) continue;
+    const keys = children.get(n.parent) ?? [];
+    keys.push(n.key);
+    children.set(n.parent, keys);
+  }
+  const queue = [...gone];
+  for (let i = 0; i < queue.length; i++) for (const key of children.get(queue[i]!) ?? []) {
+    if (gone.has(key)) continue;
+    gone.add(key);
+    queue.push(key);
+  }
+  for (const key of gone) nodes.delete(key);
+  // SCP1: the section boundaries redaction took (fill/ask-scope.ts windowOutline): each removed heading and group goes
+  // back in its place as structure only, its key, its role and its nearest kept ancestor, so the outline after redaction
+  // places fields as the raw one does (a field after a removed "Password and security" group is not in the section
+  // before it). Nothing else of it comes back: `gone` still holds it, so its typed values stay out below.
+  const structural = (n: Node | undefined): boolean => n !== undefined && (n.role === "AXHeading" || SECTION_BOUNDARY_ROLES.has(n.role));
+  const stubOf = (n: Node): Node => {
+    let parent = n.parent;
+    while (parent !== null && gone.has(parent) && !structural(w.nodes.get(parent))) parent = w.nodes.get(parent)?.parent ?? null;
+    return { key: n.key, parent, role: n.role };
+  };
+  if ([...gone].some((k) => structural(w.nodes.get(k)))) {
+    const ordered = new Map<string, Node>();
+    for (const [k, n] of w.nodes) {
+      const kept = nodes.get(k) ?? (gone.has(k) && structural(n) ? stubOf(n) : undefined);
+      if (kept !== undefined) ordered.set(k, kept);
+    }
+    nodes.clear();
+    for (const [k, n] of ordered) nodes.set(k, n);
   }
   // The reader's typed values, less those of a dropped node, and those standing on a dropped line: a value over several
   // lines goes when any line it covers went ("4410 Speedway\napt 2, Austin" under a dropped "Password:" opener), judged
   // by the lines where it stands, never by a dropped line's text (G2 round 6: a dropped "Austin" took an address).
-  const values: TypedValue[] = w.values.filter((v) => nodes.has(v.nodeKey) && !secretText(v.text) && !valueGoes(lost.get(v.nodeKey) ?? [], v.text));
+  // A removed node's values stay out whether or not a stub of it stands in the view (re-check of 479f875).
+  const values: TypedValue[] = w.values.filter((v) => !gone.has(v.nodeKey) && nodes.has(v.nodeKey) && !secretText(v.text) && !valueGoes(lost.get(v.nodeKey) ?? [], v.text));
   // A window that gives everything is read as it is: the same state, so every cache keyed by it (windowValues, the
   // ledger's budgets, descriptor.ts's label index) is shared with code that reads it raw.
   if (nodes.size === w.nodes.size && [...nodes].every(([k, n]) => w.nodes.get(k) === n) && values.length === w.values.length) return w;

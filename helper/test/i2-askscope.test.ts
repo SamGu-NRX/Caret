@@ -135,7 +135,7 @@ describe("the write contract under an Ask's scope", () => {
     const m = desk();
     const scope = scopeOf(m, [EMAIL]);
     const minted = mintExempt(proposed(m, EMAIL, "elena.vance@example.com"), "userTyped", 1, "", { kind: "ask", scope }, null);
-    const guard = guardFor(() => m, new Map([[0, minted]]), { kind: "ask", scope }, null);
+    const guard = guardFor(() => m, new Map([[0, minted]]), { kind: "ask", scope }, null, null);
     expect(guard(0, "elena.vance@example.com", { windowId: WIN, node: win(m).nodes.get(EMAIL) as never, window: win(m) })).toBeNull();
     const moved = desk({ label: "Backup email" });
     expect(guard(0, "elena.vance@example.com", { windowId: WIN, node: win(moved).nodes.get(EMAIL) as never, window: win(moved) })).toBe("'Email' changed since Caret asked about it");
@@ -159,7 +159,7 @@ describe("the scope is bound to the page document, read through the owning helpe
     doc = "doc-2";
     expect((await check(documentOf)).refused[0]).toMatchObject({ why: "outOfScope", says: "the page is no longer the one Caret asked about 'Name' on" });
     const minted = before.ok[0] as NonNullable<(typeof before.ok)[number]>;
-    const guard = guardFor(() => m, new Map([[0, minted]]), { kind: "ask", scope }, documentOf);
+    const guard = guardFor(() => m, new Map([[0, minted]]), { kind: "ask", scope }, documentOf, null);
     expect(guard(0, "Elena Vance", { windowId: WIN, node: w.nodes.get(NAME) as never, window: w })).toMatch(/no longer the one/u);
   });
 });
@@ -230,7 +230,7 @@ describe("the writer goal (review reproduction 1)", () => {
     route: FAKE_WRITER_ROUTE,
     async write(req) {
       const base = { model: "canned", provider: "canned", inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
-      const program = cannedProgram((req.input as { snapshots: PlanningSnapshot[] }).snapshots, STEPS);
+      const program = cannedProgram((req.input as unknown as { snapshots: PlanningSnapshot[] }).snapshots, STEPS);
       return { ...base, output: { program, reply: program } };
     },
   };
@@ -290,7 +290,7 @@ describe("the executor rereads each field right before it writes it (re-review b
       if (i === 1) heading(emailKey);
     };
     const steps: Step[] = [nameKey, emailKey].map((key, i) => ({ says: `${key} holds v${i}`, end: { kind: "valueEquals", window: { titleStartsWith: TITLE }, target: { key, describe: key }, value: i === 0 ? "Dana Whitfield" : "dana@example.com" } }));
-    const r = await helper.executor.run("i2-exec2", { id: "i2-exec2", title: "t", slots: {}, steps }, {}, undefined, { guard: guardFor(() => helper.model, mints, { kind: "ask", scope }, null) });
+    const r = await helper.executor.run("i2-exec2", { id: "i2-exec2", title: "t", slots: {}, steps }, {}, undefined, { guard: guardFor(() => helper.model, mints, { kind: "ask", scope }, null, null) });
     expect(r).toMatchObject({ outcome: "stopped", step: 1 });
     expect(app.node(emailKey)?.value).toBe("old@example.com");
   });
@@ -312,7 +312,7 @@ describe("the executor rereads each field right before it writes it (re-review b
       return v;
     };
     const steps: Step[] = [nameKey, emailKey].map((key, i) => ({ says: `${key} holds v${i}`, end: { kind: "valueEquals", window: { titleStartsWith: TITLE }, target: { key, describe: key }, value: i === 0 ? "Dana Whitfield" : "dana@example.com" } }));
-    const r = await helper.executor.run("i2-exec", { id: "i2-exec", title: "t", slots: {}, steps }, {}, undefined, { guard: guardFor(() => helper.model, mints, { kind: "ask", scope }, null) });
+    const r = await helper.executor.run("i2-exec", { id: "i2-exec", title: "t", slots: {}, steps }, {}, undefined, { guard: guardFor(() => helper.model, mints, { kind: "ask", scope }, null, null) });
     expect(r).toMatchObject({ outcome: "stopped", step: 1 });
     expect(app.node(nameKey)?.value).toBe("Dana Whitfield");
     expect(app.node(emailKey)?.value).toBe("old@example.com");

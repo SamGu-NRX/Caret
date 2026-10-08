@@ -3,6 +3,7 @@
 // start per two seconds, stale replies dropped, a waiting context replaced rather than queued, no retry, no Router 2
 // outside act, and every forged or weak answer abstaining. Then the helper end to end: routed fills and event cards
 // make the same offers, with the same spans, as the producers make on their own. Everything is invented.
+import { fixtureSay, minted } from "./minted.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -112,6 +113,7 @@ function candidate(id: string, extra: Partial<RouteCandidate> = {}): TestCandida
       c.dropped++;
     },
     ...extra,
+    say: extra.say ?? ((d) => fixtureSay(c)(d)),
   };
   return c;
 }
@@ -1102,7 +1104,7 @@ describe("the Jev client's retry", () => {
       return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
     });
     const client = makeJevClient(() => "test-key");
-    const req: JevRequest = { state: "s", questions: { q: { type: "choice", instructions: "i", criteria: { a: "A" } } }, snippets: [], charged: {} };
+    const req: JevRequest = minted({ state: "s", questions: { q: { type: "choice", instructions: "i", criteria: { a: "A" } } }, snippets: [], charged: {} });
     await expect(client({ ...req, retry429: false })).rejects.toThrow(/429/);
     expect(fetches).toHaveLength(1);
     await expect(client(req)).rejects.toThrow(/429/);
@@ -1339,7 +1341,7 @@ describe("the helper with routing on", () => {
     jev.task = () => ({ choice: "act", confidence: 0.9 });
     const attend: string[] = [];
     jev.other = async (req) => {
-      attend.push((req.state as { sentence: string }).sentence);
+      attend.push((req.state as unknown as { sentence: string }).sentence);
       return result({ attend: { choice: "yes", confidence: 0.9 } });
     };
     const h = make(true, false, { calendar: new FakeCalendar() });
@@ -1359,7 +1361,7 @@ describe("the helper with routing on", () => {
     expect(Object.keys(r1.questions)).toEqual(["task"]);
     expect(r1.snippets.some((x) => x.windowId === NOTES_DOC && x.text === sentence)).toBe(true);
     expect(r1.snippets.some((x) => x.windowId === NOTES_DOC && x.text === "Priya")).toBe(true);
-    const offer = (r1.state as { offer: { task: string; sentence: string; found: string } }).offer;
+    const offer = (r1.state as unknown as { offer: { task: string; sentence: string; found: string } }).offer;
     expect(offer.sentence).toBe(sentence);
     expect((r1.questions.task as { instructions: string }).instructions).toContain("Do not offer it for something over, cancelled, declined");
     const act = offer.found;

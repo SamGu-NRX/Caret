@@ -18,12 +18,12 @@
 // P2 (plans/fast-browser.md, gate "fill"): a page plan's values were chosen by proposeFill itself, both wordings
 // agreeing at FILL_CUTOFF with the owner veto, and minted by the write contract there (W2: the mint replaced the
 // markFilled identity mark), so lowering passes the mint through and asks nothing again.
+import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { fieldKinds, NUMBER_FIELD } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
-import { verifyWrites } from "../planner/codeplan.ts";
+import { verifyWrites, type CheckUse, type SourceNote } from "../planner/codeplan.ts";
 import { secretIn } from "../planner/trace.ts";
-import type { SnippetLedger } from "../privacy.ts";
 import type { GoalStep, TargetBinding, ValueBinding } from "./plan.ts";
 
 const clip = (s: string): string => {
@@ -134,41 +134,62 @@ export interface JevWrite {
   senderOf?: string;
 }
 
-/** The value as Jev reads it: its display, or what is written with the display it came from when they differ. */
-function shown(w: JevWrite): string {
-  if (w.target.control === "calendar") return w.value.display;
-  if (w.senderOf !== undefined) return `"${w.written}" (the sender of the message this reply answers: the From line of '${w.senderOf}')`;
-  return w.written === w.value.text ? w.value.display : `"${w.written}" (written for ${w.value.display})`;
+/**
+ * The value as Jev reads it, minted by the goal's Disclosure (the inventory's): its display, or what is written with the
+ * display it came from when they differ. Null when a part was never minted for the goal, so it is not asked about.
+ */
+function shown(d: Disclosure, w: JevWrite): ModelText | null {
+  const display = d.again(w.value.display);
+  if (display === null) return null;
+  if (w.target.control === "calendar") return display;
+  const written = w.written === w.value.text ? null : d.derived(display, w.written);
+  if (w.senderOf !== undefined) {
+    const value = written ?? d.derived(display, w.written);
+    const title = d.again(w.senderOf);
+    return value === null || title === null ? null : d.t`"${value}" (the sender of the message this reply answers: the From line of '${title}')`;
+  }
+  if (w.written === w.value.text) return display;
+  return written === null ? null : d.t`"${written}" (written for ${display})`;
 }
 
 /**
  * The writes Jev does not confirm, by step ref, each with the sentence the preview shows. With no Jev, every write is
  * unconfirmed. Throws JevUnavailable when the request fails: code does not guess on Jev's behalf.
  */
-export async function jevGate(instruction: string, writes: readonly JevWrite[], askJev: AskJev | null, ledger: SnippetLedger): Promise<Map<string, string>> {
+export async function jevGate(instruction: string, writes: readonly JevWrite[], askJev: AskJev | null, ledger: Disclosure, notes: ReadonlyMap<string, readonly SourceNote[] | null>): Promise<{ unconfirmed: Map<string, string>; jev: CheckUse }> {
   const out = new Map<string, string>();
-  if (writes.length === 0) return out;
+  const none: CheckUse = { calls: 0, costUsd: 0, latencyMs: 0 };
+  if (writes.length === 0) return { unconfirmed: out, jev: none };
   if (askJev === null) {
     for (const w of writes) out.set(w.ref, `Caret couldn't ask Jev whether '${clip(w.written)}' belongs there`);
-    return out;
+    return { unconfirmed: out, jev: none };
   }
+  /**
+   * HA2: the notes a value was read from, as the goal's inventory froze them at plan time (GoalInventory.notes); null when
+   * one was not frozen, which withholds the value from a field that wants the user's details (verifyWrites).
+   */
+  const notesOf = (v: ValueBinding): readonly SourceNote[] | null => notes.get(v.ref) ?? null;
   let dropped: Set<string>;
+  let jev: CheckUse;
   try {
-    dropped = await verifyWrites(
-      instruction,
-      writes.map((w) => {
-        const name = w.target.control === "calendar" ? `the ${w.target.label} calendar` : w.target.label;
-        // W2: a page write's exactness is the write contract's (lower.ts checkValues); only an event asks its value here.
-        return { key: w.ref, field: { name, label: name }, value: { display: shown(w), window: w.value.source?.windowId ?? null, owner: w.value.owner }, askValue: w.target.control === "calendar" };
-      }),
-      askJev,
-      ledger,
-    );
+    const d = ledger;
+    const asked = writes.flatMap((w) => {
+      const label = w.target.control === "calendar" ? d.memoryText(null, w.target.label) : d.again(w.target.label);
+      const name = label === null ? null : w.target.control === "calendar" ? d.t`the ${label} calendar` : label;
+      const display = shown(d, w);
+      // A write whose words were never minted for this goal is not asked about, and so is not confirmed.
+      if (name === null || display === null) return [];
+      // W2: a page write's exactness is the write contract's (lower.ts checkValues); only an event asks its value here.
+      // HA2 (lead decision): a writer goal's copied value meets fill's whole-note rule with the notes frozen at plan time.
+      return [{ key: w.ref, field: { name, label: w.target.control === "calendar" ? `the ${w.target.label} calendar` : w.target.label }, value: { display, window: w.value.source?.windowId ?? null, owner: w.value.owner, notes: notesOf(w.value) }, askValue: w.target.control === "calendar" }];
+    });
+    ({ dropped, jev } = await verifyWrites(instruction, asked, askJev, ledger));
+    for (const w of writes) if (!asked.some((x) => x.key === w.ref)) dropped.add(w.ref);
   } catch (e) {
     throw new JevUnavailable(e instanceof Error ? e.message.slice(0, 200) : String(e));
   }
   for (const w of writes) if (dropped.has(w.ref)) out.set(w.ref, `Jev didn't confirm '${clip(w.written)}' belongs there`);
-  return out;
+  return { unconfirmed: out, jev };
 }
 
 export class JevUnavailable extends Error {}

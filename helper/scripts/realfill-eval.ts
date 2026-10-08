@@ -14,13 +14,15 @@
 // proposed that is not, missed when an expected value got none, and a correct blank when "none" or
 // "handoff" got none. Wrong fills must be 0. The key is TYPESAFE_API_KEY from the environment or from
 // CARET_ENV_FILE; it is never printed. Output holds synthetic corpus text only.
+import { appendStore, appendStoreJson, writeStore, writeStoreJson } from "../src/privacy/send.ts";
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { proposeFill } from "../src/fill/fill.ts";
-import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
-import { heldAsConversation, heldToHalf, SnippetLedger, windowBudget } from "../src/privacy.ts";
+import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
+import { heldAsConversation, heldToHalf, windowBudget } from "../src/privacy.ts";
 import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
 import { formInputs } from "../src/fill/fill.ts";
 import { describeField } from "../src/fill/descriptor.ts";
@@ -58,10 +60,12 @@ let calls = 0;
 const live = makeJevClient(loadJevKey);
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const r = await live(req);
+  // Sealed before it is sent: sent and logged from this frozen copy (PV2).
+  const sent = sealRequest(req);
+  const r = await live(sent.asked);
   spent += r.costUsd;
   calls++;
-  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], JSON.stringify({ form: current, questions: Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])), answers: r.answers }) + "\n");
+  if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { form: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers });
   return r;
 };
 let current = "";
@@ -143,7 +147,7 @@ for (const [fi, form] of corpus.forms.entries()) {
     const d = describeField(w, x.node);
     return fieldTerms([d.label, d.nearest, d.placeholder]);
   });
-  const gen = collectCandidates(model, w.window.windowId, { now: T0, ledger: new SnippetLedger(model.windows.values()), fields: terms });
+  const gen = collectCandidates(model, w.window.windowId, { now: T0, ledger: new Disclosure(model.windows.values()), fields: terms });
   const source: SourceCut = {
     budget: sw === null ? null : windowBudget(sw),
     half: sw !== null && (heldToHalf(sw) || heldAsConversation(sw)),
@@ -209,6 +213,6 @@ const md: string[] = [
     "",
   ]),
 ];
-writeFileSync(join(OUT, "realfill-eval.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "realfill-eval.json"), JSON.stringify({ calls, spent, results: results.map((r) => ({ form: r.form.id, error: r.error, scored: r.scored, proposal: r.proposal })) }, null, 1) + "\n");
+writeStore(join(OUT, "realfill-eval.md"), md.join("\n") + "\n");
+writeStoreJson(join(OUT, "realfill-eval.json"), { calls, spent, results: results.map((r) => ({ form: r.form.id, error: r.error, scored: r.scored, proposal: r.proposal })) }, 1);
 process.stderr.write(`wrote ${join(OUT, "realfill-eval.md")}; all: right ${count(all, "right")}/${fillable(all)}, wrong ${count(all, "wrong")}; $${spent.toFixed(4)}\n`);

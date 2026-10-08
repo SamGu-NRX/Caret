@@ -39,6 +39,7 @@ import {
   fstatSync,
   fsyncSync,
   linkSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -75,6 +76,8 @@ import {
   type RecordKind,
 } from "./parse.ts";
 import { refusal, sensitiveKind, valueKind } from "./sensitive.ts";
+import { WITHHELD, WITHHELD_SAYS } from "../privacy/exclude.ts";
+import { assertLocalStorePath, openLocalFile } from "../privacy/store-path.ts";
 
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_TOTAL_BYTES = 2 * 1024 * 1024;
@@ -154,6 +157,10 @@ export class MemoryDocumentStore {
 
   constructor(root: string) {
     this.root = resolve(root);
+    // A memory folder that is a symlink keeps its own refusal, which says what to do. Every file this store writes,
+    // renames or links is inside this folder, checked once here; ensureDir refuses a link in its place later.
+    if (existsSync(this.root) && lstatSync(this.root).isSymbolicLink()) checkDir(this.root);
+    assertLocalStorePath(this.root);
     ensureDir(this.root);
     ensureDir(join(this.root, "skills"));
     this.recoverSaves(this.root);
@@ -354,7 +361,7 @@ export class MemoryDocumentStore {
     ensureDir(this.root);
     ensureDir(dir);
     const tmp = join(dir, `.${baseName(target)}${TEMP_TAG}${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-    const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const fd = openLocalFile(tmp, { exclusive: true, mode: 0o600 });
     try {
       writeAll(fd, bytes);
       fsyncSync(fd);
@@ -594,6 +601,8 @@ export function sensitiveLine(doc: DocId, text: string): string | null {
     const f = /^[-*+][ \t]+([A-Za-z][A-Za-z ']{0,30}?)[ \t]*:[ \t]*(.*)$/.exec(line);
     const s = (f === null ? null : sensitiveKind(f[1], f[2] ?? "")) ?? valueKind(line);
     if (s !== null) return `${p.file}:${i + 1}: ${refusal(s)}`;
+    // SC1 2a: a text read from the screen with a secret-format value withheld from it.
+    if (line.includes(WITHHELD)) return `${p.file}:${i + 1}: ${WITHHELD_SAYS} in memory`;
   }
   return null;
 }

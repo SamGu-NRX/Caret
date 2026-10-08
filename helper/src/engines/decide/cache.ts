@@ -7,7 +7,10 @@
 //   on a copy LaunchServices opened; apps/caret LaunchRole), and the helper refuses CARET_JEV_CACHE outright
 //   (refuseCacheInHelper), since the helper reads the user's real screen;
 // - it refuses any request that declares text (privacy.ts Snippet) from a window the harness did not load from a
-//   fixture, or from the user's memory unless the harness's memory is a fixture's, before it reads or writes anything.
+//   fixture, or from the user's memory unless the harness's memory is a fixture's, before it reads or writes anything;
+// - it verifies each request as the client does (privacy/disclosure.ts: minted, in its shape) before it replays or
+//   records it, so a replayed run fails where a live one would, and it stores the request with every value in a format
+//   Caret never carries withheld (storable). An entry is kept until someone deletes it: nothing prunes the directory.
 //
 // A request is keyed by a hash of its canonical form: the engine and model, the state, and each question by its
 // content, not its id. An option is named by its description's rank among the request's descriptions. A fill's second
@@ -15,10 +18,12 @@
 // would miss every second ask; the recorded answer is mapped back to this run's ids. When two options share a
 // description, or two questions their content, no renaming can tell them apart and the key uses the exact ids.
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MEMORY_SNIPPETS } from "../../privacy.ts";
-import type { AskJev, ChoiceQuestion, JevRequest, JevResult, NoulQuestion } from "../../fill/jev.ts";
+import { frozenRequest, wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
+import { seal, writeStoredLine } from "../../privacy/send.ts";
+import { renameLocal } from "../../privacy/store-path.ts";
 
 export type CacheMode = "record" | "replay" | "replay-or-record";
 const MODES: readonly CacheMode[] = ["record", "replay", "replay-or-record"];
@@ -202,7 +207,10 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
   return async (req) => {
     refuseShipped(opts.env ?? process.env);
     checkFixture(req, opts.fixture);
-    const c = canonicalRequest(req, opts.engine, opts.model, opts.variant ?? "");
+    // Sealed once (privacy/send.ts): the key, the engine's request and the record all come from this frozen copy.
+    const sealed = seal({ req, wire: wireBody(req, opts.model) });
+    const asked = frozenRequest(req, sealed.wire);
+    const c = canonicalRequest(asked, opts.engine, opts.model, opts.variant ?? "");
     const path = join(opts.dir, c.key.slice(0, 2), `${c.key}.json`);
     if (opts.mode !== "record") {
       let entry: Entry | null = null;
@@ -211,10 +219,10 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       }
-      if (entry !== null) return replayed(entry, c, req.nouls !== undefined);
+      if (entry !== null) return replayed(entry, c, asked.nouls !== undefined);
       if (opts.mode === "replay") throw new Error(`replay: nothing recorded for this ${opts.engine} request (${c.key.slice(0, 12)}) in ${opts.dir}`);
     }
-    const r = await ask(req);
+    const r = await ask(asked);
     const pos = new Map(c.questionIds.map((id, i) => [id, i]));
     const at = (id: string): number => {
       const i = pos.get(id);
@@ -222,11 +230,15 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
       return i;
     };
     const name = (id: string): string => c.toCanon.get(id) ?? id;
-    const entry: Entry = {
+    // The request's part of the entry is read from the sealed bytes as it is written (storedLine's `wire`), never from an
+    // object; the rest is what came back.
+    const entry = (wire: unknown): Entry => {
+      const sent = canonicalRequest(frozenRequest(req, wire), opts.engine, opts.model, opts.variant ?? "");
+      return {
       v: FORMAT,
       engine: opts.engine,
       model: opts.model,
-      canonical: { exact: c.exact, state: req.state, questions: c.questions },
+      canonical: { exact: sent.exact, state: (wire as { state: unknown }).state, questions: sent.questions },
       answeredBy: r.model,
       answers: Object.fromEntries(Object.entries(r.answers).map(([id, a]) => [at(id), { choice: name(a.choice), confidence: a.confidence }])),
       nouls: Object.fromEntries(Object.entries(r.nouls ?? {}).map(([id, p]) => [at(id), p])),
@@ -234,12 +246,14 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
       inputTokens: r.inputTokens,
       latencyMs: r.latencyMs,
       recordedAt: new Date().toISOString(),
+      };
     };
     mkdirSync(join(opts.dir, c.key.slice(0, 2)), { recursive: true, mode: 0o700 });
     mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
     const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
-    renameSync(tmp, path);
+    // Checked as it is written, after the answer came back (privacy/send.ts storedLine).
+    writeStoredLine(tmp, sealed, entry, { mode: 0o600 });
+    renameLocal(tmp, path);
     return r;
   };
 }

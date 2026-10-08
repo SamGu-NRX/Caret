@@ -1,3 +1,5 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
+import { minted } from "./minted.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +8,7 @@ import { DailySpend } from "../src/engines/decide/daily-cap.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { jevSettings, loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 
-const req = { state: "synthetic", questions: {}, snippets: [], charged: {}, retry429: false };
+const req = minted({ state: "synthetic", questions: {}, snippets: [], charged: {}, retry429: false });
 const fixture = { windows: (id: string) => id === "fixture", memory: false, plan: false };
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "jev-safety-")); });
@@ -98,3 +100,8 @@ describe("Laya fixture-only boundary", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+// INT1: v2/gate added this to the tests that existed at its base; these reach the gateway route too.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

@@ -25,6 +25,7 @@
 //     so cooldown and coalescing are counted, not assumed.
 // Cost per call is Jev's price ($0.042 per million input tokens) times the mean input tokens the corpus run measured
 // for router and fill requests.
+import { writeStore, writeStoreJson } from "../../src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -142,7 +143,7 @@ try {
   const answers: (() => void)[] = [];
   const askJev: AskJev = () =>
     new Promise((res) => answers.push(() => res({ model: "replay", answers: { outcome: { choice: "abstain", confidence: 0.9 } }, inputTokens: 0, latencyMs: latency, costUsd: 0 })));
-  const cand: RouteCandidate = { id: "fillAll", kind: "fillAll", says: "Fill", plain: "Fill", quotes: [], relevance: 0, run: () => undefined };
+  const cand: RouteCandidate = { id: "fillAll", kind: "fillAll", says: "Fill", plain: "Fill", say: (d) => ({ says: d.own("Fill"), plain: d.own("Fill") }), quotes: [], relevance: 0, run: () => undefined };
   const coord = new RoutingCoordinator({
     model,
     askJev,
@@ -262,8 +263,8 @@ try {
     `| Jev cost, at most | $${(usd(before.fillCalls.high, fillTokens) / hours).toFixed(4)} | ${cols.map((c) => `$${((usd(c.a.routerCalls, routerTokens) + usd(c.a.fillCalls.high, fillTokens)) / hours).toFixed(4)}`).join(" | ")} |`,
     "",
   ];
-  writeFileSync(a.out as string, md.join("\n"));
-  if (a.json !== undefined) writeFileSync(a.json, `${JSON.stringify({ hours, focuses, focusByDay, entries: activeEpisodes.length, findable, transfers: activeTransfers.length, groups: groups.length, coordinator: coord.stats, before, after: cols, routerTokens, fillTokens, latency }, null, 2)}\n`);
+  writeStore(a.out as string, md.join("\n"));
+  if (a.json !== undefined) writeStoreJson(a.json, { hours, focuses, focusByDay, entries: activeEpisodes.length, findable, transfers: activeTransfers.length, groups: groups.length, coordinator: coord.stats, before, after: cols, routerTokens, fillTokens, latency }, 2);
   process.stdout.write(md.join("\n"));
 } finally {
   rmSync(tmp, { recursive: true, force: true });

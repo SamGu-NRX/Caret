@@ -56,7 +56,7 @@ describe("page.sock handshake", () => {
     dir = mkdtempSync(join(tmpdir(), "caret-page-"));
     applied.length = 0;
     warnings.length = 0;
-    host = pageHost({ path: join(dir, "page.sock"), secret: LAUNCH, reader: nullReader, apply: (m) => applied.push(m), warn: (l) => warnings.push(l) });
+    host = pageHost({ path: join(dir, "page.sock"), secret: LAUNCH, reader: nullReader, apply: (m) => applied.push(m), purge: (s) => applied.push(s), warn: (l) => warnings.push(l) });
     await host.server.listen();
   });
   afterEach(async () => {
@@ -80,7 +80,7 @@ describe("page.sock handshake", () => {
   it("writes no key beside the socket, and removes one an earlier build left there (W3)", async () => {
     await host.server.close();
     writeFileSync(join(dir, "page.sock.key"), "an earlier build's key", { mode: 0o600 });
-    host = pageHost({ path: join(dir, "page.sock"), secret: LAUNCH, reader: nullReader, apply: (m) => applied.push(m), warn: (l) => warnings.push(l) });
+    host = pageHost({ path: join(dir, "page.sock"), secret: LAUNCH, reader: nullReader, apply: (m) => applied.push(m), purge: (s) => applied.push(s), warn: (l) => warnings.push(l) });
     await host.server.listen();
     expect(readdirSync(dir).sort()).toEqual(["page.sock"]);
     expect(statSync(join(dir, "page.sock")).mode & 0o777).toBe(0o600);

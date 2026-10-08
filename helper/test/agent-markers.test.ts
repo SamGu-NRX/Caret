@@ -168,7 +168,8 @@ describe("the watch's text for a long agent thread", () => {
   it("tells Jev the signs of running work then and now", () => {
     const running = windowOf(T3, t3Window({ running: true }));
     const done = windowOf(T3, t3Window({ running: false, last: ["All four seating files are updated."] }));
-    const req = buildPendingRequest(done, [done], watchLines(running), watchLines(done), windowMarkers(running), windowMarkers(done));
+    // The signs from when the user left are minted from the window as it was then (SC1 2b), as the watcher keeps it.
+    const req = buildPendingRequest(done, [done], watchLines(running), watchLines(done), windowMarkers(running), windowMarkers(done), running);
     const state = req.state as Record<string, string>;
     expect(state.signs_of_running_work_when_the_user_left).toBe("[button] Stop generation");
     expect(state.signs_of_running_work_now).toBe("none");

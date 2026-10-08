@@ -211,7 +211,7 @@ describe("planWithCode, fix-check (B24)", () => {
     m.apply(snap([...form.nodes.values(), ...terms], { at: 1100, windowId: "form", title: long, app: FORM_APP, focused: true }));
     const seen: WriterRequest[] = [];
     const r = await planWithCode("do the reference section from my notes", m, memory, { writer: writer(fillByText([["Reference name", "Simone Achebe"]]), seen), askJev: jev().ask, offerKey: "plan-2", windowId: "form", now: 2000 });
-    const sent = (seen.at(-1)?.input as { snapshots: { title: string }[] }).snapshots[0]?.title;
+    const sent = (seen.at(-1)?.input as unknown as { snapshots: { title: string }[] }).snapshots[0]?.title;
     expect(sent).toBe(long.slice(0, 200));
     expect(r.writer.disclosed.some((x) => x.text === long.slice(0, 200))).toBe(true);
     expect(seen.at(-1)?.disclosed).toEqual(r.writer.disclosed);

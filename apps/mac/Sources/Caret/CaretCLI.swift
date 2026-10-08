@@ -1,4 +1,5 @@
 import Foundation
+import CaretCore
 
 enum CaretCLI {
     enum Error: Swift.Error {
@@ -50,8 +51,11 @@ enum CaretCLI {
         environment["CARET_NOTES_ROOT"] = CaretPaths.notesRoot.path
         environment["CARET_SUPPORT_ROOT"] = CaretPaths.applicationSupportRoot.path
         environment["PYTHONPATH"] = root.path
-        Self.injectGatewayAPIKey(into: &environment, projectRoot: root)
-        process.environment = environment
+        environment = CoreProcessTransport.childEnvironment(environment)
+        if environment["CARET_RELEASE_HOST"] != "1" {
+            Self.injectGatewayAPIKey(into: &environment, projectRoot: root)
+        }
+        process.environment = CoreProcessTransport.childEnvironment(environment)
         process.arguments = ["-m", "caret", subcommand] + arguments
 
         let stdout = Pipe()

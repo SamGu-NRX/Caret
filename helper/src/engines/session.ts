@@ -31,6 +31,8 @@ export class EngineSession {
   closed = false;
   /** The latest snapshot of each tab, as walked. */
   readonly tabs = new Map<number, PageSnapshot>();
+  /** "Not on this site" as last sent to this engine: page-link.ts drops a frame at these origins whatever the engine sends. */
+  offSites: ReadonlySet<string> = new Set();
   private readonly send: (m: HelperToEngine) => boolean;
   private readonly timeoutMs: number;
   private readonly pending = new Map<string, { resolve: (a: CommandAnswer) => void; snapshot: PageSnapshot | null; timer: NodeJS.Timeout }>();
@@ -93,6 +95,7 @@ export class EngineSession {
 
   /** "Not on this site": the whole list of origins Caret is off for, replacing the worker's. */
   sitesOff(origins: readonly string[]): boolean {
+    this.offSites = new Set(origins);
     return this.send({ type: "pageSitesOff", v: PROTOCOL_VERSION, origins: [...origins] });
   }
 

@@ -12,17 +12,27 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { conversionOf, FILLABLE_ROLES, FillError, identityRefOf, MAX_FIELDS, memoryRefOf, mintOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FILLABLE_ROLES, FillError, heldReason, identityRefOf, MAX_FIELDS, memoryRefOf, mintOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { ContractError, fieldContract, requireChecked, type FieldContract } from "../fill/contract.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isAnswerField } from "../fill/answers.ts";
+import { alternateReason, PartPicks } from "../fill/alternate.ts";
 import { asksCountry, fieldPart } from "../fill/derive.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import type { EventClock } from "../offers/event-time.ts";
 import { writtenFields } from "../offers/fill-popup.ts";
 import { fieldName } from "../planner/planner.ts";
-import { saysNoValue, UNSURE_FIELD } from "../planner/says.ts";
+import { UNNAMED_FIELD } from "../planner/intent.ts";
+import { redactWindow } from "../fill/redact.ts";
+
+/** A field's name as the plan says it, read from the window's redacted view (PV1: never a name redaction removed). */
+function viewName(w: WindowState, n: Node): string {
+  const v = redactWindow(w);
+  const kept = v.nodes.get(n.key);
+  return kept === undefined ? UNNAMED_FIELD : fieldName(v, kept);
+}
+import { saysNoValue, SECTION_UNKNOWN_FIELD, UNSURE_FIELD } from "../planner/says.ts";
 import { handoffWhy } from "../planner/validate.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import type { DraftPlan } from "../codemode/types.ts";
@@ -111,6 +121,8 @@ export interface PlanPageOptions {
    * is the user's, said before Tab (planner/ask.ts AskGoal.page.unsure). Never in `scope`.
    */
   unsure?: readonly string[];
+  /** SCP1: the empty fields Jev chose that the Ask leaves to the user because Caret couldn't tell which section each is in. Never in `scope`. */
+  sectionless?: readonly string[];
   /** What the user told Caret (fill/about.ts), as a Fill all offers it. */
   about: readonly AboutValue[];
   askJev: AskJev;
@@ -295,6 +307,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     const n = w.nodes.get(k);
     if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, UNSURE_FIELD);
   }
+  for (const k of o.sectionless ?? []) {
+    const n = w.nodes.get(k);
+    if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, SECTION_UNKNOWN_FIELD);
+  }
   // Fields of a kind Caret never types that the scope takes are named before Tab.
   const scopeKeys = o.scope === null || o.kind === "all" ? null : new Set(o.kind === "list" ? o.scope.fields : []);
   for (const n of neverTyped) {
@@ -339,17 +355,23 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // 2. Values: fill's one round over exactly each part's fields, under the Ask's scope; the parts' rounds run together.
   const scopeOf = (part: readonly PageInput[]): FillScope | undefined =>
     o.scope === null ? undefined : { ...o.scope, fields: part.map((x) => x.node.key), literals: new Map([...o.scope.literals].filter(([k]) => part.some((x) => x.node.key === k))) };
+  // V6 B1: each part's alternate-field veto reads every part's proposals before any verifier runs (fill/alternate.ts):
+  // an Alternate email in one part never repeats the Email another part proposes. A part that ends before it gets there
+  // is arrived for with no proposals, so none waits on it.
+  const board = new PartPicks(parts.length);
   const rounds = await Promise.all(
-    parts.map(async (part) => {
+    parts.map(async (part, k) => {
       const scope = scopeOf(part);
       try {
         // With no scope, the part's own fields (C2 review: a fill on focus asks about the 20 nearest the trigger, which
         // on a long form of look-alike fields were not the part's).
         const which = scope === undefined ? { only: part.map((x) => x.node.key) } : { scope };
-        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), authority: o.scopes === undefined || pageScope === undefined ? { kind: "goal", goalId: o.goalId } : { kind: "ask", scope: pageScope }, documentOf: o.documentOf ?? null }), error: null };
+        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), authority: o.scopes === undefined || pageScope === undefined ? { kind: "goal", goalId: o.goalId } : { kind: "ask", scope: pageScope }, documentOf: o.documentOf ?? null, peers: { board, part: k } }), error: null };
       } catch (e) {
         if (e instanceof FillError) return { part, scope, proposal: null, error: e };
         throw e;
+      } finally {
+        board.arrive(k, []);
       }
     }),
   );
@@ -357,7 +379,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // has something to offer (before C2: with a file control only). A fill that failed any other way refuses the plan.
   const failed = rounds.find((x) => x.error !== null && x.error.why !== "nothingToCopy")?.error;
   if (failed !== undefined && failed !== null) throw new GoalError("nothingToDo", "Caret couldn't read this form's values", failed.message);
-  if (rounds.every((x) => x.error !== null) && rounds.length > 0 && files.length === 0) throw new GoalError("nothingToDo", saysNoValue(asked.map((x) => fieldName(w, x.node))), rounds[0]?.error?.message);
+  if (rounds.every((x) => x.error !== null) && rounds.length > 0 && files.length === 0) throw new GoalError("nothingToDo", saysNoValue(asked.map((x) => viewName(w, x.node))), rounds[0]?.error?.message);
   for (const x of rounds) if (x.error !== null) for (const y of x.part) leave(y.node, "Caret found nothing on screen or in memory for it");
   // What a Fill all would write: text values and the controls fill says it writes, each with its span and source; and
   // (an Ask's own) a value the instruction spells out for the field, which both asks chose as written there.
@@ -378,14 +400,17 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       if (n === undefined) continue;
       // H13: a field that takes a written answer is the user's by design, whatever Jev made of it: "wasn't sure" would say
       // Caret tried to write it. A saved answer matched to it but held back (`answer`) keeps that reason instead.
-      if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write");
+      // The alternate veto and HA2's note rule say their own complete sentence. lowerGoal adds the final period.
+      const repeated = alternateReason(f) ?? heldReason(f);
+      if (repeated !== null) left.push({ windowId: o.windowId, key: n.key, label: fieldName(w, n), why: "dropped", says: repeated.replace(/\.$/u, "") });
+      else if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write");
       else if (f.withheld !== null) leave(n, WITHHELD_SAYS[f.withheld] ?? "Caret wasn't sure what goes there");
       else if (f.handoff !== null) leave(n, `Caret leaves setting it to you ('${clip(f.handoff.display)}' fits it)`, f.handoff.source === null ? undefined : { windowId: f.handoff.source.windowId, text: clip(f.handoff.display) });
     }
   }
   if (writes.size === 0 && files.length === 0) {
     const unsure = left.filter((l) => l.key !== `size:${o.windowId}`);
-    throw new GoalError("nothingToDo", unsure.length > 0 ? clip(unsure.map((l) => l.says).join("; "), 590) : saysNoValue(asked.map((x) => fieldName(w, x.node))));
+    throw new GoalError("nothingToDo", unsure.length > 0 ? clip(unsure.map((l) => l.says).join("; "), 590) : saysNoValue(asked.map((x) => viewName(w, x.node))));
   }
 
   // 3. The inventory: the page as frozen (revision, document, owed fields), and a target for each field fill writes.
@@ -469,7 +494,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     targets.set(t.ref, t);
     attach.push({ target: t, file: o.attachOffer === undefined ? { source: "choose" } : await o.attachOffer(w, n, label) });
   }
-  const inventory: GoalInventory = { ...inv.inventory, targets, values };
+  // V6 B2: lowering's alternate-field veto reads the user's About entries, as fill's did.
+  // HA2: no source notes are frozen here. Fill's values carry its mints (gate "fill") and never reach the value gate, and
+  // the plan keeps none of the tab's text beyond the values and spans fill chose (I6).
+  const inventory: GoalInventory = { ...inv.inventory, targets, values, alternates: { fields: inv.inventory.alternates?.fields ?? new Map(), saved: o.about }, notes: new Map() };
   // I6: who goes on after Caret's steps, as the plan's last row.
   const row = handoffRow(w, domain, [...[...gated.keys()].map((r) => (targets.get(r) as TargetBinding).key), ...attach.map((a) => a.target.key)]);
 

@@ -2,6 +2,7 @@
 // instead of once per question. A fill asks every field about every candidate, so its candidate list was repeated per
 // field: 86.5% of the characters of the corpus's fill requests were option descriptions (evidence/screen/j1). The body
 // must say exactly what the request says, so expanding it back gives the request's own questions.
+import { minted } from "./minted.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -23,9 +24,9 @@ function fill(fields: number, cands: number): JevRequest {
   const criteria: Record<string, string> = {};
   for (let i = 1; i <= cands; i++) criteria[`c${i}`] = `"value ${i}" (in a block that starts 'apartment app'; in TextEdit window 'Rental notes.txt', the window the user just left)`;
   criteria.none = "No candidate is the value this field asks for.";
-  const questions: JevRequest["questions"] = {};
+  const questions: Record<string, { type: "choice"; instructions: string; criteria: Record<string, string> }> = {};
   for (let f = 1; f <= fields; f++) questions[`f${f}`] = { type: "choice", instructions: `Label: 'Field ${f}'. Which candidate?`, criteria: { ...criteria } };
-  return { state: { destination_window: "Chrome window 'Form'", task: "The user is filling in this form." }, questions, nouls: { n_1: { type: "noul", instructions: "yes?" } }, snippets: [], charged: {} };
+  return minted({ state: { destination_window: "Chrome window 'Form'", task: "The user is filling in this form." }, questions, nouls: { n_1: { type: "noul", instructions: "yes?" } }, snippets: [], charged: {} });
 }
 
 describe("the body sent to Jev", () => {
@@ -58,13 +59,13 @@ describe("the body sent to Jev", () => {
   it("is the request unchanged when no option repeats, or the state is not an object", () => {
     const one = { ...fill(1, 5), nouls: undefined };
     expect(wireBody(one)).toEqual(plain(one));
-    const text = { ...fill(3, 5), state: "a string state" };
+    const text = minted({ ...fill(3, 5), state: "a string state" });
     expect(wireBody(text)).toEqual(plain(text));
   });
 
   it("refuses a state that already uses the key it would add", () => {
     const req = fill(3, 3);
-    req.state = { [OPTION_DESCRIPTIONS]: "taken" };
+    req.state = minted({ state: { [OPTION_DESCRIPTIONS]: "taken" } }).state;
     expect(() => wireBody(req)).toThrow(OPTION_DESCRIPTIONS);
   });
 
@@ -85,7 +86,7 @@ describe("the body sent to Jev", () => {
     let before = 0;
     let after = 0;
     for (const { body } of rows) {
-      const req: JevRequest = { state: body.state, questions: Object.fromEntries(Object.entries(body.questions).filter(([, q]) => q.type === "choice")) as JevRequest["questions"], snippets: [], charged: {} };
+      const req: JevRequest = minted({ state: body.state as unknown as Record<string, string>, questions: Object.fromEntries(Object.entries(body.questions).filter(([, q]) => q.type === "choice")) as unknown as Record<string, { type: "choice"; instructions: string; criteria: Record<string, string> }>, snippets: [], charged: {} });
       before += JSON.stringify(plain({ ...req, nouls: undefined })).length;
       after += JSON.stringify(wireBody(req)).length;
     }

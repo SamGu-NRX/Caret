@@ -3,6 +3,8 @@
 // text to the left on the same row, then directly above, using the frames in the screen model.
 import type { Frame, Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
+import { secretText } from "../memory/sensitive.ts";
+import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 
 export interface FieldDescriptor {
   text: string;
@@ -12,12 +14,13 @@ export interface FieldDescriptor {
   section: string | null;
 }
 
-const ROLE_NAMES: Record<string, string> = {
+const ROLE_NAMES = {
   AXTextField: "Text field",
   AXTextArea: "Text area",
   AXComboBox: "Combo box",
   AXSearchField: "Search field",
-};
+} as const;
+const roleName = (role: string): (typeof ROLE_NAMES)[keyof typeof ROLE_NAMES] | "Field" => (Object.hasOwn(ROLE_NAMES, role) ? ROLE_NAMES[role as keyof typeof ROLE_NAMES] : "Field");
 
 /** Limits for "nearest": wider than a label column, tighter than a neighbouring section. Assumed. */
 const MAX_LEFT_GAP = 260;
@@ -30,12 +33,31 @@ export function describeField(w: WindowState, field: Node): FieldDescriptor {
   const placeholder = cutLabel(clean(field.placeholder));
   const nearest = label === null ? nearestText(w, field) : null;
   const section = sectionOf(w, field);
-  const parts = [`${ROLE_NAMES[field.role] ?? "Field"}.`];
+  const parts = [`${roleName(field.role)}.`];
   if (label !== null) parts.push(`Label: '${label}'.`);
   if (nearest !== null) parts.push(`Nearest label: '${nearest}'.`);
   if (placeholder !== null) parts.push(`Placeholder: '${placeholder}'.`);
   if (section !== null) parts.push(`Section: '${section}'.`);
   return { text: parts.join(" "), label, placeholder, nearest, section };
+}
+
+/**
+ * SC1 2b: a field's descriptor as describeField words it, minted part by part by `d` from the redacted view `w`
+ * describeField read: the role in Caret's words, each label, placeholder and section as the view shows it. Null when a
+ * part does not fit its window's budget or the view does not show it.
+ */
+export function mintDescriptor(d: Disclosure, w: WindowState, field: Node, fd: FieldDescriptor = describeField(w, field)): ModelText | null {
+  const parts: ModelText[] = [d.t`${d.own(roleName(field.role))}.`];
+  const add = (text: string | null, say: (m: ModelText) => ModelText): boolean => {
+    if (text === null) return true;
+    const m = d.descriptor(w, text);
+    if (m === null) return false;
+    parts.push(say(m));
+    return true;
+  };
+  const ok =
+    add(fd.label, (m) => d.t`Label: '${m}'.`) && add(fd.nearest, (m) => d.t`Nearest label: '${m}'.`) && add(fd.placeholder, (m) => d.t`Placeholder: '${m}'.`) && add(fd.section, (m) => d.t`Section: '${m}'.`);
+  return ok ? d.join(parts, " ") : null;
 }
 
 /**
@@ -80,7 +102,8 @@ function labelTexts(w: WindowState): LabelText[] {
   for (const n of w.nodes.values()) {
     if (n.role !== "AXStaticText" || n.frame === undefined) continue;
     const raw = n.label ?? n.value;
-    if (raw === undefined || raw.length === 0) continue;
+    // A document is content, never a competing nearest label.
+    if (raw === undefined || raw.length === 0 || /\S\s*\n\s*\S/u.test(raw)) continue;
     // With nothing to collapse, cleaning leaves the text as it is, so a long one is over the cap without running the replace.
     const unclean = UNCLEAN.test(raw);
     if (!unclean && raw.length > MAX_LABEL_CHARS) continue;
@@ -136,17 +159,18 @@ export function nearestLabel(w: WindowState, target: Node, labelOnly = false): {
  * texts are few, so this looks only at the nodes each one could be nearest to (to its right on its row, or below it):
  * about one pass over the window, not one lookup per field (G2 round 4: one per field cost about 30 ms on 2,000).
  */
-export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean): Set<string> {
+export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean, markedKeys: ReadonlySet<string> = new Set()): Set<string> {
   const out = new Set<string>();
   const all = allTexts(w);
   // A one-line text that names a secret is a label: it goes, and so does each node it is nearest to. A text of several
   // lines is a document, whose own lines the redacted view drops one by one, and which labels nothing (G2 round 6: a
   // document lost its name and phone, and then took "Robin Vale" beside it).
-  const labels = all.filter((e) => !e.document && marked(e.t));
+  const oneLine = all.filter((e) => !e.document);
+  const labels = oneLine.filter((e) => markedKeys.has(e.key) || marked(e.t));
   if (labels.length === 0) return out;
   const isDocument = new Set(all.filter((e) => e.document).map((e) => e.key));
   for (const e of labels) out.add(e.key);
-  const isMarkedLabel = (key: string, t: string): boolean => !isDocument.has(key) && marked(t);
+  const isMarkedLabel = (key: string, t: string): boolean => !isDocument.has(key) && (markedKeys.has(key) || marked(t));
   for (const n of w.nodes.values()) {
     const f = n.frame;
     // A document is checked too: a one-line label naming a secret beside it takes it whole.
@@ -159,7 +183,7 @@ export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean):
       return sameRow || below;
     });
     if (!near) continue;
-    const full = nearestIn(all, n);
+    const full = nearestIn(oneLine, n);
     const shown = [nearestLabel(w, n, false), nearestLabel(w, n, true)];
     if ((full !== null && isMarkedLabel(full.key, full.t)) || shown.some((l) => l !== null && isMarkedLabel(l.key, l.t))) out.add(n.key);
   }
@@ -217,7 +241,8 @@ function overlapsHorizontally(a: Frame, b: Frame): boolean {
 
 function sectionOf(w: WindowState, field: Node): string | null {
   const n = sectionNode(w, field);
-  return n === null ? null : fieldLabelText(n.label);
+  // A section can name a secret even when its child field does not. Do not quote that name.
+  return n === null || secretText(n.label) ? null : fieldLabelText(n.label);
 }
 
 /** The node whose label is `n`'s section: its nearest ancestor below the web area with a short label, or null. */

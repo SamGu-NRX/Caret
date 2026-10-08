@@ -127,6 +127,17 @@ function rig(o: { ask?: AskJev | null; docs?: MemoryDocumentStore | null; showsF
 }
 
 describe("offer", () => {
+  it("does not send a file label from a field removed by redaction", async () => {
+    saveFile(store, fields("Resume", touch("Resume.pdf")));
+    const { model } = pageWindow("Resume");
+    model.apply(snap([node("group", "AXGroup", { label: "Password" }), node("in-1", "CaretFileInput", { label: "Resume", parent: "group" })], { at: 1001, windowId: WINDOW, title: "Apply", kind: "page", app: CHROME }));
+    const w = model.windows.get(WINDOW)!;
+    const sent: JevRequest[] = [];
+    const { files } = rig({ model, ask: jevPicking(() => "Resume.pdf", 1, sent) });
+    expect(await files.offer(w, w.nodes.get("in-1")!, "Resume")).toEqual({ source: "choose" });
+    expect(sent).toHaveLength(0);
+  });
+
   it("offers the saved file both asks pick at the floor, with its name and mtime, never its path to Jev", async () => {
     const resume = touch("Mara Quill Resume.pdf");
     const letter = touch("Cover Letter.pdf");

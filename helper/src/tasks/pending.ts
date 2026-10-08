@@ -1,3 +1,5 @@
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { redactWindow } from "../fill/redact.ts";
 // Pending-state watch (deep plan section 6.4). When the user leaves a window that shows unfinished
 // work, code (no model) finds the markers: a progress or busy indicator, an enabled Stop button by
 // the window's message composer (how agent threads such as Codex, T3 Code and browser chats show a
@@ -11,7 +13,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PendingInfo, ReaderVerb, TaskCause, TaskState, VerbResult } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
-import { SnippetLedger, cut, flat } from "../privacy.ts";
+import { cut, flat } from "../privacy.ts";
 import { composers } from "../conversation.ts";
 import { FINISHED, type TaskRegistry } from "./registry.ts";
 
@@ -39,10 +41,13 @@ const TEXT_RULES = [
 ] as const;
 const INDICATORS: Record<string, string> = { AXProgressIndicator: "[progress bar]", AXBusyIndicator: "[busy indicator]" };
 // A Map, not an object literal: a window line reading "constructor" must not find Object's own properties.
+const INDICATOR_LINES = ["[progress bar]", "[busy indicator]"] as const;
+type IndicatorLine = (typeof INDICATOR_LINES)[number];
 const INDICATOR_RULES = new Map<string, MarkerRule>([
   ["[progress bar]", "progressBar"],
   ["[busy indicator]", "busyIndicator"],
 ]);
+const indicatorLine = (line: string): line is IndicatorLine => (INDICATOR_LINES as readonly string[]).includes(line);
 
 /** Names for the marker rules, so a real-window audit can count which one fired without keeping the text. */
 export type MarkerRule = (typeof TEXT_RULES)[number]["id"] | "progressBar" | "busyIndicator" | "stopButton";
@@ -94,6 +99,7 @@ export const mask = (s: string): string => s.replace(/\d+/g, "#");
  * window's status. Secure fields never carry a value. Stops once `max` lines are in, between nodes.
  */
 export function allWatchLines(w: WindowState, max = Number.POSITIVE_INFINITY): string[] {
+  w = redactWindow(w);
   const out: string[] = [];
   for (const n of w.nodes.values()) {
     if (out.length >= max) break;
@@ -216,6 +222,7 @@ function insideItem(w: WindowState, parent: string | null): boolean {
  * an agent's composer comes last in a long transcript.
  */
 export function windowMarkers(w: WindowState): Marker[] {
+  w = redactWindow(w);
   const out: Marker[] = [];
   const comps = composers(w);
   // In a window with a message composer the text is a conversation, and a status in it is history:
@@ -263,21 +270,21 @@ export function signature(w: WindowState, lines: readonly string[], markers: rea
 export type Finished = "yes" | "failed" | "no";
 export type Waiting = "yes" | "no";
 
-const FINISHED_CRITERIA: Record<Finished, string> = {
+const FINISHED_CRITERIA = {
   yes: "Yes. It now shows the work completed or its result, for example done, finished, succeeded, passed, complete or uploaded.",
   failed: "It ended in an error or a failure, or it was cancelled.",
   no: "No. The work is still going, or it has stopped partway and is waiting for the user.",
-};
+} as const satisfies Record<Finished, string>;
 /**
  * "Before it continues" is the test. Without the second sentence of `no`, Jev called an agent turn
  * that ended in an error waiting on the user on 8 of 8 asks, and waiting wins, so a failure showed as
  * needsYou; with it, 8 of 8 were failed and B4's fixture texts kept their answers
  * (~/.caret-run/evidence/screen/b6/jev-agent-v1 and jev-agent, synthetic windows, 2 asks per case).
  */
-const WAITING_CRITERIA: Record<Waiting, string> = {
+const WAITING_CRITERIA = {
   yes: "Yes. It asks the user to act before it continues.",
   no: "No. Nothing in the window needs the user to act before the work can go on. Work that has ended, finished or failed, is not waiting, even if the user may want to look at it.",
-};
+} as const satisfies Record<Waiting, string>;
 
 /**
  * One request, two choice questions about one window. The question carries snippets, never the window's
@@ -293,43 +300,44 @@ export function buildPendingRequest(
   now: readonly string[],
   thenMarkers: readonly Marker[] = [],
   nowMarkers: readonly Marker[] = [],
+  thenView?: WindowState,
 ): JevRequest {
-  const ledger = new SnippetLedger(screen);
-  const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
+  w = redactWindow(w);
+  const d = new Disclosure(screen);
+  const title = d.descriptor(w, w.window.title);
   const before = new Set(then.map(mask));
   const changed = now.filter((l) => !before.has(mask(l)));
   const picked = changed.length <= CHANGED_LINES ? changed : [changed[0] as string, ...changed.slice(-(CHANGED_LINES - 1))];
   // The news first: what changed, then the signs now, both on screen; the signs from when the user left
-  // may be gone from the window and take what budget is left.
-  const lines = takeLines(ledger, w, picked, CHANGED_LINES);
-  const signsNow = takeLines(ledger, w, markerLines(nowMarkers), SIGN_LINES);
-  const signsThen = takeLines(ledger, w, markerLines(thenMarkers), SIGN_LINES);
-  return {
+  // may be gone from the window and take what budget is left. They are read from the window as it was then.
+  const lines = takeLines(d, w, picked, CHANGED_LINES);
+  const signsNow = takeLines(d, w, markerLines(nowMarkers), SIGN_LINES);
+  const signsThen = takeLines(d, thenView === undefined ? w : redactWindow(thenView), markerLines(thenMarkers), SIGN_LINES);
+  return d.seal({
     purpose: "pending.change",
     state: {
-      window: windowName(w, title),
-      situation:
-        "The user left this window while it showed unfinished work. Caret watches it so it can tell the user when the work is done or needs them. " +
-        "It shows the signs of running work when the user left and now, and the lines that have changed since.",
-      signs_of_running_work_when_the_user_left: orNone(signsThen),
-      signs_of_running_work_now: orNone(signsNow),
-      lines_that_changed: orNone(lines),
+      window: windowName(d, w, title),
+      situation: d.own(
+        "The user left this window while it showed unfinished work. Caret watches it so it can tell the user when the work is done or needs them. It shows the signs of running work when the user left and now, and the lines that have changed since.",
+      ),
+      signs_of_running_work_when_the_user_left: orNone(d, signsThen),
+      signs_of_running_work_now: orNone(d, signsNow),
+      lines_that_changed: orNone(d, lines),
     },
     questions: {
       finished: {
         type: "choice",
-        instructions: "Look at what the window shows now. Has the work it was doing when the user left finished?",
-        criteria: FINISHED_CRITERIA,
+        instructions: d.own("Look at what the window shows now. Has the work it was doing when the user left finished?"),
+        criteria: d.ownRecord(FINISHED_CRITERIA),
       },
       waiting: {
         type: "choice",
-        instructions:
-          "Is the window now waiting for the user to do something, such as approve, confirm, answer a question, choose an option or sign in, before the work can go on?",
-        criteria: WAITING_CRITERIA,
+        instructions: d.own("Is the window now waiting for the user to do something, such as approve, confirm, answer a question, choose an option or sign in, before the work can go on?"),
+        criteria: d.ownRecord(WAITING_CRITERIA),
       },
     },
-    ...ledger.declared(),
-  };
+    ...d.declared(),
+  });
 }
 
 /** Marker lines and changed lines a question names, at most; assumed. Four and six lines of SNIPPET_CHARS are WINDOW_CHARS. */
@@ -337,24 +345,38 @@ const SIGN_LINES = 4;
 const CHANGED_LINES = 6;
 
 const markerLines = (ms: readonly Marker[]): string[] => [...new Set(ms.map((m) => m.line))];
-const orNone = (lines: readonly string[]): string => (lines.length === 0 ? "none" : lines.join("\n"));
-const windowName = (w: WindowState, title: string | null): string => (title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`);
+const orNone = (d: Disclosure, lines: readonly ModelText[]): ModelText => (lines.length === 0 ? d.own("none") : d.join(lines, "\n"));
+const windowName = (d: Disclosure, w: WindowState, title: ModelText | null): ModelText => (title === null ? d.t`${d.app(w)} window` : d.t`${d.app(w)} window '${title}'`);
 
 /**
- * Up to `max` of the lines, each cut to SNIPPET_CHARS, that fit the window's budget in the ledger. An
- * indicator's line ("[progress bar]") names a role, not text on screen, so it costs nothing, unless some
- * text in the window reads the same; a marker from when the user left may name an indicator now gone.
+ * Up to `max` of the lines, each cut to SNIPPET_CHARS, that fit the window's budget, minted from the redacted view
+ * (privacy/disclosure.ts). An indicator's line ("[progress bar]") names a role, not text on screen: Caret's own wording,
+ * unless some text in the window reads the same. A button's line is Caret's "[button]" and the label the view shows.
  */
-function takeLines(ledger: SnippetLedger, w: WindowState, lines: readonly string[], max: number): string[] {
-  const out: string[] = [];
+function takeLines(d: Disclosure, w: WindowState, lines: readonly string[], max: number): ModelText[] {
+  const out: ModelText[] = [];
   for (const l of lines) {
     if (out.length >= max) break;
     const t = cut(flat(l));
-    if (t === "" || out.includes(t)) continue;
-    if (isIndicatorLine(w, t) || ledger.take(w, "candidate", [t])) out.push(t);
+    if (t === "" || out.some((x) => x === t)) continue;
+    const m = mintLine(d, w, t);
+    if (m !== null) out.push(m);
   }
   return out;
 }
+
+function mintLine(d: Disclosure, w: WindowState, t: string): ModelText | null {
+  if (indicatorLine(t) && isIndicatorLine(w, t)) return d.own(t);
+  // The whole line is charged, as the ledger always charged it; then its screen text is minted from the view.
+  // A button's line is Caret's "[button] " and the button's label: only the label is the window's.
+  if (!d.take(w, "candidate", [t.startsWith(BUTTON) ? t.slice(BUTTON.length) : t])) return null;
+  if (t.startsWith(BUTTON)) {
+    const label = d.descriptor(w, t.slice(BUTTON.length));
+    return label === null ? null : d.t`[button] ${label}`;
+  }
+  return d.candidate(w, t);
+}
+const BUTTON = "[button] ";
 
 function isIndicatorLine(w: WindowState, line: string): boolean {
   if (!INDICATOR_RULES.has(line)) return false;
@@ -371,31 +393,31 @@ function isIndicatorLine(w: WindowState, line: string): boolean {
  * caller can quote it.
  */
 export function buildLookRequest(w: WindowState, screen: Iterable<WindowState>, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
-  const ledger = new SnippetLedger(screen);
-  const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
-  const signs = takeLines(ledger, w, markerLines(markers), SIGN_LINES);
-  const tail = takeLines(ledger, w, allWatchLines(w).slice(-CHANGED_LINES), CHANGED_LINES);
+  w = redactWindow(w);
+  const d = new Disclosure(screen);
+  const title = d.descriptor(w, w.window.title);
+  const signs = takeLines(d, w, markerLines(markers), SIGN_LINES);
+  const tail = takeLines(d, w, allWatchLines(w).slice(-CHANGED_LINES), CHANGED_LINES);
   return {
     lines: tail,
-    req: {
+    req: d.seal({
       purpose: "pending.look",
       state: {
-        window: windowName(w, title),
-        situation: "The window shows signs of running work. Caret looks at it once to tell the user whether the work is done or needs them.",
-        signs_of_running_work: orNone(signs),
-        last_lines: orNone(tail),
+        window: windowName(d, w, title),
+        situation: d.own("The window shows signs of running work. Caret looks at it once to tell the user whether the work is done or needs them."),
+        signs_of_running_work: orNone(d, signs),
+        last_lines: orNone(d, tail),
       },
       questions: {
-        finished: { type: "choice", instructions: "Look at what the window shows. Has the work it was doing finished?", criteria: FINISHED_CRITERIA },
+        finished: { type: "choice", instructions: d.own("Look at what the window shows. Has the work it was doing finished?"), criteria: d.ownRecord(FINISHED_CRITERIA) },
         waiting: {
           type: "choice",
-          instructions:
-            "Is the window waiting for the user to do something, such as approve, confirm, answer a question, choose an option or sign in, before the work can go on?",
-          criteria: WAITING_CRITERIA,
+          instructions: d.own("Is the window waiting for the user to do something, such as approve, confirm, answer a question, choose an option or sign in, before the work can go on?"),
+          criteria: d.ownRecord(WAITING_CRITERIA),
         },
       },
-      ...ledger.declared(),
-    },
+      ...d.declared(),
+    }),
   };
 }
 
@@ -427,6 +449,8 @@ interface Watch {
   /** Lines and markers when the watch began; the "then" of every question. */
   then: string[];
   thenMarkers: Marker[];
+  /** The window as its redacted view read when the watch began: the signs from then are minted from it (SC1). */
+  thenView: WindowState;
   /** Signature of the latest snapshot, and of the last one Jev answered about. */
   sig: string;
   asked: string;
@@ -542,6 +566,7 @@ export class PendingWatcher {
       pid: w.app.pid,
       then: lines,
       thenMarkers: markers,
+      thenView: redactWindow(w),
       sig,
       asked: sig,
       timer: null,
@@ -736,7 +761,7 @@ export class PendingWatcher {
     let answer: ReturnType<typeof readPendingAnswer>;
     let latencyMs: number;
     try {
-      const r = await askJev(buildPendingRequest(w, this.deps.model.windows.values(), watch.then, watchLines(w), watch.thenMarkers, windowMarkers(w)));
+      const r = await askJev(buildPendingRequest(w, this.deps.model.windows.values(), watch.then, watchLines(w), watch.thenMarkers, windowMarkers(w), watch.thenView));
       latencyMs = r.latencyMs;
       answer = readPendingAnswer(r);
     } catch (e) {

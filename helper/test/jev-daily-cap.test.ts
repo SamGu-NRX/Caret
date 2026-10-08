@@ -1,5 +1,6 @@
 // Brief J1 part A4: every live Jev call checks the day's spend on this Mac against CARET_JEV_DAILY_CAP before it is
 // sent, and a call the cap stops fails as its own kind, whose sentence names the cap and the day's spend.
+import { minted } from "./minted.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import { DailySpend, DEFAULT_DAILY_CAP_USD, JevCapError, capFromEnv } from "../s
 import { jevFailureKind, makeJevClient, JEV_USD_PER_INPUT_TOKEN } from "../src/fill/jev.ts";
 import { jevFailureSays, SAYS } from "../src/planner/says.ts";
 
-const REQ = { state: "s", questions: { q: { type: "choice" as const, instructions: "i", criteria: { a: null, b: null } } }, snippets: [], charged: {} };
+const REQ = minted({ state: "s", questions: { q: { type: "choice" as const, instructions: "i", criteria: { a: null, b: null } } }, snippets: [], charged: {} });
 const answered = (tokens: number): Response =>
   new Response(JSON.stringify({ model: "jev-1.13.0", answers: { q: { choice: "a", confidence: 0.9 } }, usage: { input_tokens: tokens } }), { status: 200, headers: { "content-type": "application/json" } });
 

@@ -30,6 +30,7 @@
 // GUI gates first; this script stops, closes its windows and reports `deferred: user active` as soon as
 // HID idle drops under 5 s. Needs CARET_ENV_FILE for Jev (the shipping plan's ambiguous targets); live Jev stops
 // before spending more than --max-usd (scripts/spend.ts).
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { execFile, spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -182,7 +183,7 @@ process.on("SIGTERM", () => process.exit(143));
 process.on("uncaughtException", (e) => {
   if (e instanceof Aborted) {
     // Someone used the Mac before the runs began: nothing was measured.
-    writeFileSync(join(OUT, "real-target-eval.md"), `# Executor on ${TARGET}\n\n**deferred: user active**: ${e.message}, during startup. Nothing was measured.\n`);
+    writeStore(join(OUT, "real-target-eval.md"), `# Executor on ${TARGET}\n\n**deferred: user active**: ${e.message}, during startup. Nothing was measured.\n`);
     process.exit(3);
   }
   process.stderr.write(`real-target-eval: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`);
@@ -525,7 +526,7 @@ async function electronTarget(): Promise<Target> {
   tempDirs.push(appDir);
   copyFileSync(ELECTRON_MAIN, join(appDir, "main.cjs"));
   copyFileSync(FORM, join(appDir, "form.html"));
-  writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "caret-electron-eval", main: "main.cjs" }) + "\n");
+  writeStoreJson(join(appDir, "package.json"), { name: "caret-electron-eval", main: "main.cjs" });
   // Electron keeps its profile under the app's name in Application Support unless told otherwise.
   const profile = mkdtempSync(join(tmpdir(), "caret-electron-profile-"));
   tempDirs.push(profile);
@@ -539,7 +540,7 @@ async function electronTarget(): Promise<Target> {
   let electronLog = "";
   proc.stderr.setEncoding("utf8");
   proc.stderr.on("data", (d: string) => (electronLog = (electronLog + d).slice(-20_000)));
-  process.on("exit", () => writeFileSync(join(OUT, "electron.log"), electronLog));
+  process.on("exit", () => writeStore(join(OUT, "electron.log"), electronLog));
   const lines = lineReader(proc, "the electron app");
   const first = await lines.next(30_000);
   const said = Number(/^caret-electron pid (\d+)/.exec(first)?.[1]);
@@ -742,7 +743,7 @@ const titlePrefix = target.win.titleStartsWith ?? target.win.title ?? "";
 await until("the target window in the screen model", () => windowOf(target.pid, titlePrefix) !== undefined, 30_000);
 await until("the bystander window in the screen model", () => windowOf(bystanderPid, "Caret Fixture — Executor") !== undefined);
 // The target window as the reader sees it, for checking locators: synthetic form text or this script's own text only.
-writeFileSync(join(OUT, "target-nodes.json"), JSON.stringify([...(windowOf(target.pid, titlePrefix)?.nodes.values() ?? [])].map((n) => ({ key: n.key, role: n.role, label: n.label, value: n.value, editable: n.editable })), null, 1) + "\n");
+writeStoreJson(join(OUT, "target-nodes.json"), [...(windowOf(target.pid, titlePrefix)?.nodes.values() ?? [])].map((n) => ({ key: n.key, role: n.role, label: n.label, value: n.value, editable: n.editable })), 1);
 const mainNumber = windowOf(target.pid, titlePrefix)?.window.number;
 if (target.bind !== undefined) {
   if (mainNumber === undefined) throw new Error("the reader read no window number for the target window");
@@ -1119,9 +1120,9 @@ if (candidates.length > 0) {
 md.push("", `## Frontmost app changes during the run`, "", switches.length === 0 ? "none" : switches.map((s) => `- ${new Date(s.at).toISOString()} ${s.from?.name ?? "?"} (${s.from?.pid ?? "?"}) -> ${s.to.name} (${s.to.pid})`).join("\n"));
 md.push("", `## Cleanup`, "", `Processes still carrying this run's temporary profile after Chrome exited, then stopped: ${leftoverHelpers}. Temporary folders kept because one did not exit in time: ${JSON.stringify(keptDirs)}. TextEdit processes before: [${textEditBefore.join(", ")}], after: [${textEditAfter.join(", ")}]. New entries in TextEdit's autosave and saved-state folders: ${JSON.stringify(autosave)}.`);
 md.push("", `Jev: ${jev.calls()} calls, $${jev.usd().toFixed(5)} (budget $${MAX_USD}). Helper errors: ${errors.length}.`);
-writeFileSync(join(OUT, "real-target-eval.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "real-target-eval.json"), JSON.stringify({ target: TARGET, background: BACKGROUND, front: FRONT, responder: RESPONDER, aborted, rows, means, candidates, safety: sr, progress, errors, switches, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
-writeFileSync(join(OUT, "reader.log"), readerLog);
+writeStore(join(OUT, "real-target-eval.md"), md.join("\n") + "\n");
+writeStoreJson(join(OUT, "real-target-eval.json"), { target: TARGET, background: BACKGROUND, front: FRONT, responder: RESPONDER, aborted, rows, means, candidates, safety: sr, progress, errors, switches, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, targetChoices: helper.executor.targetChoices }, 2);
+writeStore(join(OUT, "reader.log"), readerLog);
 console.log(md.join("\n"));
 process.exit(aborted === null ? 0 : 3);
 

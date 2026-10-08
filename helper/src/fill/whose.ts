@@ -14,17 +14,18 @@
 //   - soleRecipient, toUsersAddress: greenhouse's First and Last name, from the To: name beside the user's own address.
 //     Wrong value: in a mail the user sent, when memory has no email of theirs to tell it apart, the recipient reads as
 //     the user, and someone else's name or address can go in a field that wants the user's.
-//   - ownNoteAlone: forty's Mobile phone, City, Apartment and ZIP (the note's own "Mobile …" and "Address: …"). Wrong
-//     value: a note the user keeps for someone else ("Dad's appointment: …") with no relation word in the sentence.
+//   - ownNoteAlone, removed (HA2): it told Jev a value "is in a sentence of the note … that names no other person". One
+//     sentence can't say whose a value is: a held-out note's next sentence said the contact lines above it were someone
+//     else's, Jev never saw it, and the hint helped it answer "user". Code makes no ownership claim; Jev is shown the
+//     whole note instead (fill.ts, owner questions).
 //   - namesOther: none recovered; it keeps the husband's and the reference's values ("my husband Marcus Cole, …") off the
 //     user's fields. Wrong value: none, a veto only withholds; it can blank the user's own value in a sentence about
 //     someone else ("my landlord has my cell, 555-0164").
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { AboutValue } from "./about.ts";
 import type { Candidate, CandidateIdentity, Placement } from "./candidates.ts";
-import { namesIn, textKind } from "./kinds.ts";
+import { textKind } from "./kinds.ts";
 import { bareLine, LABELLED, lineValues, sentenceAround } from "./line-values.ts";
-import { splitAddress } from "./derive.ts";
 
 /** Memory kinds that are the user's identity: email, phone and (with two words or more) full name. */
 const IDENTITY_KINDS: ReadonlySet<string> = new Set(["email", "phone", "name"]);
@@ -95,16 +96,14 @@ const emailsIn = (s: string): string[] => lineValues(s).filter((v) => v.kind ===
 
 /**
  * Where a candidate sits (candidates.ts Placement), read from its window as it is now. `userEmails` are the user's own
- * emails from memory, lower-cased; `userNames` the user's own names from memory.
+ * emails from memory, lower-cased.
  *   - On a mail's To: line (a window that shows one From: line and one To: line): `soleRecipient` when the line names
  *     one recipient (one address at most, no comma, semicolon or "and"), the mail has no Cc: or Bcc:, and the From:
  *     address is not the user's own (then the user sent it, and its recipient is someone else); `toUsersAddress` too
  *     when that one address is the user's own.
- *   - In a sentence of any other line: `namesOther` when the sentence names someone else (RELATION); else, in the
- *     note the user just left (an editable text, no mail headers), `ownNoteAlone` when the sentence holds no other name
- *     than one inside the span, inside an address it labels, or the user's own from memory.
+ *   - In a sentence of any other line: `namesOther` when the sentence names someone else (RELATION).
  */
-export function placementsOf(model: ScreenModel, c: Candidate, userEmails: ReadonlySet<string>, userNames: readonly string[]): Placement[] {
+export function placementsOf(model: ScreenModel, c: Candidate, userEmails: ReadonlySet<string>): Placement[] {
   const w = model.windows.get(c.source.windowId);
   const node = w?.nodes.get(c.source.nodeKey);
   if (w === undefined || node === undefined) return [];
@@ -136,12 +135,7 @@ export function placementsOf(model: ScreenModel, c: Candidate, userEmails: Reado
   }
   const pos = line.indexOf(c.text);
   if (pos < 0) return [];
-  const sentence = sentenceAround(line, pos, c.text);
-  if (RELATION.test(sentence)) return ["namesOther"];
-  const ownNote = !mail && c.recency === "justLeft" && node.editable === true;
-  if (!ownNote) return [];
-  const value = label?.[2]?.trim() ?? null;
-  const address = value !== null && splitAddress(value) !== null ? value : null;
-  const others = namesIn(sentence).filter((n) => !c.text.includes(n) && !(address?.includes(n) ?? false) && !userNames.some((u) => u.includes(n)));
-  return others.length === 0 ? ["ownNoteAlone"] : [];
+  // HA2: only a sentence that names someone else is said; that a sentence names no one is no claim code can make about
+  // whose the value is (see the file's header).
+  return RELATION.test(sentenceAround(line, pos, c.text)) ? ["namesOther"] : [];
 }

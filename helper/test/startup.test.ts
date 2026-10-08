@@ -32,4 +32,13 @@ describe("the helper's start", () => {
     expect(r.stderr).toContain(`--status-every must be a positive number of seconds up to 2147483, not '${every}'`);
     expect(existsSync(sock)).toBe(false);
   });
+
+  it("refuses to start with SC1 step 3's test-only switch that turns the marker heuristics off", () => {
+    const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+    const sock = join(dir, "sock", "s.sock");
+    const r = spawnSync(process.execPath, [main, "--no-jev", "--socket", sock, "--data-dir", join(dir, "data")], { encoding: "utf8", timeout: 10_000, env: { ...process.env, CARET_TEST_MARKERS_OFF: "1" } });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("CARET_TEST_MARKERS_OFF is set");
+    expect(existsSync(sock)).toBe(false);
+  });
 });

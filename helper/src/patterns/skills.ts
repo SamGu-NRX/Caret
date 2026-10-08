@@ -1,3 +1,4 @@
+import { viewOf } from "../fill/candidates.ts";
 // Skills (B19): routines Caret names, offers to keep, and lets run without a Tab once they have earned it.
 //   Naming. When a scored silent prediction leaves a routine proven at the user's level, Caret names it
 //     once, in the background (naming.ts), from structure only.
@@ -27,7 +28,7 @@ import { fallbackName, list, nameRoutine, safeFacts, type NameResult, type Routi
 import type { BundleClose, RoutineCell } from "./routines.ts";
 
 /** What naming reads from a predicted or offered cell: where it writes, and where and what it copies from. */
-export type FactCell = Pick<RoutineCell, "dstWindowId" | "dstLabel" | "srcWindowId" | "srcKey" | "value">;
+export type FactCell = Pick<RoutineCell, "dstWindowId" | "dstKey" | "dstLabel" | "srcWindowId" | "srcKey" | "value">;
 
 /**
  * Clean runs in a row before Caret offers to run a skill without a Tab. Assumed, not measured: the plan's
@@ -162,10 +163,10 @@ export class Skills {
   /** What naming may know about a routine, read from the cells of one of its predictions and the live screen model. */
   facts(r: RoutineRecord, cells: readonly FactCell[]): RoutineFacts {
     const model = this.deps.model;
-    const dstWindow = model.windows.get(cells[0]?.dstWindowId ?? "") ?? null;
+    const dstWindow = viewOf(model, cells[0]?.dstWindowId ?? "") ?? null;
     const srcLabels: RoutineFacts["srcLabels"] = [];
     for (const c of cells) {
-      const w = model.windows.get(c.srcWindowId);
+      const w = viewOf(model, c.srcWindowId);
       const n = w?.nodes.get(c.srcKey);
       if (w === undefined || n === undefined) continue;
       // A static text's label is its content, so its section's label stands for it.
@@ -178,7 +179,8 @@ export class Skills {
       routineId: r.id,
       dstApp: r.steps[0]?.dstApp ?? dstWindow?.app.name ?? "",
       dstWindow,
-      dstLabels: cells.map((c) => c.dstLabel ?? "").filter((l) => l.trim() !== ""),
+      // Cached cell labels are raw history. Only the destination key admitted by its current view may name a routine.
+      dstLabels: cells.map((c) => viewOf(model, c.dstWindowId)?.nodes.get(c.dstKey)?.label ?? "").filter((l) => l.trim() !== ""),
       srcApps: [...new Set(r.steps.map((s) => s.srcApp))],
       srcLabels,
       count: r.count,

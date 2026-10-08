@@ -17,6 +17,7 @@
 // DevTools pipe, so the worker's listeners see the same activation events a click on a tab gives. The bridge and its
 // test host must already be built (accept.ts builds them). Canned Jev answers each fill question with F1's expected
 // value when a candidate quotes it exactly; live Jev is TypeSafe's, under --spend-limit. Exit 0 only when every check holds.
+import { writeStore, writeStoreJson } from "../../helper/src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -30,6 +31,7 @@ import { Helper } from "../../helper/src/helper.ts";
 import { Store } from "../../helper/src/store.ts";
 import { pageHost } from "../../helper/src/engines/host.ts";
 import { newLaunchSecret } from "../../helper/src/launch.ts";
+import { writeLocalSecretFile } from "../../helper/src/privacy/local-secret.ts";
 import { wirePageEngines } from "../../helper/src/engines/wire.ts";
 import { pageWindowId } from "../../helper/src/engines/windows.ts";
 import { pageTabReader, type TabReader } from "../../helper/src/engines/tab-source.ts";
@@ -41,7 +43,7 @@ import { harnessEngine } from "../../helper/src/engines/decide/harness.ts";
 import { engineName } from "../../helper/src/engines/decide/port.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type OfferPopup, type PageResult } from "../../helper/src/protocol.ts";
 import { CFT_BUILD, Cdp, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
-import { NetworkSink } from "./oracle.ts";
+import { NetworkSink, sameText } from "./oracle.ts";
 import { FixtureSite } from "./server.ts";
 import { loadExpectation, taskPage } from "./tasks/site.ts";
 
@@ -96,7 +98,10 @@ const fillValue = (q: JevRequest["questions"][string]): CannedAnswer => {
   const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
   const label = /Label: '(.+?)'\.(?=\s|$)/u.exec(ins)?.[1];
   const want = label === undefined ? undefined : expected[LABEL_FIELD[label] ?? ""];
-  const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, t]) => quoted(t) === want)?.[0];
+  const hit = want === undefined || want === "none" ? undefined : Object.entries(q.criteria).find(([, t]) => {
+    const text = quoted(t);
+    return text !== null && sameText(text, want);
+  })?.[0];
   return hit === undefined ? { choice: "none" in q.criteria ? "none" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 } : { choice: hit, confidence: 0.95 };
 };
 const theUsers = (): CannedAnswer => ({ choice: "user", confidence: 0.95 });
@@ -171,7 +176,7 @@ async function main(): Promise<number> {
   let helper: Helper;
   const secret = newLaunchSecret();
   const warnings: string[] = [];
-  const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), warn: (l) => void warnings.push(l) });
+  const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: (l) => void warnings.push(l) });
   // Every read the helper makes for a fill, kept here in memory only to check what it took; never written out.
   const fillReads: PageResult[] = [];
   const base = pageTabReader(host.registry);
@@ -195,7 +200,7 @@ async function main(): Promise<number> {
   const cftApp = exe.slice(0, exe.indexOf(".app/") + 4);
   const service = `dev.caret.w3test.${randomBytes(4).toString("hex")}`;
   const secretFile = join(sockDir, "launch-secret");
-  writeFileSync(secretFile, secret.toString("hex"), { mode: 0o600 });
+  writeLocalSecretFile(secretFile, secret);
   await launchdJob(tmp, service, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], join(tmp, "testhost.log"));
   const profile = join(tmp, "profile");
   writeManifest(join(profile, "NativeMessagingHosts"), extensionId, bridge);
@@ -288,7 +293,11 @@ async function main(): Promise<number> {
   const scored = oracle.score(PAGE, expected);
   const filled = Object.keys(after).filter((k) => after[k] !== before[k]);
   say(`oracle: right ${scored.right.length} [${scored.right.join(", ")}], wrong ${scored.wrong.length}, missed ${scored.missed.length} [${scored.missed.join(", ")}]`);
-  check("the oracle reads back values from the message", ["first_name", "last_name", "email", "phone"].every((k) => after[k] === expected[k]), JSON.stringify(Object.fromEntries(filled.map((k) => [k, after[k]]))));
+  check("the oracle reads back values from the message", ["first_name", "last_name", "email", "phone"].every((k) => {
+    const value = after[k];
+    const want = expected[k];
+    return value !== undefined && want !== undefined && want !== "none" && sameText(value, want);
+  }), JSON.stringify(Object.fromEntries(filled.map((k) => [k, after[k]]))));
   check("0 wrong", scored.wrong.length === 0, JSON.stringify(scored.wrong));
   check("0 submits", oracle.submits.length === 0, String(oracle.submits.length));
   check("0 presses", oracle.strayPresses().length === 0, JSON.stringify(oracle.strayPresses()));
@@ -316,8 +325,8 @@ async function main(): Promise<number> {
   check("rule 2: never after the tab left closed", (await direct(mailTab.id)).outcome === "notAllowed");
 
   const report = { at: new Date().toISOString(), jev: args.jev, engine: decide.says, spentUsd: spent, calls, page: PAGE, checks, oracle: { right: scored.right, wrong: scored.wrong, missed: scored.missed, submits: oracle.submits.length, strayPresses: oracle.strayPresses().length, offsite: oracle.offsite().length } };
-  writeFileSync(join(OUT, "journey.json"), `${JSON.stringify(report, null, 2)}\n`);
-  writeFileSync(join(OUT, "journey.log"), `${lines.join("\n")}\n`);
+  writeStoreJson(join(OUT, "journey.json"), report, 2);
+  writeStore(join(OUT, "journey.log"), `${lines.join("\n")}\n`);
   const failed = checks.filter((c) => !c.ok);
   say(`${checks.length - failed.length}/${checks.length} checks passed; ${decide.says}, $${spent.toFixed(4)}`);
   return failed.length === 0 ? 0 : 1;
@@ -332,6 +341,6 @@ main()
   .catch(async (e: unknown) => {
     say(`run failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
     await cleanup();
-    if (args.out !== undefined) writeFileSync(join(args.out, "journey.log"), `${lines.join("\n")}\n`);
+    if (args.out !== undefined) writeStore(join(args.out, "journey.log"), `${lines.join("\n")}\n`);
     process.exit(1);
   });

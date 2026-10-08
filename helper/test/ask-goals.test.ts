@@ -30,7 +30,7 @@ function askAndGoalWriter(route: string): WriterPort & { kinds: string[] } {
         const json = { route, why: "none", scope: route === "fill" ? "all" : "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
         return { ...base, output: { program: null, reply: JSON.stringify(json), json } };
       }
-      const program = cannedProgram((req.input as { snapshots: PlanningSnapshot[] }).snapshots, STEPS);
+      const program = cannedProgram((req.input as unknown as { snapshots: PlanningSnapshot[] }).snapshots, STEPS);
       return { ...base, output: { program, reply: program } };
     },
   };
@@ -43,7 +43,7 @@ const confirming = standInJev();
 const silentJev: AskJev = async (req) => {
   // I2 ruling: an Ask's goal settles each window's fields with Jev's scope ask; here every field is asked for.
   if (req.purpose === "ask.scope") return { model: "scope", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "asks", confidence: 0.95 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
-  const task = typeof req.state === "string" ? req.state : String(req.state.task);
+  const task = typeof req.state === "string" ? req.state : String((req.state as { task?: unknown }).task);
   if (task !== "Caret checks each value a drafted plan would write before offering the plan.") throw new Error(`Jev was asked: ${task}`);
   return confirming(req);
 };
@@ -108,7 +108,7 @@ describe("an Ask from the email the user is reading", () => {
         const json = { route: "plan", why: "none", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
         return { ...base, output: { program: null, reply: JSON.stringify(json), json } };
       }
-      const program = cannedProgram((req.input as { snapshots: PlanningSnapshot[] }).snapshots, steps);
+      const program = cannedProgram((req.input as unknown as { snapshots: PlanningSnapshot[] }).snapshots, steps);
       return { ...base, output: { program, reply: program } };
     } };
     const sc = goalScene({ scripts: [], windows: [mailWindow(), replyWindow()], userWindow: "6161-1", writer, askJev: silentJev, ask: { maker: "writer", writer } });

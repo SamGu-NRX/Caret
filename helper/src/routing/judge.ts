@@ -1,3 +1,6 @@
+import { Disclosure } from "../privacy/disclosure.ts";
+import { viewOf } from "../fill/candidates.ts";
+import { redactWindow } from "../fill/redact.ts";
 // The two routers' questions to Jev and the checks on their answers. Each is one Choice over options code listed:
 // Router 1 over the outcomes legal now, Router 2 over the registry's route ids. Every piece of screen text goes
 // through a SnippetLedger (privacy.ts), so the request declares what it carries and each window keeps its budget.
@@ -5,12 +8,12 @@
 // else abstains, with the reason logged. Nothing here acts.
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
-import { SnippetLedger } from "../privacy.ts";
-import { describeField } from "../fill/descriptor.ts";
+import { describeField, mintDescriptor } from "../fill/descriptor.ts";
+import type { ModelText, ModelValue } from "../privacy/disclosure.ts";
 import { isConversation } from "../conversation.ts";
 import { formFields, FillError } from "../fill/fill.ts";
 import type { RoutingContext } from "./context.ts";
-import type { Outcome, Registry, RouteCandidate } from "./routes.ts";
+import { mintReason, type MintedSay, type Outcome, type Registry, type RouteCandidate } from "./routes.ts";
 
 /**
  * The confidence Router 1's choice needs. Jev's Choice `confidence` is the margin between its two most likely options
@@ -50,12 +53,12 @@ export function readChoice<T extends string>(r: JevResult, question: string, opt
 }
 
 /** Router 1's options, each a description of the user's moment rather than of Caret's action. */
-const OUTCOME_SAYS: Record<Outcome, string> = {
+const OUTCOME_SAYS = {
   abstain: "Nothing for Caret here: the user is reading, browsing, searching, typing a command, code or an address, or is in a field Caret has nothing to offer for.",
   write: "The user is writing sentences for a person to read in this field (a document, a mail or message body, a long free-text answer), and Caret can suggest how the text goes on.",
   ask: "Caret can help once the user answers one question:",
   act: "The user would want this done for them now:",
-};
+} as const satisfies Record<Outcome, string>;
 /**
  * Router 1's task question, about the one candidate whose producer checked evidence in code (routes.ts `evidence`). It is
  * asked on its own, after the outcome question, because the task is offered next to whatever else the moment gets. The
@@ -78,21 +81,23 @@ export const TASK_QUESTION = {
   abstain: "No: do not offer it now.",
   act: "Yes: offer it now.",
 } as const;
-const taskInstructions = (offerWhen: string): string =>
-  `Caret found the task in \`offer\` in what the user is doing. Should Caret offer it now, beside anything else it does here? ${offerWhen} It is only an offer: nothing happens unless the user accepts it.`;
+const taskInstructions = (d: Disclosure, offerWhen: ModelText): ModelText =>
+  d.t`Caret found the task in \`offer\` in what the user is doing. Should Caret offer it now, beside anything else it does here? ${offerWhen} It is only an offer: nothing happens unless the user accepts it.`;
 export const TASK_OPTIONS = ["abstain", "act"] as const;
 export type TaskChoice = (typeof TASK_OPTIONS)[number];
 
 /** Other windows Router 1 names, most recently used first. Enough to say where values could come from; not measured. */
 const OTHER_WINDOWS = 5;
 
-/** The screen text one request carries, taken through one ledger; null pieces did not fit their window's budget. */
+/** The screen text one request carries, minted through one Disclosure; null pieces did not fit their window's budget. */
 interface Taken {
-  ledger: SnippetLedger;
-  state: Record<string, unknown>;
-  says: Map<string, string>;
+  ledger: Disclosure;
+  state: Record<string, ModelValue>;
+  says: Map<string, ModelText>;
   /** Candidates whose quotes fit their windows' budgets. */
   quoted: Set<string>;
+  /** Each candidate's minted sentences, by id. */
+  minted: Map<string, MintedSay>;
 }
 
 /** A router's request could not be built within the privacy budgets: the field the user is in did not fit. */
@@ -103,38 +108,53 @@ export class PrivacyRefusal extends Error {}
  * `form`: the other fields' labels, which the task question leaves out so its sentence fits the window's budget first.
  */
 function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly RouteCandidate[], form = true): Taken {
-  const w = model.windows.get(ctx.windowId);
+  const w = viewOf(model, ctx.windowId);
   if (w === undefined) throw new PrivacyRefusal(`window ${ctx.windowId} left the model`);
-  const ledger = new SnippetLedger(model.windows.values());
-  const state: Record<string, unknown> = {
-    task: "Caret is a helper on this Mac. It is deciding, once for this moment, what to do for the person using it.",
-    app: ctx.app,
+  const d = new Disclosure(model.windows.values());
+  const state: Record<string, ModelValue> = {
+    task: d.own("Caret is a helper on this Mac. It is deciding, once for this moment, what to do for the person using it."),
+    app: d.app(w),
   };
-  if (ledger.take(w, "descriptor", [w.window.title])) state.window = w.window.title;
+  const title = d.descriptor(w, w.window.title);
+  if (title !== null) state.window = title;
   state.conversation = isConversation(w);
-  const others = [...model.windows.values()].filter((o) => o.window.windowId !== w.window.windowId).sort((x, y) => y.lastFocusedAt - x.lastFocusedAt || y.updatedAt - x.updatedAt);
-  state.otherWindows = others.slice(0, OTHER_WINDOWS).map((o) => (ledger.take(o, "descriptor", [o.window.title]) ? `${o.app.name}: ${o.window.title}` : o.app.name));
+  const others = [...model.windows.values()].map(redactWindow).filter((o) => o.window.windowId !== w.window.windowId).sort((x, y) => y.lastFocusedAt - x.lastFocusedAt || y.updatedAt - x.updatedAt);
+  state.otherWindows = others.slice(0, OTHER_WINDOWS).map((o) => {
+    const t = d.descriptor(o, o.window.title);
+    return t === null ? d.app(o) : d.t`${d.app(o)}: ${t}`;
+  });
   const node = ctx.field === null ? undefined : w.nodes.get(ctx.field.key);
-  if (ctx.field === null || node === undefined) state.field = "none: the cursor is not in a text field";
+  if (ctx.field === null || node === undefined) state.field = d.own("none: the cursor is not in a text field");
   else {
-    const d = describeField(w, node);
-    if (!ledger.take(w, "descriptor", [d.label, d.nearest, d.placeholder, d.section])) throw new PrivacyRefusal("the focused field's descriptor does not fit its window's budget");
-    state.field = { describe: d.text, empty: ctx.field.empty, finishedSentences: ctx.sentences };
-    const labels = form ? formLabels(w, ctx.field.key, ledger) : null;
+    const fd = describeField(w, node);
+    if (!d.take(w, "descriptor", [fd.label, fd.nearest, fd.placeholder, fd.section])) throw new PrivacyRefusal("the focused field's descriptor does not fit its window's budget");
+    const described = mintDescriptor(d, w, node, fd);
+    if (described === null) throw new PrivacyRefusal("the focused field's descriptor is not one its redacted view shows");
+    state.field = { describe: described, empty: ctx.field.empty, finishedSentences: ctx.sentences };
+    const labels = form ? formLabels(w, ctx.field.key, d) : null;
     if (labels !== null) state.form = labels;
   }
-  const says = new Map<string, string>();
+  const says = new Map<string, ModelText>();
   const quoted = new Set<string>();
+  const minted = new Map<string, MintedSay>();
   for (const c of candidates) {
-    const fits = c.quotes.every((q) => ledger.take(q.window, q.kind, q.texts));
-    if (fits) quoted.add(c.id);
-    says.set(c.id, fits ? c.says : c.plain);
+    // Producers may hold raw changed-node evidence. A budget does not authorize text removed by redaction.
+    const fits = c.quotes.every((q) => {
+      const view = redactWindow(q.window);
+      const shown = [view.window.title, ...[...view.nodes.values()].flatMap((n) => [n.label ?? "", n.value ?? "", n.placeholder ?? ""])];
+      const flat = (s: string): string => s.replace(/\s+/gu, " ").trim();
+      return q.texts.every((t) => shown.some((s) => flat(s).includes(flat(t)))) && d.take(view, q.kind, q.texts);
+    });
+    const said = c.say(d);
+    minted.set(c.id, said);
+    if (fits && said.says !== null) quoted.add(c.id);
+    says.set(c.id, fits && said.says !== null ? said.says : said.plain);
   }
-  return { ledger, state, says, quoted };
+  return { ledger: d, state, says, quoted, minted };
 }
 
 /** The other empty fields around the focused one, as a count and the first labels that fit; null when it is no form. */
-function formLabels(w: WindowState, key: string, ledger: SnippetLedger): { emptyFields: number; labels: string[] } | null {
+function formLabels(w: WindowState, key: string, d: Disclosure): { emptyFields: number; labels: ModelText[] } | null {
   if (w.nodes.get(key)?.editable !== true) return null;
   let fields;
   try {
@@ -144,11 +164,11 @@ function formLabels(w: WindowState, key: string, ledger: SnippetLedger): { empty
     throw e;
   }
   if (fields.length < 2) return null;
-  const labels: string[] = [];
+  const labels: ModelText[] = [];
   for (const n of fields.slice(0, FORM_LABELS)) {
-    const d = describeField(w, n);
-    const name = d.label ?? d.nearest ?? d.placeholder;
-    if (name !== null && ledger.take(w, "descriptor", [name])) labels.push(name);
+    const fd = describeField(w, n);
+    const name = d.descriptor(w, fd.label ?? fd.nearest ?? fd.placeholder);
+    if (name !== null) labels.push(name);
   }
   return { emptyFields: fields.length, labels };
 }
@@ -183,39 +203,46 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
   let outcome: Built<Outcome> | null = null;
   if (options.length > 1) {
     const t = describe(model, ctx, [...acts, ...asking]);
-    const criteria: Record<string, string> = {};
+    const d = t.ledger;
+    const criteria: Record<string, ModelText> = {};
     for (const o of options) {
-      if (o === "act") criteria.act = `${OUTCOME_SAYS.act} ${acts.map((c) => t.says.get(c.id)).join("; or ")}.`;
-      else if (o === "ask") criteria.ask = `${OUTCOME_SAYS.ask} ${reg.question?.question?.says ?? ""}; then: ${t.says.get(reg.question?.id ?? "") ?? ""}.`;
-      else criteria[o] = OUTCOME_SAYS[o];
+      if (o === "act") criteria.act = d.t`${d.own(OUTCOME_SAYS.act)} ${d.join(acts.map((c) => t.says.get(c.id) ?? d.own("a task")), "; or ")}.`;
+      else if (o === "ask") {
+        const q = reg.question;
+        const fact = q === null ? undefined : t.minted.get(q.id)?.question;
+        const then = q === null ? undefined : t.says.get(q.id);
+        criteria.ask = d.t`${d.own(OUTCOME_SAYS.ask)} ${fact ?? d.own("")}; then: ${then ?? d.own("")}.`;
+      } else criteria[o] = d.own(OUTCOME_SAYS[o]);
     }
-    const request: JevRequest = {
+    const request: JevRequest = d.seal({
       purpose: "route.judge",
       state: t.state,
       questions: {
         outcome: {
           type: "choice",
-          instructions: "Which one describes the user's moment? When a task fits what they are doing, it comes before writing help.",
+          instructions: d.own("Which one describes the user's moment? When a task fits what they are doing, it comes before writing help."),
           criteria,
         },
       },
-      ...t.ledger.declared(),
+      ...d.declared(),
       retry429: false,
-    };
+    });
     outcome = { request, options };
   }
   const cand = legal.includes("act") ? reg.task : null;
   const ev = cand?.evidence;
   if (cand === null || cand === undefined || ev === undefined) return { outcome, task: null, taskPrivacy: false };
   const t = describe(model, ctx, [cand], false);
-  if (!t.quoted.has(cand.id)) return { outcome, task: null, taskPrivacy: true };
-  const request: JevRequest = {
+  const offer = t.minted.get(cand.id)?.offer ?? null;
+  if (!t.quoted.has(cand.id) || offer === null) return { outcome, task: null, taskPrivacy: true };
+  const d = t.ledger;
+  const request: JevRequest = d.seal({
     purpose: "route.task",
-    state: { ...t.state, offer: { task: ev.task, sentence: ev.sentence, found: ev.found } },
-    questions: { task: { type: "choice", instructions: taskInstructions(ev.offerWhen), criteria: { abstain: TASK_QUESTION.abstain, act: TASK_QUESTION.act } } },
-    ...t.ledger.declared(),
+    state: { ...t.state, offer: { task: offer.task, sentence: offer.sentence, found: offer.found } },
+    questions: { task: { type: "choice", instructions: taskInstructions(d, offer.offerWhen), criteria: d.ownRecord(TASK_QUESTION) } },
+    ...d.declared(),
     retry429: false,
-  };
+  });
   return { outcome, task: { cand, built: { request, options: TASK_OPTIONS } }, taskPrivacy: false };
 }
 
@@ -223,15 +250,16 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
 export function router2Request(model: ScreenModel, ctx: RoutingContext, reg: Registry): Built<string> {
   const cands = reg.routes.flatMap((r) => (r.candidate === null ? [] : [r.candidate]));
   const t = describe(model, ctx, cands);
-  const criteria: Record<string, string> = {};
-  for (const r of reg.routes) criteria[r.option] = r.candidate === null ? `None of these: ${r.reason ?? ""}. Offer nothing.` : (t.says.get(r.candidate.id) ?? r.candidate.plain);
-  const request: JevRequest = {
+  const d = t.ledger;
+  const criteria: Record<string, ModelText> = {};
+  for (const r of reg.routes) criteria[r.option] = r.candidate === null ? d.t`None of these: ${mintReason(d, r.reason)}. Offer nothing.` : (t.says.get(r.candidate.id) ?? r.candidate.say(d).plain);
+  const request: JevRequest = d.seal({
     purpose: "route.pick",
-    state: { ...t.state, decided: "Caret will offer to do one task now." },
-    questions: { route: { type: "choice", instructions: "Which one task fits what the user is doing now?", criteria } },
-    ...t.ledger.declared(),
+    state: { ...t.state, decided: d.own("Caret will offer to do one task now.") },
+    questions: { route: { type: "choice", instructions: d.own("Which one task fits what the user is doing now?"), criteria } },
+    ...d.declared(),
     retry429: false,
-  };
+  });
   return { request, options: reg.routes.map((r) => r.option) };
 }
 

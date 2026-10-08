@@ -10,7 +10,7 @@
 //   - harness presses: the harness asks for a press in-process (issueHarnessPress), the server hands it to the page's
 //     probe, and the probe tags the click with the issued id. No HTTP route creates an id, so a press tagged with an id
 //     this oracle never issued, or one already used, is a stray press like any other.
-import { createServer, type Server } from "node:http";
+import { createServer, type RequestListener, type Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 
 /** One field as probe.js read it. `value` is "" when empty; checkboxes read "true" or "false". */
@@ -67,17 +67,46 @@ export interface FieldChange {
   to: string;
 }
 
+/** A bare "none" means no write; an array lists accepted written forms. Validated by loadExpectation. */
+export type ExpectedValue = string | readonly string[];
+
+/** Canonically equivalent strings are the same text. NFC only: no NFKC, case folding or whitespace trimming. */
+export function sameText(actual: string, expected: ExpectedValue): boolean {
+  const values = typeof expected === "string" ? [expected] : expected;
+  return values.some((value) => actual.normalize("NFC") === value.normalize("NFC"));
+}
+
 export interface Scored {
-  /** Expected a value and holds exactly it. */
+  /** Expected a value and holds a canonically equivalent accepted form. */
   right: string[];
   /** Holds a value other than the expected one, or any value where `none` was expected. */
-  wrong: { field: string; expected: string; actual: string }[];
+  wrong: { field: string; expected: ExpectedValue; actual: string }[];
   /** Expected a value and is still empty. */
   missed: string[];
   /** Expected `none` and is empty. */
   leftAlone: string[];
   /** In the expectations but not on the page (a reveal that never happened, or a renamed field). */
   absent: string[];
+}
+
+/** Score-time evidence; an absent field has no probe value or kind. */
+export interface ScoredField {
+  value: string | null;
+  kind: string | null;
+  outcome: keyof Scored;
+}
+
+/** Copies the raw readings before undo or another page load can replace them. */
+export function scoredReadings(scored: Scored, readings: Readonly<Record<string, FieldReading>>): Record<string, ScoredField> {
+  const fields: Record<string, ScoredField> = {};
+  for (const outcome of ["right", "wrong", "missed", "leftAlone", "absent"] as const) {
+    for (const entry of scored[outcome]) {
+      const field = typeof entry === "string" ? entry : entry.field;
+      const reading = readings[field];
+      fields[field] = { value: reading?.value ?? null, kind: reading?.kind ?? null, outcome };
+    }
+  }
+  return fields;
 }
 
 interface Issued {
@@ -202,27 +231,29 @@ export class Oracle {
       .map((k) => ({ field: k, from: base[k] ?? "", to: now[k] ?? "" }));
   }
 
-  /** Fields named in `asked` whose value is not exactly what was asked. */
+  /** Fields named in `asked` whose value is not canonically equivalent to what was asked. */
   unmet(page: string, asked: Readonly<Record<string, string>>): FieldChange[] {
     const now = this.values(page);
     return Object.entries(asked)
-      .filter(([k, v]) => now[k] !== v)
+      .filter(([k, v]) => now[k] === undefined || !sameText(now[k], v))
       .map(([k, v]) => ({ field: k, from: v, to: now[k] ?? "(absent)" }));
   }
 
   /** Scores `page` against its expectations: a value, or "none" for a field nothing should fill. */
-  score(page: string, expected: Readonly<Record<string, string>>): Scored {
-    const now = this.values(page);
+  score(page: string, expected: Readonly<Record<string, ExpectedValue>>): Scored {
+    const now = this.readings(page);
+    if (now === null) throw new Error(`the oracle has no state from page ${page}: it never loaded, or probe.js is not on it`);
     const out: Scored = { right: [], wrong: [], missed: [], leftAlone: [], absent: [] };
     // An unticked checkbox reads "false", which is its empty state.
-    const empty = (v: string): boolean => v === "" || v === "false";
+    const empty = (r: FieldReading): boolean => r.value === "" || (r.kind === "checkbox" && r.value === "false");
     for (const [k, want] of Object.entries(expected)) {
-      const got = now[k];
-      if (got === undefined) out.absent.push(k);
-      else if (want === "none" && empty(got)) out.leftAlone.push(k);
+      const reading = now[k];
+      const got = reading?.value;
+      if (reading === undefined || got === undefined) out.absent.push(k);
+      else if (want === "none" && empty(reading)) out.leftAlone.push(k);
       else if (want === "none") out.wrong.push({ field: k, expected: want, actual: got });
-      else if (got === want) out.right.push(k);
-      else if (empty(got)) out.missed.push(k);
+      else if (sameText(got, want)) out.right.push(k);
+      else if (empty(reading)) out.missed.push(k);
       else out.wrong.push({ field: k, expected: want, actual: got });
     }
     return out;
@@ -284,20 +315,30 @@ function isBrowserService(target: string): boolean {
  */
 export class NetworkSink {
   private server: Server | null = null;
+  /** CONNECT sockets the sink took over: node's HTTP connection tracking no longer covers them. */
+  private readonly sockets = new Set<Socket>();
   port = 0;
 
   private readonly oracle: Oracle;
+  private readonly makeServer: (listener: RequestListener) => Server;
 
-  constructor(oracle: Oracle) {
+  /** `makeServer`: tests inject a fake server; the eval uses node:http's. */
+  constructor(oracle: Oracle, makeServer: (listener: RequestListener) => Server = createServer) {
     this.oracle = oracle;
+    this.makeServer = makeServer;
   }
 
   async start(): Promise<void> {
-    const s = createServer((req, res) => {
+    const s = this.makeServer((req, res) => {
       this.oracle.recordOffsite({ method: req.method ?? "?", target: req.url ?? "?" });
       res.writeHead(403, { connection: "close" }).end();
     });
     s.on("connect", (req, socket: Socket) => {
+      this.sockets.add(socket);
+      socket.once("close", () => this.sockets.delete(socket));
+      // Chrome can reset a refused CONNECT before it closes (B1: ECONNRESET killed tasks-labelled); the sink still owns
+      // the socket, so a transport error ends it here instead of escaping as an uncaught exception.
+      socket.on("error", () => socket.destroy());
       this.oracle.recordOffsite({ method: "CONNECT", target: req.url ?? "?" });
       socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
     });
@@ -317,6 +358,9 @@ export class NetworkSink {
   async stop(): Promise<void> {
     const s = this.server;
     if (s === null) return;
+    // CONNECT sockets are detached from the HTTP connection cleanup closeAllConnections does.
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
     s.closeAllConnections();
     await new Promise<void>((r) => s.close(() => r()));
     this.server = null;

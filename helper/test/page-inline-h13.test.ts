@@ -232,7 +232,7 @@ describe("the page field the host hears (H13)", () => {
   function build(focused: PageSnapshot["focused"], origin = "http://127.0.0.1:4310", path = "/apply", kind: "textarea" | "contenteditable" = "textarea") {
     const published: HelperMessage[] = [];
     let helper: Helper;
-    const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void helper.handleReader(m), warn: () => {} });
+    const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
     helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => published.push(m), warn: () => {} });
     wirePageEngines({ host, helper, publish: (m) => published.push(m), warn: () => {} });
     const snap = (id: string): PageSnapshot => ({

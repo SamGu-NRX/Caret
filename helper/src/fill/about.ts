@@ -311,7 +311,7 @@ export function aboutFits(a: AboutValue, control: string): boolean {
 }
 
 /** How a request names an entry's kind (fill.ts describeAbout). */
-export const ABOUT_KIND_SAYS: Record<AboutKind, string> = {
+export const ABOUT_KIND_SAYS = {
   name: "a name",
   email: "email",
   phone: "phone number",
@@ -335,7 +335,7 @@ export const ABOUT_KIND_SAYS: Record<AboutKind, string> = {
   diet: "dietary needs",
   salary: "salary expectation",
   heard: "how the user heard about the job",
-};
+} as const satisfies Record<AboutKind, string>;
 
 /**
  * C2 (lead decision 5): the words that name each part of an address in a field's label ("Address line 1", "Apartment,

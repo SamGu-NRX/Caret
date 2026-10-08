@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { generateCandidates } from "../src/fill/candidates.ts";
+import { generateCandidates, mintCandidate } from "../src/fill/candidates.ts";
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { describeField, nearestText } from "../src/fill/descriptor.ts";
 import { buildFillRequest, FillError, formFields, proposeFill, shuffledWithinWindows } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
@@ -111,8 +112,12 @@ describe("form fields and the Jev request", () => {
     expect(() => formFields(w, "nope")).toThrow(/not in window/);
   });
   it("asks one choice question per field, each with every candidate and none", () => {
-    const cands = generateCandidates(m, FORM);
-    const req = buildFillRequest(w, [{ id: "f1", descriptor: "Text field. Label: 'Email'.", name: "Email" }, { id: "f2", descriptor: "Text field.", name: "unnamed field" }], cands);
+    // The two fields are fixture wording (test/minted.ts); each candidate's line is minted as proposeFill mints it.
+    const d = new Disclosure(m.windows.values());
+    const cands = generateCandidates(m, FORM, undefined, undefined, d);
+    const fields = [{ id: "f1", descriptor: d.own("Text field. Label: 'Email'."), name: d.own("Email") }, { id: "f2", descriptor: d.own("Text field."), name: d.own("unnamed field") }];
+    const described = new Map(cands.map((c) => [c.id, mintCandidate(d, m, c)!]));
+    const req = buildFillRequest(d, w, fields, cands, described);
     expect(Object.keys(req.questions)).toEqual(["f1", "f2"]);
     const q = req.questions.f1!;
     expect(q.type).toBe("choice");

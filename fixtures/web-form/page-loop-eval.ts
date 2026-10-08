@@ -37,6 +37,7 @@
 // POST count is 0 (tasks: no oracle wrong, submit, stray press, off-site request or probe error, every undo restored,
 // every page previewed). The bridge and its test host must already be built (accept.ts builds them); the extension is
 // rebuilt here. Keys come from CARET_ENV_FILE and are never printed.
+import { appendStore, appendStoreJson, writeStore, writeStoreJson } from "../../helper/src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -50,12 +51,13 @@ import { Helper } from "../../helper/src/helper.ts";
 import { Store } from "../../helper/src/store.ts";
 import { pageHost } from "../../helper/src/engines/host.ts";
 import { newLaunchSecret } from "../../helper/src/launch.ts";
+import { writeLocalSecretFile } from "../../helper/src/privacy/local-secret.ts";
 import { wirePageEngines } from "../../helper/src/engines/wire.ts";
 import { pageWindowId } from "../../helper/src/engines/windows.ts";
 import type { VerbTiming } from "../../helper/src/engines/page-link.ts";
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
-import type { AskJev, JevRequest, JevResult } from "../../helper/src/fill/jev.ts";
+import { sealRequest, storedRecord, type AskJev, type JevRequest, type JevResult } from "../../helper/src/fill/jev.ts";
 import { harnessEngine } from "../../helper/src/engines/decide/harness.ts";
 import type { CannedAnswer } from "../../helper/src/engines/decide/canned.ts";
 import { pageLoopCanned, type PageLoopOwnership } from "./canned-jev.ts";
@@ -66,10 +68,10 @@ import { intentSnapshot } from "../../helper/src/planner/intent.ts";
 import { headsIntentMaker } from "../../helper/src/planner/intent-heads.ts";
 import { jevGate } from "../../helper/src/goals/gates.ts";
 import { readyOnLoad } from "../../helper/src/offers/ready-on-load.ts";
-import { SnippetLedger } from "../../helper/src/privacy.ts";
+import { Disclosure } from "../../helper/src/privacy/disclosure.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
-import { CFT_BUILD, Cdp, HOST_NAME, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
-import { NetworkSink, type Oracle, type Scored } from "./oracle.ts";
+import { CFT_BUILD, Cdp, HOST_NAME, LAUNCHD_PREFIX, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
+import { NetworkSink, sameText, scoredReadings, type ExpectedValue, type Oracle, type Scored, type ScoredField } from "./oracle.ts";
 import { FixtureSite } from "./server.ts";
 import { TASK_PAGES, loadExpectation, taskPage, type Expectation } from "./tasks/site.ts";
 import { fieldWhoseAnswer, loadOwners, ownersOf, valueOwnerAnswer, type Owners } from "./owners.ts";
@@ -150,10 +152,17 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => void cle
 const W4_SITES = ["greenhouse-discord", "greenhouse-embed-figma", "lever-palantir-apply", "ashby-ramp-application", "hubspot-contact-sales"];
 
 interface Expect {
+  source: "corpus";
   label: string;
   expected: string;
   accept: string[];
   /** The corpus's control kind; null for W4's key, which does not say. */
+  control: string | null;
+}
+interface TaskExpect {
+  source: "task";
+  label: string;
+  expected: ExpectedValue;
   control: string | null;
 }
 interface Page {
@@ -169,7 +178,7 @@ interface Page {
   /** What the user told Caret, for a form whose source is memory. */
   about: { label: string; value: string }[];
   /** A task page's expectations by data-oracle name (tasks/expect/<page>.json); the oracle scores against these. */
-  expected?: Record<string, string>;
+  expected?: Expectation["expected"];
   /** G2: whose the page's values are, from owners.json, its memory entries among the user's; null when the file has no entry. */
   owners: Owners | null;
 }
@@ -189,7 +198,7 @@ const corpusPage = (f: CorpusForm): Page => ({
   id: f.id,
   kind: "corpus",
   path: `/corpus/${f.id}.html`,
-  key: f.fields.map((x) => ({ label: x.label, expected: x.expected, accept: x.accept ?? [], control: x.control })),
+  key: f.fields.map((x) => ({ source: "corpus", label: x.label, expected: x.expected, accept: x.accept ?? [], control: x.control })),
   instruction: asks.find((x) => x.form === f.id && x.expected !== "refuse")?.instruction ?? "fill in everything you can from my notes",
   sources: [...corpus.decoys, f.source].flatMap((s) => (s.kind === "memory" ? [] : [recordedFor(s.title ?? "")])),
   about: f.source.kind === "memory" ? f.source.about : [],
@@ -216,7 +225,7 @@ const w4Page = (site: string): Page => ({
   id: site,
   kind: "w4",
   path: `/w4/${site}.html`,
-  key: (w4Key[site] ?? []).map((x) => ({ label: x.label, expected: x.expected, accept: x.accept ?? [], control: null })),
+  key: (w4Key[site] ?? []).map((x) => ({ source: "corpus", label: x.label, expected: x.expected, accept: x.accept ?? [], control: null })),
   instruction: "fill in this application from my notes",
   sources: [noteWindow(w4Note)],
   about: [],
@@ -314,24 +323,27 @@ const keyFor = (ins: string): Expect | undefined => {
  * same day or minute ("March 3, 1991" for 1991-03-03, "7:30 pm" for 19:30); for a field with options, the option as a
  * whole word ("Large, mushroom and onion" for Large). Canned Jev only; fill's own rules still decide what is written.
  */
-function fits(text: string, e: Expect): boolean {
-  const values = e.expected === "none" || e.expected === "handoff" || e.expected === "unchecked" ? [] : [e.expected, ...e.accept];
-  if (values.includes(text)) return true;
+function fits(text: string, e: Expect | TaskExpect): boolean {
+  // Task alternatives are written forms, not the corpus's control-state sentinels.
+  const values = e.source === "task"
+    ? e.expected === "none" ? [] : typeof e.expected === "string" ? [e.expected] : e.expected
+    : e.expected === "none" || e.expected === "handoff" || e.expected === "unchecked" ? [] : [e.expected, ...e.accept];
+  if (sameText(text, values)) return true;
   if (e.control === "date") {
     const d = new Date(Date.parse(text.replace(/^born\s+/iu, "")));
     const iso = Number.isNaN(d.getTime()) ? null : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    return iso !== null && values.includes(iso);
+    return iso !== null && sameText(iso, values);
   }
   if (e.control === "time") {
     const m = /\b(\d{1,2}):(\d{2})\s*([ap])\.?m\.?\b/iu.exec(text);
     const hhmm = m === null ? null : `${String((Number(m[1]) % 12) + (m[3]?.toLowerCase() === "p" ? 12 : 0)).padStart(2, "0")}:${m[2]}`;
-    return hhmm !== null && values.includes(hhmm);
+    return hhmm !== null && sameText(hhmm, values);
   }
   if (e.control === "radio" || e.control === "select" || e.control === "combobox") return namesOption(text, values);
   // Task pages only. A month field: the same month ("August 2022" for 2022-08).
   if (e.control === "month") {
     const d = new Date(Date.parse(text));
-    return !Number.isNaN(d.getTime()) && values.includes(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    return !Number.isNaN(d.getTime()) && sameText(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, values);
   }
   // A picker or react-select lists options by search: the option as a whole word, or two or more words that each start
   // a word of the option, as the page's own search matches them ("San Diego, California" finds "San Diego, California,
@@ -462,7 +474,7 @@ const SAID = [/Label: '(.+?)'\.(?=\s|$)/u, /Nearest label: '(.+?)'\.(?=\s|$)/u, 
  * label (else its nearest label, else its placeholder). A label no field carries rereads the page once, for a field
  * revealed or relabelled since; a label two fields carry answers nothing.
  */
-async function taskKeyFor(ins: string): Promise<Expect | undefined> {
+async function taskKeyFor(ins: string): Promise<TaskExpect | undefined> {
   const p = page;
   if (p?.expected === undefined || readTaskFields === null) return undefined;
   const said = SAID.flatMap((re) => {
@@ -476,7 +488,10 @@ async function taskKeyFor(ins: string): Promise<Expect | undefined> {
     for (const s of said) {
       const hits = fieldsNamed(s, taskFields ?? []);
       const f = hits[0];
-      if (hits.length === 1 && f !== undefined) return { label: f.name, expected: p.expected[f.name] ?? "none", accept: [], control: controlOf(f) };
+      if (hits.length === 1 && f !== undefined) {
+        const accepted = p.expected[f.name] ?? "none";
+        return { source: "task", label: f.name, expected: accepted, control: controlOf(f) };
+      }
       if (hits.length > 1) {
         log.ambiguous.add(`'${s}': ${hits.map((h) => h.name).join(", ")}`);
         return undefined;
@@ -531,9 +546,11 @@ const fixtureIds = new Set<string>();
 const decide = harnessEngine({ name: ENGINE, canned, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(args["log-requests"] === undefined ? {} : { logRequests: args["log-requests"] }) });
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const r = await decide.ask(req);
+  // Sealed before it is sent: sent and logged from this frozen copy (PV2).
+  const sent = sealRequest(req);
+  const r = await decide.ask(sent.asked);
   spent += r.costUsd;
-  if (args["log-jev"] !== undefined) appendFileSync(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }])), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
+  if (args["log-jev"] !== undefined) appendStoreJson(args["log-jev"], { page: page?.id ?? "", stage, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} });
   calls.push({ page: page?.id ?? "", stage, inputTokens: r.inputTokens, latencyMs: r.latencyMs, costUsd: r.costUsd });
   return r;
 };
@@ -593,6 +610,7 @@ interface TaskRow {
   warnings: string[];
   /** Whether the oracle scored the page (right, eligible, wrong and missed below hold its result). */
   scored: boolean;
+  fields: Record<string, ScoredField> | null;
   right: number;
   eligible: number;
   wrong: Scored["wrong"];
@@ -605,8 +623,24 @@ interface TaskRow {
   revealMissing: string[];
   /** The second Ask that leaves Caret's fill on a wizard page before the harness presses Next. */
   refill: string | null;
+  refillFields: Record<string, ScoredField> | null;
   unmapped: string[];
   ambiguous: string[];
+}
+
+const oracleFieldReports: Record<string, Pick<TaskRow, "fields" | "refillFields">> = {};
+
+class OracleReportError extends Error {}
+
+/** Persist before the recipe can stop a run on a logged wrong value, rather than waiting for the final report. */
+function recordScoredFields(page: string, fields: Record<string, ScoredField>, phase: "fields" | "refillFields" = "fields"): void {
+  const report = oracleFieldReports[page] ??= { fields: null, refillFields: null };
+  report[phase] = fields;
+  try {
+    writeStoreJson(join(OUT, "oracle-fields.json"), { pages: oracleFieldReports }, 1);
+  } catch (cause) {
+    throw new OracleReportError(`writing oracle-fields.json for ${page} (${phase}) failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+  }
 }
 
 /** How the goal path judges a task page: by the oracle, not by Caret's walk. */
@@ -655,7 +689,7 @@ async function main(): Promise<number> {
   let helper: Helper;
   const secret = newLaunchSecret();
   const warnings: string[] = [];
-  const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), warn: (l) => void warnings.push(l), onTiming: (t) => void timings.push({ ...t, page: page?.id ?? "", stage }) });
+  const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: (l) => void warnings.push(l), onTiming: (t) => void timings.push({ ...t, page: page?.id ?? "", stage }) });
   const published: HelperMessage[] = [];
   helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), pageContext: (id) => host.registry.contextOf(id), calendar: null, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l), ...(GOAL ? { ask: { maker: "heads" as const } } : {}), ...(JOURNEY !== null ? { goalFiles: true } : {}),
     // I6: the load journey measures each page's own verdict, so the hour's offer budget (four, balanced) is lifted: P3's
@@ -671,10 +705,14 @@ async function main(): Promise<number> {
   const bridge = signedCopy(BRIDGE, join(bin, "caret-bridge"), "dev.caret.bridge", sign);
   const testHost = signedCopy(TESTHOST, join(bin, "caret-bridge-testhost"), "dev.caret.host", sign);
   const cftApp = exe.slice(0, exe.indexOf(".app/") + 4);
-  const service = `dev.caret.w3test.${randomBytes(4).toString("hex")}`;
+  const suffix = randomBytes(4).toString("hex");
+  const service = `dev.caret.w3test.${suffix}`;
+  // Under caret-heavy the launchd job's label carries the job's prefix (rig.ts registers it); the Mach service name
+  // the bridge looks up is unchanged.
+  const label = LAUNCHD_PREFIX === undefined ? service : `${LAUNCHD_PREFIX}w3test.${suffix}`;
   const secretFile = join(sockDir, "launch-secret");
-  writeFileSync(secretFile, secret.toString("hex"), { mode: 0o600 });
-  await launchdJob(tmp, service, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], join(tmp, "testhost.log"));
+  writeLocalSecretFile(secretFile, secret);
+  await launchdJob(tmp, label, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], join(tmp, "testhost.log"));
   const profile = join(tmp, "profile");
   writeManifest(join(profile, "NativeMessagingHosts"), extensionId, bridge);
   const log = join(tmp, "chrome.log");
@@ -770,7 +808,7 @@ async function main(): Promise<number> {
     const plan = helper.goals.planOf(reply.goalId);
     const gated = (plan?.segments ?? []).flatMap((s) => s.steps).filter((x) => x.gate === "fill" && x.value !== null);
     const v0 = calls.length;
-    const dropped = gated.length === 0 ? new Map<string, string>() : await jevGate(plan?.instruction ?? "", gated.map((x) => ({ ref: x.ref, target: x.target, written: x.writes ?? x.value?.text ?? "", value: x.value as NonNullable<typeof x.value> })), askJev, new SnippetLedger(helper.model.windows.values()));
+    const dropped = gated.length === 0 ? new Map<string, string>() : (await jevGate(plan?.instruction ?? "", gated.map((x) => ({ ref: x.ref, target: x.target, written: x.writes ?? x.value?.text ?? "", value: x.value as NonNullable<typeof x.value> })), askJev, new Disclosure(helper.model.windows.values()), plan?.inventory.notes ?? new Map())).unconfirmed;
     const disagreements = gated.flatMap((x) => {
       const verdict = dropped.has(x.ref) ? ("dropped" as const) : ("kept" as const);
       const node = w.nodes.get(x.target.key);
@@ -857,7 +895,7 @@ async function main(): Promise<number> {
     // --sources labelled: each page's note from its own labels (read with every dependent section shown) and F1's values.
     if (LABELLED) {
       for (const p of pages) {
-        const expected = p.expected as Record<string, string>;
+        const expected = p.expected as Expectation["expected"];
         await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}?show=all` }, sessionId);
         let fields: TaskField[] = [];
         for (let n = 0; n < 40; n++) {
@@ -870,7 +908,9 @@ async function main(): Promise<number> {
           const f = fields.find((x) => x.name === k);
           const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
           if (v === "none" || f === undefined || label === undefined || f.kind === "file") return [];
-          return [`${label}: ${f.kind === "checkbox" ? (v === "true" ? "yes" : "no") : v}`];
+          // A labelled source supplies one written form; loadExpectation guarantees a non-empty alternatives array.
+          const value = typeof v === "string" ? v : v[0]!;
+          return [`${label}: ${f.kind === "checkbox" ? (value === "true" ? "yes" : "no") : value}`];
         });
         p.sources = [noteWindow(lines.join("\n"))];
         p.about = [];
@@ -884,9 +924,9 @@ async function main(): Promise<number> {
       page = p;
       taskFields = null;
       const name = p.id;
-      const expected = p.expected as Record<string, string>;
+      const expected = p.expected as Expectation["expected"];
       const row = newRow(p);
-      const t: TaskRow = { arrived: "navigated", warnings: [], scored: false, right: 0, eligible: 0, wrong: [], missed: [], absent: [], attachGap: [], revealMissing: [], refill: null, unmapped: [], ambiguous: [] };
+      const t: TaskRow = { arrived: "navigated", warnings: [], scored: false, fields: null, right: 0, eligible: 0, wrong: [], missed: [], absent: [], attachGap: [], revealMissing: [], refill: null, refillFields: null, unmapped: [], ambiguous: [] };
       row.task = t;
       rows.push(row);
       const from = pressFrom;
@@ -943,10 +983,12 @@ async function main(): Promise<number> {
             t.eligible = eligibleOf(gap);
             t.right = s.right.filter((k) => !gap.includes(k)).length;
             t.wrong = s.wrong;
-            row.wrong = s.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${x.expected})`);
+            row.wrong = s.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`);
             t.missed = s.missed.filter((k) => !gap.includes(k)).map((k) => `${k} (${kinds[k]?.kind === "file" ? "file; " : ""}${!picked.has(k) ? "canned never asked" : picked.get(k) === null ? "canned: none" : `canned picked '${picked.get(k)}'`})`);
             t.attachGap = gap.filter((k) => (expected[k] ?? "none") !== "none");
             t.absent = s.absent;
+            t.fields = scoredReadings(s, kinds);
+            recordScoredFields(name, t.fields);
             return { eligible: t.eligible, right: t.right };
           },
           unrestored: async () => {
@@ -965,7 +1007,7 @@ async function main(): Promise<number> {
             const want = f === undefined || hits.length > 1 ? undefined : expected[f.name];
             if (f === undefined || want === undefined) return "unscored";
             if (want === "none") return "wrong";
-            if (value === want) return "right";
+            if (sameText(value, want)) return "right";
             // A typed text is compared as written; a pick, a date or a number may be written in another form than the oracle reads.
             return f.kind === "text" && !["date", "month", "time", "number"].includes(f.type) ? "wrong" : "unscored";
           },
@@ -990,10 +1032,13 @@ async function main(): Promise<number> {
             const s = oracle.score(name, expected);
             const gap = attachGap();
             t.refill = `${s.right.filter((k) => !gap.includes(k)).length}/${eligibleOf(gap)} right, ${s.wrong.length} wrong (${r.outcome}, ${r.tabs} tabs)`;
-            row.wrong.push(...s.wrong.map((x) => `second Ask ${x.field}: '${x.actual}' (expected ${x.expected})`));
+            row.wrong.push(...s.wrong.map((x) => `second Ask ${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`));
+            t.refillFields = scoredReadings(s, oracle.readings(name) ?? {});
+            recordScoredFields(name, t.refillFields, "refillFields");
           }
         }
       } catch (e) {
+        if (e instanceof OracleReportError) throw e;
         row.error = e instanceof Error ? e.message : String(e);
       }
       const a = asksOn(name);
@@ -1079,7 +1124,7 @@ async function main(): Promise<number> {
     const wiz = ["wizard-1", "wizard-2", "wizard-3"].map((n) => pages.find((p) => p.id === n) ?? taskPageOf(n));
     // In the dropzone journey the user gives the resume to the dropzone's row: that field, not the file input, holds it.
     if (drop) {
-      const e = wiz[2]?.expected as Record<string, string>;
+      const e = wiz[2]?.expected as Expectation["expected"];
       (wiz[2] as Page).expected = { ...e, resume: "none", resume_drop: e.resume ?? "none" };
     }
     // --sources labelled: one note of the wizard's three pages, each line a field's own label and F1's value (runTasks
@@ -1087,7 +1132,7 @@ async function main(): Promise<number> {
     if (LABELLED) {
       const all: string[] = [];
       for (const p of wiz) {
-        const expected = p.expected as Record<string, string>;
+        const expected = p.expected as Expectation["expected"];
         await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}?show=all` }, sessionId);
         let fields: TaskField[] = [];
         for (let n = 0; n < 40; n++) {
@@ -1100,7 +1145,8 @@ async function main(): Promise<number> {
           const f = fields.find((x) => x.name === k);
           const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
           if (v === "none" || f === undefined || label === undefined || f.kind === "file") continue;
-          all.push(`${label}: ${f.kind === "checkbox" ? (v === "true" ? "yes" : "no") : v}`);
+          const value = typeof v === "string" ? v : v[0]!;
+          all.push(`${label}: ${f.kind === "checkbox" ? (value === "true" ? "yes" : "no") : value}`);
         }
       }
       for (const p of wiz) {
@@ -1111,8 +1157,8 @@ async function main(): Promise<number> {
     }
     // The resume the user chooses in page 3's attach row: the one the recruiter's email names (tasks/expect/wizard-3.json).
     const resume = join(tmp, "ines-vandermeer-resume-2026.pdf");
-    writeFileSync(resume, "%PDF-1.4\n% synthetic resume for the P3 wizard journey\n");
-    const out: { page: string; arrived: string; previewMs: number | null; steps: number; attach: string | null; outcome: string; right: number; eligible: number; wrong: string[]; missed: string[]; note: string }[] = [];
+    writeStore(resume, "%PDF-1.4\n% synthetic resume for the P3 wizard journey\n");
+    const out: { page: string; arrived: string; previewMs: number | null; steps: number; attach: string | null; outcome: string; right: number; eligible: number; wrong: string[]; missed: string[]; fields: Record<string, ScoredField> | null; note: string }[] = [];
     desk(wiz[0] as Page);
     let goalId: string | null = null;
     let lastName: string | null = null;
@@ -1120,8 +1166,8 @@ async function main(): Promise<number> {
       page = p;
       taskFields = null;
       const name = p.id;
-      const expected = p.expected as Record<string, string>;
-      const row = { page: name, arrived: "", previewMs: null as number | null, steps: 0, attach: null as string | null, outcome: "-", right: 0, eligible: Object.values(expected).filter((v) => v !== "none").length, wrong: [] as string[], missed: [] as string[], note: "" };
+      const expected = p.expected as Expectation["expected"];
+      const row: (typeof out)[number] = { page: name, arrived: "", previewMs: null, steps: 0, attach: null, outcome: "-", right: 0, eligible: Object.values(expected).filter((v) => v !== "none").length, wrong: [], missed: [], fields: null, note: "" };
       out.push(row);
       try {
         stage = "load";
@@ -1179,9 +1225,12 @@ async function main(): Promise<number> {
         await settleOracle(name);
         const sc = oracle.score(name, expected);
         row.right = sc.right.length;
-        row.wrong = sc.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${x.expected})`);
+        row.wrong = sc.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`);
         row.missed = sc.missed;
+        row.fields = scoredReadings(sc, oracle.readings(name) ?? {});
+        recordScoredFields(name, row.fields);
       } catch (e) {
+        if (e instanceof OracleReportError) throw e;
         row.note = e instanceof Error ? e.message : String(e);
       }
       lastName = name;
@@ -1212,9 +1261,9 @@ async function main(): Promise<number> {
       "",
       ...warnings.filter((l) => /^goal |^fill/u.test(l)).slice(-30).map((l) => `- ${cell(l, 300)}`),
     ];
-    writeFileSync(join(OUT, drop ? "wizard-drop.md" : "wizard.md"), lines.join("\n") + "\n");
+    writeStore(join(OUT, drop ? "wizard-drop.md" : "wizard.md"), lines.join("\n") + "\n");
     // R1: the same rows as data, with each decision request's latency, for the slow runner's scoring.
-    writeFileSync(join(OUT, drop ? "wizard-drop.json" : "wizard.json"), `${JSON.stringify({ engine: decide.says, drop, labelled: LABELLED, attached: attached ?? null, submits: sum.submits, presses, replayed: replayed.length, rows: out, calls }, null, 1)}\n`);
+    writeStoreJson(join(OUT, drop ? "wizard-drop.json" : "wizard.json"), { engine: decide.says, drop, labelled: LABELLED, attached: attached ?? null, submits: sum.submits, presses, replayed: replayed.length, rows: out, calls }, 1);
     const wrong = out.reduce((n, r) => n + r.wrong.length, 0);
     const failed = [
       ...out.filter((r) => r.previewMs === null || r.previewMs > 2000).map((r) => `${r.page}: preview ${r.previewMs === null ? "none" : `${Math.round(r.previewMs)} ms`}`),
@@ -1289,7 +1338,7 @@ async function main(): Promise<number> {
       `- F1 task pages: ${group((id) => TASK_PAGES.some((t) => t.name === id))}`,
       `- search-only and login: ${group((id) => id.startsWith("p3-"))}`,
     ];
-    writeFileSync(join(OUT, "ready-on-load.md"), lines.join("\n") + "\n");
+    writeStore(join(OUT, "ready-on-load.md"), lines.join("\n") + "\n");
     const bad = out.filter((o) => o.id.startsWith("p3-") && o.requests > 0);
     say(`ready on load: ${lines.slice(-4).join("; ")}${bad.length > 0 ? `; FAIL: ${bad.map((o) => o.id).join(", ")} sent Jev requests` : ""}`);
     return bad.length === 0 ? 0 : 1;
@@ -1474,8 +1523,8 @@ function writeReport(rows: readonly Row[], presses: number): void {
       ...rows.map((r) => `| ${r.id} | ${r.controls} | ${fmt(r.goal?.previewMs ?? null)} | ${r.goal?.steps ?? "-"} | ${r.goal?.left ?? "-"} | ${r.goal?.tabs ?? "-"} | ${r.goal === null ? "-" : `${r.goal.eligibleWritten} / ${r.goal.eligible}`} | ${fmt(r.goal?.revealMs ?? null)} | ${r.goal?.outcome ?? "-"} | ${r.goal === null ? "-" : r.goal.restored ? "restored" : r.goal.notRestored.join("; ").replace(/\|/g, "/").slice(0, 120)} | ${fmt(r.pageMs)} | ${r.wrong.length === 0 ? 0 : r.wrong.join("; ").replace(/\|/g, "/")} | ${(r.error ?? "").replace(/\|/g, "/").slice(0, 160)} |`),
     );
   }
-  writeFileSync(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
-  writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, null, 1)}\n`);
+  writeStore(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
+  writeStoreJson(join(OUT, "page-loop.json"), { jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, 1);
   say(`wrote ${join(OUT, "page-loop.md")}`);
 }
 
@@ -1538,8 +1587,8 @@ function writeTaskReport(rows: readonly Row[], presses: number, sum: ReturnType<
     "|---|---|---|---|---|",
     ...dis.map((d) => `| ${d.page} | ${cell(d.field)} | ${cell(d.value, 60)} | ${d.verify} | ${d.key} |`),
   ];
-  writeFileSync(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
-  writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ suite: "tasks", jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, presses, oracle: sum, cannedPicks: Object.fromEntries([...taskAsks].map(([k, a]) => [k, Object.fromEntries(a.picked)])), rows, timings, calls }, null, 1)}\n`);
+  writeStore(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
+  writeStoreJson(join(OUT, "page-loop.json"), { suite: "tasks", jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, presses, oracle: sum, cannedPicks: Object.fromEntries([...taskAsks].map(([k, a]) => [k, Object.fromEntries(a.picked)])), rows, timings, calls }, 1);
   say(`wrote ${join(OUT, "page-loop.md")}`);
 }
 

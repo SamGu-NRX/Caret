@@ -49,6 +49,8 @@ export const SAYS = {
   delete: "Deleting is yours to do.",
   whichPerson: "Which person do you mean? Say their name.",
   noSuchField: "This form has no field for that.",
+  // SCP1: the request named a section the form doesn't show in the list Caret offered Jev.
+  sectionNotFound: "Caret couldn't find the section you named on this form. Name the fields you want filled.",
   notOnScreen: "Caret can't see what you want copied. Open it and ask again.",
   cannot: "Caret can't do that on this form.",
   whichFields: "Which fields do you mean? Name one.",
@@ -256,6 +258,16 @@ export function saysPress(why: HandoffWhy, label: string): string {
 /** "Caret found nothing to put in Phone or Company name." */
 export const saysNoValue = (names: readonly string[]): string => `Caret found nothing to put in ${list(names, "or")}.`;
 
+/**
+ * V4: menus whose choices the app shows only once opened, which Caret never opens to read: "Caret can't see the choices
+ * in Month without opening the menu, so Month is yours to set." Null for none.
+ */
+export function saysOptionsUnseen(names: readonly string[]): string | null {
+  if (names.length === 0) return null;
+  const one = new Set(names.map(field)).size === 1;
+  return `Caret can't see the choices in ${list(names, "and")} without opening ${one ? "the menu" : "those menus"}, so ${one ? `${list(names, "and")} is` : "they are"} yours to set.`;
+}
+
 /** "Caret wasn't sure what goes in Your name or Email address. Say what goes there and ask again." */
 export const saysUnsure = (names: readonly string[]): string => `Caret wasn't sure what goes in ${list(names, "or")}. Say what goes there and ask again.`;
 
@@ -290,6 +302,20 @@ export function saysUnsureField(name: string): string {
   return `${field(name)}: ${UNSURE_FIELD}.`;
 }
 export const UNSURE_FIELD = "Caret wasn't sure your request asks for it";
+
+/**
+ * SCP1: a field an Ask leaves to the user because the request named one section and Caret couldn't tell which section
+ * the field is in: "City: Caret couldn't tell which section this field is in."
+ */
+export const SECTION_UNKNOWN_FIELD = "Caret couldn't tell which section this field is in";
+export function saysSectionUnknownField(name: string): string {
+  return `${field(name)}: ${SECTION_UNKNOWN_FIELD}.`;
+}
+
+/** SCP1: an Ask that named one section, where Caret couldn't tell which section any field Jev chose is in. */
+export function saysSectionUnknown(names: readonly string[]): string {
+  return names.length === 0 ? `Caret couldn't tell which fields are in that section, so it filled nothing. Name the fields you want filled.` : `Caret couldn't tell which section ${list(names, "or")} ${names.length === 1 ? "is" : "are"} in, so it filled nothing. Name the fields you want filled.`;
+}
 
 /** I3: an Ask with no field Jev settled and more unsettled ones than one question lists. */
 export function saysUnsureFields(names: readonly string[]): string {

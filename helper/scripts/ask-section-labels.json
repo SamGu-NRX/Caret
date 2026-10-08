@@ -1,0 +1,21 @@
+{
+  "_note": "SCP1: the section each Ask's instruction names, by ask id, for the oracle's section question (realfill-asks.ts --engine canned). Hand labels written from each instruction and its form's h2 headings, not measured on a model. An ask not listed names no one section: the oracle answers 'whole' when it expects every field of the form, else 'fields'. heldout2-03 ('the passenger stuff') is not listed: its expected values span the Passenger 1 and Contact information headings.",
+  "labels": {
+    "ask-09": "Current landlord",
+    "ask-10": "Emergency contact",
+    "ask-18": "Professional reference",
+    "held-11": "Emergency contact",
+    "held-17": "Current landlord",
+    "heldout2-06": "Current landlord",
+    "heldout2-10": "Emergency contact",
+    "heldout2-13": "Course selection",
+    "heldout2-15": "Professional reference",
+    "b31-07": "Current residence",
+    "b31-08": "Contact details",
+    "b31-09": "Professional reference",
+    "b31-10": "Contact information",
+    "b31-11": "Delivery",
+    "b31-16": "Emergency contact",
+    "b31-19": "Current landlord"
+  }
+}

@@ -27,6 +27,7 @@
 //
 // The key is TYPESAFE_API_KEY from the environment or from CARET_ENV_FILE (default: the Caret checkout's
 // .env); it is never printed. Output holds synthetic text only.
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -505,7 +506,7 @@ if (errors.length > 0 || stopped) {
   for (const e of errors) lines.push(`- ${e.condition}: ${e.error}`);
 }
 
-writeFileSync(join(a.out, "live-replay.md"), `${lines.join("\n")}\n`);
-writeFileSync(join(a.out, "live-replay.json"), `${JSON.stringify({ fillRows, lookRows, calls, sourceSigns, errors, stopped }, null, 2)}\n`);
+writeStore(join(a.out, "live-replay.md"), `${lines.join("\n")}\n`);
+writeStoreJson(join(a.out, "live-replay.json"), { fillRows, lookRows, calls, sourceSigns, errors, stopped }, 2);
 process.stdout.write(`${lines.join("\n")}\n`);
 process.exitCode = errors.length > 0 || stopped ? 1 : 0;

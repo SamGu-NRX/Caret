@@ -322,6 +322,67 @@
                       "bday-month",
                       "bday-year"
                     ]
+                  },
+                  "excluded": {
+                    "type": "string",
+                    "enum": [
+                      "secure",
+                      "password",
+                      "hidden",
+                      "payment",
+                      "oneTimeCode",
+                      "cardNumber",
+                      "accountNumber",
+                      "governmentId",
+                      "apiKey"
+                    ]
+                  },
+                  "headings": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "outline": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "heading": {
+                          "type": "boolean"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "heading"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "sectionNames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "sectionsCut": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "sections": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 },
                 "required": [
@@ -2216,6 +2277,39 @@
             "v",
             "requestId",
             "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "sessionLocked"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "why": {
+              "type": "string",
+              "enum": [
+                "lock",
+                "signOut"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "why"
           ],
           "additionalProperties": false
         }

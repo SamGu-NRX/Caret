@@ -2,9 +2,10 @@
 // metadata, and the times of the last hour's offers. Plain screen text never reaches it; the rolling
 // text window is memory only.
 import { createHmac, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { assertLocalStorePath, writeLocalFile } from "./privacy/store-path.ts";
 
 export interface TransferRow {
   at: number;
@@ -91,6 +92,8 @@ export class Store {
 
   constructor(dir: string) {
     this.dir = dir;
+    // The database path is checked once, here; SQLite then writes that file and its -wal and -shm beside it.
+    assertLocalStorePath(join(dir, "screen.sqlite"));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     // mkdirSync's mode applies only to a directory it creates; one that was already there is closed now (CodeRabbit on PR #5).
     chmodSync(dir, 0o700);
@@ -239,8 +242,7 @@ function loadSalt(path: string): Buffer {
     return b;
   }
   const b = randomBytes(32);
-  writeFileSync(path, b, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  writeLocalFile(path, b, { mode: 0o600 });
   return b;
 }
 

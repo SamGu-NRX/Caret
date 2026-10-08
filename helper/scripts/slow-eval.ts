@@ -16,8 +16,11 @@
 //   STOPPED              written on a stop a person must clear (cost, auth, billing, the cap, a refused answer);
 //                        slow-eval.sh will not start while it exists
 // Fixture text only: every set runs on fixture pages, notes and memory, and GW1's guard refuses anything else.
+import { appendStore, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { createInterface } from "node:readline";
+import { withholdValues } from "../src/privacy/exclude.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,7 +89,8 @@ const asks = (id: string, title: string, file: string, jev: string): SetDef => (
   browser: false,
   timeoutMs: 180 * MIN,
   cwd: HELPER,
-  argv: (out) => ["scripts/realfill-asks.ts", "--out", out, "--asks-file", file, "--maker", "heads", "--engine", ENGINE, "--log-jev", join(out, "jev.ndjson"), ...SPEND],
+  // I4: realfill-asks now defaults to the page window; these sets stay on the reader's so they compare with P1's runs.
+  argv: (out) => ["scripts/realfill-asks.ts", "--out", out, "--asks-file", file, "--maker", "heads", "--engine", ENGINE, "--form-window", "reader", "--log-jev", join(out, "jev.ndjson"), ...SPEND],
   refs: { jev: [[`P1 ${jev}`, join(EVIDENCE, "p1", jev)]] },
 });
 const page = (id: string, title: string, kind: "tasks" | "corpus" | "fill" | "wizard", extra: string[], refs: SetDef["refs"], drop = false): SetDef => ({
@@ -139,10 +143,31 @@ const eventsFile = (s: EvalSet, pass: number): string => join(setDir(s), `pass-$
 const STATUS = join(DIR, "status.json");
 const writeAtomic = (file: string, body: string): void => {
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, body);
+  writeStore(tmp, body);
   renameSync(tmp, file);
 };
-const log = (line: string): void => void process.stdout.write(`${new Date().toISOString()} ${line}\n`);
+/** writeAtomic for a JSON record: withheld inside its strings, so the file always parses (privacy/send.ts storeJson). */
+const writeAtomicJson = (file: string, value: unknown, space?: number): void => {
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeStoreJson(tmp, value, space);
+  renameSync(tmp, file);
+};
+/**
+ * The runner's own log, DIR/runner.log, written here through writeStore's append (formats withheld), never by a shell
+ * redirect (PV2: every eval store goes through privacy/send.ts). Also echoed to stdout, withheld the same way.
+ */
+const log = (line: string): void => {
+  const text = `${new Date().toISOString()} ${line}\n`;
+  appendStore(join(DIR, "runner.log"), text);
+  process.stdout.write(withholdValues(text));
+};
+// An error the runner did not catch is logged the same way, never printed raw to a file a shell keeps.
+for (const ev of ["uncaughtException", "unhandledRejection"] as const) {
+  process.on(ev, (e: unknown) => {
+    log(`stopped on an uncaught error: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
+    process.exit(1);
+  });
+}
 const readEvents = (file: string): SlowEvent[] => {
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as SlowEvent);
@@ -184,7 +209,7 @@ function holder(argv: string[], what: string): Promise<Held | null> {
 }
 const HOLD_CMD = ["/bin/sh", "-c", "echo held; exec cat > /dev/null"];
 const lockArgv = (wait: boolean): string[] => ["/usr/bin/lockf", "-k", ...(wait ? [] : ["-t", "0"]), LOCK_FILE, ...HOLD_CMD];
-const ownerNote = (): void => writeAtomic(`${LOCK_FILE}.owner`, `${JSON.stringify({ pid: process.pid, who: "R1 slow-eval", dir: DIR, since: new Date().toISOString() })}\n`);
+const ownerNote = (): void => writeAtomicJson(`${LOCK_FILE}.owner`, { pid: process.pid, who: "R1 slow-eval", dir: DIR, since: new Date().toISOString() });
 const withOwner = (h: Held | null): Held | null => {
   if (h === null) return null;
   ownerNote();
@@ -201,7 +226,7 @@ function runPass(set: EvalSet, pass: number, heavy: boolean): PassHandle {
   const def = set as SetDef;
   const out = passDir(set, pass);
   mkdirSync(out, { recursive: true });
-  const fd = openSync(join(setDir(set), `pass-${pass}.log`), "a");
+  const passLog = join(setDir(set), `pass-${pass}.log`);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     CARET_ENV_FILE: ENV_FILE,
@@ -211,8 +236,9 @@ function runPass(set: EvalSet, pass: number, heavy: boolean): PassHandle {
     CARET_SLOW_EVAL_PACE_MS: String(PACE_MS),
     ...(heavy ? { CARET_HEAVY_LOCK_HELD: "1" } : {}),
   };
-  const child = spawn(process.execPath, def.argv(out), { cwd: def.cwd, env, stdio: ["ignore", fd, fd] });
-  closeSync(fd);
+  // The pass's output goes to its log line by line through appendStore (formats withheld), never straight to a file.
+  const child = spawn(process.execPath, def.argv(out), { cwd: def.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  for (const stream of [child.stdout, child.stderr]) if (stream !== null) createInterface({ input: stream, crlfDelay: Infinity }).on("line", (l) => appendStore(passLog, `${l}\n`));
   log(`${set.id} pass ${pass}: pid ${child.pid}${heavy ? " (heavy lease held)" : ""}`);
   const done = new Promise<{ code: number | null; signal: string | null }>((r) => child.once("exit", (code, signal) => r({ code, signal })));
   let killed = false;
@@ -330,11 +356,11 @@ const runner = new Runner(SETS, {
   events: (set, pass) => readEvents(eventsFile(set, pass)),
   reported: (set, pass) => existsSync(join(passDir(set, pass), reportFile(set.kind, (set as SetDef).drop))),
   score: (set, pass) => scoreOf(set as SetDef, passDir(set, pass)),
-  save: (s) => writeAtomic(STATUS, `${JSON.stringify(s, null, 1)}\n`),
+  save: (s) => writeAtomicJson(STATUS, s, 1),
   say: log,
   finished: (set, st) => {
     const line = summaryLine(set, st);
-    appendFileSync(join(DIR, "summary.log"), `${new Date().toISOString()} ${line}\n`);
+    appendStore(join(DIR, "summary.log"), `${new Date().toISOString()} ${line}\n`);
     log(line);
     log(`cache entries by engine | model | answered by: ${cacheEngines()}`);
     writeResults(status);
@@ -353,7 +379,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
       status.state = "stopped";
       status.stopReason = `signal: ${sig}`;
       status.updatedAt = new Date().toISOString();
-      writeAtomic(STATUS, `${JSON.stringify(status, null, 1)}\n`);
+      writeAtomicJson(STATUS, status, 1);
       writeResults(status);
       process.exit(143);
     });

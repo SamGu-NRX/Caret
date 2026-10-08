@@ -72,11 +72,11 @@ async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => PageContr
       const r = await pick(req);
       for (const [id, q] of Object.entries(req.questions)) if ("yes" in q.criteria) r.answers[id] = { choice: "yes", confidence: 0.95 };
       // I2: Jev's scope ask, which settles a reveal's fields, says every field is asked for (page-rig.ts does the same).
-      if (req.purpose === "ask.scope") for (const id of Object.keys(req.questions)) r.answers[id] = { choice: "asks", confidence: 0.95 };
+      if (req.purpose === "ask.scope") for (const id of Object.keys(req.questions)) r.answers[id] = { choice: id === "section" ? "fields" : "asks", confidence: 0.95 };
       return r;
     });
   let helper: Helper;
-  const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), warn: () => {} });
+  const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
   helper = new Helper({ store, askJev: jev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => void published.push(m), warn: () => {}, ask: { maker: "writer", writer: intentWriter("fill") }, pageDocument: (id) => host.registry.documentOf(id) });
   wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
   host.registry.add(page.session);

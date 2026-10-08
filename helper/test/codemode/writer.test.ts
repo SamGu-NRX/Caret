@@ -1,4 +1,6 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 // WriterPort, prompt and transport, with a fake fetch. The live measurement is scripts/writer-eval.ts.
+import { minted } from "../minted.ts";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { runCodePlan } from "../../src/codemode/sandbox.ts";
@@ -7,7 +9,7 @@ import { listModels } from "../../src/writer/chat.ts";
 import { GATEWAY_GPT_OSS_120B, GROQ_GPT_OSS_120B, GROQ_QWEN_3_8_27B } from "../../src/writer/config.ts";
 import { extractProgram, PLAN_API, planUserMessage } from "../../src/writer/plan-prompt.ts";
 import { GOAL_API, GOAL_SYSTEM } from "../../src/writer/goal-prompt.ts";
-import { makeWriterPort } from "../../src/writer/port.ts";
+import { makeWriterPort, type WriterRequest } from "../../src/writer/port.ts";
 import { CANNED_PROGRAM, FORM, MAIL } from "./fixtures.ts";
 import { WRITER_CORPUS } from "./writer-corpus.ts";
 
@@ -26,7 +28,8 @@ const completion = (content: string, model = "openai/gpt-oss-120b") => ({
   usage: { prompt_tokens: 2000, completion_tokens: 500, completion_tokens_details: { reasoning_tokens: 120 } },
 });
 
-const request = (input: unknown = { goal: "Sign me up", snapshots: [FORM, MAIL] }) => ({ kind: "plan" as const, disclosureId: "disc-1", input, maxOutputTokens: 1500, signal: new AbortController().signal });
+// The input is fixture wording, minted with the request; its type is the port's, which takes minted values only.
+const request = (input: unknown = { goal: "Sign me up", snapshots: [FORM, MAIL] }): WriterRequest => minted({ kind: "plan", disclosureId: "disc-1", input: input as Record<string, unknown>, maxOutputTokens: 1500, signal: new AbortController().signal }) as unknown as WriterRequest;
 
 describe("plan prompt", () => {
   test("the API the writer reads names exactly the functions the sandbox exposes", () => {
@@ -128,3 +131,7 @@ describe("WriterPort", () => {
     expect(ids).toEqual(["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]);
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

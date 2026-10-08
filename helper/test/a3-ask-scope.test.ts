@@ -10,7 +10,7 @@ import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { Snapshot } from "../src/protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { checkIntent, intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
-import { fieldContext, headsIntentMaker, headsRequest, readHeads, SCOPE_CUTOFF, SCOPE_OPTIONS, scopeId, scopeRequest } from "../src/planner/intent-heads.ts";
+import { fieldContext, headsIntentMaker, headsRequest, readHeads, SCOPE_CUTOFF, SCOPE_OPTIONS, SECTION_QUESTION, scopeId, scopeRequest } from "../src/planner/intent-heads.ts";
 import { AskAsks, AskRefused, planAsk } from "../src/planner/ask.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { PlannerError } from "../src/planner/validate.ts";
@@ -33,7 +33,8 @@ const snapOn = (form: string, instruction: string, memory: readonly MemoryValue[
 
 type A = { choice: string; confidence: number };
 /** One wording's answer per field: by field name, "asks" at 0.99 for the names in `asks`, else "not" at 0.99. */
-const wording = (s: IntentSnapshot, by: (name: string) => A): JevResult => ({ model: "jev-test", answers: Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), by(f.name)])), inputTokens: 10, latencyMs: 1, costUsd: 0 });
+/** SCP1: on a form that shows headings, the section question too, answered "fields" (no one section), so no field is vetoed. */
+const wording = (s: IntentSnapshot, by: (name: string) => A): JevResult => ({ model: "jev-test", answers: { ...Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), by(f.name)])), ...(s.headings.length === 0 ? {} : { [SECTION_QUESTION]: { choice: "fields", confidence: 0.99 } }) }, inputTokens: 10, latencyMs: 1, costUsd: 0 });
 const scopeOf = (s: IntentSnapshot, asks: readonly string[], second: (name: string) => A | undefined = () => undefined): [JevResult, JevResult] => {
   const first = (n: string): A => ({ choice: asks.includes(n) ? "asks" : "not", confidence: 0.99 });
   return [wording(s, first), wording(s, (n) => second(n) ?? first(n))];
@@ -51,8 +52,9 @@ describe("the scope ask's requests", () => {
     const s = snapOn("clinic-intake", "use Ines for the emergency contact");
     for (const w of [0, 1] as const) {
       const req = scopeRequest(s, w);
-      expect(Object.keys(req.questions)).toEqual(s.fields.map((f) => scopeId(f.ref)));
-      for (const q of Object.values(req.questions)) expect(q.criteria).toEqual(SCOPE_OPTIONS);
+      // SCP1: and the section question, since the form shows headings.
+      expect(Object.keys(req.questions)).toEqual([...s.fields.map((f) => scopeId(f.ref)), SECTION_QUESTION]);
+      for (const f of s.fields) expect(req.questions[scopeId(f.ref)]?.criteria).toEqual(SCOPE_OPTIONS);
     }
     expect(scopeRequest(s, 0).questions[scopeId(s.fields[0]?.ref ?? "")]?.instructions).not.toBe(scopeRequest(s, 1).questions[scopeId(s.fields[0]?.ref ?? "")]?.instructions);
     // The heads ask no field question any more.
@@ -298,6 +300,7 @@ describe("through planAsk", () => {
           if (id.endsWith("_owner") && "person" in q.criteria && /Ines/u.test(ins)) return [id, { choice: "person", confidence: 0.9 }];
           if (id.endsWith("_whose") && "other" in q.criteria && /Emergency/u.test(ins)) return [id, { choice: "other", confidence: 0.9 }];
           if (id === "whose" || id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user" in q.criteria ? "user" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
+          if (id === SECTION_QUESTION) return [id, { choice: "fields", confidence: 0.99 }];
           if (id.startsWith("s_")) {
             const label = /[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "";
             return [id, { choice: unclear.includes(label) ? "unclear" : asks.includes(label) ? "asks" : "not", confidence: 0.99 }];

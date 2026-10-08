@@ -292,7 +292,7 @@ describe("page link: undo writes only the element its write went to (B23 on page
 
 describe("Not on this site", () => {
   it("reaches each engine after its hello and on every change, as the whole list", async () => {
-    const host = pageHost({ path: "/nonexistent/page.sock", secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "noWindow", detail: null }) }, apply: () => {}, warn: () => {} });
+    const host = pageHost({ path: "/nonexistent/page.sock", secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "noWindow", detail: null }) }, apply: () => {}, purge: () => {}, warn: () => {} });
     host.registry.setSitesOff(["https://jobs.example.test", "http://127.0.0.1:4310", "https://jobs.example.test"]);
     const { session, sent } = rig();
     host.registry.add(session);
@@ -374,7 +374,7 @@ describe("page focus into the fill path", () => {
     const readerSent: unknown[] = [];
     const readerSocket = new SocketReaderLink((m) => (readerSent.push(m), true), 500);
     let helper: Helper;
-    const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: readerSocket, apply: (m) => void helper.handleReader(m), warn: () => {} });
+    const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: readerSocket, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
     helper = new Helper({ store, askJev: canned, shadow: false, allowBackgroundFocus: false, readerLink: host.link, readerAnswers: readerSocket, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => published.push(m), warn: () => {} });
     wirePageEngines({ host, helper, publish: (m) => published.push(m), warn: () => {} });
     const { session, sent } = rig();

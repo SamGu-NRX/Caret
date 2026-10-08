@@ -6,15 +6,14 @@
 //     and each value's field. A part both asks do not agree on, at the floors below, is not taken.
 // Neither makes values. checkIntent checks whatever a maker returns.
 import type { Settled } from "../fill/ask-scope.ts";
-import { ownWording, sendable } from "../privacy.ts";
-import { secretText } from "../memory/sensitive.ts";
+import type { Disclosure, Minted, ModelText } from "../privacy/disclosure.ts";
 import * as z from "zod";
 import { randomInt } from "node:crypto";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { shuffled } from "../fill/fill.ts";
 import type { WriterPort } from "../writer/port.ts";
 import type { IntentInput } from "../writer/intent-prompt.ts";
-import { REASONS, ROUTES, type AskIntent, type IntentSnapshot } from "./intent.ts";
+import { REASONS, ROUTES, snapMint, type AskIntent, type IntentSnapshot } from "./intent.ts";
 import { PlannerError } from "./validate.ts";
 import { jevFailedError } from "./says.ts";
 
@@ -36,7 +35,7 @@ export interface IntentMaker {
    * `settled`: what the request's scope question already settled (fill/ask-scope.ts Settled), which the heads maker uses
    * instead of asking it again (I2 ruling: one request, one settlement); other makers ignore it.
    */
-  make(snap: IntentSnapshot, signal?: AbortSignal, settled?: Pick<Settled, "asks" | "unclear">): Promise<{ intent: AskIntent; use: MakerUse }>;
+  make(snap: IntentSnapshot, signal?: AbortSignal, settled?: Pick<Settled, "asks" | "unclear" | "sectionless" | "section" | "notFound">): Promise<{ intent: AskIntent; use: MakerUse }>;
 }
 
 const IntentJson = z
@@ -52,16 +51,26 @@ const IntentJson = z
   })
   .strict();
 
-/** The writer's input for a snapshot: names, titles and labels the snapshot's ledger took, never a value. */
-export function intentInput(snap: IntentSnapshot): IntentInput {
+/** The writer's input for a snapshot: names, titles and labels the snapshot's ledger took, never a value, each minted. */
+export function intentInput(snap: IntentSnapshot): Minted<IntentInput> {
+  const m = snapMint(snap);
+  const d = m.d;
+  const form = snap.views.get(snap.window.window.windowId) ?? snap.window;
+  const title = snap.title === null ? null : d.descriptor(form, snap.title);
   return {
-    instruction: snap.instruction.slice(0, 500),
-    form: snap.title === null ? snap.window.app.name : `${snap.window.app.name} window '${snap.title.slice(0, 150)}'`,
-    fields: snap.fields.map((f) => ({ ref: f.ref, name: sendable(f.name, "a field Caret leaves to the user"), section: f.section, control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled })),
-    sections: snap.sections,
-    windows: snap.windows.map((w) => ({ ref: w.ref, app: w.app, title: w.title.slice(0, 300), from: w.from })),
-    memory: snap.memory,
-    persons: snap.persons,
+    instruction: d.slice(m.instruction, 500),
+    form: title === null ? d.app(form) : d.t`${d.app(form)} window '${d.slice(title, 150)}'`,
+    fields: snap.fields.map((f) => ({ ref: d.id(f.ref), name: m.field(f), section: f.section === null ? null : m.section(f.section), control: f.neverTyped === null ? d.id(f.control) : d.own("never typed by Caret"), filled: f.filled })),
+    sections: snap.sections.map((s) => ({ ref: d.id(s.ref), name: m.section(s.name) })),
+    windows: snap.windows.map((w) => {
+      const said = m.source(w);
+      return { ref: d.id(w.ref), app: said.app, title: d.slice(said.title, 300), from: said.from };
+    }),
+    memory: snap.memory.flatMap((l) => m.memoryLabel(l) ?? []),
+    persons: snap.persons.flatMap((p) => {
+      const span = m.span(p.span);
+      return span === null ? [] : [{ ref: d.id(p.ref), span }];
+    }),
   };
 }
 
@@ -75,7 +84,7 @@ export function writerIntentMaker(writer: WriterPort, disclosureId: () => string
     async make(snap, signal) {
       let r: Awaited<ReturnType<WriterPort["write"]>>;
       try {
-        r = await writer.write({ kind: "intent", disclosureId: disclosureId(), disclosed: snap.ledger.declared().snippets, input: intentInput(snap), maxOutputTokens: INTENT_MAX_OUTPUT_TOKENS, signal: signal ?? AbortSignal.timeout(15_000) });
+        r = await writer.write(snap.ledger.seal({ kind: "intent", disclosureId: disclosureId(), disclosed: snap.ledger.declared().snippets, input: intentInput(snap), maxOutputTokens: INTENT_MAX_OUTPUT_TOKENS, signal: signal ?? AbortSignal.timeout(15_000) }));
       } catch (e) {
         throw new PlannerError("unavailable", `the intent writer failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
       }
@@ -92,21 +101,19 @@ export const ROUTE_CUTOFF = 0.75;
 /** Lowest probability of yes, the lower of two asks, for a Noul part: plan section 4's provisional floor, not calibrated. */
 export const NOUL_FLOOR = 0.95;
 
-const ROUTE_CRITERIA: Record<string, string> = {
+const ROUTE_CRITERIA = {
   fill: "Fill in or change fields of this form, with values from the screen, from what the user told Caret, or from the instruction itself.",
   plan: "More than filling fields with values that already exist: press a button, submit, send, add an event to the calendar, write a message, reply or description in new words, or a task of several steps.",
   refuse: "Something Caret must not or cannot do here: pay or give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.",
   ask: "The instruction is too unclear to act on.",
-};
-ownWording(...Object.values(ROUTE_CRITERIA));
-const REFUSE_REASONS: Record<string, string> = {
+} as const;
+const REFUSE_REASONS = {
   neverTyped: "It asks for a card number, a password, a one-time code, or a Social Security or other government ID number.",
   payment: "It asks to pay.",
   pressOrSend: "It asks to submit, send or press something, and nothing else.",
   noSuchField: "It asks for a field this form does not have.",
   nothingToFill: "Something else Caret should not do.",
-};
-ownWording(...Object.values(REFUSE_REASONS));
+} as const;
 
 /** Stage one's two wordings of each question; the second reorders every option list. */
 const WORDS = {
@@ -115,13 +122,16 @@ const WORDS = {
   scope: ["Which fields of the form does the instruction ask Caret to fill?", "Does the instruction ask for the whole form, a part of it, or particular fields?"],
   source: ["Where does the instruction say the values come from?", "Which source does the instruction name for the values?"],
   whose: ["Whose details does the instruction ask Caret to put in the form?", "The instruction asks for the details of which person?"],
-  literal: [(span: string) => `The instruction spells out "${span}". Which field is that value for?`, (span: string) => `Which field should hold "${span}", which the user wrote in the instruction?`],
-  field: [(name: string) => `Does the instruction ask Caret to fill in or change the field '${name}'?`, (name: string) => `Is the field '${name}' one of the fields the instruction asks for?`],
-  tie: [(span: string, name: string) => `Does the instruction say to put "${span}" in the field '${name}'?`, (span: string, name: string) => `Should the field '${name}' hold "${span}", as the instruction says?`],
+  literal: [(d: Disclosure, span: ModelText) => d.t`The instruction spells out "${span}". Which field is that value for?`, (d: Disclosure, span: ModelText) => d.t`Which field should hold "${span}", which the user wrote in the instruction?`],
+  field: [(d: Disclosure, name: ModelText) => d.t`Does the instruction ask Caret to fill in or change the field '${name}'?`, (d: Disclosure, name: ModelText) => d.t`Is the field '${name}' one of the fields the instruction asks for?`],
+  tie: [(d: Disclosure, span: ModelText, name: ModelText) => d.t`Does the instruction say to put "${span}" in the field '${name}'?`, (d: Disclosure, span: ModelText, name: ModelText) => d.t`Should the field '${name}' hold "${span}", as the instruction says?`],
 } as const;
 
 /** A Choice question's criteria in a given order. */
-const ordered = (c: Record<string, string>, order: readonly string[]): Record<string, string> => Object.fromEntries(order.map((k) => [k, c[k] as string]));
+const ordered = (c: Readonly<Record<string, ModelText>>, order: readonly string[]): Record<string, ModelText> => Object.fromEntries(order.flatMap((k) => {
+  const v = c[k];
+  return v === undefined ? [] : [[k, v] as const];
+}));
 
 /** Jev as an intent maker: two stages, each asked twice in parallel. */
 export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number } = {}): IntentMaker {
@@ -145,39 +155,45 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
         return r;
       };
       const declared = snap.ledger.declared();
-      // G2 round 4: a name or title that holds a secret marker word is sent as what it is, never as its words.
-      const form = snap.title === null || secretText(snap.title) ? `${snap.window.app.name} window` : `${snap.window.app.name} window '${snap.title}'`;
+      const m = snapMint(snap);
+      const d = m.d;
+      const sources = snap.windows.map((w) => ({ w, said: m.source(w) }));
+      const people = snap.persons.flatMap((p) => {
+        const span = m.span(p.span);
+        return span === null ? [] : [{ ref: p.ref, span }];
+      });
       const state = {
-        instruction: snap.instruction,
-        form,
-        form_fields: snap.fields.map((f) => sendable(f.name, "a field Caret leaves to the user")).join("; "),
-        open_windows: snap.windows.map((w) => `${w.app}: ${sendable(w.title, "a window")}${w.from === null ? "" : ` (from ${w.from})`}`).join("; "),
-        task: "Caret reads the user's instruction about the form on screen: what to do, which fields, from where, and for whom. Answer from the instruction; Caret finds the values itself.",
+        instruction: m.instruction,
+        form: m.formTitle,
+        form_fields: d.join(snap.fields.map((f) => m.field(f)), "; "),
+        open_windows: d.join(sources.map(({ said }) => (said.from === null ? d.t`${said.app}: ${said.title}` : d.t`${said.app}: ${said.title} (from ${said.from})`)), "; "),
+        task: d.own("Caret reads the user's instruction about the form on screen: what to do, which fields, from where, and for whom. Answer from the instruction; Caret finds the values itself."),
       };
       // Stage one: Choice questions.
-      const scopeCriteria: Record<string, string> = { all: "Every empty field of the form.", list: "Only particular fields that the instruction names or describes." };
-      for (const s of snap.sections) scopeCriteria[s.ref] = `The fields under '${sendable(s.name, "a section")}'.`;
-      const sourceCriteria: Record<string, string> = { any: "The instruction does not say where the values come from.", ...(snap.memory.length > 0 ? { memory: "What the user told Caret about themselves (their own name and email)." } : {}), instruction: "Only values the instruction itself spells out." };
-      for (const w of snap.windows) sourceCriteria[w.ref] = `The ${w.app} window '${sendable(w.title, "a window")}'${w.from === null ? "" : `, from ${w.from}`}.`;
-      sourceCriteria.missing = "A window, file or app that is not among the open windows listed.";
-      const whoseCriteria: Record<string, string> = { user: "The user's own details, or each field's own: the instruction names no one else whose details go in." };
-      for (const p of snap.persons) whoseCriteria[p.ref] = `The details of ${p.span}, whom the instruction names.`;
-      whoseCriteria.unnamed = "Someone else's details, but the instruction does not say whose.";
-      const fieldCriteria: Record<string, string> = Object.fromEntries(snap.fields.map((f) => [f.ref, `The field '${sendable(f.name, "a field Caret leaves to the user")}'.`]));
-      fieldCriteria.none = "None of the form's fields.";
+      const scopeCriteria: Record<string, ModelText> = { all: d.own("Every empty field of the form."), list: d.own("Only particular fields that the instruction names or describes.") };
+      for (const s of snap.sections) scopeCriteria[s.ref] = d.t`The fields under '${m.section(s.name)}'.`;
+      const sourceCriteria: Record<string, ModelText> = { any: d.own("The instruction does not say where the values come from."), ...(snap.memory.length > 0 ? { memory: d.own("What the user told Caret about themselves (their own name and email).") } : {}), instruction: d.own("Only values the instruction itself spells out.") };
+      for (const { w, said } of sources) sourceCriteria[w.ref] = said.from === null ? d.t`The ${said.app} window '${said.title}'.` : d.t`The ${said.app} window '${said.title}', from ${said.from}.`;
+      sourceCriteria.missing = d.own("A window, file or app that is not among the open windows listed.");
+      const whoseCriteria: Record<string, ModelText> = { user: d.own("The user's own details, or each field's own: the instruction names no one else whose details go in.") };
+      for (const p of people) whoseCriteria[p.ref] = d.t`The details of ${p.span}, whom the instruction names.`;
+      whoseCriteria.unnamed = d.own("Someone else's details, but the instruction does not say whose.");
+      const fieldCriteria: Record<string, ModelText> = Object.fromEntries(snap.fields.map((f) => [f.ref, d.t`The field '${m.field(f)}'.`]));
+      fieldCriteria.none = d.own("None of the form's fields.");
+      const literalSpans = snap.literals.map((span) => m.span(span));
       const stage1 = (wording: 0 | 1): JevRequest => {
-        const order = <T extends Record<string, string>>(c: T): Record<string, string> => (wording === 0 ? c : ordered(c, shuffled(Object.keys(c), rand)));
+        const order = (c: Readonly<Record<string, ModelText>>): Record<string, ModelText> => (wording === 0 ? { ...c } : ordered(c, shuffled(Object.keys(c), rand)));
         const questions: JevRequest["questions"] = {
-          route: { type: "choice", instructions: WORDS.route[wording], criteria: order(ROUTE_CRITERIA) },
-          why: { type: "choice", instructions: WORDS.why[wording], criteria: order(REFUSE_REASONS) },
-          scope: { type: "choice", instructions: WORDS.scope[wording], criteria: order(scopeCriteria) },
-          source: { type: "choice", instructions: WORDS.source[wording], criteria: order(sourceCriteria) },
-          whose: { type: "choice", instructions: WORDS.whose[wording], criteria: order(whoseCriteria) },
+          route: { type: "choice", instructions: d.own(WORDS.route[wording]), criteria: order(d.ownRecord(ROUTE_CRITERIA)) },
+          why: { type: "choice", instructions: d.own(WORDS.why[wording]), criteria: order(d.ownRecord(REFUSE_REASONS)) },
+          scope: { type: "choice", instructions: d.own(WORDS.scope[wording]), criteria: order(scopeCriteria) },
+          source: { type: "choice", instructions: d.own(WORDS.source[wording]), criteria: order(sourceCriteria) },
+          whose: { type: "choice", instructions: d.own(WORDS.whose[wording]), criteria: order(whoseCriteria) },
         };
-        snap.literals.forEach((span, i) => {
-          questions[`lit${i + 1}`] = { type: "choice", instructions: WORDS.literal[wording](span), criteria: order(fieldCriteria) };
+        literalSpans.forEach((span, i) => {
+          if (span !== null) questions[`lit${i + 1}`] = { type: "choice", instructions: WORDS.literal[wording](d, span), criteria: order(fieldCriteria) };
         });
-        return { purpose: "intent.route", state, questions, snippets: declared.snippets, charged: declared.charged };
+        return d.seal({ purpose: "intent.route", state, questions, snippets: declared.snippets, charged: declared.charged });
       };
       const [a, b] = await ask(stage1(0), stage1(1));
       const agreed = (q: string): string | null => {
@@ -201,6 +217,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
       if (source === "missing") return { intent: { ...base, route: "refuse", why: "notOnScreen" }, use };
       const whose = agreed("whose");
       const ties = snap.literals.flatMap((span, i) => {
+        if (literalSpans[i] === null) return [];
         const f = agreed(`lit${i + 1}`);
         const field = f === null || f === "none" ? undefined : snap.fields.find((x) => x.ref === f);
         return field === undefined ? [] : [{ span, field }];
@@ -209,11 +226,12 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
       const listed = scope === "list" && !routeOpen ? snap.fields : [];
       const stage2 = (wording: 0 | 1): JevRequest => {
         const nouls: NonNullable<JevRequest["nouls"]> = {};
-        for (const f of listed) nouls[`n_${f.ref}`] = { type: "noul", instructions: WORDS.field[wording](sendable(f.name, "a field Caret leaves to the user")) };
+        for (const f of listed) nouls[`n_${f.ref}`] = { type: "noul", instructions: WORDS.field[wording](d, m.field(f)) };
         ties.forEach((t, i) => {
-          nouls[`t${i + 1}`] = { type: "noul", instructions: WORDS.tie[wording](t.span, t.field.name) };
+          const span = m.span(t.span);
+          if (span !== null) nouls[`t${i + 1}`] = { type: "noul", instructions: WORDS.tie[wording](d, span, m.field(t.field)) };
         });
-        return { purpose: "intent.fields", state, questions: {}, nouls, snippets: declared.snippets, charged: declared.charged };
+        return d.seal({ purpose: "intent.fields", state, questions: {}, nouls, snippets: declared.snippets, charged: declared.charged });
       };
       let yes = (_: string): boolean => false;
       if (listed.length > 0 || ties.length > 0) {

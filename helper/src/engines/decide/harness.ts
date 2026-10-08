@@ -6,11 +6,13 @@
 //   CARET_LLAMA_URL (http://127.0.0.1:8091), CARET_LLAMA_MODEL (a name for reports and cache keys), CARET_LLAMA_PROMPT
 //   (chat or document), CARET_LLAMA_THINKING=off (tells a thinking model's template not to think), and
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
-import { assertNoSecrets } from "../../privacy.ts";
-import { appendFileSync } from "node:fs";
+import { assertNoExcludedValue } from "../../privacy.ts";
+import { verifySent } from "../../privacy/disclosure.ts";
+import { appendStoredLine, seal } from "../../privacy/send.ts";
+import { withholdValues } from "../../privacy/exclude.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { HOIST_SHARED_OPTIONS, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
+import { frozenRequest, HOIST_SHARED_OPTIONS, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
 import { DailySpend } from "./daily-cap.ts";
 import { cachedAsk, cacheFromEnv, canonicalRequest, checkFixture, refuseShipped, type FixtureSources } from "./cache.ts";
 import { DEFAULT_PACE_MS, DISK_FLOOR_GIB, fileFailures, fileLog, filePace, HOLD_FILE, PACE_FILE, REAL_CLOCK, runStop, slowAsk, terminateSelf } from "./slow.ts";
@@ -68,7 +70,8 @@ export function calibrationFromEnv(env: NodeJS.ProcessEnv, model?: string): Cali
  * send objects, so for Laya the state goes as its JSON text: the same characters, in one string.
  */
 function layaState(ask: AskJev): AskJev {
-  return (req) => ask(typeof req.state === "string" ? req : { ...req, state: JSON.stringify(req.state) });
+  // The JSON text is minted from the state's own minted strings, so the client's check still holds (SC1 risk 2).
+  return (req) => ask(typeof req.state === "string" ? req : { ...req, state: req.disclosure.jsonText(req.state) });
 }
 
 function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngine {
@@ -81,9 +84,9 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
   switch (o.name) {
     case "canned":
       if (o.canned === null) throw new Error("this harness has no canned engine");
-      // G2 round 4: a canned engine meets the Jev client's disclosure check too (privacy.ts assertNoSecrets), so a canned
-      // run fails where a live one would.
-      return { name: "canned", model: "canned", reach: "mac", ask: (req) => (assertNoSecrets(req), (o.canned as AskJev)(req)) };
+      // A canned engine meets the Jev client's checks too, so a canned run fails where a live one would: the format check
+      // (privacy.ts assertNoExcludedValue) and the minting and shape check on the body a live client would send (SC1 2b, 2c).
+      return { name: "canned", model: "canned", reach: "mac", ask: (req) => (assertNoExcludedValue(req), verifySent(req, wireBody(req, "canned")), (o.canned as AskJev)(req)) };
     case "llama": {
       const prompt = env.CARET_LLAMA_PROMPT ?? "chat";
       if (prompt !== "chat" && prompt !== "document") throw new Error(`CARET_LLAMA_PROMPT is '${prompt}'; it must be chat or document`);
@@ -152,17 +155,21 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
     ask = async (req) => {
       // The log holds request text, so it takes what the cache takes: fixture text only.
       checkFixture(req, o.fixture);
-      const body = { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } };
+      // PV2 Q2: written only as it is checked at the write, as the client checks what it sends, with values in formats
+      // Caret never carries withheld (privacy/send.ts storedLine).
+      // Sealed once: the engine is asked, and the log written, from this frozen copy only.
+      const sealed = seal({ req, wire: { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } } });
+      const asked = frozenRequest(req, sealed.wire);
       const t0 = performance.now();
       let r: Awaited<ReturnType<AskJev>>;
       try {
-        r = await inner(req);
+        r = await inner(asked);
       } catch (e) {
         // A failed request is logged with its error, which the eval's report shows only as the user's sentence.
-        appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, error: e instanceof Error ? `${e.name}: ${e.message}` : String(e), afterMs: performance.now() - t0 })}\n`, { mode: 0o600 });
+        appendStoredLine(log, sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 }), { mode: 0o600 });
         throw e;
       }
-      appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, sharedChars: JSON.stringify(wireBody(req, engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })}\n`, { mode: 0o600 });
+      appendStoredLine(log, sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens }), { mode: 0o600 });
       return r;
     };
   }

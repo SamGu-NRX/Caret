@@ -107,14 +107,14 @@ export function planSpec(d: PlanDraft): PopupSpecT {
  * (I3), each the user's with its sentence, as fill's "You set" rows are, and past MAX_FILL_ROWS one row that counts the
  * rest. H1: exported so the golden line the host's Ask card reads (fixtures/golden/ask-left.ndjson) is held to it.
  */
-export function leftToYouBlocks(windowId: string, leftToYou: string | null, unsure: readonly { key: string; name: string }[]): PopupBlock[] {
+export function leftToYouBlocks(windowId: string, leftToYou: string | null, unsure: readonly { key: string; name: string; says?: string }[]): PopupBlock[] {
   const blocks: PopupBlock[] = [];
   if (leftToYou !== null) {
     blocks.push({ type: "facts", rows: [{ label: YOU_TYPE_LABEL, value: { text: leftToYou, ref: { rule: "plan", derived: [{ node: windowId }] } } }] });
   }
   if (unsure.length > 0) {
     const shown = unsure.slice(0, MAX_FILL_ROWS);
-    const rows = shown.map((u, i) => ({ label: i === 0 ? LEFT_TO_YOU_LABEL : "", value: { text: saysUnsureField(u.name), ref: { rule: "fieldLabel", derived: [node(windowId, u.key)] } }, secondary: true as const }));
+    const rows = shown.map((u, i) => ({ label: i === 0 ? LEFT_TO_YOU_LABEL : "", value: { text: u.says ?? saysUnsureField(u.name), ref: { rule: "fieldLabel", derived: [node(windowId, u.key)] } }, secondary: true as const }));
     const more = unsure.length - shown.length;
     if (more > 0) rows.push({ label: "", value: { text: `and ${more} more`, ref: { rule: "count", derived: unsure.slice(MAX_FILL_ROWS).map((u) => node(windowId, u.key)) } }, secondary: true });
     blocks.push({ type: "facts", rows });

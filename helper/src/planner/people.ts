@@ -1,3 +1,4 @@
+import { redactWindow } from "../fill/redact.ts";
 // Whose details an Ask means, resolved by code against the people in its sources and memory (A1 lead decision 2):
 //   - a person the instruction names outside where it copies from ("use Gary's info", "make Bea my guest") is that
 //     person; a relation beside the name ("Bea ... my guest") says who the name is, not a second person;
@@ -39,8 +40,9 @@ export function peopleOnScreen(model: ScreenModel, form: WindowState, memory: re
     const n = name.replace(/\s+/gu, " ").trim();
     if (n.length >= 2 && n.length <= 60) mentions.push({ name: n, from, windowIds: windowId === null ? [] : [windowId] });
   };
-  for (const w of model.windows.values()) {
-    if (w === form) continue;
+  for (const raw of model.windows.values()) {
+    const w = redactWindow(raw);
+    if (w.window.windowId === form.window.windowId) continue;
     if (isConversation(w)) {
       const s = senderOf(w);
       if (s !== null) add(s, "sender", w.window.windowId);

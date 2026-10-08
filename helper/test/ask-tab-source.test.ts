@@ -126,7 +126,7 @@ describe("an Ask reads the tab the user just left (I6)", () => {
     };
     // Each test's engine applies to its own helper only: an earlier test's trailing walk must not reach this one's.
     let mine: Helper | null = null;
-    host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void mine?.handleReader(m), warn: (l) => void warnings.push(l) });
+    host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void mine?.handleReader(m), purge: (s) => mine?.purgeWindow(s), warn: (l) => void warnings.push(l) });
     mine = helper = new Helper({
       store, askJev: jev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, now: () => Date.now() + ahead,
       tabReader: pageTabReader(host.registry), publish: (m) => void published.push(m), warn: (l) => void warnings.push(l),

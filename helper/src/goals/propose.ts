@@ -72,13 +72,13 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
   const disclosed = disclosureFor(inv.ledger.declared().snippets, inv.snapshots, o.instruction);
   let written: Awaited<ReturnType<WriterPort["write"]>>;
   try {
-    written = await o.writer.write({ kind: "goal", disclosureId: o.goalId, disclosed, input: { goal: o.instruction.slice(0, 500), snapshots: inv.snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) });
+    written = await o.writer.write(inv.ledger.seal({ kind: "goal", disclosureId: o.goalId, disclosed, input: { goal: inv.ledger.slice(inv.ledger.instruction(o.instruction), 500), snapshots: inv.snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) }));
   } catch (e) {
     throw new GoalError("nothingToDo", "the plan writer is not available now", e instanceof Error ? e.message.slice(0, 200) : String(e));
   }
   use.value = { model: written.model, latencyMs: written.latencyMs, costUsd: written.costUsd, inputTokens: written.inputTokens, outputTokens: written.outputTokens, program: written.output.program };
   if (written.output.program === null) throw new GoalError("schema", "the plan writer wrote no program");
-  const choose: ChooserPort = o.askJev === null ? async () => null : jevChooser(o.askJev, o.instruction);
+  const choose: ChooserPort = o.askJev === null ? async () => null : jevChooser(o.askJev, o.instruction, inv.ledger);
   const ran = await runCodePlan(written.output.program, inv.snapshots, choose, { multiWindow: true, drafts: true, ...(o.signal === undefined ? {} : { signal: o.signal }) });
   if (!ran.ok) throw new GoalError("schema", "the plan program broke the rules a plan must keep", `${ran.kind}: ${ran.detail.slice(0, 200)}`);
   const local = o.drafter === undefined || ran.plan.drafts.length === 0 ? null : await localDrafts(o.drafter, o.instruction, ran.plan, inv.inventory, o.now, o.signal);

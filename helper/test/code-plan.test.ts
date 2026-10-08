@@ -1,5 +1,6 @@
 // D2-06: a goal program's DraftPlan lowered to executor end states, cut into segments, and digested. The press
 // registry is strict and isolated: one capability, and Send, Submit, Pay and Delete are always the user's.
+import { inventoryLedger } from "./minted.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCodePlan } from "../src/codemode/sandbox.ts";
 import type { DraftPlan, PlanningSnapshot } from "../src/codemode/types.ts";
@@ -9,7 +10,6 @@ import { buildInventory } from "../src/goals/inventory.ts";
 import { GoalError, lowerGoal, MAX_SEGMENTS } from "../src/goals/lower.ts";
 import { goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type GoalPlan, type GoalStep, type TargetBinding, type ValueBinding } from "../src/goals/plan.ts";
 import { macClock } from "../src/offers/event-time.ts";
-import { SnippetLedger } from "../src/privacy.ts";
 import { cannedProgram, caseWindow, detailsWindow, goalScene, mailWindow, replyWindow, standInJev, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 import { targetField } from "./mint.ts";
 import { isChecked } from "../src/fill/contract.ts";
@@ -177,7 +177,7 @@ function inventory(targets: TargetBinding[], values: ValueBinding[]): GoalInvent
   return { readerSession: 1, targets: new Map(targets.map((t) => [t.ref, t])), values: new Map(values.map((v) => [v.ref, v])), revisions: new Map([["w-a", "r1"]]), documents: new Map(), windowRefs: new Map(), texts: new Map(), owed: new Map() };
 }
 const draft = (steps: DraftPlan["steps"]): DraftPlan => ({ basedOn: "s1", window: "w1", steps, choices: [], drafts: [], programDigest: "b".repeat(64) });
-const lowerOpts = () => ({ askJev: standInJev(), ledger: new SnippetLedger([]) });
+const lowerOpts = (of: GoalInventory) => ({ askJev: standInJev(), ledger: inventoryLedger(of) });
 const refusal = async (f: () => Promise<unknown>): Promise<string> => {
   try {
     await f();
@@ -203,7 +203,7 @@ describe("lowering refuses, by name", () => {
     ],
     [val("v1", "ORD-1"), val("v2", "The lamp arrived broken and I would like a replacement."), val("v3", "Canada"), val("v4", "Peru"), val("v5", "Meet Priya", { event: { title: "Meet Priya", start: "2026-10-08T15:00:00-07:00", end: "2026-10-08T15:45:00-07:00", says: "Thu 3:00 to 3:45 PM", sentence: "s" } }), val("v6", "October 20, 2026"), val("v7", "2026-10-20", { origin: { kind: "derived", inputs: ["v6"], resolver: "values/date", version: "values/1", parametersDigest: "p" } })],
   );
-  const lower = (steps: DraftPlan["steps"]) => () => lowerGoal("g", "x", draft(steps), inv, lowerOpts());
+  const lower = (steps: DraftPlan["steps"]) => () => lowerGoal("g", "x", draft(steps), inv, lowerOpts(inv));
 
   it("refuses a question, a wait no press causes, a step after a hand-off, unknown refs and a missing program", async () => {
     expect(await refusal(lower([{ ref: "a", kind: "ask", question: "q1" }]))).toBe("unsupportedStep");
@@ -212,11 +212,11 @@ describe("lowering refuses, by name", () => {
     expect(await refusal(lower([{ ref: "a", kind: "fill", target: "t99", value: "v1" }]))).toBe("schema");
     expect(await refusal(lower([{ ref: "a", kind: "fill", target: "t1", value: "v99" }]))).toBe("schema");
     expect(await refusal(lower([{ ref: "a", kind: "fill", target: "t1", value: "v1" }, { ref: "b", kind: "fill", target: "t1", value: "v1" }]))).toBe("schema");
-    expect(await refusal(() => lowerGoal("g", "x", { ...draft([{ ref: "a", kind: "fill", target: "t1", value: "v1" }]), programDigest: "nope" }, inv, lowerOpts()))).toBe("schema");
+    expect(await refusal(() => lowerGoal("g", "x", { ...draft([{ ref: "a", kind: "fill", target: "t1", value: "v1" }]), programDigest: "nope" }, inv, lowerOpts(inv)))).toBe("schema");
     // Two steps that press the same control for the same effect: a press is not idempotent.
     expect(await refusal(lower([{ ref: "a", kind: "press", target: "t4", effect: "e:reveal" }, { ref: "b", kind: "press", target: "t4", effect: "e:reveal" }]))).toBe("replay");
     // Nor may a fresh plan make a press the goal already made.
-    expect(await refusal(() => lowerGoal("g", "x", draft([{ ref: "a", kind: "press", target: "t4", effect: "e:reveal" }]), inv, { ...lowerOpts(), done: [{ windowId: "w-a", key: "k-t4", effect: "e:reveal" }] }))).toBe("replay");
+    expect(await refusal(() => lowerGoal("g", "x", draft([{ ref: "a", kind: "press", target: "t4", effect: "e:reveal" }]), inv, { ...lowerOpts(inv), done: [{ windowId: "w-a", key: "k-t4", effect: "e:reveal" }] }))).toBe("replay");
     // A wait right after the press whose effect it names is merged into that press.
     expect(await refusal(lower([{ ref: "a", kind: "press", target: "t4", effect: "e:reveal" }, { ref: "b", kind: "waitFor", effect: "e:reveal", timeoutMs: 500 }]))).toBe("none");
   });
@@ -231,16 +231,16 @@ describe("lowering refuses, by name", () => {
     expect(await refusal(lower([{ ref: "a", kind: "fill", target: "t9", value: "v6" }]))).toBe("nothingToDo");
     expect(await refusal(lower([{ ref: "a", kind: "fill", target: "t9", value: "v7" }]))).toBe("none");
     // Beside a write that passes, each is a dropped write the preview names, not a refusal.
-    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }, { ref: "b", kind: "fill", target: "t1", value: "v1" }]), inv, lowerOpts());
+    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }, { ref: "b", kind: "fill", target: "t1", value: "v1" }]), inv, lowerOpts(inv));
     expect(g.segments.flatMap((x) => x.steps.map((y) => y.says))).toEqual(["Field t1: ORD-1"]);
     expect(g.left.map((l) => [l.label, l.why])).toEqual([["Email", "dropped"]]);
     expect(g.warnings).toEqual(["Caret left 'Email' empty: 'The lamp arrived broken and I would like a replacement.' is plain text, and the field takes an email address."]);
   });
 
   it("writes a page select by its option, hands a native select and any box to the user, and refuses a plan that is all hand-offs", async () => {
-    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t6", value: "v3" }, { ref: "b", kind: "fill", target: "t1", value: "v1" }]), inv, lowerOpts());
+    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t6", value: "v3" }, { ref: "b", kind: "fill", target: "t1", value: "v1" }]), inv, lowerOpts(inv));
     expect(g.segments.map((s) => s.steps.map((x) => [x.kind, x.writes]))).toEqual([[["write", "Canada"]], [["write", "ORD-1"]]]);
-    const n = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t1", value: "v1" }, { ref: "b", kind: "fill", target: "t5", value: "v3" }]), inv, lowerOpts());
+    const n = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t1", value: "v1" }, { ref: "b", kind: "fill", target: "t5", value: "v3" }]), inv, lowerOpts(inv));
     expect(n.segments[0]?.steps.map((x) => [x.kind, x.handoff])).toEqual([["write", null], ["handoff", "unverifiable"]]);
     expect(await refusal(lower([{ ref: "a", kind: "fill", target: "t7", value: "v3" }]))).toBe("nothingToDo");
     expect(await refusal(lower([{ ref: "a", kind: "press", target: "t4", effect: YOURS_EFFECT }]))).toBe("nothingToDo");
@@ -249,7 +249,7 @@ describe("lowering refuses, by name", () => {
   it(`refuses more than ${MAX_SEGMENTS} segments`, async () => {
     const many = Array.from({ length: MAX_SEGMENTS + 1 }, (_, i) => tgt(`m${i}`, { domain: { ...win, windowId: `w-${i}` } }));
     const big = inventory(many, [val("v1", "ORD-1")]);
-    expect(await refusal(() => lowerGoal("g", "x", draft(many.map((t, i) => ({ ref: `s${i}`, kind: "fill" as const, target: t.ref, value: "v1" }))), big, lowerOpts()))).toBe("tooManySegments");
+    expect(await refusal(() => lowerGoal("g", "x", draft(many.map((t, i) => ({ ref: `s${i}`, kind: "fill" as const, target: t.ref, value: "v1" }))), big, lowerOpts(big)))).toBe("tooManySegments");
   });
 });
 
@@ -271,7 +271,7 @@ describe("G2 third check: a draft's field is judged by its own label", () => {
     ["t3", true],
     ["t4", true],
   ] as const)("%s takes the draft: %s", async (target, takes) => {
-    const g = await lowerGoal("g", "draft a reply saying I'm in", withDraft(target), inv, lowerOpts());
+    const g = await lowerGoal("g", "draft a reply saying I'm in", withDraft(target), inv, lowerOpts(inv));
     expect(g.segments.some((x) => x.steps.some((y) => y.target.ref === target))).toBe(takes);
   });
 });
@@ -282,7 +282,7 @@ describe("G2 review finding 4: the gates read what a control will hold", () => {
   const inv = inventory([sel, country, tgt("t3")], [val("v1", "SK-TEST-ABCDEFGHIJKLMNOPQRSTUVWX"), val("v2", "canada"), val("v3", "ORD-1")]);
 
   it("drops an option that is a never-typed kind though its source text is not", async () => {
-    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t1", value: "v1" }, { ref: "b", kind: "fill", target: "t3", value: "v3" }]), inv, lowerOpts());
+    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t1", value: "v1" }, { ref: "b", kind: "fill", target: "t3", value: "v3" }]), inv, lowerOpts(inv));
     expect(g.segments.flatMap((x) => x.steps.map((y) => y.says))).toEqual(["Field t3: ORD-1"]);
     expect(g.warnings).toEqual(["Caret left 'Plan' empty: Caret never types API keys or tokens; that is yours to enter."]);
   });
@@ -291,18 +291,20 @@ describe("G2 review finding 4: the gates read what a control will hold", () => {
     const plan = tgt("t4", { control: "select", role: "AXPopUpButton", label: "Plan", options: ["HUNTER2", "Other"], domain: page, key: "f0/select:plan2~0" });
     const own = inventory([plan, tgt("t3")], [val("v1", "hunter2", { source: null }), val("v3", "ORD-1")]);
     const instruction = 'Put my password "hunter2" in Plan and the order number in Field t3';
-    const g = await lowerGoal("g", instruction, draft([{ ref: "a", kind: "fill", target: "t4", value: "v1" }, { ref: "b", kind: "fill", target: "t3", value: "v3" }]), own, lowerOpts());
+    const g = await lowerGoal("g", instruction, draft([{ ref: "a", kind: "fill", target: "t4", value: "v1" }, { ref: "b", kind: "fill", target: "t3", value: "v3" }]), own, lowerOpts(own));
     expect(g.warnings).toEqual(["Caret left 'Plan' empty: Caret never types passwords; that is yours to enter."]);
   });
 
   it("checks a writer's option with the write contract's verifier, with the value it came from, and asks Jev's yes/no nothing (W2)", async () => {
     const jev = standInJev();
-    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: jev, ledger: new SnippetLedger([]) });
+    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: jev, ledger: inventoryLedger(inv) });
     const step = g.segments[0]?.steps[0];
     expect(step?.writes).toBe("Canada");
     expect(isChecked(step?.checked)).toBe(true);
     expect(step?.checked).toMatchObject({ text: "Canada", verdict: { by: "verifier" }, provenance: { kind: "window", span: "canada" } });
-    expect(jev.asked).toEqual([]);
+    // HA2 (lead decision 2): a country is a person's detail, so the gate asks whose the field and the value are; it asks no
+    // yes/no about the value itself.
+    expect(jev.asked.filter((q) => /right one for it|belong in this field/u.test(q))).toEqual([]);
   });
 });
 

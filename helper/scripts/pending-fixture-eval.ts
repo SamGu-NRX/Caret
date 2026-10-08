@@ -15,6 +15,7 @@
 //     node scripts/pending-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR [--max-usd 0.20]
 //
 // Live Jev stops before spending more than --max-usd (scripts/spend.ts).
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -416,8 +417,8 @@ result.helperLog = log.slice(-30);
 // no question while the test run only ticks. `ok` alone says only that nothing threw.
 const falseWatches = (result.falseWatches as { falseWatches?: string[] } | undefined)?.falseWatches;
 result.ok = ok && foreground === null && falseWatches !== undefined && falseWatches.length === 0 && judgments.length > 0 && right === judgments.length && runs.every((r) => r.askedWhileTicking === 0);
-writeFileSync(join(OUT, "pending-fixture.json"), JSON.stringify(result, null, 2));
+writeStoreJson(join(OUT, "pending-fixture.json"), result, 2);
 // Reader and helper log lines: timings, counts and window titles of the synthetic fixture only.
-writeFileSync(join(OUT, "log.txt"), log.join("\n") + "\n");
+writeStore(join(OUT, "log.txt"), log.join("\n") + "\n");
 console.log(JSON.stringify({ ok: result.ok, error: result.error ?? null, falseWatches: result.falseWatches, summary: result.summary, idleCpu: result.idleCpu, frontChanges: result.frontChanges }, null, 1));
 process.exit(result.ok ? 0 : 1);

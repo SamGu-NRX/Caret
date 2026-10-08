@@ -28,6 +28,13 @@ import { judgePress, type FrameMarks } from "./worker/press-guard.ts";
 import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
 import { LEFT_TAB_MS, LeftTab, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
 import { joinFrames } from "./shared/tab-text.ts";
+import { sectionTokens, type FrameSections } from "./worker/section-names.ts";
+
+/** SCP1: a frame's sections as the snapshot carries them: tokens, never digests or the salt. */
+function sectionsOf(s: FrameSections | undefined): { sections?: FrameSections["sections"]; sectionNames?: string[]; sectionsCut?: true } {
+  if (s === undefined) return {};
+  return { ...(s.sections.length === 0 ? {} : { sections: s.sections }), ...(s.sectionNames.length === 0 ? {} : { sectionNames: s.sectionNames }), ...(s.sectionsCut ? { sectionsCut: true as const } : {}) };
+}
 
 const HOST = "ai.caret.bridge";
 const VERSION = chrome.runtime.getManifest().version;
@@ -265,6 +272,8 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   // only: a child frame reports its own viewport, and the window is the same for every frame.
   const topReport = answered.find((x) => x.f.frameId === 0)?.r;
   const zoom = await chrome.tabs.getZoom(tab.id).catch(() => null);
+  // SCP1: section name tokens across every kept frame, under one salt made for this snapshot (worker/section-names.ts).
+  const named = await sectionTokens(kept.map((k) => k.r));
   const view = topReport !== undefined && Array.isArray(topReport.screen) && zoom !== null && zoom > 0 ? { window: topReport.screen, viewport: topReport.viewport, zoom } : null;
   send({
     type: "pageSnapshot",
@@ -276,7 +285,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     active: tabNow.active,
     inFocusedWindow: lastFocused?.id !== undefined && lastFocused.id === tabNow.windowId && lastFocused.focused,
     title: tabNow.title ?? "",
-    frames: kept.map(({ f, r, origin }) => ({
+    frames: kept.map(({ f, r, origin }, i) => ({
       frameId: f.frameId,
       parentFrameId: f.parentFrameId,
       documentId: f.documentId,
@@ -285,6 +294,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       navGen: navGens.get(tab.id as number, f.frameId),
       title: r.title,
       headings: r.headings,
+      ...sectionsOf(named[i]),
       controls: r.controls,
       iframes: r.iframes.map((i) => ({ src: i.src, rect: i.rect })),
       excluded: r.excluded,

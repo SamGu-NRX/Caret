@@ -49,6 +49,25 @@ import Testing
         #expect(r.nodes[0].parent == nil)
     }
 
+    /// V4: a pop-up button's own menu items are its options, attached to the button as the helper reads them
+    /// (fill/controls.ts formControls); a context menu and a submenu stay dropped.
+    @Test func keepsAPopUpButtonsMenuItemsAsItsChildren() {
+        let r = c.compact(windowChildren: [
+            RawNode(role: "AXPopUpButton", title: "Degree", value: "Select...", children: [
+                RawNode(role: "AXMenu", children: [
+                    RawNode(role: "AXMenuItem", title: "Select..."),
+                    RawNode(role: "AXMenuItem", title: "Bachelor's Degree", children: [RawNode(role: "AXStaticText", value: "Oct 17, 2026")]),
+                    RawNode(role: "AXMenuItem", title: "Master's Degree", children: [RawNode(role: "AXMenu", children: [RawNode(role: "AXMenuItem", title: "MBA")])]),
+                ]),
+            ]),
+            RawNode(role: "AXMenu", children: [RawNode(role: "AXMenuItem", title: "Copy")]),
+        ])
+        let button = r.nodes[0]
+        #expect(button.role == "AXPopUpButton")
+        #expect(r.nodes.dropFirst().map(\.label) == ["Select...", "Bachelor's Degree", "Master's Degree"])
+        #expect(r.nodes.dropFirst().allSatisfy { $0.role == "AXMenuItem" && $0.parent == button.key })
+    }
+
     @Test func linksChildrenToTheNearestKeptAncestor() {
         let r = c.compact(windowChildren: [
             RawNode(role: "AXGroup", title: "Billing", children: [RawNode(role: "AXGroup", children: [RawNode(role: "AXTextField", title: "Card name")])]),

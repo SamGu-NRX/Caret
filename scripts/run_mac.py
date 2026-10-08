@@ -9,6 +9,13 @@ root = Path(__file__).resolve().parent.parent
 if sys.version_info < (3, 11):
     raise SystemExit("Caret requires Python 3.11 or newer. Run this script with a supported interpreter.")
 
+# Fail early, before build/install/key-sync effects; the Xcode phase enforces the same check.
+gate = subprocess.run(
+    ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")], capture_output=True, text=True,
+)
+if gate.returncode != 0:
+    raise SystemExit((gate.stderr or gate.stdout or "privacy gate: refusing to package").strip())
+
 derived_data = root / ".local" / "DerivedData"
 subprocess.run(
     [

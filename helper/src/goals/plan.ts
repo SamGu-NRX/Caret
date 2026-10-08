@@ -12,6 +12,8 @@ import type { FillScope } from "../fill/fill.ts";
 import type { CheckedValue, FieldContract, Provenance } from "../fill/contract.ts";
 import type { HandoffWhy } from "./capabilities.ts";
 import type { OwedField } from "./left.ts";
+import type { ReadableField, SavedValue } from "../fill/alternate.ts";
+import type { SourceNote } from "../planner/codeplan.ts";
 
 export type ValueOrigin = z.infer<typeof ValueOriginSchema>;
 
@@ -116,6 +118,19 @@ export interface GoalInventory {
   texts: ReadonlyMap<string, { title: string; text: string; message: string }>;
   /** Each window the goal may act in, by id: the fields a goal writing there owes (left.ts), as they were frozen. */
   owed: ReadonlyMap<string, readonly OwedField[]>;
+  /**
+   * V6 B2: what lowering's alternate-field veto reads (fill/alternate.ts): each window's readable fields as frozen, by
+   * window id, filled, read-only and dropdowns included, and the user's saved values. buildInventory always sets it; a
+   * hand-built inventory without it is read from its targets alone. Never sent.
+   */
+  alternates?: { fields: ReadonlyMap<string, readonly ReadableField[]>; saved: readonly SavedValue[] };
+  /**
+   * HA2: by value ref, the whole notes that held each value when the goal was planned (codeplan.ts frozenNotes), or null
+   * when they could not be shown (a cut, a source gone): what the value gate's owner questions show (gates.ts jevGate),
+   * charged to their windows' budgets only when sent, and what a copied value for a person's field is bound to. A value
+   * with no entry is withheld from a field that wants the user's details. Never sent otherwise.
+   */
+  notes?: ReadonlyMap<string, readonly SourceNote[] | null>;
 }
 
 /** `attach` (P2 adds the kind; P3 lowers it): a file the user confirmed in the preview, put in a page's file control. */
@@ -256,6 +271,8 @@ export interface GoalPlan {
   scopes?: ScopeSet;
   /** I2: where the plan started (ask-scope.ts Origin), which every write's and attachment's mint matches; the guard checks it. */
   origin: Origin;
+  /** HA2: what the value gate's requests to Jev cost while lowering (gates.ts jevGate); absent when it asked none. */
+  jev?: { calls: number; costUsd: number; latencyMs: number };
 }
 
 /** JSON with object keys sorted, so equal content always hashes equal. */

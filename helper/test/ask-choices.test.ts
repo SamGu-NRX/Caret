@@ -413,8 +413,11 @@ describe("Ask asks whose details, with the user and the people on screen (B29)",
     expect(q).toMatchObject({ part: "person", text: "Whose details go in?", pick: "one" });
     expect(q.options.map((c) => c.option)).toEqual([{ kind: "person", id: "o1", name: "Gary Pruitt" }]);
     const j = jevBy((s) => (s.includes("'Landlord phone'") ? "(512) 555-0177" : null), (c) => (c.includes("(512) 555-0177") ? "person" : "unclear"));
-    const d = await answer(q, ["o1"], { model: desk({ mail: true }), ask: j.ask, instruction });
-    expect(d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[KEY("landlord phone"), "(512) 555-0177"]]);
+    // HA2 review 2, item 5: an Ask that names a person meets the evidence gate too. Gary's phone sits in a mail, a
+    // conversation, which keeps more than half of itself back from every request, so its owner questions cannot show it
+    // whole and the phone is withheld; nothing else is offered in its place.
+    const e2 = await fail(answer(q, ["o1"], { model: desk({ mail: true }), ask: j.ask, instruction }));
+    expect(e2.message).toBe("Caret found nothing to put in Landlord phone.");
     expect(JSON.stringify(j.seen.map((r) => r.state))).toContain("Gary Pruitt");
   });
 

@@ -151,7 +151,7 @@ def complete_auto_expand(
         kwargs["model"] = model
     messages = build_auto_expand_messages(prefix=prefix, instructions=instructions)
     # The native Tab path uses the same Groq client as the shared core. Gateway
-    # remains an explicit option for installations configured for that service.
+    # is development-only and reports disabled without falling back to Groq.
     provider = os.environ.get("CARET_INLINE_PROVIDER", "groq")
     if provider == "groq":
         from caret.providers.groq import GroqWriter

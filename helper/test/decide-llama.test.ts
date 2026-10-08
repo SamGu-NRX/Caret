@@ -1,4 +1,5 @@
 // J1 part B: the llama.cpp engine's prompt layout, label reading and confidence, against a stand-in llama-server.
+import { minted } from "./minted.ts";
 import { describe, expect, it } from "vitest";
 import { labelsFor, layout, llamaEngine } from "../src/engines/decide/llama.ts";
 import { calibrate, calibrated, choiceConfidence, noulWithTemperature, withTemperature } from "../src/engines/decide/confidence.ts";
@@ -17,7 +18,7 @@ function server(dist: (prompt: string) => Record<string, number>) {
   return { fetchImpl, completions };
 }
 
-const REQ: JevRequest = {
+const REQ: JevRequest = minted({
   state: { task: "fill" },
   questions: {
     f1: { type: "choice", instructions: "Name?", criteria: { c1: '"Ada"', c2: '"ada@x.com"', none: "No candidate fits." } },
@@ -26,7 +27,7 @@ const REQ: JevRequest = {
   nouls: { n1: { type: "noul", instructions: "Is it a form?", criteria: { true: "it is", false: "it is not" } } },
   snippets: [],
   charged: {},
-};
+});
 
 describe("the llama.cpp engine", () => {
   it("labels options A to Z, then by fixed-width numbers", () => {
@@ -66,7 +67,7 @@ describe("the llama.cpp engine", () => {
   it("reads two-digit labels digit by digit, a forced digit included, as joint probabilities", async () => {
     const criteria: Record<string, string> = {};
     for (let i = 1; i <= 30; i++) criteria[`c${i}`] = `"value ${i}"`;
-    const req: JevRequest = { state: "s", questions: { f1: { type: "choice", instructions: "Which?", criteria } }, snippets: [], charged: {} };
+    const req: JevRequest = minted({ state: "s", questions: { f1: { type: "choice", instructions: "Which?", criteria } }, snippets: [], charged: {} });
     // First digit 1 (0.6) or 3 (0.38); after 1, 2 and 7 at 0.5 each; after 3 the only label is 30, but the model gives
     // "0" there only 0.5, so 30 holds 0.19, not 0.38.
     const s = server((p): Record<string, number> => (p.endsWith("<assistant>") ? { "1": 0.6, "3": 0.38 } : p.endsWith("<assistant>1") ? { "2": 0.5, "7": 0.5 } : { "0": 0.5 }));
@@ -131,7 +132,7 @@ describe("confidence as Jev computes it", () => {
 });
 
 describe("an engine's answers through its calibration", () => {
-  const req: JevRequest = { state: "s", questions: { q: { type: "choice", instructions: "i", criteria: { a: null, b: null } } }, snippets: [], charged: {} };
+  const req: JevRequest = minted({ state: "s", questions: { q: { type: "choice", instructions: "i", criteria: { a: null, b: null } } }, snippets: [], charged: {} });
   const result = (choice: string, p: Record<string, number>) => async () => ({ model: "m", answers: { q: { choice, confidence: 0.1 } }, probabilities: { q: p }, inputTokens: 0, latencyMs: 0, costUsd: 0 });
   it("refuses an answer its own probabilities do not rank first, instead of passing the probabilities' pick", async () => {
     await expect(calibrated(result("a", { a: 0.01, b: 0.99 }), { choiceT: 1, noulT: 1 })(req)).rejects.toThrow(/do not rank first/);

@@ -15,6 +15,7 @@
 //
 // Spend counts against CARET_JEV_DAILY_CAP (fill/jev.ts makeJevClient). Writes results.json (every verdict) and
 // summary.md to --out. Exit 1 when a wrong case was minted in any pass.
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,7 +145,7 @@ const familyTable = SHAPE_FAMILIES.map((f) => {
   };
 });
 mkdirSync(OUT, { recursive: true });
-writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ cutoff: VERIFY_CUTOFF, passes: PASSES, spentUsd: spent, latencyMs: { n: latencies.length, p50: q(latencies, 0.5), p95: q(latencies, 0.95), all: latencies }, table, byFamily, familyTable, rows }, null, 1)}\n`);
+writeStoreJson(join(OUT, "results.json"), { cutoff: VERIFY_CUTOFF, passes: PASSES, spentUsd: spent, latencyMs: { n: latencies.length, p50: q(latencies, 0.5), p95: q(latencies, 0.95), all: latencies }, table, byFamily, familyTable, rows }, 1);
 const md = [
   `# Verifier eval (W2), ${dev.cases.length} cases (${wrong.length} wrong, ${right.length} right), ${PASSES} passes, cutoff ${VERIFY_CUTOFF}`,
   "",
@@ -178,6 +179,6 @@ const md = [
   "",
   ...byFamily.flatMap((f) => f.rightOnlyCodeRefuses.map((x) => `- ${x}`)),
 ];
-writeFileSync(join(OUT, "summary.md"), `${md.join("\n")}\n`);
+writeStore(join(OUT, "summary.md"), `${md.join("\n")}\n`);
 process.stderr.write(`verifier eval: ${table.map((t, k) => `pass ${k + 1} false exact ${t.falseExact}, right refused ${t.rightRefused}/${right.length}, disagree ${t.disagree}`).join("; ")}; $${spent.toFixed(5)}; ${join(OUT, "summary.md")}\n`);
 process.exitCode = table.some((t) => t.falseExact > 0) ? 1 : 0;

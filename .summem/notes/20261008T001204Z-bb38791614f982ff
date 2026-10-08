@@ -1,0 +1,1 @@
+Caret app builds, including Debug, run scripts/privacy_gate.sh; helper/src/privacy/accepted.ts must record lead acceptance of pv2-sites-send and ha2-copied-conversation before builds pass, and CARET_DEV_VERCEL_GEMINI=1 is refused at build time.

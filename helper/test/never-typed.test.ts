@@ -3,17 +3,17 @@
 // fill, the planner and Ask refuse exactly what memory refuses to keep; its label and shape rules are tested with
 // memory. Here: that every path agrees with it, and secretIn's reading of the instruction around a value. All numbers
 // are invented; the card numbers are standard test numbers.
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { TEST_AUTHORITY } from "./mint.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { proposeFill } from "../src/fill/fill.ts";
+import { heldReason, NOTE_PRIVATE, proposeFill } from "../src/fill/fill.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { writableFields } from "../src/planner/planner.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { validateMinted } from "./mint.ts";
 import { secretIn } from "../src/planner/trace.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { SnippetLedger } from "../src/privacy.ts";
 import { field, jevPickingText, snap, value } from "./builders.ts";
 
 describe("secretIn", () => {
@@ -66,7 +66,11 @@ describe("fill and the planner agree on what is never typed", () => {
     expect(p.fields.map((f) => f.key).sort()).toEqual([`${F}/textfield:name~0`, `${F}/textfield:notes~0`, `${F}/textfield:phone~0`]);
     const sent = JSON.stringify(asked.map((r) => [r.state, r.questions]));
     for (const secret of SECRETS) expect(sent).not.toContain(secret);
-    expect(p.fields.find((f) => f.key.includes("phone"))?.value).toBe("(737) 555-0112");
+    // HA2 review (b): the note's SSN and card lines are cut from the view, so the note is incomplete and its phone, a value
+    // only an owner judgement admits, is withheld; nothing cut is shown or named.
+    const phone = p.fields.find((f) => f.key.includes("phone"));
+    expect(phone?.value).toBeNull();
+    expect(phone === undefined ? null : heldReason(phone)).toBe(`Caret left Phone: ${NOTE_PRIVATE}.`);
     expect(p.fields.find((f) => f.key.includes("notes"))?.value).toBeNull();
   });
 
@@ -77,7 +81,7 @@ describe("fill and the planner agree on what is never typed", () => {
 
   it("never offers such a value as a candidate, from a line or from a field labelled as one", () => {
     const m = desk();
-    const c = collectCandidates(m, "form", { now: 2000, ledger: new SnippetLedger(m.windows.values()) }).candidates.map((x) => x.text);
+    const c = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m.windows.values()) }).candidates.map((x) => x.text);
     expect(c).toContain("(737) 555-0112");
     expect(c).toContain("elena.v");
     for (const secret of [...SECRETS, "card 4242 4242 4242 4242"]) expect(c).not.toContain(secret);

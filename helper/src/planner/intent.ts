@@ -1,3 +1,5 @@
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { instructionForModel, instructionView, redactWindow } from "../fill/redact.ts";
 // Ask as a scoped fill (B25 lead decision 1). An instruction becomes a small intent, and every part of it is a
 // choice from what code listed or an exact span of the instruction:
 //   - the route: fill, plan, ask or refuse;
@@ -14,23 +16,22 @@ import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { headingsBefore } from "../fill/ask-scope.ts";
+import { chainHeading, headingsBefore, shownSections, windowOutline } from "../fill/ask-scope.ts";
 import { inWebArea, type Control } from "../fill/controls.ts";
-import { writableTargets } from "./targets.ts";
+import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
-import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
-import { SnippetLedger } from "../privacy.ts";
+import { mentionedKind, secretText, type SensitiveKind } from "../memory/sensitive.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
 import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, senderOf, type NamedSource } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { peopleOnScreen, PRONOUN_DETAILS, type PersonCandidate } from "./people.ts";
-import { SAYS, SaidError, Unclear, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn, type AskPart } from "./says.ts";
+import { SAYS, SaidError, Unclear, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSectionUnknown, saysSsn, type AskPart } from "./says.ts";
 
 export const ROUTES = ["fill", "plan", "ask", "refuse"] as const;
 export type AskRoute = (typeof ROUTES)[number];
 /** Why an intent refuses, or what it asks; each has a sentence in says.ts (sayWhy). */
-export const REASONS = ["none", "neverTyped", "noSuchField", "notOnScreen", "pressOrSend", "payment", "otherPersonUnnamed", "nothingToFill", "whichFields", "whichSource", "whichPerson"] as const;
+export const REASONS = ["none", "neverTyped", "noSuchField", "notOnScreen", "pressOrSend", "payment", "otherPersonUnnamed", "nothingToFill", "whichFields", "whichSource", "whichPerson", "sectionUnknown", "sectionNotFound"] as const;
 export type Reason = (typeof REASONS)[number];
 
 export interface AskIntent {
@@ -95,6 +96,17 @@ export interface AskIntent {
    * because no question asks about them (they are too many for one, or nothing is unclear). Each is the user's, said.
    */
   unsure?: readonly string[];
+  /**
+   * SCP1: the fields (refs) Jev chose that the Ask does not fill because the request named one section and Caret
+   * couldn't tell which section each is in (intent-heads.ts sectionVeto). Each is the user's, said. Only the heads
+   * maker sets it; on a refusal with why "sectionUnknown", the fields that refusal names.
+   */
+  sectionless?: readonly string[];
+  /**
+   * SCP1: the one section of the form the request named, as both wordings of the section question settled it (its
+   * heading text); absent when it named none. Held by the Ask's scope (ask-scope.ts AskScope.section).
+   */
+  namedSection?: string;
 }
 
 /**
@@ -112,6 +124,8 @@ export interface IntentField {
   ref: string;
   key: string;
   name: string;
+  /** Model-facing name read from the redacted view, separate from the local refusal name. */
+  modelName?: string;
   /** The field's group or fieldset label (describeField's section). */
   section: string | null;
   /** A3: the nearest heading before the field in document order, when the ledger took its text. */
@@ -136,6 +150,14 @@ export interface IntentSnapshot {
    */
   uploads: IntentField[];
   sections: { ref: string; name: string }[];
+  /**
+   * SCP1: the sections the window shows (fill/ask-scope.ts shownSections: headings, legends, labelled groups), those
+   * holding a field first, as the ledger took them, each text once: the only sections an Ask's section question offers
+   * (intent-heads.ts sectionRequest). Refs sec1, sec2, ...
+   */
+  headings: { ref: string; name: string }[];
+  /** SCP1: the window shows more sections than `headings` lists (the limit, or the ledger's budget): the question says so. */
+  sectionsCut: boolean;
   /** Other open windows a value could come from, most recent first, by title, and a mail's sender when it shows one. */
   windows: { ref: string; windowId: string; app: string; title: string; from: string | null }[];
   /** Labels of what the user told Caret (About entries, people), never their values. */
@@ -154,11 +176,15 @@ export interface IntentSnapshot {
   excluded: string[];
   /** The instruction names a source no open window could be ("off my LinkedIn" with no LinkedIn open). */
   missing: boolean;
-  ledger: SnippetLedger;
+  ledger: Disclosure;
+  /** The redacted views the snapshot read, by window id: the form's and each listed source's (snapMint mints from them). */
+  views: ReadonlyMap<string, WindowState>;
 }
 
 /** Fields and windows one snapshot lists at most: the plan's provisional inventory limit (section 4), and sources by recency. */
 export const MAX_INTENT_FIELDS = 40;
+/** SCP1: sections one snapshot offers at most, as many as fields; not measured. Past it the question says its list is cut. */
+export const MAX_INTENT_HEADINGS = 40;
 export const MAX_INTENT_WINDOWS = 8;
 
 /** Relations that name a person without a name ("my sister"). Written for common requests, not measured. */
@@ -192,23 +218,33 @@ export function personSpans(instruction: string): string[] {
  * Throws PlannerError("privacy") when the instruction cannot go out.
  */
 export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[]): IntentSnapshot {
-  const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([instruction])) throw new SaidError("privacy", SAYS.privacy, "the instruction quotes more of an open window than one request may carry");
+  const local = w;
+  w = redactWindow(w);
+  const ledger = new Disclosure(model.windows.values());
+  if (!ledger.plan([instructionForModel(instruction)])) throw new SaidError("privacy", SAYS.privacy, "the instruction quotes more of an open window than one request may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const fields: IntentField[] = [];
   const sections: { ref: string; name: string }[] = [];
   const headings = headingsBefore(w);
+  // SCP1: a page walk says which sections each field sits in (windowOutline); its innermost heading is the field's.
+  // Elsewhere the nearest heading before it, as before.
+  const outline = windowOutline(w);
+  const paged = [...w.nodes.values()].some((n) => n.outline !== undefined);
+  const headingOf = (key: string): string | null => (paged ? chainHeading(outline, key) : (headings.get(key) ?? null));
   // I2 ruling: the one inventory the native planner reads too (targets.ts): a field with no readable name is in neither.
-  for (const x of writableTargets(w)) {
+  for (const x of localTargets(local)) {
     if (fields.length >= MAX_INTENT_FIELDS) break;
-    const d = describeField(w, x.node);
+    const kept = w.nodes.get(x.node.key);
+    const d = kept === undefined ? { section: null } : describeField(w, kept);
     const name = x.name;
-    if (!ledger.take(w, "descriptor", [name, d.section])) continue;
+    // Its window texts only: a field the view leaves unnamed is named in Caret's words (UNNAMED_FIELD), which no window
+    // shows and nothing is charged for (PV2: a text is located where it is cut).
+    if (!ledger.take(w, "descriptor", [x.modelName === UNNAMED_FIELD ? null : x.modelName, d.section])) continue;
     if (d.section !== null && !sections.some((s) => s.name === d.section)) sections.push({ ref: `s${sections.length + 1}`, name: d.section });
     const filled = x.control === "text" && (x.node.value ?? "") !== "";
-    const h = headings.get(x.node.key) ?? null;
+    const h = headingOf(x.node.key);
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
-    fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, section: d.section, heading, control: x.control, filled, neverTyped: x.control === "text" ? neverTypedNode(w, x.node) : null });
+    fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, modelName: x.modelName, section: d.section, heading, control: x.control, filled, neverTyped: x.neverTyped });
   }
   // File controls, as upload fields for the scope question: the name and its group taken together, as a field's are.
   const uploads: IntentField[] = [];
@@ -217,14 +253,33 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     const d = describeField(w, n);
     const name = d.label ?? d.nearest;
     if (name === null || !ledger.take(w, "descriptor", [name, d.section])) continue;
-    const h = headings.get(n.key) ?? null;
+    const h = headingOf(n.key);
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
     uploads.push({ ref: `u${uploads.length + 1}`, key: n.key, name, section: d.section, heading, control: "text", filled: false, neverTyped: null, upload: true });
+  }
+  // SCP1: every section the window shows, for the section question, whether or not it places a field: one left out
+  // could not be named, and a section Ask naming it would read as particular fields. Sections holding a field come first,
+  // so a list cut at MAX_INTENT_HEADINGS keeps those; a cut list, or one the ledger would not take a section of, is said
+  // to be incomplete in the question, whose "not in this list" answer then withholds (intent-heads.ts). A section whose
+  // text redaction or an exclusion took is never offered.
+  const sectionHeadings: IntentSnapshot["headings"] = [];
+  // A section whose text an exclusion or redaction took can't be listed either: the list is said to be incomplete, so a
+  // request naming it gets "not in this list" and withholds, rather than reading as particular fields.
+  let sectionsCut = outline.cut || outline.occurrences.some((x) => x.text === null);
+  for (const name of shownSections(outline, [...fields, ...uploads].map((f) => f.key))) {
+    if (sectionHeadings.length >= MAX_INTENT_HEADINGS) {
+      sectionsCut = true;
+      break;
+    }
+    if (secretText(name)) continue;
+    if (ledger.take(w, "descriptor", [name])) sectionHeadings.push({ ref: `sec${sectionHeadings.length + 1}`, name });
+    else sectionsCut = true;
   }
   // Other windows by title, most recently focused first. A title is what names a source ("Morgan's email"); a
   // window whose title does not fit what the ledger allows is left out.
   const windows: IntentSnapshot["windows"] = [];
-  const others = [...model.windows.values()].filter((o) => o !== w && o.window.title.trim() !== "").sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
+  const views = new Map<string, WindowState>([[w.window.windowId, w]]);
+  const others = [...model.windows.values()].map(redactWindow).filter((o) => o.window.windowId !== w.window.windowId && o.window.title.trim() !== "").sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
   for (const o of others) {
     if (windows.length >= MAX_INTENT_WINDOWS) break;
     if (!ledger.take(o, "candidate", [o.window.title])) continue;
@@ -232,30 +287,91 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     const sender = senderOf(o);
     const from = sender !== null && sender.length <= 60 && ledger.take(o, "candidate", [sender]) ? sender : null;
     windows.push({ ref: `w${windows.length + 1}`, windowId: o.window.windowId, app: o.app.name, title: o.window.title, from });
+    views.set(o.window.windowId, o);
   }
   const labels = [...new Set(memory.map((m) => m.label))];
   const memoryLabels = labels.length > 0 && ledger.memory(labels) ? labels : [];
   // People the instruction names: capitalized names and relations, and words that are a mail sender's name however typed.
-  const persons = [...new Set([...personSpans(instruction), ...senderNames(instruction, model, w)])];
+  // Extract model-visible spans only from retained clauses. An unmarked value or name in a
+  // forbidden clause must not reappear beside the neutralized instruction. Keep the original locally.
+  const retained = instructionView(instruction).retained;
+  const persons = [...new Set(retained.flatMap((span) => [...personSpans(span), ...senderNames(span, model, w)]))];
   const sources = namedSources(instruction, model, w, persons);
   return {
     instruction,
-    window: w,
+    window: local,
     title,
     fields,
     uploads,
     sections,
+    headings: sectionHeadings,
+    sectionsCut,
     windows,
     memory: memoryLabels,
     persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),
     others: peopleOnScreen(model, w, memory),
     memoryValues: memory,
-    literals: instructionValues(instruction),
+    literals: [...new Set(retained.flatMap(instructionValues))],
     named: sources.named,
     excluded: sources.excluded,
     missing: sources.missing,
     ledger,
+    views,
   };
+}
+
+/** How a request names a field it may not quote, and a section or window it may not quote (SC1: Caret's own words). */
+export const UNNAMED_FIELD = "a field Caret leaves to the user";
+export const UNNAMED_SECTION = "a section";
+export const UNNAMED_WINDOW = "a window";
+
+/**
+ * SC1 2b: the snapshot's texts as its Disclosure (IntentSnapshot.ledger) mints them, each from the redacted view it was
+ * read from, the instruction as a model may read it, and memory labels as memory. A text that holds a marker word, or
+ * that its view no longer shows, is named in Caret's own words instead (UNNAMED_FIELD, UNNAMED_SECTION, UNNAMED_WINDOW).
+ */
+export interface SnapMint {
+  d: Disclosure;
+  instruction: ModelText;
+  /** "<app> window '<title>'", or "<app> window" when the title did not fit or names a secret. */
+  formTitle: ModelText;
+  field(f: IntentField): ModelText;
+  section(name: string): ModelText;
+  source(w: IntentSnapshot["windows"][number]): { app: ModelText; title: ModelText; from: ModelText | null };
+  /** A span of the instruction (a person, a literal), or null when the model's instruction does not show it. */
+  span(text: string): ModelText | null;
+  memoryLabel(label: string): ModelText | null;
+}
+
+const MINTS = new WeakMap<IntentSnapshot, SnapMint>();
+
+export function snapMint(snap: IntentSnapshot): SnapMint {
+  const hit = MINTS.get(snap);
+  if (hit !== undefined) return hit;
+  const d = snap.ledger;
+  const form = snap.views.get(snap.window.window.windowId) ?? redactWindow(snap.window);
+  const fromForm = (text: string | null | undefined, instead: typeof UNNAMED_FIELD | typeof UNNAMED_SECTION): ModelText => {
+    if (text === null || text === undefined || text === instead || secretText(text)) return d.own(instead);
+    return d.descriptor(form, text) ?? d.own(instead);
+  };
+  const title = snap.title === null || secretText(snap.title) ? null : d.descriptor(form, snap.title);
+  const m: SnapMint = {
+    d,
+    instruction: d.instruction(snap.instruction),
+    formTitle: title === null ? d.t`${d.app(form)} window` : d.t`${d.app(form)} window '${title}'`,
+    field: (f) => fromForm(f.modelName ?? f.name, UNNAMED_FIELD),
+    section: (name) => fromForm(name, UNNAMED_SECTION),
+    source: (w) => {
+      const v = snap.views.get(w.windowId);
+      if (v === undefined) throw new Error(`the snapshot lists window ${w.windowId} without its view`);
+      const t = secretText(w.title) ? null : d.descriptor(v, w.title);
+      return { app: d.app(v), title: t ?? d.own(UNNAMED_WINDOW), from: w.from === null ? null : d.candidate(v, w.from) };
+    },
+    span: (text) => d.instructionSpan(snap.instruction, text),
+    memoryLabel: (label) => d.memoryText(null, label),
+  };
+  MINTS.set(snap, m);
+  return m;
 }
 
 /** An intent checked against its snapshot: the fill engine's scope, and what the route needs. */
@@ -264,7 +380,7 @@ export type CheckedIntent =
   | { route: "plan" };
 
 /** The plan error code a refusal or an ask is reported under (protocol PlanErrorCode, unchanged). */
-const REFUSE_CODE = { neverTyped: "notEditable", noSuchField: "unknownTarget", notOnScreen: "noWindow", pressOrSend: "unsupportedStep", payment: "unsupportedStep", otherPersonUnnamed: "unsure", nothingToFill: "nothingToDo" } as const;
+const REFUSE_CODE = { neverTyped: "notEditable", noSuchField: "unknownTarget", notOnScreen: "noWindow", pressOrSend: "unsupportedStep", payment: "unsupportedStep", otherPersonUnnamed: "unsure", nothingToFill: "nothingToDo", sectionUnknown: "unsure", sectionNotFound: "unsure" } as const;
 
 /** What an Ask says for each reason (says.ts). A never-typed refusal names the kind the instruction or a field names. */
 function sayWhy(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readonly IntentField[] = [], kind: SensitiveKind | null = null): string {
@@ -293,6 +409,10 @@ function sayWhy(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: read
       return SAYS.whichFields;
     case "whichSource":
       return SAYS.whichSource;
+    case "sectionUnknown":
+      return saysSectionUnknown(fields.map((f) => f.name));
+    case "sectionNotFound":
+      return SAYS.sectionNotFound;
   }
 }
 
@@ -336,7 +456,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
   // and asked "Where should Caret copy from?" for "grab my company and title off my LinkedIn".
   const vague = intent.route === "refuse" && (intent.why === "none" || intent.why === "nothingToFill" || intent.why === "notOnScreen");
   if (snap.missing && (intent.route === "fill" || intent.route === "ask" || intent.route === "plan" || vague)) stop("notOnScreen", snap);
-  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap);
+  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap, intent.why === "sectionUnknown" ? (intent.sectionless ?? []).flatMap((r) => [...snap.fields, ...snap.uploads].find((f) => f.ref === r) ?? []) : []);
   if (intent.route === "plan") return { route: "plan" };
 
   const byRef = new Map(snap.fields.map((f) => [f.ref, f]));

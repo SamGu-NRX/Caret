@@ -12,7 +12,8 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { closeSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, readFileSync } from "node:fs";
+import { writeLocalFile } from "./privacy/store-path.ts";
 import { Helper } from "./helper.ts";
 import { HelperServer } from "./server.ts";
 import { Store } from "./store.ts";
@@ -25,7 +26,9 @@ import { pageTabReader } from "./engines/tab-source.ts";
 import { writersOnStart } from "./writer/startup.ts";
 import { HostLocalModel } from "./writer/local-port.ts";
 import { refuseCacheInHelper } from "./engines/decide/cache.ts";
+import { MARKERS_OFF_ENV } from "./fill/redact.ts";
 import { ledgeredJev, ledgeredWriter, SpendLedger, throttledTotals } from "./spend.ts";
+import { readAppsOff } from "./privacy/read-policy.ts";
 
 /** Every model call this process makes, counted from the providers' usage reports (H8): sent to "spend" consumers. */
 const spend = new SpendLedger();
@@ -35,6 +38,8 @@ const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "Care
 // J1: the decision cache writes request text to disk, and this process's requests carry the user's real screen text,
 // so a CARET_JEV_CACHE meant for a test harness stops the helper here instead of being ignored.
 refuseCacheInHelper();
+// SC1 step 3's evidence switch turns the marker heuristics off for tests and evaluations only (fill/redact.ts).
+if (process.env[MARKERS_OFF_ENV] !== undefined) throw new Error(`${MARKERS_OFF_ENV} is set, but it turns off the redacted view's marker heuristics and is for tests only; the helper does not start with it`);
 
 const { values: args } = parseArgs({
   options: {
@@ -56,6 +61,8 @@ const { values: args } = parseArgs({
     // L1: a chat route for plan and goal programs, "groq:<model>" or "gateway:<model>" (writer/startup.ts).
     // Developers only: without it no default path calls a chat provider.
     "dev-writer": { type: "string" },
+    // SC1 2a: the reader's app deny list (caret-screen --deny-list), whose apps never enter the screen model here either.
+    "deny-list": { type: "string", default: join(homedir(), ".caret-run", "deny-apps.txt") },
   },
 });
 // The user's memory folder goes with the user's data directory: the default one, whether named or not (Caret.app
@@ -114,10 +121,12 @@ let helper: Helper;
 if (!args["no-page"] && secret === null) warn("no --auth-fd: page.sock not started, since its handshake needs the launch secret");
 const pages: PageHost | null = args["no-page"] || secret === null
   ? null
-  : pageHost({ path: args["page-socket"] ?? defaultPageSocket(args.socket), secret, reader: readerSocket, apply: (m) => void helper.handleReader(m), warn });
+  : pageHost({ path: args["page-socket"] ?? defaultPageSocket(args.socket), secret, reader: readerSocket, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn });
+const appsOff = readAppsOff(args["deny-list"]);
 helper = new Helper({
   store,
   memoryDir,
+  ...(appsOff === null ? {} : { appsOff }),
   watchMemory: true,
   askJev: args["no-jev"] ? null : ledgeredJev(makeJevClient(loadJevKey), spend),
   shadow: args.shadow,
@@ -161,7 +170,7 @@ const status = setInterval(() => {
 }, statusMs);
 
 const writeAudit = (): void => {
-  if (helper.audit !== null && auditOut !== undefined) writeFileSync(auditOut, `${JSON.stringify(helper.audit.summary(), null, 2)}\n`, { mode: 0o600 });
+  if (helper.audit !== null && auditOut !== undefined) writeLocalFile(auditOut, `${JSON.stringify(helper.audit.summary(), null, 2)}\n`, { mode: 0o600 });
 };
 const audit = helper.audit === null ? null : setInterval(writeAudit, 60_000);
 
@@ -176,7 +185,7 @@ const stop = async (signal: string): Promise<void> => {
   if (helper.audit !== null && auditSeen !== undefined) {
     helper.audit.stop();
     writeAudit();
-    writeFileSync(auditSeen, JSON.stringify(helper.audit.seen.toJSON()), { mode: 0o600 });
+    writeLocalFile(auditSeen, JSON.stringify(helper.audit.seen.toJSON()), { mode: 0o600 });
   }
   await server?.close();
   await pages?.server.close();

@@ -1,10 +1,11 @@
 // I2: where A3's scope ask (planner/intent-heads.ts) meets G2's disclosure rule and W1's canned dispatch. A3 added a
 // request that quotes each field's label, heading, group and neighbours; G2's rule is that screen text holding a secret
-// marker word is sent as what it is, never as its words (privacy.ts sendable), and assertNoSecrets stops any request
-// that still carries one. W1's canned engines answer by each request's purpose, so the new request must name one.
+// marker word is sent as what it is, never as its words (planner/intent.ts snapMint). SC1 retired G2's wire check for
+// those words: the client's last check is for formats (privacy.ts assertNoExcludedValue), and the request is sealed by
+// its Disclosure (privacy/disclosure.ts), which mints only text the redacted view keeps. W1's canned engines answer by each request's purpose, so the new request must name one.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
-import { assertNoSecrets } from "../src/privacy.ts";
+import { assertNoExcludedValue } from "../src/privacy.ts";
 import { secretText } from "../src/memory/sensitive.ts";
 import { questionKind } from "../src/engines/decide/canned.ts";
 import { intentSnapshot } from "../src/planner/intent.ts";
@@ -59,7 +60,7 @@ describe("A3's scope ask under G2's disclosure rule", () => {
       const sent = JSON.stringify([req.state, req.questions]);
       expect(sent, `wording ${w}`).not.toContain(SECRET_LABEL);
       expect(sent, `wording ${w}`).not.toContain(SECRET_HEADING);
-      expect(() => assertNoSecrets(req)).not.toThrow();
+      expect(() => assertNoExcludedValue(req)).not.toThrow();
       // The field is still asked about, named as what it is.
       const hint = s.fields.find((f) => f.name === SECRET_LABEL);
       expect(String(req.questions[scopeId(hint?.ref ?? "")]?.instructions)).toContain("a field Caret leaves to the user");
@@ -69,10 +70,10 @@ describe("A3's scope ask under G2's disclosure rule", () => {
     }
   });
 
-  it("the heads request passes assertNoSecrets with its refuse wording, which names kinds of secret", () => {
+  it("the heads request passes the client's checks with its refuse wording, which names kinds of secret", () => {
     const req = headsRequest(form());
     expect(Object.values(req.questions.route?.criteria ?? {}).some((t) => secretText(t))).toBe(true);
-    expect(() => assertNoSecrets(req)).not.toThrow();
+    expect(() => assertNoExcludedValue(req)).not.toThrow();
     expect(JSON.stringify(req.state)).not.toContain(SECRET_LABEL);
   });
 
@@ -83,7 +84,7 @@ describe("A3's scope ask under G2's disclosure rule", () => {
     expect(heads.purpose).toBe("ask.heads");
     for (const r of scopes) expect(r.purpose).toBe("ask.scope");
     expect(Object.keys(heads.questions).map((id) => questionKind(heads, id)).sort()).toEqual(["ask.heads:route", "ask.heads:source", "ask.heads:whose", "ask.heads:why"]);
-    for (const r of scopes) for (const id of Object.keys(r.questions)) expect(questionKind(r, id)).toBe("ask.scope:field");
+    for (const r of scopes) for (const id of Object.keys(r.questions)) expect(questionKind(r, id)).toBe(id === "section" ? "ask.scope:section" : "ask.scope:field");
   });
 });
 
@@ -118,6 +119,7 @@ describe("a native plan from Jev's scope ask writes only the fields Jev chose (I
         const ins = String(q.instructions);
         const pick = (choice: string) => [id, { choice, confidence: 0.95 }] as const;
         if (req.purpose === "ask.heads") return pick({ route: "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
+        if (id === "section") return pick("fields");
         if (req.purpose === "ask.scope") {
           const label = /[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "";
           return pick(unclear.includes(label) ? "unclear" : asks.includes(label) ? "asks" : "not");
@@ -193,6 +195,7 @@ describe("property: no native plan writes a field outside Jev's selection (I2)",
               const keys = Object.keys(q.criteria);
               const pick = (choice: string) => [id, { choice, confidence: 0.99 }] as const;
               if (req.purpose === "ask.heads") return pick({ route: "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
+              if (id === "section") return pick("fields");
               if (req.purpose === "ask.scope") return pick(chosen.has(id.slice(2)) ? "asks" : "not");
               if (id === "press") return pick("none" in q.criteria ? "none" : (keys.at(-1) ?? "none"));
               if ("yes" in q.criteria) return pick("yes");

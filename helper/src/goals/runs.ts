@@ -17,6 +17,7 @@
 // effect other than the predicted one revokes the task's grant and stops the goal. When a replanner is configured, the
 // goal is then offered again as a fresh plan built from the screen as it is now; it needs its own acceptance. Nothing
 // here persists: a helper that crashes leaves the executor's journal row (B23), and no goal resumes on its own.
+import type { SavedReader } from "../fill/alternate.ts";
 import { fieldFingerprint } from "../fill/ask-scope.ts";
 import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
 import type { Change, ScreenModel } from "../model.ts";
@@ -199,6 +200,11 @@ export interface GoalRunDeps {
    * page goal's value from memory must still be that entry's under the same label before it runs, as a Fill all's is.
    */
   aboutNow?: (id: string) => { value: string; label: string } | null;
+  /**
+   * V6 re-review: the user's saved values now (helper.ts aboutValues), which an alternate field's value is checked
+   * against again right before its write (fill/alternate.ts alternateStale). Absent, such a value is not written.
+   */
+  savedNow?: SavedReader;
   /**
    * P3: binds the file the user confirmed in a preview to one attach step's field for one task (engines/attach.ts
    * ConfirmedFiles.confirm), reading it once now. Without it no acceptance may name a file.
@@ -436,7 +442,7 @@ export class GoalRuns {
     try {
       // C1: a pick the page put back and the executor read back as it was is listed as the user's (leftNow), and the
       // segment's other steps still run.
-      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true, guard: guardFor(() => this.sourcesOf(run), runMints, run.plan.origin, this.deps.documentOf ?? null) }) };
+      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true, guard: guardFor(() => this.sourcesOf(run), runMints, run.plan.origin, this.deps.documentOf ?? null, this.deps.savedNow ?? null) }) };
     } catch (e) {
       // The executor refused the plan before its first step (PlanError): nothing was dispatched.
       const says = `${SAYS.error}: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`;
@@ -1175,6 +1181,8 @@ export class GoalRuns {
     const plan = structuredClone(run.plan);
     const values = new Map([...plan.inventory.values].map(([k, v]) => [k, fromTab(v) ? blank(v) : v]));
     const texts = new Map([...plan.inventory.texts].filter(([k]) => !windows.has(k)));
+    // HA2: and the notes frozen for the value gate that any forgotten window gave.
+    const notes = new Map([...(plan.inventory.notes ?? [])].filter(([, ns]) => ns === null || !ns.some((n) => windows.has(n.windowId))));
     for (const seg of plan.segments) {
       for (const s of seg.steps) {
         if (s.value === null || !fromTab(s.value)) continue;
@@ -1192,7 +1200,7 @@ export class GoalRuns {
       for (const s of seg.steps) s.says = scrub(s.says);
       seg.slots = Object.fromEntries(Object.entries(seg.slots).map(([k, v]) => [k, seg.plan.sources?.[k] !== undefined && windows.has(seg.plan.sources[k] as string) ? "" : scrub(v)]));
     }
-    const next: GoalPlan = { ...plan, inventory: { ...plan.inventory, values, texts }, warnings: plan.warnings.map(scrub), left: plan.left.map(scrubItem) };
+    const next: GoalPlan = { ...plan, inventory: { ...plan.inventory, values, texts, notes }, warnings: plan.warnings.map(scrub), left: plan.left.map(scrubItem) };
     for (const seg of next.segments) deepFreeze(seg);
     run.plan = next;
     run.owed = run.owed.map(scrubItem);

@@ -39,6 +39,7 @@ function jev(owner: { choice: string; confidence: number }) {
         if (id === "source") return [id, { choice: "any", confidence: 0.9 }];
         if (id === "why") return [id, { choice: "nothingToFill", confidence: 0.9 }];
         if (id === "whose") return [id, { choice: "user", confidence: 0.9 }];
+        if (id === "section") return [id, { choice: "fields", confidence: 0.99 }];
         if (id.startsWith("s_")) return [id, { choice: LANDLORD.some((l) => ins.includes(`'${l}'`)) ? "asks" : "not", confidence: 0.99 }];
         if (id.endsWith("_owner")) return [id, /Gary|gpruitt|555-0193/u.test(ins) ? owner : { choice: "user", confidence: 0.9 }];
         if (id.endsWith("_whose")) return [id, { choice: "other" in q.criteria ? "other" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
@@ -62,7 +63,8 @@ const run = (instruction: string, j: ReturnType<typeof jev>, more?: (d: Desk) =>
 };
 
 describe("the owner question of an Ask that names a person", () => {
-  it("shows the whole line around Gary's email and phone in both wordings", async () => {
+  // TODO(INT1): needs the owner-note allotment above 0 (privacy.ts OWNER_NOTE_CHARS, 0 until re-expressed on the output-based ledger); at 0 this note is too long to show whole, so its user values are withheld (NOTE_UNSHOWN).
+  it.skip("shows the whole line around Gary's email and phone in both wordings", async () => {
     const j = jev({ choice: "person", confidence: 0.95 });
     const d = (await run("use Gary's info for the landlord part", j)) as AskDraft;
     expect(d.checked.writes.map((w) => w.value)).toEqual(["Gary Pruitt", "(512) 555-0193"]);

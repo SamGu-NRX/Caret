@@ -2,6 +2,8 @@
 // and the change log of what differed between one walk of a window and the next.
 import type { AppRef, Node, Snapshot, TypedValue, WindowRef } from "./protocol.ts";
 import { PAGE_WINDOW_KIND } from "./engines/windows.ts";
+import { admitNode, admitTitle, admitValues, confers, inherited } from "./privacy/exclude.ts";
+import { appOff, DEFAULT_APPS_OFF, noteSwitchedOff } from "./privacy/read-policy.ts";
 
 export interface WindowState {
   app: AppRef;
@@ -56,10 +58,24 @@ export class ScreenModel {
   frontmostPid: number | null = null;
   /** Every change of focused window, oldest first. */
   private readonly focusHistory: { windowId: string; at: number }[] = [];
+  /** Bundle identifier prefixes of apps the user switched off (privacy/read-policy.ts): their windows never enter the model. */
+  private appsOff: readonly string[] = DEFAULT_APPS_OFF;
+
+  /** Sets the apps whose windows never enter the model, and closes any of their windows it holds. */
+  setAppsOff(prefixes: readonly string[], at = Date.now()): void {
+    if (prefixes.some((p) => !this.appsOff.includes(p))) noteSwitchedOff();
+    this.appsOff = [...prefixes];
+    for (const [id, w] of [...this.windows]) if (appOff(w.app.bundleId, this.appsOff)) this.close(id, at);
+  }
 
   /** Applies one snapshot and returns the changes it produced. */
   apply(snap: Snapshot): Change[] {
     const id = snap.window.windowId;
+    // SC1 2a: a window of an app the user switched off never enters the model, whichever reader sent it.
+    if (appOff(snap.app.bundleId, this.appsOff)) {
+      const c = this.close(id, snap.at);
+      return c === null ? [] : [c];
+    }
     const prior = this.windows.get(id);
     const out: Change[] = [];
     let nodes: Map<string, Node>;
@@ -93,6 +109,11 @@ export class ScreenModel {
       values = prior.values.filter((v) => !removed.has(v.nodeKey)).concat(snap.values);
     }
 
+    // V4 re-review: nothing beneath a pop-up's option is kept: the option's label says it, and a text inside one would read
+    // as a value the window states.
+    const dropped = underMenuOptions(nodes);
+    for (const k of dropped) nodes.delete(k);
+    admitNodes(nodes, snap.nodes, new Set(values.map((v) => v.nodeKey)));
     if (prior !== undefined) out.push(...diffNodes(prior.nodes, nodes, snap, id));
 
     // A partial snapshot only knows focus inside its subtree; outside it, the earlier focus stands
@@ -105,10 +126,13 @@ export class ScreenModel {
     if (unreached !== null && focusedKey === null && prior !== undefined && prior.focusedKey !== null && unreached.has(prior.focusedKey)) focusedKey = prior.focusedKey;
     const state: WindowState = {
       app: snap.app,
-      window: snap.window,
+      window: admitTitle(snap.window),
       focused: snap.focused,
       nodes,
-      values,
+      // V4 review: a pop-up menu's option is a choice the window offers, not a fact it states, so a value read in one (a date
+      // in "Deliver on Oct 17") is no window's value: kept, it was offered to other forms as a source and could mint as a
+      // plain date. The reader keeps a pop-up's own menu items as its options (Compactor.swift popUpMenu).
+      values: admitValues(values.filter((v) => !menuOption(nodes, v.nodeKey) && !dropped.has(v.nodeKey)), nodes),
       focusedKey,
       updatedAt: snap.at,
       lastFocusedAt: snap.focused ? snap.at : (prior?.lastFocusedAt ?? 0),
@@ -220,7 +244,9 @@ export class ScreenModel {
       }
       const nodes = new Map(w.nodes);
       for (const n of add.nodes) nodes.set(n.key, n);
-      v.windows.set(id, { ...w, window: add.title === null ? w.window : { ...w.window, title: add.title }, nodes });
+      // The tab's text is read in as the model's own windows are (SC1 2a).
+      admitNodes(nodes, add.nodes, new Set(w.values.map((v) => v.nodeKey)));
+      v.windows.set(id, { ...w, window: add.title === null ? w.window : admitTitle({ ...w.window, title: add.title }), nodes, values: admitValues(w.values, nodes) });
     }
     v.focusedWindowId = this.focusedWindowId;
     v.frontmostPid = this.frontmostPid;
@@ -261,6 +287,59 @@ function mergeCutWalk(prior: Map<string, Node>, sent: readonly Node[]): Map<stri
   }
   for (; next < sent.length; next++) out.set((sent[next] as Node).key, sent[next] as Node);
   return out;
+}
+
+/**
+ * SC1 2a: the nodes a snapshot brought, as the model keeps them (privacy/exclude.ts admitNode): an excluded control
+ * without its value, every value in a secret format withheld. When a node it brought is excluded, editable or not,
+ * every node the model holds is admitted again, in document order: a snapshot may list a child before its parent, and a
+ * cut walk or a partial one may mark a node whose descendants the model kept from before (PV2 review and re-review),
+ * which inherit its exclusion all the same.
+ */
+function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[], typed: ReadonlySet<string> = new Set()): void {
+  let excluded = false;
+  for (const f of fresh) {
+    const n = nodes.get(f.key);
+    if (n === undefined) continue;
+    const a = admitNode(n, inherited(nodes, n), typed.has(n.key));
+    if (a !== n) nodes.set(f.key, a);
+    if (a.excluded !== undefined) excluded = true;
+  }
+  // Any excluded node in the window, fresh or kept, holds its exclusion over every descendant, kept or fresh: one pass
+  // over every node, repeated until nothing changes (a pass may exclude a node whose own descendants come before it).
+  // A node that confers one without being excluded itself (a container renamed "Password" in a cut walk, holding no value)
+  // counts too: its kept descendants are admitted again under it (INT1 review 2).
+  if (!excluded) for (const n of nodes.values()) if (confers(n) !== null) (excluded = true);
+  for (let changed = excluded; changed; ) {
+    changed = false;
+    for (const [k, n] of nodes) {
+      const a = admitNode(n, inherited(nodes, n), typed.has(n.key));
+      if (a !== n) (nodes.set(k, a), (changed = true));
+    }
+  }
+}
+
+/** The keys beneath every pop-up button's option (menuOption), the options themselves not included. */
+function underMenuOptions(nodes: ReadonlyMap<string, Node>): Set<string> {
+  const options = new Set([...nodes.values()].filter((n) => menuOption(nodes, n.key)).map((n) => n.key));
+  const out = new Set<string>();
+  if (options.size === 0) return out;
+  for (const n of nodes.values()) {
+    for (let p = n.parent; p !== null; p = nodes.get(p)?.parent ?? null) {
+      if (options.has(p)) {
+        out.add(n.key);
+        break;
+      }
+      if (!nodes.has(p)) break;
+    }
+  }
+  return out;
+}
+
+/** Whether a node is a pop-up button's option: an AXMenuItem whose parent is an AXPopUpButton. */
+export function menuOption(nodes: ReadonlyMap<string, Node>, key: string): boolean {
+  const n = nodes.get(key);
+  return n !== undefined && n.role === "AXMenuItem" && n.parent !== null && nodes.get(n.parent)?.role === "AXPopUpButton";
 }
 
 function subtreeKeys(nodes: Map<string, Node>, root: string): Set<string> {

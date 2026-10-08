@@ -61,7 +61,7 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     store = new Store(join(dir, "data"));
     page = new FakePage();
     published = [];
-    host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), warn: () => {} });
+    host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
     helper = new Helper({ store, askJev: jevPickingText(byLabel, 0.95), shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => void published.push(m), warn: () => {} });
     wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
     host.registry.add(page.session);

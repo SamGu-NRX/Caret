@@ -5,6 +5,7 @@
 // checks, and acting still needs the user's acceptance and the executor's grant.
 import type { AskRoute } from "../planner/intent.ts";
 import type { WindowState } from "../model.ts";
+import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 
 export const OUTCOMES = ["abstain", "write", "ask", "act"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
@@ -47,6 +48,18 @@ export interface TaskEvidence {
 }
 
 /**
+ * SC1 2b: a candidate's sentences as one router request's Disclosure mints them. `says` is null when its screen text does
+ * not mint (the view no longer shows it, or its window's budget is spent); `plain` names no screen text but app names and
+ * numbers; `question` is the fact's sentence; `offer` the task evidence, minted, or null when its sentence does not mint.
+ */
+export interface MintedSay {
+  says: ModelText | null;
+  plain: ModelText;
+  question?: ModelText;
+  offer?: { task: ModelText; sentence: ModelText; found: ModelText; offerWhen: ModelText } | null;
+}
+
+/**
  * One thing a producer could do at this moment, listed by code before any model call. Its `run` is the producer's
  * own path (its asks, checks and offer); its `says` is code-written and quotes screen text only through `quotes`.
  */
@@ -72,6 +85,8 @@ export interface RouteCandidate {
    * time (brief R3: R2's latency session, and the D2-02 corpus's event moments).
    */
   evidence?: TaskEvidence;
+  /** What `says`, `plain`, `question` and `evidence` say, minted by the router request's Disclosure (judge.ts). */
+  say: (d: Disclosure) => MintedSay;
   /** Makes the offer (or asks the question) through the producer. */
   run: () => void;
   /** The context's decision did not choose it. Producers that held an offer for this moment let it go. */
@@ -102,6 +117,12 @@ export interface Registry {
 
 export const HANDOFF_NONE = "none of the listed tasks fits what you are doing";
 export const HANDOFF_OVERFLOW = "more known tasks fit here than Caret can list at once";
+/** A handoff's reason in a router's request, as Caret's own wording: one of the two above, and nothing else. */
+export function mintReason(d: Disclosure, reason: string | null): ModelText {
+  if (reason === HANDOFF_NONE) return d.own(HANDOFF_NONE);
+  if (reason === HANDOFF_OVERFLOW) return d.own(HANDOFF_OVERFLOW);
+  throw new Error("a handoff route's reason is HANDOFF_NONE or HANDOFF_OVERFLOW");
+}
 
 /**
  * Freezes the candidates of one context into Router 2's registry. A candidate that needs a fact is not an act route;

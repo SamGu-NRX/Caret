@@ -3,10 +3,13 @@
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
+import { OwnerVerdicts } from "./fill/owner-cache.ts";
+import { Disclosure, type ModelText } from "./privacy/disclosure.ts";
+import { redactWindow } from "./fill/redact.ts";
 import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
-import { MEMORY_SNIPPETS, SnippetLedger, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
+import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
@@ -61,7 +64,7 @@ import {
   type ReaderVerb,
   type VerbResult,
   type RunPlan,
-  type Settings,
+  type SessionLocked, type Settings,
   type SkillAnswer,
   type TaskControl,
   type TaskCause,
@@ -122,7 +125,7 @@ import type { MemoryValue } from "./planner/trace.ts";
 import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
 import { intentSnapshot, type AskFixed } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
-import { ASK_ROUTES, type RouteCandidate, type TaskEvidence } from "./routing/routes.ts";
+import { ASK_ROUTES, type MintedSay, type RouteCandidate, type TaskEvidence } from "./routing/routes.ts";
 import { ConsentLedger, type Consent } from "./routing/consent.ts";
 import type { RoutingContext } from "./routing/context.ts";
 import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
@@ -131,7 +134,7 @@ import { labelledLines } from "./fill/candidates.ts";
 import { fieldAsksFor } from "./fill/about.ts";
 import { AnswerError, answerFor, answerNow, capture, OFFER_MIN_CHARS, OFFER_SAYS, putAnswer, savedAnswers, savedSays, type SavedAnswer } from "./memory/answers.ts";
 import { guardAnswer, pageText, type PageContext } from "./fill/answers.ts";
-import type { ValueKind } from "./protocol.ts";
+import type { Snapshot, ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
@@ -172,6 +175,11 @@ export interface RoutingOptions {
 }
 
 export interface HelperOptions {
+  /**
+   * SC1 2a: bundle identifier prefixes of apps the user switched off, read from the reader's deny list (main.ts); their
+   * windows never enter the model. The reader's default list when absent (privacy/read-policy.ts DEFAULT_APPS_OFF).
+   */
+  appsOff?: readonly string[];
   store: Store;
   /** Null disables Jev entirely: no fill proposals are made. */
   askJev: AskJev | null;
@@ -461,6 +469,12 @@ export class Helper {
    */
   private readonly tabWindows = new Set<string>();
   /**
+   * HA2 recall lever 2: this session's owner verdicts (fill/owner-cache.ts), in memory only: cleared when the reader
+   * restarts, Sites change or the helper shuts down, and a window's entries dropped when it closes. A fill that reads the
+   * tab the user left does not use it, so nothing from that tab outlives the fill.
+   */
+  private readonly ownerVerdicts = new OwnerVerdicts();
+  /**
    * Each fill request in flight, with every focus in an editable field of the app the user is in since
    * it began, so a pop-up whose Jev answer arrives late can see whether one of them left the form.
    */
@@ -525,6 +539,7 @@ export class Helper {
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
+    if (opts.appsOff !== undefined) this.model.setAppsOff(opts.appsOff);
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
     this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) }, opts.offersPerHour ?? null);
@@ -669,6 +684,7 @@ export class Helper {
       forgetFile: (taskId) => this.files.forget(taskId),
       onAttached: (a) => this.offerFileSave(a),
       aboutNow: (id) => this.aboutNow(id),
+      savedNow: () => this.aboutValues(),
       // I6: a page goal's sources may be the tab the user left, which its plan read and holds until the goal ends.
       sourceModel: (goalId) => this.fillModel(goalId),
       ended: (goalId) => this.goalEnded(goalId),
@@ -772,6 +788,7 @@ export class Helper {
       withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
       about: () => this.aboutValues(),
       aboutNow: this.aboutNow,
+      ownerCache: this.ownerVerdicts,
       now: this.now,
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
@@ -897,6 +914,7 @@ export class Helper {
         this.model.reset();
         this.tabSource?.drop();
         forgetWindows();
+        this.ownerVerdicts.clear();
         this.text.clear();
         this.executor.readerRestarted(m.session);
         this.patterns.readerRestarted();
@@ -1020,6 +1038,7 @@ export class Helper {
         this.audit?.onWindowClosed(m.windowId, m.at);
         this.model.close(m.windowId, m.at);
         forgetWindow(m.windowId);
+        this.ownerVerdicts.forget(new Set([m.windowId]));
         // A goal segment that copies from this window, or acts in it, stops now (D2-06).
         this.goals.onChanges([]);
         this.checkFills(m.windowId);
@@ -1102,6 +1121,10 @@ export class Helper {
    * session that sent it. Only a host session's records the watch role as the user's consent (routing/consent.ts).
    */
   handleSettings(m: Settings, from?: string): void {
+    // HA2 lever 2, Sam's rule 3 (i, ii): a change to the sites switched off clears the session's owner verdicts first,
+    // before anything else reacts (the page engines hear the list last, below). The whole cache goes, not only the
+    // entries from windows that show those sites: an entry records the windows its notes came from, not their sites.
+    if (m.sitesOff !== undefined && !sameList(m.sitesOff, this.sitesOffList)) this.ownerVerdicts.clear();
     this.consent.settings(m.roles, from !== undefined && this.hosts.has(from));
     const off = this.gate.apply(m);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
@@ -1123,6 +1146,15 @@ export class Helper {
       this.opts.store.count("settings.sitesOff", 1);
       for (const l of this.sitesOffListeners) l(this.sitesOffList);
     }
+  }
+
+  /**
+   * HA2 lever 2, Sam's rule 3 (iii): the user locked the screen or signed out (the host's sessionLocked). The session's
+   * owner verdicts are cleared; nothing else changes here.
+   */
+  handleSessionLocked(m: SessionLocked): void {
+    this.ownerVerdicts.clear();
+    this.opts.store.count(`session.${m.why}`, 1);
   }
 
   /** Whether a task id is in use by a run or an activity record: new offer ids skip these (B23). */
@@ -1316,7 +1348,7 @@ export class Helper {
     try {
       // I2 ruling C: an Ask's goal is held to its ScopeSet, which starts with the Ask's own scope (none, when the Ask came
       // from a window with no field) and gains a window's only by the scope question, once.
-      const scopes = ask === undefined ? undefined : scopeSet(ask.askId, ask.scope?.person ?? null, ask.scope === null ? [] : [ask.scope]);
+      const scopes = ask === undefined ? undefined : scopeSet(ask.askId, ask.scope?.person ?? null, ask.scope === null ? [] : [ask.scope], ask.scope?.section ?? null);
       const ticket = ask?.ticket ?? null;
       const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session, ...(scopes === undefined ? {} : { scopes: await this.withPageScope(ticket, instruction, first, scopes) }) }) : await this.goalPlan(goalId, instruction, [], first, [], scopes, ticket);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
@@ -1437,22 +1469,23 @@ export class Helper {
    * the question was sent. Caret cannot ask the user mid-goal, so an unclear field is not chosen. With no Jev or no such
    * window, a scope of no field: nothing is written there.
    */
-  private async settleScopeFor(ticket: SettleTicket, instruction: string, windowId: string, of: { askId: string; person: string | null }, document?: string | null): Promise<AskScope> {
-    const r = await this.settleRequest(ticket, instruction, windowId, of.askId, document);
-    return askScope(windowId, r.document, r.asks, r.seen, of.person, of.askId);
+  private async settleScopeFor(ticket: SettleTicket, instruction: string, windowId: string, of: { askId: string; person: string | null; section: string | null }, document?: string | null): Promise<AskScope> {
+    // SCP1: the section the Ask named holds here too, whatever this window's section answer says.
+    const r = await this.settleRequest(ticket, instruction, windowId, of.askId, document, of.section);
+    return askScope(windowId, r.document, r.asks, r.seen, of.person, of.askId, [], of.section);
   }
 
   /** The per-field scope question on a window for a request holding a ticket: what it settled (fill/ask-scope.ts Settled). */
-  private async settleRequest(_ticket: SettleTicket, instruction: string, windowId: string, askId: string, document?: string | null): Promise<Settled> {
+  private async settleRequest(_ticket: SettleTicket, instruction: string, windowId: string, askId: string, document?: string | null, held: string | null = null): Promise<Settled> {
     const reader = this.documentReader();
     const doc = document !== undefined ? document : reader === null ? null : reader(windowId);
     const w = this.model.windows.get(windowId);
     const ask = this.ask;
-    if (w === undefined || ask === null) return { askId, windowId, document: doc, seen: {}, asks: [], unclear: [] };
+    if (w === undefined || ask === null) return { askId, windowId, document: doc, seen: {}, asks: [], unclear: [], section: held };
     const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory());
     const seen = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldFingerprint(w, f.key)]));
-    const { asks, unclear } = await settleFields(snap, ask);
-    return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unclear: unclear.map((f) => f.key) };
+    const { asks, unclear, sectionless, section, notFound } = await settleFields(snap, ask, undefined, held);
+    return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unclear: unclear.map((f) => f.key), sectionless: sectionless.map((f) => f.key), section, ...(notFound ? { notFound } : {}) };
   }
 
 
@@ -1472,7 +1505,7 @@ export class Helper {
    * A page goal (P2): the page planner over the Ask's scope on that page, fill's picks gated by fill. Throws GoalError
    * when nothing can be offered; with no Jev, no page engine document, or no page, it refuses.
    */
-  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet } = {}): Promise<GoalPlan> {
+  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet } = {}): Promise<GoalPlan> {
     const ask = this.ask;
     const pageDocument = this.opts.pageDocument;
     if (ask === null) throw new GoalError("unchecked", "Jev is off, so Caret can't choose this page's values");
@@ -1533,7 +1566,7 @@ export class Helper {
     queueMicrotask(() => this.goals.forgetSource(goalId, windows));
   }
 
-  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet }): Promise<GoalPlan> {
+  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet }): Promise<GoalPlan> {
     return planPage(this.model, {
       goalId,
       ...(sources === this.model ? {} : { sources }),
@@ -1543,6 +1576,7 @@ export class Helper {
       kind: page.kind,
       section: page.section,
       ...(page.unsure === undefined ? {} : { unsure: page.unsure }),
+      ...(page.sectionless === undefined ? {} : { sectionless: page.sectionless }),
       about: this.aboutValues(),
       askJev: ask,
       now: this.now(),
@@ -1731,7 +1765,7 @@ export class Helper {
           if (this.ask === null) return null;
           const r = await this.settleRequest(settleTicket("freshAsk"), instruction, id, randomUUID());
           requestSettled = r;
-          return askScope(r.windowId, r.document, r.asks, r.seen, null, r.askId);
+          return askScope(r.windowId, r.document, r.asks, r.seen, null, r.askId, [], r.section ?? null);
         }, this.now(), this.documentReader());
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;
@@ -1929,7 +1963,7 @@ export class Helper {
       if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
       throw e;
     }
-    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints, p.draft.checked.origin, this.documentReader()) });
+    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints, p.draft.checked.origin, this.documentReader(), () => this.aboutValues()) });
   }
 
   private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings" | "stale"): void {
@@ -2171,7 +2205,7 @@ export class Helper {
     const p = checked.p;
     this.bindNew(taskId, session);
     const { plan, slots, checks } = fillPlan(this.model, p);
-    const guard = guardFor(this.guardSources(m.proposalId), checks, { kind: "fill", proposalId: m.proposalId }, this.documentReader());
+    const guard = guardFor(this.guardSources(m.proposalId), checks, { kind: "fill", proposalId: m.proposalId }, this.documentReader(), () => this.aboutValues());
     // P4: the run carries its values as slots; the text they were read from is not needed past this point.
     this.tabSource?.release(m.proposalId);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
@@ -2672,6 +2706,7 @@ export class Helper {
     // First, so nothing a late reply or a producer's answer starts reaches the router after the stores close (R2).
     this.routing?.stop();
     this.tabSource?.drop();
+    this.ownerVerdicts.clear();
     this.record(this.transfers.flush());
     this.patterns.shutdown();
     this.pending.shutdown();
@@ -2827,6 +2862,7 @@ export class Helper {
       const saved = this.answersForFill(windowId);
       const asked = await proposeFill(this.fillModel(reading), askHere, windowId, key, now, {
         about: this.aboutValues(),
+        ...(fromTab ? {} : { ownerCache: this.ownerVerdicts }),
         ...(saved === null ? {} : saved),
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
         ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),
@@ -2987,7 +3023,7 @@ export class Helper {
       if (ctx.sentences > 0 && this.gate.holds("event", now).length === 0) {
         const last = sentences(node.value ?? "", false).at(-1);
         // The event card asks Jev about the sentence through its window's budget; one that will not fit makes no card.
-        if (last !== undefined && !this.events.isJudged(w.window.windowId, last) && new SnippetLedger(this.model.windows.values()).cost(w, [last]) !== null) {
+        if (last !== undefined && !this.events.isJudged(w.window.windowId, last) && new Disclosure(this.model.windows.values()).cost(w, [last]) !== null) {
           const c = this.events.candidate(w, f.key, last, "typed");
           if (c !== null) {
             const key = f.key;
@@ -2999,6 +3035,16 @@ export class Helper {
               plain: "Add to Calendar the event in the sentence the user just finished",
               quotes: [{ window: w, kind: "candidate", texts: [last, c.person] }],
               evidence: eventEvidence(c, "typed", "the user typed it in this field"),
+              say: (d) => {
+                const v = redactWindow(w);
+                const s = d.candidate(v, last);
+                return {
+                  says: s === null ? null : d.t`Add to Calendar the event this sentence the user just finished arranges: "${s}"`,
+                  plain: d.own("Add to Calendar the event in the sentence the user just finished"),
+                  ...(startOpen(c) ? { question: d.own("which time the sentence means, since it leaves the start open") } : {}),
+                  offer: s === null ? null : eventOffer(d, v, s, c, "typed", d.own("the user typed it in this field")),
+                };
+              },
               relevance: 2,
               ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the sentence means, since it leaves the start open" } } : {}),
               run: () => this.startRouted(this.events.judge(w, key, last, offerField(w, key), "typed")),
@@ -3011,7 +3057,7 @@ export class Helper {
           this.events.forgetHeard(l);
           continue;
         }
-        const c = new SnippetLedger(this.model.windows.values()).cost(l.w, [l.sentence]) === null ? null : this.events.candidate(l.w, l.key, l.sentence, "conversation");
+        const c = new Disclosure(this.model.windows.values()).cost(l.w, [l.sentence]) === null ? null : this.events.candidate(l.w, l.key, l.sentence, "conversation");
         if (c === null) {
           this.events.forgetHeard(l);
           continue;
@@ -3024,6 +3070,17 @@ export class Helper {
           plain: `Add to Calendar the event in a line just heard in ${l.w.app.name}`,
           quotes: [{ window: l.w, kind: "candidate", texts: [l.sentence, c.person] }],
           evidence: eventEvidence(c, "conversation", `it is a new line in a ${l.w.app.name} conversation the user is in, perhaps written by someone else`),
+          say: (d) => {
+            const v = redactWindow(l.w);
+            const app = d.app(v);
+            const s = d.candidate(v, l.sentence);
+            return {
+              says: s === null ? null : d.t`Add to Calendar the event this line just heard in ${app} arranges: "${s}"`,
+              plain: d.t`Add to Calendar the event in a line just heard in ${app}`,
+              ...(startOpen(c) ? { question: d.own("which time the line means, since it leaves the start open") } : {}),
+              offer: s === null ? null : eventOffer(d, v, s, c, "conversation", d.t`it is a new line in a ${app} conversation the user is in, perhaps written by someone else`),
+            };
+          },
           relevance: 1,
           ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the line means, since it leaves the start open" } } : {}),
           run: () => {
@@ -3052,6 +3109,14 @@ export class Helper {
         says: `Open ${h.app}, whose window the user was waiting on now says "${h.status}"`,
         plain: `Open ${h.app}, whose window the user was waiting on changed`,
         quotes: [{ window: watched, kind: "candidate", texts: [h.status] }],
+        say: (d) => {
+          const app = d.appNamed(h.app);
+          const status = d.candidate(redactWindow(watched), h.status);
+          return {
+            says: app === null || status === null ? null : d.t`Open ${app}, whose window the user was waiting on now says "${status}"`,
+            plain: app === null ? d.own("Open the app whose window the user was waiting on, which changed") : d.t`Open ${app}, whose window the user was waiting on changed`,
+          };
+        },
         relevance: 0,
         run: () => this.openApp.showHeld(h.offerKey, offerField(w, key)),
       };
@@ -3069,12 +3134,28 @@ export class Helper {
         : h.kind === "loopFinish"
           ? `Finish the rest of what the user is copying from ${from} (${h.values} values)`
           : `Fill ${h.values} fields from ${from} the way the user did before`;
+    const say = (d: Disclosure): MintedSay => {
+      const apps = h.from.map((a) => d.appNamed(a)).filter((a): a is ModelText => a !== null);
+      const fromM = apps.length === h.from.length && apps.length > 0 ? d.join(apps, " and ") : d.own("another window");
+      const name = h.skill ? d.memoryText(null, h.says) : null;
+      const m = h.skill
+        ? name === null
+          ? d.own("Run one of the user's saved skills here")
+          : d.t`Run the user's saved skill "${name}" here`
+        : h.kind === "loopNext"
+          ? d.t`Offer the next row of what the user is copying from ${fromM}`
+          : h.kind === "loopFinish"
+            ? d.t`Finish the rest of what the user is copying from ${fromM} (${d.count(h.values)} values)`
+            : d.t`Fill ${d.count(h.values)} fields from ${fromM} the way the user did before`;
+      return { says: m, plain: m };
+    };
     return {
       id: `pattern:${h.id}`,
       kind: "workflow",
       workflow: h.skill ? "skill" : h.kind === "routine" ? "routine" : "loop",
       says: plain,
       plain,
+      say,
       quotes: [],
       // A kept skill first, then the pattern that matched most often.
       relevance: 10 + (h.skill ? 1000 : 0) + h.hits,
@@ -3142,11 +3223,23 @@ export class Helper {
       e.fields === 0
         ? `Fill this form's ${fillable} empty field${fillable === 1 ? "" : "s"}, though no open window shows a value that clearly fits ${fillable === 1 ? "it" : "them"}`
         : `Fill this form: values that fit ${e.fields} of its ${fillable} empty field${fillable === 1 ? "" : "s"} are ${andList(where)}`;
+    const say = (d: Disclosure): MintedSay => {
+      const n = d.count(fillable);
+      const fields = fillable === 1 ? d.own("field") : d.own("fields");
+      const apps = e.apps.map((a) => d.appNamed(a)).filter((a): a is ModelText => a !== null);
+      const wheres = [...(apps.length === 0 ? [] : [d.t`on screen in ${andListMinted(d, apps)}`]), ...(e.told > 0 ? [d.own("in what the user told Caret")] : [])];
+      const m =
+        e.fields === 0
+          ? d.t`Fill this form's ${n} empty ${fields}, though no open window shows a value that clearly fits ${fillable === 1 ? d.own("it") : d.own("them")}`
+          : d.t`Fill this form: values that fit ${d.count(e.fields)} of its ${n} empty ${fields} are ${andListMinted(d, wheres)}`;
+      return { says: m, plain: m };
+    };
     return {
       id: "fillAll",
       kind: "fillAll",
       says,
       plain: says,
+      say,
       quotes: [],
       relevance: 0,
       run: () => this.startRouted(this.fill(w.window.windowId, key, false)),
@@ -3197,7 +3290,7 @@ export class Helper {
     }
     const p = checked.p;
     const { plan, slots, checks } = fillPlan(this.model, p);
-    const guard = guardFor(this.guardSources(p.id), checks, { kind: "fill", proposalId: p.id }, this.documentReader());
+    const guard = guardFor(this.guardSources(p.id), checks, { kind: "fill", proposalId: p.id }, this.documentReader(), () => this.aboutValues());
     this.withdrawFill(p.id, "taken");
     const answers = p.fields.flatMap((f) => (f.answer === undefined ? [] : [{ answerId: f.answer.id, windowId: p.windowId, key: f.key }]));
     if (answers.length > 0) {
@@ -3215,7 +3308,7 @@ export class Helper {
    * empty for the user, and the log names why.
    */
   private recheckKept(p: GroundedProposal): { p: GroundedProposal } | { refused: string } {
-    const r = recheckFields(this.fillModel(p.id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(p.id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues());
     if ("stale" in r || r.dropped.length > 0) this.whyGone(p);
     if ("stale" in r) return { refused: `${r.stale}; nothing was written` };
     if (r.proposal.fields.length === 0) return { refused: `${r.dropped[0]?.log ?? "no field is left to fill"}; nothing was written` };
@@ -3231,11 +3324,23 @@ export class Helper {
    * withdrawn as stale. It no longer matches when a destination is gone or filled, a source stops
    * showing its value (recheckFill), or the form gained or lost a field.
    */
+  /**
+   * SC1 2a, when a site is switched off (engines/registry.ts setSitesOff): the page window's text is replaced from its
+   * last walk without that site's frames, before anything else hears of it. Not a reader message: no change, close,
+   * pattern, task or routing handler sees what it removes. A fill pop-up that showed a value from it is then withdrawn as
+   * stale (checkFills reads the purged model), and every request built before the switch is refused when it is sent
+   * (privacy/read-policy.ts noteSwitchedOff).
+   */
+  purgeWindow(s: Snapshot): void {
+    this.model.apply(s);
+    this.checkFills(s.window.windowId);
+  }
+
   private checkFills(windowId: string): void {
     for (const [id, { p, form }] of this.fillPopups) {
       if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
       const w = this.model.windows.get(p.windowId);
-      let changed = recheckFill(this.fillModel(id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null) !== null;
+      let changed = recheckFill(this.fillModel(id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues()) !== null;
       if (!changed && w !== undefined) {
         try {
           changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
@@ -3270,7 +3375,7 @@ export class Helper {
   private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[], owner: string): { stale: string } | { p: GroundedProposal } {
     if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return { stale: "focus left the form" };
     // P2: a field whose recheck fails is the user's, with why; the pop-up still needs two fields Caret writes (fillPopupEligible).
-    const r = recheckFields(this.fillModel(owner), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(owner), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues());
     if ("stale" in r) return r;
     if (r.proposal.fields.length < 2) return { stale: r.dropped[0]?.log ?? "fewer than two fields are left to fill" };
     if (r.dropped.length > 0) this.opts.store.count("fill.recheck_dropped", r.dropped.length);
@@ -3502,6 +3607,25 @@ function eventEvidence(c: EventCandidate, source: SentenceSource, where: string)
   };
 }
 
+/**
+ * The task evidence a router's request carries for an event card, minted: the sentence as the view showed it, the person
+ * and time code read in it (each a word of the sentence, a number or a calendar word), and the producer's own rule.
+ */
+function eventOffer(d: Disclosure, v: WindowState, sentence: ModelText, c: EventCandidate, source: SentenceSource, where: ModelText): MintedSay["offer"] {
+  const person = d.candidate(v, c.person) ?? d.derived(sentence, c.person);
+  const when = c.time.kind === "resolved" ? d.derived(sentence, c.time.time.says) : d.derived(sentence, c.time.choices.map((t) => t.says).join(" or "));
+  if (person === null || when === null) return null;
+  const said = c.time.kind === "resolved" ? when : d.t`${when}, the sentence giving no end`;
+  return { task: d.own("Add an event to the user's calendar"), sentence, found: d.t`Code found in it the person "${person}" and the time ${said}; ${where}.`, offerWhen: d.own(OFFER_WHEN[source]) };
+}
+
+/** "A", "A and B", "A, B and C", of minted texts. */
+function andListMinted(d: Disclosure, xs: readonly ModelText[]): ModelText {
+  if (xs.length <= 1) return xs[0] ?? d.own("");
+  const last = xs.at(-1);
+  return last === undefined ? d.own("") : d.t`${d.join(xs.slice(0, -1), ", ")} and ${last}`;
+}
+
 function startOpen(c: EventCandidate): boolean {
   return c.time.kind === "ask" && new Set(c.time.choices.map((t) => t.start)).size > 1;
 }
@@ -3608,4 +3732,12 @@ function inFillForm(p: GroundedProposal, windowId: string, key: string): boolean
 function issuePath(path: readonly PropertyKey[]): string {
   if (path.length === 0) return "the message";
   return path.map((p, i) => (typeof p === "number" ? `[${p}]` : i === 0 ? String(p) : `.${String(p)}`)).join("");
+}
+
+/** Whether two lists of sites switched off hold the same sites; null, no list yet, matches nothing. */
+function sameList(a: readonly string[], b: readonly string[] | null): boolean {
+  if (b === null) return false;
+  const x = new Set(a);
+  const y = new Set(b);
+  return x.size === y.size && [...x].every((o) => y.has(o));
 }

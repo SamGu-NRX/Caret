@@ -1,7 +1,7 @@
 // Writes schemas/screen-protocol.schema.json from the zod schemas in protocol.ts, and
 // schemas/plan.schema.json from executor/schema.ts.
 // test/schema.test.ts fails when the committed file is stale, so rerun `pnpm schema` after editing protocol.ts.
-import { writeFileSync } from "node:fs";
+import { writeLocalFile } from "./privacy/store-path.ts";
 import { fileURLToPath } from "node:url";
 import * as z from "zod";
 import { ConsumerMessage, HelperMessage, HelperToReader, PROTOCOL_VERSION, PageFieldText, ReaderMessage } from "./protocol.ts";
@@ -42,7 +42,7 @@ export function renderProtocolJsonSchema(): string {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  writeFileSync(SCHEMA_PATH, renderProtocolJsonSchema());
-  writeFileSync(PLAN_SCHEMA_PATH, renderPlanJsonSchema());
+  writeLocalFile(SCHEMA_PATH, renderProtocolJsonSchema());
+  writeLocalFile(PLAN_SCHEMA_PATH, renderPlanJsonSchema());
   console.log(`wrote ${SCHEMA_PATH} and ${PLAN_SCHEMA_PATH}`);
 }

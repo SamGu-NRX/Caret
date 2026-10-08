@@ -1,3 +1,4 @@
+import { redactWindow } from "./redact.ts";
 // Offering a saved answer (S1) as a fill value. A saved answer is the user's own words (memory/answers.ts), so offering
 // one fits the never-wrong rule only when three things hold, and each is decided separately:
 //   1. It answers this field's question. Jev decides, as for any fill value: one Choice per field between the saved
@@ -13,6 +14,7 @@ import type { AnswerWithheld, FillAnswer, Node, PageExclusion } from "../protoco
 import type { SavedAnswer } from "../memory/answers.ts";
 import { fieldLabelText } from "./descriptor.ts";
 import { fieldKinds } from "./kinds.ts";
+import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 
 /** The source line of a value from a saved answer; the host writes it after "from". */
 export const ANSWER_SAYS = "your saved answer";
@@ -71,14 +73,21 @@ export function describeSaved(a: SavedAnswer): string {
   return `The user's saved answer to the question "${questionExcerpt(a.fields.question)}", which begins: "${answerExcerpt(a.fields.answer)}"`;
 }
 
+/** describeSaved's words, the question and the answer's start minted as memory; null when either may not go. */
+export function mintSaved(d: Disclosure, a: SavedAnswer): ModelText | null {
+  const q = d.memoryText(null, questionExcerpt(a.fields.question));
+  const ans = d.memoryText(null, answerExcerpt(a.fields.answer));
+  return q === null || ans === null ? null : d.t`The user's saved answer to the question "${q}", which begins: "${ans}"`;
+}
+
 export const ANSWER_NONE = "No saved answer answers the question this field asks.";
 
 /** The two wordings of a field's saved-answer question (fill.ts asks each once). */
 export const ANSWER_WORDINGS = [
-  (where: string, d: string): string =>
-    `A form in the ${where} has this field: ${d} The user saved answers to questions on earlier forms. Which saved answer answers the question this field asks? Choose none unless the saved answer's question asks the same thing.`,
-  (where: string, d: string): string =>
-    `Field: ${d} It is in a form in the ${where}. Below are answers the user wrote to questions on other forms. Which one is an answer to this field's question? Answer none if no saved answer's question asks what this field asks.`,
+  (m: Disclosure, where: ModelText, d: ModelText): ModelText =>
+    m.t`A form in the ${where} has this field: ${d} The user saved answers to questions on earlier forms. Which saved answer answers the question this field asks? Choose none unless the saved answer's question asks the same thing.`,
+  (m: Disclosure, where: ModelText, d: ModelText): ModelText =>
+    m.t`Field: ${d} It is in a form in the ${where}. Below are answers the user wrote to questions on other forms. Which one is an answer to this field's question? Answer none if no saved answer's question asks what this field asks.`,
 ] as const;
 
 // MARK: - the organization guard
@@ -165,6 +174,7 @@ export function pageOrg(title: string, site: string | null): string | null {
  * field, would otherwise vouch for an answer that names it (review finding 3).
  */
 export function pageText(w: WindowState, ctx: PageContext): PageText {
+  w = redactWindow(w);
   const parts = [w.window.title, ctx.site ?? "", ...ctx.headings];
   for (const n of w.nodes.values()) parts.push(n.label ?? "", n.placeholder ?? "", n.editable === true ? "" : (n.value ?? ""));
   return { tokens: tokens(parts.join(" \n ")), org: pageOrg(w.window.title, ctx.site), tenant: tenantOf(ctx.site) };

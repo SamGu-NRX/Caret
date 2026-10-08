@@ -39,7 +39,8 @@ const below: A = { choice: "asks", confidence: SCOPE_CUTOFF - 0.2 };
 const unclear: A = { choice: "unclear", confidence: 0.3 };
 const not: A = { choice: "not", confidence: 0.99 };
 
-const wording = (s: IntentSnapshot, w: 0 | 1, by: ScopeBy): JevResult => ({ model: "jev-test", answers: Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), by(f.name, w)])), inputTokens: 10, latencyMs: 1, costUsd: 0 });
+// SCP1: the section question, when the form shows a section, names no one section.
+const wording = (s: IntentSnapshot, w: 0 | 1, by: ScopeBy): JevResult => ({ model: "jev-test", answers: { ...Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), by(f.name, w)])), section: { choice: "fields", confidence: 0.99 } }, inputTokens: 10, latencyMs: 1, costUsd: 0 });
 const headsOf = (s: IntentSnapshot, route = "some"): JevResult => {
   const dflt: Record<string, string> = { route, why: "nothingToFill", source: "any", whose: "user" };
   return { model: "jev-test", answers: Object.fromEntries(Object.keys(headsRequest(s).questions).map((id) => [id, { choice: dflt[id] ?? "none", confidence: 0.9 }])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
@@ -106,6 +107,7 @@ describe("through planAsk", () => {
           if (id === "why") return [id, { choice: "nothingToFill", confidence: 0.9 }];
           if (id === "whose" || id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user" in q.criteria ? "user" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
           // Wording 0 ends "Does the request ask Caret to fill in or change this field?" (intent-heads.ts SCOPE_WORDINGS).
+          if (id === "section") return [id, { choice: "fields", confidence: 0.99 }];
           if (id.startsWith("s_")) return [id, by(/[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "", /Does the request ask Caret to fill in or change this field\?$/u.test(ins) ? 0 : 1)];
           if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
           const want = Object.entries(values).find(([label]) => ins.includes(`'${label}'`))?.[1];
@@ -135,12 +137,14 @@ describe("through planAsk", () => {
   });
 
   it("fills the settled fields and lists each other field as the user's, with a sentence, when they do not fit one question", async () => {
-    const sure = ["Customer name"];
-    const rest = ["Telephone", "E-mail address", "Pizza Size", "Bacon", "Extra Cheese", "Onion", "Mushroom", "Preferred delivery time", "Delivery instructions"];
+    // HA2 review (a)(c): the customer's name and email are also in another window of the desk (732 characters, a mail that
+    // gives under half its text), which no owner question can show whole, so they are withheld; the phone is the note's.
+    const sure = ["Telephone"];
+    const rest = ["Customer name", "E-mail address", "Pizza Size", "Bacon", "Extra Cheese", "Onion", "Mushroom", "Preferred delivery time", "Delivery instructions"];
     const by: ScopeBy = (label) => (sure.includes(label) ? settled : label === "Delivery instructions" ? unclear : rest.includes(label) ? below : not);
     // Nine unsettled fields: one question lists eight at most.
     const d = (await run(ASK_01, jevFor(by, NOTE))) as AskDraft;
-    expect(d.checked.writes.map((w) => w.value)).toEqual(["Jordan Reyes"]);
+    expect(d.checked.writes.map((w) => w.value)).toEqual(["(512) 555-0147"]);
     expect(d.unsure?.map((u) => u.name)).toEqual(rest);
     const yours = planSpec(d).blocks.find((b) => b.type === "facts" && b.rows.some((r) => /wasn't sure/u.test(r.value.text)));
     expect(yours?.type === "facts" && yours.rows.map((r) => r.value.text)).toEqual(expect.arrayContaining(["Pizza Size: Caret wasn't sure your request asks for it."]));
@@ -158,7 +162,8 @@ describe("through planAsk", () => {
     const email = q.options[0];
     if (email === undefined) throw new Error("no option");
     const after = (await run(ASK_01, jev, { ...q.resume, fixed: { ...q.resume.fixed, ...email.fixes } })) as AskDraft;
-    expect(after.checked.writes.map((w) => w.value)).toEqual(["Jordan Reyes", "(512) 555-0147", "jordan.reyes@example.org"]);
+    // HA2 review (a)(c): the name and email are withheld, as above; the phone is written.
+    expect(after.checked.writes.map((w) => w.value)).toEqual(["(512) 555-0147"]);
   });
 
   it("leaves the unsettled fields of a page goal to the user in its scope, never writing them", async () => {

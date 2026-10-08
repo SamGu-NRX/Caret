@@ -203,7 +203,7 @@ const BODY = "dev.caret.mail/standard/textarea:body~0";
 function attendJev(answer: (sentence: string) => "yes" | "no"): AskJev & { asked: string[] } {
   const asked: string[] = [];
   const fn = async (req: JevRequest) => {
-    const s = (req.state as { sentence: string }).sentence;
+    const s = (req.state as unknown as { sentence: string }).sentence;
     asked.push(s);
     return { model: "jev-test", answers: { attend: { choice: answer(s), confidence: 0.9 } }, inputTokens: 50, latencyMs: 3, costUsd: 0.0000021 };
   };

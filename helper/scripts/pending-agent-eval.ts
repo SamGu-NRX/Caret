@@ -10,6 +10,8 @@
 //
 // Writes results.json and summary.md. The key is read when a request is made and never printed. Live Jev stops
 // before spending more than --max-usd (scripts/spend.ts); the questions past it are rows with got "error".
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
+import { minted } from "../test/minted.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -76,7 +78,7 @@ function b6Request(w: WindowState, then: readonly string[], now: readonly string
   const thenText = then.length <= 20 ? then : [...then.slice(0, 3), ...then.slice(-17)];
   const list = (ms: readonly Marker[]): string => (ms.length === 0 ? "none" : [...new Set(ms.map((m) => m.line))].slice(0, 10).join("\n"));
   const current = buildPendingRequest(w, [w], then, now, thenMarkers, nowMarkers);
-  return {
+  return minted({
     purpose: "pending.change",
     state: {
       window: `${w.app.name} window '${w.window.title}'`,
@@ -89,7 +91,7 @@ function b6Request(w: WindowState, then: readonly string[], now: readonly string
     questions: current.questions,
     snippets: [],
     charged: {},
-  };
+  });
 }
 
 /** Characters of window text in a request's state and questions, for the summary. */
@@ -187,7 +189,7 @@ for (const c of JOB_CASES) {
   }
 }
 
-writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), reps: REPS, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, rows }, null, 2)}\n`);
+writeStoreJson(join(OUT, "results.json"), { at: new Date().toISOString(), reps: REPS, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, rows }, 2);
 const right = (form: "b10" | "b6", id?: string): string => {
   const rs = rows.filter((r) => r.form === form && (id === undefined || r.case === id || (id === "agent" && r.app !== "Fixture job window")));
   return `${rs.filter((r) => r.got === r.expect).length} of ${rs.length}`;
@@ -220,4 +222,4 @@ const md = [
   ...rows.map((r) => `| ${r.app} | ${r.case} | ${r.form} | ${r.chars} | ${r.expect} | ${r.got} | ${r.finished} | ${r.waiting} | ${r.confidence.toFixed(2)} |`),
   "",
 ];
-writeFileSync(join(OUT, "summary.md"), md.join("\n"));
+writeStore(join(OUT, "summary.md"), md.join("\n"));

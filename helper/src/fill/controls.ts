@@ -10,6 +10,7 @@
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import { fieldLabelText } from "./descriptor.ts";
+import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 
 export type Control = "text" | "date" | "time" | "select" | "radio" | "checkbox" | "combobox";
 
@@ -64,7 +65,7 @@ export function boxNeverTicked(label: string): boolean {
 }
 
 /** A select's value that is a prompt, not a choice: nothing is picked yet. */
-const PROMPT = /^(?:|select\b.*|choose\b.*|please (?:select|choose)\b.*|pick\b.*|-+.*-*|month|day|year|—)$/i;
+export const PROMPT = /^(?:|select\b.*|choose\b.*|please (?:select|choose)\b.*|pick\b.*|-+.*-*|month|day|year|—)$/i;
 
 const label = (n: Node): string | null => fieldLabelText(n.label);
 
@@ -154,6 +155,73 @@ export function optionInText(options: readonly string[], text: string): string |
   return hits.length === 1 ? (hits[0] as string) : null;
 }
 
+/** Each US state's and the District of Columbia's two-letter postal code, by its name in lower case (USPS Publication 28, appendix B). */
+const US_STATE_CODES: ReadonlyMap<string, string> = new Map([
+  ["alabama", "AL"], ["alaska", "AK"], ["arizona", "AZ"], ["arkansas", "AR"], ["california", "CA"], ["colorado", "CO"], ["connecticut", "CT"],
+  ["delaware", "DE"], ["district of columbia", "DC"], ["florida", "FL"], ["georgia", "GA"], ["hawaii", "HI"], ["idaho", "ID"], ["illinois", "IL"],
+  ["indiana", "IN"], ["iowa", "IA"], ["kansas", "KS"], ["kentucky", "KY"], ["louisiana", "LA"], ["maine", "ME"], ["maryland", "MD"],
+  ["massachusetts", "MA"], ["michigan", "MI"], ["minnesota", "MN"], ["mississippi", "MS"], ["missouri", "MO"], ["montana", "MT"], ["nebraska", "NE"],
+  ["nevada", "NV"], ["new hampshire", "NH"], ["new jersey", "NJ"], ["new mexico", "NM"], ["new york", "NY"], ["north carolina", "NC"],
+  ["north dakota", "ND"], ["ohio", "OH"], ["oklahoma", "OK"], ["oregon", "OR"], ["pennsylvania", "PA"], ["rhode island", "RI"],
+  ["south carolina", "SC"], ["south dakota", "SD"], ["tennessee", "TN"], ["texas", "TX"], ["utah", "UT"], ["vermont", "VT"], ["virginia", "VA"],
+  ["washington", "WA"], ["west virginia", "WV"], ["wisconsin", "WI"], ["wyoming", "WY"],
+]);
+const US_STATE_NAMES: ReadonlyMap<string, string> = new Map([...US_STATE_CODES].map(([name, code]) => [code, name]));
+
+/** Options a source never names by its words: a fallback or a refusal to say ("Other", "Prefer not to say"). */
+const FALLBACK = /^(?:other|none|n\/?a|not applicable|unknown|prefer not to (?:say|answer)|decline to (?:state|answer))$/iu;
+
+/** How a source text names a menu's option without being it (optionLink). */
+export type OptionLink = "inText" | "sameWords" | "inOption" | "stateCode";
+
+/**
+ * V4: the one option of a menu that a source text names without being it, and how:
+ * - "inText": the option's words, in order, inside the text ("Manager" in "Dr. Simone Achebe, my manager at Ridgeline");
+ *   the hand-off's rule (optionInText). Not a number option: a bare number inside other words counts something else as
+ *   easily ("2 semesters" for "Number of occupants");
+ * - "sameWords": the same words in another order or punctuation ("Intro to Web Development (CIS 140)" for "CIS 140 -
+ *   Intro to Web Development"), its numbers in the same order: "2026-02-01" is not "2026-01-02", "5pm-9am" not "9am-5pm"
+ *   (V4 reviews);
+ * - "inOption": all of a text of two or more words, in order, inside the option ("Intro to Web Development");
+ * - "stateCode": a US state by its name where the menu lists postal codes, or the reverse ("Texas" for "TX"), only for a
+ *   menu the caller knows asks for a US state (`usState`): a country menu's "GA" is Gabon (V4 review). A code is read only
+ *   as written, in capitals, so "in" and "or" are words.
+ * Null when an option equals the text (the text is that option: matchOption), when the text names no option or two or
+ * more (by one rule or across rules), when it negates, excludes or leaves the choice open (leavesChoiceOpen), and for a
+ * prompt ("Select...") or a fallback ("Other"). A link is code's reading of the text, so a value picked through one goes
+ * to the verifier with the link said, never minted as the option's own label (fill.ts).
+ */
+export function optionLink(options: readonly string[], text: string, usState = false): { option: string; how: OptionLink } | null {
+  const real = options.filter((o) => !PROMPT.test(o.trim()) && !FALLBACK.test(o.trim()));
+  const said = wordsOf(text);
+  if (said.length === 0 || real.length === 0 || matchOption(options, text) !== null) return null;
+  const found = new Map<string, OptionLink>();
+  const note = (hits: readonly string[], how: OptionLink): boolean => {
+    if (hits.length > 1) return false;
+    if (hits[0] !== undefined && !found.has(hits[0])) found.set(hits[0], how);
+    return true;
+  };
+  const line = ` ${said.join(" ")} `;
+  // An option of one to three capitals ("IN", "OR", "M") is found only as written: "in" and "or" are words.
+  const asWritten = new Set(text.normalize("NFKC").split(/[^\p{L}\p{N}]+/u));
+  const inText = real.filter((o) => {
+    const w = wordsOf(o);
+    if (/^[A-Z]{1,3}$/u.test(o.trim())) return asWritten.has(o.trim());
+    return w.length > 0 && !(w.length === 1 && /^\d+$/u.test(w[0] as string)) && line.includes(` ${w.join(" ")} `);
+  });
+  // Words in any order; a token holding a digit in its own order ("5pm-9am" is not "9am-5pm": re-review).
+  const shape = (ws: readonly string[]): string => `${ws.filter((w) => !/\p{N}/u.test(w)).sort().join(" ")}|${ws.filter((w) => /\p{N}/u.test(w)).join(" ")}`;
+  const sameWords = real.filter((o) => shape(wordsOf(o)) === shape(said));
+  const inOption = said.length < 2 ? [] : real.filter((o) => ` ${wordsOf(o).join(" ")} `.includes(line));
+  const asName = usState ? US_STATE_CODES.get(norm(text).replace(/\.$/u, "")) : undefined;
+  const asCode = usState && /^[A-Z]{2}$/u.test(text.trim()) ? US_STATE_NAMES.get(text.trim()) : undefined;
+  const stateCode = asName !== undefined ? real.filter((o) => o.trim() === asName) : asCode !== undefined ? real.filter((o) => norm(o) === asCode) : [];
+  const one = note(inText, "inText") && note(sameWords, "sameWords") && note(inOption, "inOption") && note(stateCode, "stateCode");
+  if (!one || found.size !== 1) return null;
+  const [option, how] = [...found][0] as [string, OptionLink];
+  return leavesChoiceOpen(text, option) ? null : { option, how };
+}
+
 /** A weekday's full name, then the abbreviations an option's label may write it as. */
 const WEEKDAYS: readonly (readonly string[])[] = [
   ["monday", "mon"],
@@ -186,6 +254,22 @@ const ANY_FIELD: ReadonlySet<string> = new Set(["this", "that", "these", "those"
 export function namesField(request: string, asked: readonly (string | null)[]): boolean {
   const field = new Set(asked.flatMap((t) => (t === null ? [] : wordsOf(t))).filter((w) => w.length >= 3 && !ANY_FIELD.has(w)));
   return wordsOf(request).some((w) => field.has(w));
+}
+
+/**
+ * Words that say what kind or form a value has, not what it is for: shared alone, they tie no source line to a menu
+ * (V4 re-review: "Move-in date" does not name "Graduation date month"). "Reference" is not one: it names a person's role.
+ */
+const KIND_ONLY: ReadonlySet<string> = new Set(["date", "day", "days", "month", "year", "time", "hour", "email", "mail", "phone", "telephone", "tel", "mobile", "cell", "fax", "number", "address", "street", "url", "website", "link", "name", "first", "last", "full", "amount", "total", "price", "code", "type", "other", "select", "choose"]);
+
+/**
+ * V4 review: whether a source line's label ties the line to a menu: a word of the menu's label, nearest label or heading
+ * that says what the menu is for ("Reference" for "Reference relationship"), not one any form uses (ANY_FIELD) or one that
+ * only names a value's kind (KIND_ONLY).
+ */
+export function labelTies(label: string, asked: readonly (string | null)[]): boolean {
+  const field = new Set(asked.flatMap((t) => (t === null ? [] : wordsOf(t))).filter((w) => w.length >= 3 && !ANY_FIELD.has(w) && !KIND_ONLY.has(w)));
+  return wordsOf(label).some((w) => field.has(w));
 }
 
 /** Short words that name no option on their own. */
@@ -328,14 +412,43 @@ export function namedInList(label: string, span: string, context: string | null 
   return items.length >= 2 && want !== "" && items.some((x) => wordsOf(x).join(" ") === want);
 }
 
-const ROLE_NAMES: Record<FormControl["control"], string> = {
+const ROLE_NAMES = {
   combobox: "Dropdown",
   select: "Pop-up menu",
   radio: "Radio buttons",
   checkbox: "Checkbox",
   date: "Date field",
   time: "Time field",
-};
+} as const satisfies Record<FormControl["control"], string>;
+
+/**
+ * SC1 2b: describeControl's descriptor, minted by `d` from the redacted view `w` the control was read in: the kind in
+ * Caret's words, the label, nearest label, options and section as the view shows them. Null when a part does not mint.
+ */
+export function mintControl(d: Disclosure, w: WindowState, c: FormControl, section: string | null, nearest: string | null): ModelText | null {
+  const parts: ModelText[] = [d.t`${c.format === "datetime" ? d.own("Date and time field") : d.own(ROLE_NAMES[c.control])}.`];
+  const m = (t: string): ModelText | null => d.descriptor(w, t);
+  if (c.label !== null) {
+    const l = m(c.label);
+    if (l === null) return null;
+    parts.push(d.t`Label: '${l}'.`);
+  } else if (nearest !== null) {
+    const n = m(nearest);
+    if (n === null) return null;
+    parts.push(d.t`Nearest label: '${n}'.`);
+  }
+  if (c.options !== null) {
+    const os = c.options.map(m).filter((o): o is ModelText => o !== null);
+    if (os.length !== c.options.length) return null;
+    parts.push(d.t`Options: ${d.join(os.map((o) => d.t`'${o}'`), ", ")}.`);
+  }
+  if (section !== null && section !== c.label) {
+    const s = m(section);
+    if (s === null) return null;
+    parts.push(d.t`Section: '${s}'.`);
+  }
+  return d.join(parts, " ");
+}
 
 /** The descriptor a question carries for a control: what it is, its label, its section, and the options it shows. */
 export function describeControl(c: FormControl, section: string | null, nearest: string | null): string {

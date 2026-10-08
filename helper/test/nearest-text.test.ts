@@ -19,7 +19,8 @@ function scanNearest(w: WindowState, target: Node, labelOnly: boolean): string |
   for (const n of w.nodes.values()) {
     if (n.role !== "AXStaticText" || n.frame === undefined) continue;
     const raw = n.label ?? n.value;
-    if (raw === undefined || raw === null) continue;
+    // PV1: multiline documents are content, never model-facing field labels.
+    if (raw === undefined || raw === null || /\S\s*\n\s*\S/u.test(raw)) continue;
     const t = raw.replace(/\s+/g, " ").trim();
     if (t.length === 0 || t.length > 60) continue;
     if (n.key === target.key || (labelOnly && !isLabelLike(t))) continue;

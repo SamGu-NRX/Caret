@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { instructionForModel, instructionView, redactWindow } from "../fill/redact.ts";
+import { mentionedKind } from "../memory/sensitive.ts";
 // Ask (B25): an instruction becomes an intent (intent.ts), code checks it, and the route decides what runs.
 //   - fill: the fill engine (fill/fill.ts proposeFill) restricted to the intent's fields, sources, person and
 //     spelled-out values; its text writes become the planner's plan of field writes, checked by validatePlan as
@@ -21,12 +24,14 @@ import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { conversionOf, FillError, identityRefOf, memoryRefOf, mintOf, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
+import { formControls } from "../fill/controls.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
-import { checkIntent, intentSnapshot, leftToYouSays, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
-import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
+import { checkIntent, intentSnapshot, leftToYouSays, snapMint, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
+import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
+import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNeverTyped, saysNoValue, saysOptionsUnseen, saysPress, saysSectionUnknown, saysSectionUnknownField, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
 import { choicesFor, type Choice } from "./choices.ts";
 import { fieldWords } from "./sources.ts";
 import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
@@ -148,7 +153,7 @@ export interface AskGoal {
    * the ones named), for the reveal continuation; a scope narrowed by Jev's confirmation is a list. Absent for a goal
    * about native windows, which the writer plans.
    */
-  page?: { scope: FillScope; trigger: string; kind: "all" | "section" | "list"; section: string | null; unsure?: readonly string[] };
+  page?: { scope: FillScope; trigger: string; kind: "all" | "section" | "list"; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[] };
   /** I2: the Ask's settled scope, which the goal's write contract and goal gate enforce (fill/ask-scope.ts). */
   askScope?: AskScope;
   /** I2: the Ask's id, which every scope the goal holds carries (a window with no field gives no scope of its own). */
@@ -211,6 +216,24 @@ function withUnnamed(left: string | null, w: WindowState): string | null {
   return left === null ? says : `${left} ${says}`;
 }
 
+/**
+ * V4: the scoped menus whose options the window does not show (FormControl.options null: Chrome's Accessibility shows a
+ * closed menu's selected option only), which fill never asks about and Caret never opens to read; the Ask says they are
+ * the user's. I4 review: only menus PV1's redacted view keeps (fill/redact.ts redactWindow), named as that view names
+ * them (IntentField.modelName), since the sentence is new text about the menu: a menu whose own label holds a secret's
+ * line is dropped from the view, and naming it here repeated the secret.
+ */
+function unseenOptions(w: WindowState, fields: readonly IntentField[]): IntentField[] {
+  const shut = new Set(formControls(redactWindow(w)).filter((c) => c.control === "select" && c.options === null).map((c) => c.node.key));
+  return fields.filter((f) => shut.has(f.key));
+}
+
+/** `left`, then the sentence for the scoped menus whose options Caret cannot see (unseenOptions). */
+function withUnseen(left: string | null, w: WindowState, fields: readonly IntentField[]): string | null {
+  const says = saysOptionsUnseen(unseenOptions(w, fields).map((f) => f.modelName ?? f.name));
+  return says === null ? left : left === null ? says : `${left} ${says}`;
+}
+
 /** A planner's refusal, with the fields no name reads said as the user's (withUnnamed): an Ask never writes them. */
 function saidWithUnnamed(e: unknown, w: WindowState): unknown {
   if (!(e instanceof PlannerError) || unnamedTargets(w).length === 0) return e;
@@ -218,11 +241,18 @@ function saidWithUnnamed(e: unknown, w: WindowState): unknown {
   return new SaidError(e.code, said, e.message);
 }
 
-/** What a question records of the form; a later question of the same Ask keeps the first one's record of each field. */
+/**
+ * What a question records of the form; a later question of the same Ask keeps the first one's record of each field. The
+ * title is recorded as a digest of the redacted view's title, as fields are (fieldFingerprint): a record holds no screen
+ * text (PV1).
+ */
 function seenOf(snap: IntentSnapshot, earlier: AskResume["seen"] | undefined): AskResume["seen"] {
   const now = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldSeen(snap.window, f)]));
-  return earlier === undefined ? { title: snap.window.window.title, fields: now } : { title: earlier.title, fields: { ...now, ...earlier.fields } };
+  return earlier === undefined ? { title: titleSeen(snap.window), fields: now } : { title: earlier.title, fields: { ...now, ...earlier.fields } };
 }
+
+/** The form's title as a record compares it: a digest of its redacted view's title. */
+const titleSeen = (w: WindowState): string => createHash("sha256").update(redactWindow(w).window.title).digest("hex");
 
 /**
  * Refuses a continued Ask when the form's title, or any field it is about to fill, no longer reads as the question saw
@@ -230,7 +260,7 @@ function seenOf(snap: IntentSnapshot, earlier: AskResume["seen"] | undefined): A
  * after the fill's last model call, so a change made while Jev answered is seen too (second re-check).
  */
 function checkSeen(r: AskResume, snap: IntentSnapshot, keys: readonly string[]): void {
-  if (snap.window.window.title !== r.seen.title) changed("the form's title changed");
+  if (titleSeen(snap.window) !== r.seen.title) changed("the form's title changed");
   for (const key of keys) {
     const f = snap.fields.find((x) => x.key === key);
     if (f === undefined || r.seen.fields[key] !== fieldSeen(snap.window, f)) changed(`the field '${f?.name ?? key}' changed`);
@@ -263,6 +293,8 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fi
     // I3: the fields Jev settled stay in scope through the pick, so one that is gone changes the form under the question.
     ...(intent.sure === undefined ? {} : { sure: intent.sure.map(field) }),
     ...(intent.unsure === undefined ? {} : { unsure: intent.unsure.filter((r) => snap.fields.some((f) => f.key === refs.fields[r])).map(field) }),
+    // SCP1: fields and upload fields alike; one that is gone has nothing left to say about.
+    ...(intent.sectionless === undefined ? {} : { sectionless: intent.sectionless.flatMap((r) => [...snap.fields, ...snap.uploads].find((f) => f.key === (refs.fields[r] ?? refs.uploads[r]))?.ref ?? []) }),
     sources: intent.sources.map(source),
     whose: whose(intent.whose),
     section: section === undefined ? intent.section : (snap.sections.find((x) => x.name === section)?.ref ?? changed(`the section ${intent.section} is gone`)),
@@ -340,6 +372,11 @@ function scopeFields(intent: AskIntent, snap: IntentSnapshot): IntentField[] {
 export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions & { goals?: false }): Promise<AskDraft>;
 export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions): Promise<AskDraft | AskGoal>;
 export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions): Promise<AskDraft | AskGoal> {
+  // PV1: refuse a wholly forbidden instruction locally, before even window selection can build a request.
+  // A mixed instruction keeps its original local checks; each outbound builder projects the safe clauses instead.
+  const kind = mentionedKind(instruction);
+  const safeAction = instructionView(instruction).retained.some((span) => /[\p{L}\p{N}]/u.test(span.replace(/\b(?:and|then)\b/giu, "")));
+  if (kind !== null && !safeAction) throw new AskRefused(new SaidError("notEditable", saysNeverTyped(kind.kind, kind.ssn), "the instruction only asks for a kind Caret never types"), null, null);
   const now = o.now ?? Date.now();
   const jev = { calls: 0, costUsd: 0, latencyMs: 0 };
   const askJev: AskJev = async (req) => {
@@ -511,7 +548,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       let settled: Awaited<ReturnType<typeof settleFields>>;
       if (presettled !== undefined) {
         const of = (keys: readonly string[]): IntentField[] => [...snap.fields, ...snap.uploads].filter((f) => keys.includes(f.key));
-        settled = { asks: of(presettled.asks), unclear: of(presettled.unclear) };
+        settled = { asks: of(presettled.asks), unclear: of(presettled.unclear), sectionless: of(presettled.sectionless ?? []), section: presettled.section ?? null, notFound: presettled.notFound === true };
       } else
         try {
           settled = await settleFields(snap, askJev);
@@ -520,6 +557,15 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
         }
       const unclear = settled.unclear.filter((f) => f.upload !== true);
       frozen = [...settled.asks, ...unclear].map((f) => f.key);
+      // SCP1: the section the request named, and the fields and upload fields the veto left to the user, go into the
+      // maker's intent before any question is saved (AskResume.intent), so a continued Ask holds the section and still
+      // says why those fields are the user's. With nothing else settled, the Ask says only that.
+      const sectionless = settled.sectionless.map((f) => f.ref);
+      const held = { ...(settled.section === null ? {} : { namedSection: settled.section }), ...(sectionless.length === 0 ? {} : { sectionless }) };
+      made = { ...made, intent: { ...made.intent, ...held } };
+      intent = { ...intent, ...held };
+      if (settled.notFound) return refused(new SaidError("unsure", SAYS.sectionNotFound, "the request named a section the section question's list lacked"));
+      if (settled.asks.length === 0 && unclear.length === 0 && sectionless.length > 0) return refused(new SaidError("unsure", saysSectionUnknown(settled.sectionless.map((f) => f.name)), "the request named one section, and Caret couldn't tell which section any field Jev chose is in"));
       // I3 lead ruling, as the heads maker reads it (intent-heads.ts): the fields Jev chose are filled; the unclear ones
       // are asked about beside them when one question lists them all, else each is left to the user, said.
       const sure = snap.fields.filter((f) => settled.asks.includes(f));
@@ -577,12 +623,18 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   }
   const extra = { intent, maker: use, fill: null };
   /** I3: the fields left to the user because Jev wasn't sure the request asks for them, never one the Ask writes. */
-  const unsureOf = (writes: Iterable<string>): { key: string; name: string }[] => {
+  const byRef = (refs: readonly string[] | undefined): IntentField[] => (refs ?? []).flatMap((r) => [...snap.fields, ...snap.uploads].find((f) => f.ref === r) ?? []);
+  const notWritten = (fields: readonly IntentField[], writes: Iterable<string>): IntentField[] => {
     const writing = new Set(writes);
-    const fields = [...unsureLeft, ...(intent.unsure ?? []).flatMap((r) => snap.fields.find((f) => f.ref === r) ?? [])];
-    return fields.filter((f) => !writing.has(f.key)).map((f) => ({ key: f.key, name: f.name }));
+    return fields.filter((f) => !writing.has(f.key));
   };
-  const withUnsure = (writes: Iterable<string>): { unsure?: { key: string; name: string }[] } => {
+  /** SCP1: the fields left to the user because Caret couldn't tell which section they are in. */
+  const sectionlessOf = (writes: Iterable<string>): IntentField[] => notWritten(byRef(intent.sectionless), writes);
+  const unsureOf = (writes: Iterable<string>): { key: string; name: string; says?: string }[] => {
+    const writing = [...writes];
+    return [...notWritten([...unsureLeft, ...byRef(intent.unsure)], writing).map((f) => ({ key: f.key, name: f.name })), ...sectionlessOf(writing).map((f) => ({ key: f.key, name: f.name, says: saysSectionUnknownField(f.name) }))];
+  };
+  const withUnsure = (writes: Iterable<string>): { unsure?: { key: string; name: string; says?: string }[] } => {
     const u = unsureOf(writes);
     return u.length === 0 ? {} : { unsure: u };
   };
@@ -665,7 +717,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   let scope: AskScope;
   try {
     // A window with no field gives a scope of no field: it authorizes nothing (a goal settles each window it writes in).
-    scope = askScope(w.window.windowId, document, scopeKeys, resume?.seen.fields ?? { ...seenOf(snap, undefined).fields, ...(presettled?.seen ?? {}) }, fixed.person?.kind === "person" ? fixed.person.name : null, askId, fixed.fields ?? []);
+    scope = askScope(w.window.windowId, document, scopeKeys, resume?.seen.fields ?? { ...seenOf(snap, undefined).fields, ...(presettled?.seen ?? {}) }, fixed.person?.kind === "person" ? fixed.person.name : null, askId, fixed.fields ?? [], made.intent.namedSection ?? null);
   } catch (e) {
     return refused(new SaidError("unknownWindow", SAYS.windowChanged, e instanceof Error ? e.message : String(e)));
   }
@@ -712,8 +764,9 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     const section = bySection ? sectionName : intent.scope === "section" && fixed.fields === undefined ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;
     const narrowed = bySection ? checked.fields.length !== sectionBefore : checked.fields.length !== scopedBefore;
     const kind = narrowed ? "list" : whole ? "all" : section !== null ? "section" : "list";
-    const unsure = unsureOf(checked.scope.fields).map((f) => f.key);
-    return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: uploadKeys.length === 0 ? checked.scope : { ...checked.scope, fields: [...checked.scope.fields, ...uploadKeys] }, trigger: checked.trigger, kind, section: kind === "section" ? section : null, ...(unsure.length === 0 ? {} : { unsure }) }, askId, resumed: resume !== undefined, ...(snap.fields.length === 0 ? {} : { askScope: scope }) };
+    const unsure = notWritten([...unsureLeft, ...byRef(intent.unsure)], checked.scope.fields).map((f) => f.key);
+    const sectionless = sectionlessOf(checked.scope.fields).map((f) => f.key);
+    return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: uploadKeys.length === 0 ? checked.scope : { ...checked.scope, fields: [...checked.scope.fields, ...uploadKeys] }, trigger: checked.trigger, kind, section: kind === "section" ? section : null, ...(unsure.length === 0 ? {} : { unsure }), ...(sectionless.length === 0 ? {} : { sectionless }) }, askId, resumed: resume !== undefined, ...(snap.fields.length === 0 ? {} : { askScope: scope }) };
   }
   // I6: the sources the fill reads, which may hold the tab the user just left, read now that a fill needs them.
   const sourceModel = o.fillModel === undefined ? model : await o.fillModel(w.window.windowId);
@@ -748,8 +801,13 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   if (writes.length === 0 && controls.length === 0) {
     const unsure = p.fields.filter((f) => f.withheld === "disagree" || f.withheld === "lowConfidence");
     if (unsure.length > 0) return refused(new SaidError("unsure", saysUnsure(unsure.map(name)), `Jev was not sure enough about ${unsure.map((f) => `${name(f)} (${f.withheld === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`));
-    const left = withUnnamed(leftToYouSays(checked.leftToYou), w);
-    return refused(new SaidError("nothingToDo", `${saysNoValue(checked.fields.map((f) => f.name))}${left === null ? "" : ` ${left}`}`, `no value for ${checked.fields.map((f) => f.name).join(", ")} on screen, in memory or in the instruction`));
+    const left = withUnseen(withUnnamed(leftToYouSays(checked.leftToYou), w), w, checked.fields);
+    // V4: a menu whose options Caret cannot see is named once, as the user's, not also as one with nothing found.
+    const unseen = new Set(unseenOptions(w, checked.fields).map((f) => f.key));
+    // PV1: the names a sentence and its record carry are the redacted view's (modelName), never a local raw name.
+    const empty = checked.fields.filter((f) => !unseen.has(f.key)).map((f) => f.modelName ?? f.name);
+    const said = [empty.length === 0 ? null : saysNoValue(empty), left].filter((x): x is string => x !== null).join(" ");
+    return refused(new SaidError("nothingToDo", said, `no value for ${checked.fields.map((f) => f.modelName ?? f.name).join(", ")} on screen, in memory or in the instruction${unseen.size === 0 ? "" : `; ${unseen.size} of them menus whose options the window does not show`}`));
   }
 
   const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
@@ -800,7 +858,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     withheld: p.fields.flatMap((f) => (f.withheld === "disagree" || f.withheld === "lowConfidence" ? [{ name: name(f), why: f.withheld }] : [])),
     jev: { calls: jev.calls, costUsd: jev.costUsd, latencyMs: p.jev.latencyMs + use.latencyMs },
     controls: controls.map((f) => ({ key: f.key, name: name(f), value: f.handoff?.value ?? "", display: f.handoff?.display ?? "" })),
-    leftToYou: withUnnamed(leftToYouSays(checked.leftToYou), w),
+    leftToYou: withUnseen(withUnnamed(leftToYouSays(checked.leftToYou), w), w, checked.fields),
     ...withUnsure(checked.fields.map((f) => f.key)),
     route: "fill",
     intent,
@@ -811,12 +869,12 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
 
 const CONFIRM = { yes: "Yes: the instruction asks for this.", no: "No: the instruction does not ask for this." } as const;
 const CONFIRM_FIELD = [
-  (instr: string, name: string): string => `The user asked: "${instr}". Does that ask to fill in or change the field '${name}'?`,
-  (instr: string, name: string): string => `Field: '${name}'. Instruction: "${instr}". Is this field one the instruction asks to fill or change?`,
+  (d: Disclosure, instr: ModelText, name: ModelText): ModelText => d.t`The user asked: "${instr}". Does that ask to fill in or change the field '${name}'?`,
+  (d: Disclosure, instr: ModelText, name: ModelText): ModelText => d.t`Field: '${name}'. Instruction: "${instr}". Is this field one the instruction asks to fill or change?`,
 ] as const;
 const CONFIRM_ALL = [
-  (instr: string): string => `The user asked: "${instr}". Does that ask Caret to fill in every field of the form it can?`,
-  (instr: string): string => `Instruction: "${instr}". Is it a request to fill in the whole form?`,
+  (d: Disclosure, instr: ModelText): ModelText => d.t`The user asked: "${instr}". Does that ask Caret to fill in every field of the form it can?`,
+  (d: Disclosure, instr: ModelText): ModelText => d.t`Instruction: "${instr}". Is it a request to fill in the whole form?`,
 ] as const;
 
 type FillChecked = Extract<ReturnType<typeof checkIntent>, { route: "fill" }>;
@@ -873,17 +931,20 @@ function sectionScope(instruction: string, checked: FillChecked, snap: IntentSna
  * Asks Jev, in both wordings in parallel, whether the instruction asks for the whole form (`all`) and for each of
  * `fields` (ids f1, f2, ... in order). The answer holds for an id both wordings answer yes at PLAN_CUTOFF.
  */
-function jevConfirms(instruction: string, snap: IntentSnapshot, askJev: AskJev): (all: boolean, fields: readonly IntentField[]) => Promise<(id: string) => boolean> {
+function jevConfirms(raw: string, snap: IntentSnapshot, askJev: AskJev): (all: boolean, fields: readonly IntentField[]) => Promise<(id: string) => boolean> {
+  const m = snapMint(snap);
+  const d = m.d;
+  const instruction = d.instruction(raw);
   const declared = snap.ledger.declared();
   return async (all, fields) => {
     const req = (wording: 0 | 1): JevRequest => {
       const questions: JevRequest["questions"] = {};
-      if (all) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](instruction), criteria: { ...CONFIRM } };
+      if (all) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](d, instruction), criteria: d.ownRecord(CONFIRM) };
       fields.forEach((f, i) => {
-        questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.name), criteria: { ...CONFIRM } };
+        questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](d, instruction, m.field(f)), criteria: d.ownRecord(CONFIRM) };
       });
       const sent = JSON.stringify([instruction, questions]);
-      return { purpose: "ask.confirm", state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
+      return d.seal({ purpose: "ask.confirm", state: { instruction, task: d.own("Caret checks which fields of the form the user's instruction asks it to fill.") }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged });
     };
     const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
     return (id) => {

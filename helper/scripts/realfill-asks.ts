@@ -5,7 +5,7 @@
 //
 //   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker heads|jev|writer]
 //        [--spend-limit USD] [--gap S] [--writer-model provider:model] [--plan-writer provider:model]
-//        [--engine jev|llama|gemini] [--log-requests FILE] [--replay JEV_LOG]
+//        [--engine jev|llama|gemini] [--log-requests FILE] [--replay JEV_LOG] [--form-window page|reader]
 // J1: --engine names the decision engine in Jev's place (engines/decide/harness.ts; llama's server and calibration come
 // from CARET_LLAMA_* and CARET_ENGINE_CALIBRATION), behind the record-and-replay cache (CARET_JEV_CACHE, replay-or-record
 // by default), so a rerun of unchanged asks costs nothing. Every window and memory entry here comes from fixture files.
@@ -26,11 +26,12 @@
 // for a source question (none when the source is memory); for a person question, the person whose name an expected
 // value holds, else the user. Then the user's pick is simulated (the right options), the Ask continues from it, up to
 // three questions deep, and the continued Ask is scored as any other.
+import { appendStore, appendStoreJson, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import type { AskJev } from "../src/fill/jev.ts";
+import { sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { cannedReply } from "../src/engines/decide/canned.ts";
 import type { FillTrace } from "../src/fill/fill.ts";
@@ -47,7 +48,7 @@ import { devWriterRoute } from "../src/writer/routes.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
-import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
+import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, pageForm, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: a } = parseArgs({
@@ -76,9 +77,19 @@ const { values: a } = parseArgs({
     "log-requests": { type: "string" },
     /** A2: an earlier run's --log-jev file, whose answers are replayed for the same questions (see `recorded`). */
     replay: { type: "string" },
+    /**
+     * V4: which window the form is. "reader": the reader's recorded Accessibility window, as when no page engine covers
+     * Chrome, where no menu shows its options. "page": the page engine's walk of it (realfill-corpus.ts pageForm), the
+     * window an Ask plans on when a page engine covers the browser, with every native menu's options.
+     * I4 (lead ruling, 2026-10-07): page is the default because the product plans browser Asks on the page walk
+     * (helper.ts plans on the page window whenever a page engine covers it), so the reader's desk measured a window no
+     * browser Ask uses. Pass "reader" to compare with runs before V4, which all used the reader's window.
+     */
+    "form-window": { type: "string", default: "page" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
+if (a["form-window"] !== "reader" && a["form-window"] !== "page") throw new Error("--form-window is reader or page");
 if (a.maker !== "writer" && a.maker !== "jev" && a.maker !== "heads") throw new Error("--maker is heads, jev or writer");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
@@ -104,6 +115,8 @@ const fixtureIds = new Set<string>();
  * scope gets a value and scores wrong: it measures what code does with a perfect scope answer, not how a real model
  * scores.
  */
+/** SCP1: the section each ask's instruction names, hand-labelled (ask-section-labels.json), for the oracle's section question. */
+const SECTION_LABELS = (JSON.parse(readFileSync(join(here, "ask-section-labels.json"), "utf8")) as { labels: Record<string, string> }).labels;
 const oracle: AskJev = async (req) => {
   const ask = asks.find((x) => x.id === current.replace(/\+pick$/u, ""));
   const form = corpus.forms.find((f) => f.id === ask?.form);
@@ -165,6 +178,14 @@ const oracle: AskJev = async (req) => {
     // A must-refuse ask's head refuses with its reason, or plans a press, as a model that recognises refusals would.
     // A fill route is the whole form when the ask expects a value for every field of it.
     if (id === "route") pick(ask?.reason === "submit" || ask?.reason === "send" ? "plan" : ask?.expected === "refuse" && ask.reason !== undefined ? "refuse" : form !== undefined && form.fields.every((f) => wanted(f.label)) ? "all" : "some");
+    // SCP1: the section question, by the hand label of the section the instruction names (ask-section-labels.json): that
+    // heading's option, else the whole form when the ask expects every field of it, else particular fields.
+    else if (id === "section") {
+      const label = SECTION_LABELS[ask?.id ?? ""];
+      // The reader shows some headings in capitals ("EMERGENCY CONTACT"), so the label is matched without case.
+      const named = label === undefined ? undefined : Object.entries(q.criteria).find(([k, d]) => k.startsWith("sec") && d?.toLowerCase().includes(`'${label.toLowerCase()}'`) === true)?.[0];
+      pick(named ?? (form !== undefined && form.fields.every((f) => wanted(f.label)) ? "whole" : "fields"));
+    }
     // The scope ask's label, which may hold an apostrophe ("Guest's full name"), ends where the wording goes on.
     else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(/[Tt]he field '(.*?)'(?: is a |\. Kind: )/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
     else if (id === "why") pick(ask?.reason === "payment" ? "payment" : ask?.reason === "neverTyped" ? "neverTyped" : ask?.reason === "noSuchField" ? "noSuchField" : "nothingToFill");
@@ -199,7 +220,7 @@ const oracle: AskJev = async (req) => {
   // why, source and whose, and the scope ask (ask.scope) settles fields; the writer maker's field yes/no heads say no.
   const kinds = [
     ...["route", "why", "source", "whose"].map((h) => `ask.heads:${h}`),
-    "ask.scope:field",
+    "ask.scope:field", "ask.scope:section",
     ...["route", "why", "scope", "source", "whose", "literal"].map((h) => `intent.route:${h}`),
     "ask.confirm:all", "ask.confirm:field", "codeplan.asksAbout:field",
     "fill.whose:whose", "fill.whose:owner", "fill.values:whose", "fill.values:owner", "fill.values:value", "fill.values:answer",
@@ -249,12 +270,14 @@ const askJev: AskJev = async (req) => {
   requestsBy.set(current, (requestsBy.get(current) ?? 0) + 1);
   const qs = Object.fromEntries(Object.entries({ ...req.questions, ...req.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]));
   const hit = a.replay === undefined ? undefined : recorded.get(replayKey(current, qs))?.shift();
+  // Sealed before it is sent: the engine is asked, and the log written, from this frozen copy (PV2).
+  const sent = sealRequest(req);
   if (a.replay !== undefined) replay[hit === undefined ? "misses" : "hits"]++;
-  const r = hit === undefined ? await decide.ask(req) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
+  const r = hit === undefined ? await decide.ask(sent.asked) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   jevSpent += r.costUsd;
   jevModels.add(r.model);
   requestMs.push(r.latencyMs);
-  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], JSON.stringify({ ask: current, questions: qs, answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
+  if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { ask: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers, nouls: r.nouls ?? {} });
   return r;
 };
 // Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.
@@ -329,7 +352,7 @@ const rows: Row[] = [];
 for (const [i, ask] of asks.entries()) {
   const form = corpus.forms.find((f) => f.id === ask.form);
   if (form === undefined) throw new Error(`no form ${ask.form}`);
-  const desk = buildDesk(corpus, snaps, form);
+  const desk = buildDesk(corpus, snaps, form, a["form-window"] === "page" ? pageForm(form) : undefined);
   for (const id of desk.model.windows.keys()) fixtureIds.add(id);
   const memory = { values: () => desk.memory };
   const r = rng(Number(a.seed) * 1000 + i);
@@ -503,7 +526,7 @@ const rightAsks = rows.filter((r) => r.ask.ask !== undefined && r.verdict === "a
 const firstRequests = rows.map((r) => r.requests);
 const kinds = [...new Set(rows.flatMap((r) => (r.ask.kind === undefined ? [] : [r.ask.kind])))];
 const md = [
-  `# Ask scoreboard (B26): ${a["asks-file"]}, maker ${a.maker}`,
+  `# Ask scoreboard (B26): ${a["asks-file"]}, maker ${a.maker}, form window ${a["form-window"]}`,
   "",
   `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker !== "writer" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
@@ -534,6 +557,6 @@ const md = [
 function ok2(p: Proposed): boolean {
   return p.expected === p.value;
 }
-writeFileSync(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "realfill-asks.json"), JSON.stringify({ engine: decide.says, requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
+writeStore(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
+writeStoreJson(join(OUT, "realfill-asks.json"), { engine: decide.says, formWindow: a["form-window"], requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, 1);
 process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; asked back ${back.length}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}${a.replay === undefined ? "" : `; replayed ${replay.hits}, missed ${replay.misses}`}\n`);

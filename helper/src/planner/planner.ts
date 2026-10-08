@@ -1,3 +1,7 @@
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { instructionForModel, instructionView } from "../fill/redact.ts";
+import { viewOf } from "../fill/candidates.ts";
+import { redactWindow } from "../fill/redact.ts";
 // The planner: "do X" becomes a checked plan (brief B16). Jev answers only choice questions, so the
 // house rule holds here too: code proposes, Jev chooses, code copies and verifies.
 //   1. Code picks the window: the one the host names (requestedWindow resolves a host's window number), the
@@ -24,13 +28,15 @@ import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { candidateProvenance, FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
 import { checkValues, ContractError, fieldContract, isChecked, VerifierUnavailable, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
-import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
+import { alternateVetoes, readableFields, savedValuesOf, type SavedValue } from "../fill/alternate.ts";
+import { bindNotes, personalField, sourceNotes, verifyWrites } from "./codeplan.ts";
+import { describeCandidate, generateCandidates, mintCandidate, type Candidate } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts } from "../fill/kinds.ts";
 import { writeMisfit } from "../fill/writable.ts";
 import { fieldPart, splitAddress, splitName } from "../fill/derive.ts";
 import { inWebArea } from "../fill/controls.ts";
-import { SnippetLedger, type Declared } from "../privacy.ts";
+import { type Declared } from "../privacy.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { instructionValues } from "./spans.ts";
 import type { MemoryValue } from "./trace.ts";
@@ -104,13 +110,14 @@ export interface PlanDraft {
   /** Fields an Ask left to the user because Caret never types them, as a sentence (ask.ts); null or absent for none. */
   leftToYou?: string | null;
   /** I3: fields an Ask left to the user because Jev wasn't sure the request asks for them (ask.ts); each is said in the pop-up. */
-  unsure?: readonly { key: string; name: string }[];
+  unsure?: readonly { key: string; name: string; says?: string }[];
 }
 
 interface Option {
   id: string;
   text: string;
-  describe: string;
+  /** What the question says of the value, minted by the plan's Disclosure. */
+  describe: ModelText;
   /** W2: where the value was read, as the write contract carries it (fill/contract.ts). */
   provenance: Provenance;
 }
@@ -189,16 +196,19 @@ async function planIn(
   answers: Record<string, AskPair>,
   jev: PlanDraft["jev"],
 ): Promise<PlanDraft> {
+  w = redactWindow(w);
   const fields = writableFields(w);
   const buttons = labelledButtons(w);
-  const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([instruction])) throw new PlannerError("privacy", PRIVACY_SAYS);
+  const ledger = new Disclosure(model.windows.values());
+  if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
   // A title that does not fit the window's budget is left out; the question then names the app alone.
-  const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
+  const title = ledger.descriptor(w, w.window.title);
   // A window that is not a card gives a question less than half its text (privacy.ts), which may not hold
   // every field and button: what the instruction names is taken first, the rest in document order.
-  const order = byRelevance(instruction, [...fields.map((f) => ({ key: f.node.key, name: f.name, text: f.descriptor })), ...buttons.map((b) => ({ key: b.key, name: b.label, text: b.label }))]);
-  const taken = new Set(order.filter((x) => ledger.take(w, "descriptor", [x.text])).map((x) => x.key));
+  // Each is cut from the view by its window texts (a field's descriptor parts, a button's label; PV2: a text is located
+  // where it is cut), never as the composed descriptor, whose wording is Caret's.
+  const order = byRelevance(instruction, [...fields.map((f) => ({ key: f.node.key, name: f.name, text: f.descriptor, cut: () => ledger.fieldDescriptor(w, f.node) !== null })), ...buttons.map((b) => ({ key: b.key, name: b.label, text: b.label, cut: () => ledger.take(w, "descriptor", [b.label]) }))]);
+  const taken = new Set(order.filter((x) => x.cut()).map((x) => x.key));
   // Only the fields the instruction names are asked about: the second live pass (evidence/screen/b16/
   // planner-live) wrote an order number into two fields "Put the order number ... in Reference" never
   // named. Every field is asked about only when the instruction asks to fill the form (asksToFillForm);
@@ -232,8 +242,8 @@ async function planIn(
   const fitting = (f: Field, vs: readonly Option[]): Option[] => vs.filter((v) => writeMisfit(v.text, { labelWords: [f.label] }) === null);
   const [r1, r2] = await ask(
     ...sentOnly([
-      fieldRequest(instruction, w, title, questioned, (f) => fitting(f, values), askedButtons, 0, declared),
-      fieldRequest(instruction, w, title, questioned, (f) => fitting(f, second.values), second.buttons, 1, declared),
+      fieldRequest(ledger, instruction, w, title, questioned, (f) => fitting(f, values), askedButtons, 0, declared),
+      fieldRequest(ledger, instruction, w, title, questioned, (f) => fitting(f, second.values), second.buttons, 1, declared),
     ]),
   );
   const withheld: PlanDraft["withheld"] = [];
@@ -267,16 +277,55 @@ async function planIn(
     agreedWrites.push({ field: f, value: v });
     read.set(f.node.key, (values.find((x) => x.text === v) as Option).provenance);
   }
+  // HA2 (lead decision 3): the planner asks whose its values are, as the code writer does (codeplan.ts verifyWrites), and
+  // under fill's rule: an owner judgement about a window value counts only when both owner questions showed the whole
+  // note it was read from. Before HA2 this path asked no owner question at all, so another person's phone in the user's
+  // note went into the user's Phone on the value questions alone. A value Jev calls another's, or whose note did not
+  // fit, is withheld as an unsure one is. Asked only when a field takes a person's details.
+  const windowOf = (pr: Provenance): string | null => (pr.kind === "window" ? pr.windowId : pr.kind === "derived" ? (windowOf(pr.base) ?? (pr.also === null ? null : windowOf(pr.also))) : null);
+  // HA2 review 2, item 1: each value's notes are read once, here, before the owner check is sent; the check shows these
+  // and the value is bound to exactly these, so an edit while it is out refuses the value at the recheck.
+  const disclosed = new Map(agreedWrites.map(({ field }) => [field.node.key, sourceNotes(model, read.get(field.node.key) as Provenance, w.window.windowId)] as const));
+  // INT1: the check's field names are minted from the view, as codeplan's are (mintFieldName); a person's field whose name
+  // does not mint cannot be asked about, so its value is withheld, never written unchecked.
+  const unnamed = new Set<string>();
+  const { dropped, jev: owners } = await verifyWrites(
+    instruction,
+    agreedWrites.flatMap(({ field, value }) => {
+      const pr = read.get(field.node.key) as Provenance;
+      const name = mintFieldName(ledger, w, field);
+      if (name === null) {
+        if (personalField(field.label)) unnamed.add(field.node.key);
+        return [];
+      }
+      return [{ key: field.node.key, field: { name, label: field.label }, value: { display: (values.find((x) => x.text === value) as Option).describe, window: windowOf(pr), owner: pr.kind === "memory" ? pr.whose : null, notes: disclosed.get(field.node.key) ?? null } }];
+    }),
+    o.askJev,
+    ledger,
+  );
+  for (const k of unnamed) dropped.add(k);
+  // Their requests count toward the draft's Jev use, as every other request of this plan does.
+  jev.calls += owners.calls;
+  jev.costUsd += owners.costUsd;
+  jev.latencyMs += owners.latencyMs;
+  for (const x of agreedWrites) if (dropped.has(x.field.node.key)) withheld.push({ name: x.field.name, why: "lowConfidence" });
+  const ownedWrites = agreedWrites.filter((x) => !dropped.has(x.field.node.key));
   // W2: each value meets the write contract once, in its field, with where it was read (fill/contract.ts); a value it
   // refuses is withheld, as an unsure one is.
-  const minted = await mintWrites(agreedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null });
+  // HA2 review P1: a person's value is bound to the notes its owner check showed, rechecked before each write.
+  const bound = (field: Field): Provenance => {
+    const pr = read.get(field.node.key) as Provenance;
+    const notes = personalField(field.label) ? (disclosed.get(field.node.key) ?? null) : null;
+    return notes === null ? pr : bindNotes(pr, notes, w.window.windowId);
+  };
+  const minted = await mintWrites(ownedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: bound(field), owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null }, savedValuesOf(memory.values()));
   for (const r of minted.refused) withheld.push({ name: r.name, why: "lowConfidence" });
-  const writes = agreedWrites.filter((x) => minted.mints.has(x.field.node.key));
+  const writes = ownedWrites.filter((x) => minted.mints.has(x.field.node.key));
   const pressLabel = askedButtons.length === 0 ? null : agreed("press", "press", byId(askedButtons.map((b) => ({ id: b.id, text: b.key }))), byId(second.buttons.map((b) => ({ id: b.id, text: b.key }))), NONE);
   const press = pressLabel === null ? null : (askedButtons.find((b) => b.key === pressLabel) ?? null);
   if (press !== null) answers.press = [press.label, press.label];
   if (writes.length === 0 && press === null) {
-    if (minted.refused.length > 0 && agreedWrites.length === minted.refused.length) throw allRefused(minted.refused);
+    if (minted.refused.length > 0 && ownedWrites.length === minted.refused.length) throw allRefused(minted.refused);
     if (withheld.length > 0) throw new PlannerError("unsure", `Jev was not sure enough about ${withheld.map((x) => `${x.name} (${x.why === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`);
     throw new PlannerError("nothingToDo", "Jev found nothing in your instruction to write or press here");
   }
@@ -324,9 +373,21 @@ async function planIn(
  * PlannerError("notEditable") for a field Caret never types, and PlannerError("jevFailed") when the verifier cannot
  * answer: nothing is written then.
  */
-export async function mintWrites(writes: readonly { key: string; w: WindowState; node: Node; name: string; text: string; provenance: Provenance; owner: Owner }[], o: CheckOptions): Promise<{ mints: Map<string, CheckedValue>; refused: { key: string; name: string; says: string; why: string }[] }> {
+export async function mintWrites(writes: readonly { key: string; w: WindowState; node: Node; name: string; text: string; provenance: Provenance; owner: Owner }[], o: CheckOptions, saved: readonly SavedValue[]): Promise<{ mints: Map<string, CheckedValue>; refused: { key: string; name: string; says: string; why: string }[] }> {
+  // V6: the alternate-field veto (fill/alternate.ts), over every write of the plan into each window, before any value is
+  // checked: an Alternate email never repeats the plan's Email or a primary field the window shows.
+  const vetoed = new Map<string, string>();
+  for (const id of new Set(writes.map((x) => x.w.window.windowId))) {
+    const here = writes.filter((x) => x.w.window.windowId === id);
+    const vetoes = alternateVetoes({ fields: readableFields((here[0] as (typeof writes)[number]).w), writes: here.map((x) => ({ key: x.node.key, name: x.name, text: x.text })), saved });
+    for (const x of here) {
+      const v = vetoes.get(x.node.key);
+      if (v !== undefined) vetoed.set(x.key, v.says);
+    }
+  }
+  const kept = writes.filter((x) => !vetoed.has(x.key));
   const proposed: Proposed[] = [];
-  for (const x of writes) {
+  for (const x of kept) {
     let field: FieldContract;
     try {
       field = fieldContract(x.w, x.node);
@@ -344,9 +405,12 @@ export async function mintWrites(writes: readonly { key: string; w: WindowState;
     throw e;
   }
   const mints = new Map<string, CheckedValue>();
-  const refused: { key: string; name: string; says: string; why: string }[] = [];
+  const refused: { key: string; name: string; says: string; why: string }[] = writes.flatMap((x) => {
+    const says = vetoed.get(x.key);
+    return says === undefined ? [] : [{ key: x.key, name: x.name, says, why: "notExact" }];
+  });
   r.results.forEach((x, i) => {
-    const w = writes[i] as (typeof writes)[number];
+    const w = kept[i] as (typeof writes)[number];
     if (isChecked(x)) mints.set(w.key, x);
     else refused.push({ key: w.key, name: w.name, says: x.says, why: x.why });
   });
@@ -452,7 +516,22 @@ export function fieldName(w: WindowState, n: Node): string {
   return [d.section, d.label ?? d.nearest ?? d.placeholder].filter((x) => x !== null).join(" ") || "field";
 }
 
+/**
+ * A field's name (fieldName) minted from the redacted view `w` it was read in: its section and its label, nearest label
+ * or placeholder, each as the view shows it; Caret's "field" when it has none. Null when the view does not show a part.
+ */
+export function mintFieldName(d: Disclosure, w: WindowState, f: Pick<Field, "node" | "name">): ModelText | null {
+  const fd = describeField(w, f.node);
+  const parts = [fd.section, fd.label ?? fd.nearest ?? fd.placeholder].filter((x): x is string => x !== null);
+  if (parts.length === 0) return f.name === "field" ? d.own("field") : null;
+  const minted = parts.map((x) => d.descriptor(w, x)).filter((x): x is ModelText => x !== null);
+  if (minted.length !== parts.length) return null;
+  const name = d.join(minted, " ");
+  return name === f.name ? name : null;
+}
+
 export function writableFields(w: WindowState): Field[] {
+  w = redactWindow(w);
   const out: Field[] = [];
   // I2 ruling: the one inventory the intent snapshot reads (targets.ts), so the planner writes no field the scope
   // question could not ask about; a field with no readable name is not in it.
@@ -475,6 +554,7 @@ interface Button {
 }
 
 function labelledButtons(w: WindowState): Button[] {
+  w = redactWindow(w);
   const out: Button[] = [];
   for (const n of w.nodes.values()) {
     if (out.length >= MAX_PLAN_BUTTONS) break;
@@ -520,31 +600,62 @@ export function requestedWindow(model: ScreenModel, req: { windowId?: string | u
 }
 
 /** Values to choose from: the instruction's spans, then memory, then the other windows' candidates; each text once. */
-function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number): Option[] {
+function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: Disclosure, now: number): Option[] {
+  const d = ledger;
   const out: Option[] = [];
+  const retainedValues = new Set(instructionView(instruction).retained.flatMap(instructionValues));
   const seen = new Set<string>();
-  const add = (text: string, describe: string, provenance: Provenance, max = MAX_PLAN_VALUES): void => {
+  const LEFT = "[a field Caret leaves to you]";
+  /** `said` is the option's sentence minted, or null when a part would not mint (the option is then not offered). */
+  const add = (text: string, said: () => ModelText | null, describe: string, provenance: Provenance, max = MAX_PLAN_VALUES): void => {
     if (out.length >= max || seen.has(text)) return;
+    // Local binding retains withheld values for refusal; a model sees only the neutral reference.
+    const withheld = provenance.kind === "instruction" && !retainedValues.has(text);
+    // What the question said before SC1 is the oracle: a sentence the instruction's redaction changes is not offered.
+    const minted = withheld ? d.own(LEFT) : instructionForModel(describe) === describe ? said() : null;
+    if (minted === null) return;
     seen.add(text);
-    out.push({ id: `v${out.length + 1}`, text, describe, provenance });
+    out.push({ id: `v${out.length + 1}`, text, describe: minted, provenance });
   };
   const entry = (m: MemoryValue): Provenance => ({ kind: "memory", id: m.id, label: m.label, part: null, whose: m.whose ?? null });
   const spans = instructionValues(instruction);
-  if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
-  for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`, entry(m));
+  if (ledger.plan(spans.map((s) => (retainedValues.has(s) ? instructionForModel(s) : LEFT)))) {
+    for (const s of spans) {
+      add(s, () => {
+        const m = d.instructionSpan(instruction, s);
+        return m === null ? null : d.t`"${m}" (written in the instruction)`;
+      }, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
+    }
+  }
+  const remembered = new Map<string, { text: ModelText; label: ModelText }>();
+  for (const m of memory) {
+    if (!ledger.plan([m.text, m.label])) continue;
+    add(m.text, () => {
+      const text = d.memoryText(m.label, m.text);
+      const label = d.memoryText(null, m.label);
+      if (text === null || label === null) return null;
+      remembered.set(m.id, { text, label });
+      return d.t`"${text}" (from the user's memory: ${label})`;
+    }, `"${m.text}" (from the user's memory: ${m.label})`, entry(m));
+  }
   // A remembered name's first and last parts, split by code (fill/derive.ts, B24), for First and Last name
   // fields: "fill my name and email" on a form with split name fields found no value for either (Q1 bug 11).
   for (const m of memory) {
     // Only for an entry whose text went into the question above, so the part's description declares nothing new.
-    if (!/\bname\b/i.test(m.label) || !seen.has(m.text)) continue;
+    const r = remembered.get(m.id);
+    if (!/\bname\b/i.test(m.label) || !seen.has(m.text) || r === undefined) continue;
     const s = splitName(m.text);
     if (s.kind !== "split") continue;
     for (const [part, text] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) {
-      if (text !== null) add(text, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`, { kind: "derived", how: "namePart", base: entry(m), also: null });
+      if (text === null) continue;
+      add(text, () => {
+        const v = d.derived(r.text, text);
+        return v === null ? null : d.t`"${v}" (the ${d.own(part)} in the user's memory: ${r.label} "${r.text}")`;
+      }, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`, { kind: "derived", how: "namePart", base: entry(m), also: null });
     }
   }
   const cands = generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger);
-  for (const c of cands) add(c.text, describeCandidate(c), candidateProvenance(model, c));
+  for (const c of cands) add(c.text, () => mintCandidate(d, model, c), describeCandidate(c), candidateProvenance(model, c));
   // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
   // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
   // tuned on those sets). Each part is a span of the same line, so it traces to it. They have their own
@@ -553,24 +664,32 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
   // apart (fill/derive.ts splitAddress, B24): the corpus's rental form took "4410 Speedway Apt 2" in Street
   // address beside an empty Apt / Unit field (asks-dev-3).
   const unitField = writableFields(w).some((f) => fieldPart(f.label) === "unit");
+  /** A part of a candidate's address, said as "the <part> of <the candidate's line>". */
+  const part = (c: Candidate, v: string, partName: ModelText): ModelText | null => {
+    const whole = mintCandidate(d, model, c);
+    const text = d.again(c.text);
+    const value = text === null ? null : d.derived(text, v);
+    return whole === null || value === null ? null : d.t`"${value}" (the ${partName} of ${whole})`;
+  };
   for (const c of cands) {
     const split = unitField ? splitAddress(c.text) : null;
     if (split !== null) {
-      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: candidateProvenance(model, c), also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, () => part(c, v, d.id(k)), `"${v}" (the ${k} of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: candidateProvenance(model, c), also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
       continue;
     }
     const parts = addressParts(c.text);
     if (parts === null) continue;
     const whole = candidateProvenance(model, c);
-    add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
-    if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    add(parts.street, () => part(c, parts.street, d.own("street line")), `"${parts.street}" (the street line of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    const city = parts.city;
+    if (city !== null) add(city, () => part(c, city, d.own("city")), `"${city}" (the city of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
   }
   return out;
 }
 
 const WINDOW_WORDINGS = [
-  (instr: string) => `The user asked: "${instr}". In which of these windows should that be done? Choose none if no window fits.`,
-  (instr: string) => `Instruction: "${instr}". Pick the window the instruction is about, or none if it is about none of them.`,
+  (d: Disclosure, instr: ModelText) => d.t`The user asked: "${instr}". In which of these windows should that be done? Choose none if no window fits.`,
+  (d: Disclosure, instr: ModelText) => d.t`Instruction: "${instr}". Pick the window the instruction is about, or none if it is about none of them.`,
 ] as const;
 
 async function chooseWindow(
@@ -583,34 +702,44 @@ async function chooseWindow(
   answers: Record<string, AskPair>,
 ): Promise<WindowState> {
   if (o.windowId !== undefined) {
-    const w = model.windows.get(o.windowId);
+    const w = viewOf(model, o.windowId);
     if (w === undefined) throw new PlannerError("unseenWindow", `window ${o.windowId} is not open`);
     if (!actionable(w)) throw new PlannerError("noWindow", `window ${o.windowId} has no field or button`);
     return w;
   }
-  const candidates = [...model.windows.values()].filter(actionable);
+  const candidates = [...model.windows.values()].map(redactWindow).filter(actionable);
   if (candidates.length === 0) throw new PlannerError("noWindow", "no open window has a field or a button");
   if (candidates.length === 1) return candidates[0] as WindowState;
-  const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([instruction])) throw new PlannerError("privacy", PRIVACY_SAYS);
-  const listed = candidates.filter((w) => ledger.take(w, "descriptor", [w.window.title]));
+  const ledger = new Disclosure(model.windows.values());
+  if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
+  const named = new Map<WindowState, ModelText>();
+  for (const w of candidates) {
+    const t = ledger.descriptor(w, w.window.title);
+    if (t !== null) named.set(w, ledger.t`${ledger.app(w)} window '${t}'`);
+  }
+  const listed = candidates.filter((w) => named.has(w));
   if (listed.length === 0) throw new PlannerError("privacy", "no open window's title fits what one question to Jev may carry");
   const declared = ledger.declared();
   const first = listed.map((w, i) => ({ id: `w${i + 1}`, w }));
   const second = shuffled(first, rand).map((x, i) => ({ id: `x${i + 1}`, w: x.w }));
-  const req = (list: typeof first, wording: 0 | 1): JevRequest => ({
+  const instr = ledger.instruction(instruction);
+  const req = (list: typeof first, wording: 0 | 1): JevRequest => (ledger.seal({
     purpose: "planner.window",
-    state: { instruction, task: "Caret is about to plan the user's instruction in one of the user's open windows." },
+    state: { instruction: instr, task: ledger.own("Caret is about to plan the user's instruction in one of the user's open windows.") },
     questions: {
       window: {
         type: "choice",
-        instructions: WINDOW_WORDINGS[wording](instruction),
-        criteria: { ...Object.fromEntries(list.map((x) => [x.id, `${x.w.app.name} window '${x.w.window.title}'`])), [NONE]: "None of these windows." },
+        // The question quotes the instruction as a model may read it (SC1: before, the wording quoted it raw).
+        instructions: WINDOW_WORDINGS[wording](ledger, instr),
+        criteria: { ...Object.fromEntries(list.flatMap((x) => {
+          const said = named.get(x.w);
+          return said === undefined ? [] : [[x.id, said] as const];
+        })), [NONE]: ledger.own("None of these windows.") },
       },
     },
     snippets: declared.snippets,
     charged: declared.charged,
-  });
+  }));
   const [r1, r2] = await ask(req(first, 0), req(second, 1));
   const pick = (r: JevResult, list: typeof first): { w: WindowState | null; conf: number } => {
     const a = r.answers.window;
@@ -632,38 +761,42 @@ async function chooseWindow(
 }
 
 const FIELD_WORDINGS = [
-  (instr: string, d: string) => `The user asked: "${instr}". This field is in the window: ${d} After the task is done, which value should this field hold? Choose keep if the instruction does not ask to change this field.`,
-  (instr: string, d: string) => `Instruction: "${instr}". Field: ${d} Pick the value the instruction asks to put in this field, or keep if it asks for no change here.`,
+  (m: Disclosure, instr: ModelText, d: ModelText) => m.t`The user asked: "${instr}". This field is in the window: ${d} After the task is done, which value should this field hold? Choose keep if the instruction does not ask to change this field.`,
+  (m: Disclosure, instr: ModelText, d: ModelText) => m.t`Instruction: "${instr}". Field: ${d} Pick the value the instruction asks to put in this field, or keep if it asks for no change here.`,
 ] as const;
 const PRESS_WORDINGS = [
-  (instr: string) => `The user asked: "${instr}". Which button does the instruction ask to press? Choose none if it asks for no press.`,
-  (instr: string) => `Instruction: "${instr}". If the instruction asks for a button to be pressed, pick it; otherwise pick none.`,
+  (m: Disclosure, instr: ModelText) => m.t`The user asked: "${instr}". Which button does the instruction ask to press? Choose none if it asks for no press.`,
+  (m: Disclosure, instr: ModelText) => m.t`Instruction: "${instr}". If the instruction asks for a button to be pressed, pick it; otherwise pick none.`,
 ] as const;
 
-function fieldRequest(instruction: string, w: WindowState, title: string | null, fields: readonly Field[], valuesFor: (f: Field) => readonly Option[], buttons: readonly Button[], wording: 0 | 1, declared: Declared): JevRequest {
+function fieldRequest(d: Disclosure, raw: string, w: WindowState, title: ModelText | null, fields: readonly Field[], valuesFor: (f: Field) => readonly Option[], buttons: readonly Button[], wording: 0 | 1, declared: Declared): JevRequest {
+  const instruction = d.instruction(raw);
+  w = redactWindow(w);
   const questions: JevRequest["questions"] = {};
   for (const f of fields) {
-    const criteria: Record<string, string> = { ...Object.fromEntries(valuesFor(f).map((v) => [v.id, v.describe])), [KEEP]: "Leave the field as it is." };
-    questions[f.id] = { type: "choice", instructions: FIELD_WORDINGS[wording](instruction, f.descriptor), criteria };
+    const descriptor = d.fieldDescriptor(w, f.node);
+    if (descriptor === null) throw new PlannerError("privacy", `the descriptor of '${f.name}' is not one its window shows`);
+    const criteria: Record<string, ModelText> = { ...Object.fromEntries(valuesFor(f).map((v) => [v.id, v.describe])), [KEEP]: d.own("Leave the field as it is.") };
+    questions[f.id] = { type: "choice", instructions: FIELD_WORDINGS[wording](d, instruction, descriptor), criteria };
   }
   if (buttons.length > 0) {
-    questions.press = {
-      type: "choice",
-      instructions: PRESS_WORDINGS[wording](instruction),
-      criteria: { ...Object.fromEntries(buttons.map((b) => [b.id, `the '${b.label}' button`])), [NONE]: "No button." },
-    };
+    const named = buttons.flatMap((b) => {
+      const label = d.descriptor(w, b.label);
+      return label === null ? [] : [[b.id, d.t`the '${label}' button`] as const];
+    });
+    questions.press = { type: "choice", instructions: PRESS_WORDINGS[wording](d, instruction), criteria: { ...Object.fromEntries(named), [NONE]: d.own("No button.") } };
   }
-  return {
+  return d.seal({
     purpose: "planner.fields",
     state: {
       instruction,
-      window: title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`,
-      task: "Caret plans the instruction as values written into this window's fields. Values come from the instruction, the user's memory and the user's other open windows; Caret writes only a value listed here.",
+      window: title === null ? d.t`${d.app(w)} window` : d.t`${d.app(w)} window '${title}'`,
+      task: d.own("Caret plans the instruction as values written into this window's fields. Values come from the instruction, the user's memory and the user's other open windows; Caret writes only a value listed here."),
     },
     questions,
     snippets: declared.snippets,
     charged: declared.charged,
-  };
+  });
 }
 
 export { PlannerError };

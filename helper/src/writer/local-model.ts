@@ -1,3 +1,4 @@
+import { assertNoExcludedValue } from "../privacy.ts";
 // The helper's side of apps/local-model (caret-local-model, G1): one child process that loaded a GGUF once and
 // answers grammar-constrained completions, one JSON object per line each way (apps/local-model/README.md). Requests
 // go one at a time; the answers come back in order. Nothing here retries: a failure is the caller's to report.
@@ -45,10 +46,46 @@ export interface LocalModelTool {
   complete(req: LocalRequest, signal?: AbortSignal): Promise<LocalCompletion>;
   /** Ends input, waits for the tool to exit (it frees the model first), and resolves with its exit code. */
   close(): Promise<number | null>;
+  /**
+   * The last 2,000 characters the tool wrote to stderr, for a debugger only: it may echo a prompt, so no error, warning,
+   * log or store ever carries it (PV2, the lead's ruling).
+   */
+  stderrForDebugger(): string;
 }
 
-/** The tool failed, said no, or broke the protocol. The message says which; a model's text is never in it. */
-export class LocalModelError extends Error {}
+/** What went wrong with the tool, worked out inside this module; the only account of a failure that leaves it. */
+export type LocalModelFailure = "crash" | "outOfMemory" | "modelMissing" | "timeout" | "refused" | "protocol" | "notRunnable";
+
+const FAILURE_SAYS: Record<LocalModelFailure, string> = {
+  crash: "the local model stopped",
+  outOfMemory: "the local model ran out of memory",
+  modelMissing: "the local model's file could not be loaded",
+  timeout: "the local model did not answer in time",
+  refused: "the local model refused the request",
+  protocol: "the local model broke its protocol",
+  notRunnable: "the local model could not be started",
+};
+
+/**
+ * The tool failed, said no, or broke the protocol: `failure` says which, in Caret's words, with an exit status or a
+ * request id at most. No text the tool wrote (its stderr, an error line, a model's text) is ever in it: a tool can echo a
+ * prompt there.
+ */
+export class LocalModelError extends Error {
+  readonly failure: LocalModelFailure;
+  constructor(failure: LocalModelFailure, detail = "") {
+    super(`${FAILURE_SAYS[failure]}${detail === "" ? "" : ` (${detail})`}`);
+    this.name = "LocalModelError";
+    this.failure = failure;
+  }
+}
+
+/** A failure read from what the tool wrote, inside this module only: the words, never carried further. */
+function classify(text: string): LocalModelFailure {
+  if (/out of memory|\bOOM\b|failed to allocate|cannot allocate|ENOMEM/iu.test(text)) return "outOfMemory";
+  if (/no such file|not found|ENOENT|failed to load model|unable to load model|invalid model/iu.test(text)) return "modelMissing";
+  return "crash";
+}
 
 export interface LocalModelOptions {
   binary: string;
@@ -65,7 +102,7 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
   const child = o.spawnFn?.() ?? spawn(o.binary, ["--model", o.modelPath, "--ctx", String(o.contextLength ?? 4096)], { stdio: ["pipe", "pipe", "pipe"] });
   const stdin = child.stdin;
   const stdout = child.stdout;
-  if (stdin === null || stdout === null) throw new LocalModelError("the local model's stdin or stdout is not a pipe");
+  if (stdin === null || stdout === null) throw new LocalModelError("notRunnable", "no pipes");
   // A write after the tool died raises EPIPE here; the exit handler below is what reports it.
   stdin.on("error", () => undefined);
   let stderrTail = "";
@@ -83,12 +120,12 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
   });
   const exited = new Promise<number | null>((resolve) => {
     child.on("exit", (code, sig) => {
-      ended = new LocalModelError(`the local model exited (${sig ?? `code ${code}`})${stderrTail.trim() === "" ? "" : `: ${stderrTail.trim().split("\n").at(-1)}`}`);
+      ended = new LocalModelError(classify(stderrTail), sig ?? `exit code ${code}`);
       for (const w of waiting.splice(0)) w.reject(ended);
       resolve(code);
     });
     child.on("error", (e) => {
-      ended = new LocalModelError(`the local model could not run: ${e.message}`);
+      ended = new LocalModelError("notRunnable", (e as NodeJS.ErrnoException).code ?? "");
       for (const w of waiting.splice(0)) w.reject(ended);
       resolve(null);
     });
@@ -103,7 +140,7 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
     try {
       return JSON.parse(line);
     } catch {
-      throw new LocalModelError(`the local model wrote a line that is not JSON (${line.length} chars)`);
+      throw new LocalModelError("protocol", `a line that is not JSON, ${line.length} chars`);
     }
   };
 
@@ -112,14 +149,14 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
   const first = await Promise.race([
     nextLine(),
     new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new LocalModelError(`the local model did not load within ${loadTimeout} ms`)), loadTimeout);
+      timer = setTimeout(() => reject(new LocalModelError("timeout", `loading, ${loadTimeout} ms`)), loadTimeout);
     }),
   ]).finally(() => clearTimeout(timer));
   const head = parse(first);
   const notReady = NotReady.safeParse(head);
-  if (notReady.success) throw new LocalModelError(`the local model did not load: ${notReady.data.error}`);
+  if (notReady.success) throw new LocalModelError(classify(notReady.data.error) === "crash" ? "modelMissing" : classify(notReady.data.error), "loading");
   const ready = Ready.safeParse(head);
-  if (!ready.success) throw new LocalModelError(`the local model's first line is not Ready: ${ready.error.issues[0]?.message ?? "invalid"}`);
+  if (!ready.success) throw new LocalModelError("protocol", "no Ready line");
 
   let seq = 0;
   // One request at a time: each waits for the one before it, so answers pair with requests by order and id.
@@ -129,6 +166,7 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
     loadMs: ready.data.loadMs,
     memoryAtLoad: ready.data.memory,
     complete(req, signal) {
+      assertNoExcludedValue({ input: { prefix: req.prefix, prompt: req.prompt } });
       const id = `r${++seq}`;
       const run = async (): Promise<LocalCompletion> => {
         signal?.throwIfAborted();
@@ -137,10 +175,10 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
         // An abort cannot stop the tool mid-request; the answer is read and dropped so the next pairs correctly.
         const body = parse(await nextLine());
         const f = Failure.safeParse(body);
-        if (f.success) throw new LocalModelError(`the local model refused request ${f.data.id ?? "(no id)"}: ${f.data.error}`);
+        if (f.success) throw new LocalModelError("refused", `request ${id}`);
         const c = Completion.safeParse(body);
-        if (!c.success) throw new LocalModelError(`the local model's answer is not a completion: ${c.error.issues[0]?.message ?? "invalid"}`);
-        if (c.data.id !== id) throw new LocalModelError(`the local model answered ${c.data.id} when ${id} was next`);
+        if (!c.success) throw new LocalModelError("protocol", `request ${id}: not a completion`);
+        if (c.data.id !== id) throw new LocalModelError("protocol", `request ${id}: answered out of turn`);
         signal?.throwIfAborted();
         return c.data;
       };
@@ -152,5 +190,6 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
       stdin.end();
       return exited;
     },
+    stderrForDebugger: () => stderrTail,
   };
 }

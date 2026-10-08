@@ -1,6 +1,8 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 // R1: the slow Laya runner. The layer in each eval process (engines/decide/slow.ts) and the runner's loop
 // (scripts/slow-eval-core.ts), on a fake clock: pacing and backoff, resume after a kill without a repeated request,
 // the stops (cost, auth, HOLD, disk), and the heavy lease released through every wait.
+import { minted } from "./minted.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +36,7 @@ function fakeClock(start = 1_000_000): SlowClock & { sleeps: number[] } {
   };
 }
 
-const req = (q: string): JevRequest => ({ state: { form: "fixture" }, questions: { [q]: { type: "choice", instructions: `Pick for ${q}`, criteria: { a: "A", b: "B" } } }, snippets: [], charged: {} });
+const req = (q: string): JevRequest => (minted({ state: { form: "fixture" }, questions: { [q]: { type: "choice", instructions: `Pick for ${q}`, criteria: { a: "A", b: "B" } } }, snippets: [], charged: {} }));
 const answer = (q: string, costUsd = 0): JevResult => ({ model: "convaiinnovations/laya-free", answers: { [q]: { choice: "a", confidence: 0.9 } }, inputTokens: 10, latencyMs: 400, costUsd });
 const qOf = (r: JevRequest): string => Object.keys(r.questions)[0] as string;
 
@@ -453,3 +455,8 @@ describe("harness wiring", () => {
     expect(() => harnessEngine({ name: "gateway:convaiinnovations/laya-free", canned: null, fixture, env: env({ CARET_JEV_CACHE: "off" }) })).toThrow(/needs the replay cache/);
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+// INT1: v2/gate added this to the tests that existed at its base; these reach the gateway route too.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

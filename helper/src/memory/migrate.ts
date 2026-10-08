@@ -15,7 +15,7 @@
 //   5. The sealed values stay in memory_backup, still encrypted, as the rollback copy. Forgetting an entry deletes
 //      its backup too.
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import * as z from "zod";
@@ -24,6 +24,7 @@ import { open } from "../sealed.ts";
 import { MemoryDocumentStore, revisionOf } from "./documents.ts";
 import { fileOf, formatDiagnostic, newDocument, recordDigest, recordSecret, ROOT_DOCS, SkillText, type DocId, type MemoryRecord } from "./parse.ts";
 import { refusal } from "./sensitive.ts";
+import { assertLocalStorePath, renameLocal, writeLocalFile } from "../privacy/store-path.ts";
 
 export interface MigrationResult {
   /** fresh: nothing to move. done: moved before. migrated / resumed: moved now. failed: the sealed store stays in use. */
@@ -132,6 +133,9 @@ export function migrateSealedMemory(o: { db: DatabaseSync; key: Buffer; dataDir:
 
   // 2. Stage, then read back with the normal reader.
   const staging = join(dirname(o.memoryDir), `.${basename(o.memoryDir)}.staging-${randomBytes(6).toString("hex")}`);
+  // Beside the memory folder, which may itself be a root, so the staging folder can fall outside every root: checked
+  // before it is made.
+  assertLocalStorePath(staging);
   let renamed = false;
   let markerWritten = false;
   try {
@@ -144,7 +148,7 @@ export function migrateSealedMemory(o: { db: DatabaseSync; key: Buffer; dataDir:
     const files: Record<string, string> = {};
     for (const [doc, rs] of byDoc) {
       const text = newDocument(doc, rs);
-      writeFileSync(join(staging, fileOf(doc)), text, { mode: 0o600, flag: "wx" });
+      writeLocalFile(join(staging, fileOf(doc)), text, { exclusive: true, mode: 0o600 });
       files[fileOf(doc)] = revisionOf(text);
     }
     const check = new MemoryDocumentStore(staging);
@@ -170,7 +174,7 @@ export function migrateSealedMemory(o: { db: DatabaseSync; key: Buffer; dataDir:
     o.hooks?.beforeRename?.();
     if (existsSync(o.memoryDir)) removeEmptyTree(o.memoryDir);
     mkdirSync(dirname(o.memoryDir), { recursive: true, mode: 0o700 });
-    renameSync(staging, o.memoryDir);
+    renameLocal(staging, o.memoryDir);
     renamed = true;
     o.hooks?.afterRename?.();
     finish(db, marker, o.now);
@@ -273,8 +277,8 @@ function removeEmptyTree(dir: string): void {
 
 function writeAtomic(path: string, text: string): void {
   const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
-  writeFileSync(tmp, text, { mode: 0o600, flag: "wx" });
-  renameSync(tmp, path);
+  writeLocalFile(tmp, text, { exclusive: true, mode: 0o600 });
+  renameLocal(tmp, path);
 }
 
 function diffKeys(a: MemoryRecord, b: MemoryRecord): string[] {

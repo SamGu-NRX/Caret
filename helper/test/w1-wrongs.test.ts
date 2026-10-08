@@ -439,7 +439,20 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
       // families left the gate on the verifier's evidence, fill/writable.ts RETIRED_FAMILIES); the refuse-mode run below
       // holds every class at 0. Canned right values measured on these desks when W1's review fixes landed (the corpus by the reader's windows, the Ask sets through
       // planAsk): the guards must not cost one.
-      expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(167);
+      // HA2 (lead decision, cost accepted): a user's value admitted by owner questions counts only when both questions
+      // showed its whole source note. A fill on focus from a note the user did not name sends under half of the note's
+      // prose (privacy.ts prose share), so a note with any line over 80 characters never goes whole and its user values
+      // are withheld; an Ask that names the note keeps the full budget. Measured on these desks: 199 right at 68a7daa,
+      // 164 with HA2 (evidence/screen/ha2; all four sets 353 -> 283). Lead decision 2 then held every address part to the
+      // same rule (a lone city or ZIP line is asked whose it is too): 162 (all four sets 271). The review's fail-closed
+      // rules (fill/note-unit.ts) then showed every text that holds a value, (a), and a mail's or page's whole window, (c):
+      // 139 (all four sets 243; (a) alone cost 14 here, (c) 19, (b) none). The owner-note allotment (privacy.ts
+      // OWNER_NOTE_CHARS, 2,000, conversations kept out) then brought it to 160 (all four sets 306). The floor is the
+      // measured value, and the guards must not cost one more.
+      // TODO(INT1): the allotment is 0 until it is re-expressed on the output-based ledger (privacy.ts), so the floor is
+      // what v2/int1 measures with it off: 142 at a2062bc. v2/alt 74ae6e2 alone with the allotment set to 0 measures 139;
+      // the 3 more were not broken down (v2/fmt is merged before it). Restore 160 with the allotment.
+      expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(142);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

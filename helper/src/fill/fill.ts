@@ -1,3 +1,5 @@
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { instructionForModel, redactWindow } from "./redact.ts";
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
 // the same candidate spans plus "none" (deep plan section 5, "Fill"). Jev picks a candidate id;
 // code copies that candidate's text verbatim into the proposal. Nothing here writes to any app.
@@ -12,24 +14,28 @@ import { fieldFingerprint, scopeRefusal, type Authority, type DocumentReader } f
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, PLACEMENT_SAYS, viewOf, type Candidate } from "./candidates.ts";
+import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, mintCandidate, PLACEMENT_SAYS, viewOf, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
-import { assertNoSecrets, SnippetLedger, type Declared } from "../privacy.ts";
-import { describeField, fieldLabelText } from "./descriptor.ts";
+import type { Declared } from "../privacy.ts";
+import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
+import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
+import { ownedOf, unitKey, unitsHolding, type NoteUnit } from "./note-unit.ts";
+import { OwnerVerdicts, type CacheTicket, type OwnerAnswer } from "./owner-cache.ts";
+import { alternateVetoes, readableFields, setAlternateReason, type AlternateWrite, type PartPicks } from "./alternate.ts";
 import { secretText } from "../memory/sensitive.ts";
+import { formatForField } from "./field-format.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 import { dateOrder } from "../values/date-time.ts";
 import { bareLine, sentenceAround } from "./line-values.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
-import { ANSWER_NONE, ANSWER_SAYS, ANSWER_WORDINGS, answerQuestionId, describeSaved, answerExcerpt, questionExcerpt, fillAnswer, guardAnswer, isAnswerField, MAX_ANSWERS_ASKED, pageText, type PageContext } from "./answers.ts";
+import { ANSWER_NONE, ANSWER_SAYS, ANSWER_WORDINGS, answerQuestionId, mintSaved, answerExcerpt, questionExcerpt, fillAnswer, guardAnswer, isAnswerField, MAX_ANSWERS_ASKED, pageText, type PageContext } from "./answers.ts";
 
 export const NONE = "none";
 /** The proposal's model name when a cut withheld every field and Jev was not asked. */
@@ -168,7 +174,7 @@ export function selectedFormInputs(model: ScreenModel, windowId: string, trigger
   const w = model.windows.get(windowId);
   if (w === undefined) throw new FillError("noWindow", `unknown window ${windowId}`);
   const sourceWords = (): ReadonlySet<string> =>
-    new Set([...model.windows.values()].filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
+    new Set([...model.windows.values()].map(redactWindow).filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
   return formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords);
 }
 
@@ -272,9 +278,10 @@ export function formInputs(w: WindowState, triggerKey: string, max = MAX_FIELDS,
 
 export interface AskField {
   id: string;
-  descriptor: string;
+  /** The field's descriptor, minted by the request's Disclosure (describeInput's words). */
+  descriptor: ModelText;
   /** A short name for the field, used to list the form's other fields. */
-  name: string;
+  name: ModelText;
 }
 
 /**
@@ -284,10 +291,10 @@ export interface AskField {
  * where the first was right (wording1-cal-* in the evidence folder).
  */
 const WORDINGS = [
-  (where: string, d: string): string =>
-    `A form in the ${where} has this field: ${d} Which candidate is the value the user should enter in this field? The user usually copies from the window they just left. Choose none if no candidate fits.`,
-  (where: string, d: string): string =>
-    `Field to fill: ${d} It is in a form in the ${where}. Which value below should the user type into this field? Values usually come from the window the user just left. Answer none if no value below belongs in it.`,
+  (m: Disclosure, where: ModelText, d: ModelText): ModelText =>
+    m.t`A form in the ${where} has this field: ${d} Which candidate is the value the user should enter in this field? The user usually copies from the window they just left. Choose none if no candidate fits.`,
+  (m: Disclosure, where: ModelText, d: ModelText): ModelText =>
+    m.t`Field to fill: ${d} It is in a form in the ${where}. Which value below should the user type into this field? Values usually come from the window the user just left. Answer none if no value below belongs in it.`,
 ] as const;
 
 /**
@@ -296,14 +303,16 @@ const WORDINGS = [
  * at confidence 0.08 to 0.27 (evidence/screen/b25/asks-smoke-w, ask-12).
  */
 const ASK_WORDINGS = [
-  (instr: string, where: string, d: string): string => `The user asked Caret: "${instr}". A form in the ${where} has this field: ${d} Which candidate should go in this field for that instruction? Choose none if no candidate fits.`,
-  (instr: string, where: string, d: string): string => `Instruction from the user: "${instr}". Field to fill: ${d} It is in a form in the ${where}. Which value below belongs in this field? Answer none if no value below does.`,
+  (m: Disclosure, instr: ModelText, where: ModelText, d: ModelText): ModelText => m.t`The user asked Caret: "${instr}". A form in the ${where} has this field: ${d} Which candidate should go in this field for that instruction? Choose none if no candidate fits.`,
+  (m: Disclosure, instr: ModelText, where: ModelText, d: ModelText): ModelText => m.t`Instruction from the user: "${instr}". Field to fill: ${d} It is in a form in the ${where}. Which value below belongs in this field? Answer none if no value below does.`,
 ] as const;
 
 /** A value the user told Caret, under this ask's id for it (m1, m2... in the first ask, n1... in the second). */
 export interface AskAbout {
   id: string;
   about: AboutValue;
+  /** describeAbout's words, minted by the request's Disclosure. */
+  said: ModelText;
 }
 
 /** The answers to a question about whose details a field asks for (see WHOSE_WORDINGS). */
@@ -314,8 +323,8 @@ export const WHOSE_CRITERIA = {
 } as const;
 export type Whose = keyof typeof WHOSE_CRITERIA;
 const WHOSE_WORDINGS = [
-  (where: string, d: string): string => `A form in the ${where} has this field: ${d} Whose name or email does this field ask for?`,
-  (where: string, d: string): string => `Field: ${d} It is in a form in the ${where}. Is it for the details of the user filling in the form, of someone else, or can you not tell?`,
+  (m: Disclosure, where: ModelText, d: ModelText): ModelText => m.t`A form in the ${where} has this field: ${d} Whose name or email does this field ask for?`,
+  (m: Disclosure, where: ModelText, d: ModelText): ModelText => m.t`Field: ${d} It is in a form in the ${where}. Is it for the details of the user filling in the form, of someone else, or can you not tell?`,
 ] as const;
 /**
  * G2: the whose-details question for a field that asks for no person's name, email, phone or address, asked because
@@ -326,8 +335,8 @@ const WHOSE_WORDINGS = [
  * "user" here too; the value question must still pick the user's current title from memory above MEMORY_CUTOFF.
  */
 const MEMORY_WHOSE_WORDINGS = [
-  (where: string, d: string, own: string): string => `A form in the ${where} has this field: ${d} Does it ask about the user filling in the form (such as the user's own ${own}), about someone else, or can you not tell?`,
-  (where: string, d: string, own: string): string => `Field: ${d} It is in a form in the ${where}. Is it for the user's own ${own}, for someone else's, or can you not tell?`,
+  (m: Disclosure, where: ModelText, d: ModelText, own: ModelText): ModelText => m.t`A form in the ${where} has this field: ${d} Does it ask about the user filling in the form (such as the user's own ${own}), about someone else, or can you not tell?`,
+  (m: Disclosure, where: ModelText, d: ModelText, own: ModelText): ModelText => m.t`Field: ${d} It is in a form in the ${where}. Is it for the user's own ${own}, for someone else's, or can you not tell?`,
 ] as const;
 /** The id of a field's whose-details question. */
 export const whoseId = (fieldId: string): string => `${fieldId}_whose`;
@@ -337,10 +346,20 @@ export function describeAbout(a: AboutValue): string {
   return `"${a.value}" (${ABOUT_KIND_SAYS[a.kind]}; the user's own ${a.label}, which the user told Caret)`;
 }
 
+/** describeAbout's words, minted by `d`: the value and its label as memory, the kind in Caret's words; null when either may not go. */
+export function mintAbout(d: Disclosure, a: AboutValue): ModelText | null {
+  const value = d.memoryText(a.label, a.value);
+  const label = d.memoryText(null, a.label);
+  // An entry of a kind Caret has no words for is said as "a value" (before SC1 the sentence read "undefined").
+  const kind = Object.hasOwn(ABOUT_KIND_SAYS, a.kind) ? d.own(ABOUT_KIND_SAYS[a.kind]) : d.own("a value");
+  return value === null || label === null ? null : d.t`"${value}" (${kind}; the user's own ${label}, which the user told Caret)`;
+}
+
 /** Values code derived for one field, or candidates whose owner is asked, under one ask's ids. */
 export interface AskExtra {
   id: string;
-  describe: string;
+  /** What the question says of it, minted by the request's Disclosure. */
+  describe: ModelText;
   /** G2: for a candidate whose owner is asked, its text (JevRequest.subjects). */
   text?: string;
 }
@@ -352,9 +371,14 @@ export interface RequestMore {
   /** Fields that ask for a person's details, so whose details they want is asked beside them. */
   personal?: ReadonlySet<string>;
   /** G2: fields that ask for no person's details, by id, with what memory offers them ("job title"): MEMORY_WHOSE_WORDINGS. */
-  memoryWhose?: ReadonlyMap<string, string>;
+  memoryWhose?: ReadonlyMap<string, ModelText>;
   /** Candidates whose owner is asked, by this ask's candidate id. */
   owners?: readonly AskExtra[];
+  /**
+   * HA2: the whole notes the owner questions' values were read from, by note id ("note_1"), sent once in the request's
+   * state (source_notes) beside the owner questions that name them; each minted by the request's Disclosure.
+   */
+  notes?: ReadonlyMap<string, ModelText>;
   /** Each field's control, which words its question. Text when absent. */
   controls?: ReadonlyMap<string, Control>;
   /**
@@ -364,42 +388,43 @@ export interface RequestMore {
   stage?: "whose" | "values";
   /** Candidates, by this ask's id, not offered to a field (by field id): another person's for a field that wants the user's, or the reverse. */
   exclude?: ReadonlyMap<string, ReadonlySet<string>>;
-  /** The user's instruction when an Ask scoped the fill (B25): every question's state quotes it. */
-  instruction?: string;
-  /** A person the instruction names (FillScope.person): the owner questions ask whether a value is theirs. */
-  person?: string | null;
+  /** The user's instruction when an Ask scoped the fill (B25), as a model may read it: every question's state quotes it. */
+  instruction?: ModelText;
+  /** A person the instruction names (FillScope.person), as the instruction spells it: the owner questions ask whether a value is theirs. */
+  person?: ModelText | null;
   /** S1: fields asked which saved answer answers them, each with its own answers under this ask's ids (fill/answers.ts). */
-  answers?: readonly { id: string; descriptor: string; criteria: Readonly<Record<string, string>> }[];
+  answers?: readonly { id: string; descriptor: ModelText; criteria: Readonly<Record<string, ModelText>> }[];
 }
 
 /** The owner question's answers when an Ask names a person: theirs, the user's, someone else's, or unclear. */
-export function personOwnerCriteria(person: string): Record<string, string> {
+export function personOwnerCriteria(d: Disclosure, person: ModelText): Record<string, ModelText> {
   return {
-    person: `The details of ${person}, the person the user's instruction names.`,
-    user: OWNER_CRITERIA.user,
-    other: `Someone else's: anyone but the user and ${person}.`,
-    unclear: OWNER_CRITERIA.unclear,
+    person: d.t`The details of ${person}, the person the user's instruction names.`,
+    user: d.own(OWNER_CRITERIA.user),
+    other: d.t`Someone else's: anyone but the user and ${person}.`,
+    unclear: d.own(OWNER_CRITERIA.unclear),
   };
 }
 
 /** A checkbox or a choice of options is asked which candidate says what to set, not which value to type. */
-const CONTROL_WORDINGS: Partial<Record<Control, readonly [(where: string, d: string) => string, (where: string, d: string) => string]>> = {
+type Wording = (m: Disclosure, where: ModelText, d: ModelText) => ModelText;
+const CONTROL_WORDINGS: Partial<Record<Control, readonly [Wording, Wording]>> = {
   checkbox: [
-    (where, d) => `A form in the ${where} has this checkbox: ${d} Which candidate says the user wants this box ticked? The user usually copies from the window they just left. Choose none if no candidate says so.`,
-    (where, d) => `Checkbox: ${d} It is in a form in the ${where}. Which value below says this box should be ticked? Answer none if no value below says so.`,
+    (m, where, d) => m.t`A form in the ${where} has this checkbox: ${d} Which candidate says the user wants this box ticked? The user usually copies from the window they just left. Choose none if no candidate says so.`,
+    (m, where, d) => m.t`Checkbox: ${d} It is in a form in the ${where}. Which value below says this box should be ticked? Answer none if no value below says so.`,
   ],
   radio: [
-    (where, d) => `A form in the ${where} has this choice: ${d} Which candidate says which option the user should pick? The user usually copies from the window they just left. Choose none if no candidate says.`,
-    (where, d) => `Choice to make: ${d} It is in a form in the ${where}. Which value below names the option to pick? Answer none if no value below does.`,
+    (m, where, d) => m.t`A form in the ${where} has this choice: ${d} Which candidate says which option the user should pick? The user usually copies from the window they just left. Choose none if no candidate says.`,
+    (m, where, d) => m.t`Choice to make: ${d} It is in a form in the ${where}. Which value below names the option to pick? Answer none if no value below does.`,
   ],
   select: [
-    (where, d) => `A form in the ${where} has this menu: ${d} Which candidate says which option the user should pick? The user usually copies from the window they just left. Choose none if no candidate says.`,
-    (where, d) => `Menu to set: ${d} It is in a form in the ${where}. Which value below names the option to pick? Answer none if no value below does.`,
+    (m, where, d) => m.t`A form in the ${where} has this menu: ${d} Which candidate says which option the user should pick? The user usually copies from the window they just left. Choose none if no candidate says.`,
+    (m, where, d) => m.t`Menu to set: ${d} It is in a form in the ${where}. Which value below names the option to pick? Answer none if no value below does.`,
   ],
   // B27: its options are not shown, so the value must be the option's own name.
   combobox: [
-    (where, d) => `A form in the ${where} has this dropdown: ${d} Its options are not shown. Which candidate is the name of the option the user should pick? The user usually copies from the window they just left. Choose none if no candidate is an option's name.`,
-    (where, d) => `Dropdown to set: ${d} It is in a form in the ${where}, and its list is closed. Which value below is the option to pick, as the list would name it? Answer none if no value below is.`,
+    (m, where, d) => m.t`A form in the ${where} has this dropdown: ${d} Its options are not shown. Which candidate is the name of the option the user should pick? The user usually copies from the window they just left. Choose none if no candidate is an option's name.`,
+    (m, where, d) => m.t`Dropdown to set: ${d} It is in a form in the ${where}, and its list is closed. Which value below is the option to pick, as the list would name it? Answer none if no value below is.`,
   ],
 };
 
@@ -410,89 +435,98 @@ export const OWNER_CRITERIA = {
   unclear: "The screen does not make clear whose it is.",
 } as const;
 const OWNER_WORDINGS = [
-  (d: string): string => `A value on the user's screen: ${d} Whose details is it?`,
-  (d: string): string => `Whose details is this value, the user's or someone else's? ${d}`,
+  (m: Disclosure, d: ModelText): ModelText => m.t`A value on the user's screen: ${d} Whose details is it?`,
+  (m: Disclosure, d: ModelText): ModelText => m.t`Whose details is this value, the user's or someone else's? ${d}`,
 ] as const;
 /** The id of a candidate's whose-value question. */
 export const ownerId = (candidateId: string): string => `${candidateId}_owner`;
 
 /**
- * One ask. `declared` holds the screen text in it and what each window was charged (privacy.ts); `title` is the form window's title as
- * declared there, or null when it did not fit the window's budget and the question names the app alone. `about` lists, by field id,
- * the values the user told Caret that the field asks for (about.ts); only that field's question offers them. `more` adds B24's
- * derived values, controls and the questions about whose details a field wants and a value is.
+ * One ask, every text minted by `d`, the proposal's Disclosure (privacy/disclosure.ts). `declared` holds the screen text
+ * in it and what each window was charged (privacy.ts); `title` is the form window's title as declared there, or null when
+ * it did not fit the window's budget and the question names the app alone. `described` is each candidate's line by its
+ * id in this ask (mintCandidate). `about` lists, by field id, the values the user told Caret that the field asks for
+ * (about.ts); only that field's question offers them. `more` adds B24's derived values, controls and the questions about
+ * whose details a field wants and a value is.
  */
 export function buildFillRequest(
+  d: Disclosure,
   w: WindowState,
   fields: AskField[],
   candidates: Candidate[],
+  described: ReadonlyMap<string, ModelText>,
   wording: 0 | 1 = 0,
   declared: Declared = { snippets: [], charged: {} },
-  title: string | null = w.window.title,
+  title: ModelText | null = null,
   about: ReadonlyMap<string, readonly AskAbout[]> = new Map(),
   whose = false,
   more: RequestMore = {},
 ): JevRequest {
-  const shared: Record<string, string> = {};
-  for (const c of candidates) shared[c.id] = describeCandidate(c);
-  const where = title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`;
+  w = redactWindow(w);
+  const shared: Record<string, ModelText> = {};
+  for (const c of candidates) {
+    const said = described.get(c.id);
+    if (said !== undefined) shared[c.id] = said;
+  }
+  const app = d.app(w);
+  const where = title === null ? d.t`${app} window` : d.t`${app} window '${title}'`;
   const questions: JevRequest["questions"] = {};
   for (const f of fields) {
     if (more.stage !== "whose") {
       const excluded = more.exclude?.get(f.id);
-      const criteria: Record<string, string> = excluded === undefined ? { ...shared } : Object.fromEntries(Object.entries(shared).filter(([id]) => !excluded.has(id)));
-      for (const a of about.get(f.id) ?? []) criteria[a.id] = describeAbout(a.about);
-      for (const d of more.derived?.get(f.id) ?? []) criteria[d.id] = d.describe;
-      criteria[NONE] = "No candidate is the value this field asks for.";
+      const criteria: Record<string, ModelText> = excluded === undefined ? { ...shared } : Object.fromEntries(Object.entries(shared).filter(([id]) => !excluded.has(id)));
+      for (const a of about.get(f.id) ?? []) criteria[a.id] = a.said;
+      for (const x of more.derived?.get(f.id) ?? []) criteria[x.id] = x.describe;
+      criteria[NONE] = d.own("No candidate is the value this field asks for.");
       const control = more.controls?.get(f.id) ?? "text";
       const words = CONTROL_WORDINGS[control]?.[wording];
       const instr = more.instruction;
       const asked =
-        instr === undefined ? (words ?? WORDINGS[wording])(where, f.descriptor) : words === undefined ? ASK_WORDINGS[wording](instr, where, f.descriptor) : `The user asked Caret: "${instr}". ${words(where, f.descriptor)}`;
+        instr === undefined ? (words ?? WORDINGS[wording])(d, where, f.descriptor) : words === undefined ? ASK_WORDINGS[wording](d, instr, where, f.descriptor) : d.t`The user asked Caret: "${instr}". ${words(d, where, f.descriptor)}`;
       questions[f.id] = { type: "choice", instructions: asked, criteria };
     }
     if (more.stage !== "values" && whose && ((about.get(f.id)?.length ?? 0) > 0 || more.personal?.has(f.id) === true)) {
       const own = more.memoryWhose?.get(f.id);
-      questions[whoseId(f.id)] = { type: "choice", instructions: own === undefined ? WHOSE_WORDINGS[wording](where, f.descriptor) : MEMORY_WHOSE_WORDINGS[wording](where, f.descriptor, own), criteria: { ...WHOSE_CRITERIA } };
+      questions[whoseId(f.id)] = { type: "choice", instructions: own === undefined ? WHOSE_WORDINGS[wording](d, where, f.descriptor) : MEMORY_WHOSE_WORDINGS[wording](d, where, f.descriptor, own), criteria: d.ownRecord(WHOSE_CRITERIA) };
     }
   }
   if (more.stage !== "whose") {
-    for (const a of more.answers ?? []) questions[answerQuestionId(a.id)] = { type: "choice", instructions: ANSWER_WORDINGS[wording](where, a.descriptor), criteria: { ...a.criteria, [NONE]: ANSWER_NONE } };
+    for (const a of more.answers ?? []) questions[answerQuestionId(a.id)] = { type: "choice", instructions: ANSWER_WORDINGS[wording](d, where, a.descriptor), criteria: { ...a.criteria, [NONE]: d.own(ANSWER_NONE) } };
   }
-  const ownerCriteria = more.person === null || more.person === undefined ? { ...OWNER_CRITERIA } : personOwnerCriteria(more.person);
+  const ownerCriteria = more.person === null || more.person === undefined ? d.ownRecord(OWNER_CRITERIA) : personOwnerCriteria(d, more.person);
   const subjects: Record<string, string> = {};
   if (more.stage !== "values") {
     for (const o of more.owners ?? []) {
-      questions[ownerId(o.id)] = { type: "choice", instructions: OWNER_WORDINGS[wording](o.describe), criteria: { ...ownerCriteria } };
+      questions[ownerId(o.id)] = { type: "choice", instructions: OWNER_WORDINGS[wording](d, o.describe), criteria: { ...ownerCriteria } };
       if (o.text !== undefined) subjects[ownerId(o.id)] = o.text;
     }
   }
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
   const anyDerived = fields.some((f) => (more.derived?.get(f.id)?.length ?? 0) > 0);
-  const req: JevRequest = {
+  const notes = more.stage !== "values" && (more.owners?.length ?? 0) > 0 && (more.notes?.size ?? 0) > 0 ? Object.fromEntries(more.notes as ReadonlyMap<string, ModelText>) : null;
+  const task = [
+    d.own("The user is filling in this form. The candidates are values visible in the user's other open windows. Users most often copy from the window they were in just before the form."),
+    ...(anyAbout ? [d.own(" A few candidates are the user's own details, which the user told Caret; one fits a field only when the form asks for the user's own details there.")] : []),
+    ...(anyDerived ? [d.own(" Some candidates are a part of another, which Caret split out: a first or last name, or a street, city, state, ZIP code or country of an address or place.")] : []),
+    ...(more.instruction === undefined ? [] : [d.own(" The user asked Caret for this in the instruction above: a field gets a value only when the instruction asks for it, from where the instruction says.")]),
+    ...(more.person === null || more.person === undefined ? [] : [d.t` The instruction asks for ${more.person}'s details.`]),
+    ...((more.answers?.length ?? 0) > 0 ? [d.own(" Some fields ask for a written answer; for those, the candidates are answers the user saved on earlier forms.")] : []),
+  ];
+  const req: JevRequest = d.seal({
     purpose: more.stage === "whose" ? "fill.whose" : "fill.values",
     state: {
       ...(more.instruction === undefined ? {} : { instruction: more.instruction }),
+      ...(notes === null ? {} : { source_notes: notes }),
       destination_window: where,
-      form_fields: [...fields.map((f) => f.name), ...(more.answers ?? []).map((a) => a.descriptor)].join("; "),
-      task:
-        "The user is filling in this form. The candidates are values visible in the user's other open windows. " +
-        "Users most often copy from the window they were in just before the form." +
-        (anyAbout ? " A few candidates are the user's own details, which the user told Caret; one fits a field only when the form asks for the user's own details there." : "") +
-        (anyDerived ? " Some candidates are a part of another, which Caret split out: a first or last name, or a street, city, state, ZIP code or country of an address or place." : "") +
-        (more.instruction === undefined ? "" : " The user asked Caret for this in the instruction above: a field gets a value only when the instruction asks for it, from where the instruction says.") +
-        (more.person === null || more.person === undefined ? "" : ` The instruction asks for ${more.person}'s details.`) +
-        ((more.answers?.length ?? 0) > 0 ? " Some fields ask for a written answer; for those, the candidates are answers the user saved on earlier forms." : ""),
+      form_fields: d.join([...fields.map((f) => f.name), ...(more.answers ?? []).map((a) => a.descriptor)], "; "),
+      task: d.join(task, ""),
     },
     questions,
     snippets: declared.snippets,
     charged: declared.charged,
     ...(declared.consented === undefined ? {} : { consented: declared.consented }),
     ...(Object.keys(subjects).length === 0 ? {} : { subjects }),
-  };
-  // G2 review: fill's requests meet the one disclosure rule as they are built, so a test or a canned engine sees a miss
-  // too (privacy.ts assertNoSecrets; the Jev client checks every request again before it is sent).
-  assertNoSecrets(req);
+  });
   // A staged request (B24) carries only some of the asked text: it declares only the snippets it sends, as the
   // planner's requests do (privacy.test.ts fails a request that declares text it does not send). The ledger
   // still charged their windows for all of them, which errs on the side of saying less.
@@ -557,6 +591,16 @@ export interface FillOptions {
   authority?: Authority;
   /** Which page document a window shows now (the owning helper's page engine), for an Ask's scope. */
   documentOf?: DocumentReader | null;
+  /**
+   * V6 B1: this fill is part `part` of a page plan whose parts ask together (page-planner.ts): its alternate-field veto
+   * waits for every part's proposals on `board` and reads them all. Absent, the fill's own proposals are the form's.
+   */
+  peers?: { board: PartPicks; part: number };
+  /**
+   * HA2 recall lever 2: the session's owner verdicts (owner-cache.ts). A candidate whose owner question, notes and all,
+   * was answered before in this session is not asked again; its earlier answers stand. Absent, every one is asked.
+   */
+  ownerCache?: OwnerVerdicts;
   cutoff?: number;
   rand?: (n: number) => number;
   /** Makes the proposal id; tests pass a counter. */
@@ -666,7 +710,14 @@ function scopedInputs(w: WindowState, keys: readonly string[]): FormInput[] {
 }
 
 /** V3: a choice code made in deriving a value, and the extra source it read for it (a message's send line), for the verifier. */
-type Chosen = { says: string; also: Provenance | null; via?: "sentLine" };
+type Chosen = { says: string; also: Provenance | null; via?: "sentLine"; /** V4 review: how the value was derived, when the field's part would misstate it. */ how?: DeriveHow };
+/** V4: how a value names a menu's option, as the verifier is told it (controls.ts optionLink). */
+const OPTION_LINK_SAYS: Record<OptionLink, string> = {
+  inText: "the option's words are in it",
+  sameWords: "it has the same words as the option",
+  inOption: "its words are in the option",
+  stateCode: "a US state's name and its postal code",
+};
 
 /** V3 review: a reading's assumptions as a stated choice, or undefined for a plain reading (when.ts Reading). */
 function stated(r: Reading | null): Chosen | undefined {
@@ -684,7 +735,7 @@ type Pick =
 const PERSON_LABEL = /\b(?:name|traveler|traveller|passenger|patient|guest|applicant|student|attendee|from|to|cc|reference|landlord|contact|recipient|sender|tenant|driver|member|employee|candidate|spouse|partner|roommate|manager|advisor)\b/i;
 /** "Avery Kim <avery.kim@example.com>": a display name before an address. */
 const DISPLAY_NAME = /^\s*"?([^"<>@]+?)"?\s*<[^<>\s@]+@[^<>\s]+>\s*$/u;
-const PART_SAYS: Record<FillPart, string> = {
+const PART_SAYS = {
   first: "first name",
   middle: "middle name",
   last: "last name",
@@ -698,12 +749,16 @@ const PART_SAYS: Record<FillPart, string> = {
   month: "month",
   day: "day",
   year: "year",
-};
+} as const satisfies Record<FillPart, string>;
 const ADDRESS_PARTS: ReadonlySet<FillPart> = new Set(["street", "unit", "city", "state", "zip"]);
 /** Parts a place written "City, State, Country" gives (derive.ts splitPlace). */
 const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"]);
 /** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate); C2 adds its day. */
 const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "day", "year"]);
+/** HA2: the parts of a person's address and place (derive.ts FillPart): a field asking one of these takes a person's detail. */
+const PERSON_PLACE_PARTS: ReadonlySet<FillPart> = new Set([...ADDRESS_PARTS, ...PLACE_PARTS]);
+/** HA2: kinds of value that are no person's address part (an event's date or time, an amount, a link, a reference). */
+const NOT_ADDRESS_KINDS: ReadonlySet<ValueKind> = new Set(["date", "time", "amount", "url", "id", "email", "phone"]);
 /** C1: the part a menu asks for, if any: a date's month or year, a state, or a country. */
 /** The parts a menu's autocomplete field name may give it: those menuPart reads from a label. */
 const MENU_AUTOCOMPLETE: ReadonlySet<string> = new Set(["month", "day", "year", "state", "country"]);
@@ -768,15 +823,61 @@ const ABOUT_VALUE_KIND: Partial<Record<AboutKind, ValueKind>> = { email: "email"
  * G2: what a memory entry of each kind is, as MEMORY_WHOSE_WORDINGS asks "the user's own …"; a kind not listed is said as
  * ABOUT_KIND_SAYS says it. These name a thing; ABOUT_KIND_SAYS's "whether the user may work there, yes or no" does not.
  */
-const OWN_SAYS: Partial<Record<AboutKind, string>> = { workAuth: "work authorization", sponsorship: "need for visa sponsorship", heard: "answer to how they heard about the job", name: "name" };
+const OWN_SAYS = { workAuth: "work authorization", sponsorship: "need for visa sponsorship", heard: "answer to how they heard about the job", name: "name" } as const satisfies Partial<Record<AboutKind, string>>;
 /** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
 const MAX_OWNERS = 40;
+
+/**
+ * SC1 2c, the minimized candidate: a value question describes a candidate by its span, its line (at most MAX_LINE, 80
+ * characters), its label and section, and its window, without the first line of its block. The block head stays in the
+ * whose and owner questions (mintOwned), where G2 added it to say whose details a value is. PV2 Q3 ran the B24 scripted
+ * oracle with and without it (~/.caret-run/evidence/screen/pv2/q3): every ask scored the same on the page and reader
+ * windows, and the requests carried 10-11% fewer characters. That oracle answers from fill's trace, not from the
+ * descriptions, so it shows no cost in code; what a model loses without the block head is unmeasured (no live run).
+ */
+const VALUE_BLOCK_HEAD = false;
+
+/**
+ * describeOwned's words, minted: the candidate's line (its whole source line when given), then where it sits in Caret's
+ * words, then (HA2) the whole notes that hold it, by their minted ids in source_notes (notesSay's words).
+ */
+function mintOwned(d: Disclosure, model: ScreenModel, c: Candidate, line?: string, notes?: readonly ModelText[]): ModelText | null {
+  const said = mintCandidate(d, model, c, line === undefined ? {} : { line });
+  if (said === null) return null;
+  const placed = c.placements === undefined ? said : d.t`${said} Where it sits: ${d.join(c.placements.map((p) => d.own(PLACEMENT_SAYS[p])), "; ")}.`;
+  if (notes === undefined || notes.length === 0) return placed;
+  return d.t`${placed} Every text on screen that holds it, whole: ${d.join(notes, " and ")} in source_notes; whose it is depends on all of that text.`;
+}
+
+/** What a memory entry of a kind is, as MEMORY_WHOSE_WORDINGS says it (OWN_SAYS, else ABOUT_KIND_SAYS). */
+function ownSays(kind: AboutKind): (typeof OWN_SAYS)[keyof typeof OWN_SAYS] | (typeof ABOUT_KIND_SAYS)[AboutKind] | "value" {
+  return Object.hasOwn(OWN_SAYS, kind) ? OWN_SAYS[kind as keyof typeof OWN_SAYS] : Object.hasOwn(ABOUT_KIND_SAYS, kind) ? ABOUT_KIND_SAYS[kind] : "value";
+}
 
 /** G2: a candidate as a whose-value question describes it: its description, then where it sits (Candidate.placements). I3: `line`, its whole source line, in place of its clause. */
 function describeOwned(c: Candidate, line?: string): string {
   const d = describeCandidate({ ...c, id: "", ...(line === undefined ? {} : { line }) });
   return c.placements === undefined ? d : `${d} Where it sits: ${c.placements.map((p) => PLACEMENT_SAYS[p]).join("; ")}.`;
 }
+
+/** HA2: how an owner question names the whole texts that hold its value (mintOwned mints these words); noteShown looks for exactly this. */
+export function notesSay(ids: readonly string[]): string {
+  return `Every text on screen that holds it, whole: ${ids.join(" and ")} in source_notes; whose it is depends on all of that text.`;
+}
+
+/** HA2 review 3, item 3: why a value is withheld when its cached owner verdict was invalidated while Caret worked. */
+export const OWNER_STALE = "what Caret knew about whose this value is was cleared while it worked";
+
+/** HA2 review item 7: why a value is withheld when a window Caret may not read for this fill also holds it. */
+export const OWNER_UNREADABLE = "a window Caret may not read here also holds it, so Caret can't show Jev whose it is";
+
+/** HA2 (b): why a value is withheld when redaction cut part of a text that holds it. */
+export const NOTE_PRIVATE = "part of the note is private, so Caret can't show Jev whose this value is";
+
+/** HA2: why a value is withheld when the owner questions could not show the whole text it was read from (ownerNotes). */
+export const NOTE_UNSHOWN = "the note is too long for Caret to show Jev whose this value is";
+/** HA2: why an address part is withheld when its value was asked no owner question (past MAX_OWNERS). */
+export const OWNER_UNASKED = "Caret couldn't ask Jev whose this value is";
 
 /** The person's name a candidate holds, when it is a person's: the display name of "Name <email>", the head of "Name, more", or the whole span. */
 function personName(c: Candidate): string | null {
@@ -803,14 +904,15 @@ export async function proposeFill(
   const derive = opts.derive !== false;
   const owners = opts.owner !== false && whose;
   const resolveCtx: ResolveContext = opts.resolve ?? { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
-  const w = model.windows.get(windowId);
-  if (w === undefined) throw new FillError("noWindow", `unknown window ${windowId}`);
+  const localWindow = model.windows.get(windowId);
+  if (localWindow === undefined) throw new FillError("noWindow", `unknown window ${windowId}`);
+  const w = redactWindow(localWindow);
   const pageOwned = w.window.kind === PAGE_WINDOW_KIND;
   // Every piece of screen text the asks carry goes through one ledger, which holds each window to its
   // budget (privacy.ts): the form's title and each field's descriptor, nearest field first, then the
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
   const scope = opts.scope;
-  const ledger = new SnippetLedger(model.windows.values(), scope?.consented === undefined ? {} : { consented: scope.consented });
+  const ledger = new Disclosure(model.windows.values(), scope?.consented === undefined ? {} : { consented: scope.consented });
   // C1 (item 6): an Ask for the whole form that narrows nothing (every source, memory, no person, no value it spells out)
   // asks each value as a Fill all does. Live on the same corpus and W4 pages and sources, Ask's wording that quotes the
   // instruction (B25) agreed on the same values as Fill all's but under FILL_CUTOFF, which was calibrated on Fill all's
@@ -819,7 +921,7 @@ export async function proposeFill(
   // untied rule included.
   const plainAsk = scope !== undefined && scope.wholeForm === true && scope.windows === null && scope.memory && scope.person === null && scope.literals.size === 0 && (scope.consented?.size ?? 0) === 0;
   // An Ask's instruction is in every question; it may quote a window, which pays for what it quotes.
-  if (scope !== undefined && !plainAsk && !ledger.plan([scope.instruction])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
+  if (scope !== undefined && !plainAsk && !ledger.plan([instructionForModel(scope.instruction)])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
   // G2: the form's own title and fields' texts meet the redacted view's rule too (memory/sensitive.ts secretText).
   const title = !secretText(w.window.title) && ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   type Field = {
@@ -827,6 +929,8 @@ export async function proposeFill(
     node: Node;
     descriptor: string;
     name: string;
+    /** `descriptor` and `name` as the request mints them (SC1 2b). */
+    said: AskField;
     kinds: Set<ValueKind>;
     terms: Set<string>;
     texts: (string | null)[];
@@ -854,7 +958,22 @@ export async function proposeFill(
       return c === undefined ? [] : [{ node: c.node, control: c.control, form: c }];
     });
   };
-  const inputs = scope !== undefined ? scopedInputs(w, scope.fields) : opts.only !== undefined ? onlyInputs(opts.only) : selectedFormInputs(model, windowId, triggerKey, opts);
+  // PV1: raw nodes classify forbidden targets locally before any descriptor is read for a model.
+  // Only nodes and controls retained by the redacted view can become request fields.
+  const localInputs = scope !== undefined ? scopedInputs(localWindow, scope.fields) : opts.only !== undefined ? onlyInputs(opts.only) : selectedFormInputs(model, windowId, triggerKey, opts);
+  const safeControls = new Map(formControls(w).map((c) => [c.node.key, c]));
+  const inputs = localInputs.flatMap((x): FormInput[] => {
+    if (neverTypedNode(localWindow, x.node) !== null || x.node.states?.includes("secure")) return [];
+    const node = w.nodes.get(x.node.key);
+    if (node === undefined) return [];
+    // Editable web comboboxes are synthesized by formInputs, not listed by formControls.
+    // Rebuild that control from the redacted node so safe dropdowns keep their existing behavior.
+    const form = x.form === null ? null : safeControls.get(node.key) ??
+      (x.control === "combobox" && node.role === "AXComboBox" && inWebArea(w, node)
+        ? { node, control: "combobox" as const, label: fieldLabelText(node.label), options: null, members: [] }
+        : undefined);
+    return form === undefined ? [] : [{ ...x, node, form }];
+  });
   const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");
   for (const x of inputs) {
     const n = x.node;
@@ -883,7 +1002,9 @@ export async function proposeFill(
     // its options are names, which a whole date or address is not (C1, MENU_PARTS).
     // W2: the page's own autocomplete field name, when it names a part, outranks the label (fill/contract.ts).
     const part = !derive ? null : typed ? (autocompletePart(n.autocomplete) ?? datePart(name, d.section) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : x.control === "select" ? (MENU_AUTOCOMPLETE.has(autocompletePart(n.autocomplete) ?? "none") ? autocompletePart(n.autocomplete) : menuPart(name, d.section)) : null;
-    // A country is no one's detail, so it asks no whose question. A dropdown that takes a person's details meets the owner
+    // HA2 (lead decision 2): every part of an address is a person's detail, a country included: someone else's address in
+    // the user's note is the same failure as their phone. Before HA2 a country asked no whose question, as no one's detail.
+    // A dropdown that takes a person's details meets the owner
     // veto and the whose gate as a text field does (B27 review: "Your full name" took another person's name otherwise).
     // So does a list of options, read by its label alone: a "Your full name" pop-up menu listing two people was handed
     // the other one's name (B27 second review).
@@ -891,12 +1012,20 @@ export async function proposeFill(
     const personKinds = typed ? kinds : listed ? fieldKinds(labelWords) : new Set<ValueKind>();
     const personal =
       (typed || listed) &&
-      ((part !== null && part !== "country" && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
+      ((part !== null && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
     const about = memoryOk ? (opts.about ?? []).filter((a) => aboutFits(a, x.control) && fieldAsksFor(a, name, w.window.title)) : [];
     const descriptor = describeInput(w, x);
-    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor, name: name ?? "unnamed field", kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
+    const id = `f${fields.length + 1}`;
+    const descriptorSaid = c === null ? mintDescriptor(ledger, w, n, d) : mintControl(ledger, w, c, d.section, c.label === null ? d.nearest : null);
+    const nameSaid = name === null ? ledger.own("unnamed field") : ledger.descriptor(w, name);
+    // Every part was taken above; a descriptor the view does not show whole is never sent.
+    if (descriptorSaid === null || nameSaid === null) {
+      if (n.key === triggerKey && scope === undefined) throw new FillError("labelTooLong", `the descriptor of the focused field in window ${windowId} is not one its redacted view shows`);
+      continue;
+    }
+    fields.push({ id, node: n, descriptor, name: name ?? "unnamed field", said: { id, descriptor: descriptorSaid, name: nameSaid }, kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
   }
   // S1: a page form's empty field that takes a written answer is asked which saved answer answers it, and nothing else:
   // no window span is the user's prose (prose fields hand off in v1, plans/fast-browser.md). Each field offers the
@@ -971,14 +1100,32 @@ export async function proposeFill(
       const c = candidates[i];
       if (c === undefined) continue;
       const moved = labelledCandidate(anchorWindow, l.node, l.value, l.label, c.id, c.kind, "justLeft");
-      if (ledger.take(anchorWindow, "candidate", candidateTexts(moved))) candidates[i] = moved;
+      if (moved !== null && ledger.take(anchorWindow, "candidate", candidateTexts(moved))) candidates[i] = moved;
     }
   }
   // Values code derives for one field (derive.ts): a name's first, middle or last part for a field that asks
   // for it, a full name joined from labelled first and last names, and an address's parts. Each is offered only
   // in its field's question, beside the shared candidates, and keeps the candidate or memory entry it came from.
   /** V3: `chose` says a choice code made in deriving it; such a value goes to the verifier with that sentence (contract.ts Provenance.says). */
-  type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"]; also: Candidate | null; chose?: Chosen };
+  /** `said` mints `describe` when the request is built (SC1 2b): after memory and lines are priced; null drops the value. */
+  type Derived = { key: string; text: string; describe: string; said: () => ModelText | null; base: Extract<Pick, { from: "derived" }>["base"]; also: Candidate | null; chose?: Chosen };
+  const m = ledger;
+  /** A candidate's line as describeCandidate read it when a derived value named it: `line` is set only later (clauses). */
+  const candidateSaid = (c: Candidate): (() => ModelText | null) => {
+    const line = c.line ?? null;
+    return () => mintCandidate(m, model, c, { line, blockHead: VALUE_BLOCK_HEAD });
+  };
+  const textSaid = (c: Candidate): (() => ModelText | null) => () => m.candidate(viewOf(model, c.source.windowId) ?? w, c.text);
+  /** "<value>" (the <part> of|in <whole>), the value a derivation of the whole's text. */
+  const partSaid = (value: string, part: ModelText, rel: "of" | "in", whole: () => ModelText | null, base: () => ModelText | null): (() => ModelText | null) => () => {
+    const wm = whole();
+    const b = base();
+    const v = b === null ? null : m.derived(b, value);
+    if (wm === null || v === null) return null;
+    return rel === "of" ? m.t`"${v}" (the ${part} of ${wm})` : m.t`"${v}" (the ${part} in ${wm})`;
+  };
+  const aboutSaid = (a: AboutValue): (() => ModelText | null) => () => mintAbout(m, a);
+  const aboutValue = (a: AboutValue): (() => ModelText | null) => () => m.memoryText(a.label, a.value);
   const derived = new Map<string, Derived[]>();
   const memoryNames = scope !== undefined && !scope.memory ? [] : (opts.about ?? []).filter((a) => a.kind === "name");
   // C2 (lead decision 5): one address or date entry gives a part to each field that asks for that part of it.
@@ -987,23 +1134,26 @@ export async function proposeFill(
     for (const f of fields) {
       if (f.part === null) continue;
       const list: Derived[] = [];
-      const add = (text: string | null, describe: string, base: Derived["base"], also: Candidate | null = null, chose?: Chosen): void => {
+      const add = (text: string | null, describe: string, said: () => ModelText | null, base: Derived["base"], also: Candidate | null = null, chose?: Chosen): void => {
         if (text === null || text === "" || candidates.some((c) => c.text === text) || list.some((x) => x.text === text)) return;
-        list.push({ key: `${f.id}:${list.length}`, text, describe, base, also, ...(chose === undefined ? {} : { chose }) });
+        list.push({ key: `${f.id}:${list.length}`, text, describe, said, base, also, ...(chose === undefined ? {} : { chose }) });
       };
       const part = f.part;
       if (part === "first" || part === "middle" || part === "last" || part === "full") {
         for (const c of candidates) {
           const person = personName(c);
           if (person === null) continue;
-          if (part === "full") add(person === c.text ? null : person, `"${person}" (the ${PART_SAYS.full} in ${describeCandidate(c)})`, { from: "window", c });
-          else add(namePart(splitName(person), part), `"${namePart(splitName(person), part) ?? ""}" (the ${PART_SAYS[part]} in ${describeCandidate(c)})`, { from: "window", c });
+          if (part === "full") add(person === c.text ? null : person, `"${person}" (the ${PART_SAYS.full} in ${describeCandidate(c)})`, partSaid(person, m.own(PART_SAYS.full), "in", candidateSaid(c), textSaid(c)), { from: "window", c });
+          else {
+            const v = namePart(splitName(person), part);
+            add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} in ${describeCandidate(c)})`, partSaid(v ?? "", m.own(PART_SAYS[part]), "in", candidateSaid(c), textSaid(c)), { from: "window", c });
+          }
         }
         if (part !== "full" && (scope?.person ?? null) === null) {
           for (const a of memoryNames) {
             if (!fieldAsksForNamePart(a, f.name)) continue;
             const v = namePart(splitName(a.value), part);
-            add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} in ${describeAbout(a)})`, { from: "memory", a });
+            add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} in ${describeAbout(a)})`, partSaid(v ?? "", m.own(PART_SAYS[part]), "in", aboutSaid(a), aboutValue(a)), { from: "memory", a });
           }
         } else {
           // A full name joined from labelled first and last names on two lines next to each other in one node and
@@ -1017,7 +1167,13 @@ export async function proposeFill(
             const last = cs.filter((c) => fieldPart(c.context, false) === "last");
             if (first.length === 1 && last.length === 1 && adjacentLines(model, first[0] as Candidate, last[0] as Candidate)) {
               const [a, b] = [first[0] as Candidate, last[0] as Candidate];
-              add(joinName(a.text, b.text), `"${joinName(a.text, b.text)}" (the first name ${describeCandidate(a)} and the last name ${describeCandidate(b)}, joined)`, { from: "window", c: a }, b);
+              const joined = joinName(a.text, b.text);
+              const [sa, sb, ta, tb] = [candidateSaid(a), candidateSaid(b), textSaid(a), textSaid(b)];
+              add(joined, `"${joined}" (the first name ${describeCandidate(a)} and the last name ${describeCandidate(b)}, joined)`, () => {
+                const [da, db, xa, xb] = [sa(), sb(), ta(), tb()];
+                const v = xa === null || xb === null ? null : m.derived([xa, xb], joined);
+                return da === null || db === null || v === null ? null : m.t`"${v}" (the first name ${da} and the last name ${db}, joined)`;
+              }, { from: "window", c: a }, b);
             }
           }
         }
@@ -1026,13 +1182,13 @@ export async function proposeFill(
           const parts = part === "country" ? null : splitAddress(c.text);
           const place = PLACE_PARTS.has(part) ? splitPlace(c.text) : null;
           const v = parts?.[part as "street" | "unit" | "city" | "state" | "zip"] ?? place?.[part as "city" | "state" | "country"] ?? undefined;
-          if (v !== undefined && v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
+          if (v !== undefined && v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, partSaid(v, m.own(PART_SAYS[part]), "of", candidateSaid(c), textSaid(c)), { from: "window", c });
         }
         if (part !== "country") {
           for (const a of memoryWhole) {
             if (!fieldAsksForPart(a, f.name, part as "street" | "unit" | "city" | "state" | "zip", w.window.title)) continue;
             const v = memoryValue(a.value, part as FillMemoryPart);
-            add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, { from: "memory", a });
+            add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, partSaid(v ?? "", m.own(PART_SAYS[part]), "of", aboutSaid(a), aboutValue(a)), { from: "memory", a });
           }
         }
       } else if (DATE_PARTS.has(part)) {
@@ -1052,13 +1208,39 @@ export async function proposeFill(
           const shown = v !== null && part === "month" && f.control === "select" && options !== null && /^\d{1,2}$/u.test(v) ? monthOption(options, Number(v)) : v;
           // V3 review: an order the source's format hint settled, where the numbers alone did not, is code's choice.
           const hinted = part !== "year" && order !== null && datePartOf(part as "month" | "day", c.text, null) === null;
-          if (shown !== null) add(shown, `"${shown}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c }, null, hinted ? { says: `Caret read the date ${order === "md" ? "month first" : "day first"}, as ${stated !== null ? "the format beside it in the source says" : `the source's locale, ${resolveCtx.sourceLocale}, writes dates`}`, also: null } : undefined);
+          if (shown !== null) add(shown, `"${shown}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, partSaid(shown, m.own(PART_SAYS[part]), "of", candidateSaid(c), textSaid(c)), { from: "window", c }, null, hinted ? { says: `Caret read the date ${order === "md" ? "month first" : "day first"}, as ${stated !== null ? "the format beside it in the source says" : `the source's locale, ${resolveCtx.sourceLocale}, writes dates`}`, also: null } : undefined);
         }
         for (const a of memoryWhole) {
           if (!fieldAsksForPart(a, f.name, part as "month" | "day" | "year", w.window.title)) continue;
           const v = memoryValue(a.value, part as FillMemoryPart);
-          add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, { from: "memory", a });
+          add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, partSaid(v ?? "", m.own(PART_SAYS[part]), "of", aboutSaid(a), aboutValue(a)), { from: "memory", a });
         }
+      }
+      if (list.length > 0) derived.set(f.id, list);
+    }
+  }
+  // F1: offer the field's format of a known month/year or GitHub address, retaining the original source and stating
+  // the conversion for the verifier. The shape gate still checks the formatted value, and no exemption is added.
+  if (derive) {
+    for (const f of fields) {
+      if (f.control !== "text") continue;
+      const list = derived.get(f.id) ?? [];
+      for (const c of candidates) {
+        const source = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
+        if (source === undefined) continue;
+        // URL candidates already carry required raw evidence from their extraction occurrence.
+        const r = formatForField(c.text, f.labelWords, f.node.inputKind, c.line ?? nodeText(source));
+        if (r === null || candidates.some((x) => x.text === r.value) || list.some((x) => x.text === r.value)) continue;
+        // GFM strips link punctuation from the value, but both verifier wordings must read the complete source token.
+        const original = r.sourceToken === undefined || r.sourceToken === c.text ? c : { ...c, text: r.sourceToken };
+        const [whole, base] = [candidateSaid(original), textSaid(original)];
+        list.push({ key: `${f.id}:${list.length}`, text: r.value, describe: `"${r.value}" (the value in the field's format of ${describeCandidate(original)})`, said: () => {
+          const wm = whole();
+          const b = base();
+          // HTTPS is the only word this transform adds; derived already accepts a caller's literal code vocabulary.
+          const v = b === null ? null : m.derived(b, r.value, ["https"]);
+          return wm === null || v === null ? null : m.t`"${v}" (the value in the field's format of ${wm})`;
+        }, base: { from: "window", c: original }, also: null, chose: { says: `Caret assumed: ${r.assumptions.join("; ")}`, also: null, how: "fieldFormat" } });
       }
       if (list.length > 0) derived.set(f.id, list);
     }
@@ -1073,7 +1255,13 @@ export async function proposeFill(
         const m = /^[$€£¥]\s?(\d[\d,]*(?:\.\d{1,2})?)(?![\d,.])/u.exec(c.text);
         const n = m?.[1];
         if (n === undefined || candidates.some((x) => x.text === n) || list.some((x) => x.text === n)) continue;
-        list.push({ key: `${f.id}:${list.length}`, text: n, describe: `"${n}" (the number of ${describeCandidate(c)})`, base: { from: "window", c }, also: null });
+        const [whole, base] = [candidateSaid(c), textSaid(c)];
+        list.push({ key: `${f.id}:${list.length}`, text: n, describe: `"${n}" (the number of ${describeCandidate(c)})`, said: () => {
+          const wm = whole();
+          const b = base();
+          const v = b === null ? null : ledger.derived(b, n);
+          return wm === null || v === null ? null : ledger.t`"${v}" (the number of ${wm})`;
+        }, base: { from: "window", c }, also: null });
       }
       if (list.length > 0) derived.set(f.id, list);
     }
@@ -1096,7 +1284,16 @@ export async function proposeFill(
       const list = derived.get(f.id) ?? [];
       const offer = (value: string, c: Candidate, chose: Chosen): void => {
         if (candidates.some((x) => x.text === value) || list.some((x) => x.text === value)) return;
-        list.push({ key: `${f.id}:${list.length}`, text: value, describe: `"${value}" (${describeCandidate(c)}, as the field takes it; ${chose.says})`, base: { from: "window", c }, also: null, chose });
+        const [whole, base] = [candidateSaid(c), textSaid(c)];
+        list.push({ key: `${f.id}:${list.length}`, text: value, describe: `"${value}" (${describeCandidate(c)}, as the field takes it; ${chose.says})`, said: () => {
+          // The reading is code's: its words are the span's, numbers and calendar words; the choice it made is code text
+          // read from the screen, minted as held text (Disclosure.heldText).
+          const wm = whole();
+          const b = base();
+          const v = b === null ? null : m.derived(b, value);
+          const says = m.heldText(chose.says);
+          return wm === null || v === null || says === null ? null : m.t`"${v}" (${wm}, as the field takes it; ${says})`;
+        }, base: { from: "window", c }, also: null, chose });
       };
       for (const c of candidates) {
         const kinds = candidateKinds(model, c);
@@ -1111,7 +1308,7 @@ export async function proposeFill(
           continue;
         }
         if (raw !== null) continue;
-        const sw = model.windows.get(c.source.windowId);
+        const sw = viewOf(model, c.source.windowId);
         const sent = sw === undefined ? null : sentLineFor([...sw.nodes.values()].map((n) => ({ key: n.key, text: nodeText(n) })), c.source.nodeKey, c.text);
         const dated = sent === null ? null : datedBySent(c.text, sent, resolveCtx);
         const read = dated === null ? null : readFor(f, c.text, dated.ctx, null);
@@ -1141,17 +1338,68 @@ export async function proposeFill(
       const list = derived.get(f.id) ?? [];
       if (list.some((x) => x.text === named.option)) continue;
       const chose: Chosen = { says: `Caret took the word '${named.word}' in the user's instruction to name the option '${named.option}', the only option it names`, also: null };
-      list.push({ key: `${f.id}:${list.length}`, text: named.option, describe: `"${named.option}" (the option the word '${named.word}' in the user's instruction names)`, base: { from: "instruction", text: named.word }, also: null, chose });
+      const option = named.option;
+      const word = named.word;
+      list.push({ key: `${f.id}:${list.length}`, text: option, describe: `"${option}" (the option the word '${word}' in the user's instruction names)`, said: () => {
+        const o = m.descriptor(w, option);
+        const said = m.instructionSpan(scope.instruction, word);
+        return o === null || said === null ? null : m.t`"${o}" (the option the word '${said}' in the user's instruction names)`;
+      }, base: { from: "instruction", text: word }, also: null, chose });
       derived.set(f.id, list);
     }
   }
   // A value the instruction spells out for a field (FillScope.literals) is offered in that field's question, as
   // what the user wrote; Jev still chooses it, and a date or time is read by the value resolver like any other.
   const literalOf = (f: { node: Node }): string | undefined => scope?.literals.get(f.node.key);
+  // HA2 review 2, item 8: always, even when a window's candidate has the same text. That candidate meets the owner rules
+  // (an "other" verdict takes it out of the field's question); the user's own words for the field never do.
   for (const f of fields) {
     const lit = literalOf(f);
-    if (lit === undefined || candidates.some((c) => c.text === lit)) continue;
-    derived.set(f.id, [{ key: `${f.id}:said`, text: lit, describe: `"${lit}" (written in the user's instruction for this field)`, base: { from: "instruction", text: lit }, also: null }, ...(derived.get(f.id) ?? [])]);
+    if (lit === undefined) continue;
+    const instruction = scope?.instruction ?? "";
+    derived.set(f.id, [{ key: `${f.id}:said`, text: lit, describe: `"${lit}" (written in the user's instruction for this field)`, said: () => {
+      const said = m.instructionSpan(instruction, lit);
+      return said === null ? null : m.t`"${said}" (written in the user's instruction for this field)`;
+    }, base: { from: "instruction", text: lit }, also: null }, ...(derived.get(f.id) ?? [])]);
+  }
+  // V4 (G3: 30 of 35 Ask fields with no candidate were menus): a menu's option that a value on offer names without being
+  // it (controls.ts optionLink: "Manager" in "my manager at Ridgeline", "TX" for "Texas") is offered as that option's own
+  // label, in that field's question only, so Jev picks among the options its sources name. An option equal to a value
+  // needs no link: that value is the option, and its pick is minted under optionLabel. Which option a value names is
+  // code's reading, so a linked pick goes to the verifier with the reading said (`chose`), never minted as the option's
+  // label: options are candidates, never mints. A derived value that already carries a choice is not linked again, so a
+  // pick states at most one choice. A value the instruction spells out for the menu is linked too ("Texas" in "put Texas for
+  // state"). Radio groups keep their visible buttons and controlValue's reading of a pick.
+  // V4 review: an option found among other words of a longer text ("inText") is linked only when the text is tied to this
+  // menu: a line labelled with a word of its label or section that says what it is for (controls.ts labelTies: "Reference:
+  // …, my manager at Ridgeline" for "Reference relationship", never "date" alone), a memory entry labelled so, or a part or
+  // literal derived for this field. Untied, "a friend referred
+  // me" offered Relationship "Friend" and a move-in date's "March" offered Graduation date month (guard adversary). A text
+  // that is the option in other words (sameWords, inOption) names it by itself; a state's postal code is read only for a
+  // menu that asks for a state (fill part "state").
+  if (derive) {
+    for (const f of fields) {
+      const options = f.form?.options ?? null;
+      if (f.control !== "select" || options === null) continue;
+      const asked = f.texts.slice(0, 3);
+      const list = derived.get(f.id) ?? [];
+      const link = (text: string, describe: string, said: () => ModelText | null, base: Derived["base"], also: Candidate | null, tied: boolean): void => {
+        const l = optionLink(options, text, f.part === "state");
+        if (l === null || (l.how === "inText" && !tied) || candidates.some((c) => c.text === l.option) || list.some((x) => x.text === l.option)) return;
+        const chose: Chosen = { says: `Caret took "${text}" to name the option '${l.option}' (${OPTION_LINK_SAYS[l.how]})`, also: null, how: "optionNamed" };
+        const option = l.option;
+        list.push({ key: `${f.id}:${list.length}`, text: option, describe: `"${option}" (the option ${describe} names)`, said: () => {
+          const o = m.descriptor(w, option);
+          const by = said();
+          return o === null || by === null ? null : m.t`"${o}" (the option ${by} names)`;
+        }, base, also, chose });
+      };
+      // A derived value with no choice of its own is this field's part, or its literal: tied to it.
+      for (const d of [...list]) if (d.chose === undefined) link(d.text, d.describe, d.said, d.base, d.also, true);
+      for (const c of candidates) link(c.text, describeCandidate(c), candidateSaid(c), { from: "window", c }, null, c.context !== null && labelTies(c.context, asked));
+      for (const a of f.about) link(a.value, describeAbout(a), aboutSaid(a), { from: "memory", a }, null, labelTies(a.label, asked));
+      if (list.length > 0) derived.set(f.id, list);
+    }
   }
   if (candidates.length === 0 && cut.length === 0 && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
 
@@ -1212,18 +1460,17 @@ export async function proposeFill(
   const judged = new Map<string, string>();
   const nodeKeyOf = (c: Candidate): string => `${c.source.windowId}\u0000${c.source.nodeKey}`;
   const snapshotOf = (c: Candidate): void => {
-    const sw = model.windows.get(c.source.windowId);
+    const sw = viewOf(model, c.source.windowId);
     const n = sw?.nodes.get(c.source.nodeKey);
     if (n !== undefined && !judged.has(nodeKeyOf(c))) judged.set(nodeKeyOf(c), nodeText(n));
   };
   const memoryRead = scope === undefined || scope.memory;
   const ids = memoryRead ? identitiesOf(opts.about ?? []) : [];
   const userEmails = new Set(ids.filter((x) => x.kind === "email").map((x) => x.key));
-  const userNames = ids.filter((x) => x.kind === "name").map((x) => x.key);
   for (const c of candidates) {
     const id = identityOf(c.text, ids);
     if (id !== null && ledger.memory([id.label])) c.identity = id;
-    const sits = placementsOf(model, c, userEmails, userNames);
+    const sits = placementsOf(model, c, userEmails);
     if (sits.length > 0) c.placements = sits;
     snapshotOf(c);
   }
@@ -1246,7 +1493,15 @@ export async function proposeFill(
   const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
   // G2: a candidate that is the user's own identity (whose.ts) is the user's without asking; it is "asked" in every
   // sense below (ownerKnown), its answer "user" from both asks.
-  const ownerCands = owners && personal.size > 0 ? candidates.filter((c) => personalCand(c) && c.identity === undefined).slice(0, MAX_OWNERS) : [];
+  // HA2 (lead decision 2): a field asking an address part takes a person's detail, and a lone city, ZIP or country line is
+  // no person's kind of value by its shape. Each window value that could be one of the asked parts (derive.ts partFits,
+  // never a date, time, amount, link or reference) is asked whose it is too, after the person's values, within MAX_OWNERS;
+  // one past the cap is withheld from those fields (noteUnshown).
+  const addressAsked = asked.filter((f) => f.personal && f.part !== null && PERSON_PLACE_PARTS.has(f.part));
+  // A value a part is derived from for such a field ("Oakland, California, United States" for Country) counts too.
+  const derivedFrom = (f: Field, c: Candidate): boolean => (derived.get(f.id) ?? []).some((d) => (d.base.from === "window" && d.base.c.id === c.id) || d.also?.id === c.id);
+  const addressCand = (c: Candidate): boolean => addressAsked.some((f) => partFits(f.part as FillPart, c.text) || derivedFrom(f, c)) && ![...candidateKinds(model, c)].some((k) => NOT_ADDRESS_KINDS.has(k));
+  const ownerCands = owners && personal.size > 0 ? [...candidates.filter((c) => personalCand(c)), ...candidates.filter((c) => !personalCand(c) && addressCand(c))].filter((c) => c.identity === undefined).slice(0, MAX_OWNERS) : [];
   // I3 (N1): for an Ask that names a person, both owner questions show each value's whole source line, read from the
   // redacted view and charged to its window's budget after every span and clause, before the asks' declaration is taken
   // (review: taken after, the line went out undeclared). The clause alone can lose the name
@@ -1262,6 +1517,96 @@ export async function proposeFill(
       if (line === undefined || line === c.text || line === c.line) continue;
       if (ledger.take(sw, "candidate", [line])) ownerLines.set(c.id, line);
     }
+  }
+  // HA2 (lead decision): an owner judgement about a window's value counts only when both owner questions showed the
+  // whole text it was read from, its source node as the redacted view shows it, charged to its window's budget and prose
+  // share, which are unchanged. A held-out note held the user's profile, then another person's contact lines and a
+  // sentence saying they were that person's; the owner questions showed the value's own line and the note's first 60
+  // characters, and Jev called the phone the user's. One rule, with no name detection and no choice of sentences: a
+  // disclaimer that names nobody ("neither line is mine") is shown as any other text is. A note that does not fit is not
+  // sent in part; its values are withheld from fields that want the user's details (noteUnshown, below).
+  // Lead decisions on the review: the evidence is every unit that holds the value (note-unit.ts: (a) all of them, (b) none
+  // a redaction cut, (c) a text area or its whole window), each taken through the ledger once and sent once.
+  const notes = new Map<string, ModelText>();
+  /** Each note's id ("note_1") as the request's Disclosure minted it, by id. */
+  const noteSaid = new Map<string, ModelText>();
+  const noteIds = new Map<string, string>();
+  const ownerNotes = new Map<string, { units: NoteUnit[]; ids: string[] | null; why: "private" | "unshown" | "unreadable" | "stale" | null }>();
+  /** Lever 2: the cache's invalidations as they stand now, before any owner question is read from it or sent (item 3). */
+  const cacheTicket = opts.ownerCache?.ticket();
+  /** Lever 2: what shapes how an owner question is read beyond its own words: the Ask's instruction and person (item 4). */
+  const cacheContext = JSON.stringify({ instruction: scope?.instruction ?? null, person: scope?.person ?? null, plainAsk });
+  /** Lever 2: by candidate id, its owner question's cache key, and the session's earlier answers when it has them. */
+  const ownerKeys = new Map<string, string>();
+  /**
+   * Lever 2, by candidate id: an answer read from the session's cache, with the invalidations as they stood when it was
+   * read and the windows its notes came from. HA2 review 3, item 3: it is checked again after every await and right
+   * before it is consumed (hitLive); one invalidated meanwhile is dropped, and its value is withheld, never written.
+   */
+  const cachedOwners = new Map<string, { answers: readonly [OwnerAnswer, OwnerAnswer]; ticket: CacheTicket; windows: readonly string[] }>();
+  const hitLive = (cid: string): boolean => {
+    const h = cachedOwners.get(cid);
+    return h !== undefined && opts.ownerCache !== undefined && opts.ownerCache.still(h.ticket, h.windows);
+  };
+  /** Drops every cached answer invalidated since it was read: its value is withheld (OWNER_STALE). */
+  const dropStaleHits = (): void => {
+    for (const cid of [...cachedOwners.keys()]) {
+      if (hitLive(cid)) continue;
+      cachedOwners.delete(cid);
+      const ev = ownerNotes.get(cid);
+      ownerNotes.set(cid, { units: ev?.units ?? [], ids: null, why: "stale" });
+    }
+  };
+  // Lever 2's key is a local digest, never sent: the owner criteria in Caret's words, and the person an Ask names.
+  const criteriaNow: Record<string, string> = scope?.person === null || scope?.person === undefined ? { ...OWNER_CRITERIA } : { ...OWNER_CRITERIA, person: scope.person };
+  for (const c of ownerCands) {
+    const units = unitsHolding(model, c.text, windowId, { windowId: c.source.windowId, nodeKey: c.source.nodeKey });
+    if (units === null || units.length === 0) {
+      ownerNotes.set(c.id, { units: [], ids: null, why: "unshown" });
+      continue;
+    }
+    // HA2 review 2, item 7: evidence in a window this fill may not read (excluded, or outside the Ask's sources) is never
+    // sent; the value it would judge is withheld. Finding it reads that window locally and authorizes nothing.
+    if (units.some((u) => unread?.has(u.windowId) === true)) {
+      ownerNotes.set(c.id, { units, ids: null, why: "unreadable" });
+      continue;
+    }
+    if (units.some((u) => !u.complete)) {
+      ownerNotes.set(c.id, { units, ids: null, why: "private" });
+      continue;
+    }
+    if (opts.ownerCache !== undefined) {
+      // The question's own words, raw: a local digest, never sent (the request mints its words in mintOwned).
+      const key = OwnerVerdicts.key(describeOwned(c, ownerLines.get(c.id)), c.text, units.map((u) => u.digest), criteriaNow, cacheContext);
+      ownerKeys.set(c.id, key);
+      const readAt = opts.ownerCache.ticket();
+      const hit = opts.ownerCache.get(key);
+      if (hit !== undefined) {
+        // Asked before in this session over the same notes, by digest: nothing is sent again.
+        cachedOwners.set(c.id, { answers: hit, ticket: readAt, windows: units.map((u) => u.windowId) });
+        ownerNotes.set(c.id, { units, ids: [], why: null });
+        continue;
+      }
+    }
+    const ids: string[] = [];
+    for (const u of units) {
+      let id = noteIds.get(unitKey(u));
+      if (id === undefined) {
+        // INT1: minted through the request's Disclosure as a candidate of its redacted view, so it is charged to its
+        // window's own budget and prose share and declared, or refused. HA2's allotment past that budget waits for the
+        // output-based ledger (privacy.ts OWNER_NOTE_CHARS, TODO(INT1)).
+        const view = viewOf(model, u.windowId);
+        const said = view === undefined ? null : m.candidate(view, u.text);
+        if (said === null) break;
+        // The id is a key of the request's state, which PV2 holds to identifiers (disclosure.ts KEY): "note_1", not "note 1".
+        id = `note_${notes.size + 1}`;
+        notes.set(id, said);
+        noteSaid.set(id, m.id(id));
+        noteIds.set(unitKey(u), id);
+      }
+      ids.push(id);
+    }
+    ownerNotes.set(c.id, ids.length === units.length ? { units, ids, why: null } : { units, ids: null, why: "unshown" });
   }
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
   // window was still charged for them, which errs on the side of saying less.
@@ -1291,18 +1636,38 @@ export async function proposeFill(
   const askAnswers = (ids: ReadonlyMap<string, string>): RequestMore["answers"] =>
     answerAsked.map((f) => ({
       id: f.id,
-      descriptor: f.descriptor,
-      criteria: Object.fromEntries((answersFor.get(f.id) ?? []).map((a) => [ids.get(a.id) as string, describeSaved(a)] as const).sort(([x], [y]) => x.localeCompare(y, "en", { numeric: true }))),
+      descriptor: f.said.descriptor,
+      criteria: Object.fromEntries((answersFor.get(f.id) ?? []).flatMap((a) => {
+        const said = mintSaved(m, a);
+        return said === null ? [] : [[ids.get(a.id) as string, said] as const];
+      }).sort(([x], [y]) => x.localeCompare(y, "en", { numeric: true }))),
     }));
+  // SC1 2b: each derived value's words minted now, every part priced; one whose words do not mint is not offered.
+  const derivedSaid = new Map<string, ModelText>();
+  for (const f of asked) {
+    const list = (derived.get(f.id) ?? []).filter((x) => {
+      const said = x.said();
+      if (said !== null) derivedSaid.set(x.key, said);
+      return said !== null;
+    });
+    if (derived.has(f.id)) derived.set(f.id, list);
+  }
   // Derived values are d1... in the first ask and e1..., shuffled, in the second.
   const allDerived = asked.flatMap((f) => derived.get(f.id) ?? []);
   const derivedIds = new Map(allDerived.map((d, i) => [d.key, `d${i + 1}`]));
   const derivedSecond = new Map(shuffled(allDerived, opts.rand).map((d, i) => [d.key, `e${i + 1}`]));
   for (const [k, eid] of derivedSecond) back.set(eid, derivedIds.get(k) ?? "");
+  const aboutSaidNow = new Map(aboutSent.map((a) => [a.id, mintAbout(m, a)]));
   const askAbout = (ids: ReadonlyMap<string, string>): Map<string, AskAbout[]> =>
-    new Map(asked.map((f) => [f.id, f.about.map((a) => ({ id: ids.get(a.id) ?? "", about: a })).sort((x, y) => x.id.localeCompare(y.id, "en", { numeric: true }))]));
+    new Map(asked.map((f) => [f.id, f.about.flatMap((a) => {
+      const said = aboutSaidNow.get(a.id) ?? null;
+      return said === null ? [] : [{ id: ids.get(a.id) ?? "", about: a, said }];
+    }).sort((x, y) => x.id.localeCompare(y.id, "en", { numeric: true }))]));
   const askDerived = (ids: ReadonlyMap<string, string>): Map<string, AskExtra[]> =>
-    new Map(asked.map((f) => [f.id, (derived.get(f.id) ?? []).map((d) => ({ id: ids.get(d.key) ?? "", describe: d.describe })).sort((x, y) => x.id.localeCompare(y.id, "en", { numeric: true }))]));
+    new Map(asked.map((f) => [f.id, (derived.get(f.id) ?? []).flatMap((d) => {
+      const said = derivedSaid.get(d.key);
+      return said === undefined ? [] : [{ id: ids.get(d.key) ?? "", describe: said }];
+    }).sort((x, y) => x.id.localeCompare(y.id, "en", { numeric: true }))]));
   /** Whether fill has an answer to whose this candidate is: code's identity, or its owner questions were asked. */
   const ownerKnown = (c: Candidate): boolean => c.identity !== undefined || ownerCands.some((x) => x.id === c.id);
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
@@ -1338,20 +1703,49 @@ export async function proposeFill(
   const whoseAsked = new Set([...personal, ...asked.filter((f) => (derived.get(f.id) ?? []).some((d) => d.base.from === "memory")).map((f) => f.id)]);
   // G2: what each field that asks for no person's details is offered from memory, in the words of its kind.
   const memoryWhose = new Map(
-    asked.flatMap((f): [string, string][] => {
+    asked.flatMap((f): [string, ModelText][] => {
       if (f.personal) return [];
-      const kinds = [...new Set([...f.about, ...(derived.get(f.id) ?? []).flatMap((d) => (d.base.from === "memory" ? [d.base.a] : []))].map((a) => OWN_SAYS[a.kind] ?? ABOUT_KIND_SAYS[a.kind]))];
-      return kinds.length === 0 ? [] : [[f.id, kinds.join(" or ")]];
+      const kinds = [...new Set([...f.about, ...(derived.get(f.id) ?? []).flatMap((d) => (d.base.from === "memory" ? [d.base.a] : []))].map((a) => ownSays(a.kind)))];
+      return kinds.length === 0 ? [] : [[f.id, m.join(kinds.map((k) => m.own(k)), " or ")]];
     }),
   );
+  // The owner questions' lines, minted; a candidate whose line does not mint is asked about no further (ownerKnown).
+  // HA2: each names the whole notes that hold its value, by their minted ids (noteSaid); notes is what source_notes carries.
+  const ownerSaid = new Map(ownerCands.flatMap((c) => {
+    const ids = ownerNotes.get(c.id)?.ids ?? [];
+    const said = mintOwned(m, model, c, ownerLines.get(c.id), ids.flatMap((id) => noteSaid.get(id) ?? []));
+    return said === null ? [] : [[c.id, said] as const];
+  }));
+  const asksInstruction = scope === undefined || plainAsk ? null : m.instruction(scope.instruction);
+  // The person is a span of the instruction, or the user's pick of a person on screen or in memory (B29).
+  const asksPerson = scope === undefined || plainAsk || scope.person === null ? null : (m.instructionSpan(scope.instruction, scope.person) ?? m.onScreen(scope.person) ?? m.memoryText(null, scope.person));
   const more = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({
-    ...(scope === undefined || plainAsk ? {} : { instruction: scope.instruction, person: scope.person }),
+    ...(asksInstruction === null ? {} : { instruction: asksInstruction, person: asksPerson }),
     derived: askDerived(dIds),
     personal: whose ? whoseAsked : new Set(),
     memoryWhose,
-    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c, ownerLines.get(c.id)), text: c.text })),
+    // Lever 2: a candidate the session's cache answered is not asked again (cachedOwners).
+    owners: ownerCands.flatMap((c) => {
+      const said = ownerSaid.get(c.id);
+      return said === undefined || cachedOwners.has(c.id) ? [] : [{ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: said, text: c.text }];
+    }),
+    notes,
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
+  const titleSaid = title === null ? null : m.descriptor(w, title);
+  // Each candidate's line, minted with what it carries now (its clause included), by its id in either ask.
+  // The whose stage describes each with its block head, the value questions as VALUE_BLOCK_HEAD says.
+  const describe = (blockHead: boolean): Map<string, ModelText> => {
+    const out = new Map<string, ModelText>();
+    for (const list of [candidates, second]) {
+      for (const c of list) {
+        const said = mintCandidate(m, model, c, { blockHead });
+        if (said !== null) out.set(c.id, said);
+      }
+    }
+    return out;
+  };
+  const described = describe(VALUE_BLOCK_HEAD);
   // Two stages when some field wants a person's details (B24). First, both asks say whose details each such
   // field wants and whose each person's value is. Then the value questions, where a field that wants the user's
   // details is not offered a value both asks say is someone else's, and the reverse. In one stage, live Jev
@@ -1359,13 +1753,48 @@ export async function proposeFill(
   // the user's own name and email from memory were offered beside it (evidence/screen/b24/dev-7: 0 of 12 memory
   // values on the corpus's four memory forms).
   const staged = whose && personal.size > 0;
-  const [w1, w2] =
+  const describedWhose = !staged || VALUE_BLOCK_HEAD ? described : describe(true);
+  const whoseAsks =
     asked.length === 0 || !staged
-      ? [null, null]
-      : await Promise.all([
-          asking(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" })),
-          asking(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })),
-        ]);
+      ? null
+      : ([
+          buildFillRequest(m, w, asked.map((f) => f.said), candidates, describedWhose, 0, declared, titleSaid, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" }),
+          buildFillRequest(m, w, asked.map((f) => f.said), second, describedWhose, 1, declared, titleSaid, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" }),
+        ] as const);
+  const [w1, w2] = whoseAsks === null ? [null, null] : await Promise.all([asking(whoseAsks[0]), asking(whoseAsks[1])]);
+  // Lever 2: the session's earlier answers stand in for the questions not asked again; each new answer to a question that
+  // showed its notes whole is kept for the rest of the session.
+  dropStaleHits();
+  if (w1 !== null && w2 !== null) {
+    for (const [cid, { answers: [a, b] }] of cachedOwners) {
+      w1.answers[ownerId(cid)] = { ...a };
+      w2.answers[ownerId(secondId.get(cid) ?? "")] = { ...b };
+    }
+  }
+  /**
+   * HA2: whether both owner questions about `c` showed the whole text it was read from: each request's question names
+   * its note, and each request's state carries that note whole. Read from the requests as sent, not from what was meant.
+   */
+  const noteShown = (c: Candidate): boolean => {
+    // Lever 2: a cached verdict was given by questions that showed these very notes, by digest (ownerKeys).
+    if (cachedOwners.has(c.id)) return hitLive(c.id);
+    const ids = ownerNotes.get(c.id)?.ids ?? null;
+    if (whoseAsks === null || ids === null || ids.length === 0) return false;
+    return ([[whoseAsks[0], c.id], [whoseAsks[1], secondId.get(c.id) ?? ""]] as const).every(([req, cid]) => {
+      const q = req.questions[ownerId(cid)];
+      const sent = (req.state as { source_notes?: Record<string, string> }).source_notes ?? {};
+      return q !== undefined && String(q.instructions).includes(notesSay(ids)) && ids.every((id) => sent[id] === notes.get(id));
+    });
+  };
+  if (opts.ownerCache !== undefined && w1 !== null && w2 !== null) {
+    for (const c of ownerCands) {
+      const key = ownerKeys.get(c.id);
+      const a = w1.answers[ownerId(c.id)];
+      const b = w2.answers[ownerId(secondId.get(c.id) ?? "")];
+      if (key === undefined || cachedOwners.has(c.id) || a === undefined || b === undefined || !noteShown(c)) continue;
+      opts.ownerCache.set(key, [{ choice: a.choice, confidence: a.confidence }, { choice: b.choice, confidence: b.confidence }], (ownerNotes.get(c.id)?.units ?? []).map((u) => u.windowId), cacheTicket as NonNullable<typeof cacheTicket>);
+    }
+  }
   /** Both stage-one asks' answer to a whose or owner question, agreed at the whose cutoff, or null. */
   const stageOne = (q: string, q2: string = q): string | null => {
     const a1 = w1?.answers[q];
@@ -1404,8 +1833,8 @@ export async function proposeFill(
     asked.length === 0 && answerAsked.length === 0
       ? [null, null]
       : await Promise.all([
-          asking(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, valuesMore(derivedIds, true))),
-          asking(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, valuesMore(derivedSecond, false))),
+          asking(buildFillRequest(m, w, asked.map((f) => f.said), candidates, described, 0, declared, titleSaid, askAbout(aboutIds), whose, valuesMore(derivedIds, true))),
+          asking(buildFillRequest(m, w, asked.map((f) => f.said), second, described, 1, declared, titleSaid, askAbout(aboutSecond), whose, valuesMore(derivedSecond, false))),
         ]);
   const byId = new Map<string, Pick>([
     ...candidates.map((c): [string, Pick] => [c.id, { from: "window", c }]),
@@ -1537,6 +1966,29 @@ export async function proposeFill(
     // (evidence/screen/b24/adv-live-replay-final).
     return wants === "user";
   };
+  /**
+   * HA2 rule 2: a window's value for a field both asks say wants the user's details, admitted on an owner judgement that
+   * did not see the whole text the value was read from (noteShown), the window bases and extra sources of a derived
+   * value included. Exceptions, as before: a value that is exactly the user's identity from memory (Candidate.identity),
+   * what the user told Caret, and a value the user's instruction spells out. Only withholds.
+   */
+  const noteUnshown = (f: Field, p: Pick): string | null => {
+    // HA2 review 2, item 5: an Ask that names a person meets the same gate on every personal field, whatever the field's
+    // whose answer: its owner judgement ("the person named") counts only on complete, disclosed evidence too.
+    if (!owners || !f.personal || (namedPerson === null && sameChoice(whoseId(f.id)) !== "user")) return null;
+    const sources = p.from === "window" ? [p.c] : p.from === "derived" ? [...(p.base.from === "window" ? [p.base.c] : []), ...(p.also === null ? [] : [p.also])] : [];
+    // A value whose owner was asked counts only when its note was shown (noteShown). A field asking an address part also
+    // takes no value whose owner was never asked (lead decision 2: one past MAX_OWNERS); any other field's unasked value
+    // is no person's kind (a date, an amount) and stays as before HA2.
+    const asked1 = (c: Candidate): boolean => ownerCands.some((x) => x.id === c.id);
+    const address = f.part !== null && PERSON_PLACE_PARTS.has(f.part);
+    const open = sources.filter((c) => c.identity === undefined);
+    if (open.some((c) => asked1(c) && ownerNotes.get(c.id)?.why === "unreadable")) return OWNER_UNREADABLE;
+    if (open.some((c) => asked1(c) && (ownerNotes.get(c.id)?.why === "stale" || (cachedOwners.has(c.id) && !hitLive(c.id))))) return OWNER_STALE;
+    if (open.some((c) => asked1(c) && ownerNotes.get(c.id)?.why === "private")) return NOTE_PRIVATE;
+    if (open.some((c) => asked1(c) && !noteShown(c))) return NOTE_UNSHOWN;
+    return address && open.some((c) => !asked1(c)) ? OWNER_UNASKED : null;
+  };
   /** Whether the named person has several values of the pick's kind and nothing on the pick's line names the field. */
   const personHasSeveral = (f: Field, p: Pick): boolean => {
     const c = windowOf(p);
@@ -1545,7 +1997,7 @@ export async function proposeFill(
     if (kinds.length === 0) return false;
     const theirs = ownerCands.filter((x) => ownerAgreed(x) === "person" && [...candidateKinds(model, x)].some((k) => kinds.includes(k)));
     if (theirs.length < 2) return false;
-    const node = model.windows.get(c.source.windowId)?.nodes.get(c.source.nodeKey);
+    const node = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
     const line = node === undefined ? "" : (nodeText(node).split(/\r?\n/).find((l) => l.includes(c.text)) ?? "");
     const said = new Set(fieldTerms([line, c.context]));
     const named = [...fieldTerms(f.labelWords)].filter((t) => !isKindTerm(t) && t !== NAME_TERM && !KIND_ONLY_WORDS.has(t));
@@ -1560,6 +2012,9 @@ export async function proposeFill(
    * either Portfolio or GitHub.
    */
   const oneOfSeveral = (f: Field, p: Pick): boolean => {
+    // V4 review: a menu's option code linked from a window value (optionLink) meets the rule as that value would. Only a link:
+    // a date's or an address's part is judged as before (re-review: a birthday's month would meet the phone rule).
+    if (p.from === "derived" && p.chose?.how === "optionNamed" && p.base.from === "window") return oneOfSeveral(f, p.base);
     // A value the user's instruction spells out for this field is their choice among them (B27 review).
     if (p.from !== "window" || p.c.labelled !== true || p.c.context === null || literalOf(f) === p.c.text) return false;
     const kind = textKind(p.c.text);
@@ -1634,7 +2089,10 @@ export async function proposeFill(
         if ([text, c?.context ?? null, clause].some((t) => t !== null && leavesChoiceOpen(t, o))) return { why: "ambiguous" };
         // V3 review: a year menu's or a month menu's option read through a two-digit year's century ("Aug '30") is a choice.
         const century = byPiece === null && byDate !== null ? stated(readMonth(text, refYear)) : undefined;
-        if (exact !== null) return { value: exact, display: exact, writes: page && !press, ...(century === undefined ? {} : { chose: century }) };
+        // V4 re-review: only an option written exactly as the pick is the pick (optionLabel). One matchOption found by case,
+        // spacing or NFKC ("…/profile" for "…/Profile") is code's reading, said to the verifier.
+        const respelled = whole !== null && whole.trim() !== text.trim() ? { says: `Caret took "${text}" to be the option '${whole}', written differently`, also: null, how: "optionNamed" as const } : undefined;
+        if (exact !== null) return { value: exact, display: exact, writes: page && !press, ...(century === undefined ? (respelled === undefined ? {} : { chose: respelled }) : { chose: century }) };
         return { value: o, display: o, writes: false, chose: { says: `Caret took "${text}" to name the option '${o}'`, also: null } };
       }
       case "checkbox": {
@@ -1750,7 +2208,13 @@ export async function proposeFill(
     const a2 = readAsk(r2, f, (id) => back.get(id));
     const agree = a1.choice === a2.choice;
     const confidence = agree ? Math.min(a1.confidence, a2.confidence) : 0;
-    const picked = agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
+    const chosen = agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
+    // HA2 review P2: the value the user's instruction spells out for this field is theirs, whatever window also shows the
+    // same text. The literal is offered as the window's candidate when one has its text (literals, above), so a pick of
+    // that candidate is the instruction's own value: its provenance is the instruction, which no owner rule withholds.
+    // Before, a phone the user typed into the Ask and that a long note also held was withheld as the note's.
+    const said = literalOf(f);
+    const picked: Pick | undefined = chosen !== undefined && chosen.from === "window" && said !== undefined && chosen.c.text === said ? { from: "instruction", text: said } : chosen;
     const fromMemory = picked !== undefined && memoryOf(picked) !== null;
     // An anchored field's pick from the anchor window is judged on its own; any other pick meets the cut rules.
     const anchoredPick = picked !== undefined && anchored(f) && fromAnchor(f, picked);
@@ -1767,6 +2231,7 @@ export async function proposeFill(
     // signature's office phone in Emergency contact phone, where her mail says "my cell is …" beside "emergency
     // contact" (evidence/screen/b25/asks-dev-3-gpt-oss-20b, ask-10; a rule tuned on the B24 corpus).
     const whichOfTheirs = namedPerson !== null && picked !== undefined && f.personal && personHasSeveral(f, picked);
+    const unshown = picked === undefined ? null : noteUnshown(f, picked);
     const withheld: FillWithheld | null =
       a1.choice === NONE && a2.choice === NONE
         ? null
@@ -1782,7 +2247,9 @@ export async function proposeFill(
                   ? "ambiguous"
                   : picked !== undefined && otherPerson(f, picked)
                   ? "otherPerson"
-                  : null;
+                  : unshown !== null
+                    ? "ambiguous"
+                    : null;
     const p = withheld === null ? picked : undefined;
     const got = p === undefined || read === null || "why" in read ? null : read;
     // A text field's value is `value`, which Caret writes. Any other control's is a hand-off, which a Fill all writes
@@ -1811,7 +2278,7 @@ export async function proposeFill(
     const basisOf = line?.identity ?? (p?.from === "derived" ? (p.also?.identity ?? undefined) : undefined);
     const idPart = p?.from === "derived" && f.part !== null && NAME_PARTS.has(f.part) ? (f.part as "first" | "middle" | "last") : undefined;
     const basis = p === undefined || got === null || basisOf === undefined ? undefined : { identity: { memoryId: basisOf.memoryId, kind: basisOf.kind, key: basisOf.key, ...(idPart === undefined ? {} : { part: idPart }) } };
-    return {
+    const field: FillField = {
       ...empty,
       ...(basis === undefined ? {} : { basis }),
       handoff,
@@ -1823,13 +2290,53 @@ export async function proposeFill(
       withheld,
       asks: [a1, a2],
     };
+    if (unshown !== null && withheld === "ambiguous") setHeldReason(field, `Caret left ${f.name}: ${unshown}.`);
+    return field;
   });
 
+  // The alternate-field veto (alternate.ts): a secondary field never repeats its primary's value or the user's own. A
+  // held-out run's log records the user's primary email in Alternate email; identity ownership and an exact verifier
+  // answer did not catch it. Every pick is checked here, controls and derived values included, before checkValues or an
+  // exemption can approve it, against:
+  //   - every field of the form Caret can read, filled, read-only or a dropdown (formFields omits populated fields);
+  //   - every value proposed into the form, by every part of a page plan (V6 B1: the parts ask concurrently);
+  //   - the form as it reads after the asks, so a primary that changed while they were out counts (V6 B3).
+  // The form is the window: page-link.ts keeps no HTML form ids. A primary in another form can only withhold an extra
+  // alternate, never admit a write; preserving those ids is the lead's deferred follow-up.
+  const ownWrites: AlternateWrite[] = [...picksOf].map(([i, x]) => ({ key: (fields[i] as Field).node.key, name: (fields[i] as Field).name, text: x.text }));
+  let proposedHere: readonly AlternateWrite[] = ownWrites;
+  if (opts.peers !== undefined) {
+    opts.peers.board.arrive(opts.peers.part, ownWrites);
+    proposedHere = await opts.peers.board.all();
+  }
+  const vetoes = alternateVetoes({ fields: readableFields(model.windows.get(windowId) ?? localWindow), writes: proposedHere, saved: opts.about ?? [] });
+  for (const i of [...picksOf.keys()]) {
+    const f = fields[i] as Field;
+    const veto = vetoes.get(f.node.key);
+    if (veto === undefined) continue;
+    const held: FillField = { ...out[i]!, choice: NONE, value: null, source: null, memory: null, handoff: null, basis: undefined, withheld: "notExact" };
+    setAlternateReason(held, `Caret left ${f.name}: ${veto.says}.`);
+    out[i] = held;
+    picksOf.delete(i);
+  }
+
+  /**
+   * HA2 review P1: a window value an owner judgement saw whole (noteShown) is bound to every unit that held it, by digest
+   * (note-unit.ts ownedOf), its derived bases and extra sources included; the one recheck of a source refuses it once any
+   * of them changes (contract.ts provenanceStale). Values from memory, an identity or the instruction carry no binding.
+   */
+  const bindOwned = (pr: Provenance): Provenance => {
+    if (pr.kind === "derived") return { ...pr, base: bindOwned(pr.base), also: pr.also === null ? null : bindOwned(pr.also) };
+    if (pr.kind !== "window") return pr;
+    const c = ownerCands.find((x) => x.source.windowId === pr.windowId && x.source.nodeKey === pr.nodeKey && x.text === pr.span);
+    const ev = c === undefined ? undefined : ownerNotes.get(c.id);
+    return c === undefined || ev === undefined || !noteShown(c) ? pr : { ...pr, owned: ownedOf(windowId, ev.units) };
+  };
   /** Each candidate's source text as Jev was shown it (`judged`, taken before the asks), for its provenance's digests. */
   const judgedText = (c: Candidate): string | undefined => judged.get(nodeKeyOf(c));
   /**
-   * AC1's Owner slot, which G2's ownership fills and the contract only reads into the verifier's question ("the screen
-   * says it is the user's"): the user's for what they told Caret and for their own identity on screen (whose.ts), else
+   * AC1's Owner slot, which G2's ownership fills and the contract carries for the Ask's scope check; since HA2 the
+   * verifier's question no longer says it, so no earlier answer is restated as a screen fact: the user's for what they told Caret and for their own identity on screen (whose.ts), else
    * whose both asks agreed a window's value is, at the whose cutoff (ownerAgreed); null when it was not asked or not
    * settled, and for the user's instruction. A value derived from two window values has their owner only when they agree.
    * The owner veto (otherPerson, above) has already withheld every pick it refuses: those never reach checkValues, so
@@ -1861,7 +2368,7 @@ export async function proposeFill(
     // V3 review: a control's value code chose (an order, a year, an option a word names) is no plain conversion, so it
     // meets the verifier as text does, with the choice said in its provenance, and is never minted under an exemption.
     if (f.control !== "text" && f.control !== "combobox" && chose === undefined) continue;
-    proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: provenanceOf(model, p, f.part, text, judgedText, f.control, chose), owner: ownerOf(p) } });
+    proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: bindOwned(provenanceOf(model, p, f.part, text, judgedText, f.control, chose)), owner: ownerOf(p) } });
   }
   let verify: VerifyUse | null = null;
   let verifierDown: string | null = null;
@@ -1886,13 +2393,30 @@ export async function proposeFill(
       if (isChecked(c)) fieldMints.set(out[(proposed[k] as { i: number }).i] as FillField, c);
     });
   }
+  // HA2 review 3, item 3: after the verifier's await, before a value resting on a cached owner verdict is handed back to be
+  // written: a verdict invalidated meanwhile withholds it, mint and all.
+  const restsOnStale = (p: Pick): boolean => {
+    const cs = p.from === "window" ? [p.c] : p.from === "derived" ? [...(p.base.from === "window" ? [p.base.c] : []), ...(p.also === null ? [] : [p.also])] : [];
+    return cs.some((c) => cachedOwners.has(c.id) && !hitLive(c.id));
+  };
+  const withholdStale = (): void => {
+    for (const [i, x] of picksOf) {
+      const o = out[i] as FillField;
+      if (!restsOnStale(x.p) || (o.value === null && o.handoff === null)) continue;
+      fieldMints.delete(o);
+      const held: FillField = { ...o, choice: NONE, value: null, source: null, memory: null, handoff: null, withheld: "ambiguous" };
+      setHeldReason(held, `Caret left ${(fields[i] as Field).name}: ${OWNER_STALE}.`);
+      out[i] = held;
+    }
+  };
+  withholdStale();
   for (const [i, o] of out.entries()) {
     const f = fields[i] as Field;
     const exempt: ExemptRule | null = o.answer !== undefined && o.value !== null ? "savedAnswerShown" : o.handoff?.writes === true ? EXEMPT_BY_CONTROL[f.control] : null;
     if (exempt === null || picksOf.get(i)?.chose !== undefined) continue;
     const text = o.value ?? o.handoff?.value ?? "";
     const pick = picksOf.get(i);
-    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : provenanceOf(model, pick.p, f.part, text, judgedText, f.control);
+    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : bindOwned(provenanceOf(model, pick.p, f.part, text, judgedText, f.control));
     const proposedExempt: Proposed = { field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: pick === undefined ? null : ownerOf(pick.p) };
     // I2: a control outside the Ask's scope is withheld, as the contract would refuse to mint it.
     if (authority.kind === "ask" && scopeRefusal(proposedExempt, authority.scope, documentOf) !== null) {
@@ -1942,6 +2466,19 @@ export async function proposeFill(
  * refuses to write it.
  */
 const fieldMints = new WeakMap<FillField, CheckedValue>();
+
+/**
+ * HA2: the sentence a preview says for a field proposeFill withheld for a reason the protocol's FillWithheld has no word
+ * for (NOTE_UNSHOWN), by the very FillField object. Helper-local, like fieldMints: the host's wire contract is unchanged.
+ */
+const heldReasons = new WeakMap<FillField, string>();
+function setHeldReason(f: FillField, says: string): void {
+  heldReasons.set(f, says);
+}
+/** The sentence a preview says for a field proposeFill withheld (heldReasons), or null. */
+export function heldReason(f: FillField): string | null {
+  return heldReasons.get(f) ?? null;
+}
 
 /** The write contract's mint for a field proposeFill returned, or undefined (fieldMints). */
 export function mintOf(f: FillField): CheckedValue | undefined {
@@ -1993,7 +2530,7 @@ function deriveHow(part: FillPart | null, written: string, base: string, control
  * the source now.
  */
 export function candidateProvenance(model: ScreenModel, c: Candidate, text?: string): Provenance {
-  return windowProvenance(model.windows.get(c.source.windowId), c, text);
+  return windowProvenance(viewOf(model, c.source.windowId), c, text);
 }
 
 /**
@@ -2006,7 +2543,7 @@ function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, writte
     // V3: the value as derived, with the choice code made said, and the extra source it read (a send line) as `also`.
     const own = provenanceOf(model, p, part, written, judged, control);
     const d: Extract<Provenance, { kind: "derived" }> = own.kind === "derived" ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, pickSpan(p)) : "optionFromPart", base: own, also: null };
-    return { ...d, also: chose.also ?? d.also, says: chose.says, ...(chose.via === undefined ? {} : { via: chose.via }) };
+    return { ...d, ...(chose.how === undefined ? {} : { how: chose.how }), also: chose.also ?? d.also, says: chose.says, ...(chose.via === undefined ? {} : { via: chose.via }) };
   }
   const cand = (c: Candidate): Provenance => candidateProvenance(model, c, judged(c) ?? "");
   const base = (b: Exclude<Pick, { from: "derived" }>): Provenance =>
@@ -2075,7 +2612,7 @@ export function conversionOf(control: string): MemoryConversion {
 
 /** Whether two candidates' "Label: value" lines are next to each other in their node, with no line between. */
 function adjacentLines(model: ScreenModel, a: Candidate, b: Candidate): boolean {
-  const node = model.windows.get(a.source.windowId)?.nodes.get(a.source.nodeKey);
+  const node = viewOf(model, a.source.windowId)?.nodes.get(a.source.nodeKey);
   if (node === undefined || a.context === null || b.context === null) return false;
   const lines = nodeText(node).split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim());
   const at = (c: Candidate): number => lines.findIndex((l) => l.startsWith(`${c.context}:`) && l.includes(c.text));

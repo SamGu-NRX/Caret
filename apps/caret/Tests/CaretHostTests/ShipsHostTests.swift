@@ -108,14 +108,14 @@ final class ShipsHostTests: XCTestCase {
     func testAKeptKeyGoesIntoTheHelpersEnvironmentAndNowhereElse() throws {
         let home = try CaretHome.resolve(override: "\(dir)/home", userHome: "/nonexistent")
         let programs = CaretServices.Programs(node: "/usr/local/bin/node", helperEntry: "/x/main.mjs", reader: "/x/caret-screen")
-        let launch = ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: ["HOME": "/Users/robin"], storedKey: { self.seedKey })
+        let launch = try ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: ["HOME": "/Users/robin"], storedKey: { self.seedKey })
         XCTAssertEqual(launch.jev, .keychain)
         XCTAssertEqual(launch.env["TYPESAFE_API_KEY"], seedKey)
         XCTAssertFalse(launch.args.contains { $0.contains("SEEDKEY") }, "not on argv")
         XCTAssertFalse(launch.args.contains("--no-jev"))
         XCTAssertFalse(launch.logLine.contains("SEEDKEY"))
         // The reader gets none of it, even when Caret's own environment holds a key.
-        let reader = ServiceLauncher.childEnvironment(["HOME": "/Users/robin", "TYPESAFE_API_KEY": seedKey, "CARET_ENV_FILE": "/x/.env"], passesJevKey: false)
+        let reader = try ServiceLauncher.childEnvironment(["HOME": "/Users/robin", "TYPESAFE_API_KEY": seedKey, "CARET_ENV_FILE": "/x/.env"], passesJevKey: false)
         XCTAssertNil(reader["TYPESAFE_API_KEY"])
         XCTAssertNil(reader["CARET_ENV_FILE"])
     }
@@ -124,23 +124,23 @@ final class ShipsHostTests: XCTestCase {
     func testTheDailyJevCapReachesTheHelperOnly() throws {
         let home = try CaretHome.resolve(override: "\(dir)/home", userHome: "/nonexistent")
         let programs = CaretServices.Programs(node: "/n", helperEntry: "/m", reader: "/r")
-        let launch = ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: ["CARET_JEV_DAILY_CAP": "1.25"], storedKey: { nil })
+        let launch = try ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: ["CARET_JEV_DAILY_CAP": "1.25"], storedKey: { nil })
         XCTAssertEqual(launch.env["CARET_JEV_DAILY_CAP"], "1.25")
         XCTAssertEqual(launch.jev, .off, "a cap is not a key")
-        XCTAssertNil(ServiceLauncher.childEnvironment(["CARET_JEV_DAILY_CAP": "1.25"], passesJevKey: false)["CARET_JEV_DAILY_CAP"])
-        XCTAssertNil(ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: [:], storedKey: { nil }).env["CARET_JEV_DAILY_CAP"])
+        XCTAssertNil(try ServiceLauncher.childEnvironment(["CARET_JEV_DAILY_CAP": "1.25"], passesJevKey: false)["CARET_JEV_DAILY_CAP"])
+        XCTAssertNil(try ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: [:], storedKey: { nil }).env["CARET_JEV_DAILY_CAP"])
     }
 
     func testTheEnvironmentWinsOverTheKeychainAndNoKeyMeansNoJev() throws {
         let home = try CaretHome.resolve(override: "\(dir)/home", userHome: "/nonexistent")
         let programs = CaretServices.Programs(node: "/n", helperEntry: "/m", reader: "/r")
         var asked = 0
-        let dev = ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: ["CARET_ENV_FILE": "/x/.env"], storedKey: { asked += 1; return self.seedKey })
+        let dev = try ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: ["CARET_ENV_FILE": "/x/.env"], storedKey: { asked += 1; return self.seedKey })
         XCTAssertEqual(dev.jev, .environment)
         XCTAssertEqual(dev.env["CARET_ENV_FILE"], "/x/.env")
         XCTAssertNil(dev.env["TYPESAFE_API_KEY"])
         XCTAssertEqual(asked, 0, "the keychain is not read when the environment has a key")
-        let none = ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: [:], storedKey: { nil })
+        let none = try ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: [:], storedKey: { nil })
         XCTAssertEqual(none.jev, .off)
         XCTAssertEqual(none.args.last, "--no-jev")
     }

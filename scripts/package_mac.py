@@ -17,7 +17,19 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def privacy_gate(runner=subprocess.run) -> None:
+    """Run the same gate as the Xcode target before any packaging side effects."""
+    result = runner(
+        ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit((result.stderr or result.stdout or "privacy gate: refusing to package").strip())
+
+
 def build() -> None:
+    privacy_gate()
     run([
         "xcodebuild",
         "-project", str(root / "Caret.xcodeproj"),

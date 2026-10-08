@@ -1,8 +1,12 @@
 // System One through TypeSafe or Vercel (brief GW1). Keys are read at call time from the environment or
 // CARET_ENV_FILE. Gateway uses only CARET_JEV_GATEWAY_KEY, never the writer's AI_GATEWAY_API_KEY.
+import { requireVercelDevelopment } from "../privacy/vercel.ts";
 import { readFileSync } from "node:fs";
 import * as z from "zod";
-import { assertNoSecrets, type Snippet } from "../privacy.ts";
+import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
+import { UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
+import { frozenRequest, seal, sealedBody, storedRequest, type Sealed } from "../privacy/send.ts";
+import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
 
@@ -111,17 +115,18 @@ export function jevFailureKind(e: unknown): JevFailureKind | null {
   return null;
 }
 
+/** SC1 2b: every text a question carries is ModelText, minted by its request's Disclosure (privacy/disclosure.ts). */
 export interface ChoiceQuestion {
   type: "choice";
-  instructions: string | Record<string, unknown>;
-  criteria: Record<string, string | null>;
+  instructions: ModelText;
+  criteria: Record<string, ModelText | null>;
 }
 
 /** A yes/no question; Jev answers with the probability of yes (docs.typesafe.ai/api, "Noul"), and no confidence. */
 export interface NoulQuestion {
   type: "noul";
-  instructions: string | Record<string, unknown>;
-  criteria?: { true: string; false: string };
+  instructions: ModelText;
+  criteria?: { true: ModelText; false: ModelText };
 }
 
 /**
@@ -138,7 +143,8 @@ export type JevPurpose =
 export interface JevRequest {
   /** What the request asks (JevPurpose); absent only in tests' hand-built requests, which no canned engine answers. */
   purpose?: JevPurpose;
-  state: string | Record<string, unknown>;
+  /** SC1 2b: minted text, numbers, booleans, null, and lists and records of them (privacy/disclosure.ts ModelValue). */
+  state: ModelValue;
   questions: Record<string, ChoiceQuestion>;
   /**
    * Yes/no questions sent beside `questions` in the same request, by id (B25). Kept apart so every caller that
@@ -171,6 +177,11 @@ export interface JevRequest {
    * sent: the text is already in the question, through the ledger.
    */
   subjects?: Readonly<Record<string, string>>;
+  /**
+   * SC1 2b: the Disclosure that minted every text in this request (privacy/disclosure.ts). Never sent: the client
+   * verifies the wire body against it, and refuses a request without one.
+   */
+  disclosure: Disclosure;
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number(), probabilities: z.record(z.string(), z.number()).optional() }).loose();
@@ -255,7 +266,7 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
   if (!hoist || typeof state !== "object" || state === null || Array.isArray(state)) return { state, model, questions: all };
   if (OPTION_DESCRIPTIONS in state) throw new Error(`a Jev request's state already has a ${OPTION_DESCRIPTIONS} key, which the body uses for shared options`);
   // Each id's one description across the choice questions, or null when some question gives it none or another one.
-  const described = new Map<string, string | null>();
+  const described = new Map<string, ModelText | null>();
   const uses = new Map<string, number>();
   for (const q of Object.values(req.questions)) {
     for (const [id, d] of Object.entries(q.criteria)) {
@@ -264,7 +275,7 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
       uses.set(id, (uses.get(id) ?? 0) + 1);
     }
   }
-  const shared: Record<string, string> = {};
+  const shared: Record<string, ModelText> = {};
   for (const [id, d] of described) if (d !== null && (uses.get(id) ?? 0) >= 2) shared[id] = d;
   if (Object.keys(shared).length === 0) return { state, model, questions: all };
   const questions: Record<string, ChoiceQuestion | NoulQuestion> = {};
@@ -274,15 +285,52 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
   return { state: { ...state, [OPTION_DESCRIPTIONS]: shared }, model, questions };
 }
 
+export { frozenRequest };
+
+export interface SealedRequest {
+  readonly sealed: Sealed;
+  /** The request as the sealed copy says it (frozenRequest): what is sent, and what a store records. */
+  readonly asked: JevRequest;
+}
+
+/**
+ * PV2: seals a request before it is sent (privacy/send.ts seal): what an evaluation sends is `asked`, the frozen copy, and
+ * what it stores of the request comes from that same copy (storedRecord), never from the live request.
+ */
+export function sealRequest(req: JevRequest): SealedRequest {
+  const sealed = seal({ req, wire: wireBody(req) });
+  return Object.freeze({ sealed, asked: frozenRequest(req, sealed.wire) });
+}
+
+/**
+ * What an evaluation's request log or dump keeps of a request it sent: `build`'s record of the frozen copy that was sent,
+ * checked again as it is written, with every value in a format Caret never carries withheld. There is no path that seals
+ * the live request again at storage time.
+ */
+export function storedRecord<T>(s: SealedRequest, build: (frozen: JevRequest) => T): T {
+  return storedRequest(s.sealed, s.asked, build);
+}
+
+
+/** Whether a minted value is a record of them (an array is not: Array.isArray does not narrow a readonly array). */
+function isRecord(v: ModelValue | undefined): v is { readonly [k: string]: ModelValue } {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 /** The questions and state a body says, with shared options described in each question again: the inverse of wireBody. */
 export function expandWireBody(body: WireBody): WireBody {
   const state = body.state;
   if (typeof state !== "object" || state === null || Array.isArray(state) || !(OPTION_DESCRIPTIONS in state)) return body;
-  const { [OPTION_DESCRIPTIONS]: shared, ...rest } = state as Record<string, unknown>;
-  const d = shared as Record<string, string>;
+  const { [OPTION_DESCRIPTIONS]: shared, ...rest } = state;
+  // The shared descriptions are the body's own (wireBody put them there), each a question's minted criterion.
+  const d: Readonly<Record<string, ModelValue>> = isRecord(shared) ? shared : {};
+  const described = (id: string): ModelText | null => {
+    const x = d[id];
+    return typeof x === "string" ? x : null;
+  };
   const questions: Record<string, ChoiceQuestion | NoulQuestion> = {};
   for (const [k, q] of Object.entries(body.questions)) {
-    questions[k] = q.type === "choice" ? { ...q, criteria: Object.fromEntries(Object.entries(q.criteria).map(([id, x]) => [id, x === null && id in d ? (d[id] as string) : x])) } : q;
+    questions[k] = q.type === "choice" ? { ...q, criteria: Object.fromEntries(Object.entries(q.criteria).map(([id, x]) => [id, x === null ? described(id) : x])) } : q;
   }
   return { state: rest, model: body.model, questions };
 }
@@ -294,24 +342,30 @@ export function expandWireBody(body: WireBody): WireBody {
 export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs = 10_000, spend: DailySpend = DailySpend.fromEnv(), settings: JevSettings = jevSettings(), fetchFn: typeof fetch = (input, init) => fetch(input, init), onUsage?: (usage: JevUsage) => void, evaluation?: { fixture: FixtureSources; env: NodeJS.ProcessEnv }): AskJev {
   const route = { ...settings };
   return async (req) => {
-    if (route.model === LAYA_FREE_MODEL) {
-      // Laya's boundless endpoint reports has_no_training:false and has_zdr:false (Oct 6, 2026).
-      // Real-screen text must never reach it, even with explicit model configuration or no replay cache.
-      if (evaluation === undefined) throw new JevGatewayPolicyError("Laya runs only with declared fixture sources in evaluation harnesses", route.model);
+    if (route.provider === "gateway" || new URL(route.url).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
+    if (jevPolicy(route).retains) {
+      // SC1 T4: a provider that keeps or trains on what it is sent (Laya: privacy/providers.ts) never gets real-screen
+      // text, even with explicit model configuration or no replay cache: only an evaluation's declared fixture text.
+      if (evaluation === undefined) throw new JevGatewayPolicyError(`${route.model} keeps what it is sent, so it runs only with declared fixture sources in evaluation harnesses`, route.model);
       refuseShipped(process.env);
       refuseShipped(evaluation.env);
       checkFixture(req, evaluation.fixture);
     }
     const ids = Object.keys(req.nouls ?? {});
     if (ids.some((id) => id in req.questions)) throw new Error("Jev request repeats a question id between its choices and its yes/no questions");
-    // G2 review: no request leaves with a secret marker in it, whichever builder made it (privacy.ts assertNoSecrets).
-    assertNoSecrets(req);
+    // SC1 section 3: no request leaves with a value in a format Caret never carries, whichever builder made it
+    // (privacy.ts assertNoExcludedValue, G2's assertNoSecrets narrowed to formats).
+    assertNoExcludedValue(req);
     const wire = wireBody(req, route.model);
+    // SC1 2b: every string on the wire was minted for this request, checked after wireBody so a string the client makes
+    // up shows too; checked again as it leaves, on every attempt (privacy/send.ts sealedBody).
+    verifySent(req, wire);
     if (route.provider === "gateway") {
       wire.providerOptions = { gateway: { only: [checkGatewayModel(route.model)] } };
     }
-    const body = JSON.stringify(wire);
-    const hold = spend.reserve(DailySpend.estimateUsd(body.length, JEV_USD_PER_INPUT_TOKEN));
+    // Sealed once: every attempt posts this frozen copy, checked again as it leaves (privacy/send.ts).
+    const sealed = seal({ req, wire });
+    const hold = spend.reserve(DailySpend.estimateUsd(JSON.stringify(sealed.wire).length, JEV_USD_PER_INPUT_TOKEN));
     let settled = false;
     const settle = (costUsd: number, inputTokens: number): void => {
       settled = true;
@@ -319,7 +373,7 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
       onUsage?.({ costUsd, inputTokens });
     };
     try {
-      const result = await post(key, timeoutMs, req, body, ids, route, fetchFn, settle);
+      const result = await post(key, timeoutMs, req, sealed, ids, route, fetchFn, settle);
       if (!settled) settle(result.costUsd, result.inputTokens);
       return result;
     } catch (e) {
@@ -387,12 +441,13 @@ function gatewayUsage(json: unknown): { inputTokens: number; hasInputTokens: boo
   };
 }
 
-async function post(key: (provider: JevProvider) => string, timeoutMs: number, req: JevRequest, body: string, ids: string[], settings: JevSettings, fetchFn: typeof fetch, settle: (costUsd: number, inputTokens: number) => void): Promise<JevResult> {
+async function post(key: (provider: JevProvider) => string, timeoutMs: number, req: JevRequest, sealed: Sealed, ids: string[], settings: JevSettings, fetchFn: typeof fetch, settle: (costUsd: number, inputTokens: number) => void): Promise<JevResult> {
   for (let attempt = 0; ; attempt++) {
     if (settings.provider === "gateway") {
       if (settings.model === LAYA_FREE_MODEL) await paceLaya();
       checkGatewayModel(settings.model);
     }
+    if (settings.provider === "gateway" || new URL(settings.url).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
     let credential = "";
     const t0 = performance.now();
     let res: Response;
@@ -402,10 +457,12 @@ async function post(key: (provider: JevProvider) => string, timeoutMs: number, r
       res = await fetchFn(settings.url, {
         method: "POST",
         headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
-        body,
+        body: sealedBody(sealed),
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
+      // A request the boundary refused (privacy/send.ts sealedBody) is that refusal, not a network failure.
+      if (e instanceof UnmintedText) throw e;
       const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
       const rawDetail = e instanceof Error ? e.message : String(e);
       const detail = credential === "" ? rawDetail : rawDetail.split(credential).join("[redacted]");

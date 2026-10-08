@@ -1,3 +1,6 @@
+import { assertNoExcludedValue } from "../../privacy.ts";
+import { UnmintedText } from "../../privacy/disclosure.ts";
+import { seal, sealedBody, type Sealed } from "../../privacy/send.ts";
 // A decision engine on this Mac: an open instruct model in llama-server (llama.cpp), J1 part B.
 //
 // Each request becomes one prompt prefix, the state and every option once with a label, and then one short question
@@ -8,7 +11,7 @@
 // digit by digit, since the tokenizers of the models screened here split numbers into digits.
 //
 // A yes/no question is a choice of two labels, A for yes and B for no; its answer is the probability of A.
-import type { AskJev, ChoiceQuestion, JevRequest, JevResult, NoulQuestion } from "../../fill/jev.ts";
+import { frozenRequest, wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
 import type { DecideEngine } from "./port.ts";
 
 export interface LlamaOptions {
@@ -106,28 +109,31 @@ class LlamaUnavailable extends Error {
 export function llamaEngine(opts: LlamaOptions): DecideEngine {
   const f = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 300_000;
-  const post = async (path: string, body: unknown): Promise<Record<string, unknown>> => {
+  const post = async (path: string, body: unknown, out: Sealed): Promise<Record<string, unknown>> => {
     let res: Response;
     try {
-      res = await f(`${opts.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+      // Rendered from the sealed copy (answer reads only frozenRequest's), checked as it leaves.
+      res = await f(`${opts.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: sealedBody(out, () => body), signal: AbortSignal.timeout(timeoutMs) });
     } catch (e) {
+      // A request the boundary refused is that refusal, not an engine that did not answer.
+      if (e instanceof UnmintedText) throw e;
       throw new LlamaUnavailable(`llama-server at ${opts.url} did not answer ${path}: ${e instanceof Error ? e.message : String(e)}`, e);
     }
     if (!res.ok) throw new LlamaUnavailable(`llama-server ${path} answered HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 300)}`);
     return (await res.json()) as Record<string, unknown>;
   };
 
-  const frame = async (content: string): Promise<string> => {
+  const frame = async (content: string, out: Sealed): Promise<string> => {
     if (opts.prompt === "document") return `${SYSTEM}\n\n${content}\nAnswer:`;
-    const r = await post("/apply-template", { messages: [{ role: "system", content: SYSTEM }, { role: "user", content }], ...(opts.templateKwargs === undefined ? {} : { chat_template_kwargs: opts.templateKwargs }) });
+    const r = await post("/apply-template", { messages: [{ role: "system", content: SYSTEM }, { role: "user", content }], ...(opts.templateKwargs === undefined ? {} : { chat_template_kwargs: opts.templateKwargs }) }, out);
     if (typeof r.prompt !== "string") throw new LlamaUnavailable("llama-server /apply-template returned no prompt");
     return r.prompt;
   };
 
-  const complete = async (prompt: string, allowed: readonly string[]): Promise<Completion> => {
+  const complete = async (prompt: string, allowed: readonly string[], out: Sealed): Promise<Completion> => {
     // Temperature below 0 is greedy, and the probabilities are then the plain softmax of the logits over the whole
     // vocabulary (llama-server README, n_probs), which is what the labels' split is read from.
-    const r = await post("/completion", { prompt, n_predict: 1, n_probs: N_PROBS, temperature: -1, cache_prompt: true, grammar: gbnf(allowed) });
+    const r = await post("/completion", { prompt, n_predict: 1, n_probs: N_PROBS, temperature: -1, cache_prompt: true, grammar: gbnf(allowed) }, out);
     const list = (r.completion_probabilities ?? r.probs) as { top_logprobs?: { token: string; logprob: number }[] }[] | undefined;
     const top = list?.[0]?.top_logprobs;
     if (top === undefined) throw new LlamaUnavailable("llama-server returned no token probabilities");
@@ -144,7 +150,7 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
    * normalized over the labels (review: renormalizing per position counted a forced digit as certain, and read a yes of
    * 0.5 against a no of 0.001 as 0.998).
    */
-  const split = async (prompt: string, labels: readonly string[]): Promise<{ p: Map<string, number>; evaluated: number }> => {
+  const split = async (prompt: string, labels: readonly string[], out: Sealed): Promise<{ p: Map<string, number>; evaluated: number }> => {
     const width = labels[0]?.length ?? 1;
     let evaluated = 0;
     const raw = new Map<string, number>();
@@ -154,7 +160,7 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
         return;
       }
       const next = [...new Set(under.map((l) => l[prefix.length] as string))];
-      const c = await complete(prompt + prefix, next);
+      const c = await complete(prompt + prefix, next, out);
       evaluated += c.evaluated;
       for (const ch of next) {
         const q = (c.probs.get(ch) ?? 0) * mass;
@@ -172,8 +178,10 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   };
 
   let queue: Promise<unknown> = Promise.resolve();
-  const answer = async (req: JevRequest): Promise<JevResult> => {
+  const answer = async (out: Sealed, req: JevRequest): Promise<JevResult> => {
     const t0 = performance.now();
+    // `req` is the sealed copy read back (frozenRequest): every prompt is rendered from it, and every call to llama-server,
+    // when it is dequeued and each one after, is checked as it leaves.
     const { choice, prefix } = layout(req);
     const answers: JevResult["answers"] = {};
     const probabilities: Record<string, Record<string, number>> = {};
@@ -181,8 +189,8 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
     for (const [qid, q] of Object.entries(req.questions)) {
       const byLabel = choice.get(qid) as Map<string, string>;
       const labels = [...byLabel.keys()];
-      const prompt = await frame(prefix + questionText(q, labels));
-      const s = await split(prompt, labels);
+      const prompt = await frame(prefix + questionText(q, labels), out);
+      const s = await split(prompt, labels, out);
       evaluated += s.evaluated;
       const p = Object.fromEntries(labels.map((l) => [byLabel.get(l) as string, s.p.get(l) ?? 0]));
       const best = Object.entries(p).sort(([, x], [, y]) => y - x)[0];
@@ -193,7 +201,7 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
     }
     const nouls: Record<string, number> = {};
     for (const [qid, q] of Object.entries(req.nouls ?? {})) {
-      const s = await split(await frame(prefix + noulText(q)), ["A", "B"]);
+      const s = await split(await frame(prefix + noulText(q), out), ["A", "B"], out);
       evaluated += s.evaluated;
       nouls[qid] = s.p.get("A") ?? 0;
     }
@@ -201,8 +209,13 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   };
   // One request at a time: two requests in flight would take turns in llama-server's one slot and push each other's
   // prompt prefix out of its cache, evaluating each prefix again for every question.
-  const ask: AskJev = (req) => {
-    const run = queue.then(() => answer(req));
+  const ask: AskJev = (asked) => {
+    // The request waits in the queue, so it is sealed now (privacy/send.ts): one frozen copy, verified, that every prompt
+    // is rendered from; a caller that changes its request afterwards changes nothing that is sent (PV2 review).
+    assertNoExcludedValue(asked);
+    const out = seal({ req: asked, wire: wireBody(asked, opts.model) });
+    const req = frozenRequest(asked, out.wire);
+    const run = queue.then(() => answer(out, req));
     queue = run.catch(() => undefined);
     return run;
   };

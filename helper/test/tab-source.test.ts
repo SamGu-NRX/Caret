@@ -312,7 +312,7 @@ describe("one fill from the tab the user just left (rules 1 to 7, through the he
     tabs = new TwoTabs();
     published = [];
     warnings = [];
-    host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) }, apply: (m) => void helper.handleReader(m), warn: (l) => void warnings.push(l) });
+    host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) }, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: (l) => void warnings.push(l) });
     helper = new Helper({
       store, askJev: jevPickingText((_, ins) => PICK[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null, 0.95), shadow: false, allowBackgroundFocus: true, readerLink: host.link, calendar: null, now: () => Date.now() + ahead,
       tabReader: pageTabReader(host.registry), publish: (m) => void published.push(m), warn: (l) => void warnings.push(l),
@@ -401,7 +401,7 @@ describe("a fill whose tab text expires while Jev answers (rule 6, P4 review)", 
       });
       return true;
     }, 500);
-    const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) }, apply: (m) => void helper.handleReader(m), warn: () => {} });
+    const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) }, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
     const PICK: Record<string, string> = { "First name": "Ines", "Last name": "Vandermeer", Email: "ines.vandermeer@example.org" };
     const picking = jevPickingText((_, ins) => PICK[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null, 0.95);
     helper = new Helper({

@@ -11,6 +11,7 @@
 // (writer/routes.ts devWriterRoute). Drafts' words from the local model by default (G1's caret-local-model reading the
 // GGUF by path; take a heavy lease, loading maps 3.4 GB); --drafts program keeps a live writer's own text. Jev live.
 // Each call's model is recorded. No GUI, no input, no app.
+import { writeStore, writeStoreJson, writeStoreNdjson } from "../src/privacy/send.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -126,7 +127,7 @@ function cannedWriter(c: Case): WriterPort & { requests: number } {
     requests: 0,
     async write(req: Parameters<WriterPort["write"]>[0]) {
       w.requests++;
-      const snapshots = (req.input as { snapshots: PlanningSnapshot[] }).snapshots;
+      const snapshots = (req.input as unknown as { snapshots: PlanningSnapshot[] }).snapshots;
       const hasEvent = snapshots.some((x) => x.values.some((v) => v.display.startsWith("the event '")));
       const program = w.requests > 1 ? null : cannedProgram(snapshots, cannedSteps(c).filter((x) => hasEvent || !("fill" in x && x.fill.window === "Calendar")));
       return { model: "canned", provider: "canned", output: { program, reply: program ?? "" }, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
@@ -310,7 +311,7 @@ for (const c of cases) {
   for (const d of drafts) console.log(`   draft ${d.field}: ${d.text}`);
   for (const w of sc.warnings.filter((x) => x.startsWith("goal "))) console.log(`   note: ${w.slice(0, 300)}`);
   for (const d of draftCalls.filter((x) => x.case === c.id)) console.log(`   local ${d.model} ${Math.round(d.ms)} ms (${d.stop ?? "error"}): ${d.text ?? d.error}`);
-  writeFileSync(join(OUT, `${c.id}.goals.ndjson`), sc.goals.map((g) => JSON.stringify(g)).join("\n") + "\n");
+  writeStoreNdjson(join(OUT, `${c.id}.goals.ndjson`), sc.goals);
   await sc.close();
 }
 
@@ -355,7 +356,7 @@ const summary = {
     cutOff: draftCalls.filter((x) => x.stop === "maxTokens").length,
   },
 };
-writeFileSync(join(OUT, "goal-drafts.json"), JSON.stringify({ summary, rows, calls, draftCalls }, null, 2) + "\n");
+writeStoreJson(join(OUT, "goal-drafts.json"), { summary, rows, calls, draftCalls }, 2);
 const md = [
   "# B30 goal and draft cases",
   "",
@@ -366,7 +367,7 @@ const md = [
   `Summary: ${JSON.stringify(summary)}`,
   "",
 ].join("\n");
-writeFileSync(join(OUT, "goal-drafts.md"), md);
+writeStore(join(OUT, "goal-drafts.md"), md);
 console.log(`summary ${JSON.stringify(summary)}`);
 await tool?.close();
 process.exitCode = summary.wrong === 0 && summary.falseDone === 0 ? 0 : 1;

@@ -1,12 +1,15 @@
 // The B24 real-form corpus (fixtures/realfill): its schema, the window titles its pages and notes get, and the
 // mail page each mail source is shown as. Shared by realfill-capture.ts and realfill-eval.ts.
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as z from "zod";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { forgetWindows } from "../src/privacy.ts";
 import { aboutKind, type AboutValue } from "../src/fill/about.ts";
-import type { Node, Snapshot } from "../src/protocol.ts";
+import { toWindowSnapshot } from "../src/engines/page-link.ts";
+import { EngineSession } from "../src/engines/session.ts";
+import { PageSnapshot, type Node, type Snapshot } from "../src/protocol.ts";
 
 const Control = z.enum(["text", "email", "tel", "url", "textarea", "select", "radio", "checkbox", "date", "time", "file", "combobox"]);
 export type Control = z.infer<typeof Control>;
@@ -127,6 +130,30 @@ h1{font-size:20px;font-weight:500}.hdr div{font-size:13px;color:#5f6368;margin:2
 <body><main aria-label="Message"><h1>${esc(m.subject)}</h1>
 <div class=hdr><div>From: ${esc(m.from)}</div><div>To: ${esc(m.to)}</div><div>Date: ${esc(m.date)}</div></div>
 <div class=body>${lines.join("\n")}</div></main></body></html>`;
+}
+
+/**
+ * V4: the corpus forms as the page engine walked them (D2-04's accept.ts --sites run of 2026-10-05, copied from
+ * evidence/screen/d2-04/corpus-pages/real), one `<form id>.snapshot.json` each. The pages they walked differ from
+ * fixtures/realfill/forms only by the walker's data-w4 attributes and the stylesheet.
+ * SCP1: each frame's `sections` and each control's `sections` were added by hand, not walked: derived offline from
+ * fixtures/realfill/forms by the extension's own rules (extension/src/content/sections.ts sectionOutline), since
+ * re-recording needs a browser. Their name tokens are made as the worker makes them (extension
+ * src/worker/section-names.ts) under a fixed salt, not a random one. A re-recording with the SCP1 walker replaces them.
+ */
+export const PAGE_WALKS = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/recorded/realfill-pages");
+
+/**
+ * V4: a corpus form as the page engine reads it (engines/page-link.ts toWindowSnapshot): the window an Ask plans on when
+ * a page engine covers the browser (helper.ts handlePlanRequest, H10). Chrome's Accessibility shows a closed select's
+ * selected option only (evidence/screen/b24/capture-2/windows.ndjson.probe-chrome.json: one AXMenuItem, "Select...",
+ * under a three-option Degree menu), so the reader's recorded window of a form has no option list for any menu; the
+ * page engine's walk has them all. The page gets a browser process of its own: under the recorded Chrome's pid,
+ * model.windowBefore passes over the mail windows the user just left as that browser's own toolbar window.
+ */
+export function pageForm(form: CorpusForm, dir = PAGE_WALKS): Snapshot {
+  const session = new EngineSession({ engine: "corpus", browser: { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" }, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+  return toWindowSnapshot(PageSnapshot.parse(JSON.parse(readFileSync(join(dir, `${form.id}.snapshot.json`), "utf8"))), session, 1);
 }
 
 /** The replay's clock: every desk is built as if the form were focused at this instant. */

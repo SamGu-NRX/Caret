@@ -3,6 +3,7 @@
 // tab's snapshot to the screen model before answering, as the reader does, and maps the page outcome back onto
 // the reader's. Its grant() turns the executor's one-window ActGrant into one ScopedActGrant per frame of the tab
 // as last walked, each pinned to that frame's origin and navigation generation.
+import { excludedSection } from "./page-exclusions.ts";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageFrame, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type VerbOutcome, type VerbResult } from "../protocol.ts";
 import type { ReaderLink } from "../executor/means.ts";
 import type { EngineSession } from "./session.ts";
@@ -169,6 +170,25 @@ function union(rects: readonly (readonly [number, number, number, number])[]): [
   return [x0, y0, x1 - x0, y1 - y0];
 }
 
+/** SCP1: an outline occurrence's key in the window: its frame's web area key and its id in that frame's walk. */
+const occurrenceKey = (frameId: number, id: string): string => `${frameKey(frameId)}#${id}`;
+
+/** SCP1: a control's sections as its node carries them, by occurrence key; a radio or press group takes its first option's. */
+const sectionsOf = (frameId: number, c: PageControl): Pick<Node, "sections"> => (c.sections === undefined || c.sections.length === 0 ? {} : { sections: c.sections.map((id) => occurrenceKey(frameId, id)) });
+
+/**
+ * SCP1: the frame's section occurrences as its web area node carries them, with any text the walk's self-identification
+ * exclusion matches taken out again here (page-exclusions.ts): an occurrence keeps its key, its place and its name's
+ * token, so it still ends the section before it and still counts as a section of that name, and loses only its text.
+ * One source of section text: a frame with an outline carries no separate heading list; one from an extension before
+ * SCP1 carries its heading list alone.
+ */
+function frameSections(f: PageFrame): Pick<Node, "headings" | "outline" | "sectionNames" | "sectionsCut"> {
+  const outline = (f.sections ?? []).map((o) => ({ key: occurrenceKey(f.frameId, o.id), heading: o.heading, ...(o.text === undefined || excludedSection(o.text) ? {} : { text: o.text }), ...(o.name === undefined ? {} : { name: o.name }) }));
+  const headings = outline.length > 0 ? [] : f.headings.filter((h) => !excludedSection(h));
+  return { ...(headings.length === 0 ? {} : { headings }), ...(outline.length === 0 ? {} : { outline }), ...(f.sectionNames === undefined || f.sectionNames.length === 0 ? {} : { sectionNames: f.sectionNames }), ...(f.sectionsCut === true ? { sectionsCut: true as const } : {}) };
+}
+
 /**
  * The window snapshot the screen model takes for a tab: one AXWebArea per frame, its controls below it.
  *
@@ -182,11 +202,26 @@ function union(rects: readonly (readonly [number, number, number, number])[]): [
  * checkbox holds PAGE_CHECKED while ticked and "" while not, and is editable the same way. So the executor reads,
  * writes, verifies and undoes both as it does a text field.
  */
+/**
+ * Whether a tab's page is at a site Caret may read: its top frame reported, and its origin not switched off. The one
+ * check every reader of a tab's walk makes before it takes the tab's title, frames or headings (SC1 2a).
+ */
+export function topFrameOn(s: PageSnapshot, off: ReadonlySet<string>): boolean {
+  const top = s.frames.find((f) => f.parentFrameId < 0);
+  return top !== undefined && !off.has(top.origin);
+}
+
 export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: number): Snapshot {
   const nodes: Node[] = [];
   let focusedKey: string | null = null;
   const view = s.view ?? null;
+  // SC1 2a: a frame at a site the user turned Caret off for never enters the model, whatever the engine sent. A tab whose
+  // top frame is at such a site is that site's page: none of its frames enters, nor its title (PV2 review). A walk with
+  // no report from its top frame is of a site Caret cannot know, so it fails closed the same way (PV2 re-review).
+  const tabOff = !topFrameOn(s, session.offSites);
+  const kept = new Set(tabOff ? [] : s.frames.filter((f) => !session.offSites.has(f.origin)).map((f) => f.frameId));
   for (const f of s.frames) {
+    if (!kept.has(f.frameId)) continue;
     // H10: screen frames for the top frame's nodes only. A child frame's rects are in its own viewport, whose place in
     // the page this walk does not pin down; its controls have no frame, so the host draws no offer at them.
     const onScreen = view !== null && f.parentFrameId < 0 ? (r: readonly [number, number, number, number]) => ({ frame: screenRect(view, r) }) : () => ({});
@@ -194,9 +229,17 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
       const u = view !== null && f.parentFrameId < 0 ? union(members.map((m) => screenRect(view, m.rect))) : null;
       return u === null ? {} : { frame: u };
     };
-    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}`, ...(view !== null && f.parentFrameId < 0 ? onScreen([0, 0, view.viewport[0], view.viewport[1]]) : {}) });
+    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 || !kept.has(f.parentFrameId) ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}`, ...frameSections(f), ...(view !== null && f.parentFrameId < 0 ? onScreen([0, 0, view.viewport[0], view.viewport[1]]) : {}) });
     const groups = new Set<string>();
     for (const c of f.controls) {
+      if (c.excluded !== undefined) {
+        // SC1 2a: a control the walker marks arrives with no value; it reads as a secure field does through Accessibility,
+        // so nothing targets it, and the model keeps it marked (privacy/exclude.ts).
+        const focusedHere = s.focused !== null && s.focused.frameId === f.frameId && s.focused.id === c.id;
+        if (focusedHere) focusedKey = nodeKey(f.frameId, c);
+        nodes.push({ key: nodeKey(f.frameId, c), parent: frameKey(f.frameId), role: ROLE[c.kind], label: c.name, ...(VALUE_KINDS.has(c.kind) ? { editable: true as const } : {}), states: focusedHere ? ["focused", "secure"] : ["secure"], excluded: c.excluded, ...onScreen(c.rect) });
+        continue;
+      }
       let parent = frameKey(f.frameId);
       if (c.kind === "radio") {
         parent = radioGroupKey(f.frameId, c);
@@ -204,7 +247,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
           groups.add(parent);
           const members = radioMembers(f, parent);
           const checked = members.find((m) => m.checked === true);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }), value: checked?.name ?? "", editable: true, ...groupFrame(members) });
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }), value: checked?.name ?? "", editable: true, ...sectionsOf(f.frameId, c), ...groupFrame(members) });
         }
       }
       const press = isPressOption(c);
@@ -213,7 +256,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         if (!groups.has(parent)) {
           groups.add(parent);
           const options = f.controls.filter((o) => isPressOption(o) && o.group.id === c.group.id);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: c.group.name, value: pressedValue(options), editable: true, ...groupFrame(options) });
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: c.group.name, value: pressedValue(options), editable: true, ...sectionsOf(f.frameId, c), ...groupFrame(options) });
         }
       }
       const states: NodeState[] = [];
@@ -251,6 +294,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         // W2: a text input's own kind, which the write contract checks a value's shape against (fill/contract.ts).
         ...(TEXT_KINDS.has(c.kind) ? { inputKind: c.kind as NonNullable<Node["inputKind"]> } : {}),
         ...(c.autocomplete === undefined ? {} : { autocomplete: c.autocomplete }),
+        ...sectionsOf(f.frameId, c),
       });
       // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
       // hand-off for it can name one. Chrome's Accessibility shows only the selected one. An option whose value is
@@ -267,7 +311,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
     at: s.at,
     reason: "request",
     app: session.info.browser,
-    window: { windowId: pageWindowId(session.info.engine, s.tabId), kind: PAGE_WINDOW_KIND, title: s.title, frame: view === null ? null : [...view.window] },
+    window: { windowId: pageWindowId(session.info.engine, s.tabId), kind: PAGE_WINDOW_KIND, title: tabOff ? "" : s.title, frame: view === null ? null : [...view.window] },
     // The selected tab of a background browser window is not where the user is (W3): only the selected tab of the
     // window Chrome last focused counts, and the model's frontmost app (the reader's) decides whether that browser does.
     focused: s.active && s.inFocusedWindow,
@@ -413,6 +457,11 @@ export class PageEngineLink implements ReaderLink {
     this.apply = apply;
     this.onTiming = onTiming;
     session.onSnapshot = (s) => this.apply(toWindowSnapshot(s, session, ++this.seq));
+  }
+
+  /** A tab's last walk as the model takes it under the sites now switched off, for EngineRegistry.setSitesOff's purge. */
+  readAgain(s: PageSnapshot): Snapshot {
+    return toWindowSnapshot(s, this.session, ++this.seq);
   }
 
   /** A page command, timed; a walk's answer carries the extension's own time in its snapshot. */

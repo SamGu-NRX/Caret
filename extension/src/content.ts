@@ -119,8 +119,11 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
       } catch {
         selection = null;
       }
-      // H13: the caret's rect with its text, for the host's inline text; neither on a site on the deny list.
-      focused = { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null, caret: caretText ? caretRect(active) : null };
+      // H13: the caret's rect with its text, for the host's inline text; neither on a site on the deny list. SC1 2a: a
+      // marked secret field says only that it has focus, never its text, selection, caret or whether it is empty.
+      focused = c.excluded !== undefined
+        ? { id: c.id, selection: null, text: null, caret: null }
+        : { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null, caret: caretText ? caretRect(active) : null };
     }
   }
   const docs = window.self === window.top ? docsKind(self.origin, location.pathname) : null;
@@ -130,7 +133,12 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
     origin: self.origin,
     path: location.protocol === "about:" ? location.href : location.pathname,
     title: clean(document.title, 200),
-    headings: [...document.querySelectorAll("h1, h2")].filter((x) => visible(x)).slice(0, 10).map((h) => clean(h.textContent, 120)).filter((t) => t !== ""),
+    // SCP1: one source of section text: the heading list comes from the walk's section outline, after its exclusions
+    // by name and by where a heading is, never from a separate read of the page's headings.
+    headings: out.headings,
+    sections: out.sections,
+    ...(out.sectionOverflow.length === 0 ? {} : { sectionOverflow: out.sectionOverflow }),
+    ...(out.sectionsCut ? { sectionsCut: true as const } : {}),
     controls: out.controls,
     iframes: visibleIframes(),
     viewport: [window.innerWidth, window.innerHeight],

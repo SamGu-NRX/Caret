@@ -8,9 +8,9 @@
 // it back, and the elements it recorded let the new helper undo a run the crash cut off (executor/journal.ts). At
 // most RESTARTS restarts in RESTART_WINDOW_MS, then both stop. The reader exiting, or this process being stopped,
 // stops both.
-import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { newLocalSecret } from "./privacy/local-secret.ts";
 
 /** Restarts of a crashed helper allowed in RESTART_WINDOW_MS before the launcher gives up. Assumed. */
 const RESTARTS = 5;
@@ -18,9 +18,9 @@ const RESTART_WINDOW_MS = 60_000;
 /** Wait before starting a crashed helper again. Assumed: the reader retries its connection every second. */
 const RESTART_DELAY_MS = 1000;
 
-/** A new launch secret. */
+/** A new launch secret: 32 random bytes, registered as this process's own (privacy/local-secret.ts). */
 export function newLaunchSecret(): Buffer {
-  return randomBytes(32);
+  return newLocalSecret(32);
 }
 
 /** Hands a child started with `--auth-fd 0` its launch secret on standard input, then closes it. */

@@ -67,6 +67,7 @@ const jev = (route: string, asks: readonly string[], log: JevRequest[] = []): As
         const ins = String(q.instructions);
         const pick = (c: string) => [id, { choice: c, confidence: 0.95 }] as const;
         if (req.purpose === "ask.heads") return pick({ route, why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
+        if (req.purpose === "ask.scope" && id === "section") return pick("fields");
         if (req.purpose === "ask.scope") return pick(asks.includes(/[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
         if (id === "press") return pick("none" in q.criteria ? "none" : (Object.keys(q.criteria).at(-1) ?? "none"));
         const want = Object.entries(VALUES).find(([l]) => ins.includes(`'${l}'`))?.[1];

@@ -18,6 +18,7 @@
 //
 // It opens windows, so run it under the GUI wrapper (gui.lock, idle Mac):
 //   gui.sh 30 env CARET_GUI_LOCK=held node scripts/skills-real-eval.ts --target chromium|electron --bin ../apps/screen-reader/.build/debug --out DIR [--electron DIR]
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { execFileSync, spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -297,7 +298,7 @@ async function electronBrowser(): Promise<Browser> {
   copyFileSync(resolve(import.meta.dirname, "../fixtures/electron/main.cjs"), join(appDir, "main.cjs"));
   // main.cjs loads form.html from its directory; here that is the intake page.
   copyFileSync(FORM, join(appDir, "form.html"));
-  writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "caret-electron-eval", main: "main.cjs" }) + "\n");
+  writeStoreJson(join(appDir, "package.json"), { name: "caret-electron-eval", main: "main.cjs" });
   const profile = mkdtempSync(join(tmpdir(), "caret-electron-profile-"));
   tempDirs.push(profile);
   // A blank first window, so the form windows each occurrence opens are the only ones titled as the form.
@@ -538,6 +539,6 @@ result.readerLogTail = readerErr.split("\n").slice(-10);
 result.target = TARGET;
 result.targetLogTail = targetLog.split("\n").slice(-5);
 result.ok = ok;
-writeFileSync(join(OUT, "skills-real.json"), JSON.stringify(result, null, 2) + "\n");
+writeStoreJson(join(OUT, "skills-real.json"), result, 2);
 console.log(JSON.stringify({ ok, error: result.error ?? null, checks, runs: runs.length }, null, 1));
 process.exit(ok ? 0 : 1);

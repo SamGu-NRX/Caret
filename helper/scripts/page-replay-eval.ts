@@ -11,6 +11,7 @@
 // page control as the model shows it (a radio or Yes/No question by its question). Wrong fills must be 0. The Jev key
 // is TYPESAFE_API_KEY from the environment or CARET_ENV_FILE and is never printed. The snapshots hold public form
 // labels only; the note and every value are invented.
+import { appendStore, appendStoreJson, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -18,7 +19,7 @@ import * as z from "zod";
 import { ScreenModel } from "../src/model.ts";
 import { forgetWindows } from "../src/privacy.ts";
 import { proposeFill } from "../src/fill/fill.ts";
-import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { PageSnapshot, PROTOCOL_VERSION, type FillField, type Node, type Snapshot } from "../src/protocol.ts";
@@ -51,10 +52,12 @@ let current = "";
 const live = makeJevClient(loadJevKey);
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const r = await live(req);
+  // Sealed before it is sent: sent and logged from this frozen copy (PV2).
+  const sent = sealRequest(req);
+  const r = await live(sent.asked);
   spent += r.costUsd;
   calls++;
-  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], `${JSON.stringify({ site: current, questions: Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])), answers: r.answers })}\n`);
+  if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { site: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers });
   return r;
 };
 
@@ -161,6 +164,6 @@ const md = [
   "",
   ...results.flatMap((r) => [`### ${r.site}`, "", "| field | expected | proposed | verdict | why |", "|---|---|---|---|---|", ...r.scored.map((s) => `| ${s.label.slice(0, 90)} | ${s.expected} | ${s.proposed ?? ""} | ${s.verdict} | ${s.why ?? ""} |`), ""]),
 ];
-writeFileSync(join(OUT, "page-replay.md"), `${md.join("\n")}\n`);
-writeFileSync(join(OUT, "page-replay.json"), `${JSON.stringify({ calls, spent, results }, null, 1)}\n`);
+writeStore(join(OUT, "page-replay.md"), `${md.join("\n")}\n`);
+writeStoreJson(join(OUT, "page-replay.json"), { calls, spent, results }, 1);
 process.stderr.write(`wrote ${join(OUT, "page-replay.md")}; all: right ${count(all, "right")}/${fillable(all)}, wrong ${count(all, "wrong")}; $${spent.toFixed(4)}\n`);

@@ -1,3 +1,4 @@
+import { instructionForModel } from "../fill/redact.ts";
 // A draft from the local model (L1 lead decision 6): words for one message or description field, under a grammar that
 // allows only plain sentences. Code still decides whether a draft may be offered: goals/drafts.ts checks its facts and
 // Jev its claims, unchanged. Measured on B30's cases and D2-06's scenes (scripts/goal-drafts-eval.ts,
@@ -6,6 +7,7 @@
 // The development model, Cotypist's Gemma 4 E2B, is a base model (G1), so the prompt is a few-shot document, not a
 // chat. Its examples are invented and appear in no evaluation case. The host renders localTextRequest's prompt parts
 // into its own model's prompt; this file is the rendering L1 measured, for the host batch to match or replace.
+import { assertNoExcludedValue } from "../privacy.ts";
 import type { LocalTextAsk } from "./local-port.ts";
 
 /**
@@ -84,11 +86,13 @@ export function renderDraftPrompt(p: LocalTextAsk["prompt"]): { prefix: string; 
 
 /** The request for one draft in `field`, from `basis` (each window's title and its message's words). */
 export function draftAsk(instruction: string, field: { name: string; placeholder: string | null }, basis: readonly string[], now: number): LocalTextAsk {
-  return {
+  const ask: LocalTextAsk = {
     kind: "draft",
     grammar: DRAFT_GRAMMAR,
-    prompt: { instruction: instruction.slice(0, 500), field: { name: field.name.slice(0, 200), placeholder: field.placeholder?.slice(0, 200) ?? null }, basis: basis.slice(0, 8).map((b) => b.slice(0, 4000)) },
+    prompt: { instruction: instructionForModel(instruction).slice(0, 500), field: { name: field.name.slice(0, 200), placeholder: field.placeholder?.slice(0, 200) ?? null }, basis: basis.slice(0, 8).map((b) => b.slice(0, 4000)) },
     maxTokens: LOCAL_DRAFT_MAX_TOKENS,
     deadlineMs: now + LOCAL_DRAFT_DEADLINE_MS,
   };
+  assertNoExcludedValue({ input: ask.prompt });
+  return ask;
 }

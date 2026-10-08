@@ -1,3 +1,4 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 // G2: fill's ownership stage, end to end through proposeFill on a page form with the task pages' sources as
 // page-loop-eval.ts replays them (a Mail window, then the note the user just left). Jev is a script that answers each
 // question by rule and records every request. Imports nothing G2 added, so the same file runs on the code before G2,
@@ -17,9 +18,20 @@ import { buildFillPopup, fillPlan, recheckFields, recheckFill, writtenFields } f
 import { holds as holdsAfter } from "./recheck.ts";
 import { provenanceStale } from "../src/fill/contract.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
-import { assertNoSecrets, SecretInRequest } from "../src/privacy.ts";
+import { assertNoExcludedValue, SecretInRequest } from "../src/privacy.ts";
+import { Disclosure, OutOfShape, UnmintedText, type ModelText } from "../src/privacy/disclosure.ts";
 import { redactWindow } from "../src/fill/redact.ts";
-import "../src/planner/intent-heads.ts";
+import { headsRequest, scopeRequest } from "../src/planner/intent-heads.ts";
+import { intentSnapshot } from "../src/planner/intent.ts";
+import { jevIntentMaker, writerIntentMaker } from "../src/planner/intent-makers.ts";
+import { planWithCode } from "../src/planner/codeplan.ts";
+import { planTask } from "../src/planner/planner.ts";
+import { PlannerError } from "../src/planner/validate.ts";
+import { macClock } from "../src/offers/event-time.ts";
+import { planGoal } from "../src/goals/propose.ts";
+import { GoalError } from "../src/goals/lower.ts";
+import { gatewayRoute } from "../src/writer/routes.ts";
+import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
 import { bareLine, lineDigests } from "../src/fill/line-values.ts";
 import { secretText as holdsSecret } from "../src/memory/sensitive.ts";
 import { nodeText } from "../src/model.ts";
@@ -165,7 +177,9 @@ describe("structural evidence in whose-value questions (G2)", () => {
   it("gives a mail with several recipients, or a Cc:, no structural evidence", async () => {
     const several = await ownerAsk({ ...forty.email, to: "Jo Abernathy-Cole <jo.abernathycole@example.com>, Tamsin Reyes <tamsin.reyes@example.org>" });
     for (const t of ["jo.abernathycole@example.com", "tamsin.reyes@example.org"]) expect(ownerQuestionOf(several, t), t).toBeDefined();
-    for (const q of ownerQuestions(several).filter((x) => x.includes("Mail window"))) expect(q).not.toContain("Where it sits");
+    // HA2: the form's address fields also ask whose the mail's other lines are (its Subject included); only the To: line's
+    // values are about recipients here.
+    for (const q of ownerQuestions(several).filter((x) => x.includes("Mail window") && x.includes("labelled 'To'"))) expect(q).not.toContain("Where it sits");
     const cc = await ownerAsk(forty.email, ["Cc: Tamsin Reyes <tamsin.reyes@example.org>"]);
     for (const q of ownerQuestions(cc).filter((x) => x.includes("labelled 'To'"))) expect(q).not.toContain("only recipient");
   });
@@ -178,16 +192,16 @@ describe("structural evidence in whose-value questions (G2)", () => {
     }
   });
 
-  it("G2: says which note sentences name no other person, and which name someone else", async () => {
+  it("G2: says which note sentences name someone else; HA2: never that a sentence names no other person", async () => {
     const r = await ownerAsk(forty.email);
-    const alone = "it is in a sentence of the note the user just left that names no other person";
+    const alone = "names no other person";
     const other = "it is in a sentence that names someone other than the user";
-    expect(ownerQuestionOf(r, "2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214")).toContain(alone);
-    expect(ownerQuestionOf(r, "555-0164")).toContain(alone);
+    // HA2: one sentence can't say whose a value is, so code no longer claims it (whose.ts header).
+    for (const q of ownerQuestions(r)) expect(q).not.toContain(alone);
+    expect(ownerQuestionOf(r, "555-0164")).not.toContain("Where it sits");
     expect(ownerQuestionOf(r, "555-0171")).toContain(other);
     expect(ownerQuestionOf(r, "marcus.cole@example.net")).toContain(other);
     expect(ownerQuestionOf(r, "Marcus Cole")).toContain(other);
-    for (const t of ["555-0171", "marcus.cole@example.net"]) expect(ownerQuestionOf(r, t)).not.toContain(alone);
   });
 
   it("reads the sentence, not the line: the user's cell beside a warning about the parents' landline", async () => {
@@ -201,7 +215,7 @@ describe("structural evidence in whose-value questions (G2)", () => {
 });
 
 describe("a date's or a contact's clause (G2)", () => {
-  const descriptions = (requests: JevRequest[]): string[] => requests.flatMap((r) => Object.values(r.questions).flatMap((q) => Object.values(q.criteria).filter((d): d is string => typeof d === "string")));
+  const descriptions = (requests: JevRequest[]): string[] => requests.flatMap((r) => Object.values(r.questions).flatMap((q) => Object.values(q.criteria).filter((d) => typeof d === "string")));
 
   // Passes before G2 too: on a two-field page the old rule's long-line clause fits. On F1's walked Greenhouse page the
   // note's budget was spent before any clause, and these dates went out bare (evidence/screen/g2/whose/probe-*.json).
@@ -381,17 +395,20 @@ describe("G2 review round 2: one disclosure rule", () => {
   });
 
   it("b: a request that still carries a secret marker is refused where it is built, loudly and without the text", () => {
-    const req = { state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field.", criteria: { c1: `"Robin" (in a block that starts 'Password: hunter2')`, none: "None." } } } };
-    expect(() => assertNoSecrets(req)).toThrow(SecretInRequest);
-    expect(() => assertNoSecrets(req)).toThrow(/questions\.f1\.criteria\.c1/u);
+    // SC1: a block head the redacted view dropped is text no Disclosure minted, so sealing the request throws, naming the
+    // path. The client no longer checks words on the wire (privacy.ts assertNoExcludedValue checks formats).
+    const d = new Disclosure([]);
+    const req = { purpose: "fill.values" as const, state: { task: d.own("t") }, questions: { f1: { type: "choice" as const, instructions: d.own("Field."), criteria: { c1: `"Robin" (in a block that starts 'Password: hunter2')` as ModelText, none: d.own("None.") } } } };
+    expect(() => d.seal(req)).toThrow(UnmintedText);
+    expect(() => d.seal(req)).toThrow(/questions\.f1\.criteria\.c1/u);
     try {
-      assertNoSecrets(req);
+      d.seal(req);
     } catch (e) {
       expect(String(e)).not.toContain("hunter2");
     }
-    // The same word rule as the redacted view (round 4): a marker word anywhere in any text throws, a plain field does not.
-    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Password'.", criteria: { none: "None." } } } })).toThrow(SecretInRequest);
-    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Email'.", criteria: { none: "None." } } } })).not.toThrow();
+    // A value in a format Caret never carries throws at the client's last line; a marker word alone is prose there.
+    expect(() => assertNoExcludedValue({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Card: 4111 1111 1111 1111.", criteria: { none: "None." } } } })).toThrow(SecretInRequest);
+    expect(() => assertNoExcludedValue({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Password'.", criteria: { none: "None." } } } })).not.toThrow();
   });
 
   // G2 round-3 review: lines that name a secret anywhere, not only as their leading label, each beside an ordinary value.
@@ -530,7 +547,11 @@ describe("G2 review round 2: provenance", () => {
     const entry = about.find((a) => a.value === "jo.abernathycole@example.com") as AboutValue;
     const pick: Record<string, string> = { Phone: "555-0164", City: "Portland", "ZIP code": "97214", Apartment: "Apt 5B", Street: "2210 Willow Bend Drive", "Mobile phone": "555-0164", Email: "jo.abernathycole@example.com" };
     const { ask } = scripted(pick, () => ({ choice: "user", confidence: 0.95 }));
-    const m = desk(fields, [mailWindow(forty.email), noteWindow(forty.note)]);
+    // HA2: the owner questions must show the whole note, and a note with a line over 80 characters is prose, of which a
+    // fill on focus sends under half; its values for the user's fields are withheld (fill.ts NOTE_UNSHOWN). This test is
+    // about the pop-up's rows, so it reads the note's card lines alone, which may go whole.
+    const card = forty.note.split("\n").filter((l) => l.length <= 80).join("\n");
+    const m = desk(fields, [mailWindow(forty.email), noteWindow(card)]);
     const p = await proposeFill(m, ask, WIN, keyOf(fields[0] as PageControl), 2000, { about });
     const g = writtenFields(p);
     expect(g.fields.length).toBeGreaterThan(5);
@@ -596,14 +617,17 @@ describe("G2 round 4: the redacted view, generated", () => {
       const m = pick(MARKERS);
       const [o, c] = pick(QUOTES) as [string, string];
       const line = `${pick(["", "my ", "Staging ", "Email: robin@example.test "])}${m}${pick(SEPS)}${o}${planted}${c}`;
-      const role = pick(["note", "mail", "label", "placeholder", "nearest", "cell", "cellLabel", "split", "blankOpener"] as const);
+      const role = pick(["note", "mail", "label", "placeholder", "nearest", "cell", "cellLabel", "split", "blankOpener", "sender", "splitAttrs", "hiddenLabel"] as const);
       const at = [20, 40, 120, 20] as [number, number, number, number];
       const source: Snapshot =
         role === "note" ? noteWindow(`Notes\n${line}\nName: Kenji Watanabe`)
+        : role === "sender" ? mailWindow({ from: `Robin Vale; ${m}: ${planted}`, to: "Kenji Watanabe <kenji@example.org>", subject: "Hi", body: "Name: Kenji Watanabe" })
         : role === "mail" ? mailWindow({ from: "Dana Park <dana@example.org>", to: "Kenji Watanabe <kenji@example.org>", subject: "Hi", body: `Hi Kenji,\n${line}\nDana` })
         : ({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 500, 300] }, focused: false, root: null, values: [], focusedKey: null, stats: { walkMs: 0, visited: 2, truncated: false },
             nodes:
-              role === "label" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, label: `${m}${pick(SEPS)}`, frame: at }]
+              role === "splitAttrs" ? [{ key: "o/c", parent: null, role: "AXCell", label: "API", value: `key: ${planted}`, frame: at }]
+              : role === "hiddenLabel" ? [{ key: "o/l", parent: null, role: "AXStaticText", value: m, frame: [0, 40, 80, 20] }, { key: "o/d", parent: null, role: "AXStaticText", value: "A short\ndocument", frame: [85, 40, 35, 20] }, { key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, frame: [125, 40, 100, 20] }]
+              : role === "label" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, label: `${m}${pick(SEPS)}`, frame: at }]
               : role === "placeholder" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, placeholder: m, frame: at }]
               : role === "nearest" ? [{ key: "o/l", parent: null, role: "AXStaticText", value: `${o}${m}${c}`, frame: at }, { key: "o/f", parent: null, role: pick(["AXTextField", "AXStaticText", "AXCell"]), ...(r() < 0.5 ? { editable: true as const } : {}), value: planted, frame: [150, 40, 120, 20] }]
               : role === "cellLabel" ? [{ key: "o/c", parent: null, role: pick(["AXCell", "AXStaticText"]), label: `${o}${m}${c}`, value: planted, ...(r() < 0.5 ? { frame: at } : {}) }]
@@ -614,9 +638,32 @@ describe("G2 round 4: the redacted view, generated", () => {
       const name = control("e1", "Full name");
       const others = role === "note" ? [source] : [source, noteWindow("Name: Kenji Watanabe")];
       const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
-      await proposeFill(desk([name, control("e2", "Notes", "textarea")], others), ask, WIN, keyOf(name), 2000);
-      expect(requests.length, `case ${i}`).toBeGreaterThan(0);
-      const sent = JSON.stringify(requests.map((x) => [x.state, x.questions, x.nouls ?? {}, x.snippets]));
+      const model = desk([name, control("e2", "Notes", "textarea")], others);
+      await proposeFill(model, ask, WIN, keyOf(name), 2000);
+      const snap = intentSnapshot("Fill all fields", model, model.windows.get(WIN)!, []);
+      requests.push(headsRequest(snap), scopeRequest(snap, 0), scopeRequest(snap, 1));
+      await jevIntentMaker(ask).make(snap);
+      const writes: WriterRequest[] = [];
+      const writer: WriterPort = {
+        route: gatewayRoute("openai/gpt-oss-120b"),
+        async write(req) {
+          writes.push(req);
+          return { model: "fixture", provider: "fixture", output: { program: null, reply: "", json: { route: "refuse", why: "nothingToFill", scope: "none", section: "none", fields: [], sources: [], whose: "user", literals: [] } }, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
+        },
+      };
+      await writerIntentMaker(writer, () => "fixture").make(snap);
+      // These writers stop after their request, before any program runs. A secret guard failure must not be hidden
+      // as an expected planner failure: all three requests must reach the stand-in.
+      await expect(planWithCode("Fill all fields", model, { values: () => [] }, { writer, askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 })).rejects.toBeInstanceOf(PlannerError);
+      await expect(planGoal(model, { goalId: "fixture", instruction: "Fill all fields", writer, askJev: ask, windows: [WIN], memory: [], calendar: null, clock: macClock(new Date(2000)), now: 2000, readerSession: 0 })).rejects.toBeInstanceOf(GoalError);
+      expect(writes, `case ${i}: all writer builders reached`).toHaveLength(3);
+      try {
+        await planTask("Fill all fields", model, { values: () => [] }, { askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 });
+      } catch (e) {
+        expect(e).toBeInstanceOf(PlannerError);
+      }
+      expect(requests.some((r) => r.purpose === "planner.fields"), `case ${i}: planner built a request`).toBe(true);
+      const sent = JSON.stringify([requests.map((x) => [x.state, x.questions, x.nouls ?? {}, x.snippets]), writes.map((w) => [w.input, w.disclosed])]);
       expect(sent.includes(planted), `case ${i} (${role}): ${JSON.stringify(line)}`).toBe(false);
     }
   });
@@ -659,9 +706,10 @@ describe("G2 round 4: recheck by neighbourhood", () => {
       return "stale" in r ? ["stale"] : r.dropped.map((d) => d.key);
     };
     expect(after("First name: Kenji\nLandlord\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin")).toContain(keyOf(full));
-    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nDo not use this old number\nCity: Austin")).toEqual([keyOf(phone)]);
-    // An edit two lines away touches neither.
-    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin\nZIP: 78751")).toEqual([]);
+    // HA2 review P1: each value is also bound to the whole note its owner questions showed, so any edit of the note refuses
+    // every value from it; the neighbourhood rule above still names its own cause first.
+    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nDo not use this old number\nCity: Austin")).toEqual([keyOf(full), keyOf(phone)]);
+    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin\nZIP: 78751")).toEqual([keyOf(full), keyOf(phone)]);
   });
 });
 
@@ -721,12 +769,12 @@ describe("G2 round 5", () => {
     expect(recheckFill(m, g, () => null)).not.toBeNull();
   });
 
-  it("8: Caret's own wording passes only as a question's criterion, never in the state", () => {
-    const refuse = "Something Caret must not or cannot do here: pay, give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.";
-    // The Ask heads register it (planner/intent-heads.ts); importing fill.ts loads them through the planner.
-    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { scope: { type: "choice", instructions: "Which?", criteria: { refuse } } } })).not.toThrow();
-    expect(() => assertNoSecrets({ state: { screenText: refuse }, questions: {} })).toThrow(SecretInRequest);
-    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { scope: { type: "choice", instructions: refuse, criteria: { none: "None." } } } })).toThrow(SecretInRequest);
+  it("8: Caret's own wording passes only where its request's shape has a slot for it", () => {
+    const d = new Disclosure([]);
+    const refuse = d.own("Something Caret must not or cannot do here: pay, give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.");
+    // SC1 2c: the shape (privacy/shapes.ts) says where a request may carry text; Caret's wording is minted by own().
+    expect(() => d.seal({ purpose: "intent.route", state: { task: d.own("t") }, questions: { scope: { type: "choice", instructions: d.own("Which?"), criteria: { refuse } } } })).not.toThrow();
+    expect(() => d.seal({ purpose: "intent.route", state: { screenText: refuse }, questions: {} })).toThrow(OutOfShape);
   });
 });
 
@@ -876,3 +924,7 @@ describe("G2 round 7: last fixes", () => {
     expect(g).toContain("City: Austin");
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

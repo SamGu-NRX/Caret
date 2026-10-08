@@ -6,9 +6,10 @@
 // The cap is CARET_JEV_DAILY_CAP, from the environment or the .env file named by CARET_ENV_FILE (where the Jev key
 // comes from), in dollars. Without it the cap is DEFAULT_DAILY_CAP_USD. The day's file is in CARET_JEV_SPEND_DIR, or
 // SPEND_DIR by default.
-import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { assertLocalStorePath, writeLocalFile } from "../../privacy/store-path.ts";
 
 /**
  * The cap when none is configured: $0.50 a day, the lead's development default (brief J1). It is also the shipped
@@ -138,9 +139,12 @@ export class DailySpend {
     return {
       settle: (costUsd, inputTokens) => {
         close();
+        const file = join(this.dir, `${day}.ndjson`);
+        // Checked before the folder is made, so a refused path leaves nothing behind.
+        assertLocalStorePath(file);
         mkdirSync(this.dir, { recursive: true, mode: 0o700 });
         // The day the request was reserved on, so one sent at 23:59:59 counts against the day that let it through.
-        appendFileSync(join(this.dir, `${day}.ndjson`), `${JSON.stringify({ at: this.now().toISOString(), usd: costUsd, tokens: inputTokens, pid: process.pid })}\n`, { mode: 0o600 });
+        writeLocalFile(file, `${JSON.stringify({ at: this.now().toISOString(), usd: costUsd, tokens: inputTokens, pid: process.pid })}\n`, { append: true, mode: 0o600 });
       },
       release: close,
     };
@@ -160,30 +164,23 @@ export class DailySpend {
       this.landed = 0;
     }
     const path = join(this.dir, `${day}.ndjson`);
-    let fd: number;
+    let all: Buffer;
     try {
-      fd = openSync(path, "r");
+      all = readFileSync(path);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
       throw e;
     }
-    try {
-      const size = fstatSync(fd).size;
-      if (size <= this.offset) return;
-      const buf = Buffer.alloc(size - this.offset);
-      readSync(fd, buf, 0, buf.length, this.offset);
-      const text = buf.toString("utf8");
-      // Only whole lines; a line still being written is read next time.
-      const end = text.lastIndexOf("\n") + 1;
-      for (const line of text.slice(0, end).split("\n")) {
-        if (line === "") continue;
-        const usdSpent = (JSON.parse(line) as { usd?: unknown }).usd;
-        if (typeof usdSpent !== "number" || !Number.isFinite(usdSpent) || usdSpent < 0) throw new Error(`${path} has a line without a dollar amount: ${line.slice(0, 120)}`);
-        this.landed += usdSpent;
-      }
-      this.offset += Buffer.byteLength(text.slice(0, end), "utf8");
-    } finally {
-      closeSync(fd);
+    if (all.length <= this.offset) return;
+    const text = all.subarray(this.offset).toString("utf8");
+    // Only whole lines; a line still being written is read next time.
+    const end = text.lastIndexOf("\n") + 1;
+    for (const line of text.slice(0, end).split("\n")) {
+      if (line === "") continue;
+      const usdSpent = (JSON.parse(line) as { usd?: unknown }).usd;
+      if (typeof usdSpent !== "number" || !Number.isFinite(usdSpent) || usdSpent < 0) throw new Error(`${path} has a line without a dollar amount: ${line.slice(0, 120)}`);
+      this.landed += usdSpent;
     }
+    this.offset += Buffer.byteLength(text.slice(0, end), "utf8");
   }
 }

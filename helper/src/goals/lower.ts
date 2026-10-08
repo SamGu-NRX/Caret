@@ -18,18 +18,20 @@
 // Steps are then cut into segments: a new segment starts where the window changes (or the calendar starts or ends),
 // and after a press whose effect changes what the window offers. Each segment is one executor task, under one
 // forward grant for its one window, and needs its own acceptance.
+import type { Disclosure } from "../privacy/disclosure.ts";
 import { authorityRefusal, scopeKey, scopeRefusal, withScope, type AskScope, type Authority, type DocumentReader, type Origin, type ScopeSet } from "../fill/ask-scope.ts";
 import type { DraftPlan } from "../codemode/types.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { matchOption } from "../fill/controls.ts";
 import { MAX_FIELDS } from "../fill/fill.ts";
-import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
 import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, statedChoice, VerifierUnavailable, type CheckedValue, type Proposed, type Provenance } from "../fill/contract.ts";
 import { readClock, readDate, readDateTime, readMonth } from "../fill/when.ts";
+import { alternateVetoes, type AlternateWrite } from "../fill/alternate.ts";
+import { bindNotes, personalField } from "../planner/codeplan.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
@@ -196,7 +198,7 @@ export interface LowerOptions {
   /** Jev, for the value gate; null confirms nothing, so no copied value is written. */
   askJev: AskJev | null;
   /** The ledger the inventory's texts went through: what a Jev request may carry. */
-  ledger: SnippetLedger;
+  ledger: Disclosure;
   /** Writes a stopped goal this plan replaces meant and did not make (runs.ts): those this plan leaves out are left. */
   carried?: readonly LeftItem[];
 
@@ -303,6 +305,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const digest = createHash("sha256").update(d.text).digest("hex");
     drafted.set(d.ref, { ref: d.ref, text: d.text, display: d.text, origin: { kind: "draft", draftId: d.ref, model: o.writerModel ?? "", basis: d.from, digest }, source: null, memory: null, event: null, draft: { windows: [...new Set(windows)], memory }, owner: null });
   }
+  // V6 B2: the alternate-field veto (fill/alternate.ts), over every value the plan writes into each window, before any
+  // value is checked, verified or minted under an exemption.
+  const repeats = alternateRefusals(draft, inv, drafted);
   let steps: GoalStep[] = [];
   const warnings: string[] = [];
   const asked = eventsAsked(instruction);
@@ -373,6 +378,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       if (filled.has(t.ref) && t.control !== "calendar") throw new GoalError("schema", `the plan fills ${named(t)} twice`, t.ref);
       filled.add(t.ref);
       if (t.domain.kind === "window") writesIn.add(t.domain.windowId);
+      const repeated = repeats.get(s.ref);
+      if (repeated !== undefined) {
+        dropAs(t, repeated, v);
+        continue;
+      }
       // A draft is words for a message or description field (gates.ts): anywhere else it is dropped, as a value of the
       // wrong kind is, before its facts are read.
       if (v.draft !== null && t.control !== "text") {
@@ -510,7 +520,13 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     }
     const refusedSteps = new Set<GoalStep>();
     for (const [scope, group] of byScope) {
-      const proposed = group.map((x) => proposedFor(x.target, x.value as ValueBinding, x.writes as string, verifiedAs.get(x)));
+      // HA2 review P1: a copied value for a person's field is bound to the notes frozen for it at plan time, which its
+      // owner check shows (jevGate), so the recheck before each write refuses it once any of them changes.
+      const proposed = group.map((x) => {
+        const p = proposedFor(x.target, x.value as ValueBinding, x.writes as string, verifiedAs.get(x));
+        const notes = personalField(x.target.label) ? (inv.notes?.get((x.value as ValueBinding).ref) ?? null) : null;
+        return notes === null ? p : { ...p, provenance: bindNotes(p.provenance, notes, null) };
+      });
       let result: Awaited<ReturnType<typeof checkValues>>;
       try {
         result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now, authority: authorityBy(scope), documentOf });
@@ -532,8 +548,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   // Jev's question for every copied value still in the plan (drafts are drafts.ts's, derived values code's), both
   // wordings, fill's floor.
   let unconfirmed: Map<string, string>;
+  let gateUse: { calls: number; costUsd: number; latencyMs: number };
   try {
-    unconfirmed = await jevGate(
+    ({ unconfirmed, jev: gateUse } = await jevGate(
       instruction,
       steps.flatMap((x) => {
         if (x.gate !== "jev" || x.value === null) return [];
@@ -542,7 +559,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       }),
       o.askJev,
       o.ledger,
-    );
+      // HA2: the notes frozen at plan time; an inventory without them withholds every user value read from a window.
+      inv.notes ?? new Map(),
+    ));
   } catch (e) {
     if (e instanceof JevUnavailable) throw new GoalError("unchecked", "Caret couldn't check the plan's values with Jev just now", e.message);
     throw e;
@@ -642,7 +661,46 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   }
   const segments = cut(draft.programDigest, steps, warnings, o.parts);
   if (segments.length > MAX_SEGMENTS) throw new GoalError("tooManySegments", `the plan needs ${segments.length} separate acceptances; Caret offers at most ${MAX_SEGMENTS}`);
-  return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv, ...(set === undefined ? {} : { scopes: set }), origin: originNow() };
+  return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv, ...(set === undefined ? {} : { scopes: set }), origin: originNow(), ...(gateUse.calls === 0 ? {} : { jev: gateUse }) };
+}
+
+/**
+ * V6 B2: by the draft step's ref, why its value may not go in its field under the alternate-field veto, said as the
+ * preview says a dropped write. The check is fill's (alternate.ts alternateVetoes), run on what each control will hold
+ * (lowerFill: a select's option as matched, a draft, a writer's copy or fill's own pick), against every other value the
+ * plan writes into the same window, the window's readable fields as frozen, and the user's saved values. A step lowering
+ * refuses for another reason is left to the step loop, which says that reason.
+ */
+function alternateRefusals(draft: DraftPlan, inv: GoalInventory, drafted: ReadonlyMap<string, ValueBinding>): Map<string, string> {
+  const byWindow = new Map<string, { ref: string; write: AlternateWrite }[]>();
+  const nameOf = (t: TargetBinding): string => t.field?.name ?? (t.own !== "" ? t.own : t.label);
+  for (const s of draft.steps) {
+    if (s.kind !== "fill") continue;
+    const t = inv.targets.get(s.target);
+    const v = inv.values.get(s.value) ?? drafted.get(s.value);
+    if (t === undefined || v === undefined || t.domain.kind !== "window" || (v.draft !== null && t.control !== "text")) continue;
+    const byFill = isChecked(v.checked) && v.checked.field.key === t.key && v.checked.field.windowId === t.domain.windowId;
+    let lowered: ReturnType<typeof lowerFill>;
+    try {
+      lowered = lowerFill(t, v, byFill);
+    } catch (e) {
+      if (e instanceof GoalError) continue;
+      throw e;
+    }
+    if ("drop" in lowered || lowered.kind !== "write" || lowered.writes === null) continue;
+    byWindow.set(t.domain.windowId, [...(byWindow.get(t.domain.windowId) ?? []), { ref: s.ref, write: { key: t.key, name: nameOf(t), text: lowered.writes } }]);
+  }
+  const out = new Map<string, string>();
+  for (const [windowId, xs] of byWindow) {
+    const frozen = inv.alternates?.fields.get(windowId);
+    const fields = frozen ?? [...inv.targets.values()].flatMap((t) => (t.domain.kind === "window" && t.domain.windowId === windowId && t.control !== "button" && t.control !== "file" ? [{ key: t.key, name: nameOf(t), shown: nameOf(t), value: t.value }] : []));
+    const vetoes = alternateVetoes({ fields, writes: xs.map((x) => x.write), saved: inv.alternates?.saved ?? [] });
+    for (const x of xs) {
+      const veto = vetoes.get(x.write.key);
+      if (veto !== undefined) out.set(x.ref, veto.says);
+    }
+  }
+  return out;
 }
 
 /** Why a fill's value may not go in a page field because the field is a message's recipient or subject (B30), or null. */

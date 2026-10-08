@@ -13,6 +13,7 @@
 // (writeMisfit with the carried provenance) until the verifier replaces it family by family (AC1 section 6). Values
 // whose exactness code settles (an option's own label, a resolved date, the user's saved answer, a user transfer, a
 // draft) are minted under a named exemption instead (ExemptRule); only the never-typed check runs on them.
+import { Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
 import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { createHash } from "node:crypto";
@@ -29,7 +30,9 @@ import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
-import { assertNoSecrets, SnippetLedger } from "../privacy.ts";
+import { WITHHELD } from "../privacy/exclude.ts";
+import { alternateKinds, alternateStale, type AlternateKind, type SavedReader } from "./alternate.ts";
+import { ownedStale, type OwnedEvidence } from "./note-unit.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -62,6 +65,12 @@ export interface FieldContract {
   readonly autocomplete: AutocompleteToken | null;
   /** I2: how the field read when its contract was made (ask-scope.ts fieldFingerprint); null when made without its window. */
   readonly fingerprint: string | null;
+  /**
+   * V6 B3: the kinds this field is an alternate of (alternate.ts alternateKinds: "Alternate email" is an email's), read
+   * from its name. A value checked for it depends on the form's primary fields of those kinds: the acceptance's recheck
+   * and the guard right before each dispatch read them again (alternate.ts alternateStale). Empty for any other field.
+   */
+  readonly alternate: readonly AlternateKind[];
 }
 
 /** The part of a name, an address or a date an autocomplete field name asks for (HTML autofill), or none. */
@@ -100,7 +109,8 @@ export function autocompletePart(token: AutocompleteToken | null | undefined): F
  * V3: "timePart" is the time of a span that names a date and a time; "resolved" is a whole date, time or date and time
  * written in its input's own format (when.ts), no part taken.
  */
-export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart";
+/** V4: "optionNamed" is a menu option code found a value to name (controls.ts optionLink), said as such to the verifier. */
+export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat";
 
 /** Where a value came from, carried unchanged from the moment it was read to the step that writes it. */
 export type Provenance =
@@ -138,6 +148,13 @@ export type Provenance =
        * becomes "number, do not use it.").
        */
       sentences: readonly string[];
+      /**
+       * HA2 P1: when the value was admitted on an owner judgement, every unit that held it and that judgement showed whole
+       * (fill/note-unit.ts), by digest. The recheck at acceptance, at plan validation and right before each write
+       * requires the same units with the same digests (ownedStale): `lines` and `sentences` cover only the span's own
+       * neighbourhood, and a note's last sentence could turn "mine" into "not mine" outside it.
+       */
+      owned?: OwnedEvidence;
     }
   | { kind: "memory"; id: string; label: string; part: FillMemory["part"] | null; whose: "user" | "other" | null }
   | { kind: "instruction"; span: string }
@@ -160,7 +177,7 @@ export type Provenance =
     }
   | { kind: "transfer"; srcWindowId: string; srcKey: string; rounds: number; reshaped: "memory" | null; /** The source element's whole value when read. */ value?: string };
 
-/** G2's slot. The contract never computes it; it only reads it into the verifier's description. */
+/** G2's slot. The contract never computes it. HA2: the verifier's questions no longer say it (verifyProposed); the Ask's scope reads it. */
 export type Owner = "user" | "other" | "person" | "unclear" | null;
 
 /** A write one path wants to make: everything the deterministic checks and the verifier need, nothing they infer. */
@@ -259,7 +276,7 @@ export interface CheckOptions {
   /** Jev, for the verifier; null verifies nothing, so every value the shape checks pass is refused as unverified. */
   askJev: AskJev | null;
   /** The ledger the caller's asks took screen text through: the verifier quotes only what it admits (privacy.ts). */
-  ledger: SnippetLedger | null;
+  ledger: Disclosure | null;
   /** The user's instruction when an Ask or goal scoped the write: quoted in the request's state, and a value it labels as a secret is never typed (trace.ts secretIn). */
   instruction?: string;
   now: number;
@@ -361,6 +378,7 @@ export function makeFieldContract(x: {
     currencyShown: CURRENCY_SHOWN.test(words),
     autocomplete,
     fingerprint: x.fingerprint ?? null,
+    alternate: Object.freeze([...alternateKinds(x.name)]),
   });
 }
 
@@ -437,6 +455,8 @@ export function shapeRefusal(p: Proposed): string | null {
   const v = p.text.trim();
   const secret = secretIn(v, "");
   if (secret !== null) return `Caret never types ${SENSITIVE_SAYS[secret]}; that is yours to enter`;
+  // SC1 2a: a text the model withheld a secret-format value from is never written, whatever else it holds.
+  if (v.includes(WITHHELD)) return "Caret never reads part of this value; that is yours to enter";
   // V3: a date or time input takes a value through the verifier only when code resolved it into the input's own format and
   // said the choice it made doing so (Provenance.says: an assumed year, an order a format hint gave); every other value
   // there is still an exemption's (resolverFormat) or refused.
@@ -501,7 +521,6 @@ export function neverTypedRefusal(p: Proposed, instruction = ""): string | null 
 /** Questions one verifier request asks at most: fill's MAX_FIELDS, so a request is no bigger than a fill's. */
 export const VERIFY_BATCH = 20;
 
-const OWNER_SAYS: Record<Exclude<Owner, null | "unclear">, string> = { user: "the user's", other: "someone else's", person: "the person the user named" };
 
 /** The source window's own words for a window provenance: its app and title, quoted only when the ledger admitted them. */
 function where(app: string, title: string, admitted: (t: string) => boolean): string {
@@ -514,37 +533,64 @@ function where(app: string, title: string, admitted: (t: string) => boolean): st
  * span with its label, else the span alone; a part names the value it was cut from when that was admitted.
  */
 export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean): string {
+  // The verifier's own phrase (mintProvenanceSays), over a ledger of no windows: nothing to charge, so every admitted
+  // text mints and the rest are named, not quoted.
+  const d = new Disclosure([]);
+  return mintProvenanceSays(d, pr, (t) => (admitted(t) ? d.planText(t) : null), () => true);
+}
+
+/**
+ * provenanceSays's phrase, minted by the verifier's Disclosure: every quoted text as plan text (Disclosure.planText, which
+ * refuses a text that shows a line redaction removed), Caret's words around them. A text that does not mint is named,
+ * not quoted, as one the ledger refused always was. `shown` says whether a window's text may be quoted at all: the
+ * verifier quotes a window's title, line, label, span or value only when its Disclosure was built over that window and
+ * its redacted view shows the text (Disclosure.shownIn), since a provenance is not itself read from a view.
+ */
+function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) => ModelText | null, shown: (windowId: string, t: string) => boolean): ModelText {
+  const m = quote;
   switch (pr.kind) {
     case "window": {
-      const at = where(pr.app, pr.title, admitted);
-      // Every quoted text must be admitted; a span the ledger refused is named, not quoted (W2 review).
-      const span = admitted(pr.span);
+      const m = (t: string): ModelText | null => (shown(pr.windowId, t) ? quote(t) : null);
+      const t = pr.title.trim();
+      // The app is reader metadata, named as it always was; a window of it is open, or the app's name is plan text.
+      const app = pr.app === "" ? null : (d.appNamed(pr.app) ?? d.planText(pr.app));
+      const title = t === "" ? null : m(t);
+      const at = title !== null ? d.t`${app ?? d.own("a window")} '${title}'` : (app ?? d.own("another window"));
+      const span = m(pr.span);
+      const line = pr.line === null ? null : m(pr.line);
+      const label = pr.label === null ? null : m(pr.label);
       const base =
-        pr.line !== null && admitted(pr.line) ? `the line "${pr.line}" in ${at}`
-        : span && pr.label !== null && admitted(pr.label) ? `"${pr.span}" labelled '${pr.label}' in ${at}`
-        : span ? `"${pr.span}" in ${at}`
-        : `a value in ${at}`;
-      return pr.partOf !== null && pr.partOf !== pr.line && admitted(pr.partOf) ? `${base}, which is part of "${pr.partOf}"` : base;
+        line !== null ? d.t`the line "${line}" in ${at}`
+        : span !== null && label !== null ? d.t`"${span}" labelled '${label}' in ${at}`
+        : span !== null ? d.t`"${span}" in ${at}`
+        : d.t`a value in ${at}`;
+      const whole = pr.partOf !== null && pr.partOf !== pr.line ? m(pr.partOf) : null;
+      return whole !== null ? d.t`${base}, which is part of "${whole}"` : base;
     }
-    // I1 review: a memory entry's label and a saved answer's question are quoted only when the ledger admitted them, as a
-    // window's texts are; otherwise they are named, not quoted.
     case "memory": {
-      const as = admitted(pr.label) ? ` as '${pr.label}'` : "";
-      return pr.part === null ? `what the user told Caret${as}` : `the ${pr.part} part of what the user told Caret${as}`;
+      const label = m(pr.label);
+      const as = label === null ? d.own("") : d.t` as '${label}'`;
+      return pr.part === null || pr.part === undefined ? d.t`what the user told Caret${as}` : d.t`the ${d.id(pr.part)} part of what the user told Caret${as}`;
     }
     case "instruction":
-      return "the user's instruction";
-    case "answer":
-      return admitted(pr.question) ? `the user's saved answer to '${pr.question}'` : "one of the user's saved answers";
+      return d.own("the user's instruction");
+    case "answer": {
+      const q = m(pr.question);
+      return q !== null ? d.t`the user's saved answer to '${q}'` : d.own("one of the user's saved answers");
+    }
     case "transfer":
-      return "a value the user copied there before";
+      return d.own("a value the user copied there before");
     case "derived": {
-      const how: Record<DeriveHow, string> = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part" };
-      const plain = `${how[pr.how]} in ${provenanceSays(pr.base, admitted)}`;
-      return pr.says === undefined ? plain : `${plain}${pr.also === null ? "" : `, and ${provenanceSays(pr.also, admitted)}`}; ${pr.says}`;
+      const plain = d.t`${d.own(DERIVE_SAYS[pr.how])} in ${mintProvenanceSays(d, pr.base, m, shown)}`;
+      if (pr.says === undefined) return plain;
+      const says = m(pr.says);
+      const also = pr.also === null ? d.own("") : d.t`, and ${mintProvenanceSays(d, pr.also, m, shown)}`;
+      return says === null ? d.t`${plain}${also}` : d.t`${plain}${also}; ${says}`;
     }
   }
 }
+
+const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format" } as const satisfies Record<DeriveHow, string>;
 
 /** The texts of a provenance a question may quote, for the ledger: its window's title, line, label, span and whole value. */
 function provenanceTexts(pr: Provenance): string[] {
@@ -594,11 +640,19 @@ export function takesSays(f: FieldContract): string {
   return takes.length === 0 ? "" : ` The field takes ${takes.join("; ")}.`;
 }
 
+/** A question's minted parts: the field's descriptor and name, the proposed text, what the field takes, where it was read. */
+interface VerifyParts {
+  descriptor: ModelText;
+  name: ModelText;
+  text: ModelText;
+  takes: ModelText;
+  from: ModelText;
+}
 const WORDINGS = [
-  (p: Proposed, from: string, owner: string): string =>
-    `Field: ${p.field.descriptor}${takesSays(p.field)} Caret proposes to type this into it, with nothing added or removed: "${p.text}". It was read from ${from}${owner}. What is the proposed text, for this field?`,
-  (p: Proposed, from: string, owner: string): string =>
-    `Proposed text for the field '${p.field.name}': "${p.text}". Read from ${from}${owner}. The field: ${p.field.descriptor}${takesSays(p.field)} If Caret typed exactly this text into the field, what would it have typed?`,
+  (d: Disclosure, p: VerifyParts): ModelText =>
+    d.t`Field: ${p.descriptor}${p.takes} Caret proposes to type this into it, with nothing added or removed: "${p.text}". It was read from ${p.from}. What is the proposed text, for this field?`,
+  (d: Disclosure, p: VerifyParts): ModelText =>
+    d.t`Proposed text for the field '${p.name}': "${p.text}". Read from ${p.from}. The field: ${p.descriptor}${p.takes} If Caret typed exactly this text into the field, what would it have typed?`,
 ] as const;
 
 /** Every string a request carries in its state and questions. */
@@ -653,43 +707,55 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
   if (proposed.length === 0) return { asks: [], jev };
   if (o.askJev === null) throw new VerifierUnavailable("no Jev to verify values with");
   const ask = testVerifier ?? o.askJev;
-  const ledger = o.ledger ?? new SnippetLedger([]);
-  // What the ledger admits: a text the request may quote. `plan` declares it, charging each window whose lines it
-  // holds; text already taken for the value asks costs nothing more.
-  const admittedCache = new Map<string, boolean>();
-  const admitted = (t: string): boolean => {
-    let ok = admittedCache.get(t);
-    if (ok === undefined) admittedCache.set(t, (ok = ledger.plan([t])));
-    return ok;
+  const ledger = o.ledger ?? new Disclosure([]);
+  const d = ledger;
+  // What the ledger admits: a text the request may quote, minted as plan text (Disclosure.planText), which declares it,
+  // charging each window whose lines it holds; text already taken for the value asks costs nothing more.
+  const mintedCache = new Map<string, ModelText | null>();
+  const admit = (t: string): ModelText | null => {
+    if (!mintedCache.has(t)) mintedCache.set(t, d.planText(t));
+    return mintedCache.get(t) ?? null;
   };
-  // I1: an instruction that names a secret ("Put my password 'hunter2' in Plan") is not sent: no Jev request may carry a
-  // secret marker (privacy.ts assertNoSecrets, G2), and the verifier judges a value against its field and where it was
+  // I1: an instruction that names a secret ("Put my password 'hunter2' in Plan") is not sent: the verifier reads no
+  // instruction holding a secret marker (memory/sensitive.ts secretText, G2), and the verifier judges a value against its field and where it was
   // read without it. Its values Caret never types were refused before this (neverTypedRefusal, with the instruction).
-  const instruction = o.instruction === undefined || o.instruction === "" || secretText(o.instruction) ? undefined : o.instruction;
-  if (instruction !== undefined && !admitted(instruction)) throw new VerifierUnavailable("the instruction quotes more of an open window than the verifier may carry");
+  const raw = o.instruction === undefined || o.instruction === "" || secretText(o.instruction) ? undefined : o.instruction;
+  if (raw !== undefined && !ledger.plan([raw])) throw new VerifierUnavailable("the instruction quotes more of an open window than the verifier may carry");
+  const instruction = raw === undefined ? undefined : d.instruction(raw);
   const questions = proposed.map((p) => {
     // The field's descriptor and the text itself must go; a value whose own text the ledger refuses is not verified.
-    if (!admitted(p.field.descriptor) || !admitted(p.text) || !admitted(p.field.name)) return null;
-    for (const t of provenanceTexts(p.provenance)) admitted(t);
-    const from = provenanceSays(p.provenance, admitted);
-    const owner = p.owner === null || p.owner === "unclear" ? "" : `; the screen says it is ${OWNER_SAYS[p.owner]}`;
-    return [WORDINGS[0](p, from, owner), WORDINGS[1](p, from, owner)] as const;
+    const descriptor = admit(p.field.descriptor);
+    const text = admit(p.text);
+    const name = admit(p.field.name);
+    if (descriptor === null || text === null || name === null) return null;
+    for (const t of provenanceTexts(p.provenance)) admit(t);
+    const takes = takesSays(p.field);
+    const parts: VerifyParts = {
+      descriptor,
+      name,
+      text,
+      takes: takes === "" ? d.own("") : (admit(takes) ?? d.own("")),
+      from: mintProvenanceSays(d, p.provenance, admit, (id, t) => d.shownIn(id, t)),
+    };
+    // HA2: no ownership claim. "The screen says it is the user's" restated an earlier answer of Jev's as a screen fact, and
+    // on a held-out note it carried an answer given without the note's own disclaimer into this check. This check judges
+    // exactness; its "other" verdict can still refuse another person's value.
+    return [WORDINGS[0](d, parts), WORDINGS[1](d, parts)] as const;
   });
   const declared = ledger.declared();
-  const state: Record<string, unknown> = { task: "Caret checks that each value it is about to type is exactly what its field asks for.", ...(instruction === undefined ? {} : { instruction }) };
+  const state: Record<string, ModelValue> = { task: d.own("Caret checks that each value it is about to type is exactly what its field asks for."), ...(instruction === undefined ? {} : { instruction }) };
   const batches: number[][] = [];
   const asked = proposed.flatMap((_, i) => (questions[i] === null ? [] : [i]));
   for (let i = 0; i < asked.length; i += VERIFY_BATCH) batches.push(asked.slice(i, i + VERIFY_BATCH));
   const request = (batch: readonly number[], wording: 0 | 1): JevRequest => {
     // The second wording asks in reverse order, so neither order nor wording alone decides.
     const order = wording === 0 ? batch : [...batch].reverse();
-    const qs: JevRequest["questions"] = Object.fromEntries(order.map((i) => [`x${i + 1}`, { type: "choice" as const, instructions: (questions[i] as readonly [string, string])[wording], criteria: { ...VERDICTS } }]));
+    const qs: JevRequest["questions"] = Object.fromEntries(order.map((i) => [`x${i + 1}`, { type: "choice" as const, instructions: (questions[i] ?? [d.own(""), d.own("")])[wording], criteria: d.ownRecord(VERDICTS) }]));
     const sent = sentStrings([state, qs]);
-    const req: JevRequest = { purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged };
-    // I1: the disclosure rule every Jev request meets at build (privacy.ts assertNoSecrets, G2), the verifier's included:
-    // its provenance sentences quote only redacted, ledger-admitted text, and this is the guarantee behind that. A throw
+    const req: JevRequest = d.seal({ purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged });
+    // I1, SC1 2b: the verifier's request is sealed like every other (privacy/disclosure.ts): its provenance sentences
+    // quote only text minted from redacted views and admitted by the ledger, and seal checks that at build. A throw
     // here makes the verifier unavailable (below), so every value it would have checked is withheld, nothing is sent.
-    assertNoSecrets(req);
     return req;
   };
   const out: (readonly [VerifyAsk, VerifyAsk] | null)[] = proposed.map(() => null);
@@ -841,6 +907,7 @@ export function contractStale(node: Node, f: FieldContract, text: string): strin
  * before its asks, G2's `judged`); by default the node's text in `w` now.
  */
 export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }, text?: string): Provenance {
+  w = w === undefined ? undefined : redactWindow(w);
   const node = w?.nodes.get(c.source.nodeKey);
   const read = text ?? (node === undefined ? undefined : nodeText(node));
   return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, lines: read === undefined ? [] : lineDigests(read, c.text), sentences: read === undefined ? [] : sentenceDigests(read, c.text) };
@@ -912,11 +979,12 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
       const shows = seen !== undefined && (norm(logicalLines(shown).join("\n")).includes(norm(pr.span)) || norm(shown).includes(norm(pr.span)) || view.values.some((v) => v.nodeKey === pr.nodeKey && norm(v.text) === norm(pr.span)));
       if (!shows) return "Caret may no longer read it where it was read";
       if (pr.lines.length === 0) return "Caret has no record of the lines it was read from";
-      const now = lineDigests(nodeText(node), pr.span);
+      // Compare the same redacted evidence used at request construction, not discarded secret lines.
+      const now = lineDigests(shown, pr.span);
       if (now.length === 0) return "its source no longer shows it";
-      if (!sameDigests(now, pr.lines) || !sameDigests(sentenceDigests(nodeText(node), pr.span), pr.sentences)) return "what its source says around it changed";
+      if (!sameDigests(now, pr.lines) || !sameDigests(sentenceDigests(shown, pr.span), pr.sentences)) return "what its source says around it changed";
       if (pr.context !== null && !spanContexts(view, seen as Node, pr.span).includes(pr.context)) return "the label it was read beside changed";
-      return null;
+      return pr.owned === undefined ? null : ownedStale(model, pr.span, { windowId: pr.windowId, nodeKey: pr.nodeKey }, pr.owned);
     }
     case "derived": {
       const stale = provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));
@@ -944,7 +1012,7 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
  * in the run's plan, its mint. Right before each dispatch the value must be the mint's text, and its source must still
  * say what it said (provenanceStale, read from `model()`); a value step with no mint is refused.
  */
-export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>, origin: Origin, documentOf: DocumentReader | null): (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null {
+export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>, origin: Origin, documentOf: DocumentReader | null, saved: SavedReader | null): (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null {
   return (step, value, target) => {
     const m = mints.get(step);
     if (!isChecked(m)) return "the value has no check from the write contract";
@@ -959,8 +1027,14 @@ export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, Ch
     // read from the window the executor resolved, right before the dispatch.
     if (m.authority.kind === "ask" && target !== undefined) {
       if (target.window === undefined) return "Caret can't see the field to check it is still the one the Ask was about";
-      const out = scopeRefusal({ field: { ...m.field, fingerprint: fieldFingerprint(target.window, m.field.key) }, owner: m.owner }, m.authority.scope, documentOf);
+      const out = scopeRefusal({ field: { ...m.field, fingerprint: fieldFingerprint(target.window, m.field.key) }, owner: m.owner }, m.authority.scope, documentOf, target.window);
       if (out !== null) return out;
+    }
+    // V6 B3: an alternate field's value against the form's primary fields as they read right before the dispatch, in the
+    // window the executor resolved. A check with no target (the executor's look ahead) leaves it to the dispatch's own.
+    if (target !== undefined) {
+      const repeats = alternateStale(target.window, m, saved);
+      if (repeats !== null) return `Caret left '${clip(m.field.name)}': ${repeats}`;
     }
     const stale = provenanceStale(model(), m.provenance);
     return stale === null ? null : `the source of '${clip(m.text)}' changed (${stale})`;

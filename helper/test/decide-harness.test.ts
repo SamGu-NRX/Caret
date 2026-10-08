@@ -1,5 +1,6 @@
 // J1: an eval's --engine flag (engines/decide/harness.ts): canned answers directly, every other engine behind the cache,
 // and nothing that stores request text takes text from a window the harness did not load from a fixture.
+import { minted } from "./minted.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-const req = (windowId: string): JevRequest => ({ state: { s: 1 }, questions: { q: { type: "choice", instructions: "i", criteria: { a: "A", b: "B" } } }, snippets: [{ windowId, kind: "candidate", text: "A" }], charged: {} });
+const req = (windowId: string): JevRequest => (minted({ state: { s: 1 }, questions: { q: { type: "choice", instructions: "i", criteria: { a: "A", b: "B" } } }, snippets: [{ windowId, kind: "candidate", text: "A" }], charged: {} }));
 const canned: AskJev = async () => ({ model: "canned", answers: { q: { choice: "a", confidence: 0.9 } }, inputTokens: 0, latencyMs: 0, costUsd: 0 });
 const fixture = { windows: (id: string) => id === "fx", memory: true, plan: true };
 

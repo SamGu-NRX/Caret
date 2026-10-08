@@ -1,3 +1,5 @@
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { redactWindow } from "../fill/redact.ts";
 // Naming a routine (B19, plan section 4: "When a routine crosses the threshold, a language model names it
 // in the background. The name is a label only."). Jev answers only choice questions, so the house rule
 // holds here too: code proposes, Jev chooses, code checks.
@@ -15,7 +17,6 @@
 import { randomInt } from "node:crypto";
 import type { WindowState } from "../model.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
-import { SnippetLedger } from "../privacy.ts";
 
 /** Words a name may have. The brief's rule; no measurement behind it. */
 export const NAME_MAX_WORDS = 6;
@@ -75,7 +76,7 @@ function hasPhrase(text: string, phrase: string, exactCase = false): boolean {
  * counts only with its own capitals, so "Mail to Notes" does not name a "To" field.
  */
 function namesLabel(name: string, label: string): boolean {
-  return hasPhrase(name, label, CONNECTIVES.includes(norm(label)));
+  return hasPhrase(name, label, (CONNECTIVES as readonly string[]).includes(norm(label)));
 }
 
 /**
@@ -146,7 +147,7 @@ export function checkName(name: string, f: RoutineFacts): string | null {
 }
 
 /** The words candidate names add to labels and app names. */
-const CONNECTIVES = ["and", "into", "to", "from", "in", "fill", "copy", "log"];
+const CONNECTIVES = ["and", "into", "to", "from", "in", "fill", "copy", "log"] as const;
 
 /** "A", "A and B", or "A, B and C". */
 export function list(xs: readonly string[]): string {
@@ -194,51 +195,79 @@ export function fallbackName(f: RoutineFacts): string | null {
   return null;
 }
 
-const appOr = (app: string, other: string): string => (app === "" ? other : app);
+/** The two wordings of the naming question, over the request's minted app names (null: none to name) and count. */
 const WORDINGS = [
-  (f: RoutineFacts) =>
-    `Someone copied values from ${appOr(list(f.srcApps), "one app")} into ${appOr(f.dstApp, "another")} the same way ${f.count} times. Which short name would they recognize this routine by?`,
-  (f: RoutineFacts) =>
-    `A repeated task: fields of a ${appOr(f.dstApp, "form")} window filled from ${appOr(list(f.srcApps), "another window")}, seen ${f.count} times. Pick the clearest label for it in a list of saved tasks.`,
-];
+  (d: Disclosure, src: ModelText | null, dst: ModelText | null, count: ModelText): ModelText =>
+    d.t`Someone copied values from ${src ?? d.own("one app")} into ${dst ?? d.own("another")} the same way ${count} times. Which short name would they recognize this routine by?`,
+  (d: Disclosure, src: ModelText | null, dst: ModelText | null, count: ModelText): ModelText =>
+    d.t`A repeated task: fields of a ${dst ?? d.own("form")} window filled from ${src ?? d.own("another window")}, seen ${count} times. Pick the clearest label for it in a list of saved tasks.`,
+] as const;
 
 /**
- * One naming request, built through a ledger over `windows` (normally the screen model's): the
- * destination's labels as its descriptors, the source labels as candidates of their windows, the app
- * names as plan text, and then the composed names and question as plan text too, since a name built from
- * two labels can be a line some other window shows. A text the ledger refuses is left out, and so are the
- * names that use it; null when no name or the question itself cannot go.
+ * One naming request, built through a Disclosure over `windows` (normally the screen model's): the destination's labels
+ * as its descriptors and the source labels as candidates, each minted from its window's redacted view; the app names as
+ * the reader gives them, or as the routine's record keeps them when no window of the app is open (memory); and then the
+ * composed names and question as plan text too, since a name built from two labels can be a line some other window
+ * shows. A text the ledger refuses is left out, and so are the names that use it; null when no name or the question
+ * itself cannot go.
  */
 export function namingRequest(f: RoutineFacts, windows: Iterable<WindowState>, wording: number, rand: (n: number) => number): { req: JevRequest; ids: Map<string, string> } | null {
-  const ledger = new SnippetLedger(windows);
-  const dstLabels = f.dstWindow === null ? [] : f.dstLabels.filter((l) => ledger.take(f.dstWindow as WindowState, "descriptor", [l]));
-  const srcLabels = f.srcLabels.filter((x) => ledger.take(x.window, "candidate", [x.text]));
-  const apps = [...new Set([f.dstApp, ...f.srcApps])].filter((x) => x !== "");
-  if (!ledger.plan(apps)) return null;
-  const facts: RoutineFacts = { ...f, dstLabels, srcLabels };
-  const instructions = WORDINGS[wording % WORDINGS.length]!(facts);
-  if (!ledger.plan([instructions])) return null;
-  const names = nameCandidates(facts).filter((n) => ledger.plan([n]));
+  const d = new Disclosure(windows);
+  const dstView = f.dstWindow === null ? null : redactWindow(f.dstWindow);
+  const dst = dstView === null ? [] : f.dstLabels.flatMap((l) => {
+    const m = d.descriptor(dstView, l);
+    return m === null ? [] : [{ text: l, m }];
+  });
+  const src = f.srcLabels.flatMap((x) => {
+    const m = d.candidate(redactWindow(x.window), x.text);
+    return m === null ? [] : [{ x, m }];
+  });
+  const appText = (name: string): ModelText | null => d.appNamed(name) ?? d.memoryText(null, name);
+  // App names are declared as plan text, as the ledger always took them: a name can be a line some window shows.
+  if (!d.plan([...new Set([f.dstApp, ...f.srcApps])].filter((x) => x !== ""))) return null;
+  const apps = new Map<string, ModelText>();
+  for (const a of new Set([f.dstApp, ...f.srcApps])) {
+    if (a === "") continue;
+    const m = appText(a);
+    if (m === null) return null;
+    apps.set(a, m);
+  }
+  const facts: RoutineFacts = { ...f, dstLabels: dst.map((x) => x.text), srcLabels: src.map((x) => x.x) };
+  const srcApps = facts.srcApps.flatMap((a) => apps.get(a) ?? []);
+  const instructions = WORDINGS[wording % WORDINGS.length]!(d, srcApps.length === 0 ? null : listMinted(d, srcApps), apps.get(facts.dstApp) ?? null, d.count(facts.count));
+  if (!d.plan([instructions])) return null;
+  // Each name is code's composition of the minted labels and app names with its own connectives.
+  const parts = [...dst.map((x) => x.m), ...src.map((x) => x.m), ...apps.values()];
+  const names = nameCandidates(facts).filter((n) => d.plan([n])).flatMap((n) => {
+    const m = d.derived(parts, n, CONNECTIVES);
+    return m === null ? [] : [m];
+  });
   if (names.length === 0) return null;
   const order = shuffle(names, rand);
   const ids = new Map<string, string>();
-  const criteria: Record<string, string> = {};
+  const criteria: Record<string, ModelText> = {};
   order.forEach((n, i) => {
-    ids.set(`n${i + 1}`, n);
-    criteria[`n${i + 1}`] = n;
+    const id = `n${i + 1}`;
+    ids.set(id, n);
+    criteria[id] = n;
   });
-  criteria[NONE] = "None of these names fits.";
-  const declared = ledger.declared();
+  criteria[NONE] = d.own("None of these names fits.");
   return {
-    req: {
+    req: d.seal({
       purpose: "pattern.naming",
-      state: { into: facts.dstApp, intoFields: dstLabels, from: facts.srcApps, fromSections: srcLabels.map((x) => x.text), timesSeen: facts.count },
+      state: { into: apps.get(facts.dstApp) ?? d.own(""), intoFields: dst.map((x) => x.m), from: srcApps, fromSections: src.map((x) => x.m), timesSeen: facts.count },
       questions: { name: { type: "choice", instructions, criteria } },
-      snippets: declared.snippets,
-      charged: declared.charged,
-    },
+      ...d.declared(),
+    }),
     ids,
   };
+}
+
+/** "A", "A and B", or "A, B and C", of minted texts. */
+function listMinted(d: Disclosure, xs: readonly ModelText[]): ModelText {
+  if (xs.length <= 1) return xs[0] ?? d.own("");
+  const last = xs[xs.length - 1];
+  return last === undefined ? d.own("") : d.t`${d.join(xs.slice(0, -1), ", ")} and ${last}`;
 }
 
 /**

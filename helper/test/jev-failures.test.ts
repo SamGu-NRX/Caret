@@ -1,6 +1,7 @@
 // Lead addendum (2026-10-06): when Jev fails, the user reads how, and what to do. Before it, every failure read
 // "Caret couldn't reach its model just now. Try again.", which for a 402 (no credits) was wrong twice: Caret reached
 // Jev, and trying again does not add credits. The client throws a typed failure; Ask, fill and a page goal say it.
+import { minted } from "./minted.ts";
 import { answeringScope } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,7 +18,7 @@ import { Store } from "../src/store.ts";
 import { field, snap } from "./builders.ts";
 import { closeRigs, rig } from "./page-rig.ts";
 
-const REQ = { state: "s", questions: { q: { type: "choice" as const, instructions: "i", criteria: { a: null, b: null } } }, snippets: [], charged: {} };
+const REQ = minted({ state: "s", questions: { q: { type: "choice" as const, instructions: "i", criteria: { a: null, b: null } } }, snippets: [], charged: {} });
 
 function respond(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "retry-after": "0" } });

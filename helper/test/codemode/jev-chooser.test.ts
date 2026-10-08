@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { jevChooser } from "../../src/codemode/jev-chooser.ts";
+import { Disclosure } from "../../src/privacy/disclosure.ts";
 import type { AskJev, JevRequest } from "../../src/fill/jev.ts";
 
 const OPTIONS = [
@@ -15,7 +16,13 @@ function fakeJev(choice: string, confidence: number, seen: JevRequest[] = []): A
   };
 }
 
-const call = (ask: AskJev, signal = new AbortController().signal) => jevChooser(ask, "sign me up")({ window: "win:form", question: QUESTION, options: OPTIONS, signal });
+/** The Disclosure that minted the program's snapshots: the question and labels are its texts (fixture wording here). */
+const snapshotsDisclosure = (): Disclosure => {
+  const d = new Disclosure([]);
+  for (const t of [QUESTION.text, ...OPTIONS.map((o) => o.label)]) d.own(t as never);
+  return d;
+};
+const call = (ask: AskJev, signal = new AbortController().signal) => jevChooser(ask, "sign me up", snapshotsDisclosure())({ window: "win:form", question: QUESTION, options: OPTIONS, signal });
 
 describe("jevChooser", () => {
   test("sends the host's question and numbered labels, declares them, and maps the answer to a ref", async () => {

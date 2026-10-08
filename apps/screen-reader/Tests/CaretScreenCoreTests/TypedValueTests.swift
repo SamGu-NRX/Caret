@@ -59,4 +59,14 @@ import Testing
         let v = d.values(for: nodes)
         #expect(v == [TypedValue(kind: .email, text: "x@example.com", nodeKey: "a"), TypedValue(kind: .email, text: "y@example.com", nodeKey: "c")])
     }
+
+    /// V4: a pop-up button's option offers a choice; it states no value of the window.
+    @Test func valuesSkipAPopUpButtonsOptions() {
+        let nodes = [
+            Node(key: "m", parent: nil, role: "AXPopUpButton", label: "Contact"),
+            Node(key: "m/o", parent: "m", role: "AXMenuItem", label: "front-desk@example.com"),
+            Node(key: "c", parent: nil, role: "AXStaticText", label: "Reach me at y@example.com"),
+        ]
+        #expect(d.values(for: nodes) == [TypedValue(kind: .email, text: "y@example.com", nodeKey: "c")])
+    }
 }

@@ -67,6 +67,7 @@ const jev = (asks: readonly string[], seen: JevRequest[] = []): AskJev => async 
         const ins = String(q.instructions);
         const pick = (c: string) => [id, { choice: c, confidence: 0.95 }] as const;
         if (req.purpose === "ask.heads") return pick({ route: "some", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
+        if (req.purpose === "ask.scope" && id === "section") return pick("fields");
         if (req.purpose === "ask.scope") return pick(asks.includes(/[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
         if ("yes" in q.criteria) return pick("yes");
         const want = Object.entries(VALUES).find(([l]) => ins.includes(`'${l}'`))?.[1];
@@ -92,7 +93,8 @@ describe("ruling B: uploads are asked in the same scope question as the fields, 
     const s = intentSnapshot("fill this in and attach my resume", page(), page().windows.get(PAGE) as never, []);
     for (const w of [0, 1] as const) {
       const req = scopeRequest(s, w);
-      const ins = Object.values(req.questions).map((q) => String(q.instructions));
+      // SCP1: the field questions; the section question rides beside them.
+      const ins = Object.entries(req.questions).filter(([id]) => id !== "section").map(([, q]) => String(q.instructions));
       expect(ins.map((t) => /[Tt]he field '([^']+)'/u.exec(t)?.[1])).toEqual(["Name", "Email", "Resume"]);
       expect(ins[2]).toContain("file upload");
       expect(req.snippets.map((x) => x.text)).toContain("Documents");

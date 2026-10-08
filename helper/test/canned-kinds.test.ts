@@ -3,6 +3,8 @@
 // canned page goal asked which fields to fill and the canned browser sets wrote nothing. These tests meet the canned
 // engine with every kind of question the Ask, fill, the goal gate and the planner build, on the real-form corpus's
 // replayed desks. All text is synthetic fixture text.
+import { minted } from "./minted.ts";
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,9 +15,8 @@ import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { AskAsks, planAsk } from "../src/planner/ask.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { jevIntentMaker } from "../src/planner/intent-makers.ts";
-import { verifyWrites } from "../src/planner/codeplan.ts";
+import { sourceNotes, verifyWrites } from "../src/planner/codeplan.ts";
 import { planTask, taskWindow } from "../src/planner/planner.ts";
-import { SnippetLedger } from "../src/privacy.ts";
 import { CannedGap, cannedReply, questionKind } from "../src/engines/decide/canned.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
@@ -78,8 +79,10 @@ describe("page-loop-eval's canned engine", () => {
           return null;
         });
         // W2: the value question goes only with a calendar event now (goals/gates.ts jevGate); asked here so its rule is met.
-        const writes = (p?.fields ?? []).filter((f) => f.value !== null).map((f, i) => ({ key: `s${i}`, field: { name: f.descriptor, label: f.descriptor }, value: { display: `"${f.value as string}"`, window: f.source?.windowId ?? null, owner: null }, askValue: true }));
-        if (writes.length > 0) await verifyWrites(instruction, writes, ask, new SnippetLedger(desk.model.windows.values()));
+        // The fill's descriptors and values stand in for a plan's minted texts here (fixture wording, test/minted.ts).
+        const d = new Disclosure(desk.model.windows.values());
+        const writes = (p?.fields ?? []).filter((f) => f.value !== null).map((f, i) => ({ key: `s${i}`, field: { name: d.own(f.descriptor as never), label: f.descriptor }, value: { display: d.own(`"${f.value as string}"` as never), window: f.source?.windowId ?? null, owner: null, notes: f.source === null ? [] : sourceNotes(desk.model, { kind: "window", windowId: f.source.windowId, nodeKey: f.source.nodeKey, app: "", title: "", span: f.value as string, label: null, line: null, partOf: null, context: null, lines: [], sentences: [] }, desk.form.window.windowId) }, askValue: true }));
+        if (writes.length > 0) await verifyWrites(instruction, writes, ask, d);
         for (const r of seen) for (const id of [...Object.keys(r.questions), ...Object.keys(r.nouls ?? {})]) kinds.add(questionKind(r, id));
       }
     }
@@ -114,7 +117,7 @@ describe("every request the planner and fill build says what it asks", () => {
 });
 
 describe("cannedReply", () => {
-  const req: JevRequest = { purpose: "ask.scope", state: {}, questions: { s_f1: { type: "choice", instructions: "Which?", criteria: { asks: "Yes", not: "No", unclear: "Unclear" } } }, snippets: [], charged: {} };
+  const req: JevRequest = minted({ purpose: "ask.scope", state: {}, questions: { s_f1: { type: "choice", instructions: "Which?", criteria: { asks: "Yes", not: "No", unclear: "Unclear" } } }, snippets: [], charged: {} });
 
   it("throws on a kind it has no rule for, naming the kind and the request", async () => {
     await expect(cannedReply(req, { confidence: 0.9, choice: {}, noul: {} })).rejects.toThrow(/no rule for question kind 'ask\.scope:field' \(id 's_f1'.*in a ask\.scope request asking s_f1/u);

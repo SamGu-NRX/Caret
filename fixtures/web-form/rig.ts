@@ -5,6 +5,7 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,67 @@ export const CFT_NM_DIR = join(SUPPORT, "Google", "Chrome for Testing", "NativeM
 export const FORBIDDEN_NM = [join(SUPPORT, "Google", "Chrome", "NativeMessagingHosts"), join(SUPPORT, "net.imput.helium", "NativeMessagingHosts"), join(SUPPORT, "Chromium", "NativeMessagingHosts")];
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// ---- caret-heavy custody (ops/heavy, branch ops/heavy-queue) ----
+// Under a caret-heavy job, the job's recovery owner must know every launchd job and Chrome's process group before
+// they start, so that a cleanup which outlives this process (the supervisor's, or the recovery owner's after the
+// supervisor died) stops them by exact label and verified identity. Outside caret-heavy these variables are unset and
+// nothing here changes.
+/** "<python> <flags> <register.py>": the job's registration command (supervise.py; its paths hold no spaces). */
+const REGISTER = process.env.CARET_HEAVY_REGISTER;
+/** Every launchd label this job starts must begin with it. */
+export const LAUNCHD_PREFIX = process.env.CARET_HEAVY_LAUNCHD_PREFIX;
+
+/** Registers a resource with the recovery owner and returns once it is journalled; throws if it was refused. */
+function register(kind: "launchd" | "group", value: string): void {
+  if (REGISTER === undefined) return;
+  const [cmd, ...args] = REGISTER.split(" ");
+  if (cmd === undefined) throw new Error("CARET_HEAVY_REGISTER is empty");
+  execFileSync(cmd, [...args, kind, value], { stdio: ["ignore", "ignore", "pipe"] });
+}
+
+/** Members of process group `pgid`: a list, or null when pgrep failed for any reason but "none". */
+function groupMembers(pgid: number): number[] | null {
+  try {
+    return execFileSync("pgrep", ["-g", String(pgid)], { encoding: "utf8" }).split("\n").filter((x) => x !== "").map(Number);
+  } catch (e) {
+    return (e as { status?: number }).status === 1 ? [] : null;
+  }
+}
+
+/**
+ * Every process of one Chrome launch carries this variable, set to the launch's random nonce: Chrome's helpers inherit
+ * its environment. groupStop signals only what it has just proved is the launch's own: the leader by its pid, start time
+ * and marker, or a member by its marker. A group id alone proves nothing once the group may have emptied (I4 review).
+ */
+const OWNER_VAR = "CARET_RIG_CHROME_OWNER";
+const owners = new WeakMap<ChildProcess, { nonce: string; start: string | undefined }>();
+
+/** A process as `ps` shows it: its start time and whether its environment entries hold the marker. */
+type Seen = { start: string; marked: boolean } | "gone" | "unknown";
+
+/**
+ * Reads `pid` twice, without and with its environment (`ps -E` appends the environment to the arguments), so the
+ * marker is looked for in the environment entries alone. "gone": no such process. "unknown": `ps` failed otherwise,
+ * or the two reads disagree (the pid changed hands, or its arguments changed, between them).
+ */
+function inspect(pid: number, nonce: string): Seen {
+  const read = (env: boolean): string | "gone" | "unknown" => {
+    try {
+      return execFileSync("ps", [env ? "-wwE" : "-ww", "-o", "lstart=,command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).replace(/\n$/, "");
+    } catch (e) {
+      const { status, stdout } = e as { status?: number; stdout?: string };
+      return status === 1 && !stdout ? "gone" : "unknown";
+    }
+  };
+  const plain = read(false);
+  if (plain === "gone" || plain === "unknown") return plain;
+  const withEnv = read(true);
+  if (withEnv === "gone") return "gone";
+  if (withEnv === "unknown" || !withEnv.startsWith(plain)) return "unknown";
+  // lstart is the first 24 characters ("Wed Oct  7 13:55:12 2026").
+  return { start: plain.slice(0, 24), marked: new RegExp(`(^|\\s)${OWNER_VAR}=${nonce}(\\s|$)`).test(withEnv.slice(plain.length)) };
+}
 
 // ---- cleanup registry: everything this run creates is undone here, in reverse order ----
 export const undo: { what: string; fn: () => Promise<void> | void }[] = [];
@@ -100,6 +162,7 @@ const xml = (s: string): string => s.replaceAll("&", "&amp;").replaceAll("<", "&
  * in this run's private directory; it is booted out at cleanup. Resolves once its log says it is listening.
  */
 export async function launchdJob(dir: string, label: string, service: string, program: string[], log: string, env: Record<string, string> = {}): Promise<void> {
+  if (LAUNCHD_PREFIX !== undefined && !label.startsWith(LAUNCHD_PREFIX)) throw new Error(`launchd label ${label} is not under this job's prefix ${LAUNCHD_PREFIX}`);
   const plist = join(dir, `${label}.plist`);
   const envXml = Object.keys(env).length === 0 ? "" : `<key>EnvironmentVariables</key><dict>${Object.entries(env).map(([k, v]) => `<key>${xml(k)}</key><string>${xml(v)}</string>`).join("")}</dict>\n`;
   writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
@@ -113,6 +176,7 @@ export async function launchdJob(dir: string, label: string, service: string, pr
 ${envXml}</dict></plist>
 `, { mode: 0o600 });
   const domain = `gui/${process.getuid?.() ?? 501}`;
+  register("launchd", label);  // before bootstrap: once the recovery owner journals it, it can boot it out
   execFileSync("launchctl", ["bootstrap", domain, plist], { stdio: "pipe" });
   undo.push({
     what: `launchd job ${label}`,
@@ -197,7 +261,11 @@ export class Cdp {
   }
 }
 
-/** Headless Chrome for Testing on `profile`; its own process group, so stopping it stops every helper process too. */
+/**
+ * Headless Chrome for Testing on `profile`; its own process group, so stopping it stops every helper process too.
+ * Under caret-heavy, Chrome is held by a shell until its group is registered with the job's recovery owner; if the
+ * registration fails, or this process dies first, Chrome never starts.
+ */
 /** `extension`: the unpacked extension directory to load, or null for none. */
 export function launch(exe: string, profile: string, urls: string[], env: NodeJS.ProcessEnv, extension: string | null, log: string, extra: string[] = [], devtools = false): Running {
   const flags = [
@@ -215,29 +283,134 @@ export function launch(exe: string, profile: string, urls: string[], env: NodeJS
     ...(devtools ? ["--remote-debugging-pipe"] : []),
     ...urls,
   ];
-  const proc = spawn(exe, flags, { env, detached: true, stdio: devtools ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"] });
+  const proc = spawnChrome(exe, flags, env, devtools ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"]);
   const cdp = devtools ? new Cdp(proc.stdio[3] as Writable, proc.stdio[4] as Readable) : null;
   const out = createWriteStream(log, { flags: "a" });
   proc.stdout?.pipe(out);
   proc.stderr?.pipe(out);
-  const pid = proc.pid;
-  if (pid === undefined) throw new Error("Chrome for Testing did not start");
-  const stop = async (): Promise<void> => {
-    if (proc.exitCode !== null || proc.signalCode !== null) return;
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
-      return;
-    }
-    for (let i = 0; i < 50 && proc.exitCode === null && proc.signalCode === null; i++) await sleep(100);
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      /* already gone */
-    }
-  };
-  undo.push({ what: `Chrome for Testing pid ${pid}`, fn: stop });
+  const stop = groupStop(proc);
+  undo.push({ what: `Chrome for Testing pid ${proc.pid}`, fn: stop });
   return { proc, stop, cdp };
+}
+
+/**
+ * Chrome for Testing as the leader of its own process group. Every Chrome a fixture starts goes through here (launch,
+ * and tasks/chrome.ts launchHeadless), so under caret-heavy none runs before its group is registered: a shell holds
+ * Chrome until one line arrives on the descriptor after `stdio`'s, written once the group is registered, then execs
+ * Chrome in place (same pid, same group).
+ */
+export function spawnChrome(exe: string, flags: string[], env: NodeJS.ProcessEnv, stdio: ("ignore" | "pipe")[]): ChildProcess {
+  const go = stdio.length;
+  const nonce = randomBytes(16).toString("hex");
+  const marked = { ...env, [OWNER_VAR]: nonce };
+  const proc = REGISTER === undefined
+    ? spawn(exe, flags, { env: marked, detached: true, stdio })
+    : spawn("/bin/sh", ["-c", `IFS= read -r _ <&${go} || exit 97; exec ${go}<&-; exec "$@"`, "chrome-held", exe, ...flags], { env: marked, detached: true, stdio: [...stdio, "pipe"] });
+  if (proc.pid === undefined) throw new Error("Chrome for Testing did not start");
+  // The leader's start time, while it is certainly alive (not yet reaped: this function has not yielded since spawn).
+  const seen = inspect(proc.pid, nonce);
+  owners.set(proc, { nonce, start: typeof seen === "object" && seen.marked ? seen.start : undefined });
+  if (REGISTER !== undefined) {
+    try {
+      register("group", String(proc.pid));
+    } catch (e) {
+      process.kill(-proc.pid, "SIGKILL");
+      throw new Error(`Chrome's process group was not registered, so it was never started: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // The held shell can be gone before this line arrives (killed, or its group stopped); the write then fails with
+    // EPIPE on the pipe, which must not escape as an uncaught exception (B1 report: harden like the sink's sockets).
+    const release = proc.stdio[go] as Writable;
+    release.on("error", (e) => say(`Chrome's release line was not delivered (${e.message}): the held shell is gone, so Chrome never started`));
+    release.end("G\n");
+  }
+  return proc;
+}
+
+/**
+ * Stops the process group `proc` leads: SIGTERM, up to 5 s for everything of the launch's to go (Chrome's helpers can
+ * outlive it), then SIGKILL and a report of any survivor.
+ * Nothing is signalled on the group id alone: once the group has emptied, the id is free, and another process can lead
+ * a group under it, start helpers and exit (I4 re-review), and node's exit fields can lag the reap (libuv reaps first).
+ * So each signal follows its own proof, read just before it: while the leader is alive with its recorded start time
+ * and the marker, it holds the group id and the whole group is signalled; otherwise each member whose environment
+ * shows the marker is signalled by its pid. A member without it is reported, never signalled; one `ps` cannot read is
+ * reported too, and keeps the stop from counting the launch as gone. What is left is the classic pid race: a pid would
+ * have to be freed and reused within the moment between its `ps` read and the signal.
+ * Once nothing of the launch's is left, `gone` latches and nothing is signalled again (I4 review: accept.ts stops a
+ * browser, and cleanup stops it again).
+ */
+export function groupStop(proc: ChildProcess): () => Promise<void> {
+  const pid = proc.pid;
+  if (pid === undefined) throw new Error("no process group to stop: the process did not start");
+  const owner = owners.get(proc);
+  let gone = false;
+  type Count = { ours: number; unknown: number[]; foreign: number[] };
+  /** One pass over the group: signals what it proves is the launch's (when `sig` is given) and counts. */
+  const pass = (sig: NodeJS.Signals | null): Count | null => {
+    if (owner?.start !== undefined) {
+      const leader = inspect(pid, owner.nonce);
+      if (typeof leader === "object" && leader.marked && leader.start === owner.start) {
+        if (sig !== null) {
+          try {
+            process.kill(-pid, sig);
+          } catch {
+            /* the group emptied since the read */
+          }
+        }
+        return { ours: 1, unknown: [], foreign: [] };
+      }
+    }
+    const members = groupMembers(pid);
+    if (members === null) return null;
+    const count: Count = { ours: 0, unknown: [], foreign: [] };
+    for (const member of members) {
+      const seen: Seen = owner === undefined ? "unknown" : inspect(member, owner.nonce);
+      if (seen === "gone") continue;
+      if (seen === "unknown") count.unknown.push(member);
+      else if (!seen.marked) count.foreign.push(member);
+      else {
+        count.ours++;
+        if (sig !== null) {
+          try {
+            process.kill(member, sig);
+          } catch {
+            /* exited since the read */
+          }
+        }
+      }
+    }
+    return count;
+  };
+  const empty = (): boolean => {
+    if (gone) return true;
+    const count = pass(null);
+    if (count !== null && count.ours === 0 && count.unknown.length === 0) gone = true;
+    return gone;
+  };
+  const report = (): void => {
+    const count = pass(null);
+    if (count === null) return say(`Chrome's process group ${pid} cannot be listed`);
+    if (count.unknown.length > 0) say(`Chrome's process group id ${pid} lists ${JSON.stringify(count.unknown)}, whose environment cannot be read; not signalled`);
+    if (count.foreign.length > 0) say(`Chrome's process group id ${pid} also lists ${JSON.stringify(count.foreign)} without this launch's marker; not signalled`);
+  };
+  /** Polls until nothing of the launch's is left or `ms` have passed (by the clock: each poll runs `ps`). */
+  const settle = async (ms: number): Promise<void> => {
+    const until = Date.now() + ms;
+    while (!empty() && Date.now() < until) await sleep(100);
+  };
+  return async () => {
+    if (gone) return;
+    if (!empty()) {
+      pass("SIGTERM");
+      await settle(5000);
+    }
+    if (!gone) {
+      pass("SIGKILL");
+      await settle(5000);
+      if (!gone) say(`Chrome's process group ${pid} still has members of this launch, or unreadable ones, after SIGKILL`);
+    }
+    report();
+  };
 }
 
 /** The frontmost app's display name, by LaunchServices; the run aborts if Chrome for Testing ever takes it. */

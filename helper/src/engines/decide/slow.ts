@@ -16,12 +16,14 @@
 //
 // Harness-only: harness.ts installs it when CARET_SLOW_EVAL_EVENTS is set, and the Laya guard and the cache's fixture
 // checks run above it.
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statfsSync, writeFileSync } from "node:fs";
+import { withholdValues } from "../../privacy/exclude.ts";
+import { mkdirSync, readFileSync, statfsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { CacheRefused } from "./cache.ts";
 import { JevCapError } from "./daily-cap.ts";
 import { JevGatewayPolicyError, JevHttpError, JevNetworkError, type AskJev, type JevRequest } from "../../fill/jev.ts";
+import { renameLocal, writeLocalFile } from "../../privacy/store-path.ts";
 
 /** Reasons that stop the whole run: the runner exits and does not retry. */
 export type SlowStop = "cost" | "policy" | "auth" | "billing" | "cap" | "hold" | "disk";
@@ -70,7 +72,8 @@ export class SlowAnswerFailure extends Error {
 
 type Outcome = { kind: "stop"; reason: SlowStop; detail: string } | { kind: "rate" } | { kind: "transient"; detail: string } | { kind: "answer"; detail: string } | { kind: "pass" };
 
-const text = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 300);
+/** A failure as the run's files keep it: 300 characters, with any value in a format Caret never carries withheld (PV2 Q2). */
+const text = (e: unknown): string => withholdValues((e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 300));
 
 /** What a failed request means for the run (see the file's header). */
 export function classify(e: unknown): Outcome {
@@ -226,8 +229,8 @@ export function filePace(file: string): SlowOptions["pace"] {
     write: (at) => {
       mkdirSync(dirname(file), { recursive: true });
       const tmp = `${file}.${process.pid}.tmp`;
-      writeFileSync(tmp, `${at}\n`);
-      renameSync(tmp, file);
+      writeLocalFile(tmp, `${at}\n`);
+      renameLocal(tmp, file);
     },
   };
 }
@@ -246,14 +249,15 @@ export function fileFailures(dir: string): SlowOptions["failures"] {
     put: (key, error) => {
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const tmp = join(dir, `${key}.${process.pid}.tmp`);
-      writeFileSync(tmp, `${JSON.stringify({ error, recordedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
-      renameSync(tmp, join(dir, `${key}.json`));
+      writeLocalFile(tmp, `${JSON.stringify({ error, recordedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+      renameLocal(tmp, join(dir, `${key}.json`));
     },
   };
 }
 
 export function fileLog(file: string): (e: SlowEvent) => void {
-  return (e) => appendFileSync(file, `${JSON.stringify(e)}\n`);
+  // Checked on every write (privacy/store-path.ts writeLocalFile): the log's path is the caller's, held to the policy.
+  return (e) => writeLocalFile(file, `${JSON.stringify(e)}\n`, { append: true });
 }
 
 /** Ends this eval process the way a user's Ctrl-C would, so its own handler closes Chrome and its launchd job. */

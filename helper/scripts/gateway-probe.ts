@@ -4,6 +4,9 @@
 // A model is free when the listing prices both input and output at 0. The call asks for at most 8 tokens from the
 // first free model (or --model) and costs nothing on a free model. The key is read at call time and never printed.
 // Exit status: 0 the call was served, 3 the gateway needs a card on file (chat.ts GatewayNeedsCard), 1 anything else.
+import { writeStore } from "../src/privacy/send.ts";
+import { Disclosure } from "../src/privacy/disclosure.ts";
+import { seal } from "../src/privacy/send.ts";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import * as z from "zod";
@@ -29,7 +32,10 @@ if (model === undefined) lines.push("no free language model to try");
 else {
   const route: ChatRoute = { provider: "gateway", baseUrl: GATEWAY_BASE_URL, keyName: "AI_GATEWAY_API_KEY", model, maxTokensParam: "max_tokens", extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "the gateway's listing, free" } };
   try {
-    const r = await chat(route, readKey(route.keyName), [{ role: "user", content: "Say OK." }], 8, AbortSignal.timeout(20_000));
+    // The probe's one message is Caret's own wording, a request with no purpose (privacy/shapes.ts UNNAMED).
+    const d = new Disclosure([]);
+    const sealed = seal({ req: { disclosure: d }, wire: { probe: d.own("Say OK.") } });
+    const r = await chat(route, readKey(route.keyName), sealed, (w) => [{ role: "user", content: (w as { probe: string }).probe }], 8, AbortSignal.timeout(20_000));
     lines.push(`call ${model}: served by ${r.servedModel} in ${Math.round(r.latencyMs)} ms, ${r.inputTokens} in / ${r.outputTokens} out tokens`);
     exit = 0;
   } catch (e) {
@@ -39,5 +45,5 @@ else {
 }
 const report = lines.join("\n") + "\n";
 process.stdout.write(report);
-if (a.out !== undefined) writeFileSync(a.out, report);
+if (a.out !== undefined) writeStore(a.out, report);
 process.exitCode = exit;
