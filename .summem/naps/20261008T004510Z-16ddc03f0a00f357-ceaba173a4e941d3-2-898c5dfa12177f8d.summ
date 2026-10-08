@@ -1,0 +1,1 @@
+Xcode privacy phases: first checks source plists, last needs the processed bundle plist. Release env extraction keeps only TypeSafe settings. Disclosure.walk refuses body keys with spaces (use note_1); dynamic state maps need a childGlob rule in shapes.ts.

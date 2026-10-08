@@ -1,0 +1,1 @@
+privacy_gate.sh runs on every build (Debug, build-app.sh, helper bundling): accepted.ts records pv2-sites-send and ha2-copied-conversation; CARET_DEV_VERCEL_GEMINI=1 refused; onboarding renders PrivacyPromise.txt; release sets CARET_RELEASE_HOST=1 (no Vercel).
