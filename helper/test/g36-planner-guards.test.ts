@@ -2,13 +2,13 @@
 // addresses are invented.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
-import { PAGE_WINDOW_KIND } from "../src/fill/fill.ts";
+import { proposeFill, PAGE_WINDOW_KIND } from "../src/fill/fill.ts";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { checkIntent, intentSnapshot, personSpans, type AskIntent } from "../src/planner/intent.ts";
 import { tieLiterals } from "../src/planner/intent-heads.ts";
 import { pointsAtOther, readWhose } from "../src/planner/people.ts";
 import { onlyInSources } from "../src/planner/sources.ts";
-import { field, node, snap, text } from "./builders.ts";
+import { field, jevPickingText, MAIL_APP, node, snap, text } from "./builders.ts";
 
 beforeAll(() => setGeneratorClock(() => 0));
 afterAll(() => setGeneratorClock(null));
@@ -104,4 +104,30 @@ describe("a company the instruction gives as a value is not a person (b31-21 sha
       { field: refOf(s, "Backup email"), text: "secondary@example.org" },
     ]);
   });
+});
+
+describe("one of several phones: a sentence's lead-in is not the phone's purpose (b31-13 shape)", () => {
+  const SIG = "\n\nThanks,\nPriya Raman\nFront Desk, Alder Dental\n(303) 555-0199";
+  const fillMobile = async (body: string) => {
+    const m = new ScreenModel();
+    m.apply(snap([field("src/body", body, { role: "AXTextArea" })], { at: 900, windowId: "src", title: "Re: your visit", app: MAIL_APP, focused: true }));
+    pageForm(m, ["Mobile phone"]);
+    const p = await proposeFill(m, jevPickingText(() => "(303) 555-0112", 0.93), "form", key("Mobile phone"), 2000);
+    return p.fields.find((f) => f.key === key("Mobile phone"));
+  };
+
+  it.each(["As you asked: the visit is at 9:00, best number for you is", "From your earlier email: best number for you is", "As requested, here it is:"])(
+    "fills the user's phone after \"%s\", beside the sender's own phone",
+    async (lead) => {
+      expect(await fillMobile(`Hi Sam,\n\n${lead} (303) 555-0112.${SIG}`)).toMatchObject({ value: "(303) 555-0112", withheld: null });
+    },
+  );
+
+  it.each(["Home phone: (303) 555-0112", "Recruiter: Odile Marsh, (303) 555-0112", "From recruiter: (303) 555-0112", "From my work phone: (303) 555-0112", "As my backup: (303) 555-0112"])(
+    "still withholds %s beside another phone, and only then",
+    async (line) => {
+      expect(await fillMobile(`Hi Sam,\n\n${line}${SIG}`)).toMatchObject({ value: null, withheld: "ambiguous" });
+      expect(await fillMobile(`Hi Sam,\n\n${line}`)).toMatchObject({ value: "(303) 555-0112", withheld: null });
+    },
+  );
 });
