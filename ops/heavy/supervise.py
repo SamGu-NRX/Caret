@@ -432,8 +432,12 @@ class Supervisor:
     def run(self):
         code, reason = EXIT_ERROR, "supervisor error"
         try:
-            # The slot must be the queue's, held through this exact open file.
-            procs.inherited_lock_fd(self.slot_path, self.slot_fd)
+            # The slot must be the queue's, held through this exact open file: a lane's slot lock is re-checked to be
+            # the regular file in the queue's state directory, and the descriptor bound to its (st_dev, st_ino).
+            identity = None
+            if self.slot_path != self.plan["paths"]["slot_lock"]:
+                identity = procs.slot_lock_identity(self.slot_path, self.plan["paths"]["queue_state"], self.lane)
+            procs.inherited_lock_fd(self.slot_path, self.slot_fd, identity)
             if self.heavy_fd is not None:
                 procs.inherited_lock_fd(self.paths["heavy_lock"], self.heavy_fd)
             if signal.getsignal(signal.SIGCHLD) not in (signal.SIG_DFL, None):

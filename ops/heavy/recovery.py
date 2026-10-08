@@ -505,6 +505,7 @@ class Owner:
         # run, owned by it, can only have been taken for this attempt.
         self.adopted_ms = self.dead_ms = None
         self.slot_path = None  # the slot lock this attempt adopted, as journalled (the queue's lane slot)
+        self.slot_identity = None  # its (st_dev, st_ino) at adoption: every later slot descriptor must be that file
         self.resources, self.watches = {}, {}
         self.state = "waiting"
         self.term_at = self.next_kill = self.next_retry = None
@@ -516,12 +517,14 @@ class Owner:
 
     def _restore(self):
         self.adopted_ms = self.dead_ms = None
-        self.slot_path = None
+        self.slot_path = self.slot_identity = None
         for rec in self.journal.load(repair=True):
             ev = rec.get("event")
             if ev == "adopted":
                 self.supervisor = rec["supervisor"]
                 self.slot_path = self.slot_path or rec.get("slot_path")
+                if self.slot_identity is None and rec.get("slot_identity") is not None:
+                    self.slot_identity = tuple(rec["slot_identity"])
                 self.adopted_ms = self.adopted_ms or rec.get("since_ms")
                 self.state = "custody" if self.state == "waiting" else self.state
             elif ev == "lease":
@@ -688,13 +691,19 @@ class Owner:
         return requested
 
     def _check_locks(self, names, fds, slot_path=None):
-        """Every descriptor is checked before any is kept: on a refusal the caller closes them all."""
+        """Every descriptor is checked before any is kept: on a refusal the caller closes them all. Returns each
+        lock's (st_dev, st_ino). A slot descriptor must be the file adopted first (slot_identity), when there was one."""
         if len(names) != len(fds) or len(set(names)) != len(names):
             raise ValueError("{} lock names for {} descriptors".format(len(names), len(fds)))
+        identities = {}
         for name, fd in zip(names, fds):
             path = (slot_path or getattr(self, "slot_path", None) or self.paths["slot_lock"]) if name == "slot" \
                 else self.paths[LOCK_PATHS[name]]
-            procs.inherited_lock_fd(path, fd)  # same file, and this open file holds it
+            expected = getattr(self, "slot_identity", None) if name == "slot" else None
+            procs.inherited_lock_fd(path, fd, expected)  # the lock file itself, this open file holds it
+            st = os.fstat(fd)
+            identities[name] = (st.st_dev, st.st_ino)
+        return identities
 
     def _adopt_locks(self, names, fds):
         self._check_locks(names, fds)
@@ -723,12 +732,15 @@ class Owner:
             if self.supervisor is not None and self.supervisor != sup:
                 raise ValueError("this attempt already has supervisor {}".format(self.supervisor))
             slot_path = self._slot_path_for(msg.get("slot_path"))
-            self._check_locks(msg["locks"], fds, slot_path)
+            checked = self._check_locks(msg["locks"], fds, slot_path)
+            slot_identity = checked.get("slot", getattr(self, "slot_identity", None))
             since = self.adopted_ms or int(time.time() * 1000)
             self.journal.append({"event": "adopted", "supervisor": sup, "locks": sorted(set(self.fds) | set(msg["locks"])),
-                                 "since_ms": since, "slot_path": slot_path})
+                                 "since_ms": since, "slot_path": slot_path,
+                                 "slot_identity": None if slot_identity is None else list(slot_identity)})
             self._keep_locks(msg["locks"], fds)
             self.token, self.supervisor, self.adopted_ms, self.slot_path = msg["token"], sup, since, slot_path
+            self.slot_identity = slot_identity
             if self.state == "waiting":
                 self.state = "custody"
             test_point(self.plan, "recovery:after-adopt")

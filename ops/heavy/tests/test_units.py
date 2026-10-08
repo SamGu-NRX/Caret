@@ -1159,10 +1159,11 @@ class LaneTest(Temp):
     def test_the_slot_lock_comes_from_the_job(self):
         import supervise
         plan = self.plan("browser")
-        slot = os.path.join(plan["paths"]["queue_state"], "slot-browser-2.lock")
+        slot = self.write("state/slot-browser-2.lock", "")
         env = {"HEAVY_JOB_QUEUE_SLOT_LOCK": slot, "HEAVY_JOB_QUEUE_LEASE_KIND": "browser"}
         self.assertEqual(supervise.lane_slot_lock(plan, env), slot)
         heavy = self.plan("heavy")
+        self.write("state/slot.lock", "")
         env = {"HEAVY_JOB_QUEUE_SLOT_LOCK": heavy["paths"]["slot_lock"], "HEAVY_JOB_QUEUE_LEASE_KIND": "heavy"}
         self.assertEqual(supervise.lane_slot_lock(heavy, env), heavy["paths"]["slot_lock"])
 
@@ -1185,6 +1186,49 @@ class LaneTest(Temp):
         with self.assertRaisesRegex(procs.Refusal, "HEAVY_JOB_QUEUE_SLOT_LOCK"):
             supervise.lane_slot_lock(heavy, {"HEAVY_JOB_QUEUE_SLOT_LOCK": os.path.join(state, "slot-browser-1.lock"),
                                              "HEAVY_JOB_QUEUE_LEASE_KIND": "heavy"})
+
+    def test_a_slot_lock_must_be_the_regular_file_itself(self):
+        # P1 (347f8ea review): the basename and the resolved parent were checked, so a symlink named like a slot lock
+        # in the state directory passed, pointing anywhere.
+        import procs
+        import supervise
+        plan = self.plan("browser")
+        state = plan["paths"]["queue_state"]
+        elsewhere = self.write("elsewhere/real.lock", "")
+        os.symlink(elsewhere, os.path.join(state, "slot-browser-1.lock"))
+        os.mkdir(os.path.join(state, "slot-browser-2.lock"))
+        for name, why in (("slot-browser-1.lock", "symlink"), ("slot-browser-2.lock", "not a regular file")):
+            with self.subTest(name):
+                with self.assertRaisesRegex(procs.Refusal, why):
+                    supervise.lane_slot_lock(plan, {"HEAVY_JOB_QUEUE_SLOT_LOCK": os.path.join(state, name),
+                                                    "HEAVY_JOB_QUEUE_LEASE_KIND": "browser"})
+        heavy = self.plan("heavy")
+        with self.assertRaisesRegex(procs.Refusal, "does not exist"):
+            supervise.lane_slot_lock(heavy, {"HEAVY_JOB_QUEUE_SLOT_LOCK": heavy["paths"]["slot_lock"],
+                                             "HEAVY_JOB_QUEUE_LEASE_KIND": "heavy"})
+
+    def test_the_descriptor_is_bound_to_the_slot_files_identity(self):
+        import fcntl
+        import procs
+        state = self.plan("heavy")["paths"]["queue_state"]
+        slot = self.write("state/slot.lock", "")
+        other = self.write("state/other.lock", "")
+        fd = os.open(slot, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        os.set_inheritable(fd, True)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        link = os.path.join(state, "link.lock")
+        os.symlink(slot, link)
+        with self.assertRaisesRegex(procs.Refusal, "symlink"):
+            procs.inherited_lock_fd(link)  # the descriptor is the slot's, but the path is not the file itself
+        with self.assertRaisesRegex(procs.Refusal, "symlink"):
+            procs.inherited_lock_fd(link, fd)
+        st = os.stat(other)
+        with self.assertRaisesRegex(procs.Refusal, "identity"):
+            procs.inherited_lock_fd(slot, fd, identity=(st.st_dev, st.st_ino))
+        st = os.stat(slot)
+        self.assertEqual(procs.inherited_lock_fd(slot, fd, identity=(st.st_dev, st.st_ino)), fd)
+        self.assertEqual(procs.slot_lock_identity(slot, state, "heavy"), (st.st_dev, st.st_ino))
 
     def test_unset_falls_back_to_the_plans_slot_lock(self):
         import supervise

@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -62,7 +63,9 @@ SLOT_LOCK_NAMES = {"heavy": ("slot.lock",), "browser": ("slot-browser-1.lock", "
 
 
 def slot_lock_problem(path, queue_state, lane):
-    """Why *path* is not a slot lock of *lane* in the queue's state directory, or None."""
+    """Why *path* is not a slot lock of *lane* in the queue's state directory, or None. The path must be the lock file
+    itself: a regular file, not a symlink, whose real path is its name directly in the real state directory. Checking
+    only the name and the resolved parent let a symlink named like a slot lock point anywhere (347f8ea review, P1)."""
     names = SLOT_LOCK_NAMES.get(lane)
     if names is None:
         return "lane {!r} has no slot locks".format(lane)
@@ -70,9 +73,40 @@ def slot_lock_problem(path, queue_state, lane):
         return "{!r} is not an absolute path".format(path)
     if os.path.basename(path) not in names:
         return "{} is not one of the {} lane's slot locks {}".format(path, lane, list(names))
-    if os.path.realpath(os.path.dirname(path)) != os.path.realpath(queue_state):
+    canonical = os.path.join(os.path.realpath(queue_state), os.path.basename(path))
+    if os.path.realpath(os.path.dirname(path)) != os.path.dirname(canonical):
         return "{} is not in the queue's state directory {}".format(path, queue_state)
+    try:
+        lock_file_identity(path)
+    except Refusal as ex:
+        return str(ex)
+    if os.path.realpath(path) != canonical:
+        return "{} resolves to {}, not {}".format(path, os.path.realpath(path), canonical)
     return None
+
+
+def slot_lock_identity(path, queue_state, lane):
+    """(st_dev, st_ino) of *path*, checked to be a slot lock of *lane* (slot_lock_problem). Raises Refusal."""
+    problem = slot_lock_problem(path, queue_state, lane)
+    if problem:
+        raise Refusal(problem)
+    return lock_file_identity(path)
+
+
+def lock_file_identity(path):
+    """(st_dev, st_ino) of the lock file at *path*, read without following a symlink. Raises Refusal unless *path* is
+    a regular file."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        raise Refusal("lock file {} does not exist".format(path)) from None
+    except OSError as ex:
+        raise Refusal("cannot read {}: {}".format(path, ex)) from None
+    if stat.S_ISLNK(st.st_mode):
+        raise Refusal("{} is a symlink, not the lock file itself".format(path))
+    if not stat.S_ISREG(st.st_mode):
+        raise Refusal("{} is not a regular file".format(path))
+    return (st.st_dev, st.st_ino)
 
 
 def _errno_error(what):
@@ -279,31 +313,46 @@ class DarwinProbes:
 _FLOCK_STRUCT = "qqihh"
 
 
-def lock_held(path):
-    """True when some open file holds a lock on *path*. F_GETLK reports flock() locks on macOS and takes nothing."""
+def lock_held(path, identity=None):
+    """True when some open file holds a lock on *path*. F_GETLK reports flock() locks on macOS and takes nothing.
+    With *identity* ((st_dev, st_ino)), *path* is opened without following a symlink and must still be that file."""
     try:
-        fd = os.open(path, os.O_RDONLY)
+        fd = os.open(path, os.O_RDONLY | (os.O_NOFOLLOW if identity is not None else 0))
     except FileNotFoundError:
         return False
+    except OSError as ex:
+        if identity is None:
+            raise
+        raise Refusal("cannot open {} as the lock file itself: {}".format(path, ex)) from None
     try:
+        if identity is not None:
+            st = os.fstat(fd)
+            if (st.st_dev, st.st_ino) != tuple(identity):
+                raise Refusal("{} is no longer the file of identity {}".format(path, tuple(identity)))
         query = struct.pack(_FLOCK_STRUCT, 0, 0, 0, fcntl.F_WRLCK, os.SEEK_SET)
         return struct.unpack(_FLOCK_STRUCT, fcntl.fcntl(fd, fcntl.F_GETLK, query))[3] != fcntl.F_UNLCK
     finally:
         os.close(fd)
 
 
-def inherited_lock_fd(path, fd=None):
+def inherited_lock_fd(path, fd=None, identity=None):
     """The inherited descriptor for *path*, checked to be the one holding its lock.
 
-    With *fd* None, the one inheritable descriptor referring to *path* is found (the queue passes
-    the slot without saying its number). A free file is refused before the LOCK_EX probe, so the
-    probe never takes a lock the parent did not hold. Re-locking through the open file that already
-    holds an exclusive flock changes nothing; through any other open file it fails at once.
+    *path* must be the lock file itself, a regular file and not a symlink, and the descriptor must refer to that
+    file's (st_dev, st_ino); with *identity* given, that must be it too (the identity a slot lock was validated or
+    journalled with). With *fd* None, the one inheritable descriptor for that file is found (the queue passes the
+    slot without saying its number). A free file is refused before the LOCK_EX probe, so the probe never takes a
+    lock the parent did not hold. Re-locking through the open file that already holds an exclusive flock changes
+    nothing; through any other open file it fails at once.
     """
-    try:
-        target = os.stat(path)
-    except FileNotFoundError:
-        raise Refusal("slot lock {} does not exist".format(path)) from None
+    found = lock_file_identity(path)
+    if identity is not None and found != tuple(identity):
+        raise Refusal("{} has identity {}, not the slot lock's {}".format(path, found, tuple(identity)))
+
+    def same(candidate):
+        st = os.fstat(candidate)
+        return (st.st_dev, st.st_ino) == found
+
     if fd is None:
         matches = []
         for name in os.listdir("/dev/fd"):
@@ -311,7 +360,7 @@ def inherited_lock_fd(path, fd=None):
             if candidate <= 2:
                 continue
             try:
-                if os.path.samestat(os.fstat(candidate), target) and os.get_inheritable(candidate):
+                if same(candidate) and os.get_inheritable(candidate):
                     matches.append(candidate)
             except OSError:
                 continue  # the directory handle os.listdir used, closed by now
@@ -320,11 +369,11 @@ def inherited_lock_fd(path, fd=None):
         fd = matches[0]
     else:
         try:
-            if not os.path.samestat(os.fstat(fd), target):
-                raise Refusal("descriptor {} is not {}".format(fd, path))
+            if not same(fd):
+                raise Refusal("descriptor {} is not {} (identity {})".format(fd, path, found))
         except OSError as ex:
             raise Refusal("descriptor {} is unusable: {}".format(fd, ex)) from None
-    if not lock_held(path):
+    if not lock_held(path, found):
         raise Refusal("{} is not locked, so inherited descriptor {} carries no slot".format(path, fd))
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

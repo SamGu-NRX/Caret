@@ -581,6 +581,73 @@ class AdoptionIsAllOrNothing(unittest.TestCase):
         os.close(good)
 
 
+class SlotLockIdentity(unittest.TestCase):
+    """P1 (347f8ea review): the owner takes the slot lock the supervisor names only when the path is the regular file
+    itself, not a symlink, and journals its (st_dev, st_ino). A later descriptor for the slot must be that same file."""
+
+    def setUp(self):
+        import fcntl
+        import tempfile
+        self.fcntl = fcntl
+        d = os.path.realpath(tempfile.mkdtemp(prefix="caret-slot-id-"))
+        self.addCleanup(subprocess.run, ["rm", "-rf", d])
+        self.state = os.path.join(d, "state")
+        os.makedirs(self.state)
+        self.slot = os.path.join(self.state, "slot-browser-1.lock")
+        self.lock = self.locked(self.slot)
+        owner = recovery.Owner.__new__(recovery.Owner)
+        owner.journal = recovery.Journal(os.path.join(d, "journal.ndjson"))
+        owner.probes = procs.DarwinProbes()
+        owner.paths = {"slot_lock": os.path.join(self.state, "slot.lock"), "queue_state": self.state}
+        owner.plan = {"job_id": "caret-x", "test": {}, "lane": "browser"}
+        owner.attempt, owner.state, owner.supervisor, owner.token, owner.lease = "a" * 32, "waiting", None, None, None
+        owner.fds, owner.clients, owner.watches, owner.resources = {}, {}, {}, {}
+        owner.adopted_ms = owner.dead_ms = owner.slot_path = None
+        self.owner = owner
+        self.me = recovery.identity(owner.probes, os.getpid())
+
+    def locked(self, path):
+        fd = os.open(path, os.O_RDWR | os.O_CREAT)
+        self.addCleanup(os.close, fd)
+        self.fcntl.flock(fd, self.fcntl.LOCK_EX)
+        return fd
+
+    serve = WireDescriptorsAndDeadlines.serve
+
+    def ask(self, msg, fds=()):
+        a, b = self.serve(self.owner, (json.dumps(msg) + "\n").encode(), fds=fds)
+        self.addCleanup(b.close)
+        return recovery.Reader(a).read()[0]
+
+    def adopt(self, slot_path, fd):
+        return self.ask({"op": "adopt", "attempt": self.owner.attempt, "token": "t" * 64, "supervisor": self.me,
+                         "locks": ["slot"], "slot_path": slot_path}, fds=[fd])
+
+    def test_a_symlinked_slot_lock_is_refused(self):
+        real = os.path.join(os.path.dirname(self.state), "real.lock")
+        fd = self.locked(real)
+        link = os.path.join(self.state, "slot-browser-2.lock")
+        os.symlink(real, link)
+        reply = self.adopt(link, fd)
+        self.assertFalse(reply["ok"])
+        self.assertIn("symlink", reply["error"])
+        self.assertEqual(self.owner.fds, {})
+
+    def test_the_adopted_identity_is_journalled_and_a_replaced_file_is_refused(self):
+        self.assertTrue(self.adopt(self.slot, self.lock)["ok"])
+        st = os.stat(self.slot)
+        adopted = [r for r in self.owner.journal.load() if r["event"] == "adopted"]
+        self.assertEqual(adopted[-1]["slot_identity"], [st.st_dev, st.st_ino])
+        os.unlink(self.slot)
+        replaced = self.locked(self.slot)  # the same path, another file
+        reply = self.ask({"op": "lock", "name": "slot"}, fds=[replaced])
+        self.assertFalse(reply["ok"])
+        self.assertIn("identity", reply["error"])
+        reply = self.adopt(self.slot, replaced)
+        self.assertFalse(reply["ok"])
+        self.assertIn("identity", reply["error"])
+
+
 class SupervisorErrorWithoutAnOwner(Custody):
     def test_an_error_with_no_confirmed_owner_keeps_the_locks_until_one_holds_them(self):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3),
