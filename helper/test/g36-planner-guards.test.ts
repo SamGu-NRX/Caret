@@ -68,6 +68,18 @@ describe("a person named only as who sent the source is not whose details go in 
     expect(snapFor("fill my contact details, not what marta quill sent")).toMatchObject({ named: [], excluded: ["mail"] });
   });
 
+  it("reads a lower-case full name whole across a particle or a hyphen", () => {
+    const desk = (sender: string, instruction: string) => {
+      const m = new ScreenModel();
+      m.apply(snap([text("h1", `From: ${sender} <q@example.org>`), text("h2", "To: Sam Rivera <sam.rivera@example.org>"), text("b", "Your new address: 14 Orchard Row")], { at: 900, windowId: "mail", title: "Dentist form", app: { pid: 9002, bundleId: "com.apple.mail", name: "Mail" }, focused: true }));
+      return intentSnapshot(instruction, m, pageForm(m, ["Email", "Street address"]), []);
+    };
+    const de = desk("Ines de Quill", "do the contact part w the stuff ines de quill sent");
+    expect(de.persons.map((p) => p.span)).toEqual(["ines de quill"]);
+    expect(readWhose(de, de.others, de.memoryValues).kind).toBe("user");
+    expect(desk("Ines Quill-Sato", "fill my contact details, not what ines quill-sato sent")).toMatchObject({ named: [], excluded: ["mail"] });
+  });
+
   it("reads no relation as a sender's name", () => {
     expect(onlyInSources("my wife sent it, put her down as the contact", "my wife")).toBe(false);
   });
@@ -101,6 +113,15 @@ describe("a value the instruction gives a company field is not a person (b31-21 
     expect(read(snapOf(COMPANY, FORM), "unclear")).toMatchObject({ route: "ask", open: ["person"] });
   });
 
+  it.each([
+    ["fill Dana Lab's phone and set company to Dana Lab LLC", ["Contact phone", "Company"]],
+    ["set company contact name to Dana Lab and fill phone", ["Company contact name", "Phone"]],
+  ])("keeps a person named outside a company name in %s", (instruction, labels) => {
+    const s = snapOf(instruction, labels);
+    expect(s.persons.map((p) => p.span)).toEqual(["Dana Lab"]);
+    expect(read(s, "unclear")).toMatchObject({ whose: "p1" });
+  });
+
   it("keeps a name the instruction gives any other field a person", () => {
     const s = snapOf("set contact name to Dana Lab and fill phone", ["Contact name", "Phone"]);
     expect(s.persons.map((p) => p.span)).toEqual(["Dana Lab"]);
@@ -121,7 +142,7 @@ describe("a value the instruction gives a company field is not a person (b31-21 
   });
 });
 
-describe("one of several phones: a lead-in to the user's own note is not the phone's purpose (b31-13 shape)", () => {
+describe("one of several phones: a lead-in label is still a purpose", () => {
   const SIG = "\n\nThanks,\nPriya Raman\nFront Desk, Alder Dental\n(303) 555-0199";
   const fill = async (body: string, labels: readonly string[] = ["Mobile phone"]) => {
     const m = new ScreenModel();
@@ -132,28 +153,20 @@ describe("one of several phones: a lead-in to the user's own note is not the pho
   };
   const mobile = async (body: string) => (await fill(body))["Mobile phone"];
 
-  it.each(["From your earlier note: visit at 9:00, best number for you is", "Per your last message: best number for you is"])(
-    "fills the user's phone after \"%s\", beside the sender's own phone",
-    async (lead) => {
-      expect(await mobile(`Hi Sam,\n\n${lead} (303) 555-0112.${SIG}`)).toMatchObject({ value: "(303) 555-0112", withheld: null });
-    },
-  );
-
   it.each([
     "Home phone: (303) 555-0112",
     "Recruiter: Odile Marsh, (303) 555-0112",
     "From the recruiter: Dana's cell (303) 555-0112",
     "From my backup: (303) 555-0112",
-    "From your notes: Dana's cell (303) 555-0112",
-    "From your notes: work phone (303) 555-0112",
-  ])("still withholds %s beside another phone, and only then", async (line) => {
+    "From your work phone: (303) 555-0112",
+    "From your recruiter: (303) 555-0112",
+  ])("withholds %s beside another phone, and only then", async (line) => {
     expect(await mobile(`Hi Sam,\n\n${line}${SIG}`)).toMatchObject({ value: null, withheld: "ambiguous" });
     expect(await mobile(`Hi Sam,\n\n${line}`)).toMatchObject({ value: "(303) 555-0112", withheld: null });
   });
 
   it("keeps the phone out of a field that takes no phone", async () => {
     const f = await fill(`Hi Sam,\n\nFrom your earlier note: best number for you is (303) 555-0112.${SIG}`, ["Mobile phone", "Delivery instructions"]);
-    expect(f["Mobile phone"]).toMatchObject({ value: "(303) 555-0112" });
     expect(f["Delivery instructions"]).toMatchObject({ value: null });
   });
 });

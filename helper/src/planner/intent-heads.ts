@@ -18,7 +18,7 @@
 // "unclear", never by a new reading rule.
 import { shapeOf } from "../privacy/shapes.ts";
 import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
-import { readWhose } from "./people.ts";
+import { insideValues, readWhose } from "./people.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import type { Control } from "../fill/controls.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
@@ -595,7 +595,7 @@ function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly
   // in its sources or a relation's memory entry, or a question when it finds more than one. When code cannot tell, the
   // head: unsettled with a person named, or someone else unnamed, is a question; unsettled with no one named is the user.
   const orgValues = literals.filter((l) => organizationField(snap.fields.find((f) => f.ref === l.field)?.name ?? "")).map((l) => l.text);
-  const orgRef = (ref: string): boolean => snap.persons.some((p) => p.ref === ref && orgValues.some((v) => v.includes(p.span)));
+  const orgRef = (ref: string): boolean => snap.persons.some((p) => p.ref === ref && insideValues(snap.instruction, p.span, orgValues));
   const code = readWhose(snap, snap.others, snap.memoryValues, orgValues);
   const whose = settled(heads, "whose");
   let person: string | null = null;

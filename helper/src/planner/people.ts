@@ -88,6 +88,15 @@ function personShaped(name: string): boolean {
   return !ws.some((w) => /^(?:Inc|LLC|Ltd|Co|Corp|Company|Labs?|Group|Partners|Bank|Bakery|Clinic|Health|Analytics|Outdoor|Dental|Apartments?|Court|Street|St|Ave|Avenue|Rd|Road|Lane|Blvd|Drive|Way|Park|Center|Centre|School|College|University|Hospital|Studio|Design|Systems|Services|Summit|Subaru|Notes?|Application|Form|Team)\.?$/u.test(w));
 }
 
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+
+/** Whether every mention of `span` in the instruction sits inside a mention of one of `values`; false when it has none. */
+export function insideValues(instruction: string, span: string, values: readonly string[]): boolean {
+  const ranges = values.flatMap((v) => [...instruction.matchAll(new RegExp(escapeRe(v), "gu"))].map((m) => [m.index, m.index + v.length] as const));
+  const mentions = [...instruction.matchAll(new RegExp(`(?<![\\p{L}])${escapeRe(span)}(?![\\p{L}])`, "gu"))];
+  return mentions.length > 0 && mentions.every((m) => ranges.some(([a, b]) => m.index >= a && m.index + m[0].length <= b));
+}
+
 /** Whose details code reads the instruction as asking for, or none when it cannot tell without the maker. */
 export type WhoseReading =
   | { kind: "user"; why: string }
@@ -130,9 +139,9 @@ export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate
   const instruction = snap.instruction;
   // A name right before a form noun names the form, not a person: "the Northgate application" (A1 held-out B25). Any other
   // place keeps it a person, a word of the form's title or not ("the RSVP for Jun or Bea"; A1 fix-check).
-  const formName = (span: string): boolean => new RegExp(`(?<![\\p{L}])${span.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?:['’]s)?\\s+(?:${FORM_NOUN})\\b`, "iu").test(instruction);
+  const formName = (span: string): boolean => new RegExp(`(?<![\\p{L}])${escapeRe(span)}(?:['’]s)?\\s+(?:${FORM_NOUN})\\b`, "iu").test(instruction);
   const people = snap.persons.map((p) => p.span);
-  const orgValue = (span: string): boolean => orgValues.some((v) => v.includes(span));
+  const orgValue = (span: string): boolean => insideValues(instruction, span, orgValues);
   const named = snap.persons.filter((p) => !orgValue(p.span) && !onlyInSources(instruction, p.span, people) && !formName(p.span));
   const relations = named.filter((p) => RELATION_SPAN.test(p.span));
   const names = named.filter((p) => !RELATION_SPAN.test(p.span));

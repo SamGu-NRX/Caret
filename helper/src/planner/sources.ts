@@ -131,25 +131,38 @@ export function fieldWords(instruction: string): string {
  */
 const COMMON_NAMES = new Set(["will", "may", "mark", "bill", "rose", "art", "grace", "hope", "joy", "june", "april", "august", "sue", "pat", "max", "ray", "rob", "jack", "frank", "drew", "chase", "dawn", "faith", "summer", "page", "lane", "dean", "guy", "don", "jean", "carol", "bob", "ben", "al", "an", "eve"]);
 
+/** Lower-case particles inside a name ("Ines de Quill", "Jan van der Berg"). */
+const PARTICLE = "de|van|von|der|bin|al|da|di|la|le|du";
+
 /**
  * The words of an instruction that name a mail's sender, however they are typed: a word of a conversation's sender
- * name ("ines", "chris"), or, capitalized, the start of the sender's first name when exactly one sender starts with it
- * ("Bea" for "Beatrice"). Each is an exact span of the instruction. B25 and B26's held-out sets type names in lower
- * case ("emergency contact is ines"), which the capitalized-name rule (intent.ts personSpans) does not see. A word in
- * lower case never matches by its start: "can" named Candace's mail in B26's second review.
+ * name ("ines", "chris"), a hyphenated word whose parts all are ("quill-sato"), or, capitalized, the start of the
+ * sender's first name when exactly one sender starts with it ("Bea" for "Beatrice"). Such words next to each other,
+ * or with only name particles between them, are one name ("ines de quill"). Each is an exact span of the instruction.
+ * B25 and B26's held-out sets type names in lower case ("emergency contact is ines"), which the capitalized-name rule
+ * (intent.ts personSpans) does not see. A word in lower case never matches by its start: "can" named Candace's mail in
+ * B26's second review.
  */
 export function senderNames(instruction: string, model: ScreenModel, form: WindowState): string[] {
   const senders = [...model.windows.values()].map(redactWindow).filter((w) => w.window.windowId !== form.window.windowId && isConversation(w)).map((w) => wordsOf(senderOf(w) ?? ""));
-  const out: string[] = [];
+  const hits: { start: number; end: number }[] = [];
   for (const m of instruction.matchAll(/(?<![\p{L}'’])\p{L}[\p{L}'’-]*/gu)) {
     const word = m[0].replace(/['’]s$/u, "");
     const n = word.toLowerCase();
-    if (n.length < 3 || COMMON_NAMES.has(n) || STOP.has(n) || out.includes(word)) continue;
-    const exact = senders.filter((ws) => ws.includes(n)).length;
+    if (n.length < 3 || COMMON_NAMES.has(n) || STOP.has(n)) continue;
+    const parts = n.split("-");
+    const exact = senders.filter((ws) => ws.includes(n) || (parts.length > 1 && parts.every((x) => ws.includes(x)))).length;
     const prefix = /^\p{Lu}/u.test(word) ? senders.filter((ws) => (ws[0] ?? "").startsWith(n)).length : 0;
-    if (exact > 0 || prefix === 1) out.push(word);
+    if (exact > 0 || prefix === 1) hits.push({ start: m.index, end: m.index + word.length });
   }
-  return out;
+  const joins = new RegExp(`^(?:\\s+(?:${PARTICLE}))*\\s+$`, "iu");
+  const spans: { start: number; end: number }[] = [];
+  for (const h of hits) {
+    const last = spans.at(-1);
+    if (last !== undefined && joins.test(instruction.slice(last.end, h.start))) last.end = h.end;
+    else spans.push({ ...h });
+  }
+  return [...new Set(spans.map((x) => instruction.slice(x.start, x.end)))];
 }
 
 /** Whether the instruction keeps Caret to its own words or rules out reading other windows. */
