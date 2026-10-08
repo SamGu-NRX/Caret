@@ -1618,3 +1618,95 @@ class SwiftEnvTest(Temp):
                     self.plan_env(bad)
         with self.assertRaisesRegex(manifest.ManifestError, "twice"):
             self.plan_env("CARET_RECORD_SNAPSHOTS=1", "CARET_RECORD_SNAPSHOTS=1")
+
+
+class SnapshotsTest(Temp):
+    """recipes/snapshots.py, record mode's collector: it reads only inside the export and writes only new files."""
+
+    def setUp(self):
+        super().setUp()
+        import snapshots
+        self.snapshots = snapshots
+        self.src = os.path.join(self.root, "src")
+        self.write("src/pkg/Tests/__Snapshots__/T/old.png", "old\n")
+        self.baseline = os.path.join(self.root, "before.json")
+        os.mkdir(os.path.join(self.root, "out"))  # the job's OUT, which exists before the recipe runs
+        self.dest = os.path.join(self.root, "out", "snapshots")
+
+    def run_tool(self, *argv):
+        import io
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err), mock.patch("sys.stdout", io.StringIO()):
+            code = self.snapshots.main(list(argv))
+        return code, err.getvalue()
+
+    def collect(self):
+        return self.run_tool("collect", self.src, self.baseline, self.dest, "a" * 40, "pkg")
+
+    def baseline_now(self):
+        self.assertEqual(self.run_tool("baseline", self.src, self.baseline, "pkg")[0], 0)
+
+    def test_a_symlink_out_of_the_export_fails_the_collection(self):
+        outside = self.write("outside/secret.png", "secret\n")
+        self.baseline_now()
+        os.symlink(outside, os.path.join(self.src, "pkg/Tests/__Snapshots__/T/new.png"))
+        code, err = self.collect()
+        self.assertEqual(code, 1)
+        self.assertIn("outside the export", err)
+        self.assertFalse(os.path.exists(os.path.join(self.dest, "pkg/Tests/__Snapshots__/T/new.png")))
+
+    def test_a_symlinked_directory_is_not_followed(self):
+        self.write("outside/dir/leak.png", "secret\n")
+        self.baseline_now()
+        os.symlink(os.path.join(self.root, "outside/dir"), os.path.join(self.src, "pkg/Tests/linked"))
+        code, err = self.collect()
+        self.assertEqual(code, 1)
+        self.assertIn("outside the export", err)
+        self.assertFalse(os.path.exists(os.path.join(self.dest, "pkg/Tests/linked")))
+
+    def test_a_package_that_resolves_outside_the_export_is_refused(self):
+        self.write("outside/pkg2/Tests/a.png", "secret\n")
+        os.symlink(os.path.join(self.root, "outside/pkg2"), os.path.join(self.src, "pkg2"))
+        code, err = self.run_tool("baseline", self.src, self.baseline, "pkg2")
+        self.assertEqual(code, 1)
+        self.assertIn("outside the export", err)
+
+    def test_an_unreadable_directory_fails_the_collection(self):
+        self.baseline_now()
+        hidden = os.path.join(self.src, "pkg/Tests/__Snapshots__/U")
+        os.makedirs(hidden)
+        self.write("src/pkg/Tests/__Snapshots__/U/new.png", "new\n")
+        os.chmod(hidden, 0)
+        self.addCleanup(os.chmod, hidden, 0o755)
+        code, err = self.collect()
+        self.assertEqual(code, 1)
+        self.assertIn("Permission denied", err)
+
+    def test_an_existing_destination_is_never_overwritten_or_followed(self):
+        self.baseline_now()
+        self.write("src/pkg/Tests/__Snapshots__/T/old.png", "recorded\n")
+        target = self.write("elsewhere/target.png", "keep\n")
+        os.makedirs(os.path.join(self.dest, "pkg/Tests/__Snapshots__/T"))
+        os.symlink(target, os.path.join(self.dest, "pkg/Tests/__Snapshots__/T/old.png"))
+        code, err = self.collect()
+        self.assertEqual(code, 1)
+        self.assertIn("File exists", err)
+        with open(target) as fh:
+            self.assertEqual(fh.read(), "keep\n")
+        # Each copied file is created exclusively too, never through a symlink.
+        link = os.path.join(self.root, "link.png")
+        os.symlink(target, link)
+        with self.assertRaises(FileExistsError):
+            os.close(self.snapshots.create(link))
+        with open(target) as fh:
+            self.assertEqual(fh.read(), "keep\n")
+
+    def test_a_recorded_image_is_copied_with_its_sha256(self):
+        import hashlib
+        self.baseline_now()
+        self.write("src/pkg/Tests/__Snapshots__/T/old.png", "recorded\n")
+        self.assertEqual(self.collect()[0], 0)
+        with open(os.path.join(self.dest, "manifest.json")) as fh:
+            images = json.load(fh)["images"]
+        self.assertEqual(images, [{"path": "pkg/Tests/__Snapshots__/T/old.png", "change": "modified",
+                                   "sha256": hashlib.sha256(b"recorded\n").hexdigest()}])
