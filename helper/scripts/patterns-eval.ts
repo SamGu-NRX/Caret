@@ -3,7 +3,7 @@
 // edit-to-memory scenario. Writes results.json and a short summary.md to --out.
 //
 //   node scripts/patterns-eval.ts --out DIR [--pace-ms 20]
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -148,7 +148,7 @@ async function editScenario(): Promise<Record<string, unknown>> {
 const editResult = await editScenario();
 
 const results = { pacingMs: PACE, planted: plantedResult, distractor: distractorResult, forgetRerun: forgetResult, editChangesNextFill: editResult };
-writeStore(join(OUT, "results.json"), JSON.stringify(results, null, 2));
+writeStoreJson(join(OUT, "results.json"), results, 2);
 
 const f = (x: number): string => x.toFixed(3);
 const row = (r: Record<string, unknown>): string => {

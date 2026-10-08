@@ -16,7 +16,7 @@
 // The fixture opens windows (behind others), so run it under the GUI wrapper, which holds gui.lock and waits
 // until nobody is using the Mac:
 //   gui.sh env CARET_GUI_LOCK=held node scripts/skills-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -416,6 +416,6 @@ result.verbs = Object.fromEntries([...new Set(verbs)].map((v) => [v, verbs.filte
 result.log = log.slice(-20);
 result.fixtureStderr = fixtureErr.split("\n").filter((l) => l.length > 0).slice(-5);
 result.ok = ok && foreign.length === 0;
-writeStore(join(OUT, "skills-fixture.json"), JSON.stringify(result, null, 2) + "\n");
+writeStoreJson(join(OUT, "skills-fixture.json"), result, 2);
 console.log(JSON.stringify({ ok: result.ok, error: result.error ?? null, checks, runs: runs.length, deferred: result.deferred }, null, 1));
 process.exit(result.ok ? 0 : 1);

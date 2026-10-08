@@ -10,7 +10,7 @@
 // says "I'm in". The other scenes ask for no words and run as they are.
 // Reports, per scene and writer: plan offered (valid), refused for an unsupported route, segments and acceptances,
 // steps verified, fresh previews, the end, the oracle, false done, replayed mutations and sends; and the cost.
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson, writeStoreNdjson } from "../src/privacy/send.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -267,7 +267,7 @@ for (let run = 1; run <= runs; run++) {
     spent += meter.cost;
     for (const note of rows.at(-1)?.notes ?? []) console.log(`  note: ${note}`);
     console.log(`${s.name} [${meter.model}]: ${end}; valid ${first.event === "segment"}${refused === null ? "" : ` (${refused})`}; oracle ${bad.length === 0 ? "ok" : bad.join("; ")}; verified ${rows.at(-1)?.verified}; replayed ${replayed}; sends ${sends}; $${meter.cost.toFixed(4)}`);
-    writeStore(join(OUT, `${s.name.replace(/[^a-z0-9]+/gi, "-")}-${run}.goals.ndjson`), sc.goals.map((g) => JSON.stringify(g)).join("\n") + "\n");
+    writeStoreNdjson(join(OUT, `${s.name.replace(/[^a-z0-9]+/gi, "-")}-${run}.goals.ndjson`), sc.goals);
     // The writer's programs, to count the ones the sandbox refused and why (G2, the writer's contract).
     if (live) writeStore(join(OUT, `${s.name.replace(/[^a-z0-9]+/gi, "-")}-${run}.programs.ts`), meter.programs.map((p, i) => `// program ${i + 1} (${meter.model})\n${p}\n`).join("\n"));
     await sc.close();
@@ -293,7 +293,7 @@ const summary = {
   localDrafts: tool === null ? null : { model: tool.model, calls: draftCalls },
 };
 await tool?.close();
-writeStore(join(OUT, "goal-scenes.json"), JSON.stringify({ summary, rows }, null, 2) + "\n");
+writeStoreJson(join(OUT, "goal-scenes.json"), { summary, rows }, 2);
 const md = [
   `# Goal scenes (${summary.writer})`,
   "",

@@ -14,7 +14,7 @@
 // proposed that is not, missed when an expected value got none, and a correct blank when "none" or
 // "handoff" got none. Wrong fills must be 0. The key is TYPESAFE_API_KEY from the environment or from
 // CARET_ENV_FILE; it is never printed. Output holds synthetic corpus text only.
-import { writeStore, appendStore } from "../src/privacy/send.ts";
+import { appendStore, appendStoreJson, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { Disclosure } from "../src/privacy/disclosure.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -65,7 +65,7 @@ const askJev: AskJev = async (req) => {
   const r = await live(sent.asked);
   spent += r.costUsd;
   calls++;
-  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ form: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers }) + "\n");
+  if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { form: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers });
   return r;
 };
 let current = "";
@@ -214,5 +214,5 @@ const md: string[] = [
   ]),
 ];
 writeStore(join(OUT, "realfill-eval.md"), md.join("\n") + "\n");
-writeStore(join(OUT, "realfill-eval.json"), JSON.stringify({ calls, spent, results: results.map((r) => ({ form: r.form.id, error: r.error, scored: r.scored, proposal: r.proposal })) }, null, 1) + "\n");
+writeStoreJson(join(OUT, "realfill-eval.json"), { calls, spent, results: results.map((r) => ({ form: r.form.id, error: r.error, scored: r.scored, proposal: r.proposal })) }, 1);
 process.stderr.write(`wrote ${join(OUT, "realfill-eval.md")}; all: right ${count(all, "right")}/${fillable(all)}, wrong ${count(all, "wrong")}; $${spent.toFixed(4)}\n`);

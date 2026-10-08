@@ -94,8 +94,11 @@ describe("the I/O boundary: every POST body and every request store is checked a
   /** A text write in an evaluation script (helper/scripts, the fixture harness's eval scripts) that is not writeStore or appendStore. */
   // Also a file handed to a child as its output (openSync, a file descriptor in stdio), a reader's --record, and a shell
   // script's redirect to a file (anything but /dev/null).
+  // A code generator writes source files from pinned public data, never model or screen text, so it writes them as they
+  // are: withholding could corrupt a generated table.
+  const CODEGEN: ReadonlySet<string> = new Set(["scripts/gen-ledger-unicode.ts"]);
   const rawScriptWrites = (sources: Map<string, string>): string[] =>
-    [...sources].filter(([file]) => file.startsWith("scripts/") || /fixtures\/web-form\/(?:page-loop-eval|tab-source-journey)\.ts$/u.test(file)).flatMap(([file, src]) => {
+    [...sources].filter(([file]) => !CODEGEN.has(file)).filter(([file]) => file.startsWith("scripts/") || /fixtures\/web-form\/(?:page-loop-eval|tab-source-journey)\.ts$/u.test(file)).flatMap(([file, src]) => {
       // A redirect may stand only with a "# store: <why>" note on its line saying it keeps no model text.
       if (file.endsWith(".sh")) return src.split("\n").some((l) => !l.trimStart().startsWith("#") && !/#\s*store:\s*\S/u.test(l) && /(?:^|[^&0-9])>>?\s*(?!\/dev\/null|&)\S/u.test(l.replace(/"[^"]*"/gu, (q) => (q.includes(">") ? "" : q)))) ? [`${file}: a shell redirect to a file`] : [];
       return /\b(?:writeFileSync|appendFileSync|createWriteStream|openSync)\(|"--record"/u.test(src) ? [`${file}: a store that is not writeStore or appendStore`] : [];
@@ -106,6 +109,34 @@ describe("the I/O boundary: every POST body and every request store is checked a
     expect(rawScriptWrites(new Map([["scripts/run.sh", 'node scripts/x.ts >> "$DIR/runner.log" 2>&1 &']]))).toEqual(["scripts/run.sh: a shell redirect to a file"]);
     expect(rawScriptWrites(new Map([["scripts/run.ts", "const fd = openSync(join(out, 'pass.log'), 'a');"]]))).toEqual(["scripts/run.ts: a store that is not writeStore or appendStore"]);
     expect(rawScriptWrites(new Map([...all(), ["scripts/new-eval.ts", "writeFileSync(join(OUT, 'drafts.json'), JSON.stringify(drafts));"]]))).toEqual(["scripts/new-eval.ts: a store that is not writeStore or appendStore"]);
+  });
+
+  /**
+   * A JSON text handed to a raw-text store: writeStore or appendStore over a JSON.stringify withholds the encoded text and
+   * can cut into a number (B31's live scoreboard on v2/int1). A JSON store goes through writeStoreJson, appendStoreJson or
+   * writeStoreNdjson (privacy/send.ts storeJson), which withhold inside strings and encode once.
+   */
+  const jsonAsText = (sources: Map<string, string>): string[] =>
+    [...sources].filter(([file]) => file.startsWith("scripts/") || file.startsWith("../fixtures/")).flatMap(([file, src]) => {
+      const out: string[] = [];
+      for (const m of src.matchAll(/\b(?:writeStore|appendStore|writeAtomic)\(/gu)) {
+        let depth = 0;
+        let end = m.index + m[0].length - 1;
+        for (; end < src.length; end++) {
+          if (src[end] === "(") depth++;
+          else if (src[end] === ")" && --depth === 0) break;
+        }
+        if (/\bJSON\.stringify\(/u.test(src.slice(m.index, end))) out.push(`${file}: a JSON text through a raw-text store`);
+      }
+      return out;
+    });
+
+  it("finds every script's JSON store on the structured path, and catches one that is not", () => {
+    expect(jsonAsText(all())).toEqual([]);
+    expect(jsonAsText(new Map([["scripts/new-eval.ts", 'writeStore(join(OUT, "rows.json"), `${JSON.stringify(rows, null, 1)}\\n`);']]))).toEqual(["scripts/new-eval.ts: a JSON text through a raw-text store"]);
+    expect(jsonAsText(new Map([["scripts/new-eval.ts", 'appendStore(log, JSON.stringify({ n: 1 }) + "\\n");']]))).toEqual(["scripts/new-eval.ts: a JSON text through a raw-text store"]);
+    expect(jsonAsText(new Map([["scripts/new-eval.ts", 'writeStore(f, rows.map((r) => JSON.stringify(r)).join("\\n"));']]))).toEqual(["scripts/new-eval.ts: a JSON text through a raw-text store"]);
+    expect(jsonAsText(new Map([["scripts/new-eval.ts", 'writeStoreJson(join(OUT, "rows.json"), rows, 1);']]))).toEqual([]);
   });
 
   it("finds every POST body sealed and every request store checked", () => {

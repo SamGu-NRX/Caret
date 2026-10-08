@@ -12,7 +12,7 @@
 //
 //   /usr/bin/lockf -k ~/.long-run/locks/gui.lock env CARET_GUI_LOCK=held \
 //     node scripts/tasks-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -300,6 +300,6 @@ result.frontChanges = fronts.slice(1).map((f) => ({ at: f.at, pid: f.pid, name: 
 result.fixtureOrReaderWasFront = foreground !== null;
 result.log = log.slice(-20);
 result.ok = ok && foreground === null;
-writeStore(join(OUT, "tasks-fixture.json"), JSON.stringify(result, null, 2));
+writeStoreJson(join(OUT, "tasks-fixture.json"), result, 2);
 console.log(JSON.stringify({ ok: result.ok, error: result.error ?? null, pause: `${(result.pause as { ok: number }).ok}/${pauseRuns.length}`, takeOver: `${(result.takeOver as { ok: number }).ok}/${takeOverRuns.length}`, errors: result.errors, first: { pause: pauseRuns[0], takeOver: takeOverRuns[0] } }, null, 1));
 process.exit(result.ok ? 0 : 1);

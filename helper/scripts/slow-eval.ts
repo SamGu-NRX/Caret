@@ -16,7 +16,7 @@
 //   STOPPED              written on a stop a person must clear (cost, auth, billing, the cap, a refused answer);
 //                        slow-eval.sh will not start while it exists
 // Fixture text only: every set runs on fixture pages, notes and memory, and GW1's guard refuses anything else.
-import { writeStore, appendStore } from "../src/privacy/send.ts";
+import { appendStore, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -146,6 +146,12 @@ const writeAtomic = (file: string, body: string): void => {
   writeStore(tmp, body);
   renameSync(tmp, file);
 };
+/** writeAtomic for a JSON record: withheld inside its strings, so the file always parses (privacy/send.ts storeJson). */
+const writeAtomicJson = (file: string, value: unknown, space?: number): void => {
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeStoreJson(tmp, value, space);
+  renameSync(tmp, file);
+};
 /**
  * The runner's own log, DIR/runner.log, written here through writeStore's append (formats withheld), never by a shell
  * redirect (PV2: every eval store goes through privacy/send.ts). Also echoed to stdout, withheld the same way.
@@ -203,7 +209,7 @@ function holder(argv: string[], what: string): Promise<Held | null> {
 }
 const HOLD_CMD = ["/bin/sh", "-c", "echo held; exec cat > /dev/null"];
 const lockArgv = (wait: boolean): string[] => ["/usr/bin/lockf", "-k", ...(wait ? [] : ["-t", "0"]), LOCK_FILE, ...HOLD_CMD];
-const ownerNote = (): void => writeAtomic(`${LOCK_FILE}.owner`, `${JSON.stringify({ pid: process.pid, who: "R1 slow-eval", dir: DIR, since: new Date().toISOString() })}\n`);
+const ownerNote = (): void => writeAtomicJson(`${LOCK_FILE}.owner`, { pid: process.pid, who: "R1 slow-eval", dir: DIR, since: new Date().toISOString() });
 const withOwner = (h: Held | null): Held | null => {
   if (h === null) return null;
   ownerNote();
@@ -350,7 +356,7 @@ const runner = new Runner(SETS, {
   events: (set, pass) => readEvents(eventsFile(set, pass)),
   reported: (set, pass) => existsSync(join(passDir(set, pass), reportFile(set.kind, (set as SetDef).drop))),
   score: (set, pass) => scoreOf(set as SetDef, passDir(set, pass)),
-  save: (s) => writeAtomic(STATUS, `${JSON.stringify(s, null, 1)}\n`),
+  save: (s) => writeAtomicJson(STATUS, s, 1),
   say: log,
   finished: (set, st) => {
     const line = summaryLine(set, st);
@@ -373,7 +379,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
       status.state = "stopped";
       status.stopReason = `signal: ${sig}`;
       status.updatedAt = new Date().toISOString();
-      writeAtomic(STATUS, `${JSON.stringify(status, null, 1)}\n`);
+      writeAtomicJson(STATUS, status, 1);
       writeResults(status);
       process.exit(143);
     });

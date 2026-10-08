@@ -7,7 +7,7 @@
 // windows and nothing else. Field keys are found by matching the fixture's gold frames against
 // the recorded snapshots. For each form it sends one fillRequest per round, and it also records any
 // proposal that a focus event produced on its own. Scores exact match against the gold values.
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
@@ -175,7 +175,7 @@ const summary = {
   costUsd: requests.reduce((s, r) => s + r.costUsd, 0),
   errors,
 };
-writeStore(join(a.out, "fill-eval.json"), JSON.stringify({ summary, requests, rows }, null, 2) + "\n");
+writeStoreJson(join(a.out, "fill-eval.json"), { summary, requests, rows }, 2);
 
 const md: string[] = [];
 md.push(`# Grounded fill on caret-fixture, live Jev`, "");

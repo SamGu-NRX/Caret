@@ -8,7 +8,7 @@
 // Router questions go to live Jev (spend capped); nothing else is asked.
 //
 //   node scripts/routing/focus-entry.ts --out DIR [--entries 12] [--gaps 1200,900,400] [--spend-cap 0.003] [--label x]
-import { writeStore, appendStore } from "../../src/privacy/send.ts";
+import { appendStore, appendStoreJson, writeStore, writeStoreJson } from "../../src/privacy/send.ts";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,7 +57,7 @@ const askJev: AskJev = async (req: JevRequest) => {
   const sent = sealRequest(req);
   const r = await live(sent.asked);
   spend += r.costUsd;
-  if (a.dump) appendStore(join(OUT, `router-requests${suffix}.ndjson`), `${JSON.stringify({ at: performance.now(), ...storedRecord(sent, (f) => ({ state: f.state, questions: f.questions })), answers: r.answers })}\n`);
+  if (a.dump) appendStoreJson(join(OUT, `router-requests${suffix}.ndjson`), { at: performance.now(), ...storedRecord(sent, (f) => ({ state: f.state, questions: f.questions })), answers: r.answers });
   return r;
 };
 
@@ -175,7 +175,7 @@ const summary = {
   stats: helper.routing === null ? null : { ...helper.routing.stats, callMs: undefined, entryMs: undefined },
 };
 const decisions = (helper.routing?.decisions ?? []).map((d) => ({ windowId: d.windowId, breakpoint: d.breakpoint, outcome: d.outcome, by: d.by, failure: d.failure, latencyMs: d.latencyMs, calls: d.calls }));
-writeStore(join(OUT, `focus-entry${suffix}.json`), `${JSON.stringify({ ...summary, rows, decisions }, null, 2)}\n`);
+writeStoreJson(join(OUT, `focus-entry${suffix}.json`), { ...summary, rows, decisions }, 2);
 console.log(JSON.stringify(summary));
 helper.shutdown();
 host.close();

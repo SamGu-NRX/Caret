@@ -10,7 +10,7 @@
 //   node scripts/ask-scope-eval.ts --out DIR [--set b24|dev|all] [--engine jev] [--answers FILE] [--cutoff C] [--spend-limit USD]
 // --answers rescores an earlier run's answers.json with no request. Keys come from CARET_ENV_FILE and are never printed;
 // requests hold synthetic corpus text only.
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -92,7 +92,7 @@ else {
     }
     process.stderr.write(`${x.id}: ${snap.fields.length} fields, spent $${spent.toFixed(5)}\n`);
   }
-  writeStore(join(OUT, "answers.json"), `${JSON.stringify(rows, null, 1)}\n`);
+  writeStoreJson(join(OUT, "answers.json"), rows, 1);
   writeStore(join(OUT, "spend.txt"), `$${spent.toFixed(6)} for ${labelled.length * 2} requests\n`);
 }
 

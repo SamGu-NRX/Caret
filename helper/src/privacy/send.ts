@@ -86,7 +86,8 @@ export function storedRequest<T>(s: Sealed, req: JevRequest, build: (frozen: Jev
  * PV2 (the lead's ruling on local and provider responses): the only way an evaluation script writes a text file. What a
  * model answered, a local model drafted or a run reported is kept with every value in a format Caret never carries
  * withheld (privacy/exclude.ts withholdValues), whatever the file. A request in it goes through storedLine or
- * storableRequest first. test/sc1-boundary.test.ts holds every script's text write to these.
+ * storableRequest first. test/sc1-boundary.test.ts holds every script's text write to these. For raw text only: a JSON
+ * or NDJSON store goes through writeStoreJson, appendStoreJson or writeStoreNdjson, which withhold inside its strings.
  */
 export function writeStore(path: string, text: string, o?: WriteFileOptions): void {
   writeFileSync(path, withholdValues(text), o);
@@ -95,6 +96,56 @@ export function writeStore(path: string, text: string, o?: WriteFileOptions): vo
 /** writeStore's append. */
 export function appendStore(path: string, text: string, o?: WriteFileOptions): void {
   appendFileSync(path, withholdValues(text), o);
+}
+
+/** Two keys of one object that withholding made the same: the store refuses rather than drop one of them. */
+export class StoreKeyCollision extends Error {
+  constructor() {
+    super("two keys of one object in a store record withhold to the same text; nothing was written");
+    this.name = "StoreKeyCollision";
+  }
+}
+
+function withheldStructure(v: unknown): unknown {
+  if (typeof v === "string") return withholdValues(v);
+  if (Array.isArray(v)) return v.map(withheldStructure);
+  if (typeof v === "object" && v !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) {
+      const key = withholdValues(k);
+      if (Object.hasOwn(out, key)) throw new StoreKeyCollision();
+      Object.defineProperty(out, key, { value: withheldStructure(x), enumerable: true, writable: true, configurable: true });
+    }
+    return out;
+  }
+  return v;
+}
+
+/**
+ * A structured record as a store writes it: the value as JSON sees it (toJSON applied, undefined dropped), with every
+ * string in it, keys included, withheld as withholdValues withholds text, then encoded once. Numbers, booleans and null
+ * are never touched, so the result always parses. Withholding the encoded text instead (writeStore over a
+ * JSON.stringify) can cut into a number: B31's live scoreboard on v2/int1 held `382.[withheld]` and did not parse
+ * (~/.caret-run/evidence/screen/int1/live-b31/realfill-asks.json).
+ */
+export function storeJson(value: unknown, space?: number): string {
+  const plain = JSON.parse(JSON.stringify(value) ?? "null") as unknown;
+  return JSON.stringify(withheldStructure(plain), null, space);
+}
+
+/** A .json store: storeJson's text and a newline. */
+export function writeStoreJson(path: string, value: unknown, space?: number, o?: WriteFileOptions): void {
+  writeFileSync(path, `${storeJson(value, space)}\n`, o);
+}
+
+/** One record appended to an .ndjson store, on one line. */
+export function appendStoreJson(path: string, value: unknown, o?: WriteFileOptions): void {
+  appendFileSync(path, `${storeJson(value)}\n`, o);
+}
+
+/** An .ndjson store of these records, one line each. */
+export function writeStoreNdjson(path: string, values: readonly unknown[], o?: WriteFileOptions): void {
+  writeFileSync(path, values.map((v) => `${storeJson(v)}\n`).join(""), o);
 }
 
 /**

@@ -113,7 +113,7 @@ export class ScreenModel {
     // as a value the window states.
     const dropped = underMenuOptions(nodes);
     for (const k of dropped) nodes.delete(k);
-    admitNodes(nodes, snap.nodes);
+    admitNodes(nodes, snap.nodes, new Set(values.map((v) => v.nodeKey)));
     if (prior !== undefined) out.push(...diffNodes(prior.nodes, nodes, snap, id));
 
     // A partial snapshot only knows focus inside its subtree; outside it, the earlier focus stands
@@ -245,7 +245,7 @@ export class ScreenModel {
       const nodes = new Map(w.nodes);
       for (const n of add.nodes) nodes.set(n.key, n);
       // The tab's text is read in as the model's own windows are (SC1 2a).
-      admitNodes(nodes, add.nodes);
+      admitNodes(nodes, add.nodes, new Set(w.values.map((v) => v.nodeKey)));
       v.windows.set(id, { ...w, window: add.title === null ? w.window : admitTitle({ ...w.window, title: add.title }), nodes, values: admitValues(w.values, nodes) });
     }
     v.focusedWindowId = this.focusedWindowId;
@@ -296,12 +296,12 @@ function mergeCutWalk(prior: Map<string, Node>, sent: readonly Node[]): Map<stri
  * cut walk or a partial one may mark a node whose descendants the model kept from before (PV2 review and re-review),
  * which inherit its exclusion all the same.
  */
-function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[]): void {
+function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[], typed: ReadonlySet<string> = new Set()): void {
   let excluded = false;
   for (const f of fresh) {
     const n = nodes.get(f.key);
     if (n === undefined) continue;
-    const a = admitNode(n, inherited(nodes, n));
+    const a = admitNode(n, inherited(nodes, n), typed.has(n.key));
     if (a !== n) nodes.set(f.key, a);
     if (a.excluded !== undefined) excluded = true;
   }
@@ -311,7 +311,7 @@ function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[]): void {
   for (let changed = excluded; changed; ) {
     changed = false;
     for (const [k, n] of nodes) {
-      const a = admitNode(n, inherited(nodes, n));
+      const a = admitNode(n, inherited(nodes, n), typed.has(n.key));
       if (a !== n) (nodes.set(k, a), (changed = true));
     }
   }

@@ -10,7 +10,7 @@
 // --jev live sends only the naming question to Jev (CARET_ENV_FILE names the .env with the key); every other
 // question the helper asks (fill on focus) is answered "none" here, for free. It stops before spending more
 // than --max-usd.
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -144,7 +144,7 @@ async function run(label: string, s: SkillStream, takeOffers: boolean): Promise<
     out.namingRequests = recorded.length;
     out.valuesInRequests = recorded.filter((r) => values.some((v) => JSON.stringify([r.asked.state, r.asked.questions]).includes(v))).length;
     out.skills = helper.memory.list("skill").flatMap((e) => (e.kind === "skill" ? [{ name: e.fields.name, runs: e.fields.runs, cleanRuns: e.fields.cleanRuns }] : []));
-    writeStore(join(OUT, `naming-requests-${label}.json`), JSON.stringify(recorded.map((r) => storedRecord(r, (f) => ({ state: f.state, questions: f.questions, snippets: f.snippets, charged: f.charged }))), null, 2) + "\n");
+    writeStoreJson(join(OUT, `naming-requests-${label}.json`), recorded.map((r) => storedRecord(r, (f) => ({ state: f.state, questions: f.questions, snippets: f.snippets, charged: f.charged }))), 2);
   } finally {
     out.wallSeconds = (Date.now() - t0) / 1000;
     helper.shutdown();
@@ -158,7 +158,7 @@ async function run(label: string, s: SkillStream, takeOffers: boolean): Promise<
 const planted = await run("planted", skillStream({ caretFrom: 4 }), true);
 const distractor = await run("distractor", skillStream({ seed: 23, distractor: true }), true);
 const results = { jev: a.jev, liveCalls, liveUsd: spent, planted, distractor };
-writeStore(join(OUT, "results.json"), JSON.stringify(results, null, 2) + "\n");
+writeStoreJson(join(OUT, "results.json"), results, 2);
 
 const lines = [
   `# B19 skills eval (Jev ${a.jev})`,

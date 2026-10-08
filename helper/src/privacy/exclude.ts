@@ -174,6 +174,13 @@ export function excludedAncestor(nodes: ReadonlyMap<string, Node>, n: Node): Nod
     seen.add(p.key);
     if (p.excluded !== undefined) return p.excluded;
     if (p.states?.includes("secure") === true || p.role === "AXSecureTextField") return "secure";
+    // A container labelled for a secret (a group named "Password") holds what it names. Its own label is a name, an
+    // attribute: not a text's content (TEXT_ROLES), nor a window's, page's or scroll view's title (NOT_A_GROUP), which
+    // names no field.
+    if (!TEXT_ROLES.has(p.role) && !NOT_A_GROUP.has(p.role) && p.editable !== true) {
+      const kind = labelKind(p.label);
+      if (kind !== null) return kind;
+    }
   }
   return null;
 }
@@ -198,12 +205,16 @@ function groupLabel(nodes: ReadonlyMap<string, Node>, n: Node): string | null {
  * nearest group's name ends in a sensitive kind (memory/sensitive.ts labelKind: "Card number", "SSN"; not "Password
  * hint"). Null for every other node.
  */
-export function excludedNode(n: Node, from: Inherited = {}): NodeExclusion | null {
+export function excludedNode(n: Node, from: Inherited = {}, typed = false): NodeExclusion | null {
   if (n.excluded !== undefined) return n.excluded;
   if (n.states?.includes("secure") === true || n.role === "AXSecureTextField") return "secure";
   // Everything inside an excluded node is its content, editable or not (PV2 re-review).
   if (from.excluded !== undefined) return from.excluded;
-  if (n.editable !== true) return null;
+  // A node that holds a value (its own value, a typed value, a placeholder), whatever its role, is excluded when its own
+  // label or placeholder names a sensitive kind: that label is the value's declared purpose (the coordinator's ruling
+  // after SC1 step 3's evidence: a cell labelled "Password" holding a value). A label that holds nothing is only a label.
+  const holds = (n.value ?? "") !== "" || (n.placeholder ?? "") !== "" || typed;
+  if (n.editable !== true) return holds ? (labelKind(n.label) ?? labelKind(n.placeholder)) : null;
   return labelKind(n.label) ?? labelKind(n.placeholder) ?? labelKind(from.label);
 }
 
@@ -228,8 +239,8 @@ function admitSections(n: Node): Pick<Node, "headings" | "outline"> | null {
  * A node as the model keeps it: excluded (its value gone, `excluded` set), or with every excluded value in its label,
  * value, placeholder and section texts withheld. The same object when nothing changes.
  */
-export function admitNode(n: Node, from: Inherited = {}): Node {
-  const why = excludedNode(n, from);
+export function admitNode(n: Node, from: Inherited = {}, typed = false): Node {
+  const why = excludedNode(n, from, typed);
   const sections = admitSections(n);
   if (why !== null) {
     const { value: _value, ...rest } = n;

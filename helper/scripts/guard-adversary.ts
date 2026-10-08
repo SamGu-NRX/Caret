@@ -36,7 +36,7 @@
 // sites); a task or W4 page whose walk is missing is reported as skipped, never as 0, and a corpus form with no walk is
 // read from the reader's committed recording instead (set "corpus-reader"), which test/w1-wrongs.test.ts runs in the
 // suite. Exit 1 when class (a) is above 0.
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson, writeStoreNdjson } from "../src/privacy/send.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -388,14 +388,14 @@ interface Run {
  * with the attack's class and the field's key value, for the verifier's dev set (fixtures/verify/dev.json). One line each.
  */
 let observing: { set: string; page: string; picks: Map<string, { cls: "canned" | "a" | "b"; text: string; expected: string }> } | null = null;
-const dumped: string[] = [];
+const dumped: unknown[] = [];
 const dumpSeen = new Set<string>();
 if (a.values["dump-proposed"] !== undefined) {
   setCheckObserver((p: Proposed, codeRefusal: string | null) => {
     const o = observing;
     const pick = o?.picks.get(p.field.key);
     if (o === null || pick === undefined || p.text !== pick.text) return;
-    const line = JSON.stringify({ cls: pick.cls, set: o.set, page: o.page, expected: pick.expected, field: { key: p.field.key, descriptor: p.field.descriptor, name: p.field.name, labelWords: p.field.labelWords, control: p.field.control, part: p.field.part, inputKind: p.field.inputKind, maxLength: p.field.maxLength }, text: p.text, provenance: p.provenance, owner: p.owner, codeRefusal });
+    const line = { cls: pick.cls, set: o.set, page: o.page, expected: pick.expected, field: { key: p.field.key, descriptor: p.field.descriptor, name: p.field.name, labelWords: p.field.labelWords, control: p.field.control, part: p.field.part, inputKind: p.field.inputKind, maxLength: p.field.maxLength }, text: p.text, provenance: p.provenance, owner: p.owner, codeRefusal };
     const id = JSON.stringify([pick.cls, p.field.descriptor, p.text, p.provenance]);
     if (dumpSeen.has(id)) return;
     dumpSeen.add(id);
@@ -699,7 +699,7 @@ for (const [name, gen] of generators) {
 if (SETS.has("routine")) routine = await routineSet();
 
 mkdirSync(OUT, { recursive: true });
-if (a.values["dump-proposed"] !== undefined) writeStore(resolve(a.values["dump-proposed"]), dumped.length === 0 ? "" : `${dumped.join("\n")}\n`);
+if (a.values["dump-proposed"] !== undefined) writeStoreNdjson(resolve(a.values["dump-proposed"]), dumped);
 const CLASSES: Cls[] = ["a", "b", "c"];
 const HOWS = ["fill", "goal", "ask"] as const;
 const exempt = (x: { via: string | null }): boolean => x.via?.startsWith("exempt:") === true;
@@ -773,6 +773,6 @@ const md = [
 ];
 writeStore(join(OUT, "guard-adversary.md"), `${md.join("\n")}\n`);
 const summary = (cls: Cls) => ({ written: count(cls, "written"), handedOff: count(cls, "handedOff"), rightValue: count(cls, "rightValue"), withheld: count(cls, "withheld"), unexempt: unexempt(cls).length });
-writeStore(join(OUT, "guard-adversary.json"), `${JSON.stringify({ verifier: VERIFIER, desks, fills, a: summary("a"), b: summary("b"), c: summary("c"), unexempt: unexempt().length, routine, attempts, canned, unattacked, refusals: Object.fromEntries(refusals), failures, goalRuns, skipped }, null, 1)}\n`);
+writeStoreJson(join(OUT, "guard-adversary.json"), { verifier: VERIFIER, desks, fills, a: summary("a"), b: summary("b"), c: summary("c"), unexempt: unexempt().length, routine, attempts, canned, unattacked, refusals: Object.fromEntries(refusals), failures, goalRuns, skipped }, 1);
 process.stderr.write(`guard adversary (verifier ${VERIFIER}): written outside an exemption ${unexempt().length}; ${CLASSES.map((c) => `(${c}) written ${count(c, "written")} of ${attempts.filter((x) => x.cls === c).length}`).join("; ")}; canned right ${cannedRight.length}, refused ${canned.filter((x) => x.outcome === "refused").length}${routine === null ? "" : `; routine cells ${routine.cells} in ${routine.offers} offers, errors ${routine.errors.length}`}; ${join(OUT, "guard-adversary.md")}\n`);
 process.exitCode = VERIFIER === "refuse" && (unexempt().length > 0 || (routine?.errors.length ?? 0) > 0 || failures.length > 0) ? 1 : 0;

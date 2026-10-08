@@ -237,7 +237,17 @@ function splitTextNodes(w: WindowState): Set<string> {
   return out;
 }
 
+/**
+ * SC1 step 3's evidence (PV2, Sam's decision through the coordinator): with CARET_TEST_MARKERS_OFF=1 the view applies none
+ * of the marker heuristics above (the line drops, the cross-node joining, the nearest-label and own-label drops, the title
+ * drop), so tests and evaluations measure what the structural path alone (privacy/exclude.ts on read, the Disclosure, the
+ * formats, the shapes, the budgets) withholds. A test-only switch: the helper refuses to start with it set (main.ts).
+ */
+export const MARKERS_OFF_ENV = "CARET_TEST_MARKERS_OFF";
+const markersOff = (): boolean => process.env[MARKERS_OFF_ENV] === "1";
+
 function build(w: WindowState): WindowState {
+  if (markersOff()) return w;
   if (secretText(w.window.title)) return { ...w, window: { ...w.window, title: "" }, nodes: new Map(), values: [] };
   const split = splitTextNodes(w);
   const dropped = nodesLabelledBy(w, secretText, split);

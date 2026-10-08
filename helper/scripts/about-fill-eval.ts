@@ -19,7 +19,7 @@
 // --memory-cutoff, --whose-cutoff and --no-whose (whose: false) set fill.ts's options (B18). A field may say `who`: whose
 // details it wants (user, other, unclear, n/a). The report then counts by it, and sweeps the memory cutoff
 // (and the whose cutoff, unless --no-whose) over the answers Jev gave, so one live pass shows every cutoff.
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -349,6 +349,6 @@ md.push("| Form | Field | Section | Who | Expected | Got | From | Outcome | With
 for (const r of rows) md.push(`| ${r.form} | ${r.field} | ${r.section ?? ""} | ${r.who} | ${r.expect} | ${r.got ?? ""} | ${r.from ?? ""} | ${r.outcome} | ${r.withheld ?? ""} | ${r.asks} | ${r.whose.map((x) => `${x.choice} ${x.confidence.toFixed(2)}`).join(" / ")} |`);
 if (errors.length > 0) md.push("", "## Errors", "", ...errors.map((e) => `- ${e}`));
 writeStore(`${OUT}/about-fill-eval.md`, md.join("\n") + "\n");
-writeStore(`${OUT}/about-fill-eval.json`, JSON.stringify({ jev: a.jev, calls, cost, rows, errors }, null, 2) + "\n");
+writeStoreJson(`${OUT}/about-fill-eval.json`, { jev: a.jev, calls, cost, rows, errors }, 2);
 console.log(md.slice(0, 9).join("\n"));
 process.exit(errors.length > 0 ? 1 : 0);
