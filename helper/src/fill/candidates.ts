@@ -341,6 +341,13 @@ const MAX_SCAN = 4000;
  */
 const LEFT_OUT_MAX = 2000;
 /**
+ * Lines (and typed values) of a window the cap stopped in, or never reached, read for what it may hold (unreadRest), each
+ * one counted, a repeated line too; past it the rest is unknown and everything it could touch is withheld. LEFT_OUT_MAX's
+ * size. Not tuned: no fixture desk needs the pass, and the scan prototype in
+ * ~/.caret-run/evidence/screen/pv2/simplify/cap-binding.md read at most 1,280 in one window of a realistic desk.
+ */
+const UNREAD_MAX = 2000;
+/**
  * The kinds of typed value that make a line a contact line ("Dana Whitfield <dana@example.com>", "Priya,
  * (415) 555-0162"), whose names count as kept out when the line is cut (B14). A date or a time does not: "a
  * call with Priya Thursday 3pm PT" is a sentence, and counting "Priya Thursday" withheld every name on Q1's
@@ -629,11 +636,16 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (o.deferClauses === true) pending.set(c, clause);
       else if (viewHolds(sw, clause) && (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause], clauseSpans(c, clause)))) c.line = clause;
     }
+    for (const id of unreadOf) {
+      const lw = viewOf(model, id);
+      if (lw !== undefined) unreadRest(lw);
+    }
     for (const id of leftOutOf) {
       const lw = viewOf(model, id);
-      if (lw !== undefined) leftOut(lw);
+      if (lw !== undefined && !unreadOf.has(id)) leftOut(lw);
     }
     leftOutOf.clear();
+    unreadOf.clear();
     stats.windows = touched.size;
     stats.ms = performance.now() - t0;
     return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
@@ -642,23 +654,19 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * Stops early, on either cap, partway through `reading`: what of it was offered is a partial
    * set like a privacy cut's, so it is reported cut and fill withholds the kinds it lost (B13 review: a
    * chat's 79 times filled the cap before its meeting date, and an older window's date was asked alone).
-   * Each window in `unread`, which the cap stopped the generator from reaching, counts as cut the same way: its lines
-   * are read for what it may hold (leftOut), so the cut rules withhold those kinds, words and names. Left out silently
-   * as the least recent, a chat's other Ref values never withheld the newer note's.
+   * Each window in `unread`, which the cap stopped the generator from reaching, counts as cut the same way. Both are
+   * read for what they may hold (unreadRest), so the cut rules withhold those kinds, words and names.
    */
   const stop = (unread: readonly WindowState[]): Collected => {
     if (reading !== null) {
       missed.add(reading);
-      // The rest of the window was not read, so whether it held a name is not known (B14 review: the
-      // cap stopped a notes window between another window's name and the right one).
+      // The rest of the window was not read, so whether it held a name is not known.
       partway = true;
-      // And its unread rest is read for what it may hold, as an unreached window's is (leftOut; cutAll if that cannot
-      // finish): a note's last line naming L81 the current locker left no cut word or association, and L01 was written.
-      leftOutOf.add(reading);
+      unreadOf.add(reading);
     }
     for (const w of unread) {
       missed.add(w.window.windowId);
-      leftOutOf.add(w.window.windowId);
+      unreadOf.add(w.window.windowId);
     }
     return finish();
   };
@@ -667,6 +675,43 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   let cutAll = false;
   /** Windows, not conversations, that a span did not fit; their left-out lines are read when the generator finishes. */
   const leftOutOf = new Set<string>();
+  /** Windows a cap stopped the generator in, or kept it from reaching; their unread text is read when it finishes. */
+  const unreadOf = new Set<string>();
+  /**
+   * What a window a cap stopped in, or never reached, may hold: every line of every node not offered whole, a line with
+   * no candidate in it as much as one with (a note's closing "Do not use L01 ..."), since candidate extraction does not
+   * say a window was read whole. Its words, its section's and its typed values' kinds go in cutTerms, its names in
+   * cutNames, its labels' associations in omitted. Every line and value read counts, a repeated one too, against
+   * UNREAD_MAX; past it what the rest may hold is not known, and cutAll is set.
+   */
+  const unreadRest = (w: WindowState): void => {
+    const valuesOf = new Map<string, TypedValue[]>();
+    let n = 0;
+    for (const v of windowValues(w)) {
+      if (++n > UNREAD_MAX) return void (cutAll = true);
+      valuesOf.set(v.nodeKey, [...(valuesOf.get(v.nodeKey) ?? []), v]);
+      if (secretValue(w, v) || seen.has(v.text)) continue;
+      for (const k of valueKinds(v)) cutTerms.add(kindTerm(k));
+    }
+    for (const node of w.nodes.values()) {
+      const isSourceField = sourceField(node);
+      for (const raw of nodeText(node).split(/\r\n|\r|\n/u)) {
+        if (++n > UNREAD_MAX) return void (cutAll = true);
+        const line = bareLine(raw);
+        if (line === "") continue;
+        const spans = lineSpans(raw);
+        for (const sp of spans) omit(w, node, sp.text, sp.label ?? (isSourceField ? (node.label ?? null) : null));
+        if (spans.length > 0 && spans.every((sp) => seen.has(sp.text))) continue;
+        for (const t of words(line)) cutTerms.add(t);
+        for (const t of words(sectionAround(w, node))) cutTerms.add(t);
+        const values = (valuesOf.get(node.key) ?? []).filter((v) => line.includes(v.text));
+        for (const v of values) for (const k of valueKinds(v)) cutTerms.add(kindTerm(k));
+        if (!wantsNames) continue;
+        for (const sp of spans) if (!seen.has(sp.text) && isNameLike(sp.text, sp.label)) cutNames.push(sp.text);
+        if (values.some((v) => valueKinds(v).some((k) => CONTACT_KINDS.has(k)))) cutNames.push(...namesOutside(line, values));
+      }
+    }
+  };
   /**
    * What a window that is not a conversation left out once a span of it did not fit its budget: the words of
    * every line not offered, as cutTerms, and the names those lines hold, as cutNames, the way a conversation's
@@ -680,12 +725,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const v of windowValues(w)) valuesOf.set(v.nodeKey, [...(valuesOf.get(v.nodeKey) ?? []), v]);
     let n = 0;
     const note = (node: Node, text: string, line: string, kinds: readonly ValueKind[], label: string | null): boolean => {
-      omit(w, node, text, label);
-      if (seen.has(text)) return true;
+      // Every span read counts, a repeated one too, before it is weighed.
       if (++n > LEFT_OUT_MAX || outOfWork()) {
         cutAll = true;
         return false;
       }
+      omit(w, node, text, label);
+      if (seen.has(text)) return true;
       for (const t of words(line)) cutTerms.add(t);
       for (const t of words(sectionAround(w, node))) cutTerms.add(t);
       for (const k of kinds) cutTerms.add(kindTerm(k));
@@ -859,8 +905,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         const sp = spans[i] as (typeof spans)[number];
         if (sp.group !== k) continue;
         // Not offered again: its association is weighed once the kinds are in (skipped), against the association its text
-        // was offered under then, as add() weighs one. Weighed now, a second "Date: 2026-10-08" counted as left out before
-        // the first was offered.
+        // was offered under, as add() weighs one, so a repeat of an offered value under its own label is no omission.
         if (seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) {
           skipped.push(sp);
           continue;

@@ -11,7 +11,7 @@ import { collectCandidates } from "../src/fill/candidates.ts";
 import { candidateProvenance, proposeFill, type FillScope } from "../src/fill/fill.ts";
 import { fieldContract, makeFieldContract, setTestVerifier, verifyProposed, type Proposed, type Provenance } from "../src/fill/contract.ts";
 import { checkSealable, sealRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
-import { sendable } from "../src/privacy/send.ts";
+import { seal, sendable } from "../src/privacy/send.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, snap, text } from "./builders.ts";
 import { TEST_AUTHORITY } from "./mint.ts";
@@ -354,5 +354,33 @@ describe("checking requests sent together, as their seals will", () => {
     expect(() => checkSealable([req(a), req(b)])).toThrow(/with the requests sent before it, it reveals 59 characters of window chat, over its limit of 34/u);
     // The check committed nothing: the first still goes alone.
     expect(() => sendable(sealRequest(req(a)).sealed)).not.toThrow();
+  });
+});
+
+describe("round 7", () => {
+  it("keeps a view's class when it is redacted again: a mail's basis is still held to 41 after its provenance is taken", () => {
+    const m = new ScreenModel();
+    const body = ["see you at five tomorrow", "and the venue holds the date for us"];
+    const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+    m.apply(snap([text("h0", "From: Dana"), text("h1", "Subject: my password is violet-orchard-seven"), ...body.map((l, i) => text(`b${i}`, l))], { at: 1, windowId: "mail", title: "Inbox - Chrome", app: chrome }));
+    const view = redactWindow(m.windows.get("mail") as WindowState);
+    expect(redactWindow(view), "redacting a view gives the view").toBe(view);
+    const d = new Disclosure(m);
+    const bases = body.map((l) => d.basis(view, l)!);
+    // Taking a candidate's provenance redacts its view again (contract.ts windowProvenance).
+    const c = collectCandidates(m, "no-form", { now: 3000 }).candidates.find((x) => x.text === body[0]);
+    candidateProvenance(m, c!);
+    m.close("mail", 2);
+    expect(d.derived(bases, body.join(" ")), "59 of a limit of 41").toBeNull();
+  });
+
+  it("seals plan text whose words a bare CR splits across a line: 'alpha beta' from 'alpha\\rbeta'", () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("n", "alpha\rbeta")], { at: 1, windowId: "note", title: "N", app: TEXTEDIT }));
+    const d = new Disclosure(m);
+    const said = d.heldText("alpha beta");
+    expect(said).toBe("alpha beta");
+    const s = seal({ req: { purpose: "route.task", disclosure: d }, wire: { state: { offer: { found: said } }, questions: {} } });
+    expect(() => sendable(s)).not.toThrow();
   });
 });

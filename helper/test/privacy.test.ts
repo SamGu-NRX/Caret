@@ -321,8 +321,9 @@ describe("the privacy line on every Jev request", () => {
       await s.firstLook();
     });
     // Withheld, not asked: each window is read whole, newest first, so the files window fills the candidate cap and the
-    // six it never reached count as cut. What they hold is unknown, so the email field and the first look's fields are
-    // withheld (candidates.ts stop). Read every window's typed values first, this screen sent 8 requests.
+    // six it never reached count as cut. Their unread text is read for what it holds (candidates.ts unreadRest), whose
+    // emails and words cut the email field and the first look's fields. Read every window's typed values first, this
+    // screen sent 8 requests.
     expect(rec, "nothing is asked from a partial read of the screen").toEqual([]);
   }, 30_000);
 

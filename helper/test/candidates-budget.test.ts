@@ -91,13 +91,14 @@ describe("candidate generator", () => {
     expect(stats.values).toBe(0);
     expect(stats.nodes).toBe(MAX_CANDIDATES);
     expect(stats.values).toBeLessThan(values);
-    // The files window, stopped partway, and the six windows the cap never reached count as cut, as a privacy cut would:
-    // reading the six for what they may hold runs past the visit cap, so every field the cut could touch is withheld
-    // (cutAll), not filled from a partial set.
+    // The files window, stopped partway, and the six windows the cap never reached count as cut. Their unread text is read
+    // whole by its own bound (candidates.ts unreadRest, UNREAD_MAX lines a window), within which each of them fits: its
+    // words, kinds and names are cut, so every field they could serve is withheld, and nothing else is.
     const r = collectCandidates(scene.model, scene.formWindowId, { now: NOW });
     expect(r.cut).toHaveLength(scene.model.windows.size - 1);
-    expect(r.cutAll, "withheld, not filled: what the unread windows hold is unknown").toBe(true);
-    expect(stats.overBudget).toBe(true);
+    expect(r.cutAll, "each unread window was read within its bound").toBe(false);
+    expect(r.cutTerms.size).toBeGreaterThan(100);
+    expect(stats.overBudget).toBe(false);
   });
 
   it("counts duplicate typed values toward the visit cap", () => {
@@ -128,10 +129,11 @@ describe("candidate generator", () => {
     model.apply(snap([], { at: 2000, windowId: "form", focused: true }));
     const capped = collectCandidates(model, "form", { now: 3000 });
     expect(capped.candidates).toHaveLength(MAX_CANDIDATES);
-    // The candidate cap stops it in the log, whose unread rest is then read as a cut's would be (candidates.ts stop):
-    // 20,000 lines run past the visit cap, so what the rest may hold is unknown and everything it could touch is withheld.
-    expect(capped.stats.overBudget, "reading the unread rest ran out of visits").toBe(true);
-    expect(capped.cutAll).toBe(true);
+    // The candidate cap stops it in the log, whose unread rest is then read for what it may hold (candidates.ts
+    // unreadRest): 20,000 lines are past UNREAD_MAX, so what the rest holds is unknown and everything it could touch is
+    // withheld. The generator's own visits stay under its cap.
+    expect(capped.stats.overBudget).toBe(false);
+    expect(capped.cutAll, "the unread rest is past its bound").toBe(true);
     const visited = collectCandidates(model, "form", { max: 20_000, now: 3000 });
     expect(visited.stats.overBudget).toBe(true);
     expect(visited.candidates).toHaveLength(MAX_GENERATOR_VISITS - 1);

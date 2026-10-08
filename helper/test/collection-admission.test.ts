@@ -8,6 +8,7 @@ import { proposeFill, valueSettlementOf, type FillScope } from "../src/fill/fill
 import { sealRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
+import { sendable } from "../src/privacy/send.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, node, snap, text } from "./builders.ts";
 import { associationKey, collectCandidates } from "../src/fill/candidates.ts";
@@ -163,6 +164,27 @@ describe("collection order, associations, one membership, kept ranges", () => {
     const f = p.fields.find((x) => x.key === key("Locker"))!;
     expect(f.value, "L01 is not the only locker the note shows").toBeNull();
     expect(f.withheld).toBe("sourceCut");
+  });
+
+  it("reads the cap's unread rest whether or not it holds a value: a prose line saying not to use L01 withholds Locker", async () => {
+    const tail = "Do not use L01 for the locker field; it is obsolete and no longer assigned to this account. Leave the locker blank.";
+    const m = new ScreenModel();
+    m.apply(snap([...Array.from({ length: 80 }, (_, i) => text(`n${i}`, `Locker: L${String(i + 1).padStart(2, "0")}`)), text("restriction", tail)], { at: 1000, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("Locker"), "", { label: "Locker", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [new Set(["locker"])] });
+    expect(c.candidates).toHaveLength(80);
+    expect([...c.cutTerms]).toEqual(expect.arrayContaining(["locker", "obsolete"]));
+    const p = await proposeFill(m, picking({ Locker: "L01" }), FORM, key("Locker"), 3000);
+    expect(p.fields.find((x) => x.key === key("Locker"))?.value).toBeNull();
+  });
+
+  it("counts the work of reading duplicates: 5,000 copies of 'Locker: L01' after the cap run past the bound, and all is withheld", () => {
+    const m = new ScreenModel();
+    m.apply(snap([...Array.from({ length: 80 }, (_, i) => text(`n${i}`, `Locker: L${String(i + 1).padStart(2, "0")}`)), ...Array.from({ length: 5000 }, (_, i) => text(`dup${i}`, "Locker: L01"))], { at: 1000, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("Locker"), "", { label: "Locker", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [new Set(["locker"])] });
+    expect(c.candidates).toHaveLength(80);
+    expect(c.cutAll, "what the unread rest may hold is not known").toBe(true);
   });
 
   it("does not count a second 'Date: 2026-10-08' as left out: the same value under the same label is offered", async () => {
@@ -321,6 +343,29 @@ describe("one admission path for every value settlement request", () => {
     const p = await proposeFill(m, sealingPicker(url, { seen }), FORM, key("Website"), 3000, { scope: scoped("Website"), whose: false });
     expect(seen.filter((r) => r.refused !== undefined)).toEqual([]);
     expect(p.fields.find((x) => x.key === key("Website"))?.withheld, "as the base's two wordings left it").toBe("disagree");
+  });
+
+  it("settles a menu option chosen from a note's value: 'Texas' for 'State: TX', charged TX where the note shows it", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("n", "State: TX")], { at: 1000, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("State"), "", { label: "State", role: "AXPopUpButton", frame: [100, 40, 300, 24] }), node("texas", "AXMenuItem", { parent: key("State"), label: "Texas" }), node("ca", "AXMenuItem", { parent: key("State"), label: "California" })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    let asked = 0;
+    // The base's second wording answers none; settlement's both choose Texas; the verifier calls it exact.
+    const ask: AskJev = async (req) => {
+      sendable(sealRequest(req).sealed);
+      const answers: Record<string, { choice: string; confidence: number }> = {};
+      for (const [id, q] of Object.entries(req.questions)) {
+        const settling = Object.values(q.criteria).some((d) => d?.startsWith("Proposed value:"));
+        const hit = Object.entries(q.criteria).find(([, d]) => d?.startsWith('"Texas"') || d?.startsWith('Proposed value: "Texas"'))?.[0];
+        answers[id] = { choice: req.purpose === "fill.verify" ? "exact" : settling ? (hit ?? "none") : asked === 1 ? "none" : (hit ?? "none"), confidence: 0.99 };
+      }
+      asked++;
+      return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+    };
+    setTestVerifier(ask);
+    const p = await proposeFill(m, ask, FORM, key("State"), 3000, { scope: scoped("State"), whose: false }).finally(() => setTestVerifier(STAND_IN));
+    const f = p.fields.find((x) => x.key === key("State"));
+    expect(f?.value ?? f?.handoff?.value, "settled as a choice made from TX (Disclosure.chosen)").toBe("Texas");
   });
 
   it("does not offer a value for clarification whose settlement request cannot be sent: 'necessarily' in its task", async () => {

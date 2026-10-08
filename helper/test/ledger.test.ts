@@ -594,6 +594,22 @@ describe("a unique place, and a window's strictest limit", () => {
     expect(() => send(said[1]!), "the page's 29 count toward the mail's limit").toThrow(/with the requests sent before it, it reveals 58 characters of window tab\S*, over its limit of 30/u);
   });
 
+  it("holds a promoted conversation's union to its limit on a request that charges it nothing new", () => {
+    const m = new ScreenModel();
+    const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+    const a = "abcdefghijklmnopqrstuvwxyzABC";
+    const b = "0123456789zyxwvutsrqponmlkjih";
+    m.apply(snap([text("a", a), text("b", b)], { at: 1, windowId: "tab", title: "Tab", app: chrome }));
+    const d = new Disclosure(m);
+    const view = redactWindow(m.windows.get("tab") as WindowState);
+    const said = d.candidate(view, `${a}\n${b}`)!;
+    const send = (t: string): void => void sendable(seal({ req: { purpose: "route.task", disclosure: d }, wire: { state: { offer: { found: t } }, questions: {} } }));
+    send(said);
+    // The tab shows a mail: a conversation now, at a limit of 30, with 58 of it already sent.
+    m.apply(snap([text("h", "From: Dana"), text("s", "Subject: booking"), text("a", a), text("b", b)], { at: 2, windowId: "tab", title: "Tab", app: chrome }));
+    expect(() => send(d.own("nothing at all")), "the union is over the limit whatever this request adds").toThrow(/with the requests sent before it, it reveals 58 characters of window tab\S*, over its limit of 30/u);
+  });
+
   it("keeps a tab that became a mail a conversation after it closes: 59 is refused at send against 41, not taken against 1200", () => {
     const m = new ScreenModel();
     const body = ["see you at five tomorrow", "and the venue holds the date for us"];

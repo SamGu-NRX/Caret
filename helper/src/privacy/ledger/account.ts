@@ -299,8 +299,10 @@ export class OperationLedger {
       const s = split.find((x) => x.key === w.key);
       if (s !== undefined) grown("notes", w.windowId, sourceKeys(w.inv, s.notes));
     }
+    // A conversation's union is checked whether or not this request adds to it: one promoted since its positions were
+    // sent (a tab that now shows a mail) is over its limit already, and the request would add to the operation.
     for (const w of windows) {
-      const u = next.union.get(w.windowId);
+      const u = next.union.get(w.windowId) ?? this.union.get(w.windowId);
       if (u !== undefined && w.conversation && u.size > w.limit) return { key: w.key, charged: u.size, limit: w.limit, notes: false };
       const n = next.notes.get(w.windowId);
       if (n !== undefined && split.some((x) => x.key === w.key) && n.size > allotment) return { key: w.key, charged: n.size, limit: allotment, notes: true };

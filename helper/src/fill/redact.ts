@@ -207,6 +207,9 @@ export const SECTION_BOUNDARY_ROLES: ReadonlySet<string> = new Set(["AXGroup", "
  * snapshot to the next while what labels it changes.
  */
 export function redactWindow(w: WindowState): WindowState {
+  // A view is already the window as fill may read it: redacted again, it is itself, its class (builtFromConversation)
+  // and its identity kept. Rebuilt from a view, a mail whose Subject redaction removed was classified as a page.
+  if (REDACTED.has(w)) return w;
   const hit = views.get(w);
   if (hit !== undefined && hit.at === w.updatedAt) return hit.view;
   const view = build(w);
