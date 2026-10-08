@@ -1,6 +1,6 @@
 import { assertNoExcludedValue } from "../../privacy.ts";
-import { UnmintedText, verifySent } from "../../privacy/disclosure.ts";
-import { sealedBody, type Outbound } from "../../privacy/send.ts";
+import { UnmintedText } from "../../privacy/disclosure.ts";
+import { seal, sealedBody, type Sealed } from "../../privacy/send.ts";
 // A decision engine on this Mac: an open instruct model in llama-server (llama.cpp), J1 part B.
 //
 // Each request becomes one prompt prefix, the state and every option once with a label, and then one short question
@@ -11,7 +11,7 @@ import { sealedBody, type Outbound } from "../../privacy/send.ts";
 // digit by digit, since the tokenizers of the models screened here split numbers into digits.
 //
 // A yes/no question is a choice of two labels, A for yes and B for no; its answer is the probability of A.
-import { wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
+import { frozenRequest, wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
 import type { DecideEngine } from "./port.ts";
 
 export interface LlamaOptions {
@@ -109,10 +109,11 @@ class LlamaUnavailable extends Error {
 export function llamaEngine(opts: LlamaOptions): DecideEngine {
   const f = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 300_000;
-  const post = async (path: string, body: unknown, out: Outbound): Promise<Record<string, unknown>> => {
+  const post = async (path: string, body: unknown, out: Sealed): Promise<Record<string, unknown>> => {
     let res: Response;
     try {
-      res = await f(`${opts.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: sealedBody(out, body), signal: AbortSignal.timeout(timeoutMs) });
+      // Rendered from the sealed copy (answer reads only frozenRequest's), checked as it leaves.
+      res = await f(`${opts.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: sealedBody(out, () => body), signal: AbortSignal.timeout(timeoutMs) });
     } catch (e) {
       // A request the boundary refused is that refusal, not an engine that did not answer.
       if (e instanceof UnmintedText) throw e;
@@ -122,14 +123,14 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
     return (await res.json()) as Record<string, unknown>;
   };
 
-  const frame = async (content: string, out: Outbound): Promise<string> => {
+  const frame = async (content: string, out: Sealed): Promise<string> => {
     if (opts.prompt === "document") return `${SYSTEM}\n\n${content}\nAnswer:`;
     const r = await post("/apply-template", { messages: [{ role: "system", content: SYSTEM }, { role: "user", content }], ...(opts.templateKwargs === undefined ? {} : { chat_template_kwargs: opts.templateKwargs }) }, out);
     if (typeof r.prompt !== "string") throw new LlamaUnavailable("llama-server /apply-template returned no prompt");
     return r.prompt;
   };
 
-  const complete = async (prompt: string, allowed: readonly string[], out: Outbound): Promise<Completion> => {
+  const complete = async (prompt: string, allowed: readonly string[], out: Sealed): Promise<Completion> => {
     // Temperature below 0 is greedy, and the probabilities are then the plain softmax of the logits over the whole
     // vocabulary (llama-server README, n_probs), which is what the labels' split is read from.
     const r = await post("/completion", { prompt, n_predict: 1, n_probs: N_PROBS, temperature: -1, cache_prompt: true, grammar: gbnf(allowed) }, out);
@@ -149,7 +150,7 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
    * normalized over the labels (review: renormalizing per position counted a forced digit as certain, and read a yes of
    * 0.5 against a no of 0.001 as 0.998).
    */
-  const split = async (prompt: string, labels: readonly string[], out: Outbound): Promise<{ p: Map<string, number>; evaluated: number }> => {
+  const split = async (prompt: string, labels: readonly string[], out: Sealed): Promise<{ p: Map<string, number>; evaluated: number }> => {
     const width = labels[0]?.length ?? 1;
     let evaluated = 0;
     const raw = new Map<string, number>();
@@ -177,10 +178,10 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   };
 
   let queue: Promise<unknown> = Promise.resolve();
-  const answer = async (req: JevRequest): Promise<JevResult> => {
+  const answer = async (out: Sealed, req: JevRequest): Promise<JevResult> => {
     const t0 = performance.now();
-    // Every call this request makes to llama-server, when it is dequeued and each one after, is checked as it leaves.
-    const out: Outbound = { req, wire: wireBody(req, opts.model) };
+    // `req` is the sealed copy read back (frozenRequest): every prompt is rendered from it, and every call to llama-server,
+    // when it is dequeued and each one after, is checked as it leaves.
     const { choice, prefix } = layout(req);
     const answers: JevResult["answers"] = {};
     const probabilities: Record<string, Record<string, number>> = {};
@@ -209,14 +210,12 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   // One request at a time: two requests in flight would take turns in llama-server's one slot and push each other's
   // prompt prefix out of its cache, evaluating each prefix again for every question.
   const ask: AskJev = (asked) => {
-    // The request waits in the queue, so what is checked and what is rendered is one copy of it, taken now: a caller
-    // that changes its request afterwards changes nothing that is sent (PV2 review).
-    const copy = <T>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
-    const req: JevRequest = { ...asked, state: copy(asked.state), questions: copy(asked.questions), ...(asked.nouls === undefined ? {} : { nouls: copy(asked.nouls) }) };
-    assertNoExcludedValue(req);
-    // SC1 2b: the local engine refuses unminted text as the Jev client does, so an evaluation fails where a live run would.
-    verifySent(req, wireBody(req, opts.model));
-    const run = queue.then(() => answer(req));
+    // The request waits in the queue, so it is sealed now (privacy/send.ts): one frozen copy, verified, that every prompt
+    // is rendered from; a caller that changes its request afterwards changes nothing that is sent (PV2 review).
+    assertNoExcludedValue(asked);
+    const out = seal({ req: asked, wire: wireBody(asked, opts.model) });
+    const req = frozenRequest(asked, out.wire);
+    const run = queue.then(() => answer(out, req));
     queue = run.catch(() => undefined);
     return run;
   };

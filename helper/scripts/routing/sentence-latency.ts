@@ -77,7 +77,7 @@ const askJev: AskJev = async (req) => {
     routerCalls++;
     const r = await live(req);
     spend += r.costUsd;
-    if (a.dump) appendStore(join(a.out as string, `router-requests${a.label === "" ? "" : `-${a.label}`}.ndjson`), `${JSON.stringify({ at: performance.now(), ...storableRequest(req, { state: req.state, questions: req.questions }), answers: r.answers })}\n`);
+    if (a.dump) appendStore(join(a.out as string, `router-requests${a.label === "" ? "" : `-${a.label}`}.ndjson`), `${JSON.stringify({ at: performance.now(), ...storableRequest(req, (f) => ({ state: f.state, questions: f.questions })), answers: r.answers })}\n`);
     return r;
   }
   // The event card's own questions: attend yes. Anything else: the first option.

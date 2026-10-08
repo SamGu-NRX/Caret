@@ -18,7 +18,9 @@
 // Fixture text only: every set runs on fixture pages, notes and memory, and GW1's guard refuses anything else.
 import { writeStore, appendStore } from "../src/privacy/send.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { createInterface } from "node:readline";
+import { withholdValues } from "../src/privacy/exclude.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,7 +146,22 @@ const writeAtomic = (file: string, body: string): void => {
   writeStore(tmp, body);
   renameSync(tmp, file);
 };
-const log = (line: string): void => void process.stdout.write(`${new Date().toISOString()} ${line}\n`);
+/**
+ * The runner's own log, DIR/runner.log, written here through writeStore's append (formats withheld), never by a shell
+ * redirect (PV2: every eval store goes through privacy/send.ts). Also echoed to stdout, withheld the same way.
+ */
+const log = (line: string): void => {
+  const text = `${new Date().toISOString()} ${line}\n`;
+  appendStore(join(DIR, "runner.log"), text);
+  process.stdout.write(withholdValues(text));
+};
+// An error the runner did not catch is logged the same way, never printed raw to a file a shell keeps.
+for (const ev of ["uncaughtException", "unhandledRejection"] as const) {
+  process.on(ev, (e: unknown) => {
+    log(`stopped on an uncaught error: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
+    process.exit(1);
+  });
+}
 const readEvents = (file: string): SlowEvent[] => {
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as SlowEvent);
@@ -203,7 +220,7 @@ function runPass(set: EvalSet, pass: number, heavy: boolean): PassHandle {
   const def = set as SetDef;
   const out = passDir(set, pass);
   mkdirSync(out, { recursive: true });
-  const fd = openSync(join(setDir(set), `pass-${pass}.log`), "a");
+  const passLog = join(setDir(set), `pass-${pass}.log`);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     CARET_ENV_FILE: ENV_FILE,
@@ -213,8 +230,9 @@ function runPass(set: EvalSet, pass: number, heavy: boolean): PassHandle {
     CARET_SLOW_EVAL_PACE_MS: String(PACE_MS),
     ...(heavy ? { CARET_HEAVY_LOCK_HELD: "1" } : {}),
   };
-  const child = spawn(process.execPath, def.argv(out), { cwd: def.cwd, env, stdio: ["ignore", fd, fd] });
-  closeSync(fd);
+  // The pass's output goes to its log line by line through appendStore (formats withheld), never straight to a file.
+  const child = spawn(process.execPath, def.argv(out), { cwd: def.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  for (const stream of [child.stdout, child.stderr]) if (stream !== null) createInterface({ input: stream, crlfDelay: Infinity }).on("line", (l) => appendStore(passLog, `${l}\n`));
   log(`${set.id} pass ${pass}: pid ${child.pid}${heavy ? " (heavy lease held)" : ""}`);
   const done = new Promise<{ code: number | null; signal: string | null }>((r) => child.once("exit", (code, signal) => r({ code, signal })));
   let killed = false;

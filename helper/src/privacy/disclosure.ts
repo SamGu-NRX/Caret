@@ -4,7 +4,7 @@
 // disappears at runtime, so the check that holds is `verify`, run on the body where each request is sent (the Jev
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
-import { assertNoExcludedValue, cut, flat, SnippetLedger, type Snippet } from "../privacy.ts";
+import { assertNoExcludedValue, cut, flat, fold, SnippetLedger, type Snippet, type Span } from "../privacy.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
@@ -212,12 +212,20 @@ export class Basis {
   readonly text: string;
   /** The redacted view the text was read from, whose window a derivation from it is charged to. */
   readonly view: WindowState | null;
-  constructor(token: symbol, of: object, text: string, view: WindowState | null = null) {
+  /** Where each piece of the text stands in its window's lines, located once when the basis was cut (Disclosure.basis). */
+  readonly pieces: readonly { text: string; line: string; at: number }[];
+  constructor(token: symbol, of: object, text: string, view: WindowState | null = null, pieces: readonly { text: string; line: string; at: number }[] = []) {
     if (token !== BASIS_TOKEN) throw new UnmintedText("a Basis comes only from Disclosure.basis");
     this.of = of;
     this.text = text;
     this.view = view;
+    this.pieces = pieces;
   }
+}
+
+/** A text's words, case-folded, with where each stands in it. */
+function wordsOf(t: string): { w: string; at: number; end: number }[] {
+  return [...t.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ w: fold(m[0]), at: m.index, end: m.index + m[0].length }));
 }
 
 /**
@@ -247,6 +255,11 @@ export class Disclosure extends SnippetLedger {
    * candidate in every way of minting it.
    */
   private readonly ways = new Map<string, MintReason[][]>();
+  /**
+   * The stretches of window lines each minted text reveals (PV2, the span model): a text cut from a view carries where
+   * it was located, a composed or derived one the union of what its parts reveal. Text with none is not window text.
+   */
+  private readonly spansOf = new Map<string, Span[]>();
   /** Texts jsonText wrote: verify parses each and checks the strings it holds against the shape. */
   private readonly asJson = new Set<string>();
   /** Texts plan() or memory() already priced, so minting them again declares nothing twice. */
@@ -305,11 +318,7 @@ export class Disclosure extends SnippetLedger {
    * window, a plan or memory. The model withheld such values when windows were read in; this holds for any other path.
    */
   override take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
-    if (texts.some((t) => excludedValue(t) !== null) || !super.take(w, kind, texts)) return false;
-    let set = this.asTaken.get(w.window.windowId);
-    if (set === undefined) this.asTaken.set(w.window.windowId, (set = new Set()));
-    for (const t of texts) if (typeof t === "string") set.add(t);
-    return true;
+    return this.cutFrom(w, kind, texts, "");
   }
 
   override cost(w: WindowState, texts: readonly (string | null | undefined)[]): number | null {
@@ -343,8 +352,47 @@ export class Disclosure extends SnippetLedger {
   private fromView(view: RedactedWindow, text: string, reason: "descriptor" | "candidate" | "held"): ModelText | null {
     if (!isRedacted(view)) throw new UnmintedText(`a ${reason} was read from a window that is not a redacted view`);
     if (text === "" || !viewHolds(view, text)) return null;
-    if (this.asTaken.get(view.window.windowId)?.has(text) !== true && !this.take(view, reason === "descriptor" ? "descriptor" : "candidate", [text])) return null;
+    if (!this.cutFrom(view, reason === "descriptor" ? "descriptor" : "candidate", [text], text)) return null;
     return this.record(text, [reason]);
+  }
+
+  /**
+   * Cuts texts from a view: located and charged (SnippetLedger.takeLocated), unless this request took them already, and
+   * the stretches they reveal recorded under `as`. False when they cannot be located or will not fit.
+   */
+  private cutFrom(view: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[], as: string): boolean {
+    const set = this.asTaken.get(view.window.windowId);
+    const fresh = texts.filter((t): t is string => typeof t === "string" && t !== "" && set?.has(t) !== true);
+    if (fresh.some((t) => excludedValue(t) !== null)) return false;
+    if (fresh.length > 0) {
+      const spans = this.takeLocated(view, kind, fresh);
+      if (spans === null) return false;
+      let s = this.asTaken.get(view.window.windowId);
+      if (s === undefined) this.asTaken.set(view.window.windowId, (s = new Set()));
+      for (const t of fresh) {
+        s.add(t);
+        this.addSpans(t, spans);
+      }
+    }
+    if (as !== "") this.addSpans(as, texts.flatMap((t) => (typeof t === "string" ? (this.spansOf.get(t) ?? []) : [])));
+    return true;
+  }
+
+  private addSpans(text: string, spans: readonly Span[]): void {
+    if (spans.length === 0) return;
+    const had = this.spansOf.get(text) ?? [];
+    const keys = new Set(had.map((x) => `${x.windowId}\u0000${x.line}\u0000${x.at}\u0000${x.len}`));
+    const out = [...had];
+    for (const x of spans) {
+      const k = `${x.windowId}\u0000${x.line}\u0000${x.at}\u0000${x.len}`;
+      if (!keys.has(k)) (keys.add(k), out.push(x));
+    }
+    this.spansOf.set(text, out);
+  }
+
+  /** The stretches of window lines a minted text reveals (empty for Caret's own wording and for text no window shows). */
+  spansOfText(text: string): readonly Span[] {
+    return this.spansOf.get(text) ?? [];
   }
 
   /**
@@ -357,8 +405,10 @@ export class Disclosure extends SnippetLedger {
     if (view.nodes.get(node.key) === undefined) return null;
     const own = describeField(view, node);
     if (own.text !== fd.text) return null;
-    for (const t of [fd.label, fd.nearest, fd.placeholder, fd.section]) if (t !== null && !viewHolds(view, t)) return null;
-    if (this.asTaken.get(view.window.windowId)?.has(fd.text) !== true && !this.take(view, "descriptor", [fd.text])) return null;
+    const parts = [fd.label, fd.nearest, fd.placeholder, fd.section].filter((t): t is string => t !== null);
+    for (const t of parts) if (!viewHolds(view, t)) return null;
+    // Its window texts are cut one by one, each located; Caret's words around them reveal nothing.
+    if (!this.cutFrom(view, "descriptor", parts, fd.text)) return null;
     return this.record(fd.text, ["descriptor"]);
   }
 
@@ -459,7 +509,20 @@ export class Disclosure extends SnippetLedger {
   /** The app a window belongs to, by the name the reader gives it: not screen text the window shows, but a descriptor of it. */
   app(view: RedactedWindow): ModelText {
     if (!isRedacted(view)) throw new UnmintedText("an app name was read from a window that is not a redacted view");
-    return this.record(view.app.name, ["descriptor"]);
+    return this.appText(view.app.name);
+  }
+
+  /**
+   * An app's name, minted once per request: reader metadata, but a window may show it too (a title, a line), and then
+   * sending it reveals that (takeShown charges every window that shows it). When that will not fit, the app is named in
+   * Caret's words instead, "an app".
+   */
+  private appText(name: string): ModelText {
+    if (this.mints.has(name) && (this.ways.get(name) ?? []).some((w) => w.includes("descriptor"))) return name as ModelText;
+    const spans = this.takeShown(name);
+    if (spans === null) return this.own("an app");
+    this.addSpans(name, spans);
+    return this.record(name, ["descriptor"]);
   }
 
   /** The user's instruction as a model may read it (fill/redact.ts instructionForModel): its secret clauses replaced. */
@@ -531,14 +594,47 @@ export class Disclosure extends SnippetLedger {
     const ws = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "");
     if (ws.length === 0 && text.trim() !== "") return null;
     for (const w of ws) if (!shown.has(w) && !/^\d+(?:st|nd|rd|th|am|pm|h)?$/u.test(w) && !DERIVED_WORDS.has(w)) return null;
-    // A basis was never priced, so what the derivation shows of its window is taken from that window here, by the
-    // ledger's one span rule (SnippetLedger.takeDerived): every run of it that stands where the basis stands in a line,
-    // each repeat at another occurrence, a prose line's share counting all of them. A word the basis does not show is
-    // code's. A template's own words go in by t`` around the derivation, never through it.
+    // A basis was located when it was cut but never charged: what the derivation reveals of it is charged here, read
+    // off the basis's located pieces, never searched for in the window (PV2: pricing never searches text). Each run of
+    // the text's words that a basis piece shows as consecutive words (case aside) is the stretch of that piece's line
+    // from the run's first word to its last; a repeated run takes another occurrence each time, as many as there are.
+    // A word no basis shows is code's (a calendar word, a number, one of codeWords) and reveals nothing.
+    const out = wordsOf(text);
+    const spans: Span[] = [];
     for (const b of bases) {
       if (!(b instanceof Basis) || b.view === null) continue;
-      if (!this.takeDerived(b.view, b.text, text)) return null;
+      const pieces = b.pieces.map((p) => ({ ...p, words: wordsOf(p.text) }));
+      const used = new Set<string>();
+      for (let i = 0; i < out.length; ) {
+        let best: { key: string; span: Span; k: number } | null = null;
+        for (const p of pieces) {
+          for (let st = 0; st < p.words.length; st++) {
+            const key = `${p.line}\u0000${p.at}\u0000${st}`;
+            if (used.has(key)) continue;
+            let k = 0;
+            while (i + k < out.length && st + k < p.words.length && (out[i + k] as { w: string }).w === (p.words[st + k] as { w: string }).w) k++;
+            if (k === 0 || (best !== null && k <= best.k)) continue;
+            const first = p.words[st] as { at: number };
+            const last = p.words[st + k - 1] as { end: number };
+            best = { key, k, span: { windowId: b.view.window.windowId, line: p.line, at: p.at + first.at, len: last.end - first.at } };
+          }
+        }
+        if (best === null) {
+          i++;
+          continue;
+        }
+        used.add(best.key);
+        spans.push(best.span);
+        i += best.k;
+      }
     }
+    const byWindow = new Map<string, Span[]>();
+    for (const x of spans) byWindow.set(x.windowId, [...(byWindow.get(x.windowId) ?? []), x]);
+    for (const [wid, xs] of byWindow) {
+      const w = bases.find((b): b is Basis => b instanceof Basis && b.view?.window.windowId === wid)?.view;
+      if (w === undefined || w === null || !this.takeSpans(w, xs, text)) return null;
+    }
+    this.addSpans(text, [...spans, ...minted.flatMap((m) => this.spansOf.get(m) ?? [])]);
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }
 
@@ -549,7 +645,20 @@ export class Disclosure extends SnippetLedger {
    */
   basis(view: RedactedWindow, text: string): Basis | null {
     if (!isRedacted(view)) throw new UnmintedText("a basis was read from a window that is not a redacted view");
-    return viewHolds(view, text) ? new Basis(BASIS_TOKEN, this, text, view) : null;
+    if (!viewHolds(view, text)) return null;
+    // Located once, here: each piece (a line of it, or a stretch between a cut's ellipses) as one stretch of one line of
+    // its window. A piece that is not one stretch of one line is no basis: null, never a guess (PV2).
+    const pieces: { text: string; line: string; at: number }[] = [];
+    for (const raw of text.split("\n")) {
+      for (const seg of raw.split("…")) {
+        const piece = flat(seg);
+        if (piece === "") continue;
+        const where = this.locate(view, piece)?.find((u) => u.windowId === view.window.windowId)?.alts.find((a) => a.len === piece.length);
+        if (where === undefined) return null;
+        pieces.push({ text: where.line.slice(where.at, where.at + where.len), line: where.line, at: where.at });
+      }
+    }
+    return pieces.length === 0 ? null : new Basis(BASIS_TOKEN, this, text, view, pieces);
   }
 
   /**
@@ -557,7 +666,7 @@ export class Disclosure extends SnippetLedger {
    * reader metadata that describes a window, not text the window shows.
    */
   appNamed(name: string): ModelText | null {
-    for (const w of this.known.values()) if (w.app.name === name) return this.record(name, ["descriptor"]);
+    for (const w of this.known.values()) if (w.app.name === name) return this.appText(name);
     return null;
   }
 
@@ -583,21 +692,25 @@ export class Disclosure extends SnippetLedger {
       if (typeof h !== "string") throw new UnmintedText("t: a hole is not text");
       out += h + (strings[i + 1] ?? "");
     });
+    this.addSpans(out, holes.flatMap((h) => this.spansOf.get(h) ?? []));
     return this.recordWays(out, this.composedWays(holes, "t", strings.some((s) => s !== "")));
   }
 
   /** A minted text cut to `max` characters with an ellipsis (privacy.ts cut); it keeps its reasons. */
   cut(s: ModelText, max?: number): ModelText {
+    this.addSpans(cut(s, max), this.spansOf.get(s) ?? []);
     return this.recordWays(cut(s, max), this.composedWays([s], "cut", false));
   }
 
   /** A minted text's first `max` characters, with no ellipsis (String.slice); it keeps its reasons. */
   slice(s: ModelText, max: number): ModelText {
+    this.addSpans(s.slice(0, max), this.spansOf.get(s) ?? []);
     return this.recordWays(s.slice(0, max), this.composedWays([s], "slice", false));
   }
 
   /** A minted text with its whitespace collapsed (privacy.ts flat); it keeps its reasons. */
   flat(s: ModelText): ModelText {
+    this.addSpans(flat(s), this.spansOf.get(s) ?? []);
     return this.recordWays(flat(s), this.composedWays([s], "flat", false));
   }
 
@@ -610,6 +723,7 @@ export class Disclosure extends SnippetLedger {
   join(parts: readonly ModelText[], sep: ModelText): ModelText;
   join(parts: readonly ModelText[], sep: string): ModelText {
     const text = parts.join(sep);
+    this.addSpans(text, [...parts, sep].flatMap((p) => this.spansOf.get(p) ?? []));
     if (parts.length < 2 || sep === "") return this.recordWays(text, this.composedWays(parts, "join", false));
     if (SEPARATORS.has(sep)) return this.recordWays(text, this.composedWays(parts, "join", true));
     if (this.mints.has(sep)) return this.recordWays(text, this.composedWays([...parts, sep], "join", false));

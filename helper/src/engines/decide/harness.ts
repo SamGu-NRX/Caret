@@ -8,12 +8,12 @@
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
 import { assertNoExcludedValue } from "../../privacy.ts";
 import { verifySent } from "../../privacy/disclosure.ts";
-import { storedLine } from "../../privacy/send.ts";
+import { seal, storedLine } from "../../privacy/send.ts";
 import { withholdValues } from "../../privacy/exclude.ts";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { HOIST_SHARED_OPTIONS, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
+import { frozenRequest, HOIST_SHARED_OPTIONS, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
 import { DailySpend } from "./daily-cap.ts";
 import { cachedAsk, cacheFromEnv, canonicalRequest, checkFixture, refuseShipped, type FixtureSources } from "./cache.ts";
 import { DEFAULT_PACE_MS, DISK_FLOOR_GIB, fileFailures, fileLog, filePace, HOLD_FILE, PACE_FILE, REAL_CLOCK, runStop, slowAsk, terminateSelf } from "./slow.ts";
@@ -158,18 +158,19 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
       checkFixture(req, o.fixture);
       // PV2 Q2: written only as it is checked at the write, as the client checks what it sends, with values in formats
       // Caret never carries withheld (privacy/send.ts storedLine).
-      const wire = { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } };
-      const out = { req, wire };
+      // Sealed once: the engine is asked, and the log written, from this frozen copy only.
+      const sealed = seal({ req, wire: { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } } });
+      const asked = frozenRequest(req, sealed.wire);
       const t0 = performance.now();
       let r: Awaited<ReturnType<AskJev>>;
       try {
-        r = await inner(req);
+        r = await inner(asked);
       } catch (e) {
         // A failed request is logged with its error, which the eval's report shows only as the user's sentence.
-        appendFileSync(log, storedLine(out, { body: wire, chars: JSON.stringify(wire).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 }), { mode: 0o600 });
+        appendFileSync(log, storedLine(sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 })), { mode: 0o600 });
         throw e;
       }
-      appendFileSync(log, storedLine(out, { body: wire, chars: JSON.stringify(wire).length, sharedChars: JSON.stringify(wireBody(req, engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens }), { mode: 0o600 });
+      appendFileSync(log, storedLine(sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(asked, engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })), { mode: 0o600 });
       return r;
     };
   }

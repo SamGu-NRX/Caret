@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
 import { storable, UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
-import { sealedBody } from "../privacy/send.ts";
+import { frozenRequest, seal, sealedBody, type Sealed } from "../privacy/send.ts";
 import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
@@ -289,9 +289,13 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
  * wire body verifies as the client's would, with every value in a format Caret never carries withheld (privacy/
  * disclosure.ts storable). A replayed request that never reaches the client is checked here the same way.
  */
-export function storableRequest<T>(req: JevRequest, kept: T): T {
-  return storable(req, wireBody(req), kept);
+export { frozenRequest };
+
+export function storableRequest<T>(req: JevRequest, build: (frozen: JevRequest) => T): T {
+  const sealed = seal({ req, wire: wireBody(req) });
+  return storable(req, sealed.wire, build(frozenRequest(req, sealed.wire)));
 }
+
 
 /** Whether a minted value is a record of them (an array is not: Array.isArray does not narrow a readonly array). */
 function isRecord(v: ModelValue | undefined): v is { readonly [k: string]: ModelValue } {
@@ -343,7 +347,9 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
     if (route.provider === "gateway") {
       wire.providerOptions = { gateway: { only: [checkGatewayModel(route.model)] } };
     }
-    const hold = spend.reserve(DailySpend.estimateUsd(JSON.stringify(wire).length, JEV_USD_PER_INPUT_TOKEN));
+    // Sealed once: every attempt posts this frozen copy, checked again as it leaves (privacy/send.ts).
+    const sealed = seal({ req, wire });
+    const hold = spend.reserve(DailySpend.estimateUsd(JSON.stringify(sealed.wire).length, JEV_USD_PER_INPUT_TOKEN));
     let settled = false;
     const settle = (costUsd: number, inputTokens: number): void => {
       settled = true;
@@ -351,7 +357,7 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
       onUsage?.({ costUsd, inputTokens });
     };
     try {
-      const result = await post(key, timeoutMs, req, wire, ids, route, fetchFn, settle);
+      const result = await post(key, timeoutMs, req, sealed, ids, route, fetchFn, settle);
       if (!settled) settle(result.costUsd, result.inputTokens);
       return result;
     } catch (e) {
@@ -419,7 +425,7 @@ function gatewayUsage(json: unknown): { inputTokens: number; hasInputTokens: boo
   };
 }
 
-async function post(key: (provider: JevProvider) => string, timeoutMs: number, req: JevRequest, wire: WireBody, ids: string[], settings: JevSettings, fetchFn: typeof fetch, settle: (costUsd: number, inputTokens: number) => void): Promise<JevResult> {
+async function post(key: (provider: JevProvider) => string, timeoutMs: number, req: JevRequest, sealed: Sealed, ids: string[], settings: JevSettings, fetchFn: typeof fetch, settle: (costUsd: number, inputTokens: number) => void): Promise<JevResult> {
   for (let attempt = 0; ; attempt++) {
     if (settings.provider === "gateway") {
       if (settings.model === LAYA_FREE_MODEL) await paceLaya();
@@ -434,7 +440,7 @@ async function post(key: (provider: JevProvider) => string, timeoutMs: number, r
       res = await fetchFn(settings.url, {
         method: "POST",
         headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
-        body: sealedBody({ req, wire }),
+        body: sealedBody(sealed),
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {

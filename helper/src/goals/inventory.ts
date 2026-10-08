@@ -135,11 +135,12 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     const domain = domainOf(w);
     const snapTargets: Minted<PlanningSnapshot>["targets"] = [];
     /**
-     * `shown`: the label as the writer reads it, when it says more than the control's own (a select's choices). `said`
-     * mints it, and with it the binding's own label, which the gates name the target by (gates.ts).
+     * `cut`: the window texts the writer reads the label by (a select's label and its choices), each cut from the view
+     * (PV2: located where it is cut), never the composed label, whose wording is Caret's. `said` mints the label, and
+     * with it the binding's own label, which the gates name the target by (gates.ts).
      */
-    const bind = (b: Omit<TargetBinding, "ref" | "domain">, canFill: boolean, effects: string[], said: () => ModelText | null, shown = b.label): void => {
-      if (!ledger.take(w, "descriptor", [shown])) return;
+    const bind = (b: Omit<TargetBinding, "ref" | "domain">, canFill: boolean, effects: string[], said: () => ModelText | null, cut: readonly string[] = [b.label]): void => {
+      if (!ledger.take(w, "descriptor", cut)) return;
       const label = said();
       if (label === null) return;
       const ref = `t${++t}`;
@@ -162,7 +163,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
           if (name === null || options === null) return name;
           const minted = options.map((x) => d.descriptor(w, x)).filter((x): x is ModelText => x !== null);
           return minted.length !== options.length ? null : d.t`${name} (one of: ${d.join(minted, ", ")})`;
-        }, options === null ? label : `${label} (one of: ${options.join(", ")})`);
+        }, options === null ? [label] : [label, ...options]);
       }
     }
     let buttons = 0;
@@ -230,7 +231,7 @@ function contractOf(w: WindowState, node: Node, form: FormControl | null): { fie
 }
 
 /** Events code reads from a source window's sentences: a resolved time and a person, as an event card would offer. */
-function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventClock, snapshot: string, ledger: Disclosure, nextRef: () => string): { b: ReadValue; display: ModelText }[] {
+export function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventClock, snapshot: string, ledger: Disclosure, nextRef: () => string): { b: ReadValue; display: ModelText }[] {
   w = redactWindow(w);
   const d = ledger;
   const out: { b: ReadValue; display: ModelText }[] = [];

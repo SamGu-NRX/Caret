@@ -6,6 +6,7 @@
 // Exit status: 0 the call was served, 3 the gateway needs a card on file (chat.ts GatewayNeedsCard), 1 anything else.
 import { writeStore } from "../src/privacy/send.ts";
 import { Disclosure } from "../src/privacy/disclosure.ts";
+import { seal } from "../src/privacy/send.ts";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import * as z from "zod";
@@ -33,7 +34,8 @@ else {
   try {
     // The probe's one message is Caret's own wording, a request with no purpose (privacy/shapes.ts UNNAMED).
     const d = new Disclosure([]);
-    const r = await chat(route, readKey(route.keyName), [{ role: "user", content: "Say OK." }], 8, AbortSignal.timeout(20_000), fetch, undefined, { req: { disclosure: d }, wire: { probe: d.own("Say OK.") } });
+    const sealed = seal({ req: { disclosure: d }, wire: { probe: d.own("Say OK.") } });
+    const r = await chat(route, readKey(route.keyName), sealed, (w) => [{ role: "user", content: (w as { probe: string }).probe }], 8, AbortSignal.timeout(20_000));
     lines.push(`call ${model}: served by ${r.servedModel} in ${Math.round(r.latencyMs)} ms, ${r.inputTokens} in / ${r.outputTokens} out tokens`);
     exit = 0;
   } catch (e) {

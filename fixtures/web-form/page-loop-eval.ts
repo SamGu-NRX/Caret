@@ -534,7 +534,7 @@ const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   const r = await decide.ask(req);
   spent += r.costUsd;
-  if (args["log-jev"] !== undefined) appendStore(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: storableRequest(req, Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
+  if (args["log-jev"] !== undefined) appendStore(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: storableRequest(req, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
   calls.push({ page: page?.id ?? "", stage, inputTokens: r.inputTokens, latencyMs: r.latencyMs, costUsd: r.costUsd });
   return r;
 };

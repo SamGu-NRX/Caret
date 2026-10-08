@@ -20,7 +20,7 @@ const builders: Record<string, number> = {
   "planner/intent-makers.ts": 3, "planner/planner.ts": 2, "routing/judge.ts": 3, "tasks/pending.ts": 2,
 };
 // These transform an already checked request, or normalize it for a cache; they never extract window text.
-const transforms: Record<string, number> = { "engines/decide/cache.ts": 2, "engines/decide/harness.ts": 1, "engines/decide/llama.ts": 1, "fill/jev.ts": 4, "privacy/disclosure.ts": 1 };
+const transforms: Record<string, number> = { "engines/decide/cache.ts": 2, "engines/decide/harness.ts": 1, "fill/jev.ts": 4, "privacy/disclosure.ts": 1, "privacy/send.ts": 1 };
 const contributors = ["fill/answers.ts", "goals/inventory.ts", "patterns/skills.ts", "planner/intent.ts", "planner/people.ts", "planner/sources.ts", "planner/targets.ts"];
 
 // Exact raw model lookups are allowed only for local safety/execution, privacy-budget accounting, or an audited redaction boundary.
@@ -81,11 +81,11 @@ const boundaries: Record<string, RegExp[]> = {
   "routing/judge.ts": [/viewOf\(model,/u, /windows.values\(\)\].map\(redactWindow\)/u, /const view = redactWindow\(q.window\)/u, /shown.some\(\(s\) => flat\(s\).includes\(flat\(t\)\)\)/u],
   "offers/event-card.ts": [/windows.values\(\)\].map\(redactWindow\)/u, /function askAttend[\s\S]*?w = redactWindow\(w\)/u, /nodeText\(n\).includes\(sentence\)/u],
   "patterns/skills.ts": [/viewOf\(model, cells\[0\]\?\.dstWindowId/u, /viewOf\(model, c.srcWindowId\)/u, /viewOf\(model, c.dstWindowId\)\?\.nodes.get\(c.dstKey\)\?\.label/u],
-  "writer/port.ts": [/async write\(req\) \{[\s\S]*?assertNoExcludedValue\(req\);\s*\/\/[^\n]*\n\s*verifyWriterInput\(req\)/u],
+  "writer/port.ts": [/async write\(req\) \{[\s\S]*?assertNoExcludedValue\(req\);[\s\S]*?const sealed = seal\(\{ writer: req \}\)/u],
   "writer/local-port.ts": [/assertNoExcludedValue\(\{ input: ask.prompt \}\)/u],
   "writer/local-draft.ts": [/assertNoExcludedValue\(\{ input: ask.prompt \}\)/u],
   "writer/local-model.ts": [/assertNoExcludedValue\(\{ input: \{ prefix: req.prefix, prompt: req.prompt \} \}\)/u],
-  "engines/decide/llama.ts": [/assertNoExcludedValue\(req\)/u],
+  "engines/decide/llama.ts": [/assertNoExcludedValue\(asked\);\s*const out = seal\(/u],
 };
 
 function inspect(sources: Map<string, string>): string[] {

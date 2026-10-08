@@ -222,8 +222,8 @@ for (const u of uniqueUrls.slice(1)) {
 }
 
 check();
-const record = join(sockDir, "reader.ndjson");
-const reader = spawn(join(BIN, "caret-screen"), ["--socket", SOCKET, "--only-pids", `${chromePid},${tePid}`, "--event-pids", `${chromePid},${tePid}`, "--background-interval", "5", "--record", record], { stdio: ["ignore", "ignore", "pipe"] });
+// No --record: the reader would write every snapshot to a file the capture never reads (PV2: no store outside send.ts).
+const reader = spawn(join(BIN, "caret-screen"), ["--socket", SOCKET, "--only-pids", `${chromePid},${tePid}`, "--event-pids", `${chromePid},${tePid}`, "--background-interval", "5"], { stdio: ["ignore", "ignore", "pipe"] });
 started("reader", reader);
 let readerLog = "";
 reader.stderr?.setEncoding("utf8");

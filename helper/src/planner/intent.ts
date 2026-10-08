@@ -211,7 +211,9 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     const kept = w.nodes.get(x.node.key);
     const d = kept === undefined ? { section: null } : describeField(w, kept);
     const name = x.name;
-    if (!ledger.take(w, "descriptor", [x.modelName, d.section])) continue;
+    // Its window texts only: a field the view leaves unnamed is named in Caret's words (UNNAMED_FIELD), which no window
+    // shows and nothing is charged for (PV2: a text is located where it is cut).
+    if (!ledger.take(w, "descriptor", [x.modelName === UNNAMED_FIELD ? null : x.modelName, d.section])) continue;
     if (d.section !== null && !sections.some((s) => s.name === d.section)) sections.push({ ref: `s${sections.length + 1}`, name: d.section });
     const filled = x.control === "text" && (x.node.value ?? "") !== "";
     const h = headings.get(x.node.key) ?? null;

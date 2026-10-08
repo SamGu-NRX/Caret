@@ -81,6 +81,10 @@ describe("the I/O boundary: every POST body and every request store is checked a
     });
   // The fixture harness's own scripts (fixtures/web-form/*.ts) send and store requests; its tests and pages post to the
   // local fixture site, never to a model, and are left out.
+  const shellScripts = (): Map<string, string> => {
+    const dir = join(helperRoot, "scripts");
+    return new Map(readdirSync(dir).filter((f) => f.endsWith(".sh")).map((f) => [`scripts/${f}`, readFileSync(join(dir, f), "utf8")]));
+  };
   const fixtureScripts = (): Map<string, string> => {
     const dir = join(helperRoot, "../fixtures/web-form");
     return new Map(readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith(".ts")).map((e) => [`../fixtures/web-form/${e.name}`, readFileSync(join(dir, e.name), "utf8")]));
@@ -88,11 +92,19 @@ describe("the I/O boundary: every POST body and every request store is checked a
   const all = (): Map<string, string> => new Map([...read(["src", "scripts"]), ...fixtureScripts()]);
 
   /** A text write in an evaluation script (helper/scripts, the fixture harness's eval scripts) that is not writeStore or appendStore. */
+  // Also a file handed to a child as its output (openSync, a file descriptor in stdio), a reader's --record, and a shell
+  // script's redirect to a file (anything but /dev/null).
   const rawScriptWrites = (sources: Map<string, string>): string[] =>
-    [...sources].filter(([file]) => file.startsWith("scripts/") || /fixtures\/web-form\/(?:page-loop-eval|tab-source-journey)\.ts$/u.test(file)).flatMap(([file, src]) => (/\b(?:writeFileSync|appendFileSync|createWriteStream)\(/u.test(src) ? [`${file}: a store that is not writeStore or appendStore`] : []));
+    [...sources].filter(([file]) => file.startsWith("scripts/") || /fixtures\/web-form\/(?:page-loop-eval|tab-source-journey)\.ts$/u.test(file)).flatMap(([file, src]) => {
+      // A redirect may stand only with a "# store: <why>" note on its line saying it keeps no model text.
+      if (file.endsWith(".sh")) return src.split("\n").some((l) => !l.trimStart().startsWith("#") && !/#\s*store:\s*\S/u.test(l) && /(?:^|[^&0-9])>>?\s*(?!\/dev\/null|&)\S/u.test(l.replace(/"[^"]*"/gu, (q) => (q.includes(">") ? "" : q)))) ? [`${file}: a shell redirect to a file`] : [];
+      return /\b(?:writeFileSync|appendFileSync|createWriteStream|openSync)\(|"--record"/u.test(src) ? [`${file}: a store that is not writeStore or appendStore`] : [];
+    });
 
   it("finds every script's text store going through send.ts, so a response is kept with its formats withheld", () => {
-    expect(rawScriptWrites(all())).toEqual([]);
+    expect(rawScriptWrites(new Map([...all(), ...shellScripts()]))).toEqual([]);
+    expect(rawScriptWrites(new Map([["scripts/run.sh", 'node scripts/x.ts >> "$DIR/runner.log" 2>&1 &']]))).toEqual(["scripts/run.sh: a shell redirect to a file"]);
+    expect(rawScriptWrites(new Map([["scripts/run.ts", "const fd = openSync(join(out, 'pass.log'), 'a');"]]))).toEqual(["scripts/run.ts: a store that is not writeStore or appendStore"]);
     expect(rawScriptWrites(new Map([...all(), ["scripts/new-eval.ts", "writeFileSync(join(OUT, 'drafts.json'), JSON.stringify(drafts));"]]))).toEqual(["scripts/new-eval.ts: a store that is not writeStore or appendStore"]);
   });
 

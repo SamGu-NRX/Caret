@@ -186,6 +186,6 @@ const unwanted = replays.reduce((n, r) => n + (r.unwanted as number), 0);
 const summary = { at: new Date().toISOString(), mode: MODE, runs: RUNS, settleMs: SETTLE_MS, shown, wanted: `${wanted}/${replays.length}`, unwanted, routerCalls, spendUsd: Number(spendUsd.toFixed(6)), overCap };
 writeStore(join(OUT, `a5-${MODE}.json`), JSON.stringify({ ...summary, replays }, null, 2) + "\n");
 // PV2 Q2: each captured request is checked as it is written, values in formats Caret never carries withheld (storableRequest).
-if (MODE === "capture") writeStore(join(OUT, "a5-router-requests.json"), JSON.stringify(captured.map(({ request: r, ...at }) => ({ ...at, request: storableRequest(r, { purpose: r.purpose, state: r.state, questions: r.questions, nouls: r.nouls, snippets: r.snippets, charged: r.charged }) })), null, 2) + "\n");
+if (MODE === "capture") writeStore(join(OUT, "a5-router-requests.json"), JSON.stringify(captured.map(({ request: r, ...at }) => ({ ...at, request: storableRequest(r, (f) => ({ purpose: f.purpose, state: f.state, questions: f.questions, nouls: f.nouls, snippets: f.snippets, charged: f.charged })) })), null, 2) + "\n");
 console.log(JSON.stringify(summary));
 process.exit(0);

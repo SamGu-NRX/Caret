@@ -18,7 +18,8 @@
 // the 500 characters an instruction may have (protocol.ts); a slot that may hold screen text allows at least
 // WINDOW_CHARS (privacy.ts, 1,200), what one window may give one request. No live run measured them. A request over
 // one is refused, which fails closed, and the refusal is logged with its purpose, slot and length, never its text
-// (privacy/disclosure.ts setShapeLengthLog), so a live run can measure them. The `seen` comment is that longest.
+// (privacy/disclosure.ts setShapeLengthLog), so a live run can measure them. The `seen` comment is that longest. An app
+// slot also allows Caret's own "an app", which names an app whose name a window shows as a line when that will not fit.
 import type { JevPurpose } from "../fill/jev.ts";
 import type { WriterRequest } from "../writer/port.ts";
 import type { MintReason } from "./disclosure.ts";
@@ -155,7 +156,7 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "input.persons[*].span": { reasons: ["descriptor", "instruction"], max: 1200 }, // seen 7
     "input.sections[*].name": { reasons: ["descriptor"], max: 1200 }, // seen 8
     "input.sections[*].ref": { reasons: ["ownWording"], max: 100 }, // seen 2
-    "input.windows[*].app": { reasons: ["descriptor"], max: 1200 }, // seen 25
+    "input.windows[*].app": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 25
     // The one value from a source window the intent writer gets, by the lead's ruling (PV2, 7 Oct): a window's sender as
     // its redacted view shows it (planner/intent.ts snapMint source), so an Ask like "fill from Priya's mail" can name
     // the window. SC1 2c gives the intent writer descriptors and the instruction only; this row is the exception,
@@ -263,7 +264,7 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
   "route.judge": {
     "questions.*.criteria.*": { reasons: ["candidate", "descriptor", "ownWording"], max: 1200 }, // seen 237
     "questions.*.instructions": { reasons: ["ownWording"], max: 300 }, // seen 106
-    "state.app": { reasons: ["descriptor"], max: 1200 }, // seen 13
+    "state.app": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 13
     "state.field": { reasons: ["ownWording"], max: 100 }, // seen 39
     "state.field.describe": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 33
     "state.form.labels[*]": { reasons: ["descriptor"], max: 1200 }, // seen 12
@@ -274,7 +275,7 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
   "route.pick": {
     "questions.*.criteria.*": { reasons: ["ownWording"], max: 200 }, // seen 79
     "questions.*.instructions": { reasons: ["ownWording"], max: 100 }, // seen 47
-    "state.app": { reasons: ["descriptor"], max: 1200 }, // seen 13
+    "state.app": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 13
     "state.decided": { reasons: ["ownWording"], max: 100 }, // seen 36
     "state.field.describe": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 27
     "state.form.labels[*]": { reasons: ["descriptor"], max: 1200 }, // seen 6
@@ -284,7 +285,7 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
   "route.task": {
     "questions.*.criteria.*": { reasons: ["ownWording"], max: 100 }, // seen 24
     "questions.*.instructions": { reasons: ["ownWording"], max: 800 }, // seen 365
-    "state.app": { reasons: ["descriptor"], max: 1200 }, // seen 13
+    "state.app": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 13
     "state.field.describe": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 27
     "state.offer.found": { reasons: ["candidate", "held", "ownWording"], max: 1200 }, // seen 156
     "state.offer.sentence": { reasons: ["candidate", "ownWording"], max: 1200 }, // seen 34

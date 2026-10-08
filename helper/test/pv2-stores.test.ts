@@ -68,8 +68,8 @@ describe("PV2 Q2: what a store keeps of a request", () => {
 
   it("an evaluation's excerpt is kept only for a request in shape, with its formats withheld", () => {
     const r = withCard();
-    expect(storableRequest(r, { state: r.state })).toEqual({ state: { task: "Order note: card [withheld]" } });
-    expect(() => storableRequest(unminted(), {})).toThrow(UnmintedText);
+    expect(storableRequest(r, (f) => ({ state: f.state }))).toEqual({ state: { task: "Order note: card [withheld]" } });
+    expect(() => storableRequest(unminted(), () => ({}))).toThrow(UnmintedText);
     const d = new Disclosure([]);
     expect(() => storable({ purpose: "route.judge", disclosure: d }, { state: { notes: d.own("x") } }, {})).toThrow(OutOfShape);
   });

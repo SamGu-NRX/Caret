@@ -265,7 +265,7 @@ const askJev: AskJev = async (req) => {
   jevSpent += r.costUsd;
   jevModels.add(r.model);
   requestMs.push(r.latencyMs);
-  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ ask: current, questions: storableRequest(req, qs), answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
+  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ ask: current, questions: storableRequest(req, (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
   return r;
 };
 // Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.

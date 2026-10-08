@@ -13,13 +13,21 @@ import { windowShare } from "../src/privacy.ts";
 import { noteSwitchedOff } from "../src/privacy/read-policy.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { redactWindow } from "../src/fill/redact.ts";
-import { makeJevClient, jevSettings, type AskJev, type JevRequest } from "../src/fill/jev.ts";
+import { makeJevClient, jevSettings, JevHttpError, storableRequest, type AskJev, type ChoiceQuestion, type JevRequest } from "../src/fill/jev.ts";
+import { makeWriterPort, type WriterRequest } from "../src/writer/port.ts";
+import { gatewayRoute } from "../src/writer/routes.ts";
+import { appendStore } from "../src/privacy/send.ts";
+import { minted } from "./minted.ts";
+import { FORM } from "./codemode/fixtures.ts";
 import { DailySpend } from "../src/engines/decide/daily-cap.ts";
 import { llamaEngine } from "../src/engines/decide/llama.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { cachedAsk } from "../src/engines/decide/cache.ts";
+import { eventsIn } from "../src/goals/inventory.ts";
+import { macClock } from "../src/offers/event-time.ts";
 import type { Node, Snapshot } from "../src/protocol.ts";
 import { snap, text } from "./builders.ts";
+import { labelKind } from "../src/memory/sensitive.ts";
 import { rng } from "./large-scene.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "pv2-inv-"));
@@ -28,115 +36,149 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const pick = <T>(r: () => number, xs: readonly T[]): T => xs[Math.floor(r() * xs.length)] as T;
 const words = (s: string): { w: string; at: number }[] => [...s.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ w: m[0], at: m.index }));
 
-describe("invariant: a window's prose share and budget hold whatever path reveals its text", () => {
-  /**
-   * What a set of texts shows of a line, measured on its own: each maximal run of a text's words that stands in the line
-   * (case aside) covers where it stands. The lines' words are all distinct, so a run stands in one place only.
-   */
-  function covered(line: string, texts: readonly string[]): number {
-    const hit = new Uint8Array(line.length);
-    const lower = line.toLowerCase();
-    for (const t of texts) {
-      const ws = words(t);
-      for (let i = 0; i < ws.length; ) {
-        let j = ws.length - 1;
-        let at = -1;
-        for (; j >= i; j--) {
-          const run = t.slice((ws[i] as { at: number }).at, (ws[j] as { at: number; w: string }).at + (ws[j] as { w: string }).w.length).toLowerCase();
-          at = lower.indexOf(run);
-          if (at >= 0 && (at === 0 || !/[\p{L}\p{N}]/u.test(lower[at - 1] as string)) && !/[\p{L}\p{N}]/u.test(lower[at + run.length] ?? " ")) {
-            hit.fill(1, at, at + run.length);
-            break;
-          }
-          at = -1;
-        }
-        i = at < 0 ? i + 1 : j + 1;
-      }
-    }
-    return hit.reduce((n, b) => n + b, 0);
+describe("invariant: pricing never searches text; what a request reveals of a window is exactly what it is charged", () => {
+  /** What the generator knows it revealed, per line: the characters, by offset. */
+  type Truth = Map<string, Set<number>>;
+  const reveal = (truth: Truth, line: string, at: number, len: number): void => {
+    let s = truth.get(line);
+    if (s === undefined) truth.set(line, (s = new Set()));
+    for (let k = at; k < at + len; k++) s.add(k);
+  };
+  /** Truth against the ledger, line by line, and against the window's share. */
+  function agree(d: Disclosure, truth: Truth, w: WindowState, why: string): void {
+    const charged = d.markedLines(w.window.windowId);
+    const lines = new Set([...truth.keys(), ...charged.keys()]);
+    for (const l of lines) expect(charged.get(l) ?? 0, `${why}: line ${JSON.stringify(l.slice(0, 40))}`).toBe(truth.get(l)?.size ?? 0);
+    const share = windowShare(w);
+    const total = [...truth.values()].reduce((n, x) => n + x.size, 0);
+    const prose = [...truth].filter(([l]) => l.length > 80).reduce((n, [, x]) => n + x.size, 0);
+    expect(total, `${why}: window`).toBeLessThanOrEqual(share.budget);
+    if (share.prose !== null) expect(prose, `${why}: prose`).toBeLessThanOrEqual(share.prose);
   }
+  const changeCase = (r: () => number, t: string): string => (r() < 0.3 ? t.toUpperCase() : r() < 0.5 ? t.toLowerCase() : t);
 
-  it.each(Array.from({ length: 40 }, (_, i) => i + 1))("seed %i", (seed) => {
+  it.each(Array.from({ length: 60 }, (_, i) => i + 1))("seed %i: random cuts through every path, and derivations from several bases", (seed) => {
     const r = rng(seed);
     let next = 0;
-    const word = (): string => `${pick(r, ["ka", "lo", "mi", "ne", "su", "ta", "vo", "ri"])}${pick(r, ["ber", "dan", "fel", "gor", "hin", "jun", "kel", "mor"])}${next++}`;
-    const lines = Array.from({ length: 2 + Math.floor(r() * 5) }, () => Array.from({ length: r() < 0.5 ? 2 + Math.floor(r() * 3) : 14 + Math.floor(r() * 8) }, word).join(" "));
+    const word = (): string => `${pick(r, ["Ka", "lo", "Mi", "ne", "su", "Ta", "vo", "ri"])}${pick(r, ["ber", "dan", "fel", "gor", "hin", "jun", "kel", "mor"])}${next++}`;
+    const lineWords = Array.from({ length: 3 + Math.floor(r() * 5) }, () => Array.from({ length: r() < 0.4 ? 2 + Math.floor(r() * 3) : 14 + Math.floor(r() * 8) }, word));
+    const lines = lineWords.map((ws) => ws.join(" "));
+    const fields = Array.from({ length: 2 }, (_, i) => ({ key: `f${i}`, label: `${word()} ${word()}`, placeholder: word() }));
     const m = new ScreenModel();
-    m.apply(snap(lines.map((l, i) => text(`t${i}`, l)), { at: 1000, windowId: "w", title: "Notes" }));
+    m.apply(snap([...lines.map((l, i) => text(`t${i}`, l)), ...fields.map((f) => ({ key: f.key, parent: null, role: "AXTextField", editable: true as const, label: f.label, placeholder: f.placeholder }))], { at: 1000, windowId: "w", title: "Notes" }));
     const w = m.windows.get("w") as WindowState;
     const view = redactWindow(w);
     const d = new Disclosure(m.windows.values());
-    const sent: string[] = [];
-    const span = (min = 1): string => {
-      const ws = words(pick(r, lines)).map((x) => x.w);
+    const truth: Truth = new Map();
+    /** A random stretch of whole words of a random line: its text, its line and where it stands. */
+    const stretch = (min = 1, ws = pick(r, lineWords)): { text: string; line: string; at: number; words: string[] } => {
       const a = Math.floor(r() * ws.length);
-      const b = Math.min(ws.length, a + min + Math.floor(r() * 10));
-      return ws.slice(a, b).join(" ");
+      const b = Math.min(ws.length, a + min + Math.floor(r() * 6));
+      const line = ws.join(" ");
+      const t = ws.slice(a, b).join(" ");
+      return { text: t, line, at: ws.slice(0, a).join(" ").length + (a === 0 ? 0 : 1), words: ws.slice(a, b) };
     };
-    for (let step = 0; step < 60; step++) {
-      const path = pick(r, ["candidate", "descriptor", "held", "derived", "take"] as const);
-      if (path === "derived") {
-        const basis = span(3);
-        const b = d.basis(view, basis);
-        if (b === null) continue;
-        const ws = basis.split(" ");
-        const textOut = r() < 0.3 ? basis : ws.filter(() => r() < 0.6).join(" ");
-        if (textOut === "") continue;
-        const got = d.derived(b, textOut);
-        if (got !== null) sent.push(got);
+    for (let step = 0; step < 50; step++) {
+      const path = pick(r, ["candidate", "descriptor", "held", "take", "basis", "fieldDescriptor"] as const);
+      const why = `seed ${seed} step ${step} (${path})`;
+      if (path === "candidate" || path === "descriptor" || path === "held") {
+        const s0 = stretch();
+        const got = path === "candidate" ? d.candidate(view, s0.text) : path === "descriptor" ? d.descriptor(view, s0.text) : d.held(view, s0.text);
+        if (got !== null) reveal(truth, s0.line, s0.at, s0.text.length);
       } else if (path === "take") {
-        const t = `${span()} ${span()}`;
-        if (d.take(view, "candidate", [t])) sent.push(t);
+        // Two stretches of different lines, joined as a cut might join them: a space, a line break, an ellipsis.
+        const [x, y] = [stretch(), stretch()];
+        if (x.line === y.line) continue;
+        const joined = `${x.text}${pick(r, [" ", "\n", "… "])}${y.text}`;
+        if (d.take(view, "candidate", [joined])) {
+          reveal(truth, x.line, x.at, x.text.length);
+          reveal(truth, y.line, y.at, y.text.length);
+        }
+        // A word no line shows: no cut at all.
+        expect(d.take(view, "candidate", [`${x.text} unseen${step}`]), why).toBe(false);
+      } else if (path === "fieldDescriptor") {
+        const f = pick(r, fields);
+        const node = view.nodes.get(f.key);
+        if (node !== undefined && d.fieldDescriptor(view, node) !== null) {
+          reveal(truth, f.label, 0, f.label.length);
+          reveal(truth, f.placeholder, 0, f.placeholder.length);
+        }
       } else {
-        const t = span();
-        const got = path === "candidate" ? d.candidate(view, t) : path === "descriptor" ? d.descriptor(view, t) : d.held(view, t);
-        if (got !== null) sent.push(got);
+        // One to three bases from different lines, each written with its case changed, its spaces doubled, or cut with an
+        // ellipsis; the derivation repeats a run of each, its case changed again, its spaces collapsed.
+        const bases = [...new Set(Array.from({ length: 1 + Math.floor(r() * 3) }, () => pick(r, lineWords)))].map((ws) => stretch(2, ws));
+        const written = bases.map((b) => {
+          const t = changeCase(r, b.text);
+          return r() < 0.3 ? t.split(" ").join("  ") : r() < 0.5 ? `${t}…` : t;
+        });
+        const minted = written.map((t) => d.basis(view, t));
+        if (minted.some((x) => x === null)) continue;
+        const runs = bases.map((b) => {
+          const a = Math.floor(r() * b.words.length);
+          const n = 1 + Math.floor(r() * (b.words.length - a));
+          return { b, a, words: b.words.slice(a, a + n) };
+        });
+        const out = runs.map((x) => changeCase(r, x.words.join(r() < 0.3 ? "   " : " "))).join(" ");
+        const got = d.derived(minted as never, out);
+        if (got !== null) for (const x of runs) {
+          const at = x.b.at + x.b.words.slice(0, x.a).join(" ").length + (x.a === 0 ? 0 : 1);
+          reveal(truth, x.b.line, at, x.words.join(" ").length);
+        }
       }
-      const share = windowShare(w);
-      const prose = lines.filter((l) => l.length > 80).reduce((n, l) => n + covered(l, sent), 0);
-      const all = lines.reduce((n, l) => n + covered(l, sent), 0);
-      if (share.prose !== null) expect(prose, `seed ${seed} step ${step}: prose`).toBeLessThanOrEqual(share.prose);
-      expect(all, `seed ${seed} step ${step}: window`).toBeLessThanOrEqual(share.budget);
+      agree(d, truth, w, why);
     }
   });
 
-  it("charges a repeat at another occurrence each time, and a basis's prefix of a prose line as that line's prose", () => {
-    // Short lines beside the prose give the window a budget well past the prose line's share, so only the share stops it.
-    const cards = Array.from({ length: 12 }, (_, i) => text(`c${i}`, `Card line ${i}: value ${i}`));
-    const alphas = Array(20).fill("alpha").join(" ");
+  it.each(Array.from({ length: 20 }, (_, i) => i + 1))("seed %i: the goal inventory's event derivations reveal the person, the dates, the event's kind and the title", (seed) => {
+    const r = rng(seed * 31);
+    const name = pick(r, ["Priya", "Dana", "Robin", "Aiko", "Mateo"]);
+    const kind = pick(r, ["lunch", "coffee", "meet", "dinner"]);
+    const day = 8 + Math.floor(r() * 10);
+    const weekday = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"][(day - 8) % 7] as string;
+    const date = `${weekday}, October ${day}, 2026`;
+    const hour = 1 + Math.floor(r() * 5);
+    const time = `${hour}:00 PM to ${hour}:45 PM PT`;
+    const sentence = kind === "meet" ? `Can we meet with ${name} on ${date} from ${time} to sort it out?` : `Can we have ${kind} with ${name} on ${date} from ${time} to sort it out?`;
+    const filler = Array.from({ length: 3 }, (_, i) => `Earlier note ${i}: the shipment went out on time and the invoice was paid in full last month, nothing else.`);
     const m = new ScreenModel();
-    m.apply(snap([text("t0", alphas), ...cards], { at: 1000, windowId: "w" }));
-    const v = redactWindow(m.windows.get("w") as WindowState);
+    m.apply(snap([text("t0", sentence), ...filler.map((f, i) => text(`x${i}`, f))], { at: 1000, windowId: "c", title: "Chat", values: [{ kind: "date", text: date, nodeKey: "t0" }, { kind: "time", text: time, nodeKey: "t0" }] }));
+    const w = m.windows.get("c") as WindowState;
     const d = new Disclosure(m.windows.values());
-    const b = d.basis(v, alphas);
-    expect(d.derived(b!, Array(12).fill("alpha").join(" "))).toBeNull();
-    // The reviewer's case: the first 78 characters of a 95-character prose line, from a basis of that prefix.
-    const line = "Dana says the staging rotation moves to Austin after the March review, and back in June, again.";
-    expect(line.length).toBe(95);
-    const m2 = new ScreenModel();
-    m2.apply(snap([text("t0", line), ...cards], { at: 1000, windowId: "w" }));
-    const v2 = redactWindow(m2.windows.get("w") as WindowState);
-    const d2 = new Disclosure(m2.windows.values());
-    const prefix = line.slice(0, 78);
-    expect(d2.derived(d2.basis(v2, prefix)!, prefix)).toBeNull();
+    let n = 0;
+    const found = eventsIn(w, [], macClock(new Date("2026-10-07T10:00:00Z")), "s1", d, () => `v${++n}`);
+    expect(found.length, `seed ${seed}: an event`).toBe(1);
+    const truth: Truth = new Map();
+    reveal(truth, sentence, sentence.indexOf(name), name.length);
+    reveal(truth, sentence, sentence.indexOf(date), date.length);
+    reveal(truth, sentence, sentence.indexOf(time), time.length);
+    // The event's kind, when the sentence names one; "Meet" is Caret's template word, not the sentence's.
+    if (kind !== "meet") reveal(truth, sentence, sentence.indexOf(kind), kind.length);
+    reveal(truth, "Chat", 0, 4);
+    agree(d, truth, w, `seed ${seed}`);
   });
 });
 
 describe("invariant: nothing inside an excluded node keeps a value", () => {
   const ROLES = ["AXGroup", "AXTextField", "AXStaticText", "AXCell", "AXList", "AXWindow", "AXWebArea", "AXScrollArea", "AXApplication", "AXSplitGroup", "AXBrowser", "AXSheet", "AXDrawer", "AXSecureTextField"];
+  /** Labels: plain ones, and ones whose kind is sensitive (memory/sensitive.ts labelKind), on a field or a group. */
+  const LABELS = ["Name", "Notes", "Card number", "Password", "Security code", "Account", "Email"];
 
+  /** A random tree, its nodes in a random order, so a child may come before its parent. */
   function tree(r: () => number, n: number): Node[] {
     const out: Node[] = [];
     for (let i = 0; i < n; i++) {
       const parent = i === 0 ? null : `n${Math.floor(r() * i)}`;
       const mark = r();
-      out.push({ key: `n${i}`, parent, role: pick(r, ROLES), label: `node ${i}`, value: `value of node ${i}`, ...(r() < 0.5 ? { editable: true } : {}), ...(mark < 0.08 ? { states: ["secure" as const] } : mark < 0.12 ? { excluded: "password" as const } : {}) });
+      out.push({ key: `n${i}`, parent, role: pick(r, ROLES), label: pick(r, LABELS), value: `value of node ${i}`, ...(r() < 0.5 ? { editable: true as const } : {}), ...(mark < 0.08 ? { states: ["secure" as const] } : mark < 0.12 ? { excluded: "password" as const } : {}) });
+    }
+    for (let i = out.length - 1; i > 0; i--) {
+      const k = Math.floor(r() * (i + 1));
+      [out[i], out[k]] = [out[k] as Node, out[i] as Node];
     }
     return out;
   }
 
-  function check(m: ScreenModel, seed: number, step: number): void {
-    const w = m.windows.get("w") as WindowState;
+  function check(w: WindowState, seed: number, step: string): void {
     const excludedAbove = (n: Node): boolean => {
       const seen = new Set<string>();
       for (let p = n.parent === null ? undefined : w.nodes.get(n.parent); p !== undefined && !seen.has(p.key); p = p.parent === null ? undefined : w.nodes.get(p.parent)) {
@@ -146,13 +188,16 @@ describe("invariant: nothing inside an excluded node keeps a value", () => {
       return false;
     };
     for (const n of w.nodes.values()) {
+      // Rule (ii): an editable field whose own label names a sensitive kind is excluded.
+      if (n.editable === true && labelKind(n.label) !== null) expect(n.excluded, `seed ${seed} ${step}: ${n.key} labelled ${n.label}`).toBeDefined();
+      // Rule (i): nothing inside an excluded node keeps a value or a typed value.
       if (!excludedAbove(n)) continue;
-      expect(n.value, `seed ${seed} step ${step}: ${n.key}`).toBeUndefined();
-      expect(w.values.some((v) => v.nodeKey === n.key), `seed ${seed} step ${step}: typed value of ${n.key}`).toBe(false);
+      expect(n.value, `seed ${seed} ${step}: ${n.key}`).toBeUndefined();
+      expect(w.values.some((v) => v.nodeKey === n.key), `seed ${seed} ${step}: typed value of ${n.key}`).toBe(false);
     }
   }
 
-  it.each(Array.from({ length: 60 }, (_, i) => i + 1))("seed %i, merged across random cut and partial walks", (seed) => {
+  it.each(Array.from({ length: 60 }, (_, i) => i + 1))("seed %i, merged across random cut and partial walks, and read with a page's nodes", (seed) => {
     const r = rng(seed * 7919);
     const nodes = tree(r, 8 + Math.floor(r() * 25));
     const values = nodes.filter(() => r() < 0.4).map((n) => ({ kind: "email" as const, text: `${n.key}@example.test`, nodeKey: n.key }));
@@ -162,7 +207,7 @@ describe("invariant: nothing inside an excluded node keeps a value", () => {
     });
     const m = new ScreenModel();
     m.apply(snap(valued, { at: 1000, windowId: "w", values }));
-    check(m, seed, 0);
+    check(m.windows.get("w") as WindowState, seed, "step 0");
     for (let step = 1; step <= 6; step++) {
       // A cut walk: some nodes again, a mark flipped on some of them; or a partial walk from a random root.
       const sent = valued.filter(() => r() < 0.5).map((n) => (r() < 0.25 ? { ...n, states: ["secure" as const] } : r() < 0.1 ? { ...n, editable: true as const, states: ["secure" as const] } : n));
@@ -171,81 +216,134 @@ describe("invariant: nothing inside an excluded node keeps a value", () => {
         ? { ...snap(sent, { at, windowId: "w", values: values.filter((v) => sent.some((n) => n.key === v.nodeKey)) }), stats: { walkMs: 5, visited: sent.length, truncated: true } }
         : snap(sent.filter((n) => n.parent !== null), { at, windowId: "w", root: pick(r, valued).key, values: [] });
       m.apply(s);
-      check(m, seed, step);
+      check(m.windows.get("w") as WindowState, seed, `step ${step}`);
     }
+    // A page's nodes read in over the window (ScreenModel.withNodes, the page context): new ones under kept ones, and
+    // kept ones marked again, in a random order.
+    const extra: Node[] = Array.from({ length: 6 }, (_, i) => ({ key: `p${i}`, parent: pick(r, valued).key, role: pick(r, ROLES), label: pick(r, LABELS), value: `page value ${i}`, ...(r() < 0.5 ? { editable: true as const } : {}) }));
+    const remarked = valued.filter(() => r() < 0.2).map((n) => ({ ...n, states: ["secure" as const] }));
+    const v = m.withNodes(new Map([["w", { nodes: [...extra, ...remarked].sort(() => r() - 0.5), title: null }]]));
+    check(v.windows.get("w") as WindowState, seed, "with the page's nodes");
   });
 });
 
-describe("invariant: no request built before a switch-off reaches a transport or a store", () => {
-  /** A request whose one own text names it, so the transport can tell which request it carries. */
-  function request(id: number): JevRequest {
+describe("invariant: what leaves is the sealed copy, checked as it leaves, on every attempt", () => {
+  /** A request whose one own text names it, so a transport or a store can tell which request it carries. */
+  function jevRequest(id: number, questions = 1): JevRequest {
     const d = new Disclosure([]);
-    const name = `request ${id}` as "request 1";
-    return d.seal({ purpose: "route.judge" as const, state: { task: d.own(name) }, questions: { q: { type: "choice" as const, instructions: d.own("Which?"), criteria: { a: d.own("A"), b: d.own("B") } } }, snippets: [], charged: {} });
+    const qs: Record<string, ChoiceQuestion> = {};
+    for (let q = 0; q < questions; q++) qs[`q${q}`] = { type: "choice", instructions: d.own("Which?"), criteria: { a: d.own("A"), b: d.own("B") } };
+    return d.seal({ purpose: "route.judge" as const, state: { task: d.own(`request ${id}` as "request 1") }, questions: qs, snippets: [], charged: {} });
   }
+  function writerRequest(id: number): WriterRequest {
+    const r = minted({ kind: "plan" as const, disclosureId: "inv", input: { goal: `request ${id}`, snapshots: [FORM] }, maxOutputTokens: 16, signal: new AbortController().signal });
+    return r as unknown as WriterRequest;
+  }
+  /** Another request's text, minted by a Disclosure this request does not have: what a mutation swaps in. */
+  const foreign = (id: number): ModelText => new Disclosure([]).own(`swapped secret ${id}` as "swapped secret 1");
   const idOf = (body: string): number => Number(/request (\d+)/u.exec(body)?.[1] ?? "-1");
   const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-  it.each(Array.from({ length: 25 }, (_, i) => i + 1))("seed %i: random builds, queueing, 429 retries, store writes and switch-offs", async (seed) => {
+  it.each(Array.from({ length: 30 }, (_, i) => i + 1))("seed %i: builds, queueing, 429 retries, mutations while pending, stores and switch-offs", async (seed) => {
     const r = rng(seed * 104729);
     let generation = 0;
     const builtAt = new Map<number, number>();
-    const reached: { id: number; generation: number; where: string }[] = [];
-    // The transport: Jev's (answering 429 first, at random) and llama-server's; each records what reaches it.
+    const events: { id: number; generation: number; where: string; bytes: string }[] = [];
+    const record = (where: string, bytes: string): void => void events.push({ id: idOf(bytes), generation, where, bytes });
     const jevFetch: typeof fetch = async (_u, init) => {
-      const id = idOf(String(init?.body));
-      reached.push({ id, generation, where: "jev" });
+      record("jev", String(init?.body));
       await tick();
       if (r() < 0.4) return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
-      return new Response(JSON.stringify({ model: "jev-test", answers: { q: { choice: "a", confidence: 0.9 } }, usage: { input_tokens: 1 } }), { status: 200 });
+      return new Response(JSON.stringify({ model: "jev-test", answers: { q0: { choice: "a", confidence: 0.9 } }, usage: { input_tokens: 1 } }), { status: 200 });
     };
     const client = makeJevClient(() => "k", 10_000, new DailySpend({ dir: join(dir, `cap-${seed}`), capUsd: 100 }), jevSettings({}), jevFetch);
-    const llamaFetch = (async (_u: string, init?: RequestInit) => {
-      reached.push({ id: idOf(String(init?.body)), generation, where: "llama" });
+    // llama-server takes one request at a time: a completion of a template's rendered prompt names no request, so it
+    // belongs to the last request a body named.
+    let llamaCurrent = "";
+    const llamaFetch = (async (u: string, init?: RequestInit) => {
+      const body = String(init?.body);
+      if (idOf(body) >= 0) llamaCurrent = `request ${idOf(body)}`;
+      record("llama", idOf(body) >= 0 ? body : `${body} (${llamaCurrent})`);
       await tick();
+      if (String(u).endsWith("/apply-template")) return new Response(JSON.stringify({ prompt: "rendered" }), { status: 200 });
       return new Response(JSON.stringify({ completion_probabilities: [{ top_logprobs: [{ token: "A", logprob: 0 }] }], timings: { prompt_n: 1 } }), { status: 200 });
     }) as typeof fetch;
-    const llama = llamaEngine({ url: "http://127.0.0.1:1", model: "m", prompt: "document", fetchImpl: llamaFetch });
-    const slow: AskJev = async (req) => {
+    const llama = llamaEngine({ url: "http://127.0.0.1:1", model: "m", prompt: r() < 0.5 ? "chat" : "document", fetchImpl: llamaFetch });
+    const writerFetch = (async (_u: string, init?: RequestInit) => {
+      record("writer", String(init?.body));
       await tick();
-      return { model: "x", answers: { q: { choice: "a", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+      return new Response(JSON.stringify({ model: "w", choices: [{ message: { content: "```ts\nasync function main(caret) {}\n```" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }), { status: 200 });
+    }) as typeof fetch;
+    const writer = makeWriterPort(gatewayRoute("inclusionai/ling-3.1-flash-free"), { key: () => "k", fetchFn: writerFetch });
+    const slow: AskJev = async () => {
+      await tick();
+      return { model: "x", answers: { q0: { choice: "a", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
     };
     const log = join(dir, `log-${seed}.ndjson`);
     const harness = harnessEngine({ name: "canned", canned: slow, fixture: { windows: () => true, memory: true, plan: true }, logRequests: log });
     const cacheDir = join(dir, `cache-${seed}`);
     const cache = cachedAsk(slow, { dir: cacheDir, mode: "record", engine: "jev", model: "m", fixture: { windows: () => true, memory: true, plan: true }, env: {} });
-    const inflight: Promise<unknown>[] = [];
-    let refused = 0;
+    const script = join(dir, `script-${seed}.ndjson`);
+    const scriptStore = async (req: JevRequest): Promise<void> => {
+      await tick();
+      appendStore(script, `${JSON.stringify(storableRequest(req, (f) => ({ state: f.state, questions: f.questions })))}\n`);
+    };
+    const inflight: Promise<void>[] = [];
+    let ok = 0;
+    const settle = (p: Promise<unknown>): Promise<void> =>
+      p.then(
+        () => void ok++,
+        (e: unknown) => {
+          // A refusal at the boundary, or a second 429 the client gives up on, is an outcome; anything else fails the test.
+          if (e instanceof UnmintedText || (e instanceof JevHttpError && e.status === 429)) return;
+          throw e;
+        },
+      );
     const logLines = (): string[] => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((l) => l !== "") : []);
+    const scriptLines = (): string[] => (existsSync(script) ? readFileSync(script, "utf8").split("\n").filter((l) => l !== "") : []);
     const cacheFiles = (): string[] => (existsSync(cacheDir) ? readdirSync(cacheDir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith(".json")).map((e) => join(e.parentPath, e.name)) : []);
-    // What the stores held at each switch-off: anything written after it must be of a request built after it.
-    const marks: { generation: number; log: number; cache: Set<string> }[] = [];
-    for (let step = 0, id = 0; step < 30; step++) {
-      const op = r();
-      if (op < 0.15) {
+    const marks: { generation: number; log: number; script: number; cache: Set<string> }[] = [];
+    for (let step = 0, id = 0; step < 36; step++) {
+      if (step >= 3 && r() < 0.12) {
         noteSwitchedOff();
         generation++;
-        marks.push({ generation, log: logLines().length, cache: new Set(cacheFiles()) });
+        marks.push({ generation, log: logLines().length, script: scriptLines().length, cache: new Set(cacheFiles()) });
       } else {
-        const req = request(++id);
-        builtAt.set(id, generation);
-        const send = pick(r, [client, llama.ask, harness.ask, cache]);
-        // A refusal, or a second 429 the client gives up on, is an outcome; what matters is what reached the transport.
-        inflight.push(send(req).catch((e: unknown) => (refused += e instanceof UnmintedText ? 1 : 0)));
+        const n = ++id;
+        builtAt.set(n, generation);
+        const which = pick(r, ["jev", "llama", "harness", "cache", "writer", "script"] as const);
+        if (which === "writer") {
+          const req = writerRequest(n);
+          inflight.push(settle(writer.write(req)));
+          if (r() < 0.4) (req as { input: unknown }).input = { goal: foreign(n), snapshots: [] };
+        } else {
+          const req = jevRequest(n, which === "llama" ? 1 + Math.floor(r() * 3) : 1);
+          const send = which === "jev" ? client : which === "llama" ? llama.ask : which === "harness" ? harness.ask : which === "cache" ? cache : scriptStore;
+          inflight.push(settle(send(req)));
+          // A caller changing its request while it is pending changes nothing that leaves.
+          if (r() < 0.4) (req as { state: unknown }).state = { task: foreign(n) };
+        }
       }
       if (r() < 0.5) await tick();
     }
     await Promise.all(inflight);
-    void refused;
-    for (const x of reached) expect(x.generation, `seed ${seed}: request ${x.id} reached ${x.where} after a switch-off`).toBe(builtAt.get(x.id));
-    // The stores: a log line past a switch-off's count, or a cache entry absent at a switch-off, was written after it.
-    logLines().forEach((l, i) => {
-      const after = marks.filter((k) => k.log <= i).at(-1);
-      if (after !== undefined) expect(builtAt.get(idOf(l)), `seed ${seed}: log line ${i} written after switch-off ${after.generation}`).toBeGreaterThanOrEqual(after.generation);
-    });
-    for (const f of cacheFiles()) {
-      const after = marks.filter((k) => !k.cache.has(f)).at(-1);
-      if (after !== undefined) expect(builtAt.get(idOf(readFileSync(f, "utf8"))), `seed ${seed}: cache entry written after switch-off ${after.generation}`).toBeGreaterThanOrEqual(after.generation);
+    const stored = [...logLines().map((l, i) => ({ l, i, where: "log" })), ...scriptLines().map((l, i) => ({ l, i, where: "script" }))];
+    for (const x of events) {
+      expect(x.bytes, `seed ${seed}: ${x.where} got a swapped text`).not.toContain("swapped");
+      expect(x.generation, `seed ${seed}: request ${x.id} reached ${x.where} after a switch-off`).toBe(builtAt.get(x.id));
     }
+    for (const { l, i, where } of stored) {
+      expect(l, `seed ${seed}: ${where} kept a swapped text`).not.toContain("swapped");
+      const after = marks.filter((k) => (where === "log" ? k.log : k.script) <= i).at(-1);
+      if (after !== undefined) expect(builtAt.get(idOf(l)), `seed ${seed}: ${where} line ${i} written after switch-off ${after.generation}`).toBeGreaterThanOrEqual(after.generation);
+    }
+    for (const f of cacheFiles()) {
+      const text = readFileSync(f, "utf8");
+      expect(text, `seed ${seed}: cache kept a swapped text`).not.toContain("swapped");
+      const after = marks.filter((k) => !k.cache.has(f)).at(-1);
+      if (after !== undefined) expect(builtAt.get(idOf(text)), `seed ${seed}: cache entry written after switch-off ${after.generation}`).toBeGreaterThanOrEqual(after.generation);
+    }
+    // Not vacuous: requests did go out and get answered.
+    expect(ok, `seed ${seed}: nothing succeeded`).toBeGreaterThan(0);
   });
 });

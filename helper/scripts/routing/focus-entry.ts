@@ -55,7 +55,7 @@ const askJev: AskJev = async (req: JevRequest) => {
   routerCalls++;
   const r = await live(req);
   spend += r.costUsd;
-  if (a.dump) appendStore(join(OUT, `router-requests${suffix}.ndjson`), `${JSON.stringify({ at: performance.now(), ...storableRequest(req, { state: req.state, questions: req.questions }), answers: r.answers })}\n`);
+  if (a.dump) appendStore(join(OUT, `router-requests${suffix}.ndjson`), `${JSON.stringify({ at: performance.now(), ...storableRequest(req, (f) => ({ state: f.state, questions: f.questions })), answers: r.answers })}\n`);
   return r;
 };
 

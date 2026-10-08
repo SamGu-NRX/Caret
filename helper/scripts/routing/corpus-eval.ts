@@ -119,7 +119,7 @@ const askJev: AskJev = async (req: JevRequest) => {
   const router = req.retry429 === false;
   const which = router && ("outcome" in req.questions || "task" in req.questions) ? "router1" : router && "route" in req.questions ? "router2" : "producer";
   const r = await jevClient(req);
-  if (a.dump && which !== "producer") appendStore(join(OUT, "router-requests.ndjson"), `${JSON.stringify({ moment: current, which, ...storableRequest(req, { state: req.state, questions: req.questions }), answers: r.answers })}\n`);
+  if (a.dump && which !== "producer") appendStore(join(OUT, "router-requests.ndjson"), `${JSON.stringify({ moment: current, which, ...storableRequest(req, (f) => ({ state: f.state, questions: f.questions })), answers: r.answers })}\n`);
   spend.usd += r.costUsd;
   spend.calls[which]++;
   if (which === "producer") spend.producerTokens.push(r.inputTokens);

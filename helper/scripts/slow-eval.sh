@@ -23,9 +23,10 @@ fi
 mkdir -p "$DIR"
 cd "$HELPER"
 # perl's setsid gives the runner its own session, so a signal to the starting shell's process group does not reach it.
-CARET_ENV_FILE="$ENV_FILE" nohup /usr/bin/perl -MPOSIX -e 'POSIX::setsid() or die "setsid: $!"; exec @ARGV' "$(command -v node)" scripts/slow-eval.ts "$@" >> "$DIR/runner.log" 2>&1 < /dev/null &
+# Its output is not kept by this shell: the runner writes DIR/runner.log itself, formats withheld (PV2).
+CARET_ENV_FILE="$ENV_FILE" nohup /usr/bin/perl -MPOSIX -e 'POSIX::setsid() or die "setsid: $!"; exec @ARGV' "$(command -v node)" scripts/slow-eval.ts "$@" > /dev/null 2>&1 < /dev/null &
 pid=$!
-echo "$pid" > "$DIR/runner.pid"
+echo "$pid" > "$DIR/runner.pid"  # store: a process id, no model text
 sleep 2
 if ps -p "$pid" -o command= | grep -q "scripts/slow-eval.ts"; then
   echo "slow-eval running: pid $pid; log $DIR/runner.log; status $DIR/status.json; stop with: kill $pid"

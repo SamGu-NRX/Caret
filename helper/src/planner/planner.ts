@@ -203,8 +203,10 @@ async function planIn(
   const title = ledger.descriptor(w, w.window.title);
   // A window that is not a card gives a question less than half its text (privacy.ts), which may not hold
   // every field and button: what the instruction names is taken first, the rest in document order.
-  const order = byRelevance(instruction, [...fields.map((f) => ({ key: f.node.key, name: f.name, text: f.descriptor })), ...buttons.map((b) => ({ key: b.key, name: b.label, text: b.label }))]);
-  const taken = new Set(order.filter((x) => ledger.take(w, "descriptor", [x.text])).map((x) => x.key));
+  // Each is cut from the view by its window texts (a field's descriptor parts, a button's label; PV2: a text is located
+  // where it is cut), never as the composed descriptor, whose wording is Caret's.
+  const order = byRelevance(instruction, [...fields.map((f) => ({ key: f.node.key, name: f.name, text: f.descriptor, cut: () => ledger.fieldDescriptor(w, f.node) !== null })), ...buttons.map((b) => ({ key: b.key, name: b.label, text: b.label, cut: () => ledger.take(w, "descriptor", [b.label]) }))]);
+  const taken = new Set(order.filter((x) => x.cut()).map((x) => x.key));
   // Only the fields the instruction names are asked about: the second live pass (evidence/screen/b16/
   // planner-live) wrote an order number into two fields "Put the order number ... in Reference" never
   // named. Every field is asked about only when the instruction asks to fill the form (asksToFillForm);

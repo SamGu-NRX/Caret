@@ -10,7 +10,7 @@ free_kb=$(df -k / | awk 'NR==2 {print $4}')
 if [ "$free_kb" -lt $((8 * 1024 * 1024)) ]; then echo "blocked: disk ($free_kb KiB free)"; exit 75; fi
 mkdir -p "$DIR"
 cd "$DIR"
-[ -f package.json ] || echo '{"name":"caret-electron-eval","private":true}' > package.json
+[ -f package.json ] || echo '{"name":"caret-electron-eval","private":true}' > package.json  # store: a fixed package.json, no model text
 npm_config_cache="$DIR/.npm" electron_config_cache="$DIR/.electron-cache" npm install --no-audit --no-fund --save-exact "electron@$VERSION" >/dev/null
 # Electron 44 downloads its binary on first use rather than at install; fetch it now, into DIR.
 electron_config_cache="$DIR/.electron-cache" node node_modules/electron/install.js

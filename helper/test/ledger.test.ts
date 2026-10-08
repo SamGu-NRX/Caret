@@ -186,12 +186,15 @@ describe("the distinct characters a request reveals (B26 lead decision 2)", () =
     expect(ledger.chars(id)).toBe("Phone: (512) 555-0147".length + "Call (512) 555-0147 after six".length);
   });
 
-  it("charges a text no line shows its characters that the lines it holds do not cover", () => {
+  it("charges a text no one line shows by the runs of it the lines show, and refuses one with a word no line shows", () => {
     const { m, w, id } = card();
     const ledger = new Disclosure(m.windows.values());
-    // Two lines joined by a space: both lines in full, and the one space between them.
+    // Two lines joined by a space: both lines in full; the space between them shows nothing of the window (PV2: a text
+    // is located where it is cut, as runs of its words that lines show).
     expect(ledger.take(w, "candidate", ["Rental notes Landlord: Gary Pruitt"])).toBe(true);
-    expect(ledger.chars(id)).toBe("Rental notes".length + "Landlord: Gary Pruitt".length + 1);
+    expect(ledger.chars(id)).toBe("Rental notes".length + "Landlord: Gary Pruitt".length);
+    // A word no line shows: the text is no cut of the window, and nothing is taken.
+    expect(ledger.take(w, "candidate", ["Landlord: Gary Pruitt, unpaid"])).toBe(false);
   });
 
   it("charges a cut text the part a line shows", () => {

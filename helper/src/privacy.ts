@@ -82,6 +82,20 @@ export function cut(s: string, max = SNIPPET_CHARS): string {
 const CONTAINED_MIN = 3;
 
 /**
+ * Text as the ledger compares it (PV2, the one normalization; lines are already whitespace-collapsed, flat): case
+ * folded character by character, so a text and a line compare the same however either is capitalized. Length is kept,
+ * so an offset in the folded text is the same offset in the text.
+ */
+export function fold(s: string): string {
+  let out = "";
+  for (const c of s) {
+    const l = c.toLowerCase();
+    out += l.length === c.length ? l : c;
+  }
+  return out;
+}
+
+/**
  * A window's text as the ledger reads it, whatever the conversation rule says: its distinct lines, and
  * an index of them for finding the lines a taken text holds and whether a line holds a text.
  *
@@ -108,6 +122,11 @@ class LineTable {
   private readonly inside = new Map<string, boolean>();
   /** The lines of CONTAINED_MIN or more characters joined by NUL, which no screen text holds; null until a search needs it again. */
   private joined: string | null = null;
+  /**
+   * Every line joined by NUL, as written and case-folded (the same offsets), and the folded lines of CONTAINED_MIN or
+   * more characters by their first CONTAINED_MIN, with the lines that fold to each; null until locating needs them again.
+   */
+  private folded: { j: string; f: string; starts: Map<string, Map<number, Map<string, string[]>>> } | null = null;
 
   constructor(w: WindowState) {
     this.owner = w;
@@ -156,6 +175,66 @@ class LineTable {
   /** Whether `t` is a whole distinct line of the window. */
   isLine(t: string): boolean {
     return this.counts.has(t);
+  }
+
+  private foldedIndex(): { j: string; f: string; starts: Map<string, Map<number, Map<string, string[]>>> } {
+    if (this.folded !== null) return this.folded;
+    const lines = [...this.counts.keys()];
+    const j = `\u0000${lines.join("\u0000")}\u0000`;
+    const starts = new Map<string, Map<number, Map<string, string[]>>>();
+    for (const l of lines) {
+      if (l.length < CONTAINED_MIN) continue;
+      const fl = fold(l);
+      const p = fl.slice(0, CONTAINED_MIN);
+      let byLen = starts.get(p);
+      if (byLen === undefined) starts.set(p, (byLen = new Map()));
+      let byText = byLen.get(fl.length);
+      if (byText === undefined) byLen.set(fl.length, (byText = new Map()));
+      const originals = byText.get(fl);
+      if (originals === undefined) byText.set(fl, [l]);
+      else originals.push(l);
+    }
+    this.folded = { j, f: fold(j), starts };
+    return this.folded;
+  }
+
+  /**
+   * PV2, locating: where `t` (flat) stands in the window's lines, compared case-folded: each occurrence's line, as
+   * written, and offset, at most MAX_OCCURRENCES of them, in line order.
+   */
+  find(t: string): { line: string; at: number }[] {
+    if (t === "" || t.includes("\u0000")) return [];
+    const { j, f } = this.foldedIndex();
+    const ft = fold(t);
+    // Where it stands as written before where it stands only case aside, and as whole words ("5" as the number 5, not
+    // inside "15") before inside a word: the first of these four that has any is where the text was cut from.
+    const buckets: { line: string; at: number }[][] = [[], [], [], []];
+    const word = /[\p{L}\p{N}]/u;
+    let n = 0;
+    for (let p = f.indexOf(ft); p >= 0 && n < MAX_OCCURRENCES; p = f.indexOf(ft, p + 1), n++) {
+      const start = j.lastIndexOf("\u0000", p) + 1;
+      const o = { line: j.slice(start, j.indexOf("\u0000", p)), at: p - start };
+      const bounded = !(word.test(ft[0] ?? "") && word.test(f[p - 1] ?? "")) && !(word.test(ft[ft.length - 1] ?? "") && word.test(f[p + ft.length] ?? ""));
+      const exact = j.startsWith(t, p);
+      (buckets[(exact ? 0 : 2) + (bounded ? 0 : 1)] as { line: string; at: number }[]).push(o);
+    }
+    return buckets.find((b) => b.length > 0) ?? [];
+  }
+
+  /** Every distinct line of CONTAINED_MIN or more characters that `t` holds whole, compared case-folded; each once. */
+  linesInFolded(t: string): string[] {
+    const { starts } = this.foldedIndex();
+    const ft = fold(t);
+    const out = new Set<string>();
+    for (let i = 0; i + CONTAINED_MIN <= ft.length; i++) {
+      const byLen = starts.get(ft.slice(i, i + CONTAINED_MIN));
+      if (byLen === undefined) continue;
+      for (const [len, byText] of byLen) {
+        if (i + len > ft.length) continue;
+        for (const l of byText.get(ft.slice(i, i + len)) ?? []) out.add(l);
+      }
+    }
+    return [...out];
   }
 
   /**
@@ -249,6 +328,7 @@ class LineTable {
     const c = this.counts.get(t);
     this.counts.set(t, (c ?? 0) + 1);
     if (c !== undefined) return;
+    this.folded = null;
     this.chars += t.length;
     if (t.length > CARD_LINE_CHARS) (this.long++, (this.longChars += t.length));
     if (t.length < CONTAINED_MIN) return;
@@ -266,6 +346,7 @@ class LineTable {
     if (c === undefined) throw new Error(`the line table of window ${this.owner.window.windowId} lost count of a line`);
     if (c > 1) return void this.counts.set(t, c - 1);
     this.counts.delete(t);
+    this.folded = null;
     this.chars -= t.length;
     if (t.length > CARD_LINE_CHARS) (this.long--, (this.longChars -= t.length));
     if (t.length < CONTAINED_MIN) return;
@@ -431,6 +512,35 @@ interface Add {
 interface Priced {
   fresh: string[];
   adds: Map<string, Add>;
+  /** The stretch each unit was charged at. */
+  chosen: Span[];
+}
+
+/** A stretch of a window's line: the line as the ledger keys it (flat), and where in it. */
+export interface Span {
+  windowId: string;
+  line: string;
+  at: number;
+  len: number;
+}
+
+/** A stretch of some line of a window, its offset and length. */
+export interface Place {
+  line: string;
+  at: number;
+  len: number;
+}
+
+/** Where one located stretch stands in a window: one of `alts`, marked when it is charged (SnippetLedger.priceUnits). */
+export interface Unit {
+  windowId: string;
+  alts: readonly Place[];
+  /**
+   * Which repeat of the same stretch this is within one located text (a run its text says twice): the same stretch
+   * located again by another rule (a whole line, an occurrence) is the same repeat and charged once; another repeat
+   * is charged at another occurrence, as many as there are.
+   */
+  repeat?: number;
 }
 
 interface Entry {
@@ -481,6 +591,8 @@ export class SnippetLedger {
   private readonly places = new Map<string, { line: string; at: number }[]>();
   /** For plan and memory text: the runs of it each window's lines show (LineTable.sharedRuns), worked out once per ledger. */
   private readonly partials = new Map<string, [string, string[]][]>();
+  /** Where each text taken from a window stands (locate, locatePlan), by window and text, worked out once per ledger. */
+  private readonly located = new Map<string, Unit[] | null>();
   readonly snippets: Snippet[] = [];
 
   private readonly consented: ReadonlySet<string>;
@@ -512,6 +624,7 @@ export class SnippetLedger {
     this.known.set(w.window.windowId, w);
     this.reveals.clear();
     this.partials.clear();
+    this.located.clear();
   }
 
   private placesOf(wid: string, t: string): { line: string; at: number }[] {
@@ -568,144 +681,162 @@ export class SnippetLedger {
   }
 
   /**
-   * What taking these texts would add, window by window: the characters newly revealed, and the texts. A text
-   * taken from a window (`from`) is charged to it, whether or not a line of it shows the text; plan text (`from`
-   * null) only pays for what windows' lines show of it. Null when a window would go over its budget.
+   * PV2, the one place a text taken from window `from` is located ("pricing never searches text", the lead's restated
+   * invariant): each piece of it (a line of it, or a stretch between a cut's ellipses), flat and compared case-folded,
+   * as a stretch of one of the window's lines; or else as runs of its words, each a stretch of one line, with only spaces
+   * and punctuation (which reveal nothing) between them. Then where each stretch also stands in every other window's
+   * lines, and every line of any window it holds whole (accessibility trees repeat text: B26). Null when a word of the
+   * text stands in no line of `from`: the cut fails and nothing is minted. Worked out once per ledger, window and text.
    */
-  private price(from: WindowState | null, texts: readonly (string | null | undefined)[], scope: string | null = null): Priced | null {
+  protected locate(from: WindowState, text: string): Unit[] | null {
+    this.know(from);
+    const key = `${from.window.windowId}\u0000${text}`;
+    const hit = this.located.get(key);
+    if (hit !== undefined) return hit;
+    const table = windowText(from);
+    const fromId = from.window.windowId;
+    const units: Unit[] = [];
+    const said = new Map<string, number>();
+    const add = (run: string, here: readonly { line: string; at: number }[]): void => {
+      const repeat = said.get(fold(run)) ?? 0;
+      said.set(fold(run), repeat + 1);
+      // Every line of any window the stretch holds whole first, so the stretch itself then stands where it is marked.
+      for (const [wid, w] of this.known) for (const l of windowText(w).linesInFolded(run)) units.push({ windowId: wid, alts: [{ line: l, at: 0, len: l.length }], repeat });
+      // A stretch that is a whole line of the window stands there, not inside a longer line that also shows it.
+      const lines = here.filter((o) => o.at === 0 && o.line.length === run.length);
+      units.push({ windowId: fromId, alts: (lines.length > 0 ? lines : here).map((o) => ({ line: o.line, at: o.at, len: run.length })), repeat });
+      if (run.length < CONTAINED_MIN) return;
+      for (const [wid, w] of this.known) {
+        if (wid === fromId) continue;
+        const there = windowText(w).find(run);
+        if (there.length > 0) units.push({ windowId: wid, alts: there.map((o) => ({ line: o.line, at: o.at, len: run.length })), repeat });
+      }
+    };
+    let ok = true;
+    for (const raw of text.split("\n")) {
+      for (const seg of raw.split("…")) {
+        const piece = flat(seg);
+        if (piece === "") continue;
+        const whole = table.find(piece);
+        if (whole.length > 0) {
+          add(piece, whole);
+          continue;
+        }
+        const words = [...piece.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ at: m.index, end: m.index + m[0].length }));
+        for (let i = 0; i < words.length && ok; ) {
+          let took = false;
+          for (let k = words.length - 1; k >= i; k--) {
+            const run = piece.slice((words[i] as { at: number }).at, (words[k] as { end: number }).end);
+            const here = table.find(run);
+            if (here.length === 0) continue;
+            add(run, here);
+            i = k + 1;
+            took = true;
+            break;
+          }
+          if (!took) ok = false;
+        }
+      }
+    }
+    const out = ok ? units : null;
+    this.located.set(key, out);
+    return out;
+  }
+
+  /**
+   * Where plan or memory text stands (it is no window read, and keeps its own rule, SC1 as ruled for PV2): every line of
+   * any window it holds whole, every window that shows a piece of it inside a line, and every run of PARTIAL_MIN or more
+   * characters of it that a line shows. Worked out once per ledger and text.
+   */
+  private locatePlan(text: string): Unit[] {
+    const key = `\u0000plan\u0000${text}`;
+    const hit = this.located.get(key);
+    if (hit !== undefined && hit !== null) return hit;
+    const units: Unit[] = [];
+    const inside = (wid: string, t: string): void => {
+      const occ = this.placesOf(wid, t);
+      if (occ.length > 0) units.push({ windowId: wid, alts: occ.map((o) => ({ line: o.line, at: o.at, len: t.length })) });
+    };
+    for (const piece of text.split("\n").map((raw) => flat(raw).replace(/^…|…$/gu, "")).filter((x) => x !== "")) {
+      const r = this.revealed(piece);
+      for (const [l, ids] of r.lines) for (const wid of ids) units.push({ windowId: wid, alts: [{ line: l, at: 0, len: l.length }] });
+      for (const wid of r.shownBy) inside(wid, piece);
+      for (const [run, ids] of this.partialRuns(piece)) for (const wid of ids) inside(wid, run);
+    }
+    this.located.set(key, units);
+    return units;
+  }
+
+  /**
+   * What taking these texts would add, window by window: their located stretches (locate, or locatePlan for plan and
+   * memory text), charged by priceUnits. Null when one cannot be located or a window would go over its budget.
+   */
+  private price(from: WindowState | null, texts: readonly (string | null | undefined)[]): Priced | null {
     const own = from === null ? null : (this.know(from), this.entry(from));
     const fresh = [...new Set(texts.filter((t): t is string => t !== null && t !== undefined && t !== "" && own?.texts.has(t) !== true))];
+    const units: Unit[] = [];
+    for (const t of fresh) {
+      const u = from === null ? this.locatePlan(t) : this.locate(from, t);
+      if (u === null) return null;
+      units.push(...u);
+    }
+    return this.priceUnits(units, fresh);
+  }
+
+  /**
+   * The one charging rule: each unit's stretch is marked in its line (one of its alternatives: one already marked, else
+   * one in a line of at most CARD_LINE_CHARS, else the one with most of it marked; a stretch located twice at another
+   * occurrence each time), a window charged the characters newly marked, of which those of a line over CARD_LINE_CHARS
+   * count against its prose share. Never searches text; never charges a character twice. Null when a window would go
+   * over its budget.
+   */
+  private priceUnits(units: readonly Unit[], fresh: string[]): Priced | null {
     const adds = new Map<string, Add>();
-    /** The window's add, unless it has revealed `t` already (in this pricing or before); null then. */
-    const fresh1 = (wid: string, t: string): { e: Entry; a: Add } | null => {
-      const w = this.known.get(wid);
-      if (w === undefined) return null;
+    const used = new Set<string>();
+    const chosen: Span[] = [];
+    const done = new Set<string>();
+    for (const u of units) {
+      const w = this.known.get(u.windowId);
+      if (w === undefined || u.alts.length === 0) continue;
+      // The same stretch, the same repeat, located by two rules: charged once.
+      const first = u.alts[0] as Place;
+      const same = `${u.windowId}\u0000${fold(first.line.slice(first.at, first.at + first.len))}\u0000${u.repeat ?? 0}`;
+      if (done.has(same)) continue;
+      done.add(same);
       const e = this.entry(w);
-      let a = adds.get(wid);
-      if (a === undefined) adds.set(wid, (a = { cost: 0, prose: 0, covered: new Set(), marks: new Map() }));
-      if (e.covered.has(t) || a.covered.has(t)) return null;
-      a.covered.add(t);
-      return { e, a };
-    };
-    const view = (e: Entry, a: Add, line: string): Uint8Array | undefined => a.marks.get(line) ?? e.marks.get(line);
-    /** Marks [at, at + len) of a line revealed and charges the characters newly marked. */
-    const mark = (e: Entry, a: Add, line: string, at: number, len: number): void => {
-      let m = a.marks.get(line);
-      if (m === undefined) {
-        const before = e.marks.get(line);
-        a.marks.set(line, (m = before === undefined ? new Uint8Array(line.length) : before.slice()));
-      }
-      let n = 0;
-      for (let i = at; i < at + len; i++) if (m[i] === 0) (m[i] = 1, n++);
-      a.cost += n;
-      // What of the window's prose the text reveals counts against its prose share as well.
-      if (e.share.prose !== null && line.length > CARD_LINE_CHARS) a.prose += n;
-    };
-    /** A whole line of window `wid`. */
-    const chargeLine = (wid: string, line: string): void => {
-      const x = fresh1(wid, line);
-      if (x !== null) mark(x.e, x.a, line, 0, line.length);
-    };
-    /** A text that lines of window `wid` hold: one of its occurrences is marked (the class's comment says which). */
-    const chargeInside = (wid: string, t: string): void => {
-      const x = fresh1(wid, t);
-      if (x === null) return;
-      const { e, a } = x;
-      const occ = this.placesOf(wid, t);
-      // Every caller found the text inside a line first; were none found after all, it is charged in full.
-      if (occ.length === 0) return void (a.cost += t.length);
-      let best: { line: string; at: number; marked: number } | null = null;
-      for (const o of occ) {
-        const m = view(e, a, o.line);
+      let a = adds.get(u.windowId);
+      if (a === undefined) adds.set(u.windowId, (a = { cost: 0, prose: 0, covered: new Set(), marks: new Map() }));
+      const free = u.alts.filter((o) => !used.has(`${u.windowId}\u0000${o.line}\u0000${o.at}`));
+      const alts = free.length > 0 ? free : u.alts;
+      let best: Place | null = null;
+      let bestMarked = -1;
+      for (const o of alts) {
+        const m = a.marks.get(o.line) ?? e.marks.get(o.line);
         let marked = 0;
-        if (m !== undefined) for (let i = o.at; i < o.at + t.length; i++) marked += m[i] as number;
-        if (marked === t.length) return;
+        if (m !== undefined) for (let k = o.at; k < o.at + o.len; k++) marked += m[k] as number;
+        if (marked === o.len) {
+          best = o;
+          break;
+        }
         const short = o.line.length <= CARD_LINE_CHARS;
         const bestShort = best !== null && best.line.length <= CARD_LINE_CHARS;
-        if (best === null || (short && !bestShort) || (short === bestShort && marked > best.marked)) best = { ...o, marked };
+        if (best === null || (short && !bestShort) || (short === bestShort && marked > bestMarked)) (best = o, (bestMarked = marked));
       }
-      if (best !== null) mark(e, a, best.line, best.at, t.length);
-    };
-    /**
-     * PV2 re-review, the one span rule for a text no single line of window `wid` holds whole: it reveals the runs of it
-     * (whole words, with what stands between them) that lines show, each marked where it stands in a line, a repeated
-     * run at another occurrence each time, as many as there are; a line's prose share counts what any of them marks. With
-     * `scope` (a derivation's basis, Disclosure.derived), runs are looked for only where the basis stands, case aside,
-     * and the rest of the text is code's, free; without it, the rest is charged in full, as a text no line shows.
-     */
-    const chargeRuns = (wid: string, piece: string, within: string | null): void => {
-      const x = fresh1(wid, within === null ? piece : `${piece}\u0000${within}`);
-      if (x === null) return;
-      const { e, a } = x;
-      const words = [...piece.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ at: m.index, end: m.index + m[0].length }));
-      const used = new Set<string>();
-      // Where the basis stands, line by line; a basis no line shows (it never should be) is no scope at all, so the text
-      // is then charged as one no line shows whole.
-      const scoped = within === null ? [] : within.split("\n").map((x) => x.trim()).filter((x) => x !== "").flatMap((b) => this.placesOf(wid, b).map((o) => ({ line: o.line, from: o.at, to: o.at + b.length })));
-      const ranges = scoped.length === 0 ? null : scoped;
-      const find = (run: string): { line: string; at: number }[] => {
-        if (ranges === null) return this.placesOf(wid, run);
-        const lower = run.toLowerCase();
-        const out: { line: string; at: number }[] = [];
-        for (const r of ranges) {
-          const hay = r.line.toLowerCase();
-          for (let p = hay.indexOf(lower, r.from); p >= 0 && p + lower.length <= r.to; p = hay.indexOf(lower, p + 1)) out.push({ line: r.line, at: p });
-        }
-        return out;
-      };
-      let found = 0;
-      for (let i = 0; i < words.length; ) {
-        let took = false;
-        for (let j = words.length - 1; j >= i && !took; j--) {
-          const from = (words[i] as { at: number }).at;
-          const to = (words[j] as { end: number }).end;
-          const run = piece.slice(from, to);
-          const occ = find(run).filter((o) => !used.has(`${o.line}\u0000${o.at}`));
-          if (occ.length === 0) continue;
-          let best = occ[0] as { line: string; at: number };
-          let bestMarked = -1;
-          for (const o of occ) {
-            const m = view(e, a, o.line);
-            let marked = 0;
-            if (m !== undefined) for (let k = o.at; k < o.at + run.length; k++) marked += m[k] as number;
-            if (marked > bestMarked || (marked === bestMarked && o.line === run && best.line !== run)) (best = o, (bestMarked = marked));
-          }
-          used.add(`${best.line}\u0000${best.at}`);
-          mark(e, a, best.line, best.at, run.length);
-          found += run.length;
-          i = j + 1;
-          took = true;
-        }
-        if (!took) i++;
+      if (best === null) continue;
+      used.add(`${u.windowId}\u0000${best.line}\u0000${best.at}`);
+      chosen.push({ windowId: u.windowId, ...best });
+      let m = a.marks.get(best.line);
+      if (m === undefined) {
+        const before = e.marks.get(best.line);
+        a.marks.set(best.line, (m = before === undefined ? new Uint8Array(best.line.length) : before.slice()));
       }
-      if (ranges === null) a.cost += piece.length - found;
-    };
-    for (const t of fresh) {
-      // A text is matched piece by piece in every window: a line break or a cut's ellipsis ends a piece, so a value
-      // cut to length still reveals the line it was cut from, in whichever window shows it (B26 review: a cut line
-      // charged its own window and not a chat that showed the same line).
-      const pieces = t.split("\n").map((raw) => flat(raw).replace(/^…|…$/gu, "")).filter((x) => x !== "");
-      for (const piece of pieces) {
-        const r = this.revealed(piece);
-        // Every line the piece holds, in whichever window shows it; first, so a run below that is one of these lines
-        // stands where it is already marked.
-        for (const [l, ids] of r.lines) for (const wid of ids) chargeLine(wid, l);
-        if (from !== null) {
-          const wid = from.window.windowId;
-          const table = windowText(from);
-          // Taken from this window: a whole line, a text inside lines, or neither, whose runs that lines show are
-          // marked where they stand and the rest charged in full (chargeRuns).
-          if (scope !== null) chargeRuns(wid, piece, scope);
-          else if (table.isLine(piece)) chargeLine(wid, piece);
-          else if (piece.length >= CONTAINED_MIN && table.holds(piece)) chargeInside(wid, piece);
-          else chargeRuns(wid, piece, null);
-        }
-        // And every other window that shows the piece inside a line: a value taken from a card that a chat
-        // message also quotes reveals that much of the chat.
-        for (const wid of r.shownBy) if (wid !== from?.window.windowId) chargeInside(wid, piece);
-        // Plan and memory text that quotes part of a line reveals that part.
-        if (from === null) for (const [run, ids] of this.partialRuns(piece)) for (const wid of ids) chargeInside(wid, run);
-      }
+      let n = 0;
+      for (let k = best.at; k < best.at + best.len; k++) if (m[k] === 0) (m[k] = 1, n++);
+      a.cost += n;
+      if (e.share.prose !== null && best.line.length > CARD_LINE_CHARS) a.prose += n;
+      // Declared the first time this stretch's text is revealed in the window, as the ledger always declared a text once.
+      const said = best.line.slice(best.at, best.at + best.len);
+      if (!e.covered.has(said)) a.covered.add(said);
     }
     // The budget check every path meets: the window's budget, and its prose share, per window, as SC1 defines it (just
     // under half the window's prose, windowShare; not a share per line), whatever revealed the characters.
@@ -714,7 +845,7 @@ export class SnippetLedger {
       if (e.chars + a.cost > e.share.budget) return null;
       if (e.share.prose !== null && e.prose + a.prose > e.share.prose) return null;
     }
-    return { fresh, adds };
+    return { fresh, adds, chosen };
   }
 
   private commit(p: Priced, windowId: string, kind: Snippet["kind"], own: Entry | null): void {
@@ -736,22 +867,52 @@ export class SnippetLedger {
   }
 
   /**
-   * Takes a text code derived from `basis`, a text of window `w` (privacy/disclosure.ts Disclosure.derived): charged by
-   * the one span rule (price's chargeRuns), what of it stands in the lines where the basis stands, and declared under
-   * the window. False, taking nothing, when a window would go over its budget or prose share.
+   * Charges stretches already located (a derivation's, privacy/disclosure.ts Disclosure.derived, read off its basis's
+   * located stretches) by the one charging rule, and declares `text` under window `w`. False, charging nothing, when a
+   * window would go over its budget or prose share.
    */
-  protected takeDerived(w: WindowState, basis: string, text: string): boolean {
-    const p = this.price(w, [text], basis);
+  protected takeSpans(w: WindowState, spans: readonly Span[], text: string): boolean {
+    this.know(w);
+    // Each stretch is its own: two stretches with the same words at two places are both charged.
+    const p = this.priceUnits(spans.map((x, i) => ({ windowId: x.windowId, alts: [{ line: x.line, at: x.at, len: x.len }], repeat: i })), [text]);
     if (p === null) return false;
     this.commit(p, w.window.windowId, "candidate", this.entry(w));
     return true;
   }
 
-  take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
+  /**
+   * Charges a text that is not cut from a window: an app's name, reader metadata every window of the app carries, which
+   * a window may also show as a whole line of its own. Sending it shows that line, so each window whose line it is is
+   * charged that line and declares it; a title that merely mentions the app ("… - Google Chrome") reveals nothing the
+   * metadata does not. The lines charged, or null when a window would go over its budget.
+   */
+  protected takeShown(text: string): Span[] | null {
+    const t = flat(text);
+    const units: Unit[] = [];
+    for (const [wid, w] of this.known) if (windowText(w).isLine(t)) units.push({ windowId: wid, alts: [{ line: t, at: 0, len: t.length }] });
+    if (units.length === 0) return [];
+    const p = this.priceUnits(units, []);
+    if (p === null) return null;
+    this.commit(p, "plan", "candidate", null);
+    return p.chosen;
+  }
+
+  /** Takes these texts from `w` (located, charged); the stretches they were charged at, or null when they cannot be taken. */
+  protected takeLocated(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): Span[] | null {
     const p = this.price(w, texts);
-    if (p === null) return false;
+    if (p === null) return null;
     this.commit(p, w.window.windowId, kind, this.entry(w));
-    return true;
+    return p.chosen;
+  }
+
+  take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
+    return this.takeLocated(w, kind, texts) !== null;
+  }
+
+  /** Characters of each line of window `windowId` charged so far, by line: what the request reveals of it. */
+  markedLines(windowId: string): Map<string, number> {
+    const e = this.entries.get(windowId);
+    return new Map([...(e?.marks ?? new Map<string, Uint8Array>())].map(([l, m]) => [l, m.reduce((n, b) => n + b, 0)]));
   }
 
   /** What taking these texts from `w` would charge `w`, or null when some window would go over its budget. Takes nothing. */

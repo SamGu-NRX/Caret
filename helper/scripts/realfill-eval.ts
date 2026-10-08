@@ -63,7 +63,7 @@ const askJev: AskJev = async (req) => {
   const r = await live(req);
   spent += r.costUsd;
   calls++;
-  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ form: current, questions: storableRequest(req, Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers }) + "\n");
+  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ form: current, questions: storableRequest(req, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers }) + "\n");
   return r;
 };
 let current = "";

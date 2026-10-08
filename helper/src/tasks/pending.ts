@@ -368,7 +368,8 @@ function takeLines(d: Disclosure, w: WindowState, lines: readonly string[], max:
 function mintLine(d: Disclosure, w: WindowState, t: string): ModelText | null {
   if (indicatorLine(t) && isIndicatorLine(w, t)) return d.own(t);
   // The whole line is charged, as the ledger always charged it; then its screen text is minted from the view.
-  if (!d.take(w, "candidate", [t])) return null;
+  // A button's line is Caret's "[button] " and the button's label: only the label is the window's.
+  if (!d.take(w, "candidate", [t.startsWith(BUTTON) ? t.slice(BUTTON.length) : t])) return null;
   if (t.startsWith(BUTTON)) {
     const label = d.descriptor(w, t.slice(BUTTON.length));
     return label === null ? null : d.t`[button] ${label}`;
