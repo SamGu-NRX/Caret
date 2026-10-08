@@ -301,6 +301,20 @@ export function saysUnsureField(name: string): string {
 }
 export const UNSURE_FIELD = "Caret wasn't sure your request asks for it";
 
+/**
+ * SCP1: a field an Ask leaves to the user because the request named one section and Caret couldn't tell which section
+ * the field is in: "City: Caret couldn't tell which section this field is in."
+ */
+export const SECTION_UNKNOWN_FIELD = "Caret couldn't tell which section this field is in";
+export function saysSectionUnknownField(name: string): string {
+  return `${field(name)}: ${SECTION_UNKNOWN_FIELD}.`;
+}
+
+/** SCP1: an Ask that named one section, where Caret couldn't tell which section any field Jev chose is in. */
+export function saysSectionUnknown(names: readonly string[]): string {
+  return names.length === 0 ? `Caret couldn't tell which fields are in that section, so it filled nothing. Name the fields you want filled.` : `Caret couldn't tell which section ${list(names, "or")} ${names.length === 1 ? "is" : "are"} in, so it filled nothing. Name the fields you want filled.`;
+}
+
 /** I3: an Ask with no field Jev settled and more unsettled ones than one question lists. */
 export function saysUnsureFields(names: readonly string[]): string {
   return `Caret wasn't sure your request asks for ${list(names, "or")}, so it filled nothing. Name the fields you want filled.`;

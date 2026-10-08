@@ -79,6 +79,11 @@ export const Node = z.object({
   inputKind: z.enum(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea"]).optional(),
   /** W2, page controls only: the autocomplete field name the page gives it (PageControl.autocomplete). */
   autocomplete: AutocompleteToken.optional(),
+  /**
+   * SCP1, page web areas only: the frame's heading list (PageFrame.headings), the sections an Ask's section question
+   * may offer (fill/ask-scope.ts observedSections). It says nothing about which control is under which heading.
+   */
+  headings: z.array(z.string()).optional(),
 });
 export type Node = z.infer<typeof Node>;
 

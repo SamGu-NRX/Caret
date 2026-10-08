@@ -297,6 +297,7 @@ describe("an Ask about a menu whose options the window does not show", () => {
         if (id === "source") return [id, { choice: "any", confidence: 0.9 }];
         if (id === "why") return [id, { choice: "nothingToFill", confidence: 0.9 }];
         if (id === "whose" || id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user" in q.criteria ? "user" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
+        if (id === "section") return [id, { choice: "fields", confidence: 0.99 }];
         if (id.startsWith("s_")) return [id, { choice: /[Tt]he field '(?:Phone|Degree)/u.test(ins) ? "asks" : "not", confidence: 0.99 }];
         if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
         const want = Object.entries(values).find(([label]) => ins.includes(`'${label}'`))?.[1];
@@ -326,7 +327,7 @@ describe("an Ask about a menu whose options the window does not show", () => {
     const degreeOnly: AskJev = async (req) => {
       const r = await jev(req);
       if (req.purpose !== "ask.scope") return r;
-      return { ...r, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: /[Tt]he field 'Degree/u.test(String(q.instructions)) ? "asks" : "not", confidence: 0.99 }])) };
+      return { ...r, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: id === "section" ? "fields" : /[Tt]he field 'Degree/u.test(String(q.instructions)) ? "asks" : "not", confidence: 0.99 }])) };
     };
     const d = readerDesk("greenhouse-apply");
     const e = await planAsk("just the degree", d.model, { values: () => d.memory }, d.about, { askJev: degreeOnly, maker: headsIntentMaker(degreeOnly), writer: null, offerKey: "v4", windowId: d.form.window.windowId, now: T0 }).catch((x: unknown) => x);
@@ -343,7 +344,7 @@ describe("an Ask about a menu whose options the window does not show", () => {
     const settles: AskJev = async (req) => {
       const r = await jev(req);
       if (req.purpose !== "ask.scope") return r;
-      return { ...r, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: /[Tt]he field '(?:Phone|a field Caret leaves to the user)/u.test(String(q.instructions)) ? "asks" : "not", confidence: 0.99 }])) };
+      return { ...r, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: id === "section" ? "fields" : /[Tt]he field '(?:Phone|a field Caret leaves to the user)/u.test(String(q.instructions)) ? "asks" : "not", confidence: 0.99 }])) };
     };
     const out = await planAsk("just the degree and my phone number", d.model, { values: () => d.memory }, d.about, { askJev: settles, maker: headsIntentMaker(settles), writer: null, offerKey: "v4", windowId: d.form.window.windowId, now: T0 }).catch((x: unknown) => x);
     // What the user reads: the refusal, or the draft's left-to-you sentence. (The Ask scope's local fingerprints of the

@@ -194,7 +194,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
       const u = view !== null && f.parentFrameId < 0 ? union(members.map((m) => screenRect(view, m.rect))) : null;
       return u === null ? {} : { frame: u };
     };
-    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}`, ...(view !== null && f.parentFrameId < 0 ? onScreen([0, 0, view.viewport[0], view.viewport[1]]) : {}) });
+    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}`, ...(f.headings.length === 0 ? {} : { headings: f.headings }), ...(view !== null && f.parentFrameId < 0 ? onScreen([0, 0, view.viewport[0], view.viewport[1]]) : {}) });
     const groups = new Set<string>();
     for (const c of f.controls) {
       let parent = frameKey(f.frameId);

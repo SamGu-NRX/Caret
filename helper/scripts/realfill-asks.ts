@@ -114,6 +114,8 @@ const fixtureIds = new Set<string>();
  * scope gets a value and scores wrong: it measures what code does with a perfect scope answer, not how a real model
  * scores.
  */
+/** SCP1: the section each ask's instruction names, hand-labelled (ask-section-labels.json), for the oracle's section question. */
+const SECTION_LABELS = (JSON.parse(readFileSync(join(here, "ask-section-labels.json"), "utf8")) as { labels: Record<string, string> }).labels;
 const oracle: AskJev = async (req) => {
   const ask = asks.find((x) => x.id === current.replace(/\+pick$/u, ""));
   const form = corpus.forms.find((f) => f.id === ask?.form);
@@ -175,6 +177,13 @@ const oracle: AskJev = async (req) => {
     // A must-refuse ask's head refuses with its reason, or plans a press, as a model that recognises refusals would.
     // A fill route is the whole form when the ask expects a value for every field of it.
     if (id === "route") pick(ask?.reason === "submit" || ask?.reason === "send" ? "plan" : ask?.expected === "refuse" && ask.reason !== undefined ? "refuse" : form !== undefined && form.fields.every((f) => wanted(f.label)) ? "all" : "some");
+    // SCP1: the section question, by the hand label of the section the instruction names (ask-section-labels.json): that
+    // heading's option, else the whole form when the ask expects every field of it, else particular fields.
+    else if (id === "section") {
+      const label = SECTION_LABELS[ask?.id ?? ""];
+      const named = label === undefined ? undefined : Object.entries(q.criteria).find(([k, d]) => k.startsWith("sec") && d?.includes(`'${label}'`) === true)?.[0];
+      pick(named ?? (form !== undefined && form.fields.every((f) => wanted(f.label)) ? "whole" : "fields"));
+    }
     // The scope ask's label, which may hold an apostrophe ("Guest's full name"), ends where the wording goes on.
     else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(/[Tt]he field '(.*?)'(?: is a |\. Kind: )/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
     else if (id === "why") pick(ask?.reason === "payment" ? "payment" : ask?.reason === "neverTyped" ? "neverTyped" : ask?.reason === "noSuchField" ? "noSuchField" : "nothingToFill");
@@ -209,7 +218,7 @@ const oracle: AskJev = async (req) => {
   // why, source and whose, and the scope ask (ask.scope) settles fields; the writer maker's field yes/no heads say no.
   const kinds = [
     ...["route", "why", "source", "whose"].map((h) => `ask.heads:${h}`),
-    "ask.scope:field",
+    "ask.scope:field", "ask.scope:section",
     ...["route", "why", "scope", "source", "whose", "literal"].map((h) => `intent.route:${h}`),
     "ask.confirm:all", "ask.confirm:field", "codeplan.asksAbout:field",
     "fill.whose:whose", "fill.whose:owner", "fill.values:whose", "fill.values:owner", "fill.values:value", "fill.values:answer",

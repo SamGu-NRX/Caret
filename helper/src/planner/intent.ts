@@ -15,23 +15,23 @@ import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { headingsBefore } from "../fill/ask-scope.ts";
+import { headingsBefore, observedSections, sectionName } from "../fill/ask-scope.ts";
 import { inWebArea, type Control } from "../fill/controls.ts";
 import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
-import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
+import { mentionedKind, secretText, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
 import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, senderOf, type NamedSource } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { peopleOnScreen, PRONOUN_DETAILS, type PersonCandidate } from "./people.ts";
-import { SAYS, SaidError, Unclear, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn, type AskPart } from "./says.ts";
+import { SAYS, SaidError, Unclear, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSectionUnknown, saysSsn, type AskPart } from "./says.ts";
 
 export const ROUTES = ["fill", "plan", "ask", "refuse"] as const;
 export type AskRoute = (typeof ROUTES)[number];
 /** Why an intent refuses, or what it asks; each has a sentence in says.ts (sayWhy). */
-export const REASONS = ["none", "neverTyped", "noSuchField", "notOnScreen", "pressOrSend", "payment", "otherPersonUnnamed", "nothingToFill", "whichFields", "whichSource", "whichPerson"] as const;
+export const REASONS = ["none", "neverTyped", "noSuchField", "notOnScreen", "pressOrSend", "payment", "otherPersonUnnamed", "nothingToFill", "whichFields", "whichSource", "whichPerson", "sectionUnknown"] as const;
 export type Reason = (typeof REASONS)[number];
 
 export interface AskIntent {
@@ -96,6 +96,17 @@ export interface AskIntent {
    * because no question asks about them (they are too many for one, or nothing is unclear). Each is the user's, said.
    */
   unsure?: readonly string[];
+  /**
+   * SCP1: the fields (refs) Jev chose that the Ask does not fill because the request named one section and Caret
+   * couldn't tell which section each is in (intent-heads.ts sectionVeto). Each is the user's, said. Only the heads
+   * maker sets it; on a refusal with why "sectionUnknown", the fields that refusal names.
+   */
+  sectionless?: readonly string[];
+  /**
+   * SCP1: the one section of the form the request named, as both wordings of the section question settled it (its
+   * heading text); absent when it named none. Held by the Ask's scope (ask-scope.ts AskScope.section).
+   */
+  namedSection?: string;
 }
 
 /**
@@ -139,6 +150,12 @@ export interface IntentSnapshot {
    */
   uploads: IntentField[];
   sections: { ref: string; name: string }[];
+  /**
+   * SCP1: the sections the window shows by heading (fill/ask-scope.ts observedSections), in document order, as the
+   * ledger took them: the only sections an Ask's section question offers (intent-heads.ts sectionRequest). `repeated`
+   * is true for a heading the window shows more than once. Refs sec1, sec2, ...
+   */
+  headings: { ref: string; name: string; repeated: boolean }[];
   /** Other open windows a value could come from, most recent first, by title, and a mail's sender when it shows one. */
   windows: { ref: string; windowId: string; app: string; title: string; from: string | null }[];
   /** Labels of what the user told Caret (About entries, people), never their values. */
@@ -162,6 +179,8 @@ export interface IntentSnapshot {
 
 /** Fields and windows one snapshot lists at most: the plan's provisional inventory limit (section 4), and sources by recency. */
 export const MAX_INTENT_FIELDS = 40;
+/** SCP1: headings one snapshot offers as sections at most, as many as fields; not measured. A heading past it is never offered. */
+export const MAX_INTENT_HEADINGS = 40;
 export const MAX_INTENT_WINDOWS = 8;
 
 /** Relations that name a person without a name ("my sister"). Written for common requests, not measured. */
@@ -227,6 +246,13 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
     uploads.push({ ref: `u${uploads.length + 1}`, key: n.key, name, section: d.section, heading, control: "text", filled: false, neverTyped: null, upload: true });
   }
+  // SCP1: the sections the window shows, for the section question. A heading the ledger does not take is never offered.
+  const shown = observedSections(w);
+  const sectionHeadings: IntentSnapshot["headings"] = [];
+  for (const name of shown.names) {
+    if (sectionHeadings.length >= MAX_INTENT_HEADINGS) break;
+    if (!secretText(name) && ledger.take(w, "descriptor", [name])) sectionHeadings.push({ ref: `sec${sectionHeadings.length + 1}`, name, repeated: shown.repeated.has(sectionName(name)) });
+  }
   // Other windows by title, most recently focused first. A title is what names a source ("Morgan's email"); a
   // window whose title does not fit what the ledger allows is left out.
   const windows: IntentSnapshot["windows"] = [];
@@ -254,6 +280,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     fields,
     uploads,
     sections,
+    headings: sectionHeadings,
     windows,
     memory: memoryLabels,
     persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),
@@ -273,7 +300,7 @@ export type CheckedIntent =
   | { route: "plan" };
 
 /** The plan error code a refusal or an ask is reported under (protocol PlanErrorCode, unchanged). */
-const REFUSE_CODE = { neverTyped: "notEditable", noSuchField: "unknownTarget", notOnScreen: "noWindow", pressOrSend: "unsupportedStep", payment: "unsupportedStep", otherPersonUnnamed: "unsure", nothingToFill: "nothingToDo" } as const;
+const REFUSE_CODE = { neverTyped: "notEditable", noSuchField: "unknownTarget", notOnScreen: "noWindow", pressOrSend: "unsupportedStep", payment: "unsupportedStep", otherPersonUnnamed: "unsure", nothingToFill: "nothingToDo", sectionUnknown: "unsure" } as const;
 
 /** What an Ask says for each reason (says.ts). A never-typed refusal names the kind the instruction or a field names. */
 function sayWhy(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readonly IntentField[] = [], kind: SensitiveKind | null = null): string {
@@ -302,6 +329,8 @@ function sayWhy(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: read
       return SAYS.whichFields;
     case "whichSource":
       return SAYS.whichSource;
+    case "sectionUnknown":
+      return saysSectionUnknown(fields.map((f) => f.name));
   }
 }
 
@@ -345,7 +374,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
   // and asked "Where should Caret copy from?" for "grab my company and title off my LinkedIn".
   const vague = intent.route === "refuse" && (intent.why === "none" || intent.why === "nothingToFill" || intent.why === "notOnScreen");
   if (snap.missing && (intent.route === "fill" || intent.route === "ask" || intent.route === "plan" || vague)) stop("notOnScreen", snap);
-  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap);
+  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap, intent.why === "sectionUnknown" ? (intent.sectionless ?? []).flatMap((r) => snap.fields.find((f) => f.ref === r) ?? []) : []);
   if (intent.route === "plan") return { route: "plan" };
 
   const byRef = new Map(snap.fields.map((f) => [f.ref, f]));

@@ -1328,7 +1328,7 @@ export class Helper {
     try {
       // I2 ruling C: an Ask's goal is held to its ScopeSet, which starts with the Ask's own scope (none, when the Ask came
       // from a window with no field) and gains a window's only by the scope question, once.
-      const scopes = ask === undefined ? undefined : scopeSet(ask.askId, ask.scope?.person ?? null, ask.scope === null ? [] : [ask.scope]);
+      const scopes = ask === undefined ? undefined : scopeSet(ask.askId, ask.scope?.person ?? null, ask.scope === null ? [] : [ask.scope], ask.scope?.section ?? null);
       const ticket = ask?.ticket ?? null;
       const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session, ...(scopes === undefined ? {} : { scopes: await this.withPageScope(ticket, instruction, first, scopes) }) }) : await this.goalPlan(goalId, instruction, [], first, [], scopes, ticket);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
@@ -1449,22 +1449,23 @@ export class Helper {
    * the question was sent. Caret cannot ask the user mid-goal, so an unclear field is not chosen. With no Jev or no such
    * window, a scope of no field: nothing is written there.
    */
-  private async settleScopeFor(ticket: SettleTicket, instruction: string, windowId: string, of: { askId: string; person: string | null }, document?: string | null): Promise<AskScope> {
-    const r = await this.settleRequest(ticket, instruction, windowId, of.askId, document);
-    return askScope(windowId, r.document, r.asks, r.seen, of.person, of.askId);
+  private async settleScopeFor(ticket: SettleTicket, instruction: string, windowId: string, of: { askId: string; person: string | null; section: string | null }, document?: string | null): Promise<AskScope> {
+    // SCP1: the section the Ask named holds here too, whatever this window's section answer says.
+    const r = await this.settleRequest(ticket, instruction, windowId, of.askId, document, of.section);
+    return askScope(windowId, r.document, r.asks, r.seen, of.person, of.askId, [], of.section);
   }
 
   /** The per-field scope question on a window for a request holding a ticket: what it settled (fill/ask-scope.ts Settled). */
-  private async settleRequest(_ticket: SettleTicket, instruction: string, windowId: string, askId: string, document?: string | null): Promise<Settled> {
+  private async settleRequest(_ticket: SettleTicket, instruction: string, windowId: string, askId: string, document?: string | null, held: string | null = null): Promise<Settled> {
     const reader = this.documentReader();
     const doc = document !== undefined ? document : reader === null ? null : reader(windowId);
     const w = this.model.windows.get(windowId);
     const ask = this.ask;
-    if (w === undefined || ask === null) return { askId, windowId, document: doc, seen: {}, asks: [], unclear: [] };
+    if (w === undefined || ask === null) return { askId, windowId, document: doc, seen: {}, asks: [], unclear: [], section: held };
     const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory());
     const seen = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldFingerprint(w, f.key)]));
-    const { asks, unclear } = await settleFields(snap, ask);
-    return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unclear: unclear.map((f) => f.key) };
+    const { asks, unclear, sectionless, section } = await settleFields(snap, ask, undefined, held);
+    return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unclear: unclear.map((f) => f.key), sectionless: sectionless.map((f) => f.key), section };
   }
 
 
@@ -1484,7 +1485,7 @@ export class Helper {
    * A page goal (P2): the page planner over the Ask's scope on that page, fill's picks gated by fill. Throws GoalError
    * when nothing can be offered; with no Jev, no page engine document, or no page, it refuses.
    */
-  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet } = {}): Promise<GoalPlan> {
+  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet } = {}): Promise<GoalPlan> {
     const ask = this.ask;
     const pageDocument = this.opts.pageDocument;
     if (ask === null) throw new GoalError("unchecked", "Jev is off, so Caret can't choose this page's values");
@@ -1545,7 +1546,7 @@ export class Helper {
     queueMicrotask(() => this.goals.forgetSource(goalId, windows));
   }
 
-  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet }): Promise<GoalPlan> {
+  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet }): Promise<GoalPlan> {
     return planPage(this.model, {
       goalId,
       ...(sources === this.model ? {} : { sources }),
@@ -1555,6 +1556,7 @@ export class Helper {
       kind: page.kind,
       section: page.section,
       ...(page.unsure === undefined ? {} : { unsure: page.unsure }),
+      ...(page.sectionless === undefined ? {} : { sectionless: page.sectionless }),
       about: this.aboutValues(),
       askJev: ask,
       now: this.now(),
@@ -1743,7 +1745,7 @@ export class Helper {
           if (this.ask === null) return null;
           const r = await this.settleRequest(settleTicket("freshAsk"), instruction, id, randomUUID());
           requestSettled = r;
-          return askScope(r.windowId, r.document, r.asks, r.seen, null, r.askId);
+          return askScope(r.windowId, r.document, r.asks, r.seen, null, r.askId, [], r.section ?? null);
         }, this.now(), this.documentReader());
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;

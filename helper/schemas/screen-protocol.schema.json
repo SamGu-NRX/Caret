@@ -322,6 +322,12 @@
                       "bday-month",
                       "bday-year"
                     ]
+                  },
+                  "headings": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 },
                 "required": [

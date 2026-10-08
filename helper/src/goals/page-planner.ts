@@ -23,7 +23,7 @@ import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import type { EventClock } from "../offers/event-time.ts";
 import { writtenFields } from "../offers/fill-popup.ts";
 import { fieldName } from "../planner/planner.ts";
-import { saysNoValue, UNSURE_FIELD } from "../planner/says.ts";
+import { saysNoValue, SECTION_UNKNOWN_FIELD, UNSURE_FIELD } from "../planner/says.ts";
 import { handoffWhy } from "../planner/validate.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import type { DraftPlan } from "../codemode/types.ts";
@@ -112,6 +112,8 @@ export interface PlanPageOptions {
    * is the user's, said before Tab (planner/ask.ts AskGoal.page.unsure). Never in `scope`.
    */
   unsure?: readonly string[];
+  /** SCP1: the empty fields Jev chose that the Ask leaves to the user because Caret couldn't tell which section each is in. Never in `scope`. */
+  sectionless?: readonly string[];
   /** What the user told Caret (fill/about.ts), as a Fill all offers it. */
   about: readonly AboutValue[];
   askJev: AskJev;
@@ -295,6 +297,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   for (const k of o.unsure ?? []) {
     const n = w.nodes.get(k);
     if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, UNSURE_FIELD);
+  }
+  for (const k of o.sectionless ?? []) {
+    const n = w.nodes.get(k);
+    if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, SECTION_UNKNOWN_FIELD);
   }
   // Fields of a kind Caret never types that the scope takes are named before Tab.
   const scopeKeys = o.scope === null || o.kind === "all" ? null : new Set(o.kind === "list" ? o.scope.fields : []);

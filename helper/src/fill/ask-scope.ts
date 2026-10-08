@@ -20,6 +20,13 @@ export interface Settled {
   readonly seen: Readonly<Record<string, string>>;
   readonly asks: readonly string[];
   readonly unclear: readonly string[];
+  /**
+   * SCP1: fields Jev chose whose section Caret couldn't tell, when the request named one section (intent-heads.ts
+   * sectionVeto): never in `asks`, each the user's, said.
+   */
+  readonly sectionless?: readonly string[];
+  /** SCP1: the one section the request named (intent-heads.ts sectionVeto), held by every later settlement of it; null for none. */
+  readonly section?: string | null;
 }
 
 /** Which page document a window shows now (the helper's page engine, helper.ts HelperOptions.pageDocument). */
@@ -55,9 +62,15 @@ export interface AskScope {
    * choose: "asks" below the cutoff, or in one wording only): user-authorized, recorded apart from Jev's choices.
    */
   readonly picked: ReadonlySet<string>;
+  /**
+   * SCP1: the one section of the form the Ask's request named, as its section question settled it (intent-heads.ts
+   * sectionVeto), or null when it named none. Every later settlement of the same Ask holds to it (a next page, a reply
+   * window), so no later section answer widens the Ask.
+   */
+  readonly section: string | null;
 }
 
-export function askScope(windowId: string, document: string | null, keys: Iterable<string>, seen: Readonly<Record<string, string>>, person: string | null, askId: string, picked: Iterable<string> = []): AskScope {
+export function askScope(windowId: string, document: string | null, keys: Iterable<string>, seen: Readonly<Record<string, string>>, person: string | null, askId: string, picked: Iterable<string> = [], section: string | null = null): AskScope {
   const fields = new Set(keys);
   const own: Record<string, string> = {};
   for (const k of fields) {
@@ -67,7 +80,7 @@ export function askScope(windowId: string, document: string | null, keys: Iterab
     own[k] = s;
   }
   const byUser = new Set([...picked].filter((k) => fields.has(k)));
-  return Object.freeze({ askId, windowId, document, fields, seen: Object.freeze(own), person, picked: byUser });
+  return Object.freeze({ askId, windowId, document, fields, seen: Object.freeze(own), person, picked: byUser, section });
 }
 
 /**
@@ -80,16 +93,20 @@ export interface ScopeSet {
   /** The Ask the goal is of (AskScope.askId): every scope settled for it carries this id. */
   readonly askId: string;
   readonly person: string | null;
+  /** SCP1: the one section the Ask's request named (AskScope.section), which every scope settled for it holds to; null for none. */
+  readonly section: string | null;
   readonly scopes: Readonly<Record<string, AskScope>>;
 }
 export const scopeKey = (windowId: string, document: string | null): string => `${windowId}\n${document ?? ""}`;
-export function scopeSet(askId: string, person: string | null, scopes: readonly AskScope[] = []): ScopeSet {
+export function scopeSet(askId: string, person: string | null, scopes: readonly AskScope[] = [], section: string | null = null): ScopeSet {
   if (scopes.some((x) => x.askId !== askId)) throw new Error("a goal's scopes are all of its one Ask");
-  return Object.freeze({ ask: true, askId, person, scopes: Object.freeze(Object.fromEntries(scopes.map((x) => [scopeKey(x.windowId, x.document), x]))) });
+  if (scopes.some((x) => x.section !== section)) throw new Error("a goal's scopes all hold to the one section its Ask named");
+  return Object.freeze({ ask: true, askId, person, section, scopes: Object.freeze(Object.fromEntries(scopes.map((x) => [scopeKey(x.windowId, x.document), x]))) });
 }
 /** The set with `x` added; a window and document it already holds keeps its first scope. */
 export function withScope(set: ScopeSet, x: AskScope): ScopeSet {
   if (x.askId !== set.askId) throw new Error(`a scope of Ask ${x.askId} cannot join the goal of Ask ${set.askId}`);
+  if (x.section !== set.section) throw new Error(`a scope held to section ${JSON.stringify(x.section)} cannot join a goal held to ${JSON.stringify(set.section)}`);
   const k = scopeKey(x.windowId, x.document);
   return set.scopes[k] !== undefined ? set : Object.freeze({ ...set, scopes: Object.freeze({ ...set.scopes, [k]: x }) });
 }
@@ -112,6 +129,71 @@ export function headingsBefore(w: WindowState): Map<string, string | null> {
     else out.set(n.key, current);
   }
   return out;
+}
+
+/** How the section veto compares section names: case, Unicode width and runs of whitespace aside. */
+export const sectionName = (s: string): string => s.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase();
+
+/**
+ * SCP1: the section names a window shows, in document order, each once (`repeated` holds, by sectionName, those shown
+ * more than once): its AXHeading nodes' text, and on a page each frame's heading list (PageFrame.headings, carried on
+ * its web area node). These are the only sections an Ask's section question offers (intent-heads.ts).
+ */
+export function observedSections(w: WindowState): { names: string[]; repeated: Set<string> } {
+  const nodes = [...w.nodes.values()];
+  const all: string[] = [];
+  for (const n of nodes) {
+    if (n.role === "AXHeading") {
+      const t = headingText(nodes, n);
+      if (t !== null) all.push(t);
+    }
+    for (const h of n.headings ?? []) if (h.trim() !== "") all.push(h.trim());
+  }
+  const names: string[] = [];
+  const repeated = new Set<string>();
+  const seen = new Set<string>();
+  for (const t of all) {
+    const k = sectionName(t);
+    if (seen.has(k)) {
+      repeated.add(k);
+      continue;
+    }
+    seen.add(k);
+    names.push(t);
+  }
+  return { names, repeated };
+}
+
+/**
+ * SCP1: what the window shows of which section each field is in, by node key: the nearest heading before it in
+ * document order and its group or fieldset label (describeField's section). A page's frame heading list says nothing
+ * about which control is under which heading, so on a page this is only a radio group's question.
+ */
+export function sectionEvidence(w: WindowState): (key: string) => string[] {
+  const before = headingsBefore(w);
+  return (key) => {
+    const n = w.nodes.get(key);
+    if (n === undefined) return [];
+    return [before.get(key) ?? null, describeField(w, n).section].filter((x): x is string => x !== null && x.trim() !== "");
+  };
+}
+
+/**
+ * SCP1: whether a field is in section `section`, by what the window shows (sectionEvidence), against the sections it
+ * shows (observedSections). Only evidence that names one of those sections counts: a group labelled "Address" says
+ * nothing about which heading it sits under. "in": the evidence names `section` and no other shown section; "outside":
+ * it names another shown section and not `section`; "unknown": it names none, names `section` beside another (they
+ * conflict), or `section` is shown more than once, so which one is meant cannot be told.
+ */
+export type Membership = "in" | "outside" | "unknown";
+export function membership(evidence: readonly string[], section: string, shown: { names: readonly string[]; repeated: ReadonlySet<string> }): Membership {
+  const target = sectionName(section);
+  const names = new Set(shown.names.map(sectionName));
+  const named = new Set(evidence.map(sectionName).filter((x) => names.has(x)));
+  if (named.size === 0) return "unknown";
+  if (!named.has(target)) return "outside";
+  if (named.size > 1 || shown.repeated.has(target)) return "unknown";
+  return "in";
 }
 
 /**
@@ -181,7 +263,7 @@ export type Origin = Authority | { readonly kind: "askGoal"; readonly scopes: Sc
 /** Whether two scopes are the same settled scope, by content: a goal plan is cloned when it is offered. */
 export function sameScope(a: AskScope, b: AskScope): boolean {
   if (a === b) return true;
-  if (a.askId !== b.askId || a.windowId !== b.windowId || a.document !== b.document || a.person !== b.person || a.fields.size !== b.fields.size || a.picked.size !== b.picked.size) return false;
+  if (a.askId !== b.askId || a.windowId !== b.windowId || a.document !== b.document || a.person !== b.person || a.section !== b.section || a.fields.size !== b.fields.size || a.picked.size !== b.picked.size) return false;
   for (const k of a.picked) if (!b.picked.has(k)) return false;
   for (const k of a.fields) if (!b.fields.has(k) || a.seen[k] !== b.seen[k]) return false;
   return true;

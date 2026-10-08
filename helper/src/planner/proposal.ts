@@ -90,7 +90,7 @@ export function planSpec(d: PlanDraft): PopupSpecT {
   const unsure = d.unsure ?? [];
   if (unsure.length > 0) {
     const shown = unsure.slice(0, MAX_FILL_ROWS);
-    const rows = shown.map((u, i) => ({ label: i === 0 ? "Left to you" : "", value: { text: saysUnsureField(u.name), ref: { rule: "fieldLabel", derived: [node(windowId, u.key)] } }, secondary: true as const }));
+    const rows = shown.map((u, i) => ({ label: i === 0 ? "Left to you" : "", value: { text: u.says ?? saysUnsureField(u.name), ref: { rule: "fieldLabel", derived: [node(windowId, u.key)] } }, secondary: true as const }));
     const more = unsure.length - shown.length;
     if (more > 0) rows.push({ label: "", value: { text: `and ${more} more`, ref: { rule: "count", derived: unsure.slice(MAX_FILL_ROWS).map((u) => node(windowId, u.key)) } }, secondary: true });
     blocks.push({ type: "facts", rows });

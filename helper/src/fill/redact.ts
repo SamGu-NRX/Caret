@@ -252,13 +252,17 @@ function build(w: WindowState): WindowState {
       gone.add(n.key);
       continue;
     }
-    if (value === n.value && label === n.label) nodes.set(n.key, n);
+    // SCP1: a page's heading that names a secret is left out, as a label that names one is.
+    const headings = n.headings?.filter((h) => !secretText(h));
+    if (value === n.value && label === n.label && headings?.length === n.headings?.length) nodes.set(n.key, n);
     else {
       const m: Node = { ...n };
       if (value === undefined) delete m.value;
       else m.value = value;
       if (label === undefined) delete m.label;
       else m.label = label;
+      if (headings === undefined || headings.length === 0) delete m.headings;
+      else m.headings = headings;
       nodes.set(n.key, m);
     }
   }
