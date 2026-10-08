@@ -92,7 +92,7 @@ export class Store {
 
   constructor(dir: string) {
     this.dir = dir;
-    // SQLite writes through the file it opens here (and its -wal and -shm beside it), so this check covers every write.
+    // The database path is checked once, here; SQLite then writes that file and its -wal and -shm beside it.
     assertLocalStorePath(join(dir, "screen.sqlite"));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     // mkdirSync's mode applies only to a directory it creates; one that was already there is closed now (CodeRabbit on PR #5).

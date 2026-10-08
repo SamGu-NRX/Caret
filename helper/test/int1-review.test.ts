@@ -6,11 +6,12 @@ import { Disclosure } from "../src/privacy/disclosure.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { node, snap, text } from "./builders.ts";
 import { ownedOf, ownedStale, unitsHolding } from "../src/fill/note-unit.ts";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { loadKey } from "../src/sealed.ts";
 import { join } from "node:path";
 import { DailySpend, localDay } from "../src/engines/decide/daily-cap.ts";
-import { SyncedStorePath } from "../src/privacy/store-path.ts";
+import { storePathRefusal, SyncedStorePath } from "../src/privacy/store-path.ts";
 
 const SECRET = "API key: Zq7x";
 
@@ -138,4 +139,38 @@ describe("INT1 review 3", () => {
     }
   });
 
+});
+
+describe("INT1 review 4", () => {
+  // A scratch folder outside every root: under HOME, which is outside the roots unless HOME is inside one (then skipped).
+  const scratchOutside = (): string | null => {
+    const d = mkdtempSync(join(homedir(), ".caret-int1-review-"));
+    if (storePathRefusal(join(d, "x")) !== null) return d;
+    rmSync(d, { recursive: true, force: true });
+    return null;
+  };
+
+  it("an existing key outside the roots is refused like a new one", () => {
+    const d = scratchOutside();
+    if (d === null) return;
+    try {
+      const key = join(d, "memory.key");
+      writeFileSync(key, Buffer.alloc(32, 7), { mode: 0o600 });
+      expect(() => loadKey(key)).toThrow(SyncedStorePath);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("the spend log checks its path before making its folder", () => {
+    const d = scratchOutside();
+    if (d === null) return;
+    try {
+      const spend = new DailySpend({ dir: join(d, "spend"), capUsd: 1 });
+      expect(() => spend.reserve(0.01).settle(0.01, 1)).toThrow(SyncedStorePath);
+      expect(existsSync(join(d, "spend"))).toBe(false);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
 });

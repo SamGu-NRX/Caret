@@ -468,11 +468,11 @@ describe("what the veto leaves as it was (preservation)", () => {
     expect(chosenNames(s, vetoed.fields)).toEqual(EQUIPMENT);
   });
 
-  it("fails loudly when Jev leaves the section question unanswered or answers outside its options", () => {
+  it("fails loudly when Jev leaves the section question unanswered; an answer outside its options settles no section", () => {
     const s = snapFor(desk({ reader: readerForm() }));
     const asks = (): A => ({ choice: "asks", confidence: 0.99 });
     expect(() => readHeads(s, heads(s), pair(s, asks, () => undefined))).toThrow(/no answer to the section question/u);
-    expect(() => readHeads(s, heads(s), pair(s, asks, () => ({ choice: "sec99", confidence: 0.99 })))).toThrow(/not one of its options/u);
+    expect(sectionVerdict(s, pair(s, asks, () => ({ choice: "sec99", confidence: 0.99 })))).toBeNull();
   });
 
   it("authorises a subset of what it authorised before the veto, for random answers", () => {
@@ -1198,7 +1198,7 @@ describe("INT1 review 2 P2: a section answer counts only when both wordings offe
     const left = s.headings.find((h) => !offered[0]!.has(h.ref) && !offered[1]!.has(h.ref));
     expect(left).toBeDefined();
     const answer = (choice: string): JevResult => ({ model: "m", answers: { [SECTION_QUESTION]: { choice, confidence: 0.99 } }, inputTokens: 0, latencyMs: 0, costUsd: 0 });
-    expect(() => sectionVerdict(s, [answer(left!.ref), answer(left!.ref)])).toThrow(PlannerError);
+    expect(sectionVerdict(s, [answer(left!.ref), answer(left!.ref)])).toBeNull();
     // A heading both wordings listed still settles.
     const both = s.headings.find((h) => offered[0]!.has(h.ref) && offered[1]!.has(h.ref));
     expect(sectionVerdict(s, [answer(both!.ref), answer(both!.ref)])).toEqual({ kind: "section", name: both!.name });
@@ -1221,11 +1221,12 @@ describe("INT1 review 3: a split section answer is a disagreement", () => {
     const onlyFirst = s.headings.find((h) => offered[0]!.has(h.ref) && !offered[1]!.has(h.ref));
     const onlySecond = s.headings.find((h) => !offered[0]!.has(h.ref) && offered[1]!.has(h.ref));
     const one = onlyFirst ?? onlySecond;
-    // The two wordings list sections in different orders, so with a bounded list one offers a heading the other does not.
+    // The two wordings' own words differ in length, so at some Ask length the bound fits a different number of names.
     expect(one).toBeDefined();
     const pair: [JevResult, JevResult] = onlyFirst !== undefined ? [answer(onlyFirst.ref), answer("unlisted")] : [answer("unlisted"), answer(onlySecond!.ref)];
     expect(sectionVerdict(s, pair)).toBeNull();
-    // Both choosing a heading only one of them offered: the other's answer is outside its own options, which throws.
-    expect(() => sectionVerdict(s, [answer(one!.ref), answer(one!.ref)])).toThrow(PlannerError);
+    // Both choosing a heading only one of them offered: the other's answer is outside its own options, so the verdict
+    // fails closed (null), never throws.
+    expect(sectionVerdict(s, [answer(one!.ref), answer(one!.ref)])).toBeNull();
   });
 });

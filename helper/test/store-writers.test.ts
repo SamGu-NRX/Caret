@@ -1,22 +1,22 @@
 // Every file a helper store writes goes through privacy/store-path.ts, which holds it to local, non-synced roots. The
-// guarantee is structural: no module under helper/src may use a write-capable fs function (test/fs-writers.ts) except
-// the modules listed in ALLOWED, each with its reason. The allowed modules other than the writer check their own paths,
-// so each is aimed below at a folder outside every root and must refuse.
+// guarantee is structural: outside ALLOWED, each with its reason, no module under helper/src imports anything from node:fs
+// but the functions that cannot write a file's content, or anything from node:sqlite (test/fs-writers.ts). The allowed
+// modules that write check their own paths, so each is aimed below at a folder outside every root and must refuse.
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { SyncedStorePath } from "../src/privacy/store-path.ts";
+import { storePathRefusal, SyncedStorePath } from "../src/privacy/store-path.ts";
 import { Store } from "../src/store.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { RecoveryJournal } from "../src/executor/journal.ts";
 import { MemoryDocumentStore } from "../src/memory/documents.ts";
 import { migrateSealedMemory } from "../src/memory/migrate.ts";
 import { seal } from "../src/sealed.ts";
-import { fsWrites } from "./fs-writers.ts";
+import { fsImportViolations } from "./fs-writers.ts";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
@@ -28,6 +28,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   "store.ts": "opens its SQLite database at a checked path; SQLite writes only through that file and its -wal and -shm beside it",
   "patterns/memory.ts": "opens its SQLite database at a checked path; SQLite writes only through that file and its -wal and -shm beside it",
   "executor/journal.ts": "opens its SQLite database at a checked path; SQLite writes only through that file and its -wal and -shm beside it",
+  "engines/attach.ts": "opens an attachment read-only (O_RDONLY | O_NOFOLLOW) to check and read it; writes nothing",
 };
 
 // A folder at the filesystem's root is outside every root wherever HOME is, and this user cannot create it: a module
@@ -44,20 +45,21 @@ const REFUSES: Record<string, () => unknown> = {
 };
 
 describe("every file a helper store writes goes through the checked writer", () => {
-  it("no module but the allowed ones uses a write-capable fs function", () => {
-    const found = files(SRC).map((f) => relative(SRC, f)).flatMap((f) => (ALLOWED[f] !== undefined ? [] : fsWrites(readFileSync(join(SRC, f), "utf8")).map((w) => `${f}: ${w}`)));
+  it("no module outside the allowlist imports a function that can write a file", () => {
+    const found = files(SRC).map((f) => relative(SRC, f)).flatMap((f) => (ALLOWED[f] !== undefined ? [] : fsImportViolations(readFileSync(join(SRC, f), "utf8")).map((w) => `${f}: ${w}`)));
     expect(found).toEqual([]);
   });
 
   it("every allowed module other than the writer refuses a folder outside the roots", () => {
-    expect(Object.keys(ALLOWED).filter((f) => f !== "privacy/store-path.ts").sort()).toEqual(Object.keys(REFUSES).sort());
+    expect(Object.keys(ALLOWED).filter((f) => f !== "privacy/store-path.ts" && f !== "engines/attach.ts").sort()).toEqual(Object.keys(REFUSES).sort());
     for (const [file, run] of Object.entries(REFUSES)) expect(run, file).toThrow(SyncedStorePath);
   });
 
   it("the memory migration refuses a staging folder outside the roots, when the memory folder is itself a root", () => {
-    // Run with HOME in a folder outside the temporary directory, so the app's own memory folder (a root) has a parent that
-    // is not one: the staging folder made beside it would fall outside every root. A child process, so HOME is its own.
-    const home = join("/Users/Shared", `caret-store-writers-home-${process.pid}`);
+    // Run with HOME in a folder outside every root, so the app's own memory folder (a root) has a parent that is not one:
+    // the staging folder made beside it would fall outside every root. A child process, so HOME is its own.
+    const home = join(homedir(), `.caret-store-writers-home-${process.pid}`);
+    if (storePathRefusal(join(home, "x")) === null) return;
     const data = join(tmp, "data");
     new MemoryStore(data).close();
     const key = readFileSync(join(data, "memory.key"));
@@ -85,34 +87,27 @@ describe("every file a helper store writes goes through the checked writer", () 
     }
   });
 
-  it("the structural check finds each write-capable use, read from imports and calls", () => {
-    const has = (src: string): boolean => fsWrites(src).length > 0;
+  it("the import rule refuses every binding but the permitted ones, however it is spelled", () => {
+    const breaks = (src: string): boolean => fsImportViolations(src).length > 0;
     for (const src of [
-      'import { appendFileSync } from "node:fs"; appendFileSync(p, "x");',
-      'import { writeFile } from "node:fs"; writeFile(p, "x", () => {});',
-      'import * as fs from "node:fs"; fs.writeFileSync(p, "x");',
-      'import fs from "node:fs"; fs.promises.appendFile(p, "x");',
-      'import { open } from "node:fs/promises"; await open(p, "a");',
-      'import { openSync } from "node:fs"; const flags = "w"; openSync(p, flags);',
-      'import { openSync, constants } from "node:fs"; openSync(p, constants.O_RDWR);',
-      'import { copyFileSync } from "node:fs"; copyFileSync(a, b);',
-      'import { renameSync } from "fs"; renameSync(a, b);',
-      'import { cp } from "node:fs/promises"; await cp(a, b);',
-      'import { truncateSync } from "node:fs"; truncateSync(p);',
-      'import { createWriteStream } from "node:fs"; createWriteStream(p);',
-      'import { createReadStream } from "node:fs"; createReadStream(p, { flags: "a+" });',
-      'import * as fs from "node:fs"; const f = fs; f.writeFileSync(p, "x");',
-      'import * as fs from "node:fs"; fs["write" + "FileSync"](p, "x");',
+      'import { appendFileSync } from "node:fs";',
+      'import { openSync as open } from "node:fs";',
+      'import { promises } from "node:fs";',
+      'import * as fs from "node:fs";',
+      'import fs from "fs";',
+      'import { writeFile } from "node:fs/promises";',
+      'import { readFileSync, renameSync } from "node:fs";',
+      'export { writeFileSync } from "node:fs";',
+      'export * from "node:fs/promises";',
       'const fs = await import("node:fs");',
       'const fs = require("node:fs");',
-      'import { DatabaseSync } from "node:sqlite"; new DatabaseSync(p);',
-      "db.exec(\"ATTACH DATABASE '/tmp/x.db' AS x\");",
-      "db.exec(`VACUUM INTO ${p}`);",
-    ]) expect(has(src), src).toBe(true);
+      'const m = require(name);',
+      'import { DatabaseSync } from "node:sqlite";',
+    ]) expect(breaks(src), src).toBe(true);
     for (const src of [
-      'import { readFileSync, openSync, constants } from "node:fs"; readFileSync(p); openSync(p, "r"); openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW);',
-      'import { createReadStream } from "node:fs"; createReadStream(p);',
-      'const s = "Attach my resume to the application";',
-    ]) expect(has(src), src).toBe(false);
+      'import { readFileSync as read, existsSync, constants } from "node:fs"; import type { Stats } from "node:fs";',
+      'import type { DatabaseSync } from "node:sqlite";',
+      'const s = require("node:path");',
+    ]) expect(breaks(src), src).toBe(false);
   });
 });
