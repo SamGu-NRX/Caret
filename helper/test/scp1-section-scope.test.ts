@@ -921,14 +921,14 @@ describe("final check of 4f644e3: one reading of a section name, and the raw win
 });
 
 describe("check of 5fdb385: one source of section text, and name tokens across the window", () => {
-  type Frame = { frameId: number; parentFrameId: number; headings: string[]; walked: Walked; controls: string[]; sectionNames?: string[] };
+  type Frame = { frameId: number; parentFrameId: number; headings: string[]; walked: Walked; controls: string[]; sectionNames?: string[]; sectionsCut?: true };
   /** A tab of several frames as the worker composes it: each frame's sections, tokens and controls. */
   function tab(frames: readonly Frame[]): ReturnType<typeof toWindowSnapshot> {
     const s = PageSnapshot.parse({
       type: "pageSnapshot", v: 1, id: "walk-2", at: 2000, tabId: 42, browserWindowId: 40, active: true, inFocusedWindow: true, title: "Service request",
       frames: frames.map((f) => ({
         frameId: f.frameId, parentFrameId: f.parentFrameId, documentId: `doc-${f.frameId}`, origin: "https://service.example", path: `/f${f.frameId}`, navGen: 0, title: "Service request", headings: f.headings,
-        sections: f.walked.occurrences, ...(f.sectionNames === undefined ? {} : { sectionNames: f.sectionNames }),
+        sections: f.walked.occurrences, ...(f.sectionNames === undefined ? {} : { sectionNames: f.sectionNames }), ...(f.sectionsCut === undefined ? {} : { sectionsCut: true }),
         controls: f.controls.map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, 80 + i * 40, 200, 24], ...((f.walked.chains[name] ?? []).length === 0 ? {} : { sections: [...(f.walked.chains[name] ?? [])] }) })),
         iframes: [], excluded: {}, truncated: false,
       })),
@@ -1016,6 +1016,7 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
     const r = rng(5385);
     const names = ["Equipment details", "Service contact", "Notes"];
     let admitted = 0;
+    let ceilings = 0;
     for (let n = 0; n < 300; n++) {
       const t = tokens();
       const frames: Frame[] = [];
@@ -1023,6 +1024,7 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
       const all: { frameId: number; id: string; name: string; kept: boolean }[] = [];
       const overflow: { name: string }[] = [];
       const frameCount = 1 + Math.floor(r() * 3);
+      let cut = false;
       for (let fi = 0; fi < frameCount; fi++) {
         const occurrences: Walked["occurrences"] = [];
         const sectionNames: string[] = [];
@@ -1043,7 +1045,17 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
         const controls = [`Field ${fi}a`, `Field ${fi}b`];
         const chains: Record<string, string[]> = {};
         for (const c of controls) chains[c] = occurrences.filter(() => r() < 0.5).map((o) => o.id);
-        frames.push({ frameId: fi, parentFrameId: fi === 0 ? -1 : 0, headings: [], walked: { occurrences, chains }, controls, ...(sectionNames.length === 0 ? {} : { sectionNames }) });
+        // Some frames' walks ran out of tokens (sections.ts MAX_SECTION_DIGESTS): their inventory is incomplete. Some of
+        // those are at the real ceiling, 200 occurrences and 1800 more tokens.
+        const frameCut = r() < 0.1;
+        if (frameCut) cut = true;
+        if (frameCut && r() < 0.3) {
+          for (let k = occurrences.length; k < 200; k++) occurrences.push({ id: `o${k + 1}`, heading: true, text: `Detail ${k}`, name: t(`Detail ${k}`) });
+          const more = 2000 - 200 - sectionNames.length;
+          for (let k = 0; k < more; k++) sectionNames.push(t(`More ${k}`));
+          ceilings++;
+        }
+        frames.push({ frameId: fi, parentFrameId: fi === 0 ? -1 : 0, headings: [], walked: { occurrences, chains }, controls, ...(sectionNames.length === 0 ? {} : { sectionNames }), ...(frameCut ? { sectionsCut: true as const } : {}) });
       }
       const page = tab(frames);
       forgetWindows();
@@ -1055,7 +1067,8 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
       // The reference, from the generated tab alone: one occurrence of the name anywhere, its text kept, and the field's
       // frame placing it there.
       const same = all.filter((o) => o.name === "Equipment details");
-      const unique = same.length === 1 && overflow.every((o) => o.name !== "Equipment details") && same[0]?.kept === true ? same[0] : null;
+      // An incomplete inventory proves no name unique.
+      const unique = !cut && same.length === 1 && overflow.every((o) => o.name !== "Equipment details") && same[0]?.kept === true ? same[0] : null;
       for (const f of frames) {
         for (const c of f.controls) {
           const key = [...w.nodes.values()].find((x) => x.label === c)?.key ?? "";
@@ -1065,8 +1078,10 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
         }
       }
     }
-    // Not a withhold-everything implementation: provably unique fields in the section were admitted.
+    // Not a withhold-everything implementation: provably unique fields in the section were admitted. And some tabs were
+    // at the real 2000-name ceiling.
     expect(admitted).toBeGreaterThan(20);
+    expect(ceilings).toBeGreaterThan(0);
   });
 
   /** One frame's tab as the worker would send it, before projection. */
@@ -1078,4 +1093,70 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
       missing: [], focused: null,
     };
   }
+});
+
+describe("final check of 781ff11: an incomplete name inventory proves nothing unique", () => {
+  type Frame = { occurrences: Walked["occurrences"]; sectionNames: string[]; cut: boolean };
+  /** One frame: "Equipment details" over Serial number and Model, then `details` more sections, tokened up to the ceiling. */
+  function frame(t: (x: string) => string, details: number, cut: boolean): Frame {
+    const occurrences: Walked["occurrences"] = [{ ...occ("o1", "Equipment details"), name: t("Equipment details") }];
+    const sectionNames: string[] = [];
+    for (let i = 1; i <= details; i++) {
+      if (occurrences.length < 200) occurrences.push({ ...occ(`o${i + 1}`, `Detail ${i}`), name: t(`Detail ${i}`) });
+      else sectionNames.push(t(`Detail ${i}`));
+    }
+    return { occurrences, sectionNames, cut };
+  }
+  function page(f: Frame): ReturnType<typeof toWindowSnapshot> {
+    const s = PageSnapshot.parse({
+      type: "pageSnapshot", v: 1, id: "walk-4", at: 2000, tabId: 44, browserWindowId: 40, active: true, inFocusedWindow: true, title: "Service request",
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: "doc-0", origin: "https://service.example", path: "/f0", navGen: 0, title: "Service request", headings: [],
+        sections: f.occurrences, ...(f.sectionNames.length === 0 ? {} : { sectionNames: f.sectionNames }), ...(f.cut ? { sectionsCut: true } : {}),
+        controls: ["Serial number", "Model"].map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, 80 + i * 40, 200, 24], sections: ["o1"] })),
+        iframes: [], excluded: {}, truncated: false }],
+      missing: [], focused: null,
+    });
+    const session = new EngineSession({ engine: "scp1", browser: { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" }, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+    return toWindowSnapshot(s, session, 1);
+  }
+
+  // The reviewer's input: "Equipment details", 1999 Detail headings filling the 2000-name ceiling, then an excluded
+  // "Equipment details" the walk could not token, so the frame says its sections are cut.
+  it("withholds at settlement when a frame's name inventory is cut", async () => {
+    const t = tokens();
+    const d = desk({ page: page(frame(t, 1999, true)) });
+    expect(windowOutline(windowOf(d)).tokens).toHaveLength(2000);
+    const j = jev({ asks: EQUIPMENT, section: "Equipment details" });
+    expectSectionRefusal(await refusal(plan(d, j)), EQUIPMENT);
+    expect(sectionPlacement(windowOf(d), "Equipment details").withhold).toBe("incomplete");
+    for (const req of j.seen) expect(JSON.stringify(req)).not.toMatch(/[0-9a-f]{64}/u);
+  });
+
+  it("refuses at acceptance and at dispatch a plan minted before the inventory was cut", async () => {
+    const t = tokens();
+    const d = desk({ page: page(frame(t, 1998, false)) });
+    const r = (await plan(d, jev({ asks: EQUIPMENT, section: "Equipment details" }))) as AskDraft;
+    expect(written(r, d)).toEqual(EQUIPMENT);
+    const serial = r.checked.writes[0];
+    if (serial === undefined) throw new Error("no write");
+    const guard = guardFor(() => d.model, new Map([[0, serial.checked]]), r.checked.origin, null, null);
+    const accept = () => validatePlan(r.plan, r.slots, { model: d.model, memory: [], instruction: INSTRUCTION, origin: r.checked.origin, documentOf: null }, r.checked.mints);
+    expect(() => accept()).not.toThrow();
+    d.model.apply({ ...page(frame(t, 1999, true)), at: 2500, focused: true });
+    const w = windowOf(d);
+    expect(() => accept()).toThrow(/couldn't tell which section/u);
+    expect(guard(0, serial.value, { windowId: w.window.windowId, node: w.nodes.get(serial.node.key) as Node, window: w })).toMatch(/couldn't tell which section/u);
+  });
+
+  it("leaves a whole-form Ask on a cut page as it is on one that is not", async () => {
+    const t = tokens();
+    for (const goals of [false, true]) {
+      const cut = desk({ page: page(frame(t, 1999, true)) });
+      const whole = desk({ page: page(frame(t, 10, false)) });
+      const a = await plan(cut, jev({ asks: EQUIPMENT, section: "whole", route: "all" }), "fill out this form from my notes", goals);
+      const b = await plan(whole, jev({ asks: EQUIPMENT, section: "whole", route: "all" }), "fill out this form from my notes", goals);
+      expect(written(a as AskDraft, cut)).toEqual(written(b as AskDraft, whole));
+      expect(written(a as AskDraft, cut)).toEqual(EQUIPMENT);
+    }
+  });
 });

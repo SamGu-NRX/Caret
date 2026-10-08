@@ -356,6 +356,7 @@ export function sectionRefusal(f: { readonly key: string; readonly name: string 
   const p = sectionPlacement(window, scope.section);
   if (p.withhold === "missing") return `the section you named is no longer on the form, so Caret can't tell '${f.name}' is in it`;
   if (p.withhold === "duplicate") return `the form now shows the section you named more than once, so Caret can't tell '${f.name}' is in it`;
+  if (p.withhold === "incomplete") return `the form now has more sections than Caret can tell apart, so Caret couldn't tell which section '${f.name}' is in`;
   return p.member(f.key) === "in" ? null : `'${f.name}' is no longer in the section you named`;
 }
 
@@ -367,19 +368,23 @@ export function sectionRefusal(f: { readonly key: string; readonly name: string 
  *   - "duplicate": it names more than one, or the raw window names by that text more than one occurrence or another
  *     occurrence than the redacted view's (a heading whose own label redaction cut to that text, beside one whose
  *     placeholder redaction removed), or, on a page, another occurrence anywhere in the tab has its name's token;
+ *   - "incomplete": a page frame's walk could not token every section name, so no name is provably unique;
  *   - otherwise a field is "in" only when both outlines place it in that occurrence, so the fields admitted are a subset
  *     of what either outline alone admits.
  */
 export interface SectionPlacement {
-  readonly withhold: "missing" | "duplicate" | null;
+  readonly withhold: "missing" | "duplicate" | "incomplete" | null;
   member(key: string): Membership;
 }
 export function sectionPlacement(window: WindowState, section: string): SectionPlacement {
-  const unknown = (withhold: "missing" | "duplicate"): SectionPlacement => ({ withhold, member: () => "unknown" });
+  const unknown = (withhold: "missing" | "duplicate" | "incomplete"): SectionPlacement => ({ withhold, member: () => "unknown" });
   const name = sectionName(section);
   const named = (o: WindowOutline): readonly SectionOccurrence[] => o.occurrences.filter((x) => x.text !== null && sectionName(x.text) === name);
   const red = windowOutline(redactWindow(window));
   const raw = windowOutline(window);
+  // A page frame that tokened fewer section names than it has (extension sections.ts MAX_SECTION_DIGESTS) leaves the
+  // window's name inventory incomplete, and an incomplete inventory proves no name unique (final check of 781ff11).
+  if (raw.cut || red.cut) return unknown("incomplete");
   const shown = named(red);
   if (shown.length === 0) return unknown("missing");
   const chosen = shown[0] as SectionOccurrence;
