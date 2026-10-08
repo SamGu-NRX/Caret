@@ -73,12 +73,23 @@ export function focus(windowId: string, key: string | null, at: number, o: { emp
 }
 
 /**
+ * Whether a value question's option offers exactly `text`: an Ask's option states its exact proposed value (fill.ts
+ * VALUE_WORDINGS, "Proposed value: \"…\". Source: …"), a fill on focus's describes its candidate in quotes first.
+ */
+export function optionIs(criterion: string | null | undefined, text: string): boolean {
+  if (criterion == null) return false;
+  const proposed = /^Proposed value: "([\s\S]*?)"\. Source: /u.exec(criterion)?.[1];
+  return proposed !== undefined ? proposed === text : criterion.startsWith(`"${text}"`);
+}
+
+/**
  * A fake Jev that answers each fill question by candidate text, so the same pick holds in both asks
  * although the second ask shuffles and renumbers the candidates. `pick` returns the text to choose,
  * or null for none. `whose` answers each whose-details question; the user's by default.
  */
 export function jevPickingText(
-  pick: (fieldId: string, instructions: string) => string | null,
+  /** The text to choose, or several ways of writing it (a source's text and what an Ask's option converted it to). */
+  pick: (fieldId: string, instructions: string) => string | readonly string[] | null,
   confidence = 0.9,
   whose: (instructions: string) => Whose = () => "user",
   /** Answers each whose-value question (fill.ts ownerId) by the value's description; the user's by default. */
@@ -92,8 +103,9 @@ export function jevPickingText(
         // A whose-details question (fill.ts whoseId) asked beside a field offered a value from memory.
         if (id.endsWith("_whose")) return [id, { choice: whose(ins), confidence }];
         if (id.endsWith("_owner")) return [id, { choice: owner(ins), confidence }];
-        const want = pick(id, ins);
-        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
+        const picked = pick(id, ins);
+        const wants = picked === null ? [] : typeof picked === "string" ? [picked] : picked;
+        const hit = wants.map((want) => Object.entries(q.criteria).find(([, d]) => optionIs(d, want))).find((x) => x !== undefined);
         return [id, { choice: hit?.[0] ?? "none", confidence }];
       }),
     ),

@@ -9,7 +9,7 @@ import { planWithCode } from "../src/planner/codeplan.ts";
 import { planTask } from "../src/planner/planner.ts";
 import type { WriterPort } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
-import { field, node, snap } from "./builders.ts";
+import { field, node, snap, optionIs } from "./builders.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { buildInventory } from "../src/goals/inventory.ts";
 import { GoalError, lowerGoal } from "../src/goals/lower.ts";
@@ -68,7 +68,7 @@ function jev(owner?: () => "user" | "other"): AskJev {
       else if (crit.includes("user")) answers[id] = { choice: "user", confidence: 1 };
       else {
         const want = /\bPhone\b/u.test(ins) ? PHONE : /\bEmail\b/u.test(ins) ? EMAIL : null;
-        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`))?.[0];
+        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want))?.[0];
         answers[id] = { choice: hit ?? (crit.includes("keep") ? "keep" : (crit.find((c) => c === "none") ?? crit[0] ?? "none")), confidence: 1 };
       }
     }

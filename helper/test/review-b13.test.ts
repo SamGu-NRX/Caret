@@ -19,7 +19,7 @@ import { targetSnippets } from "../src/executor/target.ts";
 import { conversationSign } from "../src/conversation.ts";
 import { PROTOCOL_VERSION, type AppRef, type FillProposal, type HelperMessage, type ReaderMessage, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
-import { field, snap, text, value } from "./builders.ts";
+import { field, snap, text, value, optionIs } from "./builders.ts";
 import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, chatWindow, notesWindow, scheduleForm } from "./desks.ts";
 import { minted } from "./mint.ts";
 
@@ -39,7 +39,7 @@ function fallthrough(want: Record<string, readonly string[]>): AskJev {
     const answers: Record<string, { choice: string; confidence: number }> = {};
     for (const [id, q] of Object.entries(req.questions)) {
       const label = Object.keys(want).find((l) => String(q.instructions).includes(`'${l}'`));
-      const hit = (want[label ?? ""] ?? []).map((t) => Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${t}"`))?.[0]).find((c) => c !== undefined);
+      const hit = (want[label ?? ""] ?? []).map((t) => Object.entries(q.criteria).find(([, d]) => optionIs(d, t))?.[0]).find((c) => c !== undefined);
       answers[id] = { choice: hit ?? "none", confidence: 0.9 };
     }
     return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };

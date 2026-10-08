@@ -12,7 +12,7 @@ import { PROTOCOL_VERSION, type GoalProgress } from "../src/protocol.ts";
 import { AskAsks, AskRefused, planAsk } from "../src/planner/ask.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { planTask } from "../src/planner/planner.ts";
-import { field, node, scopeLabel, snap } from "./builders.ts";
+import { field, node, optionIs, scopeLabel, snap } from "./builders.ts";
 import { rig } from "./page-rig.ts";
 import { goalScene, mailWindow, replyWindow, standInJev, MAIL, line, textField, type CannedStep, type GoalScene } from "./goal-desk.ts";
 
@@ -68,7 +68,7 @@ const jev = (route: string, asks: readonly string[], log: JevRequest[] = []): As
         if (req.purpose === "ask.scope") return pick(asks.includes(scopeLabel(ins)) ? "asks" : "not");
         if (id === "press") return pick("none" in q.criteria ? "none" : (Object.keys(q.criteria).at(-1) ?? "none"));
         const want = Object.entries(VALUES).find(([l]) => ins.includes(`'${l}'`))?.[1];
-        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => String(d).startsWith(`"${want}"`));
+        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
         if (hit !== undefined) return pick(hit[0]);
         if ("yes" in q.criteria) return pick("yes");
         if ("user" in q.criteria) return pick("user");

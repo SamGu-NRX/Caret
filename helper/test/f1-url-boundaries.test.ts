@@ -7,7 +7,7 @@ import { rawURLToken } from "../src/fill/line-values.ts";
 import { lowerGoal } from "../src/goals/lower.ts";
 import type { GoalInventory, TargetBinding, ValueBinding } from "../src/goals/plan.ts";
 import type { DraftPlan } from "../src/codemode/types.ts";
-import { field, jevPickingText, snap } from "./builders.ts";
+import { field, jevPickingText, snap, optionIs } from "./builders.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { inventoryLedger } from "./minted.ts";
 
@@ -85,7 +85,7 @@ describe("reviewed URL spans carry raw evidence instead of new extraction rules"
     expect(formatForField(extracted, ["GitHub URL"], "url", `GitHub: ${raw}`)).toBeNull();
 
     const r = await throughGoal(raw, extracted, false, { label: "Notes", refuse: true });
-    expect(r.offered.some((s) => s.startsWith(`"${extracted}"`))).toBe(true);
+    expect(r.offered.some((s) => optionIs(s, extracted))).toBe(true);
     expect(r.verify).toHaveLength(2);
     for (const request of r.verify) {
       expect(request).toContain(raw);
@@ -110,7 +110,7 @@ describe("reviewed URL spans carry raw evidence instead of new extraction rules"
   it("keeps userinfo evidence in the offer and refuses it at the existing shape gate", async () => {
     const raw = "https://user@github.com/harperq-data";
     const r = await throughGoal(raw, raw, false, { refuse: true });
-    const offers = r.offered.filter((s) => s.startsWith(`"${raw}"`));
+    const offers = r.offered.filter((s) => optionIs(s, raw));
     expect(offers).toHaveLength(2);
     expect(formatForField(raw, ["GitHub URL"], "url", `GitHub: ${raw}`)).toBeNull();
     expect(r.p.fields.find((f) => f.key === KEY)).toMatchObject({ value: null, withheld: "wrongKind" });
@@ -179,7 +179,7 @@ describe("URL occurrence evidence", () => {
     const source = `Website: ${homepage}\nPortfolio: ${portfolio}`;
     for (const wanted of [homepage, portfolio]) {
       const r = await throughGoal(wanted, wanted, false, { source, label: wanted === portfolio ? "Portfolio" : "Notes" });
-      for (const value of [homepage, portfolio]) expect(r.offered.some((s) => s.startsWith(`"${value}"`))).toBe(true);
+      for (const value of [homepage, portfolio]) expect(r.offered.some((s) => optionIs(s, value))).toBe(true);
       expect(r.p.fields.find((f) => f.key === KEY)?.value).toBe(wanted);
       expect(r.verify).toHaveLength(2);
       for (const request of r.verify) expect(request).toContain(wanted);
@@ -226,7 +226,7 @@ describe("URL occurrence evidence", () => {
     const other = `${"x".repeat(1500)}/${homepage}`;
     const source = `Website: ${homepage}\nOther: ${other}`;
     const r = await throughGoal(homepage, homepage, homepage, { source, label: "Notes", role: "AXButton" });
-    expect(r.offered.some((s) => s.startsWith(`"${homepage}"`))).toBe(false);
+    expect(r.offered.some((s) => optionIs(s, homepage))).toBe(false);
     expect(r.verify).toHaveLength(0);
     expect(r.writes.some((s) => s.writes === homepage)).toBe(false);
   });
@@ -237,7 +237,7 @@ describe("scan end and evidence budget", () => {
     const value = "https://example.com/profile";
     const source = `${"x".repeat(4000 - value.length - 1)} ${value}THIS-IS-STILL-THE-SAME-TOKEN`;
     const r = await throughGoal(value, value, typed, { source, label: "Notes" });
-    expect(r.offered.some((s) => s.startsWith(`"${value}"`))).toBe(false);
+    expect(r.offered.some((s) => optionIs(s, value))).toBe(false);
     expect(r.verify).toHaveLength(0);
     expect(r.writes.some((s) => s.writes === value)).toBe(false);
   });
@@ -246,7 +246,7 @@ describe("scan end and evidence budget", () => {
     const value = "https://example.com/profile";
     const raw = `${"x".repeat(1500)}/${value}`;
     const r = await throughGoal(raw, value, false, { label: "Notes" });
-    expect(r.offered.some((s) => s.startsWith(`"${value}"`))).toBe(false);
+    expect(r.offered.some((s) => optionIs(s, value))).toBe(false);
     expect(r.verify).toHaveLength(0);
     expect(r.writes.some((s) => s.writes === value)).toBe(false);
   });

@@ -47,7 +47,7 @@ import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
-import { FIXTURE_APP, focus, node, snap, text } from "./builders.ts";
+import { FIXTURE_APP, focus, node, snap, text, optionIs } from "./builders.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { largeScene } from "./large-scene.ts";
 import { CHAT, COMPOSER_CHAT, LONG_THREAD, MAIL_THREAD, MESSAGES_CHAT, NOTES, REF, SHORT_CHAT, agentThreads, chatWindow, messagesSources, notesWindow, shortChats } from "./desks.ts";
@@ -249,7 +249,7 @@ const fakeJev: AskJev = async (req) => {
     Object.entries(q).map(([id, question]) => {
       const label = /Label: '([^']+)'|Nearest label: '([^']+)'/.exec(String(question.instructions));
       const want = FILL_VALUES[label?.[1] ?? label?.[2] ?? ""];
-      const hit = want === undefined ? undefined : Object.entries(question.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
+      const hit = want === undefined ? undefined : Object.entries(question.criteria).find(([, d]) => optionIs(d, want));
       // A planner field question says "keep" where a fill question says "none".
       return [id, answer(hit?.[0] ?? ("keep" in question.criteria ? "keep" : "none"))];
     }),

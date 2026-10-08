@@ -14,7 +14,7 @@ const name = (x: unknown): unknown => prop(x, "name") ?? prop(x, "value");
 
 // Every new request site needs a window-read audit, even when added to an already audited file.
 const builders: Record<string, number> = {
-  "codemode/jev-chooser.ts": 1, "executor/target.ts": 1, "fill/contract.ts": 1, "fill/fill.ts": 1,
+  "codemode/jev-chooser.ts": 1, "executor/target.ts": 1, "fill/contract.ts": 1, "fill/fill.ts": 2,
   "goals/drafts.ts": 1, "goals/propose.ts": 1, "goals/saved-files.ts": 1, "offers/event-card.ts": 1,
   "patterns/naming.ts": 1, "planner/ask.ts": 1, "planner/codeplan.ts": 3, "planner/intent-heads.ts": 2,
   "planner/intent-makers.ts": 3, "planner/planner.ts": 2, "routing/judge.ts": 3, "tasks/pending.ts": 2,
@@ -34,6 +34,8 @@ const reads: Record<string, number> = {
   // V6 B3: the second is the alternate-field veto's read of the form after the asks, compared locally and never sent.
   "fill/fill.ts|proposeFill|model.windows.get(windowId)": 2,
   "fill/fill.ts|proposeFill|model.windows.values()": 1,
+  // Value settlement: the alternate-field veto's read of the form when a picked value is settled, as the one above.
+  "fill/fill.ts|settle|at.model.windows.get(windowId)": 1,
   "goals/inventory.ts|buildInventory|model.windows.get(id)": 1,
   "goals/inventory.ts|buildInventory|model.windows.values()": 1,
   "goals/saved-files.ts|match|this.deps.model.windows.values()": 1,
