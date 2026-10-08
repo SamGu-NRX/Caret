@@ -1,0 +1,1 @@
+VS1: value questions reach only consumers whose hello declares askValues beside askChoices; realfill-asks scores a value question's AskAsks.fallback as the automatic result and its scripted picks as 'after pick'.
