@@ -1,0 +1,13 @@
+runner: none
+slot heavy: free, runner none
+slot browser-1: free, runner none
+slot browser-2: free, runner none
+heavy lock: free (/private/tmp/q2-multiline.VNKH/heavy.lock)
+next: caret-multi-line (admissible now)
+   1 queued       heavy    caret-multi-line         /bin/sh -c echo one
+echo two
+
+echo three
+   2 queued       heavy    other-job                /bin/true
+   3 queued       heavy    caret-long-newline       /bin/sh -c xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+

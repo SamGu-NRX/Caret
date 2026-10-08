@@ -916,8 +916,10 @@ class QueueStatusUnreadable(Exception):
 # rows "seq state job-id command"; lanes (e21588d) prints "slot NAME: S, runner R" per slot, "next LANE:" for lanes
 # other than heavy, and rows "seq state lane job-id command". The slot lines decide the format: a lanes row read as a
 # pre-lanes one is a job named after its lane, a legal ID, so the rows alone cannot tell them apart. The patterns follow
-# _status in those commits; tests/fixtures/queue-status holds what each printed. A line matching none of them stops
-# the command, because a row skipped as unknown would hide a job.
+# _status in those commits; tests/fixtures/queue-status holds what each printed. A row's command is argv joined with
+# spaces and cut at ROW_COMMAND_CUT characters, newlines included, so an argument holding a newline prints the rest of
+# the cut command on the lines after its row. A line matching none of these stops the command, because a row skipped
+# as unknown would hide a job.
 QUEUE_STATES = ("queued", "launching", "running", "blocked", "succeeded", "failed", "timed_out", "cancelled",
                 "interrupted", "refused", "lost", "abandoned")
 QUEUE_LANES = ("heavy", "browser")
@@ -932,11 +934,26 @@ _STATUS_LINES = {
         "|".join(lane for lane in QUEUE_LANES if lane != "heavy"), _QUEUE_ID)),
 }
 _ROW = {
-    "pre-lanes": re.compile(r" *(?P<seq>\d+) (?P<state>{}) +(?P<id>{})(?: .*)?\Z".format(
-        "|".join(QUEUE_STATES), _QUEUE_ID)),
-    "lanes": re.compile(r" *(?P<seq>\d+) (?P<state>{}) +(?P<lane>{}) +(?P<id>{})(?: .*)?\Z".format(
+    "pre-lanes": re.compile(r" *(?P<seq>\d+) (?P<state>{}) +(?P<id>{}) ".format("|".join(QUEUE_STATES), _QUEUE_ID)),
+    "lanes": re.compile(r" *(?P<seq>\d+) (?P<state>{}) +(?P<lane>{}) +(?P<id>{}) ".format(
         "|".join(QUEUE_STATES), "|".join(QUEUE_LANES), _QUEUE_ID)),
 }
+# The row prefix exactly as each formatter prints it, and where it cuts the command.
+_ROW_PREFIX = {"pre-lanes": "{seq:>4} {state:<12} {id:<24} ", "lanes": "{seq:>4} {state:<12} {lane:<8} {id:<24} "}
+ROW_COMMAND_CUT = {"pre-lanes": 80, "lanes": 72}
+
+
+def _row(fmt, line):
+    """(job, length of its command on this line) when *line* is a row exactly as the *fmt* formatter prints it."""
+    match = _ROW[fmt].match(line)
+    if match is None:
+        return None
+    job = {"seq": int(match["seq"]), "state": match["state"], "lane": match.groupdict().get("lane") or "heavy",
+           "id": match["id"]}
+    prefix = _ROW_PREFIX[fmt].format(**job)
+    if not line.startswith(prefix) or len(line) - len(prefix) > ROW_COMMAND_CUT[fmt]:
+        return None
+    return job, len(line) - len(prefix)
 
 
 def parse_queue_status(text):
@@ -944,23 +961,29 @@ def parse_queue_status(text):
     per lane head), "jobs" ({"seq", "state", "lane", "id"} per row)}. Pre-lanes jobs are heavy-lane jobs, as the
     lanes queue reads records from before lanes. Raises QueueStatusUnreadable naming the first line not understood."""
     fmt, header, nexts, jobs, seen = None, [], [], [], set()
+    command_left = 0  # characters of the last row's command the formatter could still have printed
 
     def unreadable(number, line, why):
         return QueueStatusUnreadable("the queue's status line {} is not understood ({}): {!r}".format(number, why, line))
 
-    for number, line in enumerate(text.splitlines(), 1):
-        kind = next((k for k, pattern in _STATUS_LINES.items() if pattern.match(line)), None)
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()  # the newline print() ends the listing with
+    for number, line in enumerate(lines, 1):
+        kind = None if jobs else next((k for k, pattern in _STATUS_LINES.items() if pattern.match(line)), None)
         if kind is None:
             if fmt is None:
                 raise unreadable(number, line, "not a header line, and no slot line has set the format yet")
-            row = _ROW[fmt].match(line)
-            if row is None:
-                raise unreadable(number, line, "not a {} job row".format(fmt))
-            jobs.append({"seq": int(row["seq"]), "state": row["state"], "lane": row.groupdict().get("lane") or "heavy",
-                         "id": row["id"]})
+            row = _row(fmt, line)
+            # Rows come in seq order, so a row-shaped line that does not advance it is part of a command.
+            if row is not None and (not jobs or row[0]["seq"] > jobs[-1]["seq"]):
+                jobs.append(row[0])
+                command_left = ROW_COMMAND_CUT[fmt] - row[1]
+            elif jobs and 1 + len(line) <= command_left:
+                command_left -= 1 + len(line)
+            else:
+                raise unreadable(number, line, "not a {} job row, nor the rest of the last row's command".format(fmt))
             continue
-        if jobs:
-            raise unreadable(number, line, "a header line after the job rows")
         if kind.endswith(" slot"):
             line_fmt = kind[:-len(" slot")]
             if fmt not in (None, line_fmt):
@@ -983,9 +1006,10 @@ def parse_queue_status(text):
 
 def _queue_status(paths):
     """(exit code, stdout) of the queue's `status`; its stderr passes through."""
+    # Bytes, decoded here: text mode would turn a carriage return inside a command into a line break.
     done = subprocess.run([PYTHON, paths["queue_script"], "--state-dir", paths["queue_state"], "status"],
-                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
-    return done.returncode, done.stdout
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+    return done.returncode, done.stdout.decode("utf-8", errors="replace")
 
 
 def queue_row(paths, job_id):

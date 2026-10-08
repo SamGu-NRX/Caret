@@ -1343,23 +1343,50 @@ class QueueStatusTest(Temp):
                 "heavy lock: held (/x/heavy.lock)\n   7 running      browser  caret-b                  /bin/sleep 9\n")
         parsed = caret_heavy.parse_queue_status(text)
         self.assertEqual(self.rows(parsed), [(7, "running", "browser", "caret-b")])
-        old = "runner: pid 4242\nslot: held\nheavy lock: held (/x/heavy.lock)\n   7 running      caret-b  /bin/sleep 9\n"
+        old = "runner: pid 4242\nslot: held\nheavy lock: held (/x/heavy.lock)\n   7 running      caret-b                  /bin/sleep 9\n"
         self.assertEqual(self.rows(caret_heavy.parse_queue_status(old)), [(7, "running", "heavy", "caret-b")])
+
+    def test_a_multiline_command_continues_its_row(self):
+        # The formatter joins argv with spaces and cuts it at 72 characters (80 before lanes), newlines included, so
+        # an argument holding newlines prints its rest on the following lines. Captured from both commits' scripts:
+        # /bin/sh -c 'echo one\necho two\n\necho three', and a command whose cut falls just after a newline.
+        for name, fmt in (("multiline-e21588d.txt", "lanes"), ("multiline-401c4d1.txt", "pre-lanes")):
+            with self.subTest(name):
+                parsed = caret_heavy.parse_queue_status(fixture(name))
+                self.assertEqual(parsed["format"], fmt)
+                self.assertEqual(self.rows(parsed), [(1, "queued", "heavy", "caret-multi-line"),
+                                                     (2, "queued", "heavy", "other-job"),
+                                                     (3, "queued", "heavy", "caret-long-newline")])
+
+    def test_a_line_beyond_the_commands_cut_is_not_a_continuation(self):
+        text = fixture("multiline-e21588d.txt").replace("echo three\n", "echo three\n" + "y" * 60 + "\n")
+        with self.assertRaisesRegex(caret_heavy.QueueStatusUnreadable, "line 11"):
+            caret_heavy.parse_queue_status(text)
+        short = fixture("lanes-e21588d.txt").replace("caret-heavy-a            /bin/true",
+                                                    "caret-heavy-a           /bin/true")
+        with self.assertRaisesRegex(caret_heavy.QueueStatusUnreadable, "line 8"):
+            caret_heavy.parse_queue_status(short)  # the ID is not padded to 24 as the formatter pads it
 
     def test_an_unknown_line_is_named(self):
         lanes, old = fixture("lanes-e21588d.txt"), fixture("prelanes-401c4d1.txt")
-        bad = {
-            "unknown state": (lanes + "   5 paused       heavy    caret-x                  /bin/true\n", "line 12"),
-            "unknown lane": (lanes + "   5 queued       gpu      caret-x                  /bin/true\n", "line 12"),
-            "pre-lanes row in lanes output": (lanes + "   5 queued       caret-x                  /bin/true\n", "line 12"),
+        # Placed before the first row: after one, a short line could be the rest of that row's command.
+        first_row = "   1 queued       heavy"
+        bad_rows = {
+            "unknown state": "   5 paused       heavy    caret-x                  /bin/true",
+            "unknown lane": "   5 queued       gpu      caret-x                  /bin/true",
+            "pre-lanes row in lanes output": "   5 queued       caret-x                  /bin/true",
+        }
+        bad = {name: (lanes.replace(first_row, row + "\n" + first_row, 1), "line 8") for name, row in bad_rows.items()}
+        bad.update({
             "lane's next line in pre-lanes output": (old.replace("next: caret-heavy-a", "next browser: caret-heavy-a"),
                                                      "line 4"),
             "slot line of the other format": (old.replace("slot: free\n", "slot: free\nslot browser-1: free, runner none\n"),
                                               "line 3"),
             "row before any slot line": ("runner: none\n   1 queued       heavy    caret-x  /bin/true\n", "line 2"),
             "unknown header": (lanes.replace("heavy lock:", "heavy lck:"), "line 5"),
-            "bad seq": (lanes + "  5x queued       heavy    caret-x                  /bin/true\n", "line 12"),
-        }
+            "bad seq": (lanes.replace(first_row, "  5x queued       heavy    caret-x  /bin/true\n" + first_row, 1),
+                        "line 8"),
+        })
         for name, (text, where) in bad.items():
             with self.subTest(name):
                 with self.assertRaises(caret_heavy.QueueStatusUnreadable) as caught:
@@ -1390,13 +1417,14 @@ class QueueStatusTest(Temp):
                 self.assertIn("next: caret-heavy-a (admissible now)", text)
 
     def test_status_of_an_unreadable_listing_fails_naming_the_line(self):
-        paths = self.stub_queue(fixture("lanes-e21588d.txt") + "   5 paused       heavy    caret-x  /bin/true\n")
+        paths = self.stub_queue(fixture("lanes-e21588d.txt").replace(
+            "   1 queued       heavy", "   5 paused       heavy    caret-x  /bin/true\n   1 queued       heavy", 1))
         with mock.patch.object(caret_heavy, "default_paths", return_value=paths), \
                 mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out, \
                 mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as err:
             code = caret_heavy.main(["status"])
         self.assertEqual(code, caret_heavy.EXIT_UNREADABLE)
-        self.assertIn("line 12", err.getvalue())
+        self.assertIn("line 8", err.getvalue())
         self.assertIn("paused", err.getvalue())
         self.assertEqual(out.getvalue(), "")
 
