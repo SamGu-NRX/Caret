@@ -186,18 +186,19 @@ extension Gallery {
     }
 
     /// Stands in for the approved privacy promise in renders, so a reference changes only when the screen does, not
-    /// when the promise's words do. Same shape as the promise: two headed sections, one long paragraph and two
-    /// shorter ones, about as long overall.
+    /// when the promise's words do. Every block carries a marked token (Sample A, A1, B, B1, B2) the real promise never
+    /// has, so a view that drew any other text in their place would change the pixels and fail the snapshot test. Same
+    /// shape as the promise: two headed sections, one long paragraph and two shorter ones, about as long overall.
     static let samplePrivacyPromise = PrivacyPromise("""
-        What this sample sends
+        Sample A: what this stand-in sends
 
-        This is sample text that stands in for Caret's privacy promise in rendered references, so a reference does not change when the approved promise does. It has the promise's shape: two headed sections, a long first paragraph and two shorter ones. Each sentence is ordinary prose of about the length the promise uses, so the screen's wrapping, spacing and fade are drawn as the real text would draw them.
+        Sample A1. This text stands in for Caret's privacy promise in rendered references, so a reference does not change when the approved promise does. It has the promise's shape: two headed sections, a long first paragraph and two shorter ones. Each sentence is ordinary prose of about the length the promise uses, so the screen's wrapping, spacing and fade are drawn as the real text would draw them.
 
-        Who receives this sample
+        Sample B: who receives this stand-in
 
-        The second section begins here. A paragraph of this length runs past the height the permission card leaves, so the render shows where the text is cut and how the fade at its foot reads. Nothing in this sample describes what Caret does: the app shows the bundled PrivacyPromise.txt, which the build writes from the approved text.
+        Sample B1. The second section begins here. A paragraph of this length runs past the height the permission card leaves, so the render shows where the text is cut and how the fade at its foot reads. Nothing here describes what Caret does: the app shows the bundled PrivacyPromise.txt, which the build writes from the approved text.
 
-        A last paragraph closes the sample, as the promise closes with a short one about a second provider. It makes the text long enough to need scrolling.
+        Sample B2. A last paragraph closes the stand-in, as the promise closes with a short one about a second provider.
         """)
 
     /// Every onboarding screen, and each state of the ones that change, reached by sending the
@@ -249,7 +250,11 @@ extension Gallery {
         // A run with no PrivacyPromise.txt, as under `swift run`; an app build cannot reach it (scripts/privacy_gate.sh).
         let missing = Item(name: "onboarding-permissions-no-promise", view: AnyView(OnboardingView(
             state: flow(ax: false, input: false, [.next, .next]), character: character, animated: false, promise: nil)))
-        return items + [missing]
+        // The same step scrolled to the promise's end, so the last blocks are in the pixels too.
+        let end = Item(name: "onboarding-permissions-promise-end", view: AnyView(OnboardingView(
+            state: flow(ax: false, input: false, [.next, .next]), character: character, animated: false, promise: samplePrivacyPromise)
+            .environment(\.offscreenScrolledToEnd, true)))
+        return items + [missing, end]
     }
 }
 

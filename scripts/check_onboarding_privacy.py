@@ -4,6 +4,12 @@ The promise's path from the bundle to the screen is checked piece by piece: the 
 whole, the window and the step pass it on without a fallback, the view that draws it has no text of its own, and
 the one message shown without a resource is pinned word for word. tests/test_onboarding_privacy_check.py records
 the edits each rule refuses.
+
+Scope: this catches accidental drift, such as a hard-coded copy of the promise or a fallback re-added to the view.
+A check over source text cannot be sound against deliberately obfuscated Swift (a closure parameter that shadows
+`promise` around the pinned loop still passes), so it adds no rule for each new trick. Substitution of that kind is
+caught at runtime instead: the onboarding snapshot tests render the step with marked sample text
+(Gallery.samplePrivacyPromise) and compare pixels, and OnboardingPromiseAccessibilityTests reads the built view's text.
 """
 from pathlib import Path
 import re
