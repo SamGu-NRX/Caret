@@ -185,7 +185,16 @@ class World(unittest.TestCase):
         survivors = world_processes(self.root)
         for dirpath, dirnames, filenames in os.walk(self.root):
             os.chmod(dirpath, 0o755)
-        shutil.rmtree(self.root, ignore_errors=True)
+        # unittest resets its success flag for each cleanup it runs, so the failure is read from the result.
+        result = getattr(getattr(self, "_outcome", None), "result", None)
+        failed = result is not None and any(t is self or getattr(t, "test_case", None) is self
+                                            for t, _ in result.errors + result.failures)
+        if failed:
+            # A failing test's world is kept: its queue logs, journals and outcomes hold what a relay or supervisor
+            # raised, which the test's own assertion message may not show.
+            print("kept the failing test's world: {}".format(self.root), file=sys.stderr)
+        else:
+            shutil.rmtree(self.root, ignore_errors=True)
         if survivors:
             raise AssertionError("processes of this test world survived its teardown: {}".format([p for p, _ in survivors]))
 

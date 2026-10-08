@@ -27,5 +27,42 @@ class TeardownLeavesNothing(unittest.TestCase):
         self.assertEqual(world_processes(root), [])
 
 
+class AFailingTestKeepsItsWorld(unittest.TestCase):
+    """A failing test's world (queue logs, journals, outcomes, run directories) is kept and its path printed, so an
+    exception inside a relay or supervisor can be read afterwards (347f8ea review, P3). A passing test's is removed."""
+
+    def run_world(self, fail):
+        import io
+        import shutil
+        import sys
+
+        class _World(World):
+            def runTest(self):
+                open(os.path.join(self.root, "marker"), "w").close()
+                if fail:
+                    self.fail("deliberately")
+        world = _World()
+        err = io.StringIO()
+        stderr, sys.stderr = sys.stderr, err
+        try:
+            result = unittest.TestResult()
+            world.run(result)
+        finally:
+            sys.stderr = stderr
+        self.addCleanup(shutil.rmtree, world.root, True)
+        return world.root, result, err.getvalue()
+
+    def test_a_failing_world_is_kept(self):
+        root, result, err = self.run_world(fail=True)
+        self.assertEqual(len(result.failures), 1)
+        self.assertTrue(os.path.exists(os.path.join(root, "marker")))
+        self.assertIn(root, err)
+
+    def test_a_passing_world_is_removed(self):
+        root, result, err = self.run_world(fail=False)
+        self.assertTrue(result.wasSuccessful(), result.errors)
+        self.assertFalse(os.path.exists(root))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

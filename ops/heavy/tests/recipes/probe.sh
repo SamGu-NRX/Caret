@@ -5,6 +5,7 @@
 #   ok | wrong | suite-fail      write evidence through check.py: exit 0, 10, 11
 #   no-result | foreign-result | stale-evidence   exit 0 with evidence the adapter must reject (66)
 #   spawn SECONDS                start tracked processes (below), write OUT/ready, sleep SECONDS, then ok
+#   spawn-held                   as spawn, but wait for the test to create OUT/release (at most 600 s), then ok
 #   leftover                     start tracked processes, then ok and exit 0 with them still running
 #   alloc MB [SECONDS]           a child touches MB of anonymous memory, writes OUT/ready, holds it SECONDS (2), then ok
 #   slow-cleanup SECONDS         on TERM, take SECONDS to clean up, write OUT/cleanup-done, exit 143
@@ -72,6 +73,10 @@ case "$MODE" in
   stale-evidence)
     evidence set 0; touch -t 202601010000 "$OUT/set/page-loop.json"; check page-loop set --exit 0; finish ;;
   spawn) spawn; touch "$OUT/ready"; sleep "${ARG:-600}" & wait $!; evidence set 0; check page-loop set --exit 0; finish ;;
+  spawn-held)
+    spawn; touch "$OUT/ready"
+    for _ in $(seq 1 6000); do [ -e "$OUT/release" ] && break; sleep 0.1; done
+    evidence set 0; check page-loop set --exit 0; finish ;;
   leftover) spawn; touch "$OUT/ready"; evidence set 0; check page-loop set --exit 0; finish ;;
   slow-cleanup)
     trap 'sleep "$ARG"; date +%s > "$OUT/cleanup-done"; exit 143' TERM

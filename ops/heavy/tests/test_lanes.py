@@ -28,13 +28,19 @@ class Lanes(World):
         return [r.get("slot_path") for r in self.journal(job_id) if r["event"] == "adopted"]
 
     def test_a_browser_job_runs_in_its_browser_slot_without_heavy_lock(self):
-        job_id, _ = self.enqueue(["spawn", "6"], profile=profile(grace=3, lease_kind="browser"))
+        # The job holds at its barrier until the lock assertions are done: with a fixed sleep it could finish, and
+        # free its slot, before they ran (347f8ea review, P3).
+        job_id, _ = self.enqueue(["spawn-held"], profile=profile(grace=3, lease_kind="browser"))
         self.assertEqual(self.job(job_id).get("lease_kind"), "browser")
         self.run_queue("--lane", "browser", "--once", "--max-wait", "120")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 120),
-                        self.queue_log(job_id))
-        self.assertFalse(self.lock_busy(self.paths["heavy_lock"]))  # never taken, by the runner or the job
-        self.assertTrue(any(self.lock_busy(self.slot(n)) for n in ("slot-browser-1.lock", "slot-browser-2.lock")))
+        out = os.path.join(self.run_root(job_id), "out")
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 120), self.queue_log(job_id))
+        try:
+            self.assertFalse(self.lock_busy(self.paths["heavy_lock"]))  # never taken, by the runner or the job
+            self.assertTrue(any(self.lock_busy(self.slot(n)) for n in ("slot-browser-1.lock", "slot-browser-2.lock")))
+            self.assertFalse(finished(self, job_id))
+        finally:
+            open(os.path.join(out, "release"), "w").close()
         self.assertTrue(self.wait_for(lambda: finished(self, job_id), 120), self.queue_log(job_id))
         outcome = self.outcome(job_id)
         self.assertEqual((outcome["exit"], outcome["cleanup"]), (0, "clean"), outcome["reason"])
