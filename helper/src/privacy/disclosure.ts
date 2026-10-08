@@ -377,8 +377,13 @@ export class Disclosure extends SnippetLedger {
     if (at !== undefined && !rangeHolds(view, at, text)) throw new Error(`a ${reason}'s recorded source range [${at.start}, ${at.end}) of ${JSON.stringify(at.part)} does not hold its text`);
     this.know(view);
     const spans: ViewSpan[] = [at === undefined ? { view, text } : { view, at }];
-    // A typed value in the reader's own words may stand in no line: it charges the node it was read from, whole.
-    if (at === undefined) for (const v of view.values) if (sourceLines(text).some((l) => v.text.includes(l.replace(/^\u2026|\u2026$/gu, "")))) spans.push(...nodeSpans(view, v.nodeKey));
+    // A typed value in the reader's own words, which stands in no line of the view, charges the node it was read from,
+    // whole. One that stands in the view's text is charged where it stands, as any text.
+    if (at === undefined) {
+      const lines = viewInventory(view).lines;
+      const pieces = sourceLines(text).map((l) => l.replace(/^\u2026|\u2026$/gu, "")).filter((l) => l !== "");
+      if (!pieces.every((p) => lines.some((l) => l.includes(p)))) for (const v of view.values) if (pieces.some((p) => v.text.includes(p))) spans.push(...nodeSpans(view, v.nodeKey));
+    }
     if (!this.admitTexts([text], { under: view.window.windowId, kind: reason === "descriptor" ? "descriptor" : "candidate", spans })) return null;
     this.declareSpans(text, spans);
     return this.record(text, [reason]);

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, Snapshot, type Node, type PageControl, type PageSnapshot, type TypedValue } from "../src/protocol.ts";
 import { ScreenModel } from "../src/model.ts";
+import { isConversation } from "../src/conversation.ts";
 import { formControls, labelTies, optionLink } from "../src/fill/controls.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
@@ -165,7 +166,10 @@ describe("a menu's option named by a source, through fill (G3's examples)", () =
    * HA2: an owner question shows the whole note, which fits its window's limit; a note it could not show whole would
    * withhold its address.
    */
-  const only = (label: string) => (d: Desk): FillScope => ({ fields: formControls(d.form).filter((c) => normLabel(c.label ?? "") === normLabel(label)).map((c) => c.node.key), windows: null, memory: false, instruction: "fill in everything you can from my notes", person: null, literals: new Map(), consented: new Set([...d.model.windows.keys()].filter((id) => id !== d.form.window.windowId)) });
+  // The Ask reads the windows that are no conversation: the desks' bystander mail holds an address too, which its own
+  // facts no longer fit beside (each candidate is admitted with all of them), so reading it would cut the address kind
+  // and withhold the note's state, which is not what these cases are about.
+  const only = (label: string) => (d: Desk): FillScope => ({ fields: formControls(d.form).filter((c) => normLabel(c.label ?? "") === normLabel(label)).map((c) => c.node.key), windows: new Set([...d.model.windows.values()].filter((w) => w.window.windowId !== d.form.window.windowId && !isConversation(w)).map((w) => w.window.windowId)), memory: false, instruction: "fill in everything you can from my notes", person: null, literals: new Map(), consented: new Set([...d.model.windows.keys()].filter((id) => id !== d.form.window.windowId)) });
 
   it("B24 ask-07: offers State 'TX' for the state of the note's Austin, Texas address", async () => {
     const { at } = await fill("rental-application", { State: "TX" }, only("State"));

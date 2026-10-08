@@ -439,10 +439,9 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
       expect(r.attempts.filter((x) => x.cls === "a").length).toBeGreaterThan(100);
       // With every value check saying exact, class (a) measures code alone; the refuse-mode run below holds every class at
       // 0. The floor is the canned right count measured on these desks with the committed ledger (the corpus by the
-      // reader's windows, the Ask sets through planAsk): the guards must not cost one. 136: plan text declares the lines it
-      // holds or quotes, charged whole (OUTPUT-LEDGER-SPEC section 4, the fallback), so the verifier's provenance sentences
-      // take more of a chat; four addresses on checkout-shipping (corpus, heldout2-12, b31-11, b31-18) go unverified.
-      expect(r.canned.filter((x) => x.outcome === "right").length, "plan text's fallback charges whole lines").toBeGreaterThanOrEqual(136);
+      // reader's windows, the Ask sets through planAsk): the guards must not cost one. 143 measured; the verifier quotes a
+      // value's provenance where it was read, not as plan text (fill/contract.ts withReads).
+      expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(143);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

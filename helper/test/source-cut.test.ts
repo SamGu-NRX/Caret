@@ -88,12 +88,12 @@ describe("a cut conversation never leaves a decoy", () => {
     expect(byLabel.get("Meeting date")?.value).not.toBe("September 28, 2026");
   });
 
-  // With declared spans charged (OUTPUT-LEDGER-SPEC section 4), screen order spends the chat's limit on the order block's
-  // short values before its Placed date, so B11's wrong fill no longer happens even with both of B12's changes off: this
-  // fixture no longer shows that the test above can fail. Kept as the measure's control.
-  it("the B11 case with both of B12's changes off: the chat's limit runs out before the decoy date", async () => {
+  // The control for the test above: with both of B12's changes off, B11's wrong fill happens. Each value is charged where
+  // it was read (OUTPUT-LEDGER-SPEC section 4, recorded ranges), so screen order no longer spends the chat's limit on the
+  // order block before its Placed date, and the decoy is offered and taken: only B12's changes keep it out.
+  it("the B11 case with both of B12's changes off: the decoy date is filled, so B12's changes are what keep it out", async () => {
     const p = await proposeFill(model(), decoyProneJev(), FORM, FORM_KEY("Meeting date"), 3000, { cutRule: false, relevance: false });
-    expect(p.fields.find((f) => f.key === FORM_KEY("Meeting date"))?.value).toBeNull();
+    expect(p.fields.find((f) => f.key === FORM_KEY("Meeting date"))?.value, "the control: B11's decoy with B12 off").toBe("September 28, 2026");
   });
 
   it("does not ask a field whose kind lost a value to the cut, and marks it sourceCut", async () => {
@@ -260,10 +260,11 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     expect(byCost.get("Attendee email")).toBe(GOLD["Attendee email"]);
     expect(byCost.get("Video link")).toBe(GOLD["Video link"]);
     expect(byCost.get("Meeting date")).toBeNull();
-    // With the names' group (B14) every name the chat holds is offered as well, and the links still fit beside them
-    // (206 of the window's 212 characters): Attendee job title and Video link are both filled.
-    expect(b14.get("Video link")).toBe(GOLD["Video link"]);
+    // With the names' group (B14) every name the chat holds is offered as well. A time is now charged its own text with
+    // its facts where it was read (7 more each), so the links no longer fit beside the names: Attendee job title is
+    // filled, Video link is not.
     expect(b14.get("Attendee job title")).toBe(GOLD["Attendee job title"]);
+    expect(b14.get("Video link"), "a time's own text is charged with its facts, and the links do not fit beside the names").toBeNull();
   });
 
   it("offers a kind the form takes whole, every value with its facts, or not at all", () => {
@@ -282,9 +283,11 @@ describe("a conversation's budget goes to the lines nearest each field first", (
       // A value offered carries the facts a window that is not a conversation would give it.
       for (const c of of) if (c !== undefined) expect(c.section, c.text).not.toBeNull();
     }
-    // The cheapest groups per field get in whole: a time, an email, the links and the names, not the dates.
+    // The cheapest groups per field get in whole: a time, an email and the names, not the dates. Each candidate goes in
+    // with all its facts at their ranges, a time's own text included, so the links no longer fit beside them.
     expect(removed.has("date")).toBe(true);
-    for (const k of ["time", "email", "url"] as const) expect(removed.has(k), k).toBe(false);
+    for (const k of ["time", "email"] as const) expect(removed.has(k), k).toBe(false);
+    expect(removed.has("url"), "the links do not fit once each value is charged with its facts").toBe(true);
     for (const n of ["Dana Whitfield", "Senior Product Designer", "Lumen Labs"]) expect(candidates.map((c) => c.text)).toContain(n);
   });
 

@@ -6,7 +6,7 @@ import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestLabel, nearestText } from "./descriptor.ts";
-import { heldAsConversation } from "../privacy.ts";
+import { heldAsConversation, type ViewSpan } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, namesInAt, overlap, textKind, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
 import { bareLine, clauseSpan, LABELLED, lineTexts, lineValues, partSpan, sentenceSpan, rawURLToken, WARNS } from "./line-values.ts";
@@ -53,6 +53,37 @@ const SOURCES = new WeakMap<Candidate, CandidateSource>();
 /** Where `c`'s texts were read, as far as the generator recorded it. */
 export function sourceOf(c: Candidate): CandidateSource {
   return SOURCES.get(c) ?? {};
+}
+
+/**
+ * Where each text of `c`'s line was read, as declared spans: its recorded range, or the text itself (every line holding
+ * it). candidateTexts' texts, in the same admission, so a candidate goes in with all its facts or not at all, and its
+ * line mints later at no further charge (mintCandidate).
+ */
+export function candidateSpans(c: Candidate): ViewSpan[] {
+  const src = SOURCES.get(c);
+  const view = src?.view;
+  if (src === undefined || view === undefined) return [];
+  const out: ViewSpan[] = [];
+  const add = (t: string | null | undefined, read: Fact | SourceAt | undefined): void => {
+    if (t === null || t === undefined || t === "") return;
+    const at = read === undefined ? undefined : "part" in read ? read : read.text === t ? read.at : undefined;
+    out.push(at === undefined ? { view, text: t } : { view, at });
+  };
+  add(c.text, src.text);
+  if (c.context !== c.text) add(c.context, src.context);
+  add(c.line, src.line);
+  add(c.blockHead, src.blockHead);
+  if (c.section !== c.context) add(c.section, src.section);
+  if (c.source.windowTitle !== "") add(c.source.windowTitle, c.source.windowTitle === view.window.title ? wholePart(TITLE, view.window.title) : undefined);
+  return out;
+}
+
+/** A clause of `c` (Candidate.line, set once spans are in) with where it was read, for its own admission. */
+export function clauseSpans(c: Candidate, clause: string): ViewSpan[] {
+  const src = SOURCES.get(c);
+  if (src?.view === undefined) return [];
+  return [src.line?.text === clause ? { view: src.view, at: src.line.at } : { view: src.view, text: clause }];
 }
 
 /** `copy`, a copy of `c` with the same texts (another id), with `c`'s source ranges. */
@@ -126,14 +157,17 @@ function partHeadRange(node: Node, part: "label" | "value", text: string): Sourc
 /** Where a span was read: a line of nodeText (its start there and its raw text), or an offset in nodeText. */
 type Found = { readonly lineStart: number; readonly raw: string; readonly at?: number; readonly withAt?: number } | { readonly offset: number };
 
-/** The source range of the white-space-bounded token of nodeText(node) that holds offset `at` (rawURLToken's token). */
-function tokenRange(node: Node, at: number): SourceAt | null {
+/**
+ * The source range of the white-space-bounded token of nodeText(node) that holds offset `at` (rawURLToken's token), when
+ * that token is `token`; null otherwise.
+ */
+function tokenRange(node: Node, at: number, token: string): SourceAt | null {
   const t = nodeText(node);
   let a = at;
   let b = at;
   while (a > 0 && !/\s/u.test(t[a - 1]!)) a--;
   while (b < t.length && !/\s/u.test(t[b]!)) b++;
-  return nodeRange(node, a, b);
+  return t.slice(a, b) === token ? nodeRange(node, a, b) : null;
 }
 
 /** Where `found` puts a span as a line of nodeText and a position in it as bareLine reads it, or undefined when it says no position. */
@@ -173,8 +207,14 @@ function nodeLines(node: Node): { raw: string; start: number }[] {
 function valueFound(node: Node, v: TypedValue): Found | undefined {
   const off = sourceOffsets.get(v);
   if (off !== undefined) return { offset: off };
-  // A reader's typed value says no offset: its source is the whole lines that hold it (the fallback), never a search.
-  return valueLines.get(v);
+  const line = valueLines.get(v);
+  if (line !== undefined) return line;
+  // A reader's typed value says its node and its text exactly as the node's text has it (protocol.ts TypedValue), not
+  // its offset. Standing there once, it was read there; standing there twice or more, which one is not known, and its
+  // source is the whole lines that hold it (the fallback), never the first of them.
+  const t = nodeText(node);
+  const at = t.indexOf(v.text);
+  return at < 0 || t.indexOf(v.text, at + 1) >= 0 ? undefined : { offset: at };
 }
 
 export interface Candidate {
@@ -374,6 +414,11 @@ export interface Collected {
   namesCut: boolean;
   /** C1: with GenerateOptions.deferClauses, each offered span's clause, for the caller to charge and set; empty otherwise. */
   clauses: ReadonlyMap<Candidate, string>;
+  /**
+   * By window id, the labels of spans a cut left out: an offered value under one of them is not the only value its label
+   * names there, so fill withholds a pick of it (fill.ts pickCut).
+   */
+  cutLabels: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export interface GenerateStats {
@@ -459,7 +504,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const end = Math.max(source.indexOf(line) + line.length, source.indexOf(raw) + raw.length);
       required = required === undefined ? raw : source.slice(start, end);
       // Its range only where the token was read at a known offset: the token is what runs to white space either side of it.
-      requiredAt = required === raw && sourceOffset !== undefined ? tokenRange(node, sourceOffset) : null;
+      // Where the value was read in nodeText: its recorded offset, or its line's start and its place in that line.
+      const valueAt = sourceOffset ?? (where === undefined ? undefined : where.lineStart + (bareMap(where.raw).from[where.at] ?? -where.lineStart - 1));
+      // Only when the excerpt is that one token: an excerpt of every occurrence (rawURLToken with no offset) has none.
+      requiredAt = required === raw && valueAt !== undefined && valueAt >= 0 ? tokenRange(node, valueAt, raw) : null;
     }
     const clause = required !== undefined || fact === null || fact.required ? null : fact.clause;
     const sec = timed("section", () => sectionRead(w, node));
@@ -524,12 +572,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId) || text.includes(WITHHELD)) return;
     const c = build(w, node, text, kind, context, quote, partOf, sourceOffset, found);
     if (c === null) return;
-    if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
+    if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c), candidateSpans(c))) {
       // W2: a part of a labelled value (line-values.ts valueParts) is an extra beside the whole value: one that does not
       // fit is dropped, and the window is neither cut nor closed for it. Counting it as a cut withheld Greenhouse's names
       // (W1's regression: 12/12 to 6/6 canned, evidence/screen/w1 CHECKLIST).
       if (partOf !== undefined) return;
       missed.add(w.window.windowId);
+      if (c.context !== null) labelCut(w.window.windowId, c.context);
       // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
       // counts as cut, so the cut rules withhold its kind and words, but the spans after it are still read. Closing the
       // window instead cut every later line of a mail whose prose warns often (corpus clinic-intake, 7 -> 5).
@@ -547,6 +596,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     out.push(c);
   };
   const touched = new Set<string>();
+  /** Collected.cutLabels. */
+  const cutLabels = new Map<string, Set<string>>();
+  const labelCut = (id: string, label: string): void => {
+    let set = cutLabels.get(id);
+    if (set === undefined) cutLabels.set(id, (set = new Set()));
+    set.add(label);
+  };
   /** The window the generator is reading, if it stops there. */
   let reading: string | null = null;
   const finish = (): Collected => {
@@ -556,7 +612,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const sw = viewOf(model, c.source.windowId);
       if (clause === undefined || sw === undefined) continue;
       if (o.deferClauses === true) pending.set(c, clause);
-      else if (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause])) c.line = clause;
+      else if (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause], clauseSpans(c, clause))) c.line = clause;
     }
     for (const id of leftOutOf) {
       const lw = viewOf(model, id);
@@ -565,7 +621,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     leftOutOf.clear();
     stats.windows = touched.size;
     stats.ms = clock() - t0;
-    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending };
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, cutLabels };
   };
   /**
    * Stops early, on the cap or the clock, partway through `reading`: what of it was offered is a partial
@@ -601,6 +657,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     let n = 0;
     const note = (node: Node, text: string, line: string, kinds: readonly ValueKind[], label: string | null): boolean => {
       if (seen.has(text)) return true;
+      if (label !== null) labelCut(w.window.windowId, label);
       if (++n > LEFT_OUT_MAX || outOfTime()) {
         cutAll = true;
         return false;
@@ -659,6 +716,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (seen.has(sp.text)) continue;
       for (const t of sp.terms) if (t !== NAME_TERM) cutTerms.add(t);
       cutNames.push(...sp.names);
+      const label = sp.context()?.text ?? null;
+      if (label !== null) labelCut(w.window.windowId, label);
     }
     return finished;
   };
@@ -790,7 +849,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (full() || outOfTime()) return false;
       let best: { k: string; rate: number } | null = null;
       for (const [k, group] of groups) {
-        const cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts));
+        const cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts), group.flatMap(candidateSpans));
         if (cost === null || cost === undefined) continue;
         const rate = o.kindsByCost === false ? kindOrder.indexOf(k) : cost / served(k);
         if (best === null || rate < best.rate) best = { k, rate };
@@ -798,7 +857,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (best === null) break;
       const group = groups.get(best.k) as Candidate[];
       groups.delete(best.k);
-      if (o.ledger?.take(w, "candidate", group.flatMap(candidateTexts)) !== true) throw new Error(`a kind priced to fit did not fit window ${w.window.windowId}`);
+      if (o.ledger?.take(w, "candidate", group.flatMap(candidateTexts), group.flatMap(candidateSpans)) !== true) throw new Error(`a kind priced to fit did not fit window ${w.window.windowId}`);
       for (const c of group) {
         c.id = `c${out.length + 1}`;
         seen.add(c.text);
@@ -828,7 +887,6 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // its first lines, and the lines a form wanted came after the cut (evidence/screen/b24/dev-5).
     if (relevance !== null && heldAsConversation(w)) {
       ranked.add(w.window.windowId);
-      if (!byRelevance(w, relevance)) return stop();
       continue;
     }
     for (const v of windowValues(w)) {
@@ -859,6 +917,14 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         }
       }
     }
+  }
+  // Conversations last, each by relevance: a window that is no conversation is read whole first, so a conversation's
+  // coincidental text cannot spend its budget before the values of the note the user was reading.
+  for (const w of windows) {
+    if (full()) break;
+    if (!ranked.has(w.window.windowId)) continue;
+    reading = w.window.windowId;
+    if (!byRelevance(w, relevance as readonly ReadonlySet<string>[])) return stop();
   }
   return finish();
 }

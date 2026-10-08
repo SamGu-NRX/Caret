@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { bareLine, LABELLED, lineDigests, logicalLines, sentenceAround } from "./line-values.ts";
 import { spanContexts } from "./candidates.ts";
 import { redactWindow } from "./redact.ts";
+import { TITLE, type SourceAt } from "../privacy/ledger/source.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
@@ -523,6 +524,30 @@ export function neverTypedRefusal(p: Proposed, instruction = ""): string | null 
 export const VERIFY_BATCH = 20;
 
 
+/**
+ * Where a window provenance's texts were read (OUTPUT-LEDGER-SPEC section 4), when the producer recorded it: by text, a
+ * range of the redacted view's text. The verifier quotes such a text at its range, not as plan text, whose fallback would
+ * charge the whole line it stands in. Kept beside the provenance, not in it: a provenance is stored and compared whole.
+ */
+const READS = new WeakMap<Provenance, { view: WindowState; reads: ReadonlyMap<string, SourceAt> }>();
+
+/** `copy`, a copy of `pr` (a clone, a spread), with `pr`'s reads and those of the provenances it names. */
+export function readsCopied<P extends Provenance>(pr: Provenance, copy: P): P {
+  const r = READS.get(pr);
+  if (r !== undefined) READS.set(copy, r);
+  if (pr.kind === "derived" && copy.kind === "derived") {
+    readsCopied(pr.base, copy.base);
+    if (pr.also !== null && copy.also !== null) readsCopied(pr.also, copy.also);
+  }
+  return copy;
+}
+
+/** `pr`, with where its texts were read in `view` (READS). */
+export function withReads<P extends Provenance>(pr: P, view: WindowState, reads: ReadonlyMap<string, SourceAt>): P {
+  if (reads.size > 0) READS.set(pr, { view, reads });
+  return pr;
+}
+
 /** The source window's own words for a window provenance: its app and title, quoted only when the ledger admitted them. */
 function where(app: string, title: string, admitted: (t: string) => boolean): string {
   const t = title.trim();
@@ -552,7 +577,13 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
   const m = quote;
   switch (pr.kind) {
     case "window": {
-      const m = (t: string): ModelText | null => (shown(pr.windowId, t) ? quote(t) : null);
+      // A text read at a recorded range is quoted there (READS); any other as `quote` mints it.
+      const read = READS.get(pr);
+      const m = (t: string): ModelText | null => {
+        if (!shown(pr.windowId, t)) return null;
+        const at = read?.reads.get(t);
+        return read === undefined || at === undefined ? quote(t) : at.part === TITLE ? d.descriptor(read.view, t, at) : d.candidate(read.view, t, at);
+      };
       const t = pr.title.trim();
       // The app is reader metadata, named as it always was; a window of it is open, or the app's name is plan text.
       const app = pr.app === "" ? null : (d.appNamed(pr.app) ?? d.planText(pr.app));
@@ -593,6 +624,32 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
 }
 
 const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format" } as const satisfies Record<DeriveHow, string>;
+
+/**
+ * A derived value's text, minted as derived from its base where the base was read (its window provenance's span at its
+ * recorded range), so it charges the base's range and not every line holding the value. Null when the base recorded no
+ * range or the value's words are not its base's (Disclosure.derived).
+ */
+function derivedAtBase(d: Disclosure, pr: Provenance, text: string): ModelText | null {
+  if (pr.kind !== "derived" || pr.base.kind !== "window") return null;
+  const read = readOf(pr.base, pr.base.span);
+  if (read === null) return null;
+  const base = d.candidate(read.view, pr.base.span, read.at);
+  return base === null ? null : d.derived(base, text);
+}
+
+/** Whether a window provenance (or the one a derived value's names) recorded where `t` was read. */
+function hasRead(pr: Provenance, t: string): boolean {
+  return readOf(pr, t) !== null;
+}
+
+/** Where a provenance (or the one a derived value's names) read `t`, with its view, or null. */
+function readOf(pr: Provenance, t: string): { view: WindowState; at: SourceAt } | null {
+  if (pr.kind === "derived") return readOf(pr.base, t) ?? (pr.also === null ? null : readOf(pr.also, t));
+  const r = READS.get(pr);
+  const at = r?.reads.get(t);
+  return r === undefined || at === undefined ? null : { view: r.view, at };
+}
 
 /** The texts of a provenance a question may quote, for the ledger: its window's title, line, label, span and whole value. */
 function provenanceTexts(pr: Provenance): string[] {
@@ -727,10 +784,13 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
   const questions = proposed.map((p) => {
     // The field's descriptor and the text itself must go; a value whose own text the ledger refuses is not verified.
     const descriptor = admit(p.field.descriptor);
-    const text = admit(p.text);
+    // The value is quoted where it was read when its provenance recorded that, else as plan text.
+    const valueRead = readOf(p.provenance, p.text);
+    const text = valueRead !== null ? d.candidate(valueRead.view, p.text, valueRead.at) : (derivedAtBase(d, p.provenance, p.text) ?? admit(p.text));
     const name = admit(p.field.name);
     if (descriptor === null || text === null || name === null) return null;
-    for (const t of provenanceTexts(p.provenance)) admit(t);
+    // Each text a provenance quotes is admitted as it is minted (mintProvenanceSays): at its range when it has one.
+    for (const t of provenanceTexts(p.provenance)) if (!hasRead(p.provenance, t)) admit(t);
     const takes = takesSays(p.field);
     const parts: VerifyParts = {
       descriptor,
@@ -833,7 +893,7 @@ export async function checkValues(proposed: readonly Proposed[], o: CheckOptions
 /** A deep copy of a value with everything frozen; a field contract already frozen (makeFieldContract) is kept as it is. */
 function snapshot(p: Proposed): Proposed {
   const field = Object.isFrozen(p.field) && Object.isFrozen(p.field.labelWords) ? p.field : Object.freeze({ ...p.field, labelWords: Object.freeze([...p.field.labelWords]), kinds: new Set(p.field.kinds) });
-  return Object.freeze({ field, text: p.text, display: p.display, provenance: deepFrozen(structuredClone(p.provenance)), owner: p.owner });
+  return Object.freeze({ field, text: p.text, display: p.display, provenance: deepFrozen(readsCopied(p.provenance, structuredClone(p.provenance))), owner: p.owner });
 }
 function deepFrozen<T>(x: T): T {
   if (typeof x === "object" && x !== null) {

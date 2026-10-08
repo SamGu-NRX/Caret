@@ -526,12 +526,16 @@ export class SnippetLedger {
     return true;
   }
 
-  /** Takes texts cut from `w`: each must stand in it (locatable); admitted by the early check, or false. */
-  take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
+  /**
+   * Takes texts cut from `w`: each must stand in it (locatable); admitted by the early check, or false. `spans`: where
+   * they were read (DeclaredSpan), charged with them in the same admission, all or none, so a later mint of the same
+   * texts at the same spans adds nothing and cannot fail on the ledger.
+   */
+  take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[], spans: readonly ViewSpan[] = []): boolean {
     this.know(w);
     const ts = texts.filter((t): t is string => typeof t === "string" && t !== "");
     if (!ts.every((t) => this.locatable(w, t))) return false;
-    return this.admitTexts(ts, { under: w.window.windowId, kind });
+    return this.admitTexts(ts, { under: w.window.windowId, kind, spans });
   }
 
   /**
@@ -553,12 +557,13 @@ export class SnippetLedger {
     return this.account.admit(takes.map((t) => t.text), false, notes) !== null;
   }
 
-  /** What taking these texts from `w` would add to `w`'s charge, or null when they cannot be taken. Takes nothing. */
-  cost(w: WindowState, texts: readonly (string | null | undefined)[]): number | null {
+  /** What taking these texts from `w` at `spans` would add to `w`'s charge, or null when they cannot be taken. Takes nothing. */
+  cost(w: WindowState, texts: readonly (string | null | undefined)[], spans: readonly ViewSpan[] = []): number | null {
     this.know(w);
     const ts = texts.filter((t): t is string => typeof t === "string" && t !== "");
     if (ts.some((t) => excludedValue(t) !== null) || !ts.every((t) => this.locatable(w, t))) return null;
-    const adds = this.account.admit(ts, false);
+    const fresh = spans.filter((sp) => !this.spanned.get(sp.view)?.has(spanKey(sp)));
+    const adds = this.account.admit(ts, false, undefined, spansOf(fresh));
     if (adds === null) return null;
     return adds.get(w.window.windowId)?.added ?? 0;
   }
@@ -579,10 +584,12 @@ export class SnippetLedger {
   /**
    * The lexical charge of wording a builder will send around its values (its question templates), kept by the early
    * check before any value is admitted: a short line of a chat that the wording happens to hold ("You" in "can you not
-   * tell") is charged at seal, and values admitted up to the limit without it lost the whole request there.
+   * tell") is charged at seal, and values admitted up to the limit without it lost the whole request there. `strict`:
+   * reserve it only if it fits beside what is admitted already, and say whether it did (wording decided late, whose
+   * builder leaves it out, and what it describes, when it does not fit).
    */
-  reserveWording(texts: readonly string[]): void {
-    this.account.reserve(texts);
+  reserveWording(texts: readonly string[], strict = false): boolean {
+    return this.account.reserve(texts, strict);
   }
 
   /**

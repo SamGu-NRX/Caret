@@ -1,0 +1,79 @@
+// What a fill offers is admitted once, where it is collected: a candidate goes in with every fact it is described by,
+// at the ranges they were read from, or it is cut and the cut rules withhold its kind. Building the requests afterwards
+// never shrinks that set. And the wording reserved before any value is admitted is the wording that will be sent.
+// Every name and value is invented.
+import { describe, expect, it } from "vitest";
+import { ScreenModel } from "../src/model.ts";
+import { proposeFill } from "../src/fill/fill.ts";
+import type { AskJev, JevRequest } from "../src/fill/jev.ts";
+import type { Node } from "../src/protocol.ts";
+import { field, snap, text } from "./builders.ts";
+
+const MESSAGES = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
+const FORM_APP = { pid: 5150, bundleId: "dev.caret.fixture", name: "Fixture" };
+const FORM = "5150-7";
+const key = (label: string): string => `dev.caret.fixture/standard/textfield:${label.toLowerCase().replace(/ /g, "-")}~0`;
+
+/** A chat, then a form with `labels`, focused on the first. */
+function desk(chat: Node[], labels: string[], title = "K"): ScreenModel {
+  const m = new ScreenModel();
+  m.apply(snap(chat, { at: 1000, windowId: "chat-1", title, app: MESSAGES }));
+  m.apply(snap(labels.map((l, i) => field(key(l), "", { label: l, frame: [100, 40 + i * 40, 300, 24] })), { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+  return m;
+}
+
+/** Picks, for each field's question, the offered value its label's entry names (by the description's start), else none. */
+function picking(want: Record<string, string>, seen: JevRequest[] = []): AskJev {
+  return async (req) => {
+    seen.push(req);
+    const answers: Record<string, { choice: string; confidence: number }> = {};
+    for (const [id, q] of Object.entries(req.questions)) {
+      // Whose details a field wants, and whose a value is: the user's.
+      if (id.endsWith("_whose") || id.endsWith("_owner")) {
+        answers[id] = { choice: "user", confidence: 0.95 };
+        continue;
+      }
+      const label = Object.keys(want).find((l) => String(q.instructions).includes(`'${l}'`));
+      const hit = label === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want[label]}"`))?.[0];
+      answers[id] = { choice: hit ?? "none", confidence: 0.95 };
+    }
+    return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+  };
+}
+
+/** The values a request's question for `label` offers, by their description's quoted text. */
+const offered = (req: JevRequest, label: string): string[] =>
+  Object.values(req.questions).filter((q) => String(q.instructions).includes(`'${label}'`)).flatMap((q) => Object.values(q.criteria).flatMap((d) => /^"([^"]*)"/.exec(String(d))?.[1] ?? []));
+
+describe("a fill's candidates, admitted once with their facts", () => {
+  it("cuts a value whose facts do not fit, so a field is not handed the other one as if it were the only one", async () => {
+    // T = 1 + 9 + 9 + 11 = 30, limit 14. AB01 with its label and the title is 8; AB02 and its own label 7 more.
+    const m = desk([text("c0", "Ref: AB01"), text("c1", "Ref: AB02"), { key: "c2", parent: null, role: "AXButton", label: "ZZZZZZZZZZZ" }], ["Reference"]);
+    const seen: JevRequest[] = [];
+    const p = await proposeFill(m, picking({ Reference: "AB01" }, seen), FORM, key("Reference"), 3000);
+    const f = p.fields.find((x) => x.key === key("Reference"))!;
+    // AB02 did not fit: the window is cut, and a pick under the label the cut value shares is withheld, not filled.
+    expect(seen.flatMap((r) => offered(r, "Reference"))).not.toContain("AB02");
+    expect(f.value, "AB01 is not the only value the chat shows").toBeNull();
+    expect(f.withheld).toBe("sourceCut");
+  });
+
+  it("reserves only the wording the requests will carry: a chat line 'country' does not cost AB01 its description", async () => {
+    // T = 1 + 9 + 7 = 17, limit 8: AB01, its label and the title take 8. The derived-values sentence names "country",
+    // and no value here is derived, so it is not sent and not reserved.
+    const m = desk([text("c0", "Ref: AB01"), text("c1", "country")], ["Reference"]);
+    const p = await proposeFill(m, picking({ Reference: "AB01" }), FORM, key("Reference"), 3000);
+    expect(p.fields.find((x) => x.key === key("Reference"))?.value).toBe("AB01");
+  });
+
+  it("derives a part from its base where the base was read: 'Austin' from an address on a long chat line", async () => {
+    const line = `Address: 123 Main St, Austin, TX 78701 ${"Z".repeat(80)}`;
+    // T = 4 + 120 = 124, limit 61: the address at its range, its label and the title fit; the whole line does not.
+    const m = new ScreenModel();
+    m.apply(snap([text("c0", line)], { at: 1000, windowId: "chat-1", title: "Kofi", app: MESSAGES, values: [{ kind: "address", text: "123 Main St, Austin, TX 78701", nodeKey: "c0" }] }));
+    m.apply(snap([field(key("City"), "", { label: "City", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    // No whose questions: a conversation's value is never owner-judged (HA2 rule c), which is not what this case is about.
+    const p = await proposeFill(m, picking({ City: "Austin" }), FORM, key("City"), 3000, { whose: false });
+    expect(p.fields.find((x) => x.key === key("City"))?.value).toBe("Austin");
+  });
+});

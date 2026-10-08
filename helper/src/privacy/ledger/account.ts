@@ -348,16 +348,28 @@ export class MintAccount {
     }
   }
 
-  /** absorb's second job: the lexical charge of `texts` (a builder's own wording), kept. Null when a text cannot be measured. */
-  reserve(texts: readonly string[]): boolean {
+  /**
+   * absorb's second job: the lexical charge of `texts` (a builder's own wording), kept; false when a text cannot be
+   * measured. `strict`: kept only when no window would pass its limit, false (keeping nothing) otherwise.
+   */
+  reserve(texts: readonly string[], strict = false): boolean {
     const units = normalizedUnits(texts.filter((t) => t !== ""));
     if (units === null) return false;
     const probe = new UnitProbe(units);
+    const adds: [MeasuredWindow, Uint8Array][] = [];
     for (const w of this.windows()) {
       if (w.inv.malformed) return false;
       const r = probe.reveal(w.inv);
-      if (r.charged > 0) this.keep(w, r.positions);
+      if (r.charged === 0) continue;
+      if (strict) {
+        const had = this.running.get(w.view);
+        let count = had?.charged ?? 0;
+        for (let p = 0; p < r.positions.length; p++) if (r.positions[p] === 1 && had?.bits[p] !== 1 && had?.notes[p] !== 1) count++;
+        if (count > w.limit) return false;
+      }
+      adds.push([w, r.positions]);
     }
+    for (const [w, bits] of adds) this.keep(w, bits);
     return true;
   }
 
