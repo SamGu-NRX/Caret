@@ -18,7 +18,9 @@ class ReleaseHostEnvironmentTests(unittest.TestCase):
 
     def test_v2_helper_launcher_marks_release_and_filters_env_file(self):
         text = (ROOT / "apps/caret/Sources/CaretHost/Services/ServiceLauncher.swift").read_text()
-        for key in ("CARET_RELEASE_HOST", "CARET_DEV_", "AI_GATEWAY_", "VERCEL_", "CARET_ENV_FILE"):
+        # Release children get only the allow-list, so no dev or gateway prefix needs filtering here; the executed test
+        # below checks that none arrives.
+        for key in ("CARET_RELEASE_HOST", "CARET_ENV_FILE"):
             self.assertIn(key, text)
         self.assertIn("#if DEBUG", text)
         self.assertIn('env.removeValue(forKey: "CARET_ENV_FILE")', text)

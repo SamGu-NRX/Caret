@@ -307,9 +307,6 @@ final class ServiceLauncher {
             if let provider = env["CARET_JEV_PROVIDER"], provider != "typesafe" {
                 throw LaunchError("CARET_JEV_PROVIDER must be typesafe under a release host; Vercel AI Gateway is disabled")
             }
-            env = env.filter { key, _ in
-                !key.hasPrefix("CARET_DEV_") && !key.hasPrefix("AI_GATEWAY_") && !key.hasPrefix("VERCEL_")
-            }
             env.removeValue(forKey: "CARET_ENV_FILE")
             env["CARET_RELEASE_HOST"] = "1"
         }

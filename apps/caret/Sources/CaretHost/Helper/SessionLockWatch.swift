@@ -11,7 +11,8 @@ final class SessionLockWatch {
          send: @escaping @Sendable (SessionLocked.Why) -> Void) {
         let watched: [(NotificationCenter, Notification.Name, SessionLocked.Why)] = [
             (distributed, Notification.Name("com.apple.screenIsLocked"), .lock),
-            // Fast user switching: the session keeps running behind another user's.
+            // Fast user switching: the session keeps running behind another user's. A switch may post the screen lock
+            // too (not checked here: it needs a real session switch), which only clears the cache twice.
             (workspace, NSWorkspace.sessionDidResignActiveNotification, .lock),
             // Logging out, restarting and shutting down all post this before apps are asked to quit.
             (workspace, NSWorkspace.willPowerOffNotification, .signOut),
