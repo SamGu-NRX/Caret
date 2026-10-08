@@ -181,7 +181,9 @@ The app bundler and the apps/mac Xcode privacy phase now generate that resource 
 
 Packaging is blocked until this view reads the resource and contains no hard-coded promise. The gate checks the binding and verifies the generated resource equals `PRIVACY_PROMISE`. The apps/mac permission panel currently shows no cloud-data promise; if it gains one, use the same bundled resource rather than another copy.
 
-## Request to Teddy: let the fields question fill only what Caret already settled
+## Host change, done by the Caret lane: let the fields question fill only what Caret already settled
+
+This was a request to Teddy. Sam decided that the Caret lane fixes a Teddy-owned surface when it blocks Caret, so the host-integration lane (v2/hostint2) builds it after this branch merges into v2/int1. Teddy, nothing is needed from you.
 
 An Ask now asks which fields far more often. Jev's two scope answers rarely say "unclear" (0 of 300 field pairs in B31's live run). They more often disagree, or both vote "asks" just under the cutoff. The helper now offers those fields by their exact labels whenever eight or fewer remain, beside the fields Jev settled. The question text names the settled ones: "Caret will fill Name. Which of these should it fill too?"
 
@@ -190,7 +192,7 @@ Today the card has no way to say "just those". Tab with nothing selected picks t
 - `askQuestion.filling` (optional, fields questions only) lists the labels Caret fills whatever is picked.
 - An `askAnswer` with `picks: []` answers such a question: Caret fills only the `filling` fields. Any other empty answer is refused with `schema`.
 
-Please change the host to match:
+The host change:
 
 1. `CaretHostCore/AskChoices.swift`: decode `filling` on `AskQuestion` (absent, or one or more labels, fields questions only), and let `AskAnswer` carry zero picks.
 2. `CaretHostCore/AskCaret.swift`: on a question with `filling`, Tab with no row selected sends `picks: []`. Space still selects rows, and Tab with rows selected sends them. Leave every other question's Tab as it is.
