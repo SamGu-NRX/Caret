@@ -1,3 +1,4 @@
+import { ENV } from "../../host-env.ts";
 // Record and replay of decision requests, for test harnesses (brief J1, part A3). An evaluation run makes the same
 // requests as the last run on an unchanged page, so with the cache a rerun costs nothing and answers the same.
 //
@@ -61,7 +62,7 @@ export interface CacheOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-const SHIPPED_MARKERS = ["CARET_LAUNCHD_AGENT", "CARET_OPENED_BY_LAUNCHSERVICES"] as const;
+const SHIPPED_MARKERS = [ENV.caret_launchd_agent, ENV.caret_opened_by_launchservices] as const;
 
 /** Throws CacheRefused in the shipped app (its launchd agent's marker, or a copy LaunchServices opened). */
 export function refuseShipped(env: NodeJS.ProcessEnv): void {
@@ -72,7 +73,7 @@ export function refuseShipped(env: NodeJS.ProcessEnv): void {
 
 /** The helper serves the user's real screens, so a CARET_JEV_CACHE in its environment is a mistake: refused at start. */
 export function refuseCacheInHelper(env: NodeJS.ProcessEnv = process.env): void {
-  if (env.CARET_JEV_CACHE !== undefined) throw new CacheRefused("CARET_JEV_CACHE is set, but the helper reads real screens and the decision cache would store their text on disk; the cache is only for test harnesses");
+  if (env[ENV.caret_jev_cache] !== undefined) throw new CacheRefused("CARET_JEV_CACHE is set, but the helper reads real screens and the decision cache would store their text on disk; the cache is only for test harnesses");
 }
 
 /**
@@ -80,9 +81,9 @@ export function refuseCacheInHelper(env: NodeJS.ProcessEnv = process.env): void 
  * CARET_JEV_CACHE_MODE the mode (replay-or-record unless set).
  */
 export function cacheFromEnv(env: NodeJS.ProcessEnv, dir: string): { dir: string; mode: CacheMode } | null {
-  const raw = env.CARET_JEV_CACHE_MODE ?? "replay-or-record";
+  const raw = env[ENV.caret_jev_cache_mode] ?? "replay-or-record";
   if (!(MODES as readonly string[]).includes(raw)) throw new Error(`CARET_JEV_CACHE_MODE is '${raw}'; it must be ${MODES.join(", ")}`);
-  const named = env.CARET_JEV_CACHE;
+  const named = env[ENV.caret_jev_cache];
   if (named === "off") return null;
   return { dir: named === undefined || named === "" ? dir : named, mode: raw as CacheMode };
 }

@@ -1,3 +1,4 @@
+import { ENV } from "../host-env.ts";
 // G2 round 4: the one place that decides what of a source window fill may read. The candidate generator (candidates.ts:
 // its passes, rankWindow, leftOut, windowValues, labelledLines) and fill's anchor read a window only through
 // redactWindow, so no extraction path has a secret filter of its own and none can miss one. Per-path filters did not
@@ -243,7 +244,7 @@ function splitTextNodes(w: WindowState): Set<string> {
  * drop), so tests and evaluations measure what the structural path alone (privacy/exclude.ts on read, the Disclosure, the
  * formats, the shapes, the budgets) withholds. A test-only switch: the helper refuses to start with it set (main.ts).
  */
-export const MARKERS_OFF_ENV = "CARET_TEST_MARKERS_OFF";
+export const MARKERS_OFF_ENV = ENV.caret_test_markers_off;
 const markersOff = (): boolean => process.env[MARKERS_OFF_ENV] === "1";
 
 function build(w: WindowState): WindowState {

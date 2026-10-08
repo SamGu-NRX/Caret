@@ -1,3 +1,4 @@
+import { ENV } from "../../host-env.ts";
 // The decision engine an evaluation harness runs on (J1): `--engine jev|canned|llama|gemini`, with the record-and-replay
 // cache in front of every engine that costs money or time, and, for llama, the calibration its probabilities are read
 // through. Harnesses only: everything here stores or sends fixture text.
@@ -53,7 +54,7 @@ export const CALIBRATIONS: Readonly<Record<string, Calibration>> = {
 };
 
 export function calibrationFromEnv(env: NodeJS.ProcessEnv, model?: string): Calibration {
-  const raw = env.CARET_ENGINE_CALIBRATION;
+  const raw = env[ENV.caret_engine_calibration];
   if (raw === undefined || raw === "") {
     const known = model === undefined ? undefined : CALIBRATIONS[model];
     if (known !== undefined) return known;
@@ -88,11 +89,11 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
       // (privacy.ts assertNoExcludedValue) and the minting and shape check on the body a live client would send (SC1 2b, 2c).
       return { name: "canned", model: "canned", reach: "mac", ask: (req) => (assertNoExcludedValue(req), verifySent(req, wireBody(req, "canned")), (o.canned as AskJev)(req)) };
     case "llama": {
-      const prompt = env.CARET_LLAMA_PROMPT ?? "chat";
+      const prompt = env[ENV.caret_llama_prompt] ?? "chat";
       if (prompt !== "chat" && prompt !== "document") throw new Error(`CARET_LLAMA_PROMPT is '${prompt}'; it must be chat or document`);
-      const model = env.CARET_LLAMA_MODEL;
+      const model = env[ENV.caret_llama_model];
       if (model === undefined || model === "") throw new Error("--engine llama needs CARET_LLAMA_MODEL, the name of the model llama-server runs");
-      return llamaEngine({ url: env.CARET_LLAMA_URL ?? "http://127.0.0.1:8091", model, prompt, ...(env.CARET_LLAMA_THINKING === "off" ? { templateKwargs: { enable_thinking: false } } : {}) });
+      return llamaEngine({ url: env[ENV.caret_llama_url] ?? "http://127.0.0.1:8091", model, prompt, ...(env[ENV.caret_llama_thinking] === "off" ? { templateKwargs: { enable_thinking: false } } : {}) });
     }
     case "gemini":
       // Brief J1: Gemini Flash-Lite's free tier only with a key in Caret's .env, and there is none.
@@ -107,17 +108,17 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
  * CARET_SLOW_EVAL_EVENTS. It needs the cache on, since a rerun after a limit must not ask again what was answered.
  */
 function slowFromEnv(engine: DecideEngine, env: NodeJS.ProcessEnv, cacheDir: string | null, variant: string): AskJev {
-  const events = env.CARET_SLOW_EVAL_EVENTS;
+  const events = env[ENV.caret_slow_eval_events];
   if (events === undefined || events === "" || engine.name === "canned") return engine.ask;
   if (cacheDir === null) throw new Error("CARET_SLOW_EVAL_EVENTS needs the replay cache on: a rerun after a rate limit would ask every answered request again");
-  const paceMs = Number(env.CARET_SLOW_EVAL_PACE_MS ?? DEFAULT_PACE_MS);
-  if (!(paceMs >= 0)) throw new Error(`CARET_SLOW_EVAL_PACE_MS is '${env.CARET_SLOW_EVAL_PACE_MS}'; it must be milliseconds, 0 or more`);
-  const where = { holdFile: env.CARET_SLOW_EVAL_HOLD ?? HOLD_FILE, diskPath: homedir(), floorGiB: Number(env.CARET_SLOW_EVAL_DISK_GIB ?? DISK_FLOOR_GIB) };
+  const paceMs = Number(env[ENV.caret_slow_eval_pace_ms] ?? DEFAULT_PACE_MS);
+  if (!(paceMs >= 0)) throw new Error(`CARET_SLOW_EVAL_PACE_MS is '${env[ENV.caret_slow_eval_pace_ms]}'; it must be milliseconds, 0 or more`);
+  const where = { holdFile: env[ENV.caret_slow_eval_hold] ?? HOLD_FILE, diskPath: homedir(), floorGiB: Number(env[ENV.caret_slow_eval_disk_gib] ?? DISK_FLOOR_GIB) };
   return slowAsk(engine.ask, {
     clock: REAL_CLOCK,
     freeOnly: engine.model === LAYA_FREE_MODEL,
     paceMs,
-    pace: filePace(env.CARET_SLOW_EVAL_PACE_FILE ?? PACE_FILE),
+    pace: filePace(env[ENV.caret_slow_eval_pace_file] ?? PACE_FILE),
     failures: fileFailures(join(cacheDir, "failures")),
     keyOf: (req) => canonicalRequest(req, engine.name, engine.model, variant).key,
     stopCheck: () => runStop(where, Date.now()),
@@ -130,7 +131,7 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   const env = o.env ?? process.env;
   const engine = baseEngine(o, env);
   const cache = engine.name === "canned" ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
-  const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}${engine.model === LAYA_FREE_MODEL ? ";state:json-text" : ""}` : engine.name === "llama" ? `prompt:${env.CARET_LLAMA_PROMPT ?? "chat"};thinking:${env.CARET_LLAMA_THINKING ?? "default"};read:${LLAMA_READING}` : "";
+  const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}${engine.model === LAYA_FREE_MODEL ? ";state:json-text" : ""}` : engine.name === "llama" ? `prompt:${env[ENV.caret_llama_prompt] ?? "chat"};thinking:${env[ENV.caret_llama_thinking] ?? "default"};read:${LLAMA_READING}` : "";
   const sent = slowFromEnv(engine, env, cache?.dir ?? null, variant);
   let ask = cache === null ? sent : cachedAsk(sent, { ...cache, engine: engine.name, model: engine.model, variant, fixture: o.fixture, env });
   if (engine.model === LAYA_FREE_MODEL) {

@@ -1,3 +1,4 @@
+import { ENV } from "../host-env.ts";
 // W2 (AC1, ~/.caret-run/design/arch/AC1-zero-wrong.md): the one contract every copied value meets before it is written.
 //
 // Why: before W2 five call sites each ran writable.ts writeMisfit on different inputs (fill passed the field's label,
@@ -692,7 +693,7 @@ export function setTestVerifier(f: AskJev | null): void {
   // Vitest's own worker state, which only a vitest worker has, as well as its environment flag (W2 review: the flag alone
   // can be set by anyone).
   const worker = (globalThis as { __vitest_worker__?: unknown }).__vitest_worker__;
-  if (process.env.VITEST !== "true" || typeof worker !== "object" || worker === null) throw new Error("setTestVerifier is for vitest only");
+  if (process.env[ENV.vitest] !== "true" || typeof worker !== "object" || worker === null) throw new Error("setTestVerifier is for vitest only");
   testVerifier = f;
 }
 

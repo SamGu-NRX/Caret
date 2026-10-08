@@ -1,3 +1,4 @@
+import { ENV } from "../host-env.ts";
 // Writer routes and the configured pick. Changing the pick is explicit configuration and needs a fresh run
 // of scripts/writer-eval.ts (plan section 5); there is no automatic fallback to another route.
 // L1 (2026-10-05): Sam turned Groq off ("As for Groq, I currently don't want to."). No route is configured; a developer
@@ -12,7 +13,7 @@ const GROQ_PRICES = "console.groq.com/docs/models.md, 2026-10-04";
 export const GROQ_GPT_OSS_120B: ChatRoute = {
   provider: "groq",
   baseUrl: GROQ,
-  keyName: "GROQ_API_KEY",
+  keyName: ENV.groq_api_key,
   model: "openai/gpt-oss-120b",
   maxTokensParam: "max_completion_tokens",
   // gpt-oss reasons by default (medium on Groq); low keeps a short plan program from paying for long thought.
@@ -29,7 +30,7 @@ export const GROQ_GPT_OSS_20B: ChatRoute = {
 export const GROQ_QWEN_3_8_27B: ChatRoute = {
   provider: "groq",
   baseUrl: GROQ,
-  keyName: "GROQ_API_KEY",
+  keyName: ENV.groq_api_key,
   model: "qwen/qwen3.8-27b",
   maxTokensParam: "max_completion_tokens",
   extraBody: { reasoning_effort: "none" },
@@ -45,7 +46,7 @@ export const GROQ_QWEN_3_8_27B: ChatRoute = {
 export const GATEWAY_GPT_OSS_120B: ChatRoute = {
   provider: "gateway",
   baseUrl: GATEWAY,
-  keyName: "AI_GATEWAY_API_KEY",
+  keyName: ENV.ai_gateway_api_key,
   model: "openai/gpt-oss-120b",
   maxTokensParam: "max_tokens",
   extraBody: { reasoning: { effort: "low" }, providerOptions: { gateway: { order: ["cerebras"], only: ["cerebras"] } } },
