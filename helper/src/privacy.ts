@@ -396,8 +396,12 @@ export class SnippetLedger {
    * builder holds (a task's kept source window), measured as well.
    */
   constructor(registry: ScreenRegistry | null, o: { snapshots?: Iterable<WindowState> } = {}) {
-    this.registry = registry;
+    // A view of the screen (a tab-backed fill's model) is measured as the live registry it was made from, with the view's
+    // own window states kept beside it: measured against the view alone, a chat that opened after it was made was not.
+    const live = registry?.live ?? null;
+    this.registry = live ?? registry;
     for (const w of registry?.windows.values() ?? []) this.known.set(w.window.windowId, w);
+    if (live !== null) for (const w of registry?.windows.values() ?? []) if (live.windows.get(w.window.windowId) !== w) this.heldStates.add(w);
     for (const w of o.snapshots ?? []) this.know(w);
     this.account = new MintAccount(() => this.measuredWindows(), OWNER_NOTE_CHARS);
   }

@@ -47,6 +47,8 @@ const MAX_FOCUS_HISTORY = 100;
 
 export class ScreenModel {
   readonly windows = new Map<string, WindowState>();
+  /** For a view made by withNodes, the model it was made from, whose windows go on changing (privacy ScreenRegistry.live). */
+  live: ScreenModel | null = null;
   private changes: Change[] = [];
   /**
    * Window that most recently arrived with focused=true. A request walk reports an app's own focused
@@ -246,6 +248,7 @@ export class ScreenModel {
    */
   withNodes(extra: ReadonlyMap<string, { nodes: readonly Node[]; title: string | null }>): ScreenModel {
     const v = new ScreenModel();
+    v.live = this.live ?? this;
     for (const [id, w] of this.windows) {
       const add = extra.get(id);
       if (add === undefined) {

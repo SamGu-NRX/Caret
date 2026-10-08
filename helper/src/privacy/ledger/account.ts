@@ -53,6 +53,12 @@ export function viewInventory(view: WindowState): LineInventory {
 /** What a Disclosure is measured against: the screen model's windows (ScreenModel satisfies it). */
 export interface ScreenRegistry {
   readonly windows: ReadonlyMap<string, WindowState>;
+  /**
+   * For a view of the screen made from another registry (ScreenModel.withNodes, a tab-backed fill's model): that live
+   * registry. A request is measured against the live window set, so a window that opens after the view was made is
+   * measured; the view's own window states are measured as kept states beside it.
+   */
+  readonly live?: ScreenRegistry | null;
 }
 
 /**
