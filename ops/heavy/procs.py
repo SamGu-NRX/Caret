@@ -56,6 +56,25 @@ class _RUsageInfoV4(ctypes.Structure):
         "interval_max_phys_footprint", "runnable_time")]
 
 
+# The slot locks heavy-job-queue's lanes pass to their jobs (feat/queue-lanes, docs/proposals/queue-lanes/SPEC.md),
+# all in the queue's state directory: the heavy lane keeps slot.lock, the browser lane has two slots.
+SLOT_LOCK_NAMES = {"heavy": ("slot.lock",), "browser": ("slot-browser-1.lock", "slot-browser-2.lock")}
+
+
+def slot_lock_problem(path, queue_state, lane):
+    """Why *path* is not a slot lock of *lane* in the queue's state directory, or None."""
+    names = SLOT_LOCK_NAMES.get(lane)
+    if names is None:
+        return "lane {!r} has no slot locks".format(lane)
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return "{!r} is not an absolute path".format(path)
+    if os.path.basename(path) not in names:
+        return "{} is not one of the {} lane's slot locks {}".format(path, lane, list(names))
+    if os.path.realpath(os.path.dirname(path)) != os.path.realpath(queue_state):
+        return "{} is not in the queue's state directory {}".format(path, queue_state)
+    return None
+
+
 def _errno_error(what):
     err = ctypes.get_errno() or errno.EIO
     return OSError(err, "{}: {}".format(what, os.strerror(err)))
@@ -197,6 +216,38 @@ class DarwinProbes:
         if info.proc_exit_abstime:
             return None
         return info.phys_footprint, info.lifetime_max_phys_footprint
+
+    def window_owner_pids(self):
+        """The pids owning an on-screen window (CGWindowListCopyWindowInfo, kCGWindowOwnerPID). Raises OSError when the
+        window list cannot be read (no window server for this process)."""
+        cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        cg.CGWindowListCopyWindowInfo.restype = ctypes.c_void_p
+        cg.CGWindowListCopyWindowInfo.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+        cf.CFArrayGetCount.restype = ctypes.c_long
+        cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+        cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+        cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+        cf.CFDictionaryGetValue.restype = ctypes.c_void_p
+        cf.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        cf.CFNumberGetValue.restype = ctypes.c_bool
+        cf.CFNumberGetValue.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        on_screen_only, null_window, sint64 = 1, 0, 4  # kCGWindowListOptionOnScreenOnly, kCGNullWindowID, kCFNumberSInt64Type
+        windows = cg.CGWindowListCopyWindowInfo(on_screen_only, null_window)
+        if not windows:
+            raise OSError("CGWindowListCopyWindowInfo returned no window list")
+        try:
+            key = ctypes.c_void_p.in_dll(cg, "kCGWindowOwnerPID")
+            owners = set()
+            for i in range(cf.CFArrayGetCount(windows)):
+                number = cf.CFDictionaryGetValue(cf.CFArrayGetValueAtIndex(windows, i), key)
+                value = ctypes.c_int64()
+                if number and cf.CFNumberGetValue(number, sint64, ctypes.byref(value)):
+                    owners.add(int(value.value))
+            return owners
+        finally:
+            cf.CFRelease(windows)
 
     def procargs(self, pid):
         """(argv, environment strings) of a process this user may read, else None."""

@@ -54,10 +54,10 @@ def probe_recipe(live=False, extra_inputs=None):
     return caret_heavy.Recipe("probe", "test", "tests/recipes/probe.sh", live, None, plan_args)
 
 
-def profile(lease=True, lease_wait=60, exec_s=120, grace=5.0, floor=0):
+def profile(lease=True, lease_wait=60, exec_s=120, grace=5.0, floor=0, lease_kind="heavy"):
     # lease_wait 60 s rides out this shared Mac's brief warning-pressure readings at admission.
     return caret_heavy.Profile("caret-test", floor, 0.1, 0.1, lease, lease_wait, exec_s, grace,
-                               "Synthetic test profile; not a Caret floor.")
+                               "Synthetic test profile; not a Caret floor.", lease_kind=lease_kind)
 
 
 def world_processes(root):

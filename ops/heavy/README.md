@@ -87,6 +87,12 @@ All figures are unmeasured unless the evidence column says otherwise. The floor 
 
 The queue timeout is the backstop: lease wait + execution + grace + 300 s. The supervisor's own limits fire first. After the lease, the supervisor rechecks the floor, normal memory pressure and HOLD. A failed recheck releases the lease and waits again, within the lease wait. If the lease wait expires, the job ends with 75. Unlike a queue admission expiry, that uses up the job's ID.
 
+### Lanes
+
+A queue with lanes (heavy-job-queue `feat/queue-lanes`, e21588d) runs a browser lane beside the heavy one: two browser slots, each with its own runner and slot lock (`slot-browser-1.lock`, `slot-browser-2.lock`), a browser lease, and never heavy.lock. Each profile has a `lease_kind` (`heavy` by default; every profile is heavy today, `caret-browser-eval` included), passed at enqueue as `--lease-kind` to a queue that has it and recorded in the plan as its `lane`; enqueue refuses a non-heavy lane on a queue without lanes. The plan names no slot path. The relay takes the slot lock from the queue's `HEAVY_JOB_QUEUE_SLOT_LOCK`, which must be one of its lane's slot locks in the queue's state directory, and checks `HEAVY_JOB_QUEUE_LEASE_KIND` against the lane (exit 65 on any mismatch). It then passes that path to the supervisor, which sends it in its custody adoption; the recovery owner validates it again and journals it. With neither variable set (an older queue) the job uses the plan's `slot.lock`, in the heavy lane only. A browser-lane job takes no heavy.lock.
+
+A browser-lane job is a headless batch by lr-lease's rule. Once a second while it runs, and as it finishes, the supervisor checks that no process it owns has an on-screen window (`CGWindowListCopyWindowInfo`, the windows' owner pids against the job's tracked pids). If one does, or the window list cannot be read, it stops the job with exit 77 and says which pids.
+
 ### Memory
 
 Every job's outcome records `memory`: the peak of its owned processes' summed physical footprint (`proc_pid_rusage`; what macOS's memory-pressure handling counts, Metal buffers included), when it happened, each process's lifetime maximum footprint (so a spike between two 0.25 s samples is still seen) and the number of samples. `memory.ndjson` in the run directory has the sum every 5 s. A profile with `mem_cap_gib` above 0 is stopped once that sum goes over the cap: SIGTERM, then SIGKILL after 2 s rather than the profile's grace, exit 76, with the usual cleanup and custody. With a cap set, an owned process whose footprint cannot be read also stops the job, since the cap could not be enforced. Laya has no default and `enqueue laya` requires `--mem-cap-gib`: its peak is unmeasured, and its first run was stopped by mem-guard at 17:31Z on 2026-10-07 (0.40 GiB free, swap 22.19 of 22.28 GB). A run under a cap is how that peak gets measured; nobody has run one yet. Light tests: `test_memory.py`.
@@ -136,6 +142,7 @@ Recipes compute their own code with `recipes/check.py`, which writes `result.jso
 | 66 | the recipe exited 0, but `result.json` is missing, foreign (job ID, plan, recipe, exit), or lists evidence that is missing, outside the run, or older than the run | adapter |
 | 75 | not admitted within the lease wait (HOLD, lease, heavy.lock, floor or pressure) | supervisor |
 | 76 | the job's processes went over the profile's memory cap (`mem_cap_gib`), or a cap is set and an owned process's footprint cannot be read | supervisor |
+| 77 | a browser-lane job's process owned an on-screen window, or the window list could not be read | supervisor |
 | 124 | execution limit reached | supervisor |
 | 125 | supervisor error (cleanup is then the recovery owner's), or VM cleanup could not be confirmed | supervisor |
 | 143 | cancelled by the queue, the relay died, or the queue runner died | supervisor |

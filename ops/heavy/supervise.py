@@ -63,6 +63,8 @@ POLL = 0.25
 # The profile's memory cap (mem_cap_gib): exceeding it stops the job with this code, after this short grace (a job
 # still growing must not get the profile's full grace), and the footprint series is written this often.
 EXIT_MEMORY_CAP = 76
+# A browser-lane job (lr-lease's browser kind: headless only) whose process owns an on-screen window.
+EXIT_WINDOW = 77
 MEMORY_CAP_GRACE_S = 2.0
 MEMORY_SERIES_EVERY = 5.0
 FULL_SCAN_EVERY = 1.0
@@ -101,9 +103,11 @@ def main(plan_path, plan_digest, plan, argv):
         for name in ("--slot-fd", "--life-fd", "--status-fd", "--runner-pid", "--runner-start"):
             parser.add_argument(name, type=int, required=True)
         parser.add_argument("--heavy-fd", type=int)
+        parser.add_argument("--slot-path", help="the slot lock the relay found the descriptor for (lane_slot_lock)")
         args = parser.parse_args(argv[1:])
         return Supervisor(plan_path, plan_digest, plan, args.slot_fd, args.life_fd, args.status_fd,
-                          heavy_fd=args.heavy_fd, runner=[args.runner_pid, args.runner_start]).run()
+                          heavy_fd=args.heavy_fd, runner=[args.runner_pid, args.runner_start],
+                          slot_path=args.slot_path).run()
     say("boot", "expected relay or supervise, got {}".format(argv[:1]))
     return 2
 
@@ -111,10 +115,31 @@ def main(plan_path, plan_digest, plan, argv):
 # Relay: the queue's process group
 
 
+def lane_slot_lock(plan, env):
+    """The slot lock this job holds, from the queue. A queue with lanes names it in HEAVY_JOB_QUEUE_SLOT_LOCK and the
+    lease kind in HEAVY_JOB_QUEUE_LEASE_KIND: the kind must be the plan's lane, and the path one of that lane's slot
+    locks in the queue's state directory (procs.SLOT_LOCK_NAMES). An older queue sets neither, and runs only the heavy
+    lane, with the plan's slot.lock. Raises procs.Refusal."""
+    lane = plan.get("lane", "heavy")
+    kind = env.get("HEAVY_JOB_QUEUE_LEASE_KIND")
+    if kind is not None and kind != lane:
+        raise procs.Refusal("HEAVY_JOB_QUEUE_LEASE_KIND is {}, but this job's plan is for the {} lane".format(kind, lane))
+    path = env.get("HEAVY_JOB_QUEUE_SLOT_LOCK")
+    if path is None:
+        if kind is None and lane != "heavy":
+            raise procs.Refusal("an older queue without lanes cannot run a {}-lane job".format(lane))
+        return plan["paths"]["slot_lock"]
+    problem = procs.slot_lock_problem(path, plan["paths"]["queue_state"], lane)
+    if problem:
+        raise procs.Refusal("HEAVY_JOB_QUEUE_SLOT_LOCK: {}".format(problem))
+    return path
+
+
 def relay(plan_path, plan_digest, plan):
     import caret_heavy  # from the same verified snapshot
     try:
-        slot_fd = procs.inherited_lock_fd(plan["paths"]["slot_lock"])
+        slot_path = lane_slot_lock(plan, os.environ)
+        slot_fd = procs.inherited_lock_fd(slot_path)
         # A runner that holds heavy.lock for the job passes its descriptor, as it passes the slot's.
         heavy_fd = procs.inherited_lock_fd_if_any(plan["paths"]["heavy_lock"])
     except procs.Refusal as ex:
@@ -130,7 +155,8 @@ def relay(plan_path, plan_digest, plan):
         return EXIT_REFUSED
     argv = caret_heavy.boot_argv(plan["python"], plan_path, plan_digest, "supervise", "--slot-fd", str(slot_fd),
                                  "--life-fd", str(life_r), "--status-fd", str(status_w),
-                                 "--runner-pid", str(runner[0]), "--runner-start", str(runner[1]))
+                                 "--runner-pid", str(runner[0]), "--runner-start", str(runner[1]),
+                                 "--slot-path", slot_path)
     passed = (slot_fd, life_r, status_w)
     if heavy_fd is not None:
         argv += ["--heavy-fd", str(heavy_fd)]
@@ -319,8 +345,11 @@ def await_recovery(plan, poll=1.0):
 
 class Supervisor:
     def __init__(self, plan_path, plan_digest, plan, slot_fd, life_fd, status_fd, probes=None, heavy_fd=None,
-                 runner=None):
+                 runner=None, slot_path=None):
         self.plan_path, self.plan_digest, self.plan = plan_path, plan_digest, plan
+        # The slot lock the queue gave this job: its lane's, named by the queue, or the plan's slot.lock on an older one.
+        self.slot_path = slot_path or plan["paths"]["slot_lock"]
+        self.lane = plan.get("lane", "heavy")
         self.runner = runner
         self.attempt = uuid.uuid4().hex
         # The secret that acknowledges a clean (lr-lease ack, recovery adoption). Memory only: never argv, logs,
@@ -404,7 +433,7 @@ class Supervisor:
         code, reason = EXIT_ERROR, "supervisor error"
         try:
             # The slot must be the queue's, held through this exact open file.
-            procs.inherited_lock_fd(self.paths["slot_lock"], self.slot_fd)
+            procs.inherited_lock_fd(self.slot_path, self.slot_fd)
             if self.heavy_fd is not None:
                 procs.inherited_lock_fd(self.paths["heavy_lock"], self.heavy_fd)
             if signal.getsignal(signal.SIGCHLD) not in (signal.SIG_DFL, None):
@@ -503,7 +532,8 @@ class Supervisor:
         if self.heavy_fd is not None:
             locks["heavy"] = self.heavy_fd
         self.custody = recovery.Custody(self.plan, self.plan_path, self.plan_digest, self.attempt, self.token,
-                                        self.probes, self.log)
+                                        self.probes, self.log, slot_path=self.slot_path)
+        self.record.update(lane=self.lane, slot_lock=self.slot_path)
         self.record["recovery"] = {"label": self.custody.label, "attempt": self.attempt,
                                    "socket": self.custody.sock_path}
         self._write_json("supervisor.json", {k: self.record[k] for k in (
@@ -580,7 +610,7 @@ class Supervisor:
             self.lease_id = got.stdout.strip()
             self.lease_renewed = time.monotonic()
             recovery.test_point(self.plan, "supervisor:after-lease-acquire")
-        if self.profile["lease"]:
+        if self.profile["lease"] and self.lane != "browser":  # a browser-lane job never takes heavy.lock
             if self.heavy_fd is None:
                 os.makedirs(os.path.dirname(self.paths["heavy_lock"]), exist_ok=True)
                 self.lock_fd = os.open(self.paths["heavy_lock"], os.O_RDWR | os.O_CREAT, 0o644)
@@ -905,6 +935,11 @@ class Supervisor:
             if leader_done and owned == {} and labels == []:
                 return stop
             owned = owned or {}
+            if full and self.lane == "browser" and stop is None:
+                window = self._window_stop(owned)
+                if window is not None:
+                    self.log("stopping: {}".format(window[2]), owned=sorted(owned))
+                    return self._finish_stop(window, owned)
             memory_stop = self._sample_memory(owned, start)
             if stop is None:
                 if memory_stop is not None:
@@ -924,6 +959,29 @@ class Supervisor:
     def _finish_stop(self, stop, owned):
         self._stop_all(stop[2], owned, grace=MEMORY_CAP_GRACE_S if stop[0] == "memory" else None)
         return stop
+
+    def _window_owners(self):
+        """Pids owning an on-screen window. Tests only: plan["test"]["window_owners_file"] lists them instead."""
+        fake = (self.plan.get("test") or {}).get("window_owners_file")
+        if fake:
+            try:
+                with open(fake, encoding="utf-8") as fh:
+                    return {int(x) for x in fh.read().split()}
+            except FileNotFoundError:
+                return set()
+        return self.probes.window_owner_pids()
+
+    def _window_stop(self, owned):
+        """A stop when a process of this browser-lane job owns an on-screen window, or when the window list cannot be
+        read (the evidence the lane needs would be missing): lr-lease's browser kind is for headless batches only."""
+        try:
+            windowed = sorted(self._window_owners() & set(owned))
+        except OSError as ex:
+            return ("window", EXIT_WINDOW, "the on-screen window list cannot be read for this browser-lane job: {}".format(ex))
+        if windowed:
+            return ("window", EXIT_WINDOW, "process(es) {} of this browser-lane job own an on-screen window; the "
+                    "browser lane is for headless batches only".format(windowed))
+        return None
 
     def _sample_memory(self, owned, start):
         """Adds one sample of the owned processes' summed physical footprint to outcome.json's "memory", and returns

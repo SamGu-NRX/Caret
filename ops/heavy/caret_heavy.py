@@ -101,6 +101,9 @@ class Profile:
     # (vm_admission, recorded in the plan); under the lock the supervisor checks lr-lease's vm decision read-only
     # (supervise.vm_check) and ends the job with 75 if it would refuse.
     admit_kind: str = ""
+    # The queue lane and lr-lease kind (heavy-job-queue --lease-kind): "heavy", or "browser" for a headless browser
+    # batch that runs beside builds in a browser slot, with a browser lease and never heavy.lock.
+    lease_kind: str = "heavy"
 
     @property
     def queue_timeout_s(self):
@@ -689,6 +692,8 @@ def build_plan(recipe, job_id, worktree, rev, recipe_argv, inputs, recorded_env,
         "paths": dict(paths), "python": python,
         "lease": {"run": "caret", "ttl_min": lease_ttl_min, "renew_s": lease_renew_s},
         **({"admission": vm_admission(paths, profile)} if profile.admit_kind == "vm" else {}),
+        # The lane only: the slot lock comes from the job (HEAVY_JOB_QUEUE_SLOT_LOCK), as the queue runs it.
+        "lane": profile.lease_kind,
         # Tests only (recovery.test_point); the CLI never sets it.
         **({"test": dict(test)} if test else {}),
     }
@@ -730,6 +735,12 @@ def vm_admission(paths, profile):
             "source": paths["lease_policy"], "policy_sha256": hashlib.sha256(data).hexdigest()}
 
 
+def queue_takes_lease_kind(queue_script):
+    """Whether this queue has lanes (heavy-job-queue feat/queue-lanes): enqueue --lease-kind."""
+    with open(queue_script, encoding="utf-8") as fh:
+        return "--lease-kind" in fh.read()
+
+
 def queue_takes_leases(queue_script):
     """Whether this queue takes an lr-lease per job (heavy-job-queue 401c4d1 and later): it then needs estimates."""
     with open(queue_script, encoding="utf-8") as fh:
@@ -756,6 +767,8 @@ def queue_enqueue_argv(plan, plan_path, plan_digest):
         # lease carries the VM's estimates, which would otherwise count twice.
         est = (profile["est_mem_gib"], profile["est_disk_gib"]) if profile["lease"] else (0, 0)
         argv += ["--est-mem-gib", _plain(est[0]), "--est-disk-gib", _plain(est[1])]
+    if queue_takes_lease_kind(paths["queue_script"]):
+        argv += ["--lease-kind", plan["lane"]]
     return argv + ["--", *boot_argv(plan["python"], plan_path, plan_digest, "relay")]
 
 
@@ -770,6 +783,9 @@ def enqueue(recipe_name, job_id, worktree, rev, recipe_args, paths, env_file=Non
     """Snapshot, record and enqueue one job. Returns (plan path, digest, queue stdout)."""
     recipe = RECIPES[recipe_name] if isinstance(recipe_name, str) else recipe_name
     profile = capped_profile(recipe, profile, getattr(recipe_args, "mem_cap_gib", None))
+    if profile.lease_kind != "heavy" and not queue_takes_lease_kind(paths["queue_script"]):
+        raise manifest.ManifestError("{} runs in the {} lane, which this queue does not have (no --lease-kind)".format(
+            profile.name, profile.lease_kind))
     if not ID_PATTERN.match(job_id):
         raise manifest.ManifestError("job ID must match {}".format(ID_PATTERN.pattern))
     if not SHA_PATTERN.match(rev):

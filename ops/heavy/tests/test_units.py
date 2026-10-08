@@ -1144,3 +1144,67 @@ class QueueLeaseRunTest(Temp):
         env = {k: v for k, v in os.environ.items() if k != "HEAVY_JOB_QUEUE_LEASE_RUN"}
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(sup._queue_lease_run(), supervise.QUEUE_LEASE_RUN)
+
+
+class LaneTest(Temp):
+    """Queue lanes (heavy-job-queue feat/queue-lanes, docs/proposals/queue-lanes/SPEC.md): a job's slot lock comes from
+    HEAVY_JOB_QUEUE_SLOT_LOCK, which must be one of its lane's slot-lock names in the queue's state directory; its
+    lease kind from HEAVY_JOB_QUEUE_LEASE_KIND, which must be the plan's lane. An older queue sets neither."""
+
+    def plan(self, lane):
+        state = os.path.join(self.root, "state")
+        os.makedirs(state, exist_ok=True)
+        return {"lane": lane, "paths": {"queue_state": state, "slot_lock": os.path.join(state, "slot.lock")}}
+
+    def test_the_slot_lock_comes_from_the_job(self):
+        import supervise
+        plan = self.plan("browser")
+        slot = os.path.join(plan["paths"]["queue_state"], "slot-browser-2.lock")
+        env = {"HEAVY_JOB_QUEUE_SLOT_LOCK": slot, "HEAVY_JOB_QUEUE_LEASE_KIND": "browser"}
+        self.assertEqual(supervise.lane_slot_lock(plan, env), slot)
+        heavy = self.plan("heavy")
+        env = {"HEAVY_JOB_QUEUE_SLOT_LOCK": heavy["paths"]["slot_lock"], "HEAVY_JOB_QUEUE_LEASE_KIND": "heavy"}
+        self.assertEqual(supervise.lane_slot_lock(heavy, env), heavy["paths"]["slot_lock"])
+
+    def test_invalid_slot_paths_are_refused(self):
+        import procs
+        import supervise
+        plan = self.plan("browser")
+        state = plan["paths"]["queue_state"]
+        other = os.path.join(self.root, "elsewhere")
+        os.makedirs(other)
+        for bad in (os.path.join(other, "slot-browser-1.lock"),        # outside the queue's state directory
+                    os.path.join(state, "slot-browser-3.lock"),        # not a name the spec defines
+                    os.path.join(state, "slot.lock"),                  # the heavy lane's, for a browser job
+                    "slot-browser-1.lock",                             # relative
+                    os.path.join(state, "sub", "..", "slot-browser-1.lock") + "x"):
+            with self.subTest(bad):
+                with self.assertRaisesRegex(procs.Refusal, "HEAVY_JOB_QUEUE_SLOT_LOCK"):
+                    supervise.lane_slot_lock(plan, {"HEAVY_JOB_QUEUE_SLOT_LOCK": bad, "HEAVY_JOB_QUEUE_LEASE_KIND": "browser"})
+        heavy = self.plan("heavy")
+        with self.assertRaisesRegex(procs.Refusal, "HEAVY_JOB_QUEUE_SLOT_LOCK"):
+            supervise.lane_slot_lock(heavy, {"HEAVY_JOB_QUEUE_SLOT_LOCK": os.path.join(state, "slot-browser-1.lock"),
+                                             "HEAVY_JOB_QUEUE_LEASE_KIND": "heavy"})
+
+    def test_unset_falls_back_to_the_plans_slot_lock(self):
+        import supervise
+        plan = self.plan("heavy")
+        self.assertEqual(supervise.lane_slot_lock(plan, {}), plan["paths"]["slot_lock"])
+        self.assertEqual(supervise.lane_slot_lock({"paths": plan["paths"]}, {}), plan["paths"]["slot_lock"])  # no lane: heavy
+
+    def test_a_lease_kind_mismatch_is_refused(self):
+        import procs
+        import supervise
+        plan = self.plan("heavy")
+        with self.assertRaisesRegex(procs.Refusal, "HEAVY_JOB_QUEUE_LEASE_KIND"):
+            supervise.lane_slot_lock(plan, {"HEAVY_JOB_QUEUE_LEASE_KIND": "browser"})
+        with self.assertRaisesRegex(procs.Refusal, "older queue"):
+            supervise.lane_slot_lock(self.plan("browser"), {})
+
+    def test_profiles_carry_a_lease_kind_and_browser_eval_stays_heavy(self):
+        self.assertEqual({p.lease_kind for p in caret_heavy.PROFILES.values()}, {"heavy"})
+        recipe = caret_heavy.RECIPES["canned-sets"]
+        plan = caret_heavy.build_plan(recipe, "caret-x", "/w", "a" * 40, [], [], {}, None,
+                                      caret_heavy.default_paths("/tmp/state-for-argv-only"), ("/snap", {}, "/ops", "b" * 40))
+        self.assertEqual(plan["lane"], "heavy")
+        self.assertNotIn("slot_path", plan)

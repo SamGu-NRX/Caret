@@ -504,6 +504,7 @@ class Owner:
         # When the supervisor was adopted and when it was seen dead (epoch ms): the window in which a lease of its
         # run, owned by it, can only have been taken for this attempt.
         self.adopted_ms = self.dead_ms = None
+        self.slot_path = None  # the slot lock this attempt adopted, as journalled (the queue's lane slot)
         self.resources, self.watches = {}, {}
         self.state = "waiting"
         self.term_at = self.next_kill = self.next_retry = None
@@ -515,10 +516,12 @@ class Owner:
 
     def _restore(self):
         self.adopted_ms = self.dead_ms = None
+        self.slot_path = None
         for rec in self.journal.load(repair=True):
             ev = rec.get("event")
             if ev == "adopted":
                 self.supervisor = rec["supervisor"]
+                self.slot_path = self.slot_path or rec.get("slot_path")
                 self.adopted_ms = self.adopted_ms or rec.get("since_ms")
                 self.state = "custody" if self.state == "waiting" else self.state
             elif ev == "lease":
@@ -671,12 +674,27 @@ class Owner:
         uid, pid = peer(sock)
         return uid == os.getuid() and pid in self._verified()
 
-    def _check_locks(self, names, fds):
+    def _slot_path_for(self, requested):
+        """The slot lock path for this attempt: the one journalled, else the one the supervisor names, which must be
+        one of the plan's lane's slot locks in the queue's state directory (procs.slot_lock_problem), else the plan's."""
+        if requested is None:
+            requested = self.paths["slot_lock"]
+        if getattr(self, "slot_path", None) is not None and requested != self.slot_path:
+            raise ValueError("this attempt's slot lock is {}, not {}".format(self.slot_path, requested))
+        if requested != self.paths["slot_lock"]:
+            problem = procs.slot_lock_problem(requested, self.paths["queue_state"], (getattr(self, "plan", None) or {}).get("lane", "heavy"))
+            if problem:
+                raise ValueError("slot lock: {}".format(problem))
+        return requested
+
+    def _check_locks(self, names, fds, slot_path=None):
         """Every descriptor is checked before any is kept: on a refusal the caller closes them all."""
         if len(names) != len(fds) or len(set(names)) != len(names):
             raise ValueError("{} lock names for {} descriptors".format(len(names), len(fds)))
         for name, fd in zip(names, fds):
-            procs.inherited_lock_fd(self.paths[LOCK_PATHS[name]], fd)  # same file, and this open file holds it
+            path = (slot_path or getattr(self, "slot_path", None) or self.paths["slot_lock"]) if name == "slot" \
+                else self.paths[LOCK_PATHS[name]]
+            procs.inherited_lock_fd(path, fd)  # same file, and this open file holds it
 
     def _adopt_locks(self, names, fds):
         self._check_locks(names, fds)
@@ -704,12 +722,13 @@ class Owner:
                 raise ValueError("this owner serves attempt {}".format(self.attempt))
             if self.supervisor is not None and self.supervisor != sup:
                 raise ValueError("this attempt already has supervisor {}".format(self.supervisor))
-            self._check_locks(msg["locks"], fds)
+            slot_path = self._slot_path_for(msg.get("slot_path"))
+            self._check_locks(msg["locks"], fds, slot_path)
             since = self.adopted_ms or int(time.time() * 1000)
             self.journal.append({"event": "adopted", "supervisor": sup, "locks": sorted(set(self.fds) | set(msg["locks"])),
-                                 "since_ms": since})
+                                 "since_ms": since, "slot_path": slot_path})
             self._keep_locks(msg["locks"], fds)
-            self.token, self.supervisor, self.adopted_ms = msg["token"], sup, since
+            self.token, self.supervisor, self.adopted_ms, self.slot_path = msg["token"], sup, since, slot_path
             if self.state == "waiting":
                 self.state = "custody"
             test_point(self.plan, "recovery:after-adopt")
@@ -983,8 +1002,9 @@ class CustodyError(Exception):
 class Custody:
     """The supervisor's connection to its recovery owner."""
 
-    def __init__(self, plan, plan_path, plan_digest, attempt, token, probes, log):
+    def __init__(self, plan, plan_path, plan_digest, attempt, token, probes, log, slot_path=None):
         self.plan, self.plan_path, self.plan_digest = plan, plan_path, plan_digest
+        self.slot_path = slot_path or plan["paths"]["slot_lock"]
         self.attempt, self.token, self.probes, self.log = attempt, token, probes, log
         self.label = label_for(plan["job_id"], attempt)
         self.dir = os.path.join(plan["run_root"], "recovery")
@@ -1056,6 +1076,7 @@ class Custody:
                 self._attach(sock)
                 names = sorted(self.locks)
                 reply = self._exchange({"op": "adopt", "attempt": self.attempt, "token": self.token,
+                                        "slot_path": self.slot_path,
                                         "supervisor": self.me, "locks": names}, [self.locks[n] for n in names])
                 if not reply.get("ok"):
                     raise CustodyError("adoption refused: {}".format(reply.get("error")))
