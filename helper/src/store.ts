@@ -5,6 +5,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { assertLocalStorePath, writeLocalFile } from "./privacy/store-path.ts";
 
 export interface TransferRow {
   at: number;
@@ -91,6 +92,10 @@ export class Store {
 
   constructor(dir: string) {
     this.dir = dir;
+    // The store's folder and its database are held to the store path policy before anything is made (INT1 review 2).
+    // SQLite writes through the file it opens here, so the check at open is the check of every write.
+    assertLocalStorePath(dir);
+    assertLocalStorePath(join(dir, "screen.sqlite"));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     // mkdirSync's mode applies only to a directory it creates; one that was already there is closed now (CodeRabbit on PR #5).
     chmodSync(dir, 0o700);
@@ -239,8 +244,7 @@ function loadSalt(path: string): Buffer {
     return b;
   }
   const b = randomBytes(32);
-  writeFileSync(path, b, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  writeLocalFile(path, b, { mode: 0o600 });
   return b;
 }
 

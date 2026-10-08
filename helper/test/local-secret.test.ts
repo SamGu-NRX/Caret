@@ -1,6 +1,6 @@
 // A generated launch secret is written as it is (privacy/local-secret.ts): no format withholding, and only bytes
 // newLocalSecret made in this process, unchanged.
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -42,5 +42,15 @@ describe("writeLocalSecretFile", () => {
   it("generates only a secret's size of bytes", () => {
     expect(newLocalSecret().length).toBe(32);
     expect(() => newLocalSecret(4)).toThrow(RangeError);
+  });
+});
+
+describe("INT1 review 2 P2: a secret overwriting an existing file leaves it 0600", () => {
+  it("narrows an existing 0644 file to 0600 before writing the secret", () => {
+    const p = join(dir, "was-0644");
+    writeFileSync(p, "old", { mode: 0o644 });
+    chmodSync(p, 0o644);
+    writeLocalSecretFile(p, newLocalSecret());
+    expect(statSync(p).mode & 0o777).toBe(0o600);
   });
 });

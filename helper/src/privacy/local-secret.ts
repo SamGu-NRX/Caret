@@ -4,8 +4,7 @@
 // break it: a 32-byte secret's hex can read as a card number or a token and be replaced, and the host then fails to
 // authenticate. So this path does no withholding, and takes only bytes newLocalSecret made in this process, unchanged.
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { assertLocalStorePath } from "./store-path.ts";
+import { writeLocalFile } from "./store-path.ts";
 
 /** Each secret newLocalSecret made, with a copy of its bytes as made, so a buffer changed since cannot be written. */
 const MADE = new WeakMap<Buffer, Buffer>();
@@ -30,6 +29,6 @@ export class NotALocalSecret extends Error {
 export function writeLocalSecretFile(path: string, secret: Buffer): void {
   const made = MADE.get(secret);
   if (made === undefined || !made.equals(secret)) throw new NotALocalSecret();
-  assertLocalStorePath(path);
-  writeFileSync(path, secret.toString("hex"), { mode: 0o600 });
+  // Mode 0600 is set on the open file before the secret is written, so an existing 0644 file is not left readable.
+  writeLocalFile(path, secret.toString("hex"), { mode: 0o600 });
 }

@@ -3,11 +3,17 @@
 // dequeued). Each checks the request as it leaves: every string minted for it, in its shape, and no app or site
 // switched off since it was built (Disclosure.verify). So a request built before a switch-off never reaches a model or a
 // disk, however long it waited. test/sc1-boundary.test.ts holds every POST body and every request store in src to them.
-import { appendFileSync, writeFileSync, type WriteFileOptions } from "node:fs";
+import type { WriteFileOptions } from "node:fs";
 import { measureBytes, verifySent, verifyWriterInput, withheldDeep } from "./disclosure.ts";
 import type { Measurement } from "./ledger/account.ts";
 import { withholdValues } from "./exclude.ts";
-import { assertLocalStorePath } from "./store-path.ts";
+import { writeLocalFile } from "./store-path.ts";
+
+/** The mode a caller's write options ask for, if any (the only option the stores honour). */
+const modeOf = (o: WriteFileOptions | undefined): { mode?: number } => {
+  const m = typeof o === "object" && o !== null ? o.mode : undefined;
+  return m === undefined ? {} : { mode: typeof m === "string" ? Number.parseInt(m, 8) : m };
+};
 import type { ModelValue } from "./disclosure.ts";
 import type { ChoiceQuestion, JevRequest, NoulQuestion } from "../fill/jev.ts";
 
@@ -104,14 +110,12 @@ export function storedLine(s: Sealed, build: (wire: unknown) => unknown): string
 
 /** storedLine written to `path` (a request store's whole file), after the store-path check (privacy/store-path.ts). */
 export function writeStoredLine(path: string, s: Sealed, build: (wire: unknown) => unknown, o?: WriteFileOptions): void {
-  assertLocalStorePath(path);
-  writeFileSync(path, storedLine(s, build), o);
+  writeLocalFile(path, storedLine(s, build), modeOf(o));
 }
 
 /** storedLine appended to `path` (a request log), after the store-path check (privacy/store-path.ts). */
 export function appendStoredLine(path: string, s: Sealed, build: (wire: unknown) => unknown, o?: WriteFileOptions): void {
-  assertLocalStorePath(path);
-  appendFileSync(path, storedLine(s, build), o);
+  writeLocalFile(path, storedLine(s, build), { ...modeOf(o), append: true });
 }
 
 /**
@@ -131,14 +135,12 @@ export function storedRequest<T>(s: Sealed, req: JevRequest, build: (frozen: Jev
  * or NDJSON store goes through writeStoreJson, appendStoreJson or writeStoreNdjson, which withhold inside its strings.
  */
 export function writeStore(path: string, text: string, o?: WriteFileOptions): void {
-  assertLocalStorePath(path);
-  writeFileSync(path, withholdValues(text), o);
+  writeLocalFile(path, withholdValues(text), modeOf(o));
 }
 
 /** writeStore's append. */
 export function appendStore(path: string, text: string, o?: WriteFileOptions): void {
-  assertLocalStorePath(path);
-  appendFileSync(path, withholdValues(text), o);
+  writeLocalFile(path, withholdValues(text), { ...modeOf(o), append: true });
 }
 
 /** Two keys of one object that withholding made the same: the store refuses rather than drop one of them. */
@@ -178,20 +180,17 @@ export function storeJson(value: unknown, space?: number): string {
 
 /** A .json store: storeJson's text and a newline. */
 export function writeStoreJson(path: string, value: unknown, space?: number, o?: WriteFileOptions): void {
-  assertLocalStorePath(path);
-  writeFileSync(path, `${storeJson(value, space)}\n`, o);
+  writeLocalFile(path, `${storeJson(value, space)}\n`, modeOf(o));
 }
 
 /** One record appended to an .ndjson store, on one line. */
 export function appendStoreJson(path: string, value: unknown, o?: WriteFileOptions): void {
-  assertLocalStorePath(path);
-  appendFileSync(path, `${storeJson(value)}\n`, o);
+  writeLocalFile(path, `${storeJson(value)}\n`, { ...modeOf(o), append: true });
 }
 
 /** An .ndjson store of these records, one line each. */
 export function writeStoreNdjson(path: string, values: readonly unknown[], o?: WriteFileOptions): void {
-  assertLocalStorePath(path);
-  writeFileSync(path, values.map((v) => `${storeJson(v)}\n`).join(""), o);
+  writeLocalFile(path, values.map((v) => `${storeJson(v)}\n`).join(""), modeOf(o));
 }
 
 /**

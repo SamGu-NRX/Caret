@@ -2,7 +2,7 @@
 // and the change log of what differed between one walk of a window and the next.
 import type { AppRef, Node, Snapshot, TypedValue, WindowRef } from "./protocol.ts";
 import { PAGE_WINDOW_KIND } from "./engines/windows.ts";
-import { admitNode, admitTitle, admitValues, inherited } from "./privacy/exclude.ts";
+import { admitNode, admitTitle, admitValues, confers, inherited } from "./privacy/exclude.ts";
 import { appOff, DEFAULT_APPS_OFF, noteSwitchedOff } from "./privacy/read-policy.ts";
 
 export interface WindowState {
@@ -307,7 +307,9 @@ function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[], typed: Rea
   }
   // Any excluded node in the window, fresh or kept, holds its exclusion over every descendant, kept or fresh: one pass
   // over every node, repeated until nothing changes (a pass may exclude a node whose own descendants come before it).
-  if (!excluded) for (const n of nodes.values()) if (n.excluded !== undefined) excluded = true;
+  // A node that confers one without being excluded itself (a container renamed "Password" in a cut walk, holding no value)
+  // counts too: its kept descendants are admitted again under it (INT1 review 2).
+  if (!excluded) for (const n of nodes.values()) if (confers(n) !== null) (excluded = true);
   for (let changed = excluded; changed; ) {
     changed = false;
     for (const [k, n] of nodes) {

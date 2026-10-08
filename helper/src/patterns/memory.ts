@@ -29,6 +29,7 @@ import { contentMode, migrateSealedMemory, type MigrationHooks, type MigrationRe
 import { recordDigest, recordSecret, type DocId, type MemoryRecord, type Noticed, type RecordKind, type RecordStatus } from "../memory/parse.ts";
 import { refusal, valueKind } from "../memory/sensitive.ts";
 import { loadKey, open, seal } from "../sealed.ts";
+import { assertLocalStorePath } from "../privacy/store-path.ts";
 import {
   AboutFields,
   PeopleFields,
@@ -314,6 +315,9 @@ export class MemoryStore {
   routineSightings: number = LEVELS.balanced.routineSightings ?? 3;
 
   constructor(dir: string, opts: MemoryOptions = {}) {
+    // Held to the store path policy before anything is made (INT1 review 2); SQLite writes through the file opened here.
+    assertLocalStorePath(dir);
+    assertLocalStorePath(join(dir, "memory.sqlite"));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.warn = opts.warn ?? (() => undefined);
     this.key = loadKey(join(dir, "memory.key"));

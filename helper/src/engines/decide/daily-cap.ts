@@ -9,6 +9,7 @@
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { assertLocalStorePath, writeLocalFile } from "../../privacy/store-path.ts";
 
 /**
  * The cap when none is configured: $0.50 a day, the lead's development default (brief J1). It is also the shipped
@@ -138,6 +139,7 @@ export class DailySpend {
     return {
       settle: (costUsd, inputTokens) => {
         close();
+        assertLocalStorePath(this.dir);
         mkdirSync(this.dir, { recursive: true, mode: 0o700 });
         // The day the request was reserved on, so one sent at 23:59:59 counts against the day that let it through.
         appendFileSync(join(this.dir, `${day}.ndjson`), `${JSON.stringify({ at: this.now().toISOString(), usd: costUsd, tokens: inputTokens, pid: process.pid })}\n`, { mode: 0o600 });

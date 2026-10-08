@@ -12,6 +12,7 @@ import { EngineHello, EngineMessage, PROTOCOL_VERSION, type EngineChallenge, typ
 import { bridgeProof, checkPrivateDir, helperProof, newNonce, pageKey, proofMatches, removeOldKeyFile } from "./auth.ts";
 import type { EngineRegistry } from "./registry.ts";
 import { EngineSession } from "./session.ts";
+import { assertLocalStorePath } from "../privacy/store-path.ts";
 
 /** A snapshot line holds every control of a tab's frames; longer than this is a bug, not a bigger page. */
 const MAX_LINE_CHARS = 32 * 1024 * 1024;
@@ -41,6 +42,8 @@ export class EngineServer {
 
   async listen(): Promise<void> {
     const dir = dirname(this.opts.path);
+    // A socket's folder is made like a store's, so it is held to the same policy.
+    assertLocalStorePath(this.opts.path);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     checkPrivateDir(dir);
     if (existsSync(this.opts.path)) {

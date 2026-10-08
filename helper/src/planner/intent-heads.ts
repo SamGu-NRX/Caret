@@ -204,6 +204,20 @@ const SECTION_WORDINGS = [
  * from the form's redacted view (snapMint section). A name that does not mint there is left off the list, and the
  * list is said to be incomplete, so a request naming it reads as "not in this list" and withholds (sectionVeto).
  */
+/**
+ * The section refs each wording's question offered, by snapshot (INT1 review 2): the bounded list may leave headings out,
+ * and an answer naming one of those was never a choice Jev was given. Read by sectionVerdict.
+ */
+const OFFERED = new WeakMap<IntentSnapshot, [ReadonlySet<string> | null, ReadonlySet<string> | null]>();
+
+/** The section refs `wording`'s question offers, built (and recorded) if it was not yet. */
+function offeredSections(snap: IntentSnapshot, wording: 0 | 1): ReadonlySet<string> {
+  const had = OFFERED.get(snap)?.[wording];
+  if (had !== null && had !== undefined) return had;
+  sectionQuestion(snap, wording);
+  return OFFERED.get(snap)?.[wording] ?? new Set();
+}
+
 function sectionQuestion(snap: IntentSnapshot, wording: 0 | 1): JevRequest["questions"][string] {
   const m = snapMint(snap);
   const d = m.d;
@@ -231,6 +245,9 @@ function sectionQuestion(snap: IntentSnapshot, wording: 0 | 1): JevRequest["ques
   }
   const criteria: Record<string, ModelText> = { whole: o.whole, fields: o.fields };
   for (const h of shown) criteria[h.ref] = d.t`One section: the fields in the section '${h.name}', and no others.`;
+  const offered = OFFERED.get(snap) ?? [null, null];
+  offered[wording] = new Set(shown.map((h) => h.ref));
+  OFFERED.set(snap, offered);
   criteria.unlisted = o.unlisted;
   criteria.unclear = o.unclear;
   return { type: "choice", instructions, criteria };
@@ -268,7 +285,10 @@ export type SectionAnswer = { readonly kind: "section"; readonly name: string } 
  */
 export function sectionVerdict(snap: IntentSnapshot, scope: readonly [JevResult, JevResult], cutoff: number = SCOPE_CUTOFF): SectionAnswer | null {
   if (!asksSection(snap)) return null;
-  const options = new Set([...Object.keys(SECTION_OPTIONS), ...snap.headings.map((h) => h.ref)]);
+  // Only what both wordings offered: a heading the bounded list left out of either question was no choice of Jev's, so
+  // an answer naming it is outside the options and fails closed (INT1 review 2).
+  const both = [offeredSections(snap, 0), offeredSections(snap, 1)];
+  const options = new Set([...Object.keys(SECTION_OPTIONS), ...snap.headings.map((h) => h.ref).filter((r) => both[0]!.has(r) && both[1]!.has(r))]);
   const answers = scope.map((r) => {
     const a = r.answers[SECTION_QUESTION];
     if (a === undefined) throw new PlannerError("jevFailed", "Jev gave no answer to the section question");

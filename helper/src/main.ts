@@ -12,7 +12,8 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { closeSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, readFileSync } from "node:fs";
+import { writeLocalFile } from "./privacy/store-path.ts";
 import { Helper } from "./helper.ts";
 import { HelperServer } from "./server.ts";
 import { Store } from "./store.ts";
@@ -171,7 +172,7 @@ const status = setInterval(() => {
 }, statusMs);
 
 const writeAudit = (): void => {
-  if (helper.audit !== null && auditOut !== undefined) writeFileSync(auditOut, `${JSON.stringify(helper.audit.summary(), null, 2)}\n`, { mode: 0o600 });
+  if (helper.audit !== null && auditOut !== undefined) writeLocalFile(auditOut, `${JSON.stringify(helper.audit.summary(), null, 2)}\n`, { mode: 0o600 });
 };
 const audit = helper.audit === null ? null : setInterval(writeAudit, 60_000);
 
@@ -186,7 +187,7 @@ const stop = async (signal: string): Promise<void> => {
   if (helper.audit !== null && auditSeen !== undefined) {
     helper.audit.stop();
     writeAudit();
-    writeFileSync(auditSeen, JSON.stringify(helper.audit.seen.toJSON()), { mode: 0o600 });
+    writeLocalFile(auditSeen, JSON.stringify(helper.audit.seen.toJSON()), { mode: 0o600 });
   }
   await server?.close();
   await pages?.server.close();

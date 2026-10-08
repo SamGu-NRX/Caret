@@ -24,6 +24,7 @@ import { open } from "../sealed.ts";
 import { MemoryDocumentStore, revisionOf } from "./documents.ts";
 import { fileOf, formatDiagnostic, newDocument, recordDigest, recordSecret, ROOT_DOCS, SkillText, type DocId, type MemoryRecord } from "./parse.ts";
 import { refusal } from "./sensitive.ts";
+import { assertLocalStorePath } from "../privacy/store-path.ts";
 
 export interface MigrationResult {
   /** fresh: nothing to move. done: moved before. migrated / resumed: moved now. failed: the sealed store stays in use. */
@@ -80,6 +81,9 @@ interface LegacyRow {
 }
 
 export function migrateSealedMemory(o: { db: DatabaseSync; key: Buffer; dataDir: string; memoryDir: string; now: number; hooks?: MigrationHooks }): MigrationResult {
+  // Both folders it writes are held to the store path policy before anything is read or made (INT1 review 2).
+  assertLocalStorePath(o.dataDir);
+  assertLocalStorePath(o.memoryDir);
   const { db } = o;
   db.exec(MIGRATION_TABLES);
   if (contentMode(db) === "documents") return { outcome: "done", moved: 0, excluded: [], error: null };
@@ -272,6 +276,7 @@ function removeEmptyTree(dir: string): void {
 }
 
 function writeAtomic(path: string, text: string): void {
+  assertLocalStorePath(path);
   const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(tmp, text, { mode: 0o600, flag: "wx" });
   renameSync(tmp, path);
