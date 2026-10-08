@@ -1,1 +1,0 @@
-SC1: every Jev/writer request carries a Disclosure (privacy/disclosure.ts) that the clients verify; hand-built test requests wrap in test/minted.ts, and structuredClone of a request loses its Disclosure (clone the body, keep the object).

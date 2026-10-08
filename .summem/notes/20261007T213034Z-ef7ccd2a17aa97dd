@@ -1,1 +1,0 @@
-Field-format fill candidates carry fieldFormat provenance and conversion assumptions through both verifier wordings; planner validation traces a genuine mint to its original window source and rechecks provenance, since formatted text need not occur verbatim.

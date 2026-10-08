@@ -1,1 +1,0 @@
-SC1 exclude.ts: the high-entropy rule counts only lower/upper/digit classes; counting symbols flagged corpus URL paths (51310/forms/greenhouse-apply) and broke B25 held-16. Excluded values become [withheld] at read-in; writes and memory refuse any text holding it.

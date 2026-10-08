@@ -1,0 +1,1 @@
+INT1 (v2/int1): OWNER_NOTE_CHARS is 0 behind TODO(INT1) until HA2's allotment is re-expressed on the output-based ledger; the tests that need it are skipped or floored with TODO(INT1). grep TODO(INT1) to restore 2,000.
