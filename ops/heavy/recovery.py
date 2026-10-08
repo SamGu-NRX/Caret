@@ -1083,10 +1083,18 @@ class Custody:
             raise CustodyError("launchctl bootstrap {} exited {}: {}".format(self.label, done.returncode, done.stdout.strip()))
 
     def _ensure_loaded(self):
-        """An owner whose launchd job is gone (booted out, not just crashed) is started again from its plist."""
-        if procs.launchd_state(self.label)[0] == procs.ABSENT:
+        """An owner whose launchd job is gone (booted out, not just crashed) is started again from its plist. One that
+        is loaded but not running is kickstarted: an owner that reached CLEAN while this supervisor lived exits 0,
+        which KeepAlive does not restart, and the CLEAN reply this supervisor is waiting for is replayed only by a
+        running owner."""
+        state = procs.launchd_state(self.label)[0]
+        if state == procs.ABSENT:
             self.log("the recovery owner {} is not loaded; starting it again".format(self.label))
             self._bootstrap()
+        elif state == procs.PRESENT and self._agent_pid() is None:
+            self.log("the recovery owner {} is loaded but not running; starting it again".format(self.label))
+            subprocess.run(["/bin/launchctl", "kickstart", "gui/{}/{}".format(os.getuid(), self.label)],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
 
     def _agent_pid(self):
         """The agent's pid as launchd reports it, or None (also when launchctl fails or takes over 20 s)."""

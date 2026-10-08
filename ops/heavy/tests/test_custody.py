@@ -697,6 +697,37 @@ class CleanReplayKeepsTheSocketDirectory(unittest.TestCase):
             self.owner._socket_dir()
 
 
+class AnOwnerThatExitedIsStartedAgain(unittest.TestCase):
+    """An owner that reached CLEAN while its supervisor lived exits 0 and stays loaded but not running (KeepAlive
+    restarts only a failed exit). A supervisor whose clean reply was lost must start it again to have CLEAN replayed:
+    a loaded job with no pid is kickstarted, a missing one bootstrapped. (2026-10-08: the supervisor found it loaded,
+    did nothing, and waited 4.5 minutes.)"""
+
+    def custody(self):
+        c = recovery.Custody.__new__(recovery.Custody)
+        c.label, c.log, c.plist = "caret-heavy-recovery.caret-x.1", lambda *a, **k: None, "/nonexistent.plist"
+        return c
+
+    def launchctl_calls(self, state, pid):
+        c = self.custody()
+        calls = []
+        done = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(procs, "launchd_state", return_value=(state, "")), \
+                mock.patch.object(recovery.Custody, "_agent_pid", return_value=pid), \
+                mock.patch.object(recovery.subprocess, "run", side_effect=lambda argv, **k: calls.append(argv) or done):
+            c._ensure_loaded()
+        return [argv[1] for argv in calls]
+
+    def test_a_loaded_owner_with_no_pid_is_kickstarted(self):
+        self.assertEqual(self.launchctl_calls(procs.PRESENT, None), ["kickstart"])
+
+    def test_a_running_owner_is_left_alone(self):
+        self.assertEqual(self.launchctl_calls(procs.PRESENT, 4242), [])
+
+    def test_a_missing_owner_is_bootstrapped(self):
+        self.assertEqual(self.launchctl_calls(procs.ABSENT, None), ["bootstrap"])
+
+
 class SupervisorErrorWithoutAnOwner(Custody):
     def test_an_error_with_no_confirmed_owner_keeps_the_locks_until_one_holds_them(self):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3),
