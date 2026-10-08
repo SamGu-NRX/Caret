@@ -1,0 +1,1 @@
+Helper undo covers whole-field replacements, not host/extension caret/selection/append insertions. Every Ask first asks Jev ask.scope per field; test stand-ins need answeringScope from helper/test/builders.ts or Asks refuse/ask back.

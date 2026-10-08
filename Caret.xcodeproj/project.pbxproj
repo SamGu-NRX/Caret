@@ -295,6 +295,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = B10000000000000000000007 /* Build configuration list for PBXNativeTarget "Caret" */;
 			buildPhases = (
+				E90000000000000000000F01 /* Privacy gate */,
 				B10000000000000000000003 /* Sources */,
 				B10000000000000000000005 /* Frameworks */,
 				B10000000000000000000004 /* Resources */,
@@ -391,6 +392,24 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		E90000000000000000000F01 /* Privacy gate */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Privacy gate";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		B10000000000000000000003 /* Sources */ = {

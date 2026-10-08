@@ -18,13 +18,9 @@ def run(command: list[str]) -> None:
 
 
 def privacy_gate(runner=subprocess.run) -> None:
-    """Refuse to package a helper that sends more than the user-facing privacy promise discloses.
-
-    helper/src/privacy.ts ownerNoteGate: an owner-note allotment above 0 needs the promise to disclose it. The check is
-    the helper's own (helper/scripts/privacy-gate.ts), so the rule lives in one place.
-    """
+    """Run the same gate as the Xcode target before any packaging side effects."""
     result = runner(
-        ["node", str(root / "helper" / "scripts" / "privacy-gate.ts")],
+        ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")],
         capture_output=True,
         text=True,
     )
