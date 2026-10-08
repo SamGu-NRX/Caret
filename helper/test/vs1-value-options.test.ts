@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { groupOptions, type OptionMember } from "../src/fill/value-options.ts";
+import { BOX_CONTRACT } from "../src/fill/fill.ts";
 import { runB31, valueQuestions } from "./vs1-kit.ts";
 
 beforeEach(() => setGeneratorClock(() => 0));
@@ -71,10 +72,11 @@ describe("each option states the exact output Caret would write (B31 desks)", ()
     expect(q?.options.map((o) => o.output)).not.toContain("Large, mushroom and onion");
   });
 
-  it("a box is offered its ticked state, said as such, never as another conversion", async () => {
+  it("a box is offered its ticked state, said as such, and its contract says what a tick means", async () => {
     const r = await runB31("b31-15");
     const [q] = valueQuestions(r, "Onion");
     expect(q?.options.find((o) => o.output === "checked")?.criterion).toMatch(/Derivation: the box ticked, as the supporting text says it should be\.$/u);
+    for (const x of valueQuestions(r, "Onion")) expect(x.instructions).toContain(`Required content and format: ${BOX_CONTRACT}.`);
   });
 
   it("a date input is offered the date in its own format, never the sentence it was read from", async () => {
