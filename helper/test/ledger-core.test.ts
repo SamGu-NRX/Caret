@@ -312,7 +312,8 @@ describe("production equals the brute-force reference (section 9)", () => {
     for (let seed = 1; seed <= 1_000; seed++) {
       const { units, lines } = caseOf(seed);
       if (lines.length === 0) continue;
-      const byText = (ls: readonly string[], ps: readonly string[]): string[] => ps.map((p) => `${ls[Number(p.split(":")[0])]}@${p.split(":")[1]}`).sort();
+      // Positions index the inventory's lines (distinct normalized lines, section 1), so they are compared by line text.
+      const byText = (ls: readonly string[], ps: readonly string[]): string[] => ps.map((p) => `${inventoryOf(ls).lines[Number(p.split(":")[0])]}@${p.split(":")[1]}`).sort();
       const a = production(units, lines);
       const b = production([...units].reverse(), [...lines].reverse());
       expect(byText([...lines].reverse(), b.positions)).toEqual(byText(lines, a.positions));

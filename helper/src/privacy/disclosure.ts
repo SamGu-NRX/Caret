@@ -1,4 +1,3 @@
-import { appendFileSync } from "node:fs";
 // SC1 section 2b: the typed boundary between the screen and a model. A request may carry only text its Disclosure
 // minted: Caret's own wording, or screen text read from a redacted view, priced against that window's budget and
 // recorded, the same ledger privacy.ts has always kept (SnippetLedger). The record is the brand. A TypeScript brand
@@ -9,6 +8,7 @@ import { assertNoExcludedValue, cut, flat, fold, sectionTexts, SnippetLedger, ty
 import { breach, measure, normalizedUnits, type Measurement } from "./ledger/account.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits } from "./ledger/units.ts";
+import { writeLocalFile } from "./store-path.ts";
 import { LedgerEncodingError, ledgerNormalizeUnit } from "./ledger/normalize.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
@@ -896,13 +896,13 @@ export function measureBytes(req: { purpose?: string; kind?: string; disclosure?
   const t0 = performance.now();
   try {
     const m = d.measureSent(purpose, units);
-    appendFileSync(log, `${JSON.stringify({ purpose, ms: performance.now() - t0, bytes: bytes.length, ok: true })}\n`);
+    writeLocalFile(log, `${JSON.stringify({ purpose, ms: performance.now() - t0, bytes: bytes.length, ok: true })}\n`, { append: true });
     return m;
   } catch (e) {
     const ms = performance.now() - t0;
     const key = e instanceof LedgerRefused ? /of window (.+?), over its limit/u.exec(e.message)?.[1] : undefined;
     const why = key === undefined ? null : d.explainBreach(decoded, key);
-    appendFileSync(log, `${JSON.stringify({ purpose, ms, bytes: bytes.length, ok: false, error: e instanceof Error ? e.message : String(e), why })}\n`);
+    writeLocalFile(log, `${JSON.stringify({ purpose, ms, bytes: bytes.length, ok: false, error: e instanceof Error ? e.message : String(e), why })}\n`, { append: true });
     throw e;
   }
 }

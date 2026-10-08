@@ -20,6 +20,7 @@ import { HelperServer } from "../src/server.ts";
 import { EngineServer } from "../src/engines/server.ts";
 import { migrateSealedMemory } from "../src/memory/migrate.ts";
 import { DatabaseSync } from "node:sqlite";
+import { Disclosure, measureBytes, registryOf } from "../src/privacy/disclosure.ts";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
@@ -61,6 +62,15 @@ const EXERCISE: Record<string, () => unknown> = {
   "engines/decide/cache.ts": () => cachedAsk(async () => ({ model: "m", answers: {}, inputTokens: 0, latencyMs: 0, costUsd: 0 }), { dir: at("cache"), mode: "record", engine: "canned", model: "m", fixture: { windows: () => true, plan: true } as never, env: {} } as never),
   "server.ts": () => new HelperServer(at("sockets/screen.sock"), () => null as never, () => undefined).listen(),
   "engines/server.ts": () => new EngineServer({ path: at("sockets/page.sock") } as never).listen(),
+  // MEASUREMENT ONLY (the ledger branch): the seal log CARET_TEST_LEDGER_LOG names.
+  "privacy/disclosure.ts": () => {
+    process.env.CARET_TEST_LEDGER_LOG = at("seal.ndjson");
+    try {
+      return measureBytes({ purpose: "unnamed", disclosure: new Disclosure(registryOf([])) }, "{}");
+    } finally {
+      delete process.env.CARET_TEST_LEDGER_LOG;
+    }
+  },
   "memory/migrate.ts": () => migrateSealedMemory({ db: new DatabaseSync(":memory:"), key: Buffer.alloc(32), dataDir: join(tmp, "data"), memoryDir: at("Memory"), now: 0 }),
 };
 

@@ -58,6 +58,17 @@ function refWords(cps: readonly number[]): { starts: Set<number>; ends: Set<numb
 
 /** The positions of one window (lines in order) that the units reveal, as a sorted list of `line:offset`. */
 export function refReveal(units: readonly RefUnit[], lines: readonly string[], rule: RefRule = envRule(), wordsOn = process.env.CARET_TEST_LEDGER_WORDS === "1"): { positions: string[]; charged: number; prose: number; words?: { positions: string[]; charged: number; prose: number } } {
+  // The coordinator's 2026-10-08 ruling: a line that normalizes like an earlier one is the same line, counted once.
+  // Of copies that normalize alike, the one that sorts first by code units stands for all, in the first copy's place.
+  const firstAt = new Map<string, number>();
+  const best = new Map<string, string>();
+  lines.forEach((l, i) => {
+    const k = ledgerNormalizeV1(l).cps.join(",");
+    if (!firstAt.has(k)) firstAt.set(k, i);
+    const b = best.get(k);
+    if (b === undefined || l < b) best.set(k, l);
+  });
+  lines = [...firstAt].sort((a, b) => a[1] - b[1]).map(([k]) => best.get(k) as string);
   const marked = new Set<string>();
   const wmarked = new Set<string>();
   const us = units.map((u) => ledgerNormalizeUnit(u).cps);

@@ -94,19 +94,37 @@ export interface LineInventory {
   readonly prose: number;
 }
 
-/** A window's inventory from its lines as section 1 collects them (already split, collapsed, trimmed and distinct). */
+/**
+ * A window's inventory from its lines as section 1 collects them (split, collapsed, trimmed, nonempty). Each distinct
+ * normalized line is kept once, one copy standing for every copy, so a line that repeats (a mail's subject in
+ * its title, its heading and its body; the same line in another case) is counted once in the charge and once in the
+ * window's size, T_w and L_w (the coordinator's 2026-10-08 ruling, OUTPUT-LEDGER-SPEC section 1). The key is the
+ * normalized scalars: lines that normalize alike are one line.
+ */
 export function inventoryOf(lines: readonly string[]): LineInventory {
+  // Of copies that normalize alike, the one that sorts first by UTF-16 code units stands for them all, whatever the
+  // order the window lists them in (section 9: node order never changes a charge). Lines keep their first place.
+  const pick = new Map<string, { line: string; at: number; n: Normalized }>();
+  lines.forEach((l, at) => {
+    if (l === "") throw new Error("inventoryOf: an empty line; section 1 removes them");
+    const n = ledgerNormalizeV1(l);
+    const key = n.cps.join(",");
+    const had = pick.get(key);
+    if (had === undefined) pick.set(key, { line: l, at, n });
+    else if (l < had.line) pick.set(key, { line: l, at: had.at, n });
+  });
+  const chosen = [...pick.values()].sort((a, b) => a.at - b.at);
+  const kept = chosen.map((c) => c.line);
+  const normalized = chosen.map((c) => c.n);
   const starts: number[] = [];
   let total = 0;
   let prose = 0;
-  for (const l of lines) {
-    if (l === "") throw new Error("inventoryOf: an empty line; section 1 removes them");
+  for (const l of kept) {
     starts.push(total);
     total += l.length;
     if (l.length > CARD_LINE_CHARS) prose += l.length;
   }
-  if (new Set(lines).size !== lines.length) throw new Error("inventoryOf: a line twice; section 1 deduplicates exact lines");
-  return Object.freeze({ lines: Object.freeze([...lines]), normalized: Object.freeze(lines.map(ledgerNormalizeV1)), starts: Object.freeze(starts), total, prose });
+  return Object.freeze({ lines: Object.freeze(kept), normalized: Object.freeze(normalized), starts: Object.freeze(starts), total, prose });
 }
 
 /** What one request reveals of one window: the positions (bits over 0..total-1), their count and their prose subset. */
@@ -314,7 +332,10 @@ export function isCard(inv: LineInventory): boolean {
 export function limitsOf(inv: LineInventory, c: WindowClass): Limits {
   const t = inv.total;
   const l = inv.prose;
-  if (c.conversation) return { chars: Math.min(CONVERSATION_CHARS, Math.max(0, Math.floor((t - 1) / 2))), prose: null };
+  // MEASUREMENT ONLY: CARET_TEST_CONSENT_OVER_CONVERSATION=1 restores today's bypass (a consented conversation gives
+  // WINDOW_CHARS), to separate section 5's precedence from the match rule in the comparison.
+  const bypass = process.env.CARET_TEST_CONSENT_OVER_CONVERSATION === "1" && c.consented;
+  if (c.conversation && !bypass) return { chars: Math.min(CONVERSATION_CHARS, Math.max(0, Math.floor((t - 1) / 2))), prose: null };
   if (c.consented || isCard(inv) || t >= LARGE_WINDOW_CHARS) return { chars: WINDOW_CHARS, prose: null };
   const h = Math.max(0, Math.floor((l - 1) / 2));
   return { chars: Math.min(WINDOW_CHARS, t - l + h), prose: h };
