@@ -144,7 +144,13 @@ export function realfillOracle(ctx: OracleContext): AskJev {
       else {
         const label = labelOf(id, ins);
         const v = label === null ? null : valueOf(label);
-        const hit = v === null || v === "none" ? undefined : Object.entries(q.criteria).find(([k, d]) => typeof d === "string" && (sameValue(oracleOptionText(trace, id, k, d), v) || d === v));
+        const hits = v === null || v === "none" ? [] : Object.entries(q.criteria).filter(([k, d]) => typeof d === "string" && (sameValue(oracleOptionText(trace, id, k, d), v) || d === v));
+        // Value settlement keeps one option per exact output and basis, so several can state the same output. Both wordings
+        // take the same one, by its criterion's text, as a consistent judge would: the text is the same in both, the ids and
+        // order are not. The scoreboard seals each request first, so the oracle may have no fill trace to tell them by.
+        const output = (d: string | null | undefined): string | undefined => PROPOSED.exec(String(d))?.[1];
+        const first = hits[0];
+        const hit = first === undefined || output(first[1]) === undefined ? first : hits.filter(([, d]) => output(d) === output(first[1])).sort(([, a], [, b]) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0))[0];
         // The planner's target questions (an Ask that asks for a press): the press the must-refuse ask names.
         const press = ask?.reason === "submit" || ask?.reason === "send" ? Object.entries(q.criteria).find(([, d]) => typeof d === "string" && new RegExp(`\\b${ask.reason}\\b`, "iu").test(d)) : undefined;
         pick(hit?.[0] ?? press?.[0] ?? "none");
