@@ -185,10 +185,8 @@ extension Gallery {
         return try! JSONDecoder().decode(TaskProgress.self, from: Data(line.utf8))
     }
 
-    /// Stands in for the approved privacy promise in renders, so a reference changes only when the screen does, not
-    /// when the promise's words do. Every block carries a marked token (Sample A, A1, B, B1, B2) the real promise never
-    /// has, so a view that drew any other text in their place would change the pixels and fail the snapshot test. Same
-    /// shape as the promise: two headed sections, one long paragraph and two shorter ones, about as long overall.
+    /// Stands in for the promise in renders, so references change with the screen, not with the promise's words. Each
+    /// block carries a token (Sample A, A1, B, B1, B2), so drawing any other text in its place changes the pixels.
     static let samplePrivacyPromise = PrivacyPromise("""
         Sample A: what this stand-in sends
 
@@ -247,10 +245,10 @@ extension Gallery {
         let items = screens.map { name, state in
             Item(name: "onboarding-\(name)", view: AnyView(OnboardingView(state: state, character: character, animated: false, promise: samplePrivacyPromise)))
         }
-        // A run with no PrivacyPromise.txt, as under `swift run`; an app build cannot reach it (scripts/privacy_gate.sh).
+        // As under `swift run`; an app build cannot reach it.
         let missing = Item(name: "onboarding-permissions-no-promise", view: AnyView(OnboardingView(
             state: flow(ax: false, input: false, [.next, .next]), character: character, animated: false, promise: nil)))
-        // The same step scrolled to the promise's end, so the last blocks are in the pixels too.
+        // Scrolled to the end, so the last blocks are in the pixels too.
         let end = Item(name: "onboarding-permissions-promise-end", view: AnyView(OnboardingView(
             state: flow(ax: false, input: false, [.next, .next]), character: character, animated: false, promise: samplePrivacyPromise)
             .environment(\.offscreenScrolledToEnd, true)))

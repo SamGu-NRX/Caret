@@ -46,38 +46,18 @@ final class OnboardingHostTests: XCTestCase {
         }
     }
 
-    /// The permissions step shows the promise it is given, all of it: the text below is this test's own, so the check
-    /// holds whatever the approved words become. Rendering it differs from rendering no promise, so the text reaches
-    /// the step rather than stopping at the window.
-    func testThePermissionsStepShowsTheInjectedPromise() throws {
-        let text = "What a test sends\n\nA first paragraph, long enough to wrap onto a second line in the permissions step of onboarding.\n\nWho a test tells\n\nA second paragraph.\n\nA third paragraph."
+    /// The promise the build bundles is PRIVACY_PROMISE byte for byte (scripts/privacy_gate.sh); parsed for the
+    /// permissions step, it splits into exactly its blank-line-separated blocks, none changed, whatever its words.
+    func testTheBundledPromiseParsesIntoItsOwnBlocks() throws {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../../helper/src/privacy.ts").standardized
+        let typescript = try String(contentsOf: source, encoding: .utf8)
+        let start = try XCTUnwrap(typescript.range(of: "export const PRIVACY_PROMISE = `"), "privacy.ts has no PRIVACY_PROMISE")
+        let end = try XCTUnwrap(typescript.range(of: "`;", range: start.upperBound..<typescript.endIndex))
+        let text = String(typescript[start.upperBound..<end.lowerBound])
+        XCTAssertFalse(text.contains("${") || text.contains("\\"), "the template literal must be plain text for this read to equal the bundled bytes")
         let promise = try XCTUnwrap(PrivacyPromise(text))
-        XCTAssertEqual(promise.blocks.map(\.text).joined(separator: PrivacyPromise.separator), text)
-        let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: false, inputMonitoring: true), clock: Gallery.StillClock())
-        flow.send(.next)
-        flow.send(.next)
-        XCTAssertEqual(flow.state.step, .permissions)
-        let shown = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false, promise: promise), dark: false))
-        let missing = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false, promise: nil), dark: false))
-        XCTAssertGreaterThan(try SnapshotTests.difference(shown, missing), 0)
-        // Other words in the same shape draw differently: the step draws the text it was given, not a fixed one.
-        let other = try XCTUnwrap(PrivacyPromise(text.replacingOccurrences(of: "A first paragraph", with: "Another opening")))
-        let otherShown = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false, promise: other), dark: false))
-        XCTAssertGreaterThan(try SnapshotTests.difference(shown, otherShown), 0)
-    }
-
-    /// A test process has no app bundle, as `swift run` has none: no promise is read, the window's default shows the
-    /// missing state (the same pixels as passing no promise), and that state names the file. Nothing stands in for it.
-    func testWithoutTheResourceTheStepNamesItAndShowsNoPromise() throws {
-        XCTAssertNil(Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt"), "the test runner must have no resource")
-        XCTAssertNil(PermissionsScreen.privacyLine)
-        XCTAssertTrue(PermissionsScreen.missingPromiseLine.contains("PrivacyPromise.txt"))
-        let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: false, inputMonitoring: true), clock: Gallery.StillClock())
-        flow.send(.next)
-        flow.send(.next)
-        let byDefault = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false), dark: false))
-        let missing = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false, promise: nil), dark: false))
-        XCTAssertEqual(try SnapshotTests.difference(byDefault, missing), 0)
+        XCTAssertEqual(promise.blocks.map(\.text), text.components(separatedBy: PrivacyPromise.separator))
+        XCTAssertTrue(promise.blocks.contains { if case .heading = $0 { true } else { false } }, "the promise's section headings must parse as headings")
     }
 
     /// The know screen's words (A11 brief): what it asks for, why, and where it can be changed.

@@ -514,17 +514,15 @@ struct KnowScreen: View {
 // MARK: - 4. Permissions
 
 struct PermissionsScreen: View {
-    /// The approved privacy promise: the bundle's PrivacyPromise.txt, which every app build writes from
-    /// `PRIVACY_PROMISE` (helper/src/privacy.ts) and refuses to finish without (scripts/privacy_gate.sh). Nil only
-    /// where there is no app bundle, as under `swift run`. There is no fallback text: a copy here would drift from the
-    /// approved one, which is what scripts/check_onboarding_privacy.py refuses.
+    /// The bundle's PrivacyPromise.txt, which every app build writes from `PRIVACY_PROMISE` and refuses to finish
+    /// without (scripts/privacy_gate.sh). Nil only without an app bundle, as under `swift run`. No fallback text: a
+    /// copy here would drift from the approved one.
     static let privacyLine = { () -> PrivacyPromise? in
         guard let url = Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt"),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         return PrivacyPromise(text)
     }()
-    /// What a run without the resource shows instead. Only a development run can reach it, so it speaks to whoever
-    /// is building Caret and names the file.
+    /// Only a development run can lack the resource, so this speaks to whoever is building Caret.
     static let missingPromiseTitle = "No privacy promise in this build"
     static let missingPromiseLine = "PrivacyPromise.txt is missing or empty, so this screen can't say what Caret sends. Development runs have no app bundle; apps/caret/scripts/build-app.sh writes the file into the app."
 
@@ -563,7 +561,6 @@ struct PermissionsScreen: View {
                 }
             }
             .padding(.top, 18)
-            // Under the card it belongs to, so the promise below can take the rest of the height.
             if !state.permissions.accessibility {
                 Text("This screen moves on by itself once Accessibility is on.")
                     .font(.system(size: 12))
@@ -592,12 +589,9 @@ struct PermissionsScreen: View {
     }
 }
 
-/// The promise in full, word for word, in the height the permission card leaves: the person reads it while deciding
-/// whether to grant, without it pushing the grant off the screen. Its headings are group heads, as the screen's other
-/// section names are; its paragraphs are the 12 pt secondary text of every note in onboarding. It scrolls; the last
-/// 18 pt fade out so a cut line reads as more to come, and the content ends with that much room so the last line can
-/// scroll clear of the fade. Nothing moves on its own: this is text to read, so the only motion is the system's
-/// one flash of the scroller as the screen appears, which says it scrolls.
+/// The whole promise scrolls in the height the permission card leaves, so reading it never pushes the permission
+/// controls out of the fixed window. Its foot fades out to show there is more; the bottom padding lets the last line
+/// scroll clear of that fade.
 struct PrivacyPromiseText: View {
     var promise: PrivacyPromise
 

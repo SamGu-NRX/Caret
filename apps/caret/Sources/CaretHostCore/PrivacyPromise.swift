@@ -22,13 +22,11 @@ public struct PrivacyPromise: Equatable, Sendable {
 
     public static let separator = "\n\n"
 
-    public let text: String
     public let blocks: [Block]
 
     /// Nil for text with nothing but whitespace in it: an empty resource is as broken as a missing one.
     public init?(_ text: String) {
         guard text.contains(where: { !$0.isWhitespace }) else { return nil }
-        self.text = text
         blocks = text.components(separatedBy: Self.separator).map { block in
             Self.isHeading(block) ? .heading(block) : .paragraph(block)
         }

@@ -12,7 +12,6 @@ final class PrivacyPromiseTests: XCTestCase {
             .heading("What it sends"), .paragraph("Short pieces of a screen, such as a label."),
             .heading("Who gets it"), .paragraph("A model run by someone."), .paragraph("Another model, \"hosted\" elsewhere."),
         ])
-        XCTAssertEqual(promise.text, text)
     }
 
     func testJoiningTheBlocksGivesBackTheTextExactly() throws {

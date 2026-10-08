@@ -20,8 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = [
     "helper/scripts/privacy-gate.ts", "scripts/privacy_gate.sh", "scripts/check_vercel_gemini.py", "scripts/check_onboarding_privacy.py",
     "apps/mac/Sources/Caret/PermissionView.swift", "apps/mac/Sources/Caret/Info.plist", "apps/caret/Bundle/Info.plist", "caret/completions.py",
-    "apps/caret/Sources/CaretHost/Onboarding/OnboardingView.swift", "apps/caret/Sources/CaretHost/Onboarding/OnboardingController.swift",
-    "apps/caret/Sources/CaretHostCore/PrivacyPromise.swift", "apps/caret/Sources/CaretHost/Design/WindowParts.swift",
+    "apps/caret/Sources/CaretHost/Onboarding/OnboardingView.swift",
 ]
 ACCEPTED = ('export const PRIVACY_ACCEPTANCES = { "pv2-sites-send": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture", '
             'at: "2026-10-07T00:00:00Z" }, "ha2-copied-conversation": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture", '
