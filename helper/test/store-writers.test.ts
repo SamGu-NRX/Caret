@@ -102,6 +102,8 @@ describe("every file a helper store writes goes through the checked writer", () 
       'const fs = await import("node:fs");',
       'const fs = require("node:fs");',
       'const m = require(name);',
+      'import { createRequire } from "node:module"; const r = createRequire(import.meta.url);',
+      'import * as mod from "module";',
       'import { DatabaseSync } from "node:sqlite";',
     ]) expect(breaks(src), src).toBe(true);
     for (const src of [

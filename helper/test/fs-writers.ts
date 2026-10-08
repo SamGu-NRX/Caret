@@ -1,13 +1,18 @@
 // The import rule behind test/store-writers.test.ts: outside a short allowlist, a module under helper/src may import
-// from node:fs only the functions below, which cannot put content into a file, and nothing from node:sqlite (a
-// database writes its file). Every other binding, a namespace or default import, `promises`, a re-export, and a dynamic
-// import or require of either module breaks it. Read from the module's imports after its TypeScript is stripped, so
-// `import type` and type-only names do not count.
+// from node:fs only the functions below, which cannot put content into a file, nothing from node:sqlite (a database
+// writes its file), and no loader from node:module (createRequire would reach either). Every other binding, a namespace
+// or default import, `promises`, a re-export, and a dynamic import or require of these modules breaks it. Read from the
+// module's imports after its TypeScript is stripped, so `import type` and type-only names do not count.
+// Out of scope: a read function called with write flags (readFileSync(p, { flag: "w+" })) is deliberate misuse, not the
+// accidental drift this guards against.
 import { stripTypeScriptTypes } from "node:module";
 import { parse, type AnyNode } from "acorn";
 
 const FS = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises"]);
 const SQLITE = new Set(["sqlite", "node:sqlite"]);
+const MODULE = new Set(["module", "node:module"]);
+/** What a module may import from node:module: nothing that loads a module. */
+const MODULE_PERMITTED: ReadonlySet<string> = new Set(["stripTypeScriptTypes", "isBuiltin", "builtinModules"]);
 
 /**
  * What a module may import from node:fs: reads, inspection and descriptors' reads, and the folder, mode and removal
@@ -44,6 +49,12 @@ export function fsImportViolations(source: string): string[] {
     if (n.type === "ImportDeclaration") {
       const from = moduleName(n.source) ?? "";
       if (SQLITE.has(from) && n.specifiers.length > 0) out.push(`imports from ${from} (line ${line})`);
+      if (MODULE.has(from)) {
+        for (const sp of n.specifiers) {
+          const name = sp.type === "ImportSpecifier" ? (sp.imported.type === "Identifier" ? sp.imported.name : String(sp.imported.value)) : null;
+          if (name === null || !MODULE_PERMITTED.has(name)) out.push(`imports ${name ?? "the module loader"} from ${from} (line ${line})`);
+        }
+      }
       if (!FS.has(from)) continue;
       for (const sp of n.specifiers) {
         if (sp.type !== "ImportSpecifier") out.push(`imports ${from} whole (line ${line})`);
