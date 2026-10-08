@@ -23,6 +23,38 @@
     "Your ticket",
     "On-site details"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "DevHarbor Summit 2026"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "About you"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Your ticket"
+    },
+    {
+     "id": "o4",
+     "heading": false,
+     "text": "Ticket type*"
+    },
+    {
+     "id": "o5",
+     "heading": false,
+     "text": "Workshops (choose any)"
+    },
+    {
+     "id": "o6",
+     "heading": true,
+     "text": "On-site details"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -40,8 +72,8 @@
       39
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "About you"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -60,8 +92,8 @@
       39
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "About you"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -80,8 +112,8 @@
       39
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "About you"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -100,8 +132,8 @@
       39
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "About you"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -120,8 +152,8 @@
       39
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "About you"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -197,8 +229,8 @@
       41
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "About you"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -221,9 +253,9 @@
       "name": "Ticket type*"
      },
      "sections": [
-      "DevHarbor Summit 2026",
-      "Your ticket",
-      "Ticket type*"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -246,9 +278,9 @@
       "name": "Ticket type*"
      },
      "sections": [
-      "DevHarbor Summit 2026",
-      "Your ticket",
-      "Ticket type*"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -271,9 +303,9 @@
       "name": "Ticket type*"
      },
      "sections": [
-      "DevHarbor Summit 2026",
-      "Your ticket",
-      "Ticket type*"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -292,9 +324,9 @@
       13
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "Your ticket",
-      "Workshops (choose any)"
+      "o1",
+      "o3",
+      "o5"
      ]
     },
     {
@@ -313,9 +345,9 @@
       13
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "Your ticket",
-      "Workshops (choose any)"
+      "o1",
+      "o3",
+      "o5"
      ]
     },
     {
@@ -334,9 +366,9 @@
       13
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "Your ticket",
-      "Workshops (choose any)"
+      "o1",
+      "o3",
+      "o5"
      ]
     },
     {
@@ -397,8 +429,8 @@
       41
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "On-site details"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -454,8 +486,8 @@
       41
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "On-site details"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -511,8 +543,8 @@
       41
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "On-site details"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -531,8 +563,8 @@
       13
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "On-site details"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -550,8 +582,8 @@
       44
      ],
      "sections": [
-      "DevHarbor Summit 2026",
-      "On-site details"
+      "o1",
+      "o6"
      ]
     }
    ],

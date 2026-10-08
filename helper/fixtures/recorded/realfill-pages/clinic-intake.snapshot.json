@@ -24,6 +24,38 @@
     "Emergency contact",
     "Acknowledgements"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Harbor Family Clinic"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Patient information"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Contact details"
+    },
+    {
+     "id": "o4",
+     "heading": false,
+     "text": "How should we contact you? (required)"
+    },
+    {
+     "id": "o5",
+     "heading": true,
+     "text": "Emergency contact"
+    },
+    {
+     "id": "o6",
+     "heading": true,
+     "text": "Acknowledgements"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -41,8 +73,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Patient information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -61,8 +93,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Patient information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -81,8 +113,8 @@
       40
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Patient information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -143,8 +175,8 @@
       39
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Patient information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -163,8 +195,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -183,8 +215,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -203,8 +235,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -223,8 +255,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -243,8 +275,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -263,8 +295,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -545,8 +577,8 @@
       39
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -565,8 +597,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -589,9 +621,9 @@
       "name": "How should we contact you? (required)"
      },
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details",
-      "How should we contact you? (required)"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -614,9 +646,9 @@
       "name": "How should we contact you? (required)"
      },
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details",
-      "How should we contact you? (required)"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -639,9 +671,9 @@
       "name": "How should we contact you? (required)"
      },
      "sections": [
-      "Harbor Family Clinic",
-      "Contact details",
-      "How should we contact you? (required)"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -660,8 +692,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Emergency contact"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -717,8 +749,8 @@
       39
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Emergency contact"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -737,8 +769,8 @@
       37
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Emergency contact"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -757,8 +789,8 @@
       13
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Acknowledgements"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -777,8 +809,8 @@
       13
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Acknowledgements"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -796,8 +828,8 @@
       42
      ],
      "sections": [
-      "Harbor Family Clinic",
-      "Acknowledgements"
+      "o1",
+      "o6"
      ]
     }
    ],

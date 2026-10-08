@@ -20,6 +20,18 @@
    "headings": [
     "Submit a request"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Submit a request"
+    },
+    {
+     "id": "o2",
+     "heading": false,
+     "text": "Priority *"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -37,7 +49,7 @@
       36
      ],
      "sections": [
-      "Submit a request"
+      "o1"
      ]
     },
     {
@@ -56,7 +68,7 @@
       36
      ],
      "sections": [
-      "Submit a request"
+      "o1"
      ]
     },
     {
@@ -75,7 +87,7 @@
       36
      ],
      "sections": [
-      "Submit a request"
+      "o1"
      ]
     },
     {
@@ -126,7 +138,7 @@
       38
      ],
      "sections": [
-      "Submit a request"
+      "o1"
      ]
     },
     {
@@ -149,8 +161,8 @@
       "name": "Priority *"
      },
      "sections": [
-      "Submit a request",
-      "Priority *"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -173,8 +185,8 @@
       "name": "Priority *"
      },
      "sections": [
-      "Submit a request",
-      "Priority *"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -197,8 +209,8 @@
       "name": "Priority *"
      },
      "sections": [
-      "Submit a request",
-      "Priority *"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -217,7 +229,7 @@
       36
      ],
      "sections": [
-      "Submit a request"
+      "o1"
      ]
     },
     {
@@ -236,7 +248,7 @@
       116
      ],
      "sections": [
-      "Submit a request"
+      "o1"
      ]
     },
     {
@@ -254,7 +266,7 @@
       21
      ],
      "sections": [
-      "Submit a request"
+      "o1"
      ]
     },
     {
@@ -273,7 +285,7 @@
       13
      ],
      "sections": [
-      "Submit a request"
+      "o1"
      ]
     },
     {
@@ -291,7 +303,7 @@
       36
      ],
      "sections": [
-      "Submit a request"
+      "o1"
      ]
     }
    ],

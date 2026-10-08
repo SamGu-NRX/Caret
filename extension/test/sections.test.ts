@@ -1,14 +1,16 @@
-// SCP1: the sections each control sits in (content/sections.ts), on small page trees. The extension's tests run without
-// a DOM, so the trees are plain objects with the members sectionChains reads; the walk in a real page is walker.ts's.
-// A synthetic service form; every heading is invented.
+// SCP1: the sections each control sits in (content/sections.ts), as occurrences, on small page trees. The extension's
+// tests run without a DOM, so the trees are plain objects with the members sectionOutline reads; the walk in a real page
+// is walker.ts's. A synthetic service form; every heading is invented.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { MAX_SECTIONS, Outline, sectionChains, type OutlineElement, type OutlineReader } from "../src/content/sections.ts";
+import { frameHeadings, MAX_SECTIONS, Outline, sectionOutline, type OutlineElement, type OutlineReader } from "../src/content/sections.ts";
+import { SELF_IDENTIFICATION } from "../src/content/walker.ts";
 
 interface El extends OutlineElement<El> {
   readonly attrs: Record<string, string>;
-  readonly own: string;
   readonly kids: El[];
-  readonly shadow: El[] | null;
+  shadow: El[] | null;
   readonly name: string;
 }
 
@@ -16,10 +18,9 @@ interface El extends OutlineElement<El> {
 function el(localName: string, attrs: Record<string, string> = {}, ...kids: (El | string)[]): El {
   const children = kids.filter((k): k is El => typeof k !== "string");
   const own = kids.filter((k): k is string => typeof k === "string").join(" ");
-  const node: El = {
+  return {
     localName,
     attrs,
-    own,
     kids: children,
     shadow: null,
     name: attrs.name ?? "",
@@ -29,92 +30,157 @@ function el(localName: string, attrs: Record<string, string> = {}, ...kids: (El 
     },
     getAttribute: (n: string) => attrs[n] ?? null,
   };
-  return node;
 }
-const input = (name: string): El => el("input", { name });
-const withShadow = (host: El, ...inside: El[]): El => ({ ...host, shadow: inside });
+const input = (name: string, attrs: Record<string, string> = {}): El => el("input", { name, ...attrs });
+const host = (tag: string, light: El[], shadow: El[]): El => {
+  const h = el(tag, {}, ...light);
+  h.shadow = shadow;
+  return h;
+};
 
-/** Every element of the tree, shadow content included, for resolving aria-labelledby ids. */
 function all(root: El): El[] {
   return [root, ...root.kids.flatMap(all), ...(root.shadow ?? []).flatMap(all)];
 }
 
-function chains(...body: El[]): Record<string, string[]> {
+/** Each control's sections, by the text of each occurrence ("(excluded)" for one with none), and the occurrences. */
+function walk(...body: El[]) {
   const doc = el("body", {}, ...body);
   const everything = all(doc);
   const reader: OutlineReader<El> = {
     wanted: (e) => e.localName === "input",
     shown: (e) => e.attrs.hidden === undefined,
-    labelledBy: (_e, ids) => ids.split(/\s+/).map((id) => everything.find((x) => x.attrs.id === id)?.textContent ?? "").join(" "),
+    labelledBy: (_e, ids) => ids.split(/\s+/).flatMap((id) => everything.find((x) => x.attrs.id === id) ?? []),
     shadowRoot: (e) => (e.shadow === null ? null : { children: e.shadow }),
-    excluded: (name) => /self[- ]identif/i.test(name),
+    // A slot's assigned elements: the host's light children whose slot attribute names it (default: none).
+    assigned: (e) => {
+      if (e.localName !== "slot") return null;
+      const owner = everything.find((h) => h.shadow !== null && all({ ...h, kids: [], shadow: h.shadow } as El).includes(e));
+      const named = e.attrs.name ?? "";
+      const got = (owner?.kids ?? []).filter((k) => (k.attrs.slot ?? "") === named);
+      return got.length > 0 ? got : e.kids;
+    },
+    excluded: (text) => SELF_IDENTIFICATION.test(text),
   };
-  return Object.fromEntries([...sectionChains(doc, reader)].map(([e, s]) => [e.name, s]));
+  const r = sectionOutline(doc, reader);
+  const text = new Map(r.occurrences.map((o) => [o.id, o.text ?? "(excluded)"]));
+  const chains: Record<string, string[]> = {};
+  for (const [e, ids] of r.chains) {
+    if (e.name in chains) throw new Error(`control ${e.name} was walked twice`);
+    chains[e.name] = ids.map((id) => text.get(id) ?? id);
+  }
+  return { chains, occurrences: r.occurrences, ids: Object.fromEntries([...r.chains].map(([e, ids]) => [e.name, ids])) };
 }
 
 describe("the sections a control sits in", () => {
   it("is its fieldset's legend", () => {
-    expect(chains(el("form", {}, el("fieldset", {}, el("legend", {}, "Equipment details"), input("serial")), el("fieldset", {}, el("legend", {}, "Service contact"), input("phone"))))).toEqual({ serial: ["Equipment details"], phone: ["Service contact"] });
+    expect(walk(el("form", {}, el("fieldset", {}, el("legend", {}, "Equipment details"), input("serial")), el("fieldset", {}, el("legend", {}, "Service contact"), input("phone")))).chains).toEqual({ serial: ["Equipment details"], phone: ["Service contact"] });
   });
 
-  it("is the heading before it, and the next heading of its level ends that section", () => {
-    expect(chains(el("form", {}, el("h2", {}, "Equipment details"), el("div", {}, el("label", {}, "Serial number"), input("serial")), el("h2", {}, "Service contact"), el("div", {}, input("phone"))))).toEqual({ serial: ["Equipment details"], phone: ["Service contact"] });
+  it("is the heading before it, and the next heading of its rank ends that section", () => {
+    expect(walk(el("form", {}, el("h2", {}, "Equipment details"), el("div", {}, input("serial")), el("h2", {}, "Service contact"), el("div", {}, input("phone")))).chains).toEqual({ serial: ["Equipment details"], phone: ["Service contact"] });
   });
 
-  it("is the whole heading outline at its place: a page title over the form, a subheading under its section", () => {
-    const r = chains(el("h1", {}, "Service request"), el("form", {}, el("h2", {}, "Equipment details"), input("serial"), el("h3", {}, "Warranty"), input("warranty"), el("h2", {}, "Service contact"), input("phone")));
-    expect(r).toEqual({ serial: ["Service request", "Equipment details"], warranty: ["Service request", "Equipment details", "Warranty"], phone: ["Service request", "Service contact"] });
+  it("nests a subheading under its section, and keeps the page title over everything", () => {
+    const r = walk(el("h1", {}, "Service request"), el("form", {}, el("h2", {}, "Equipment details"), input("serial"), el("h3", {}, "Warranty"), input("warranty"), el("h2", {}, "Service contact"), input("phone")));
+    expect(r.chains).toEqual({ serial: ["Service request", "Equipment details"], warranty: ["Service request", "Equipment details", "Warranty"], phone: ["Service request", "Service contact"] });
   });
 
   it("is the heading section and the radio group's legend inside it, outermost first", () => {
-    expect(chains(el("form", {}, el("h2", {}, "Service contact"), input("phone"), el("fieldset", {}, el("legend", {}, "How should we reach you?"), input("text"), input("call"))))).toEqual({
+    expect(walk(el("form", {}, el("h2", {}, "Service contact"), input("phone"), el("fieldset", {}, el("legend", {}, "How should we reach you?"), input("text"), input("call")))).chains).toEqual({
       phone: ["Service contact"],
       text: ["Service contact", "How should we reach you?"],
       call: ["Service contact", "How should we reach you?"],
     });
   });
 
-  it("takes no heading from a region that has closed, and a region's own label", () => {
-    const r = chains(
+  // Review P1 1: a container's own heading suppresses the inherited heading of its rank.
+  it("lets a container's own heading replace the inherited one of its rank or deeper, not a higher one", () => {
+    const r = walk(
+      el("h1", {}, "Service request"),
+      el("h2", {}, "Equipment details"),
+      input("serial"),
+      el("section", {}, el("h2", {}, "Service contact"), input("phone")),
+      el("section", {}, el("h3", {}, "Warranty"), input("warranty")),
+    );
+    expect(r.chains).toEqual({ serial: ["Service request", "Equipment details"], phone: ["Service request", "Service contact"], warranty: ["Service request", "Equipment details", "Warranty"] });
+  });
+
+  it("ends a heading with its container, and takes a region's own label", () => {
+    const r = walk(
       el("aside", {}, el("h2", {}, "Need help?"), input("search")),
       el("form", {}, input("first")),
       el("section", { "aria-labelledby": "billing-title" }, el("h2", { id: "billing-title" }, "Billing"), input("card-name")),
       el("div", { role: "group", "aria-label": "Preferred time" }, input("time")),
+      el("span", { id: "pay-label" }, "Payment"),
+      el("div", { role: "region", "aria-labelledby": "pay-label" }, input("card")),
     );
-    expect(r).toEqual({ search: ["Need help?"], first: [], "card-name": ["Billing"], time: ["Preferred time"] });
+    // A section labelled by its own heading is that heading's one occurrence; one labelled by other text has its own.
+    expect(r.chains).toEqual({ search: ["Need help?"], first: [], "card-name": ["Billing"], time: ["Preferred time"], card: ["Payment"] });
+    expect(r.occurrences.filter((o) => o.text === "Billing")).toHaveLength(1);
   });
 
   it("is none for a control before any heading, in no labelled group", () => {
-    expect(chains(el("form", {}, input("early"), el("h2", {}, "Equipment details"), input("serial")))).toEqual({ early: [], serial: ["Equipment details"] });
+    expect(walk(el("form", {}, input("early"), el("h2", {}, "Equipment details"), input("serial"))).chains).toEqual({ early: [], serial: ["Equipment details"] });
+  });
+
+  // Review P1 3: two headings that read alike are two sections.
+  it("gives two headings with the same text two occurrences, and each control only its own", () => {
+    const r = walk(el("form", {}, el("h2", {}, "Delivery"), el("h3", {}, "Address"), input("a1"), el("h3", {}, "Notes"), input("n"), el("h3", {}, "Address"), input("a2")));
+    expect(r.chains.a1).toEqual(["Delivery", "Address"]);
+    expect(r.chains.a2).toEqual(["Delivery", "Address"]);
+    expect(r.ids.a1?.[1]).not.toBe(r.ids.a2?.[1]);
   });
 
   it("reads role=heading by its aria-level, and skips a hidden heading or legend", () => {
-    expect(chains(el("div", { role: "heading", "aria-level": "3" }, "Equipment details"), input("serial"), el("h2", { hidden: "" }, "Old section"), input("model"), el("fieldset", {}, el("legend", { hidden: "" }, "Ghost"), input("ghost")))).toEqual({
+    expect(walk(el("div", { role: "heading", "aria-level": "3" }, "Equipment details"), input("serial"), el("h2", { hidden: "" }, "Old section"), input("model"), el("fieldset", {}, el("legend", { hidden: "" }, "Ghost"), input("ghost"))).chains).toEqual({
       serial: ["Equipment details"],
       model: ["Equipment details"],
-      // Still under the heading before it; the fieldset's hidden legend names nothing.
+      // Still under the heading before it; the fieldset's hidden legend defines no section.
       ghost: ["Equipment details"],
     });
   });
 
-  it("drops a section name the walk's exclusions would match: it never leaves the frame", () => {
-    expect(chains(el("h2", {}, "Voluntary self-identification"), input("pronouns-note"), el("fieldset", {}, el("legend", {}, "Self-identification survey"), input("other")))).toEqual({ "pronouns-note": [], other: [] });
+  // Review P1 2: an excluded heading still ends the section before it.
+  it("keeps an excluded heading's occurrence and boundary, with no text", () => {
+    const r = walk(el("form", {}, el("h2", {}, "Equipment details"), input("serial"), el("h2", {}, "Voluntary self-identification"), input("note"), el("fieldset", {}, el("legend", {}, "Self-identification survey"), input("other"))));
+    expect(r.chains).toEqual({ serial: ["Equipment details"], note: ["(excluded)"], other: ["(excluded)", "(excluded)"] });
+    expect(r.occurrences.filter((o) => o.text === undefined)).toHaveLength(2);
+    expect(JSON.stringify(r.occurrences)).not.toMatch(/identification/iu);
   });
 
-  it("walks a shadow root where its host is", () => {
-    const host = withShadow(el("service-form"), el("h2", {}, "Equipment details"), input("serial"));
-    expect(chains(el("h1", {}, "Service request"), host, input("after"))).toEqual({ serial: ["Service request", "Equipment details"], after: ["Service request", "Equipment details"] });
+  it("walks a shadow root in place of its host's children, as a container of its own", () => {
+    const r = walk(el("h1", {}, "Service request"), host("service-form", [], [el("h2", {}, "Equipment details"), input("serial")]), input("after"));
+    expect(r.chains).toEqual({ serial: ["Service request", "Equipment details"], after: ["Service request"] });
+  });
+
+  // Review P1 4: a slotted control is where its slot is, once.
+  it("visits a slotted control at its slot's place in the shadow tree, once", () => {
+    const r = walk(host("service-form", [input("early", { slot: "top" }), input("late")], [el("slot", { name: "top" }), el("h2", {}, "Service contact"), el("slot", {}), input("own")]));
+    expect(r.chains).toEqual({ early: [], late: ["Service contact"], own: ["Service contact"] });
   });
 });
 
 describe("the outline", () => {
   it("keeps the innermost sections when a control is nested past the cap", () => {
     const o = new Outline();
-    for (let i = 1; i <= MAX_SECTIONS + 2; i++) o.open(`Group ${i}`);
-    expect(o.here()).toEqual(Array.from({ length: MAX_SECTIONS }, (_, i) => `Group ${i + 3}`));
+    for (let i = 1; i <= MAX_SECTIONS + 2; i++) o.open(`g${i}`);
+    expect(o.here()).toEqual(Array.from({ length: MAX_SECTIONS }, (_, i) => `g${i + 3}`));
   });
 
   it("refuses to close the document", () => {
     expect(() => new Outline().close()).toThrow(/no container is open/u);
+  });
+});
+
+describe("the frame's heading list", () => {
+  // Review P1 8: an excluded heading never leaves the frame in the heading list either.
+  it("leaves out a heading the walk's exclusions match", () => {
+    expect(frameHeadings(["Apply", "  Voluntary Self-Identification ", "Education"], (t) => SELF_IDENTIFICATION.test(t))).toEqual(["Apply", "Education"]);
+  });
+
+  it("holds the same self-identification cases as the helper's copy", () => {
+    const golden = JSON.parse(readFileSync(fileURLToPath(new URL("../../helper/fixtures/golden/self-identification.json", import.meta.url)), "utf8")) as { excluded: string[]; kept: string[] };
+    for (const t of golden.excluded) expect(SELF_IDENTIFICATION.test(t), t).toBe(true);
+    for (const t of golden.kept) expect(SELF_IDENTIFICATION.test(t), t).toBe(false);
   });
 });

@@ -3,6 +3,7 @@
 // tab's snapshot to the screen model before answering, as the reader does, and maps the page outcome back onto
 // the reader's. Its grant() turns the executor's one-window ActGrant into one ScopedActGrant per frame of the tab
 // as last walked, each pinned to that frame's origin and navigation generation.
+import { SELF_IDENTIFICATION } from "./page-exclusions.ts";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageFrame, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type VerbOutcome, type VerbResult } from "../protocol.ts";
 import type { ReaderLink } from "../executor/means.ts";
 import type { EngineSession } from "./session.ts";
@@ -169,8 +170,22 @@ function union(rects: readonly (readonly [number, number, number, number])[]): [
   return [x0, y0, x1 - x0, y1 - y0];
 }
 
-/** SCP1: a control's sections as its node carries them; a radio or press group takes its first option's. */
-const sectionsOf = (c: PageControl): Pick<Node, "sections"> => (c.sections === undefined || c.sections.length === 0 ? {} : { sections: c.sections });
+/** SCP1: an outline occurrence's key in the window: its frame's web area key and its id in that frame's walk. */
+const occurrenceKey = (frameId: number, id: string): string => `${frameKey(frameId)}#${id}`;
+
+/** SCP1: a control's sections as its node carries them, by occurrence key; a radio or press group takes its first option's. */
+const sectionsOf = (frameId: number, c: PageControl): Pick<Node, "sections"> => (c.sections === undefined || c.sections.length === 0 ? {} : { sections: c.sections.map((id) => occurrenceKey(frameId, id)) });
+
+/**
+ * SCP1: the frame's heading list and section occurrences as its web area node carries them, with any text the walk's
+ * self-identification exclusion matches taken out again here (page-exclusions.ts): an occurrence keeps its key and its
+ * place, so it still ends the section before it, and loses only its text.
+ */
+function frameSections(f: PageFrame): Pick<Node, "headings" | "outline"> {
+  const headings = f.headings.filter((h) => !SELF_IDENTIFICATION.test(h));
+  const outline = (f.sections ?? []).map((o) => ({ key: occurrenceKey(f.frameId, o.id), heading: o.heading, ...(o.text === undefined || SELF_IDENTIFICATION.test(o.text) ? {} : { text: o.text }) }));
+  return { ...(headings.length === 0 ? {} : { headings }), ...(outline.length === 0 ? {} : { outline }) };
+}
 
 /**
  * The window snapshot the screen model takes for a tab: one AXWebArea per frame, its controls below it.
@@ -197,7 +212,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
       const u = view !== null && f.parentFrameId < 0 ? union(members.map((m) => screenRect(view, m.rect))) : null;
       return u === null ? {} : { frame: u };
     };
-    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}`, ...(f.headings.length === 0 ? {} : { headings: f.headings }), ...(view !== null && f.parentFrameId < 0 ? onScreen([0, 0, view.viewport[0], view.viewport[1]]) : {}) });
+    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}`, ...frameSections(f), ...(view !== null && f.parentFrameId < 0 ? onScreen([0, 0, view.viewport[0], view.viewport[1]]) : {}) });
     const groups = new Set<string>();
     for (const c of f.controls) {
       let parent = frameKey(f.frameId);
@@ -207,7 +222,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
           groups.add(parent);
           const members = radioMembers(f, parent);
           const checked = members.find((m) => m.checked === true);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }), value: checked?.name ?? "", editable: true, ...sectionsOf(c), ...groupFrame(members) });
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }), value: checked?.name ?? "", editable: true, ...sectionsOf(f.frameId, c), ...groupFrame(members) });
         }
       }
       const press = isPressOption(c);
@@ -216,7 +231,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         if (!groups.has(parent)) {
           groups.add(parent);
           const options = f.controls.filter((o) => isPressOption(o) && o.group.id === c.group.id);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: c.group.name, value: pressedValue(options), editable: true, ...sectionsOf(c), ...groupFrame(options) });
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: c.group.name, value: pressedValue(options), editable: true, ...sectionsOf(f.frameId, c), ...groupFrame(options) });
         }
       }
       const states: NodeState[] = [];
@@ -254,7 +269,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         // W2: a text input's own kind, which the write contract checks a value's shape against (fill/contract.ts).
         ...(TEXT_KINDS.has(c.kind) ? { inputKind: c.kind as NonNullable<Node["inputKind"]> } : {}),
         ...(c.autocomplete === undefined ? {} : { autocomplete: c.autocomplete }),
-        ...sectionsOf(c),
+        ...sectionsOf(f.frameId, c),
       });
       // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
       // hand-off for it can name one. Chrome's Accessibility shows only the selected one. An option whose value is

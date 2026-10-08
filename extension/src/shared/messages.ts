@@ -44,8 +44,8 @@ export interface PageControl {
   /** W2: the autocomplete attribute's field name, when it is one Caret reads (walker.ts autocompleteOf). */
   autocomplete?: string;
   /**
-   * SCP1: the sections the control sits in, outermost first (content/sections.ts): the page's heading outline at its
-   * place within its form or region, then each enclosing fieldset legend or group label. Absent when it is in none.
+   * SCP1: the ids of the section occurrences the control sits in, outermost first (content/sections.ts), which the
+   * frame's `sections` list. Absent when it is in none.
    */
   sections?: string[];
 }
@@ -163,6 +163,8 @@ export interface FrameReport {
   path: string;
   title: string;
   headings: string[];
+  /** SCP1: the frame's section occurrences in document order: id, whether a heading, and text unless an exclusion matched. */
+  sections?: { id: string; heading: boolean; text?: string }[];
   controls: PageControl[];
   iframes: { src: string; rect: Rect; inner: [number, number] }[];
   /** The frame's own viewport, [innerWidth, innerHeight]: 0 by 0 inside an iframe its embedder hides with display:none. */

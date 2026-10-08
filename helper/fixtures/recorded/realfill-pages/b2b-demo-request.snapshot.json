@@ -20,6 +20,18 @@
    "headings": [
     "See Ledgerline in action"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "See Ledgerline in action"
+    },
+    {
+     "id": "o2",
+     "heading": false,
+     "text": "What are you interested in?"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -37,7 +49,7 @@
       39
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -56,7 +68,7 @@
       39
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -75,7 +87,7 @@
       39
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -94,7 +106,7 @@
       39
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -113,7 +125,7 @@
       39
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -132,7 +144,7 @@
       39
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -151,7 +163,7 @@
       39
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -202,7 +214,7 @@
       41
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -258,7 +270,7 @@
       41
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -277,8 +289,8 @@
       13
      ],
      "sections": [
-      "See Ledgerline in action",
-      "What are you interested in?"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -297,8 +309,8 @@
       13
      ],
      "sections": [
-      "See Ledgerline in action",
-      "What are you interested in?"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -317,8 +329,8 @@
       13
      ],
      "sections": [
-      "See Ledgerline in action",
-      "What are you interested in?"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -337,7 +349,7 @@
       42
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -356,7 +368,7 @@
       76
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -375,7 +387,7 @@
       13
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     },
     {
@@ -393,7 +405,7 @@
       43
      ],
      "sections": [
-      "See Ledgerline in action"
+      "o1"
      ]
     }
    ],

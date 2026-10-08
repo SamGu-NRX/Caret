@@ -26,6 +26,48 @@
     "Employment and income",
     "Agreements"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Rental Application"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Applicant"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Current residence"
+    },
+    {
+     "id": "o4",
+     "heading": true,
+     "text": "Current landlord"
+    },
+    {
+     "id": "o5",
+     "heading": true,
+     "text": "Move details"
+    },
+    {
+     "id": "o6",
+     "heading": false,
+     "text": "Do you have pets? *"
+    },
+    {
+     "id": "o7",
+     "heading": true,
+     "text": "Employment and income"
+    },
+    {
+     "id": "o8",
+     "heading": true,
+     "text": "Agreements"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -43,8 +85,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Applicant"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -63,8 +105,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Applicant"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -83,8 +125,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Applicant"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -103,8 +145,8 @@
       38
      ],
      "sections": [
-      "Rental Application",
-      "Applicant"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -123,8 +165,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Applicant"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -143,8 +185,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Applicant"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -163,8 +205,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Applicant"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -183,8 +225,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Current residence"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -203,8 +245,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Current residence"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -223,8 +265,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Current residence"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -505,8 +547,8 @@
       37
      ],
      "sections": [
-      "Rental Application",
-      "Current residence"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -525,8 +567,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Current residence"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -545,8 +587,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Current residence"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -565,8 +607,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Current residence"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -585,8 +627,8 @@
       54
      ],
      "sections": [
-      "Rental Application",
-      "Current residence"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -605,8 +647,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Current landlord"
+      "o1",
+      "o4"
      ]
     },
     {
@@ -625,8 +667,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Current landlord"
+      "o1",
+      "o4"
      ]
     },
     {
@@ -645,8 +687,8 @@
       38
      ],
      "sections": [
-      "Rental Application",
-      "Move details"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -697,8 +739,8 @@
       37
      ],
      "sections": [
-      "Rental Application",
-      "Move details"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -721,9 +763,9 @@
       "name": "Do you have pets? *"
      },
      "sections": [
-      "Rental Application",
-      "Move details",
-      "Do you have pets? *"
+      "o1",
+      "o5",
+      "o6"
      ]
     },
     {
@@ -746,9 +788,9 @@
       "name": "Do you have pets? *"
      },
      "sections": [
-      "Rental Application",
-      "Move details",
-      "Do you have pets? *"
+      "o1",
+      "o5",
+      "o6"
      ]
     },
     {
@@ -767,8 +809,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Employment and income"
+      "o1",
+      "o7"
      ]
     },
     {
@@ -787,8 +829,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Employment and income"
+      "o1",
+      "o7"
      ]
     },
     {
@@ -807,8 +849,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Employment and income"
+      "o1",
+      "o7"
      ]
     },
     {
@@ -827,8 +869,8 @@
       35
      ],
      "sections": [
-      "Rental Application",
-      "Employment and income"
+      "o1",
+      "o7"
      ]
     },
     {
@@ -847,8 +889,8 @@
       13
      ],
      "sections": [
-      "Rental Application",
-      "Agreements"
+      "o1",
+      "o8"
      ]
     },
     {
@@ -866,8 +908,8 @@
       42
      ],
      "sections": [
-      "Rental Application",
-      "Agreements"
+      "o1",
+      "o8"
      ]
     }
    ],

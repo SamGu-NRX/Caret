@@ -285,6 +285,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       navGen: navGens.get(tab.id as number, f.frameId),
       title: r.title,
       headings: r.headings,
+      ...(r.sections === undefined || r.sections.length === 0 ? {} : { sections: r.sections }),
       controls: r.controls,
       iframes: r.iframes.map((i) => ({ src: i.src, rect: i.rect })),
       excluded: r.excluded,

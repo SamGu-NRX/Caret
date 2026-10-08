@@ -18,6 +18,18 @@
    "navGen": 2,
    "title": "httpbin.org/forms/post",
    "headings": [],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": false,
+     "text": "Pizza Size"
+    },
+    {
+     "id": "o2",
+     "heading": false,
+     "text": "Pizza Toppings"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -87,7 +99,7 @@
       "name": "Pizza Size"
      },
      "sections": [
-      "Pizza Size"
+      "o1"
      ]
     },
     {
@@ -110,7 +122,7 @@
       "name": "Pizza Size"
      },
      "sections": [
-      "Pizza Size"
+      "o1"
      ]
     },
     {
@@ -133,7 +145,7 @@
       "name": "Pizza Size"
      },
      "sections": [
-      "Pizza Size"
+      "o1"
      ]
     },
     {
@@ -152,7 +164,7 @@
       13
      ],
      "sections": [
-      "Pizza Toppings"
+      "o2"
      ]
     },
     {
@@ -171,7 +183,7 @@
       13
      ],
      "sections": [
-      "Pizza Toppings"
+      "o2"
      ]
     },
     {
@@ -190,7 +202,7 @@
       13
      ],
      "sections": [
-      "Pizza Toppings"
+      "o2"
      ]
     },
     {
@@ -209,7 +221,7 @@
       13
      ],
      "sections": [
-      "Pizza Toppings"
+      "o2"
      ]
     },
     {

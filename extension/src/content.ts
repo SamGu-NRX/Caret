@@ -24,7 +24,8 @@ import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
-import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
+import { deepActiveElement, SELF_IDENTIFICATION, visible, walkControls } from "./content/walker.ts";
+import { frameHeadings } from "./content/sections.ts";
 import { EntryTracker } from "./content/entry.ts";
 import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 import { docsKind, readFrameText } from "./content/text.ts";
@@ -130,7 +131,9 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
     origin: self.origin,
     path: location.protocol === "about:" ? location.href : location.pathname,
     title: clean(document.title, 200),
-    headings: [...document.querySelectorAll("h1, h2")].filter((x) => visible(x)).slice(0, 10).map((h) => clean(h.textContent, 120)).filter((t) => t !== ""),
+    // SCP1: a heading the walk's exclusions match (a self-identification section) never leaves the frame.
+    headings: frameHeadings([...document.querySelectorAll("h1, h2")].filter((x) => visible(x)).map((h) => h.textContent ?? ""), (t) => SELF_IDENTIFICATION.test(t)),
+    sections: out.sections,
     controls: out.controls,
     iframes: visibleIframes(),
     viewport: [window.innerWidth, window.innerHeight],

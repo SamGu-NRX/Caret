@@ -23,6 +23,33 @@
     "Course selection",
     "Background"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Course Enrollment Form"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Student information"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Course selection"
+    },
+    {
+     "id": "o4",
+     "heading": false,
+     "text": "Section *"
+    },
+    {
+     "id": "o5",
+     "heading": true,
+     "text": "Background"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -40,8 +67,8 @@
       28
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Student information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -60,8 +87,8 @@
       28
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Student information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -80,8 +107,8 @@
       28
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Student information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -100,8 +127,8 @@
       28
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Student information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -120,8 +147,8 @@
       30
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Student information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -140,8 +167,8 @@
       28
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Student information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -160,8 +187,8 @@
       28
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Student information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -180,8 +207,8 @@
       28
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Student information"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -227,8 +254,8 @@
       30
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Course selection"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -269,8 +296,8 @@
       30
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Course selection"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -293,9 +320,9 @@
       "name": "Section *"
      },
      "sections": [
-      "Course Enrollment Form",
-      "Course selection",
-      "Section *"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -318,9 +345,9 @@
       "name": "Section *"
      },
      "sections": [
-      "Course Enrollment Form",
-      "Course selection",
-      "Section *"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -343,9 +370,9 @@
       "name": "Section *"
      },
      "sections": [
-      "Course Enrollment Form",
-      "Course selection",
-      "Section *"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -401,8 +428,8 @@
       30
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Background"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -421,8 +448,8 @@
       13
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Background"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -441,8 +468,8 @@
       13
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Background"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -460,8 +487,8 @@
       36
      ],
      "sections": [
-      "Course Enrollment Form",
-      "Background"
+      "o1",
+      "o5"
      ]
     }
    ],

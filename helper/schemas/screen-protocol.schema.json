@@ -329,6 +329,28 @@
                       "type": "string"
                     }
                   },
+                  "outline": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "heading": {
+                          "type": "boolean"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "heading"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
                   "sections": {
                     "type": "array",
                     "items": {

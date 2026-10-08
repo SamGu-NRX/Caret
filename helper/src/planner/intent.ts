@@ -15,7 +15,7 @@ import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { headingsBefore, observedSections, sectionEvidence, sectionName } from "../fill/ask-scope.ts";
+import { chainHeading, headingsBefore, shownHeadings, windowOutline } from "../fill/ask-scope.ts";
 import { inWebArea, type Control } from "../fill/controls.ts";
 import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
@@ -152,10 +152,10 @@ export interface IntentSnapshot {
   sections: { ref: string; name: string }[];
   /**
    * SCP1: the sections the window shows by heading (fill/ask-scope.ts observedSections), in document order, as the
-   * ledger took them: the only sections an Ask's section question offers (intent-heads.ts sectionRequest). `repeated`
-   * is true for a heading the window shows more than once. Refs sec1, sec2, ...
+   * ledger took them, each text once: the only sections an Ask's section question offers (intent-heads.ts
+   * sectionRequest). Refs sec1, sec2, ...
    */
-  headings: { ref: string; name: string; repeated: boolean }[];
+  headings: { ref: string; name: string }[];
   /** Other open windows a value could come from, most recent first, by title, and a mail's sender when it shows one. */
   windows: { ref: string; windowId: string; app: string; title: string; from: string | null }[];
   /** Labels of what the user told Caret (About entries, people), never their values. */
@@ -222,6 +222,11 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   const fields: IntentField[] = [];
   const sections: { ref: string; name: string }[] = [];
   const headings = headingsBefore(w);
+  // SCP1: a page walk says which sections each field sits in (windowOutline); its innermost heading is the field's.
+  // Elsewhere the nearest heading before it, as before.
+  const outline = windowOutline(w);
+  const paged = [...w.nodes.values()].some((n) => n.outline !== undefined);
+  const headingOf = (key: string): string | null => (paged ? chainHeading(outline, key) : (headings.get(key) ?? null));
   // I2 ruling: the one inventory the native planner reads too (targets.ts): a field with no readable name is in neither.
   for (const x of localTargets(local)) {
     if (fields.length >= MAX_INTENT_FIELDS) break;
@@ -231,7 +236,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     if (!ledger.take(w, "descriptor", [x.modelName, d.section])) continue;
     if (d.section !== null && !sections.some((s) => s.name === d.section)) sections.push({ ref: `s${sections.length + 1}`, name: d.section });
     const filled = x.control === "text" && (x.node.value ?? "") !== "";
-    const h = headings.get(x.node.key) ?? null;
+    const h = headingOf(x.node.key);
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
     fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, modelName: x.modelName, section: d.section, heading, control: x.control, filled, neverTyped: x.neverTyped });
   }
@@ -242,26 +247,17 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     const d = describeField(w, n);
     const name = d.label ?? d.nearest;
     if (name === null || !ledger.take(w, "descriptor", [name, d.section])) continue;
-    const h = headings.get(n.key) ?? null;
+    const h = headingOf(n.key);
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
     uploads.push({ ref: `u${uploads.length + 1}`, key: n.key, name, section: d.section, heading, control: "text", filled: false, neverTyped: null, upload: true });
   }
-  // SCP1: the sections the window shows, for the section question. A heading the ledger does not take is never offered.
-  // Where the window places fields in sections, only the sections it places some field in: a page title heading over a
-  // form ("Rental Application", before every other heading) offered as a section would read "fill out the rental
-  // application" as that section, and the reader's window holds no field under it. Where it places none (a page walk
-  // from an extension before SCP1), every section it shows, so a section-only Ask still withholds rather than fills.
-  const shown = observedSections(w);
-  const evidence = sectionEvidence(w, shown);
-  const placed = new Set([...fields, ...uploads].flatMap((f) => {
-    const e = evidence(f.key);
-    return e === "conflict" ? [] : e.map(sectionName);
-  }));
-  const offered = shown.names.some((n) => placed.has(sectionName(n))) ? shown.names.filter((n) => placed.has(sectionName(n))) : shown.names;
+  // SCP1: every heading the window shows, for the section question, whether or not it places a field: a heading left
+  // out could not be named, and a section Ask naming it would read as particular fields. A heading the ledger does not
+  // take, or one redaction or an exclusion took the text of, is never offered.
   const sectionHeadings: IntentSnapshot["headings"] = [];
-  for (const name of offered) {
+  for (const name of shownHeadings(outline)) {
     if (sectionHeadings.length >= MAX_INTENT_HEADINGS) break;
-    if (!secretText(name) && ledger.take(w, "descriptor", [name])) sectionHeadings.push({ ref: `sec${sectionHeadings.length + 1}`, name, repeated: shown.repeated.has(sectionName(name)) });
+    if (!secretText(name) && ledger.take(w, "descriptor", [name])) sectionHeadings.push({ ref: `sec${sectionHeadings.length + 1}`, name });
   }
   // Other windows by title, most recently focused first. A title is what names a source ("Morgan's email"); a
   // window whose title does not fit what the ledger allows is left out.
@@ -384,7 +380,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
   // and asked "Where should Caret copy from?" for "grab my company and title off my LinkedIn".
   const vague = intent.route === "refuse" && (intent.why === "none" || intent.why === "nothingToFill" || intent.why === "notOnScreen");
   if (snap.missing && (intent.route === "fill" || intent.route === "ask" || intent.route === "plan" || vague)) stop("notOnScreen", snap);
-  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap, intent.why === "sectionUnknown" ? (intent.sectionless ?? []).flatMap((r) => snap.fields.find((f) => f.ref === r) ?? []) : []);
+  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap, intent.why === "sectionUnknown" ? (intent.sectionless ?? []).flatMap((r) => [...snap.fields, ...snap.uploads].find((f) => f.ref === r) ?? []) : []);
   if (intent.route === "plan") return { route: "plan" };
 
   const byRef = new Map(snap.fields.map((f) => [f.ref, f]));

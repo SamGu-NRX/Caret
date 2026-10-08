@@ -22,6 +22,32 @@
     "Passenger 1 (Adult)",
     "Contact information"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Who's flying?"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Passenger 1 (Adult)"
+    },
+    {
+     "id": "o3",
+     "heading": false,
+     "text": "Date of birth"
+    },
+    {
+     "id": "o4",
+     "heading": false
+    },
+    {
+     "id": "o5",
+     "heading": true,
+     "text": "Contact information"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -39,8 +65,8 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Passenger 1 (Adult)"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -59,8 +85,8 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Passenger 1 (Adult)"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -79,8 +105,8 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Passenger 1 (Adult)"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -131,8 +157,8 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Passenger 1 (Adult)"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -218,9 +244,9 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Passenger 1 (Adult)",
-      "Date of birth"
+      "o1",
+      "o2",
+      "o3"
      ]
     },
     {
@@ -239,9 +265,9 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Passenger 1 (Adult)",
-      "Date of birth"
+      "o1",
+      "o2",
+      "o3"
      ]
     },
     {
@@ -260,9 +286,9 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Passenger 1 (Adult)",
-      "Date of birth"
+      "o1",
+      "o2",
+      "o3"
      ]
     },
     {
@@ -281,8 +307,8 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Passenger 1 (Adult)"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -301,8 +327,8 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Passenger 1 (Adult)"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -321,8 +347,8 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Contact information"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -341,8 +367,8 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Contact information"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -361,8 +387,8 @@
       37
      ],
      "sections": [
-      "Who's flying?",
-      "Contact information"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -381,8 +407,8 @@
       13
      ],
      "sections": [
-      "Who's flying?",
-      "Contact information"
+      "o1",
+      "o5"
      ]
     },
     {
@@ -400,8 +426,8 @@
       42
      ],
      "sections": [
-      "Who's flying?",
-      "Contact information"
+      "o1",
+      "o5"
      ]
     }
    ],

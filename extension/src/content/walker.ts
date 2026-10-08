@@ -4,10 +4,10 @@
 // code, before anything leaves the frame: such controls are counted by reason and never named or read.
 import type { PageControl, PageControlKind, PageExclusion, Rect } from "../shared/messages.ts";
 import { authorIdentifier, isGeneratedId, strongKey } from "../shared/ids.ts";
-import { clean, composedParent, groupNames, labelledByText } from "./names.ts";
+import { clean, composedParent, groupNames, labelledBy } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
-import { sectionChains } from "./sections.ts";
+import { sectionOutline, type Occurrence } from "./sections.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -272,6 +272,8 @@ export function* candidates(root: Document | ShadowRoot = document, shadow: "ope
 
 export interface WalkOutput {
   controls: PageControl[];
+  /** SCP1: the walk's section occurrences in document order (sections.ts), which controls' `sections` name by id. */
+  sections: Occurrence[];
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
 }
@@ -287,13 +289,14 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
   const excluded: Partial<Record<PageExclusion, number>> = {};
   const ordinals = new Map<string, number>();
   let truncated = false;
-  // SCP1: the sections each control sits in (sections.ts). A section name the exclusions would match never leaves the frame.
-  const sections = sectionChains<Element>(document, {
+  // SCP1: the sections each control sits in (sections.ts). A section text the exclusions would match never leaves the frame.
+  const outline = sectionOutline<Element>(document, {
     wanted: (el) => el.matches(CANDIDATE),
     shown: (el) => !ariaHidden(el) && visible(el),
-    labelledBy: labelledByText,
+    labelledBy,
     shadowRoot: shadowRootOf,
-    excluded: (name) => SELF_IDENTIFICATION.test(name),
+    assigned: (el) => (el instanceof HTMLSlotElement ? slotted(el) : null),
+    excluded: (text) => SELF_IDENTIFICATION.test(text),
   });
   for (const f of candidates()) {
     const why = exclusionOf(f.el, f.name);
@@ -359,12 +362,18 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       if (token !== undefined) c.autocomplete = token;
     }
     if (f.shadow !== undefined) c.shadow = f.shadow;
-    const inside = sections.get(f.el) ?? [];
+    const inside = outline.chains.get(f.el) ?? [];
     if (inside.length > 0) c.sections = inside;
     controls.push(c);
     onKept(f.el, c);
   }
-  return { controls, excluded, truncated };
+  return { controls, excluded, truncated, sections: outline.occurrences };
+}
+
+/** A slot's assigned elements, slots within flattened, or its own children when nothing is assigned (its fallback). */
+function slotted(slot: HTMLSlotElement): Element[] {
+  const assigned = slot.assignedElements({ flatten: true });
+  return assigned.length > 0 ? assigned : [...slot.children];
 }
 
 const ACCEPT_EXTENSION = /^\.[a-z0-9][a-z0-9+_-]{0,15}$/;

@@ -25,6 +25,43 @@
     "Professional reference",
     "Additional information"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Data Analyst"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Submit your application"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Links"
+    },
+    {
+     "id": "o4",
+     "heading": true,
+     "text": "A few questions"
+    },
+    {
+     "id": "o5",
+     "heading": false,
+     "text": "Will you now or in the future require visa sponsorship to work in the US? ✱"
+    },
+    {
+     "id": "o6",
+     "heading": true,
+     "text": "Professional reference"
+    },
+    {
+     "id": "o7",
+     "heading": true,
+     "text": "Additional information"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -41,8 +78,8 @@
       37
      ],
      "sections": [
-      "Data Analyst",
-      "Submit your application"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -61,8 +98,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Submit your application"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -81,8 +118,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Submit your application"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -101,8 +138,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Submit your application"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -121,8 +158,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Submit your application"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -141,8 +178,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Links"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -161,8 +198,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Links"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -181,8 +218,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Links"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -201,8 +238,8 @@
       34
      ],
      "sections": [
-      "Data Analyst",
-      "A few questions"
+      "o1",
+      "o4"
      ]
     },
     {
@@ -225,9 +262,9 @@
       "name": "Will you now or in the future require visa sponsorship to work in the US? ✱"
      },
      "sections": [
-      "Data Analyst",
-      "A few questions",
-      "Will you now or in the future require visa sponsorship to work in the US? ✱"
+      "o1",
+      "o4",
+      "o5"
      ]
     },
     {
@@ -250,9 +287,9 @@
       "name": "Will you now or in the future require visa sponsorship to work in the US? ✱"
      },
      "sections": [
-      "Data Analyst",
-      "A few questions",
-      "Will you now or in the future require visa sponsorship to work in the US? ✱"
+      "o1",
+      "o4",
+      "o5"
      ]
     },
     {
@@ -308,8 +345,8 @@
       33
      ],
      "sections": [
-      "Data Analyst",
-      "A few questions"
+      "o1",
+      "o4"
      ]
     },
     {
@@ -328,8 +365,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "A few questions"
+      "o1",
+      "o4"
      ]
     },
     {
@@ -348,8 +385,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "A few questions"
+      "o1",
+      "o4"
      ]
     },
     {
@@ -368,8 +405,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Professional reference"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -420,8 +457,8 @@
       33
      ],
      "sections": [
-      "Data Analyst",
-      "Professional reference"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -440,8 +477,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Professional reference"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -460,8 +497,8 @@
       31
      ],
      "sections": [
-      "Data Analyst",
-      "Professional reference"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -480,8 +517,8 @@
       104
      ],
      "sections": [
-      "Data Analyst",
-      "Additional information"
+      "o1",
+      "o7"
      ]
     },
     {
@@ -500,8 +537,8 @@
       13
      ],
      "sections": [
-      "Data Analyst",
-      "Additional information"
+      "o1",
+      "o7"
      ]
     },
     {
@@ -519,8 +556,8 @@
       40
      ],
      "sections": [
-      "Data Analyst",
-      "Additional information"
+      "o1",
+      "o7"
      ]
     }
    ],

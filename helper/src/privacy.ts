@@ -150,7 +150,7 @@ class LineTable {
     for (const [k, n] of w.nodes) {
       const o = before.nodes.get(k);
       if (o !== undefined) kept++;
-      if (o === n || (o !== undefined && o.label === n.label && o.value === n.value && o.placeholder === n.placeholder)) continue;
+      if (o === n || (o !== undefined && o.label === n.label && o.value === n.value && o.placeholder === n.placeholder && sameTexts(sectionTexts(o), sectionTexts(n)))) continue;
       if (o !== undefined) this.removeNode(o);
       this.addNode(n);
     }
@@ -243,12 +243,14 @@ class LineTable {
     this.addField(n.label);
     this.addField(n.value);
     this.addField(n.placeholder);
+    for (const t of sectionTexts(n)) this.addField(t);
   }
 
   private removeNode(n: Node): void {
     this.removeField(n.label);
     this.removeField(n.value);
     this.removeField(n.placeholder);
+    for (const t of sectionTexts(n)) this.removeField(t);
   }
 
   private addField(raw: string | undefined): void {
@@ -298,6 +300,16 @@ class LineTable {
     for (const [s, held] of this.inside) if (held && t.includes(s)) this.inside.delete(s);
   }
 }
+
+/**
+ * SCP1: a page web area's heading list and section texts (Node.headings, Node.outline), which a section question sends:
+ * lines of the window like its labels, so they count toward its budget and prose share and the ledger charges them.
+ */
+export function sectionTexts(n: Node): string[] {
+  if (n.headings === undefined && n.outline === undefined) return [];
+  return [...(n.headings ?? []), ...(n.outline ?? []).flatMap((o) => (o.text === undefined ? [] : [o.text]))];
+}
+const sameTexts = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((t, i) => t === b[i]);
 
 /**
  * Shortest stretch of a plan's or memory's text that counts as quoting part of a window's line (sharedRuns).

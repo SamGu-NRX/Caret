@@ -134,95 +134,146 @@ export function headingsBefore(w: WindowState): Map<string, string | null> {
 /** How the section veto compares section names: case, Unicode width and runs of whitespace aside. */
 export const sectionName = (s: string): string => s.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase();
 
-/** What a window shows of its sections: their names in document order, each once, and (by sectionName) those it shows twice. */
-export interface ShownSections {
-  readonly names: readonly string[];
-  readonly repeated: ReadonlySet<string>;
+/**
+ * SCP1: one section-defining element a window shows, by a key unique in the window: a heading, or a labelled group
+ * (a fieldset's legend, a labelled region). Its text is null when an exclusion or redaction took it; it still bounds the
+ * section before it.
+ */
+export interface SectionOccurrence {
+  readonly key: string;
+  readonly heading: boolean;
+  readonly text: string | null;
 }
 
 /**
- * SCP1: the section names a window shows, in document order, each once: its AXHeading nodes' text, a page frame's
- * heading list (PageFrame.headings, carried on its web area node), and the sections a page control sits in
- * (Node.sections). `repeated` holds a name the window shows as two sections: two headings with that text, or one name
- * reached by two different outlines on a page ("Address" under Billing and under Shipping). These are the only sections
- * an Ask's section question offers (intent-heads.ts).
+ * SCP1: a window's sections as occurrences, and which of them contain each field. `chainOf` gives a field's occurrence
+ * keys, outermost first, or "unknown" when the window can't say (a page walk from an extension before SCP1, or a field
+ * after a group that closed on the heading before it). `fallback` is the heading text a window shows with no
+ * occurrence (such a page's frame heading list): offered as sections, never a field's.
  */
-export function observedSections(w: WindowState): ShownSections {
+export interface WindowOutline {
+  readonly occurrences: readonly SectionOccurrence[];
+  chainOf(key: string): readonly string[] | "unknown";
+  readonly fallback: readonly string[];
+}
+
+/** Roles that group what they hold on the Accessibility path: a heading in one ends with it. */
+const AX_CONTAINERS: ReadonlySet<string> = new Set(["AXGroup", "AXRadioGroup", "AXWebArea", "AXScrollArea", "AXSplitGroup", "AXTabGroup", "AXLayoutArea", "AXSheet"]);
+
+const outlines = new WeakMap<WindowState, WindowOutline>();
+
+/**
+ * SCP1: the window's outline, once per window state. A page walk's (Node.outline on its web areas, Node.sections on its
+ * controls) as the walk found it (extension content/sections.ts); otherwise read from the Accessibility tree in
+ * document order:
+ *   - each AXHeading is an occurrence, and each group (AX_CONTAINERS) below the web area with a label is one;
+ *   - a heading's scope is its nearest group, from the heading to the next heading in that group, or the group's end;
+ *     the tree gives no heading levels, so a heading in an inner group replaces every heading it inherits;
+ *   - a field after a group that closed on the heading before it is "unknown": a heading met in a group that ended
+ *     tells nothing of the fields after it, and the heading before that one may not be theirs either.
+ */
+export function windowOutline(w: WindowState): WindowOutline {
+  const hit = outlines.get(w);
+  if (hit !== undefined) return hit;
   const nodes = [...w.nodes.values()];
-  const names: string[] = [];
-  const repeated = new Set<string>();
-  const counted = new Set<string>();
-  const add = (t: string): void => {
-    if (!names.some((n) => sectionName(n) === sectionName(t))) names.push(t);
+  const areas = nodes.filter((n) => n.role === "AXWebArea");
+  let o: WindowOutline;
+  if (areas.some((a) => a.outline !== undefined)) {
+    const occurrences = areas.flatMap((a) => (a.outline ?? []).map((x) => ({ key: x.key, heading: x.heading, text: x.text ?? null })));
+    o = { occurrences, chainOf: (key) => w.nodes.get(key)?.sections ?? [], fallback: [] };
+  } else if (areas.some((a) => a.headings !== undefined)) {
+    o = { occurrences: [], chainOf: () => "unknown", fallback: areas.flatMap((a) => a.headings ?? []) };
+  } else o = axOutline(w, nodes);
+  outlines.set(w, o);
+  return o;
+}
+
+function axOutline(w: WindowState, nodes: readonly Node[]): WindowOutline {
+  const occurrences: SectionOccurrence[] = [];
+  const chains = new Map<string, readonly string[] | "unknown">();
+  /** A node's groups, outermost first, up to and including its web area: what bounds a heading's scope. */
+  const groupsOf = (n: Node): Node[] => {
+    const out: Node[] = [];
+    for (let key = n.parent; key !== null; ) {
+      const p = w.nodes.get(key);
+      if (p === undefined) break;
+      if (AX_CONTAINERS.has(p.role)) out.unshift(p);
+      if (p.role === "AXWebArea") break;
+      key = p.parent;
+    }
+    return out;
   };
-  // Headings: each one shown is a section of its own, so a text shown twice is two sections.
-  const heading = (t: string): void => {
-    const k = sectionName(t);
-    if (counted.has(k)) repeated.add(k);
-    counted.add(k);
-    add(t);
-  };
-  /** A page control's section name, by the outline above it there: one name under two outlines is two sections. */
-  const outlines = new Map<string, Set<string>>();
+  type Frame = { key: string; label: string | null; heading: string | null };
+  // The window itself is the outermost frame, never closed.
+  const stack: Frame[] = [{ key: "", label: null, heading: null }];
+  /** The frame the latest heading was met in, and whether that frame has closed since. */
+  let latest: Frame | null = null;
+  let stale = false;
   for (const n of nodes) {
+    const groups = groupsOf(n);
+    let keep = 0;
+    while (keep < stack.length - 1 && keep < groups.length && stack[keep + 1]?.key === groups[keep]?.key) keep++;
+    while (stack.length > keep + 1) if (stack.pop() === latest) stale = true;
+    for (const g of groups.slice(keep)) {
+      const t = g.role === "AXWebArea" ? null : fieldLabelText(g.label);
+      if (t !== null) occurrences.push({ key: g.key, heading: false, text: t });
+      stack.push({ key: g.key, label: t === null ? null : g.key, heading: null });
+    }
     if (n.role === "AXHeading") {
-      const t = headingText(nodes, n);
-      if (t !== null) heading(t);
+      occurrences.push({ key: n.key, heading: true, text: headingText(nodes, n) });
+      const top = stack.at(-1) as Frame;
+      top.heading = n.key;
+      latest = top;
+      stale = false;
+      continue;
     }
-    for (const h of n.headings ?? []) if (h.trim() !== "") heading(h.trim());
-    for (const [i, t] of (n.sections ?? []).entries()) {
-      const k = sectionName(t);
-      const path = (n.sections ?? []).slice(0, i).map(sectionName).join("\n");
-      outlines.set(k, (outlines.get(k) ?? new Set()).add(path));
-      add(t);
+    if (stale) {
+      chains.set(n.key, "unknown");
+      continue;
     }
+    // The innermost heading only: with no levels, a heading in an inner group replaces the ones it inherits.
+    const inner = [...stack].reverse().find((f) => f.heading !== null)?.heading ?? null;
+    chains.set(n.key, [...stack.flatMap((f) => (f.label === null ? [] : [f.label])), ...(inner === null ? [] : [inner])]);
   }
-  for (const [k, paths] of outlines) if (paths.size > 1) repeated.add(k);
-  return { names, repeated };
+  return { occurrences, chainOf: (key) => chains.get(key) ?? [], fallback: [] };
+}
+
+/** SCP1: the heading texts a window offers as sections, in document order, each once: its heading occurrences', else its fallback. */
+export function shownHeadings(o: WindowOutline): string[] {
+  const texts = o.occurrences.length > 0 ? o.occurrences.flatMap((x) => (x.heading && x.text !== null ? [x.text] : [])) : [...o.fallback];
+  const out: string[] = [];
+  for (const t of texts) if (!out.some((x) => sectionName(x) === sectionName(t))) out.push(t);
+  return out;
+}
+
+/** SCP1: the text of the innermost heading in a field's chain, or null: the heading a page field is shown under. */
+export function chainHeading(o: WindowOutline, key: string): string | null {
+  const chain = o.chainOf(key);
+  if (chain === "unknown") return null;
+  const byKey = new Map(o.occurrences.map((x) => [x.key, x]));
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const x = byKey.get(chain[i] as string);
+    if (x?.heading === true) return x.text;
+  }
+  return null;
 }
 
 /**
- * What the window shows of which sections a field is in: the sections that enclose it, outermost first, or "conflict"
- * when two readings of where it is disagree.
- */
-export type SectionEvidence = readonly string[] | "conflict";
-
-/**
- * SCP1: what the window shows of which sections each field is in, by node key. On a page, the sections the walk found
- * around the control (Node.sections). Otherwise the nearest heading before it in document order and its group or
- * fieldset label (describeField's section), which conflict when each names a different shown section: the heading's
- * place says one section, the group around it another. A page control the walk found in no section has none.
- */
-export function sectionEvidence(w: WindowState, shown: ShownSections): (key: string) => SectionEvidence {
-  const before = headingsBefore(w);
-  const names = new Set(shown.names.map(sectionName));
-  return (key) => {
-    const n = w.nodes.get(key);
-    if (n === undefined) return [];
-    if (n.sections !== undefined) return n.sections;
-    const heading = before.get(key) ?? null;
-    const group = describeField(w, n).section;
-    if (heading !== null && group !== null && names.has(sectionName(heading)) && names.has(sectionName(group)) && sectionName(heading) !== sectionName(group)) return "conflict";
-    return [heading, group].filter((x): x is string => x !== null && x.trim() !== "");
-  };
-}
-
-/**
- * SCP1: whether a field is in section `section`, by what the window shows (sectionEvidence), against the sections it
- * shows (observedSections). Only evidence that names one of those sections counts: a group labelled "Address" that is
- * no section the window shows says nothing. "in": a section around the field is `section`; "outside": some are shown
- * sections, and none is `section`; "unknown": none is a shown section, the readings conflict, or `section` is shown
- * twice, so which one is meant cannot be told.
+ * SCP1: whether a field is in the section a request named by heading text. The text must name exactly one occurrence
+ * the window shows; naming none or several, no field can be placed ("unknown" for every field). Otherwise a field is
+ * "in" when that occurrence contains it; "outside" when the window places it in other sections only; "unknown" when the
+ * window can't say or places it in none.
  */
 export type Membership = "in" | "outside" | "unknown";
-export function membership(evidence: SectionEvidence, section: string, shown: ShownSections): Membership {
-  if (evidence === "conflict") return "unknown";
-  const target = sectionName(section);
-  const names = new Set(shown.names.map(sectionName));
-  const named = new Set(evidence.map(sectionName).filter((x) => names.has(x)));
-  if (named.size === 0) return "unknown";
-  if (!named.has(target)) return "outside";
-  return shown.repeated.has(target) ? "unknown" : "in";
+export function sectionMembership(o: WindowOutline, section: string): (key: string) => Membership {
+  const named = o.occurrences.filter((x) => x.text !== null && sectionName(x.text) === sectionName(section));
+  if (named.length !== 1) return () => "unknown";
+  const target = (named[0] as SectionOccurrence).key;
+  return (key) => {
+    const chain = o.chainOf(key);
+    if (chain === "unknown" || chain.length === 0) return "unknown";
+    return chain.includes(target) ? "in" : "outside";
+  };
 }
 
 /**
@@ -240,7 +291,11 @@ export function fieldFingerprint(w: WindowState, key: string): string {
   const children = [...w.nodes.values()].filter((c) => c.parent === key).map((c) => [c.role, c.label ?? null, c.value ?? null, states(c.states)]);
   // The page's own input kind, autocomplete name and maxlength too (re-review): a field that now asks for a phone where it
   // asked for an email is not the field the Ask was about.
-  return JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, n.sections ?? null, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children]);
+  // SCP1: the sections the field sits in, by their text, so a field moved to another section is another field.
+  const outline = windowOutline(w);
+  const chain = outline.chainOf(key);
+  const sections = chain === "unknown" ? chain : chain.map((k) => outline.occurrences.find((x) => x.key === k)?.text ?? null);
+  return JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, sections, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children]);
 }
 
 /** What the scope check needs of a write: its target and fingerprint (FieldContract), and whose value it is. */

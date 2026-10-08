@@ -81,10 +81,16 @@ export const Node = z.object({
   autocomplete: AutocompleteToken.optional(),
   /**
    * SCP1, page web areas only: the frame's heading list (PageFrame.headings), the sections an Ask's section question
-   * may offer (fill/ask-scope.ts observedSections). It says nothing about which control is under which heading.
+   * offers when the walk gave no outline (fill/ask-scope.ts windowOutline). It says nothing about which control is under
+   * which heading.
    */
   headings: z.array(z.string()).optional(),
-  /** SCP1, page controls and their groups only: the sections the control sits in, outermost first (PageControl.sections). */
+  /**
+   * SCP1, page web areas only: the frame's section occurrences in document order (PageFrame.sections), each by a key
+   * unique in the window, with its text unless an exclusion or redaction took it. Page controls name them in `sections`.
+   */
+  outline: z.array(z.object({ key: z.string(), heading: z.boolean(), text: z.string().optional() })).optional(),
+  /** SCP1, page controls and their groups only: the keys of the outline occurrences the control sits in, outermost first. */
   sections: z.array(z.string()).optional(),
 });
 export type Node = z.infer<typeof Node>;
@@ -2778,10 +2784,10 @@ export const PageControl = z.object({
   /** W2: the autocomplete attribute's field name (extension walker.ts autocompleteOf), which the write contract reads. */
   autocomplete: AutocompleteToken.optional(),
   /**
-   * SCP1: the sections the control sits in, outermost first (extension content/sections.ts): the page's heading outline
-   * at its place within its form or region, then each enclosing fieldset legend or group label. Absent when in none.
+   * SCP1: the ids of the section occurrences (PageFrame.sections) the control sits in, outermost first (extension
+   * content/sections.ts). Absent when it is in none.
    */
-  sections: z.array(z.string().min(1).max(200)).max(8).optional(),
+  sections: z.array(z.string().min(1).max(40)).max(8).optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 
@@ -2799,8 +2805,14 @@ export const PageFrame = z.object({
   path: z.string(),
   navGen: z.number().int().nonnegative(),
   title: z.string(),
-  /** h1 and h2 text, clipped. No body prose. */
+  /** h1 and h2 text, clipped, none the walk's exclusions match. No body prose. */
   headings: z.array(z.string()),
+  /**
+   * SCP1: the frame's section occurrences in document order (extension content/sections.ts): each heading, fieldset with
+   * a legend, or labelled group or region, by an id unique within the walk, and its text unless an exclusion matched it.
+   * Absent from an extension before SCP1.
+   */
+  sections: z.array(z.object({ id: z.string().min(1).max(40), heading: z.boolean(), text: z.string().min(1).max(200).optional() })).max(200).optional(),
   controls: z.array(PageControl),
   /** The frame's visible <iframe> elements, origin plus path of src and rect: the worker drops a child frame none of them holds. */
   iframes: z.array(z.object({ src: z.string(), rect: PageRect })),

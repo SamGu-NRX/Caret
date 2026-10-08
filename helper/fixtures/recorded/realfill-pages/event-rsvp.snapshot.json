@@ -22,6 +22,28 @@
     "Dinner",
     "The evening"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Jun & Priscilla"
+    },
+    {
+     "id": "o2",
+     "heading": false,
+     "text": "Will you be joining us? *"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Dinner"
+    },
+    {
+     "id": "o4",
+     "heading": true,
+     "text": "The evening"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -39,7 +61,7 @@
       37
      ],
      "sections": [
-      "Jun & Priscilla"
+      "o1"
      ]
     },
     {
@@ -58,7 +80,7 @@
       37
      ],
      "sections": [
-      "Jun & Priscilla"
+      "o1"
      ]
     },
     {
@@ -77,7 +99,7 @@
       37
      ],
      "sections": [
-      "Jun & Priscilla"
+      "o1"
      ]
     },
     {
@@ -100,8 +122,8 @@
       "name": "Will you be joining us? *"
      },
      "sections": [
-      "Jun & Priscilla",
-      "Will you be joining us? *"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -124,8 +146,8 @@
       "name": "Will you be joining us? *"
      },
      "sections": [
-      "Jun & Priscilla",
-      "Will you be joining us? *"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -161,7 +183,7 @@
       39
      ],
      "sections": [
-      "Jun & Priscilla"
+      "o1"
      ]
     },
     {
@@ -202,8 +224,8 @@
       39
      ],
      "sections": [
-      "Jun & Priscilla",
-      "Dinner"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -222,8 +244,8 @@
       37
      ],
      "sections": [
-      "Jun & Priscilla",
-      "Dinner"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -264,8 +286,8 @@
       39
      ],
      "sections": [
-      "Jun & Priscilla",
-      "Dinner"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -284,8 +306,8 @@
       56
      ],
      "sections": [
-      "Jun & Priscilla",
-      "Dinner"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -304,8 +326,8 @@
       41.8
      ],
      "sections": [
-      "Jun & Priscilla",
-      "The evening"
+      "o1",
+      "o4"
      ]
     },
     {
@@ -324,8 +346,8 @@
       74
      ],
      "sections": [
-      "Jun & Priscilla",
-      "The evening"
+      "o1",
+      "o4"
      ]
     },
     {
@@ -344,8 +366,8 @@
       13
      ],
      "sections": [
-      "Jun & Priscilla",
-      "The evening"
+      "o1",
+      "o4"
      ]
     },
     {
@@ -363,8 +385,8 @@
       42
      ],
      "sections": [
-      "Jun & Priscilla",
-      "The evening"
+      "o1",
+      "o4"
      ]
     }
    ],

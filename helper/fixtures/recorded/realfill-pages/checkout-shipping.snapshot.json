@@ -21,6 +21,23 @@
     "Contact",
     "Delivery"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Contact"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Delivery"
+    },
+    {
+     "id": "o3",
+     "heading": false,
+     "text": "Shipping method"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -38,7 +55,7 @@
       42
      ],
      "sections": [
-      "Contact"
+      "o1"
      ]
     },
     {
@@ -57,7 +74,7 @@
       13
      ],
      "sections": [
-      "Contact"
+      "o1"
      ]
     },
     {
@@ -88,7 +105,7 @@
       44
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -107,7 +124,7 @@
       42
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -126,7 +143,7 @@
       42
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -145,7 +162,7 @@
       42
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -164,7 +181,7 @@
       42
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -183,7 +200,7 @@
       42
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -202,7 +219,7 @@
       42
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -483,7 +500,7 @@
       44
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -502,7 +519,7 @@
       42
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -521,7 +538,7 @@
       42
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -540,7 +557,7 @@
       13
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -563,8 +580,8 @@
       "name": "Shipping method"
      },
      "sections": [
-      "Delivery",
-      "Shipping method"
+      "o2",
+      "o3"
      ]
     },
     {
@@ -587,8 +604,8 @@
       "name": "Shipping method"
      },
      "sections": [
-      "Delivery",
-      "Shipping method"
+      "o2",
+      "o3"
      ]
     },
     {
@@ -611,8 +628,8 @@
       "name": "Shipping method"
      },
      "sections": [
-      "Delivery",
-      "Shipping method"
+      "o2",
+      "o3"
      ]
     },
     {
@@ -631,7 +648,7 @@
       58
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     },
     {
@@ -649,7 +666,7 @@
       49
      ],
      "sections": [
-      "Delivery"
+      "o2"
      ]
     }
    ],

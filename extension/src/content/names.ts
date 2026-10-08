@@ -9,9 +9,9 @@ export function clean(s: string | null | undefined, max = MAX_NAME): string {
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
 }
 
-/** The text of the elements an aria-labelledby value names, in `el`'s own tree (document or shadow root). */
-export function labelledByText(el: Element, ids: string): string {
-  return byIds(el, ids).map((e) => e.textContent ?? "").join(" ");
+/** The elements an aria-labelledby value names, in `el`'s own tree (document or shadow root). */
+export function labelledBy(el: Element, ids: string): Element[] {
+  return byIds(el, ids);
 }
 
 function byIds(el: Element, ids: string): Element[] {

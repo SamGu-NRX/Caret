@@ -23,6 +23,38 @@
     "Services and time",
     "Contact information"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Summit Subaru Service"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Your vehicle"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Services and time"
+    },
+    {
+     "id": "o4",
+     "heading": false,
+     "text": "Services requested *"
+    },
+    {
+     "id": "o5",
+     "heading": false,
+     "text": "While we service your vehicle"
+    },
+    {
+     "id": "o6",
+     "heading": true,
+     "text": "Contact information"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -107,8 +139,8 @@
       39
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Your vehicle"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -169,8 +201,8 @@
       39
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Your vehicle"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -189,8 +221,8 @@
       37
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Your vehicle"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -209,8 +241,8 @@
       37
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Your vehicle"
+      "o1",
+      "o2"
      ]
     },
     {
@@ -229,9 +261,9 @@
       13
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Services and time",
-      "Services requested *"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -250,9 +282,9 @@
       13
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Services and time",
-      "Services requested *"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -271,9 +303,9 @@
       13
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Services and time",
-      "Services requested *"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -292,9 +324,9 @@
       13
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Services and time",
-      "Services requested *"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -313,9 +345,9 @@
       13
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Services and time",
-      "Services requested *"
+      "o1",
+      "o3",
+      "o4"
      ]
     },
     {
@@ -334,8 +366,8 @@
       40
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Services and time"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -354,8 +386,8 @@
       41.8
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Services and time"
+      "o1",
+      "o3"
      ]
     },
     {
@@ -378,9 +410,9 @@
       "name": "While we service your vehicle"
      },
      "sections": [
-      "Summit Subaru Service",
-      "Services and time",
-      "While we service your vehicle"
+      "o1",
+      "o3",
+      "o5"
      ]
     },
     {
@@ -403,9 +435,9 @@
       "name": "While we service your vehicle"
      },
      "sections": [
-      "Summit Subaru Service",
-      "Services and time",
-      "While we service your vehicle"
+      "o1",
+      "o3",
+      "o5"
      ]
     },
     {
@@ -428,9 +460,9 @@
       "name": "While we service your vehicle"
      },
      "sections": [
-      "Summit Subaru Service",
-      "Services and time",
-      "While we service your vehicle"
+      "o1",
+      "o3",
+      "o5"
      ]
     },
     {
@@ -449,8 +481,8 @@
       37
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Contact information"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -469,8 +501,8 @@
       37
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Contact information"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -489,8 +521,8 @@
       37
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Contact information"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -509,8 +541,8 @@
       74
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Contact information"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -529,8 +561,8 @@
       13
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Contact information"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -549,8 +581,8 @@
       13
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Contact information"
+      "o1",
+      "o6"
      ]
     },
     {
@@ -568,8 +600,8 @@
       43
      ],
      "sections": [
-      "Summit Subaru Service",
-      "Contact information"
+      "o1",
+      "o6"
      ]
     }
    ],

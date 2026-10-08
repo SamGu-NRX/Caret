@@ -252,10 +252,11 @@ function build(w: WindowState): WindowState {
       gone.add(n.key);
       continue;
     }
-    // SCP1: a page's heading or section name that names a secret is left out, as a label that names one is.
+    // SCP1: a page's heading or section text that names a secret is left out, as a label that names one is. A section
+    // keeps its place in the outline without its text, so it still ends the section before it.
     const headings = n.headings?.filter((h) => !secretText(h));
-    const sections = n.sections?.filter((h) => !secretText(h));
-    if (value === n.value && label === n.label && headings?.length === n.headings?.length && sections?.length === n.sections?.length) nodes.set(n.key, n);
+    const outline = n.outline?.some((o) => o.text !== undefined && secretText(o.text)) === true ? n.outline.map((o) => (o.text !== undefined && secretText(o.text) ? { key: o.key, heading: o.heading } : o)) : n.outline;
+    if (value === n.value && label === n.label && headings?.length === n.headings?.length && outline === n.outline) nodes.set(n.key, n);
     else {
       const m: Node = { ...n };
       if (value === undefined) delete m.value;
@@ -264,8 +265,8 @@ function build(w: WindowState): WindowState {
       else m.label = label;
       if (headings === undefined || headings.length === 0) delete m.headings;
       else m.headings = headings;
-      if (sections === undefined || sections.length === 0) delete m.sections;
-      else m.sections = sections;
+      if (outline === undefined) delete m.outline;
+      else m.outline = outline;
       nodes.set(n.key, m);
     }
   }
