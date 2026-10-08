@@ -1230,6 +1230,33 @@ class LaneTest(Temp):
         self.assertEqual(procs.inherited_lock_fd(slot, fd, identity=(st.st_dev, st.st_ino)), fd)
         self.assertEqual(procs.slot_lock_identity(slot, state, "heavy"), (st.st_dev, st.st_ino))
 
+    def test_the_lane_variables_come_as_a_pair(self):
+        # P2.1 (347f8ea review): a lanes queue sets both; only a legacy heavy job, from a queue without lanes, has neither.
+        import procs
+        import supervise
+        plan = self.plan("heavy")
+        slot = self.write("state/slot.lock", "")
+        for env in ({"HEAVY_JOB_QUEUE_LEASE_KIND": "heavy"}, {"HEAVY_JOB_QUEUE_SLOT_LOCK": slot}):
+            with self.subTest(env):
+                with self.assertRaisesRegex(procs.Refusal, "together"):
+                    supervise.lane_slot_lock(plan, env)
+        browser = self.plan("browser")
+        with self.assertRaisesRegex(procs.Refusal, "together"):
+            supervise.lane_slot_lock(browser, {"HEAVY_JOB_QUEUE_SLOT_LOCK": self.write("state/slot-browser-1.lock", "")})
+
+    def test_recovery_takes_the_default_slot_lock_only_for_a_heavy_plan(self):
+        import recovery
+        owner = recovery.Owner.__new__(recovery.Owner)
+        plan = self.plan("browser")
+        owner.paths, owner.plan, owner.slot_path = plan["paths"], plan, None
+        self.write("state/slot.lock", "")
+        for requested in (None, plan["paths"]["slot_lock"]):
+            with self.subTest(requested):
+                with self.assertRaisesRegex(ValueError, "browser"):
+                    owner._slot_path_for(requested)
+        owner.plan = self.plan("heavy")
+        self.assertEqual(owner._slot_path_for(None), plan["paths"]["slot_lock"])
+
     def test_unset_falls_back_to_the_plans_slot_lock(self):
         import supervise
         plan = self.plan("heavy")

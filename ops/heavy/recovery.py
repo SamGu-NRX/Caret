@@ -679,15 +679,19 @@ class Owner:
 
     def _slot_path_for(self, requested):
         """The slot lock path for this attempt: the one journalled, else the one the supervisor names, which must be
-        one of the plan's lane's slot locks in the queue's state directory (procs.slot_lock_problem), else the plan's."""
+        one of the plan's lane's slot locks in the queue's state directory (procs.slot_lock_problem). Only a heavy plan
+        may name none or the plan's own slot.lock unchecked: that is the legacy queue's, which has no lanes."""
+        lane = (getattr(self, "plan", None) or {}).get("lane", "heavy")
         if requested is None:
+            if lane != "heavy":
+                raise ValueError("a {}-lane attempt must name its slot lock".format(lane))
             requested = self.paths["slot_lock"]
         if getattr(self, "slot_path", None) is not None and requested != self.slot_path:
             raise ValueError("this attempt's slot lock is {}, not {}".format(self.slot_path, requested))
-        if requested != self.paths["slot_lock"]:
-            problem = procs.slot_lock_problem(requested, self.paths["queue_state"], (getattr(self, "plan", None) or {}).get("lane", "heavy"))
+        if lane != "heavy" or requested != self.paths["slot_lock"]:
+            problem = procs.slot_lock_problem(requested, self.paths["queue_state"], lane)
             if problem:
-                raise ValueError("slot lock: {}".format(problem))
+                raise ValueError("slot lock for the {} lane: {}".format(lane, problem))
         return requested
 
     def _check_locks(self, names, fds, slot_path=None):

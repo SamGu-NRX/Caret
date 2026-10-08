@@ -116,19 +116,23 @@ def main(plan_path, plan_digest, plan, argv):
 
 
 def lane_slot_lock(plan, env):
-    """The slot lock this job holds, from the queue. A queue with lanes names it in HEAVY_JOB_QUEUE_SLOT_LOCK and the
-    lease kind in HEAVY_JOB_QUEUE_LEASE_KIND: the kind must be the plan's lane, and the path one of that lane's slot
-    locks in the queue's state directory (procs.SLOT_LOCK_NAMES). An older queue sets neither, and runs only the heavy
-    lane, with the plan's slot.lock. Raises procs.Refusal."""
+    """The slot lock this job holds, from the queue. A queue with lanes sets HEAVY_JOB_QUEUE_LEASE_KIND and
+    HEAVY_JOB_QUEUE_SLOT_LOCK together: the kind must be the plan's lane, and the path one of that lane's slot locks in
+    the queue's state directory (procs.slot_lock_problem). An older queue sets neither and runs only the heavy lane,
+    with the plan's slot.lock. One without the other is refused rather than guessed from. Raises procs.Refusal."""
     lane = plan.get("lane", "heavy")
     kind = env.get("HEAVY_JOB_QUEUE_LEASE_KIND")
-    if kind is not None and kind != lane:
-        raise procs.Refusal("HEAVY_JOB_QUEUE_LEASE_KIND is {}, but this job's plan is for the {} lane".format(kind, lane))
     path = env.get("HEAVY_JOB_QUEUE_SLOT_LOCK")
-    if path is None:
-        if kind is None and lane != "heavy":
+    if (kind is None) != (path is None):
+        raise procs.Refusal("HEAVY_JOB_QUEUE_LEASE_KIND and HEAVY_JOB_QUEUE_SLOT_LOCK come together from a queue with "
+                            "lanes, but only {} is set".format("HEAVY_JOB_QUEUE_LEASE_KIND" if path is None
+                                                                else "HEAVY_JOB_QUEUE_SLOT_LOCK"))
+    if kind is None:
+        if lane != "heavy":
             raise procs.Refusal("an older queue without lanes cannot run a {}-lane job".format(lane))
         return plan["paths"]["slot_lock"]
+    if kind != lane:
+        raise procs.Refusal("HEAVY_JOB_QUEUE_LEASE_KIND is {}, but this job's plan is for the {} lane".format(kind, lane))
     problem = procs.slot_lock_problem(path, plan["paths"]["queue_state"], lane)
     if problem:
         raise procs.Refusal("HEAVY_JOB_QUEUE_SLOT_LOCK: {}".format(problem))
