@@ -116,9 +116,14 @@ describe("a name the shape test misses is still a name when it is cut (B14 revie
     const m = new ScreenModel();
     notes(m, [DECOY, "pick up the badges"]);
     // Each line holds a name and a typed email; no line is a name alone, so none is in the names' group.
-    const people = Array.from({ length: 30 }, (_, i) => `Guest Number${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))} Okafor`);
-    const lines = [...chatter, ...people.map((p, i) => `${p} <guest${i}@example.com>`)];
-    const values = people.map((_, i) => value("email", `guest${i}@example.com`, `chat/${chatter.length + i}`));
+    // Distinct letters in each name and address: repeated text counts once (section 5), so lines that differed in a
+    // character or two would cost the chat little and leave it uncut.
+    let x = 17;
+    const word = (): string => Array.from({ length: 6 }, () => String.fromCharCode(97 + ((x = (x * 1103515245 + 12345) % 2147483648) % 26))).join("");
+    const people = Array.from({ length: 30 }, () => { const w = word(); return `Guest Number${w[0]!.toUpperCase()}${w.slice(1)}${word()} Okafor${word()}`; });
+    const emails = people.map(() => `guest.${word()}${word()}@example.com`);
+    const lines = [...chatter, ...people.map((p, i) => `${p} <${emails[i]}>`)];
+    const values = emails.map((e, i) => value("email", e, `chat/${chatter.length + i}`));
     m.apply(snap(lines.map((l, i) => text(`chat/${i}`, l)), { at: 1000, windowId: CHAT, title: "Kofi", app: MESSAGES, focused: true, values }));
     m.apply(scheduleForm(2000, ["Name"]));
     const p = await proposeFill(m, nameProneJev(), FORM, FORM_KEY("Name"), 3000);

@@ -120,7 +120,10 @@ describe("in-flight fill review regressions", () => {
   });
 
   it("P2 fix-check: a same-trigger request queues when input order changes privacy admission", async () => {
-    const fields = emails(20).map((n, i) => ({ ...n, label: `Email ${String(i).padStart(2, "0")} ${"x".repeat(51)}` }));
+    // Distinct letters: repeated text counts once (OUTPUT-LEDGER-SPEC section 5), so 51 x's would be 12 characters.
+    let x = 3;
+    const letters = (n: number): string => Array.from({ length: n }, () => String.fromCharCode(97 + ((x = (x * 1103515245 + 12345) % 2147483648) % 26))).join("");
+    const fields = emails(20).map((n, i) => ({ ...n, label: `Email ${String(i).padStart(2, "0")} ${letters(51)}` }));
     const keys = fields.map((n) => n.key);
     expect(fields.every((n) => n.label.length === 60)).toBe(true);
     await show(fields);

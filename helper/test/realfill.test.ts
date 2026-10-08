@@ -238,7 +238,11 @@ describe("proposeFill on a real-shaped form (B24)", () => {
   it("reads what a cut window that is no conversation left out, instead of treating all of it as unread", () => {
     // B13 set cutAll for any such window, which withheld every name and every field whose label names no kind.
     // Since B25 a mixed note's short lines all fit its budget, so this draft runs past WINDOW_CHARS with agenda lines.
-    const m = desk(NOTE, [], Array.from({ length: 30 }, (_, i) => `Agenda item ${i + 1}: slide ${i + 3} and the open questions from week ${i + 1}`));
+    // Distinct agenda lines: repeated text counts once (OUTPUT-LEDGER-SPEC section 5), so lines that differed only in
+    // their numbers would cost the draft little.
+    let x = 5;
+    const word = (): string => Array.from({ length: 6 }, () => String.fromCharCode(97 + ((x = (x * 1103515245 + 12345) % 2147483648) % 26))).join("");
+    const m = desk(NOTE, [], Array.from({ length: 30 }, (_, i) => `Agenda item ${i + 1}: ${word()} ${word()} ${word()} and ${word()} ${word()}`));
     const g = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m), fields: [fieldTerms(["Customer name"]), fieldTerms(["Delivery instructions"])] });
     expect(g.cut).toContain("draft");
     expect(g.cutAll).toBe(false);

@@ -252,7 +252,9 @@ describe("a warned value that does not fit", () => {
   it("keeps out a later span that holds it, and the cut rules still count its kind", async () => {
     const { Disclosure } = await import("../src/privacy/disclosure.ts");
     const { cutKinds } = await import("../src/fill/candidates.ts");
-    const pad = "the records were incorrect and await review ".repeat(40);
+    // Distinct words, so the warning's line is over the window's limit: repeated text would count once (section 5).
+    let x = 99;
+    const pad = Array.from({ length: 300 }, () => Array.from({ length: 5 }, () => String.fromCharCode(97 + ((x = (x * 1103515245 + 12345) % 2147483648) % 26))).join("")).join(" ");
     const m = new ScreenModel();
     m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: `Phone: 555-0101; do not use this old number because ${pad}\nPhone: 555-0101 ext 42`, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
     m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));

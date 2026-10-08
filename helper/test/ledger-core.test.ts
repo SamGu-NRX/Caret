@@ -4,8 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { LEDGER_NORMALIZATION, LedgerEncodingError, ledgerNormalizeV1 } from "../src/privacy/ledger/normalize.ts";
 import { decodeUnits } from "../src/privacy/ledger/units.ts";
-import { inventoryOf, limitOf, reveal, UnitIndex, UnitProbe, type LineInventory } from "../src/privacy/ledger/measure.ts";
-import { refReveal, refUnits } from "./ledger-reference.ts";
+import { inventoryOf, keptOf, limitOf, reveal, UnitIndex, UnitProbe, type LineInventory } from "../src/privacy/ledger/measure.ts";
+import { refConversationLimit, refKept, refReveal, refUnits } from "./ledger-reference.ts";
 import { rng } from "./large-scene.ts";
 
 const cps = (s: string): string[] => [...s].map((c) => c.codePointAt(0)!.toString(16));
@@ -164,7 +164,8 @@ describe("the fixed desks (OUTPUT-LEDGER-SPEC section 11), as units against a wi
     ["2. 'Al' and 'ix' composed as 'Alix' (whole line)", ["Alix"], ["Alix"], 4],
     ["2. a descriptor wholly runtime (whole line)", ["Label: 'Name'."], ["Label: 'Name'."], 14],
     ["2. a descriptor's runtime part 'Name' against the descriptor line (residual)", ["Name"], ["Label: 'Name'."], 0],
-    ["2. a repeated-word 89-character bystander prose line (whole line)", [tide], [tide], 89],
+    // Counted once: N_w keeps one "tide " and the line's every later copy is a repeat (section 5).
+    ["2. a repeated-word 89-character bystander prose line (whole line, 5 of it distinct)", [tide], [tide], 5],
     ["2. a runtime event title (whole line)", ["Lunch with Priya"], ["Lunch with Priya", "okay!"], 16],
     ["3. 'Al ix' held as 'Al\\nix' (whole line)", ["Al\nix"], ["Al ix"], 5],
     ["4. 'Bob Ann Ann' against 'Bob Ann then Ann' (residual)", ["Bob Ann Ann"], ["Bob Ann then Ann"], 0],
@@ -181,25 +182,62 @@ describe("the fixed desks (OUTPUT-LEDGER-SPEC section 11), as units against a wi
   ];
   for (const [name, units, lines, want] of desks) it(name, () => expect(charge(units, lines)).toBe(want));
 
-  it("long repeats, as charge against the window's size: 65 output copies against 103 source copies of 'Echo'", () => {
+  it("long repeats, as charge against the window's distinct size: 65 output copies against 103 source copies of 'Echo'", () => {
     const line = Array.from({ length: 103 }, () => "Echo").join(" ");
     const inv = inventoryOf([line]);
-    expect([production([Array.from({ length: 65 }, () => "Echo").join("\n")], [line]).charged, inv.total]).toEqual([514, 514]);
+    // The line is 514 characters; repeated text counted once, it is 5 ("Echo " once), and the copies reveal all 5.
+    expect([inv.total, keptOf(inv).size]).toEqual([514, 5]);
+    expect([production([Array.from({ length: 65 }, () => "Echo").join("\n")], [line]).charged, keptOf(inv).size]).toEqual([5, 5]);
     // Two copies are a run of 9: the residual for repeats of a short word.
     expect(production(["Echo Echo"], [line]).charged).toBe(0);
   });
 
-  it("has no occurrence cap: 65 and 103 repeats of a 15-scalar run, as charge against the window's size", () => {
+  it("has no occurrence cap: 65 and 103 repeats of a 15-scalar run, as charge against the window's distinct size", () => {
     for (const k of [65, 103]) {
       const line = Array.from({ length: k }, () => "see you at five").join(" ");
-      // Every copy is charged; only the spaces between copies are not.
-      expect([production(["see you at five"], [line]).charged, inventoryOf([line]).total]).toEqual([15 * k, 16 * k - 1]);
+      // Counted once, the line is "see you at five " (16); the unit reveals all of it but the space.
+      expect([production(["see you at five"], [line]).charged, keptOf(inventoryOf([line])).size]).toEqual([15, 16]);
+    }
+  });
+});
+
+describe("N_w, repeated text counted once (section 5)", () => {
+  /** Production's N_w as sorted `line:offset` keys, to compare with the reference's. */
+  const keys = (lines: readonly string[]): string[] => {
+    const inv = inventoryOf(lines);
+    return positionsOf(inv, keptOf(inv).bits);
+  };
+
+  it("keeps a run's leftmost copy, in canonical line order, and drops a line that stands whole in an earlier one", () => {
+    const msg = "the deposit is due on the sixteenth of the month";
+    // "> msg" is the longest line, so it comes first and keeps its copy; msg and ">  msg" add nothing but their prefixes.
+    const inv = inventoryOf([msg, `> ${msg}`, "NOTES", "Notes", "ok"]);
+    expect(keptOf(inv).size).toBe(msg.length + 2 + 5 + 2);
+    expect(limitOf(inv, true)).toBe(Math.floor((msg.length + 2 + 5 + 2 - 1) / 2));
+  });
+
+  it("is the same set as the reference's, and does not depend on line order, over 2,000 tiny windows", () => {
+    const ALPHA = ["a", "b", "A", " ", "ß", "s", "ﬁ", "f", "i", ".", "é", "𝐀"];
+    for (let seed = 1; seed <= 2_000; seed++) {
+      const r = rng(seed + 31_337);
+      const pool = Array.from({ length: 2 }, () => Array.from({ length: 4 + Math.floor(r() * 12) }, () => ALPHA[Math.floor(r() * ALPHA.length)]).join(""));
+      const raw = Array.from({ length: 1 + Math.floor(r() * 4) }, () => {
+        const parts = Array.from({ length: 1 + Math.floor(r() * 3) }, () => (r() < 0.6 ? pool[Math.floor(r() * pool.length)]! : ALPHA[Math.floor(r() * ALPHA.length)]!));
+        return parts.join(r() < 0.5 ? " " : "");
+      });
+      const lines = linesOf(raw);
+      if (lines.length === 0) continue;
+      expect(keys(lines), `seed ${seed}`).toEqual([...refKept(lines)].sort());
+      expect(limitOf(inventoryOf(lines), true), `seed ${seed}`).toBe(refConversationLimit(lines));
+      const reversed = [...lines].reverse();
+      expect(keptOf(inventoryOf(reversed)).size, `seed ${seed}: order`).toBe(keptOf(inventoryOf(lines)).size);
     }
   });
 });
 
 describe("section 5's limits", () => {
-  const lines = (n: number): string[] => Array.from({ length: Math.ceil(n / 10) }, (_, i) => `${String(i).padStart(4, "0")}${"x".repeat(6)}`.slice(0, 10)).map((l, i, a) => (i === a.length - 1 ? l.slice(0, n - 10 * (a.length - 1)) : l));
+  /** Distinct lines of n characters in all, no line inside another, no run of 12 repeated: N_w is all of them. */
+  const lines = (n: number): string[] => [...Array.from({ length: Math.floor(n / 10) }, (_, i) => `${String(i).padStart(4, "0")}${"x".repeat(6)}`), ...(n % 10 === 0 ? [] : ["~".repeat(n % 10)])];
   it("a conversation gives under half its text: 632 gives 315, 993 gives 496, never more than 600", () => {
     expect(limitOf(inventoryOf(lines(632)), true)).toBe(315);
     expect(limitOf(inventoryOf(lines(993)), true)).toBe(496);

@@ -3,8 +3,8 @@
 //
 // A position is revealed when it lies in a common run of at least RUN_MIN normalized scalars between a measured unit and
 // a source line, or when its whole line, normalized, is contained in a measured unit (any length; no word-boundary
-// test, so "Back" inside "Outback" counts). Every occurrence counts and the charge is the union of positions: there is
-// no allocation, cap or cheapest placement.
+// test, so "Back" inside "Outback" counts). The charge is the union of revealed positions within N_w, the window's text
+// with repeated runs and lines counted once (keptOf): there is no allocation, cap or cheapest placement.
 //
 // How: one suffix automaton over every measured unit, BOUNDARY between them. Each source line is scanned from the root;
 // at each line position the scan holds the longest suffix ending there that occurs in some unit. Every shorter match
@@ -68,7 +68,81 @@ export interface Revealed {
  * any other window gives 1200.
  */
 export function limitOf(inv: LineInventory, conversation: boolean): number {
-  return conversation ? Math.min(CONVERSATION_CHARS, Math.max(0, Math.floor((inv.total - 1) / 2))) : WINDOW_CHARS;
+  return conversation ? Math.min(CONVERSATION_CHARS, Math.max(0, Math.floor((keptOf(inv).size - 1) / 2))) : WINDOW_CHARS;
+}
+
+/**
+ * A window's N_w: its positions (bits), how many, and for each line under RUN_MIN dropped because an earlier line holds
+ * it, the window positions of the copy that stays counted, which revealing the line reveals.
+ */
+export interface Kept {
+  readonly bits: Uint8Array;
+  readonly size: number;
+  readonly aliases: ReadonlyMap<number, readonly number[]>;
+}
+
+const KEPT = new WeakMap<LineInventory, Kept>();
+
+/** Where `needle` first stands in `hay`, by scalar, or -1. */
+function indexOfScalars(hay: readonly number[], needle: readonly number[]): number {
+  outer: for (let a = 0; a + needle.length <= hay.length; a++) {
+    for (let k = 0; k < needle.length; k++) if (hay[a + k] !== needle[k]) continue outer;
+    return a;
+  }
+  return -1;
+}
+
+/**
+ * N_w (OUTPUT-LEDGER-SPEC section 5, repeated text counted once): a window's positions, less every position that
+ * produced a scalar of a non-leftmost occurrence of a RUN_MIN-scalar run, and every line whose whole normalized text
+ * stands in an earlier line, with lines in canonical order (longest normalized first, then by scalars), so the result
+ * does not depend on line order. A request is charged only the positions of N_w it reveals, and a conversation's limit
+ * is under half of |N_w|. Runs are compared as exact strings, never hashed: a collision would drop a position the
+ * window really shows.
+ */
+export function keptOf(inv: LineInventory): Kept {
+  let k = KEPT.get(inv);
+  if (k !== undefined) return k;
+  const bits = new Uint8Array(inv.total).fill(1);
+  const aliases = new Map<number, readonly number[]>();
+  const prior: number[] = [];
+  const order = [...inv.lines.keys()].sort((a, b) => {
+    const x = inv.normalized[a]!.cps;
+    const y = inv.normalized[b]!.cps;
+    if (x.length !== y.length) return y.length - x.length;
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
+    return 0;
+  });
+  const seen = new Set<string>();
+  for (const li of order) {
+    const n = inv.normalized[li]!;
+    const st = inv.starts[li]!;
+    const drop = (from: number, to: number): void => {
+      for (let x = from; x < to; x++) for (const p of n.origins[x]!) bits[st + p] = 0;
+    };
+    // A line of RUN_MIN or more inside an earlier line has every run seen already, so the run rule drops all of it. A
+    // shorter one is dropped whole, and the copy that stays counted is its leftmost occurrence in the first such line.
+    const host = n.cps.length < RUN_MIN ? prior.find((h) => indexOfScalars(inv.normalized[h]!.cps, n.cps) >= 0) : undefined;
+    if (host !== undefined) {
+      for (let p = 0; p < inv.lines[li]!.length; p++) bits[st + p] = 0;
+      const at = indexOfScalars(inv.normalized[host]!.cps, n.cps);
+      const o = inv.normalized[host]!.origins;
+      aliases.set(li, [...new Set(o.slice(at, at + n.cps.length).flat().map((p) => inv.starts[host]! + p))]);
+    } else {
+      const cps = n.cps;
+      for (let a = 0; a + RUN_MIN <= cps.length; a++) {
+        const g = String.fromCodePoint(...cps.slice(a, a + RUN_MIN));
+        if (seen.has(g)) drop(a, a + RUN_MIN);
+        else seen.add(g);
+      }
+    }
+    prior.push(li);
+  }
+  let size = 0;
+  for (const b of bits) size += b;
+  k = { bits, size, aliases };
+  KEPT.set(inv, k);
+  return k;
 }
 
 /** A suffix automaton over normalized measured units, BOUNDARY between them. */
@@ -156,18 +230,23 @@ export class UnitIndex {
 /** Marks the lines `which` of `inv` by what `index` finds. A whole line marks every code unit of it, trimmed ones too. */
 function revealLines(index: UnitIndex, inv: LineInventory, which: Iterable<number>): Revealed {
   const positions = new Uint8Array(inv.total);
+  const { bits: kept, aliases } = keptOf(inv);
   let charged = 0;
+  const markAt = (q: number): void => {
+    if (positions[q] === 1 || kept[q] === 0) return;
+    positions[q] = 1;
+    charged++;
+  };
   for (const li of which) {
     const norm = inv.normalized[li]!;
     const start = inv.starts[li]!;
     const marks = index.scanLine(norm.cps);
-    const mark = (p: number): void => {
-      if (positions[start + p] === 1) return;
-      positions[start + p] = 1;
-      charged++;
-    };
-    if (marks.length > 0 && marks.every((m) => m === 1)) for (let p = 0; p < inv.lines[li]!.length; p++) mark(p);
-    else marks.forEach((m, i) => {
+    const mark = (p: number): void => markAt(start + p);
+    if (marks.length > 0 && marks.every((m) => m === 1)) {
+      for (let p = 0; p < inv.lines[li]!.length; p++) mark(p);
+      // A short line counted as its copy in an earlier line: revealing it reveals that copy.
+      for (const q of aliases.get(li) ?? []) markAt(q);
+    } else marks.forEach((m, i) => {
       if (m === 1) for (const p of norm.origins[i]!) mark(p);
     });
   }

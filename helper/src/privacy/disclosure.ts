@@ -372,6 +372,8 @@ export class Disclosure extends SnippetLedger {
    * only where it stands whole in a request's state.source_notes; any other note is a candidate like any text.
    */
   ownerNote(view: RedactedWindow, text: string): ModelText | null {
+    // A note longer than the allotment is never shown, whatever the window's limit would admit: refused, not cut.
+    if (text.length > OWNER_NOTE_CHARS) return null;
     if (!this.ownerNoteFits(view, text)) return this.candidate(view, text);
     if (!isRedacted(view)) throw new UnmintedText("an owner note was read from a window that is not a redacted view");
     if (text === "" || !viewHolds(view, text)) return null;

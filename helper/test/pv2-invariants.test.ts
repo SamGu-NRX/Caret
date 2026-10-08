@@ -140,7 +140,7 @@ describe("invariant: what a request's final bytes reveal of a window is exactly 
     if (got !== null) for (const w of want) expect(got[w.id] ?? 0, `seed ${seed}: ${w.id}`).toBe(w.charged);
   });
 
-  // 34 of the 80 refuse, every one for a chat, mostly where joined words rebuild a run their pieces were too short to count.
+  // 31 of the 80 refuse, mostly where joined words rebuild a run their pieces were too short to count.
   it("refuses a fair share of those seeds, so both sides of the invariant are exercised", () => {
     const refused = Array.from({ length: 80 }, (_, i) => runSeed(i + 1)).filter((x) => !x.fits).length;
     expect(refused).toBeGreaterThanOrEqual(20);

@@ -309,17 +309,15 @@ describe("an Ask about a menu whose options the window does not show", () => {
   };
   const ask = (d: Desk) => planAsk("just the degree and my phone number", d.model, { values: () => d.memory }, d.about, { askJev: jev, maker: headsIntentMaker(jev), writer: null, offerKey: "v4", windowId: d.form.window.windowId, now: T0 });
 
-  it("B25 held-16 on the reader's window: fills Phone and says Degree is the user's, since Caret never opens a menu to read it", async () => {
-    const d = (await ask(readerDesk("greenhouse-apply"))) as AskDraft;
-    expect(d.checked.writes.map((w) => w.value)).toEqual(["(512) 555-0147"]);
-    expect(d.controls).toEqual([]);
-    expect(d.leftToYou).toBe("Caret can't see the choices in Degree without opening the menu, so Degree is yours to set.");
+  // With repeated text counted once (OUTPUT-LEDGER-SPEC section 5) the venue mail, a bystander conversation, has a
+  // smaller limit than its charge, and the phone's request is refused: the lead accepted losing held-16 for N_w
+  // (evidence/screen/pv2/simplify/NW-DECISION.md). Neither desk writes anything wrong.
+  it("B25 held-16 on the reader's window: finds no phone, and says Degree is the user's", async () => {
+    await expect(ask(readerDesk("greenhouse-apply"))).rejects.toThrow("Caret found nothing to put in Phone. Caret can't see the choices in Degree without opening the menu, so Degree is yours to set.");
   });
 
-  it("B25 held-16 on the page's window: sets Degree to its option, with no such sentence", async () => {
-    const d = (await ask(pageDesk("greenhouse-apply"))) as AskDraft;
-    expect((d.controls ?? []).map((c) => [c.name, c.value])).toEqual([["Degree", "Bachelor's Degree"]]);
-    expect(d.leftToYou ?? "").not.toMatch(/can't see the choices/u);
+  it("B25 held-16 on the page's window: finds nothing to put in Phone or Degree", async () => {
+    await expect(ask(pageDesk("greenhouse-apply"))).rejects.toThrow("Caret found nothing to put in Phone or Degree.");
   });
 
   it("names a menu once, as the user's, when it is all the Ask was about", async () => {

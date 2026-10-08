@@ -21,12 +21,16 @@ const EMAIL = "odile.f@example.com";
 const SLACK = { pid: 8300, bundleId: "com.tinyspeck.slackmacgap", name: "Slack" };
 const TEXTEDIT = (pid: number) => ({ pid, bundleId: "com.apple.TextEdit", name: "TextEdit" });
 
-/** Chat lines of about `width` characters, distinct, with no value of any kind in them. */
+/**
+ * Chat lines of about `width` characters, of pseudo-random words: distinct, with no run of 12 repeated (so repeated text
+ * counted once changes nothing), and no value of any kind in them.
+ */
 function chatLines(n: number, width: number): string[] {
-  const words = ["harbor", "lantern", "meadow", "copper", "willow", "granite", "ember", "thistle", "saffron", "juniper", "cobalt", "orchard"];
+  let x = 4243;
+  const word = (): string => Array.from({ length: 3 + (x % 5) }, () => String.fromCharCode(97 + ((x = (x * 1103515245 + 12345) % 2147483648) % 26))).join("");
   return Array.from({ length: n }, (_, i) => {
     let l = `message ${i + 1}:`;
-    for (let k = 0; l.length < width; k++) l += ` ${words[(i * 5 + k * 7) % words.length]}`;
+    while (l.length < width) l += ` ${word()}`;
     return l.slice(0, width).trimEnd();
   });
 }
