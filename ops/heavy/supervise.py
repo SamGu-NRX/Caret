@@ -941,7 +941,20 @@ class Supervisor:
                 self.log("process or launchd probe failed: {}".format(ex))
                 owned, labels = None, None
             if leader_done and owned == {} and labels == []:
+                if self.lane == "browser" and stop is None:
+                    # The completion return is a window check too: nothing is left to stop, but a window list that
+                    # cannot be read here is the same missing evidence as during the run.
+                    window = self._window_stop(self.tracker.tracked)
+                    if window is not None:
+                        self.log("stopping: {}".format(window[2]))
+                        return window
                 return stop
+            if owned is None and full and self.lane == "browser" and stop is None:
+                # A failed process probe is unknown ownership. Read as nothing owned, it would also read as no window.
+                unknown = ("window", EXIT_WINDOW, "this browser-lane job's processes cannot be listed, so whether one "
+                           "owns an on-screen window is unknown")
+                self.log("stopping: {}".format(unknown[2]))
+                return self._finish_stop(unknown, None)
             owned = owned or {}
             if full and self.lane == "browser" and stop is None:
                 window = self._window_stop(owned)

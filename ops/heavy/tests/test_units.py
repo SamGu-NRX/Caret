@@ -1414,3 +1414,81 @@ class QueueStatusTest(Temp):
             self.assertEqual(caret_heavy.main(["show", "caret-browser-b"]), 0)
         self.assertEqual(json.loads(out.getvalue())["queue"], {"seq": 2, "state": "queued", "lane": "browser",
                                                                "id": "caret-browser-b"})
+
+
+class WatchTest(Temp):
+    """The supervisor's watch loop on a browser-lane job (347f8ea review), with a scripted tracker and probes. The
+    leader is a real child of this test, so waitid answers for real; _stop_all is recorded, not run."""
+
+    class Tracker:
+        def __init__(self, scans, tracked):
+            self.scans, self.tracked = list(scans), dict(tracked)
+
+        def owned(self, full=False):
+            got = self.scans.pop(0) if len(self.scans) > 1 else self.scans[0]
+            if isinstance(got, Exception):
+                raise got
+            return dict(got)
+
+        def live_labels(self):
+            return []
+
+    class Probes:
+        def __init__(self, usage=None, footprint=0):
+            self.usage_of, self.bytes = dict(usage or {}), footprint
+
+        def usage(self, pid):
+            got = self.usage_of.get(pid)
+            if isinstance(got, Exception):
+                raise got
+            return got
+
+        def footprint(self, pid):
+            return (self.bytes, self.bytes)
+
+    def leader(self, exited):
+        proc = subprocess.Popen(["/usr/bin/true"] if exited else ["/bin/sleep", "60"])
+        self.addCleanup(proc.wait)
+        if exited:
+            while os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                time.sleep(0.01)
+        else:
+            self.addCleanup(proc.kill)  # this test's own child, by its Popen handle
+        return proc
+
+    def supervisor(self, tracker, probes=None, owners=None, exec_s=0.6, mem_cap_gib=None):
+        import threading
+        import supervise
+        sup = supervise.Supervisor.__new__(supervise.Supervisor)
+        sup.plan = {"job_id": "caret-x", "test": {"window_owners_file": owners or os.path.join(self.root, "no-owners")}}
+        sup.lane, sup.tracker, sup.probes = "browser", tracker, probes or self.Probes()
+        sup.profile = {"exec_s": exec_s, "mem_cap_gib": mem_cap_gib, "term_grace_s": 5.0}
+        sup.record, sup.run_root, sup.runner, sup.log = {}, os.path.join(self.root, "run"), None, lambda *a, **k: None
+        sup.cancel, sup.cancel_reason, sup.cancel_code = threading.Event(), None, None
+        sup._ping_custody = sup._renew_if_due = lambda *a: None
+        sup.stopped = []
+        sup._stop_all = lambda why, owned=None, grace=None: sup.stopped.append((why, owned, grace))
+        return sup
+
+    def watch(self, sup, proc):
+        import supervise
+        with mock.patch.object(supervise, "FULL_SCAN_EVERY", 0.0), mock.patch.object(supervise, "POLL", 0.01):
+            return sup._watch(proc)
+
+    def test_unknown_ownership_stops_a_browser_job_77(self):
+        # P2.2: a failed process probe is unknown ownership, never "nothing owned, so no window".
+        import supervise
+        sup = self.supervisor(self.Tracker([OSError("ps failed")], {}))
+        stop = self.watch(sup, self.leader(exited=False))
+        self.assertEqual(stop[:2], ("window", supervise.EXIT_WINDOW), stop)
+        self.assertIn("unknown", stop[2])
+
+    def test_the_completion_return_checks_windows_first(self):
+        # P2.2: the final full scan finds nothing left, but the window check still runs: an unreadable list is 77.
+        import supervise
+        unreadable = os.path.join(self.root, "owners-dir")
+        os.mkdir(unreadable)  # reading it raises IsADirectoryError, an OSError
+        sup = self.supervisor(self.Tracker([{}], {}), owners=unreadable)
+        stop = self.watch(sup, self.leader(exited=True))
+        self.assertIsNotNone(stop)
+        self.assertEqual(stop[:2], ("window", supervise.EXIT_WINDOW), stop)
