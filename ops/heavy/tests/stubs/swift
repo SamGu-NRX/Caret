@@ -15,18 +15,6 @@ if [ "${CARET_RECORD_SNAPSHOTS:-}" = 1 ]; then
   [ -f Tests/__Snapshots__/T/old.png ] && printf 'recorded\n' > Tests/__Snapshots__/T/old.png
   printf 'state\n' > .swiftpm/state.txt
 fi
-if [ -n "${STUB_SWIFT_SLEEP:-}" ]; then sleep "$STUB_SWIFT_SLEEP"; fi
-if [ -n "${STUB_SWIFT_ENV_OUT:-}" ]; then
-  # Whether gui.lock is held while the tests run: a non-blocking flock through a new open file fails when it is.
-  held=$("$CARET_HEAVY_PY" -I -c 'import fcntl, os, sys
-fd = os.open(sys.argv[1], os.O_RDONLY | os.O_CREAT)
-try:
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    print("free")
-except BlockingIOError:
-    print("held")' "$CARET_HEAVY_GUI_LOCK")
-  echo "$pkg CARET_AX_ONSCREEN=${CARET_AX_ONSCREEN:-} gui.lock=$held" >> "$STUB_SWIFT_ENV_OUT"
-fi
 if [ "${STUB_SWIFT_BUILD_ERROR:-}" = "$pkg" ]; then echo "$PWD/Sources/x.swift:1:1: error: cannot find 'y' in scope"; echo "error: fatalError"; exit 1; fi
 if [ "${STUB_SWIFT_FAIL:-}" = "$pkg" ]; then printf '\t Executed 5 tests, with 1 failure (0 unexpected) in 0.1 (0.1) seconds\n'; exit 1; fi
 printf '\t Executed 5 tests, with 0 failures (0 unexpected) in 0.1 (0.1) seconds\n\xe2\x9c\x94 Test run with 2 tests passed after 0.001 seconds.\n'

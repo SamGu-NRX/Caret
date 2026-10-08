@@ -67,8 +67,6 @@ def default_paths(state_dir=None):
         "lr_lease": os.path.join(HOME, ".long-run/bin/lr-lease"),
         "lr_reap": os.path.join(HOME, ".long-run/bin/lr-reap"),
         "heavy_lock": os.path.join(HOME, ".long-run/locks/heavy.lock"),
-        # Held by any batch that can open a window or take keystrokes (swift-tests with CARET_AX_ONSCREEN=1).
-        "gui_lock": os.path.join(HOME, ".long-run/locks/gui.lock"),
         "rig_stop": os.path.join(HOME, ".long-run/rig/bin/rig-stop"),
         "rig_run": os.path.join(HOME, ".long-run/rig/bin/rig-run"),
         "lume_clones": os.path.join(HOME, ".lume"),
@@ -439,10 +437,9 @@ def keytype_inputs(worktree, rev, source):
 
 
 SWIFT_PACKAGES = ("apps/caret", "apps/screen-reader", "bridge")
-# The only --env pairs swift-tests takes. CARET_RECORD_SNAPSHOTS=1: the snapshot tests record their reference images,
-# which the recipe copies out (recipes/swift-tests.sh). CARET_AX_ONSCREEN=1: the accessibility tests that put windows
-# on screen run, so the recipe also takes a gui lease and gui.lock and keeps the on-screen rules (recipes/onscreen.py).
-SWIFT_ENV_ALLOWED = ("CARET_RECORD_SNAPSHOTS=1", "CARET_AX_ONSCREEN=1")
+# The only --env pair swift-tests takes: the snapshot tests record their reference images, which the recipe copies out
+# (recipes/snapshots.py).
+SWIFT_ENV_ALLOWED = ("CARET_RECORD_SNAPSHOTS=1",)
 
 
 def _swift_tests_options(parser):

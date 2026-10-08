@@ -67,10 +67,8 @@ class RecipeWorld(unittest.TestCase):
     def run_recipe(self, script, *args, env=None):
         shutil.rmtree(self.out, ignore_errors=True)
         os.makedirs(self.out)
-        # Its own process group, as the supervisor starts it: an on-screen run's guard stops the group it leads.
         done = subprocess.run(["/bin/bash", os.path.join(RECIPES, script), *args], cwd=self.worktree,
-                              env=self.env(script, env), capture_output=True, text=True, timeout=120,
-                              start_new_session=True)
+                              env=self.env(script, env), capture_output=True, text=True, timeout=120)
         return done, self.result()
 
     def result(self):
@@ -371,11 +369,8 @@ class SwiftWorld(RecipeWorld):
     def swift(self, extra=None):
         env = dict({"CARET_HEAVY_REV": self.rev, "TMPDIR": self.tmp}, **(extra or {}))
         done, result = self.run_recipe("swift-tests.sh", "t", "apps/caret", "apps/screen-reader", "bridge", env=env)
-        try:
-            with open(os.path.join(self.out, "swift-calls.txt")) as fh:
-                calls = fh.read().splitlines()
-        except FileNotFoundError:
-            calls = []
+        with open(os.path.join(self.out, "swift-calls.txt")) as fh:
+            calls = fh.read().splitlines()
         self.assertEqual(os.listdir(self.tmp), [])  # the export and the builds are gone, whatever happened
         return done, result, calls
 
@@ -456,94 +451,6 @@ class SwiftRecordMode(SwiftWorld):
         done, result, calls = self.swift()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.out, "snapshots")))
-
-
-class SwiftOnScreen(SwiftWorld):
-    """CARET_AX_ONSCREEN=1: before any package, the recipe's guard (recipes/onscreen.py) takes gui.lock and a gui lease
-    as well as the job's heavy one, and waits for the HID to be idle 300 s; it holds both while the tests run and
-    releases them after. Any HID input during the run (the tests may use background input only, so it is a person)
-    stops the recipe's process group, and the recipe exits 15. Not admitted (gui.lock held, lease refused, never
-    idle) is preparation step onscreen failing, 14, with no package run."""
-
-    def setUp(self):
-        super().setUp()
-        self.lock = os.path.join(self.home, ".long-run/locks/gui.lock")
-        os.makedirs(os.path.dirname(self.lock))
-        self.idle = os.path.join(self.root, "idle.txt")
-        self.lease_log = os.path.join(self.root, "lease-calls.txt")
-        self.env_out = os.path.join(self.root, "swift-env.txt")
-        lr = os.path.join(self.root, "lr-lease")
-        write(lr, '#!/bin/bash\necho "$@" >> {}\n'
-                  'if [ "$1" = acquire ]; then\n'
-                  '  [ -n "${{STUB_LEASE_REFUSE:-}}" ] && {{ echo "refused: quiet window"; exit 75; }}\n'
-                  '  echo 11111111-2222-4333-8444-555555555555; fi\nexit 0\n'.format(self.lease_log))
-        os.chmod(lr, 0o755)
-        self.lr = lr
-
-    def onscreen(self, idle, extra=None):
-        write(self.idle, "".join("{}\n".format(i) for i in idle))
-        env = {"CARET_AX_ONSCREEN": "1", "CARET_HEAVY_GUI_LOCK": self.lock, "CARET_HEAVY_LR_LEASE": self.lr,
-               "CARET_HEAVY_LEASE_RUN": "caret", "CARET_HEAVY_EXEC_S": "600", "STUB_IOREG_IDLE": self.idle,
-               "STUB_SWIFT_ENV_OUT": self.env_out, "CARET_ONSCREEN_POLL_S": "0.1", "CARET_ONSCREEN_WAIT_S": "2"}
-        return self.swift(dict(env, **(extra or {})))
-
-    def lease_calls(self):
-        try:
-            with open(self.lease_log) as fh:
-                return [line.split() for line in fh]
-        except FileNotFoundError:
-            return []
-
-    def state(self):
-        with open(os.path.join(self.out, "onscreen.json")) as fh:
-            return json.load(fh)
-
-    def test_the_tests_run_under_gui_lock_and_a_gui_lease_once_idle(self):
-        done, result, calls = self.onscreen([400])
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertEqual(self.steps(result)[2], ("prepare", "onscreen", 0))
-        self.assertEqual(len(calls), 3)
-        with open(self.env_out) as fh:
-            self.assertEqual([line.split()[1:] for line in fh], [["CARET_AX_ONSCREEN=1", "gui.lock=held"]] * 3)
-        acquire, release = self.lease_calls()
-        self.assertEqual(acquire[:5], ["acquire", "--run", "caret", "--kind", "gui"])
-        self.assertEqual(acquire[acquire.index("--ttl") + 1], "15")  # the job's exec_s 600 s, plus 5 minutes
-        self.assertEqual(release, ["release", "11111111-2222-4333-8444-555555555555"])
-        state = self.state()
-        self.assertEqual((state["state"], state["idle_s_at_start"]), ("released", 400))
-
-    def test_a_held_gui_lock_is_not_admitted(self):
-        import fcntl
-        fd = os.open(self.lock, os.O_RDWR | os.O_CREAT)
-        self.addCleanup(os.close, fd)
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        done, result, calls = self.onscreen([400])
-        self.assertEqual(done.returncode, 14)
-        self.assertIn(("prepare", "onscreen", 14), self.steps(result))
-        self.assertEqual((calls, self.lease_calls()), ([], []))
-        self.assertIn("gui.lock", self.state()["reason"])
-
-    def test_a_refused_gui_lease_is_not_admitted(self):
-        done, result, calls = self.onscreen([400], {"STUB_LEASE_REFUSE": "1"})
-        self.assertEqual(done.returncode, 14)
-        self.assertEqual(calls, [])
-        self.assertIn("quiet window", self.state()["reason"])
-
-    def test_a_machine_in_use_is_not_admitted_and_the_lease_is_released(self):
-        done, result, calls = self.onscreen([10])
-        self.assertEqual(done.returncode, 14)
-        self.assertEqual(calls, [])
-        self.assertEqual([c[0] for c in self.lease_calls()], ["acquire", "release"])
-        self.assertIn("idle", self.state()["reason"])
-
-    def test_hid_input_during_the_run_stops_it_with_15(self):
-        done, result, calls = self.onscreen([400, 400.1, 400.2, 400.3, 400.4, 400.5, 2], {"STUB_SWIFT_SLEEP": "20"})
-        self.assertEqual(done.returncode, 15, done.stdout + done.stderr)
-        state = self.state()
-        self.assertEqual(state["state"], "interrupted")
-        self.assertIn("HID input", state["reason"])
-        self.assertEqual([c[0] for c in self.lease_calls()], ["acquire", "release"])
-        self.assertLess(len(calls), 3)
 
 
 class VmCancelProof(RecipeWorld):
