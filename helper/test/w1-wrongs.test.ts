@@ -449,7 +449,10 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
       // 139 (all four sets 243; (a) alone cost 14 here, (c) 19, (b) none). The owner-note allotment (privacy.ts
       // OWNER_NOTE_CHARS, 2,000, conversations kept out) then brought it to 160 (all four sets 306). The floor is the
       // measured value, and the guards must not cost one more.
-      expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(160);
+      // TODO(INT1): the allotment is 0 until it is re-expressed on the output-based ledger (privacy.ts), so the floor is
+      // what v2/int1 measures with it off: 142 at a2062bc. v2/alt 74ae6e2 alone with the allotment set to 0 measures 139;
+      // the 3 more were not broken down (v2/fmt is merged before it). Restore 160 with the allotment.
+      expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(142);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
