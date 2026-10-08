@@ -630,7 +630,8 @@ describe("a unique place, and a window's strictest limit", () => {
     };
     expect(send(said[1]!)["mail-1"]).toBe(35);
     m.close("mail-1", 3);
-    expect(() => send(d.join(said, "\n"))).toThrow(/it reveals 59 characters of window mail-1, over its limit of 46/u);
+    // The page state found at the start is kept too (the first state, "mail-1"), so the mail's state is "mail-1@1".
+    expect(() => send(d.join(said, "\n"))).toThrow(/it reveals 59 characters of window mail-1@1, over its limit of 46/u);
   });
 });
 
@@ -748,5 +749,19 @@ describe("a view's window states, kept whatever the live screen does", () => {
   });
   it("measures a state the view held after the live window refreshes to other text: 37 of a limit of 20 is refused", () => {
     expect(run((m) => void m.apply(snap([text("c9", "something else entirely now")], { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES })))).toBe("refused at mint");
+  });
+});
+
+describe("the windows on screen when a Disclosure is made", () => {
+  it("keeps measuring a chat that closes before the first request: a note's copy of its one line is 14 of a limit of 9", () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("m0", "Ref: AT30-1749")], { at: 1, windowId: "chat-1", title: "Priya", app: MESSAGES }));
+    m.apply(snap([text("n0", "orbit glacier saffron"), text("n1", "Ref: AT30-1749")], { at: 2, windowId: "note-1", title: "Untitled", app: NOTES }));
+    const d = new Disclosure(m);
+    m.close("chat-1", 3);
+    // T = 5 + 14 = 19, limit 9: the note's line is the chat's, whole.
+    const note = redactWindow(m.windows.get("note-1") as WindowState);
+    const said = d.candidate(note, "Ref: AT30-1749", { part: nodePart("n1", "label"), start: 0, end: 14 });
+    expect(said, "refused at mint: the closed chat is still measured").toBeNull();
   });
 });
