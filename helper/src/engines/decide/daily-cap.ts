@@ -8,7 +8,7 @@
 // SPEND_DIR by default.
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { assertLocalStorePath, writeLocalFile } from "../../privacy/store-path.ts";
 
 /**
@@ -139,10 +139,9 @@ export class DailySpend {
     return {
       settle: (costUsd, inputTokens) => {
         close();
-        const file = join(this.dir, `${day}.ndjson`);
-        // Checked before the folder is made, so a refused path leaves nothing behind.
-        assertLocalStorePath(file);
-        mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+        // Checked, then made and written, as one resolved path: a refused path leaves nothing behind.
+        const file = assertLocalStorePath(`${this.dir}/${day}.ndjson`);
+        mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
         // The day the request was reserved on, so one sent at 23:59:59 counts against the day that let it through.
         writeLocalFile(file, `${JSON.stringify({ at: this.now().toISOString(), usd: costUsd, tokens: inputTokens, pid: process.pid })}\n`, { append: true, mode: 0o600 });
       },

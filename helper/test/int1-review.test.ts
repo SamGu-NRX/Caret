@@ -9,6 +9,7 @@ import { ownedOf, ownedStale, unitsHolding } from "../src/fill/note-unit.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { loadKey } from "../src/sealed.ts";
+import { Store } from "../src/store.ts";
 import { join } from "node:path";
 import { DailySpend, localDay } from "../src/engines/decide/daily-cap.ts";
 import { storePathRefusal, SyncedStorePath } from "../src/privacy/store-path.ts";
@@ -171,6 +172,44 @@ describe("INT1 review 4", () => {
       expect(existsSync(join(d, "spend"))).toBe(false);
     } finally {
       rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("INT1 review 5: a store folder is checked and made as one resolved path", () => {
+  // A folder given as `<root>/link/../spend`, where `link` points outside the roots: path.join would check
+  // `<root>/spend`, but the system makes the folder beside the link's target.
+  const setup = (): { raw: string; outside: string; done: () => void } | null => {
+    const outside = mkdtempSync(join(homedir(), ".caret-int1-review5-"));
+    if (storePathRefusal(join(outside, "x")) === null) {
+      rmSync(outside, { recursive: true, force: true });
+      return null;
+    }
+    mkdirSync(join(outside, "deep"));
+    const base = mkdtempSync(join(tmpdir(), "int1-review5-"));
+    symlinkSync(join(outside, "deep"), join(base, "link"));
+    return { raw: `${base}/link/../spend`, outside, done: () => (rmSync(outside, { recursive: true, force: true }), rmSync(base, { recursive: true, force: true })) };
+  };
+
+  it("the spend log", () => {
+    const s = setup();
+    if (s === null) return;
+    try {
+      expect(() => new DailySpend({ dir: s.raw, capUsd: 1 }).reserve(0.01).settle(0.01, 1)).toThrow(SyncedStorePath);
+      expect(existsSync(join(s.outside, "spend"))).toBe(false);
+    } finally {
+      s.done();
+    }
+  });
+
+  it("the screen store", () => {
+    const s = setup();
+    if (s === null) return;
+    try {
+      expect(() => new Store(s.raw)).toThrow(SyncedStorePath);
+      expect(existsSync(join(s.outside, "spend"))).toBe(false);
+    } finally {
+      s.done();
     }
   });
 });

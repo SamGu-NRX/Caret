@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
 import { assertLocalStorePath, storePathRefusal, SyncedStorePath, writeLocalFile } from "../src/privacy/store-path.ts";
 import { appendStore, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 
@@ -131,5 +132,23 @@ describe("INT1 review 4: paths are compared as the volume stores them", () => {
   it("a root spelled in another case is the root", () => {
     if (process.platform !== "darwin") return;
     expect(storePathRefusal(join(dir.toUpperCase(), "rows.json"))).toBeNull();
+  });
+});
+
+describe("INT1 review 5: a synced folder that is itself a link", () => {
+  it("refuses a path under the link's target, as well as under the link", () => {
+    // A home folder whose Library/CloudStorage links to a folder in the temporary directory (a root). Run in a child, so
+    // HOME is its own.
+    const home = mkdtempSync(join(dir, "home-"));
+    const cloud = mkdtempSync(join(dir, "cloud-"));
+    mkdirSync(join(home, "Library"));
+    symlinkSync(cloud, join(home, "Library", "CloudStorage"));
+    const script = `
+      const { storePathRefusal } = require(${JSON.stringify(fileURLToPath(new URL("../src/privacy/store-path.ts", import.meta.url)))});
+      console.log(JSON.stringify([storePathRefusal(${JSON.stringify(join(cloud, "Dropbox", "rows.json"))}), storePathRefusal(${JSON.stringify(join(home, "Library", "CloudStorage", "Dropbox", "rows.json"))})]));`;
+    const r = spawnSync(process.execPath, ["--no-warnings", "-e", script], { env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir() }, encoding: "utf8" });
+    const [viaTarget, viaLink] = JSON.parse(r.stdout || "[]") as (string | null)[];
+    expect(viaTarget).toMatch(/syncs to a provider/u);
+    expect(viaLink).toMatch(/syncs to a provider/u);
   });
 });
