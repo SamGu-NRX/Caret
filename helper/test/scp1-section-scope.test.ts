@@ -13,7 +13,7 @@ import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { SELF_IDENTIFICATION } from "../src/engines/page-exclusions.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
-import { headsIntentMaker, headsRequest, readHeads, scopeId, scopeRequest, SECTION_QUESTION, settleFields } from "../src/planner/intent-heads.ts";
+import { headsIntentMaker, headsRequest, readHeads, scopeId, scopeRequest, SECTION_QUESTION, sectionVerdict, settleFields } from "../src/planner/intent-heads.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskGoal } from "../src/planner/ask.ts";
 import { askScope, scopeSet, sectionMembership, sectionPlacement, sectionRefusal, windowOutline, withScope } from "../src/fill/ask-scope.ts";
@@ -1186,5 +1186,21 @@ describe("INT1 review P2: the combined section question fits its slot", () => {
       // A section the list left out is the "not listed" option's, which never names one.
       expect(Object.values(q?.criteria ?? {}).some((c) => String(c).includes("'Section 40 about the equipment'"))).toBe(false);
     }
+  });
+});
+
+describe("INT1 review 2 P2: a section answer counts only when both wordings offered it", () => {
+  it("refuses an answer naming a heading the bounded list left out of the question", () => {
+    const many = Array.from({ length: 40 }, (_, i) => `Section ${i + 1} about the equipment`);
+    const ask = `Fill in the service request for the Kestrel 9 using my notes, ${"and keep everything exactly as the notes say it ".repeat(12)}`.slice(0, 543);
+    const s = snapFor(desk({ page: pageSnapshot(many) }), ask);
+    const offered = ([0, 1] as const).map((w) => new Set(Object.keys(scopeRequest(s, w).questions[SECTION_QUESTION]?.criteria ?? {})));
+    const left = s.headings.find((h) => !offered[0]!.has(h.ref) && !offered[1]!.has(h.ref));
+    expect(left).toBeDefined();
+    const answer = (choice: string): JevResult => ({ model: "m", answers: { [SECTION_QUESTION]: { choice, confidence: 0.99 } }, inputTokens: 0, latencyMs: 0, costUsd: 0 });
+    expect(() => sectionVerdict(s, [answer(left!.ref), answer(left!.ref)])).toThrow(PlannerError);
+    // A heading both wordings listed still settles.
+    const both = s.headings.find((h) => offered[0]!.has(h.ref) && offered[1]!.has(h.ref));
+    expect(sectionVerdict(s, [answer(both!.ref), answer(both!.ref)])).toEqual({ kind: "section", name: both!.name });
   });
 });
