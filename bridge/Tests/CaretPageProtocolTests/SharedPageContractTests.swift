@@ -43,7 +43,7 @@ import Testing
     @Test func decodesAndReencodesSharedExtensionFixtures() throws {
         let urls = try FileManager.default.contentsOfDirectory(at: fixtures, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        #expect(urls.count == 21)
+        #expect(urls.count == 24)
         for url in urls {
             let data = try Data(contentsOf: url)
             let expected = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])

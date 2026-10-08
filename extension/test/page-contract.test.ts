@@ -7,7 +7,8 @@ import { examples, incoming, outgoing, verbs } from "./page-contract-examples.ts
 const root = new URL("../../", import.meta.url);
 const directory = new URL("helper/fixtures/contracts/page/", root);
 const read = (path: string) => readFileSync(new URL(path, root), "utf8");
-const fixtures = () => readdirSync(directory).filter((f) => f.endsWith(".json")).map((f) => ({ name: f, value: JSON.parse(readFileSync(new URL(f, directory), "utf8")) as Record<string, unknown> }));
+const bridgeOnly = new Set(["engineChallenge", "engineHello", "engineWelcome"]);
+const fixtures = () => readdirSync(directory).filter((f) => f.endsWith(".json") && !bridgeOnly.has(f.slice(0, -5))).map((f) => ({ name: f, value: JSON.parse(readFileSync(new URL(f, directory), "utf8")) as Record<string, unknown> }));
 const swift = read("bridge/Sources/CaretPageProtocol/PageProtocol.swift");
 const kinds = (text: string, key: string) => [...text.matchAll(new RegExp(`${key}: "([^"]+)"`, "g"))].map((m) => m[1]!);
 const unique = (xs: string[]) => [...new Set(xs)].sort();

@@ -25,7 +25,7 @@ export const incoming = [
 ] satisfies (FromHelper & { v: 1; at?: number })[];
 
 export const outgoing = [
-  { type: "pageHello", v: 1, extensionId: "fixture-extension", version: "0.1.0", profile: "fixture-profile", instance: "fixture-instance", startedAt: 10, capabilities: ["pageWalk"] },
+  { type: "pageHello", v: 1, extensionId: "a".repeat(32), version: "0.1.0", profile: "fixture-profile", instance: "fixture-instance", startedAt: 10, capabilities: ["pageWalk"] },
   { type: "pagePong", v: 1, id: "fixture-ping", at: 20, instance: "fixture-instance", startedAt: 10 },
   { type: "pageFocus", v: 1, at: 20, tabId: 3, frameId: 0 },
   { type: "pageInput", v: 1, at: 20, tabId: 3, frameId: 0, kind: "key" },
