@@ -1,7 +1,7 @@
 // H5's lines between the helper and the host app (fixtures/golden/host.ndjson): Ask's sentences, controls the user
-// sets, "Not on this site" and the confirmed file. They live apart from protocol.ndjson because the reader's Swift
-// mirror decodes and re-encodes every line there and has no reason to know these. The host's HostGoldenTests read the
-// same file by path.
+// sets, "Not on this site", the confirmed file, and the host's sessionLocked. They live apart from protocol.ndjson
+// because the reader's Swift mirror decodes and re-encodes every line there and has no reason to know these. The
+// host's HostGoldenTests read the same file by path.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +19,7 @@ const lines = readFileSync(GOLDEN, "utf8").trim().split("\n").map((l) => JSON.pa
 
 describe("host.ndjson", () => {
   it("holds valid messages, each spec a valid pop-up", () => {
-    expect(lines.map((l) => l.type)).toEqual(["planProposal", "planProposal", "planProposal", "popup", "settings", "planProposal", "fileConfirm", "fileConfirmReply", "fileConfirmReply"]);
+    expect(lines.map((l) => l.type)).toEqual(["planProposal", "planProposal", "planProposal", "popup", "settings", "planProposal", "fileConfirm", "fileConfirmReply", "fileConfirmReply", "sessionLocked"]);
     for (const [i, l] of lines.entries()) {
       const ok = HelperMessage.safeParse(l).success || ConsumerMessage.safeParse(l).success;
       expect(ok, `line ${i + 1}`).toBe(true);
@@ -58,6 +58,13 @@ describe("host.ndjson", () => {
     expect(p.spec.blocks.filter((b) => b.type === "fields").flatMap((b) => b.rows?.map((r) => r.state))).toEqual(["yours", "yours"]);
     const popup = lines[3] as { spec: { blocks: { type: string; rows?: { state: string }[] }[] } };
     expect(popup.spec.blocks.filter((b) => b.type === "fields").map((b) => b.rows?.map((r) => r.state))).toEqual([["ready", "ready"], ["yours"]]);
+  });
+
+  it("reads the host's sessionLocked as a consumer message, lock or signOut only", () => {
+    const locked = lines[9] as Record<string, unknown>;
+    expect(ConsumerMessage.parse(locked)).toEqual({ type: "sessionLocked", v: 1, at: 1790001010000, why: "lock" });
+    expect(ConsumerMessage.safeParse({ ...locked, why: "signOut" }).success).toBe(true);
+    expect(ConsumerMessage.safeParse({ ...locked, why: "sleep" }).success).toBe(false);
   });
 
   it("refuses a sitesOff entry that is not an origin, and reads a host before H5 as sending none", () => {

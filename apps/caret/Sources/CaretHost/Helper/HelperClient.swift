@@ -251,6 +251,12 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? NDJSON.line(request))
     }
 
+    /// The screen locked or the user is signing out (`SessionLockWatch`). Dropped while disconnected, as every line is.
+    @discardableResult
+    func send(_ locked: SessionLocked) -> Bool {
+        sendLine(try? NDJSON.line(locked))
+    }
+
     /// H5: the file the user took for a plan's attach step; answered with `fileConfirmReply` to this connection.
     @discardableResult
     func send(_ confirm: FileConfirm) -> Bool {

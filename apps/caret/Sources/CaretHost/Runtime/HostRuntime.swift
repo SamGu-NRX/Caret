@@ -151,6 +151,7 @@ public final class HostRuntime {
     static let rehelloAcceptGrace: TimeInterval = 30
     private var engineTask: Task<Void, Never>?
     private let servicesBox = ServicesBox()
+    private var sessionLock: SessionLockWatch?
 
     /// The helper and reader the app shell started, and the bridge service (H4), for the debug socket's `services`.
     public var services: CaretServices? {
@@ -782,6 +783,8 @@ public final class HostRuntime {
         }
         focus.start()
         helper.start()
+        let lockClient = helper
+        sessionLock = SessionLockWatch { lockClient.send(SessionLocked(at: Self.nowMs(), why: $0)) }
         onboarding.launch()
         let modelFile = configuration.modelURL.lastPathComponent
         guard configuration.ghostEnabled else {

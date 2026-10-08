@@ -7,3 +7,4 @@
 {"type":"fileConfirm","v":1,"requestId":"file-1","at":1790001006000,"taskId":"plan-8-ask-8","path":"/tmp/caret-fixture/Resume.pdf"}
 {"type":"fileConfirmReply","v":1,"requestId":"file-1","taskId":"plan-8-ask-8","outcome":"confirmed","file":{"name":"Resume.pdf","size":48213},"says":null}
 {"type":"fileConfirmReply","v":1,"requestId":"file-2","taskId":"plan-8-ask-8","outcome":"refused","file":null,"says":"Caret couldn't read that file, so it attached nothing. Choose another one."}
+{"type":"sessionLocked","v":1,"at":1790001010000,"why":"lock"}

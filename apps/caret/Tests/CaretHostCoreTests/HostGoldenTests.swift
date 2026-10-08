@@ -89,6 +89,11 @@ final class HostGoldenTests: XCTestCase {
         let sent = HostSettings(settings, at: (golden["at"] as! NSNumber).int64Value)
         XCTAssertEqual(try Self.object(NDJSON.line(sent).dropLast()), golden)
     }
+
+    func testTheHostsSessionLockedIsTheGoldenLine() throws {
+        let sent = SessionLocked(at: 1_790_001_010_000, why: .lock)
+        XCTAssertEqual(try Self.object(NDJSON.line(sent).dropLast()), try Self.object(try Self.lines()[9]))
+    }
 }
 
 final class SiteOriginTests: XCTestCase {

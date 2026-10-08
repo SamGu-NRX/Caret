@@ -953,7 +953,7 @@ export type Settings = z.infer<typeof Settings>;
 
 /**
  * HA2 lever 2 (Sam's rule 3, iii): the user locked the screen or signed out of their Mac session. The helper clears the
- * session's owner verdicts (fill/owner-cache.ts). No host sends it yet: the host's wiring is v2/hostint's follow-up.
+ * session's owner verdicts (fill/owner-cache.ts). The host sends it from SessionLockWatch.swift.
  */
 export const SessionLocked = z.object({
   type: z.literal("sessionLocked"),
