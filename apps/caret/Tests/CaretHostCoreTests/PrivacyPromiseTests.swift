@@ -34,6 +34,21 @@ final class PrivacyPromiseTests: XCTestCase {
         }
     }
 
+    /// Trailing whitespace is not punctuation: the last character that is not whitespace decides, and the block keeps
+    /// its whitespace when shown.
+    func testTrailingWhitespaceDoesNotMakeAParagraphAHeading() throws {
+        let cases: [(String, Bool)] = [
+            ("A sentence.  ", false), ("A sentence.\n", false), ("A sentence.\t \n", false),
+            ("Who receives it  ", true), ("Who receives it\n", true),
+        ]
+        for (block, heading) in cases {
+            let text = "First.\n\n" + block
+            let promise = try XCTUnwrap(PrivacyPromise(text))
+            XCTAssertEqual(promise.blocks.last, heading ? .heading(block) : .paragraph(block), block.debugDescription)
+            XCTAssertEqual(promise.blocks.map(\.text).joined(separator: PrivacyPromise.separator), text)
+        }
+    }
+
     func testEmptyOrWhitespaceTextIsNoPromise() {
         for text in ["", " ", "\n\n", "\t\n "] {
             XCTAssertNil(PrivacyPromise(text), "\(text.debugDescription) must read as missing, never as an empty promise")

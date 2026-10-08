@@ -1,7 +1,7 @@
 // One refusal policy for packaging, make app, and the Caret target's always-run Xcode phase.
-import { mkdirSync, readFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { writeStore } from "../src/privacy/send.ts";
-import { dirname } from "node:path";
+import { dirname, sep } from "node:path";
 import { PRIVACY_PROMISE, ownerNoteGate } from "../src/privacy.ts";
 import { PRIVACY_ACCEPTANCES } from "../src/privacy/accepted.ts";
 import { spawnSync } from "node:child_process";
@@ -29,6 +29,10 @@ const onboarding = spawnSync("python3", [fileURLToPath(new URL("../../scripts/ch
 if (onboarding.error || onboarding.status !== 0) {
   reasons.push(onboarding.error?.message ?? (onboarding.stderr || onboarding.stdout || "Cannot verify onboarding privacy copy").trim());
 }
+// A verification run checks what the app already holds; one that also generated could write the file it is checking.
+if (process.env.CARET_VERIFY_PRIVACY_RESOURCE && process.env.CARET_PRIVACY_RESOURCE) {
+  reasons.push("CARET_PRIVACY_RESOURCE is set in a run that verifies the app's privacy promise; a verification run must not write it");
+}
 if (reasons.length > 0) {
   for (const why of reasons) console.error(`privacy gate: refusing to package: ${why}`);
   process.exit(1);
@@ -46,12 +50,27 @@ if (resource) {
 // handed on. Onboarding has no text of its own to show in its place (OnboardingView.swift, PermissionsScreen).
 const shipped = process.env.CARET_VERIFY_PRIVACY_RESOURCE;
 if (shipped) {
-  let text: string | null = null;
-  try { text = readFileSync(shipped, "utf8"); } catch { /* reported as missing below */ }
-  const why = text === null ? "is missing" : text.trim() === "" ? "is empty" : text !== PRIVACY_PROMISE ? "differs from PRIVACY_PROMISE in helper/src/privacy.ts" : null;
+  const why = shippedProblem(shipped);
   if (why !== null) {
     console.error(`privacy gate: refusing to package: the app's privacy promise ${shipped} ${why}; onboarding would have nothing approved to show`);
     process.exit(1);
   }
+}
+
+/** Why the app's copy cannot be shown as the promise, or null: it must be a regular file, inside its .app, with exactly PRIVACY_PROMISE. */
+function shippedProblem(path: string): string | null {
+  const parts = path.split(sep);
+  const app = parts.findLastIndex((part, i) => part.endsWith(".app") && parts[i + 1] === "Contents");
+  if (app < 0) return "is not inside an .app bundle";
+  const appPath = parts.slice(0, app + 1).join(sep);
+  let stat;
+  try { stat = lstatSync(path); } catch { return "is missing"; }
+  if (stat.isSymbolicLink()) return "is a symbolic link; the app must hold the file itself";
+  if (!stat.isFile()) return "is not a regular file";
+  if (!realpathSync(path).startsWith(realpathSync(appPath) + sep)) return `is outside ${appPath}`;
+  const text = readFileSync(path, "utf8");
+  if (text.trim() === "") return "is empty";
+  if (text !== PRIVACY_PROMISE) return "differs from PRIVACY_PROMISE in helper/src/privacy.ts";
+  return null;
 }
 console.log("privacy gate: disclosure, required acceptances and dev-only gateway configuration checked");

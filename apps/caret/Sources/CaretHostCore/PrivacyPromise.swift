@@ -34,8 +34,10 @@ public struct PrivacyPromise: Equatable, Sendable {
         }
     }
 
+    /// Decided on the block without its surrounding whitespace, which stays in the block as shown.
     static func isHeading(_ block: String) -> Bool {
-        guard let last = block.last, !block.contains("\n"), block.contains(where: \.isLetter) else { return false }
+        let words = block.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = words.last, !words.contains("\n"), words.contains(where: \.isLetter) else { return false }
         return !".,;:!?\"'\u{201D}\u{2019})".contains(last)
     }
 }
