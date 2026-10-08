@@ -468,11 +468,17 @@ describe("what the veto leaves as it was (preservation)", () => {
     expect(chosenNames(s, vetoed.fields)).toEqual(EQUIPMENT);
   });
 
-  it("fails loudly when Jev leaves the section question unanswered; an answer outside its options settles no section", () => {
+  it("fails loudly when Jev leaves the section question unanswered or answers outside its options", () => {
     const s = snapFor(desk({ reader: readerForm() }));
     const asks = (): A => ({ choice: "asks", confidence: 0.99 });
     expect(() => readHeads(s, heads(s), pair(s, asks, () => undefined))).toThrow(/no answer to the section question/u);
-    expect(sectionVerdict(s, pair(s, asks, () => ({ choice: "sec99", confidence: 0.99 })))).toBeNull();
+    expect(() => readHeads(s, heads(s), pair(s, asks, () => ({ choice: "sec99", confidence: 0.99 })))).toThrow(/not one of its options/u);
+  });
+
+  it("an answer outside the offered sections never authorizes a field outside the named section", async () => {
+    const d = desk({ page: pageSnapshot(HEADINGS, WALKED) });
+    // Refused as Jev failing: nothing is authorized, the contact fields least of all.
+    await expect(plan(d, jev({ section: { choice: "sec99", confidence: 0.99 } }), "fill the equipment details section")).rejects.toThrow(/jevFailed|couldn't reach|not one of its options/u);
   });
 
   it("authorises a subset of what it authorised before the veto, for random answers", () => {
@@ -1198,7 +1204,7 @@ describe("INT1 review 2 P2: a section answer counts only when both wordings offe
     const left = s.headings.find((h) => !offered[0]!.has(h.ref) && !offered[1]!.has(h.ref));
     expect(left).toBeDefined();
     const answer = (choice: string): JevResult => ({ model: "m", answers: { [SECTION_QUESTION]: { choice, confidence: 0.99 } }, inputTokens: 0, latencyMs: 0, costUsd: 0 });
-    expect(sectionVerdict(s, [answer(left!.ref), answer(left!.ref)])).toBeNull();
+    expect(() => sectionVerdict(s, [answer(left!.ref), answer(left!.ref)])).toThrow(PlannerError);
     // A heading both wordings listed still settles.
     const both = s.headings.find((h) => offered[0]!.has(h.ref) && offered[1]!.has(h.ref));
     expect(sectionVerdict(s, [answer(both!.ref), answer(both!.ref)])).toEqual({ kind: "section", name: both!.name });
@@ -1225,8 +1231,8 @@ describe("INT1 review 3: a split section answer is a disagreement", () => {
     expect(one).toBeDefined();
     const pair: [JevResult, JevResult] = onlyFirst !== undefined ? [answer(onlyFirst.ref), answer("unlisted")] : [answer("unlisted"), answer(onlySecond!.ref)];
     expect(sectionVerdict(s, pair)).toBeNull();
-    // Both choosing a heading only one of them offered: the other's answer is outside its own options, so the verdict
-    // fails closed (null), never throws.
-    expect(sectionVerdict(s, [answer(one!.ref), answer(one!.ref)])).toBeNull();
+    // Both choosing a heading only one of them offered: the other's answer is outside its own options, which is no
+    // answer at all, so the Ask fails (jevFailed), as for a missing answer.
+    expect(() => sectionVerdict(s, [answer(one!.ref), answer(one!.ref)])).toThrow(PlannerError);
   });
 });

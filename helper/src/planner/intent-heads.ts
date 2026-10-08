@@ -285,16 +285,17 @@ export type SectionAnswer = { readonly kind: "section"; readonly name: string } 
  */
 export function sectionVerdict(snap: IntentSnapshot, scope: readonly [JevResult, JevResult], cutoff: number = SCOPE_CUTOFF): SectionAnswer | null {
   if (!asksSection(snap)) return null;
-  // Each wording's answer is read against the options its own question offered: the bounded list may offer a heading
-  // in one wording and not the other. An answer outside them settles nothing (null), as two answers that differ do.
-  const answers = scope.map((r, i) => {
+  // Each wording's answer is read against the options its own question offered (the bounded list may offer a heading
+  // in one wording and not the other). An answer outside them is no answer: the Ask fails as for a missing one, since a
+  // null verdict would mean "no section named" and lift the veto. Two valid answers that differ settle nothing (null).
+  const [x, y] = scope.map((r, i) => {
     const a = r.answers[SECTION_QUESTION];
     if (a === undefined) throw new PlannerError("jevFailed", "Jev gave no answer to the section question");
     const options = new Set([...Object.keys(SECTION_OPTIONS), ...offeredSections(snap, i as 0 | 1)]);
-    return options.has(a.choice) ? a : null;
-  });
-  const [x, y] = answers as [(typeof answers)[number], (typeof answers)[number]];
-  if (x === null || y === null || x.choice !== y.choice || x.confidence < cutoff || y.confidence < cutoff) return null;
+    if (!options.has(a.choice)) throw new PlannerError("jevFailed", `Jev answered '${a.choice}' to the section question, which is not one of its options`);
+    return a;
+  }) as [{ choice: string; confidence: number }, { choice: string; confidence: number }];
+  if (x.choice !== y.choice || x.confidence < cutoff || y.confidence < cutoff) return null;
   if (x.choice === "unlisted") return { kind: "unlisted" };
   const name = snap.headings.find((h) => h.ref === x.choice)?.name;
   return name === undefined ? null : { kind: "section", name };
