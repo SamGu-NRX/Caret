@@ -502,6 +502,22 @@ describe("continuations of a question beside settled fields", () => {
 
 
 describe("the fields question's rows", () => {
+  it("never shows a group label two same-labelled rows share: City under Delivery > Address and Billing > Address", async () => {
+    const m = deskOf(PIZZA).model;
+    m.apply(snap([
+      field("f/name", "", { label: "Name" }),
+      node("g/d", "AXGroup", { label: "Delivery" }), node("g/da", "AXGroup", { label: "Address", parent: "g/d" }), field("f/dcity", "", { label: "City", parent: "g/da" }),
+      node("g/b", "AXGroup", { label: "Billing" }), node("g/ba", "AXGroup", { label: "Address", parent: "g/b" }), field("f/bcity", "", { label: "City", parent: "g/ba" }),
+    ], { at: 1_800_000_001_000, windowId: "g35-groups", title: "Order", focused: true }));
+    const ask: AskJev = async (req) => result(Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
+      if (req.purpose === "ask.heads") return [id, { choice: { route: "some", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none", confidence: 0.9 }];
+      if (id === SECTION_QUESTION) return [id, { choice: "fields", confidence: 0.99 }];
+      return [id, scopeLabel(String(q.instructions)) === "City" ? { choice: "unclear", confidence: 0.9 } : sure];
+    })));
+    const q = await question(planAsk("put the city in", m, { values: () => [] }, [], { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "g35-groups", windowId: "g35-groups", now: 2000 }));
+    expect(q.question.options.map((o) => [o.option.kind === "field" ? o.option.section : null, o.fixes.fields])).toEqual([["Delivery", ["f/dcity"]], ["Billing", ["f/bcity"]]]);
+  });
+
   it("names the shortest part of the section path that tells same-labelled rows apart, skipping unnamed sections", async () => {
     const m = deskOf(PIZZA).model;
     // A page walk: Delivery and Billing headings, each with an Address heading inside, and no group labels.
