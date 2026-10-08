@@ -36,6 +36,9 @@
       146,
       600,
       42
+     ],
+     "sections": [
+      "Contact"
      ]
     },
     {
@@ -52,6 +55,9 @@
       201,
       13,
       13
+     ],
+     "sections": [
+      "Contact"
      ]
     },
     {
@@ -80,6 +86,9 @@
       292,
       600,
       44
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -96,6 +105,9 @@
       374,
       294,
       42
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -112,6 +124,9 @@
       374,
       294,
       42
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -128,6 +143,9 @@
       454,
       600,
       42
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -144,6 +162,9 @@
       524,
       600,
       42
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -160,6 +181,9 @@
       594,
       600,
       42
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -176,6 +200,9 @@
       674,
       192,
       42
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -454,6 +481,9 @@
       674,
       192,
       44
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -470,6 +500,9 @@
       674,
       192,
       42
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -486,6 +519,9 @@
       756,
       600,
       42
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -502,6 +538,9 @@
       811,
       13,
       13
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -522,7 +561,11 @@
      "group": {
       "id": "e14",
       "name": "Shipping method"
-     }
+     },
+     "sections": [
+      "Delivery",
+      "Shipping method"
+     ]
     },
     {
      "id": "e15",
@@ -542,7 +585,11 @@
      "group": {
       "id": "e14",
       "name": "Shipping method"
-     }
+     },
+     "sections": [
+      "Delivery",
+      "Shipping method"
+     ]
     },
     {
      "id": "e16",
@@ -562,7 +609,11 @@
      "group": {
       "id": "e14",
       "name": "Shipping method"
-     }
+     },
+     "sections": [
+      "Delivery",
+      "Shipping method"
+     ]
     },
     {
      "id": "e17",
@@ -578,6 +629,9 @@
       1040,
       600,
       58
+     ],
+     "sections": [
+      "Delivery"
      ]
     },
     {
@@ -593,6 +647,9 @@
       1133,
       600,
       49
+     ],
+     "sections": [
+      "Delivery"
      ]
     }
    ],

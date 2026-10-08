@@ -12,6 +12,8 @@ import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
 import { headsIntentMaker, headsRequest, readHeads, scopeId, settleFields } from "../src/planner/intent-heads.ts";
 import { AskRefused, planAsk, type AskDraft, type AskGoal } from "../src/planner/ask.ts";
 import { scopeSet, withScope } from "../src/fill/ask-scope.ts";
+import { redactWindow } from "../src/fill/redact.ts";
+import { secretText } from "../src/memory/sensitive.ts";
 import { rng } from "./large-scene.ts";
 import { field, node, snap } from "./builders.ts";
 
@@ -31,9 +33,9 @@ function readerForm(o: { headings?: boolean; contactFirst?: boolean } = {}): Nod
   return [node("h/top", "AXHeading", { label: "Service request" }), ...(o.contactFirst === true ? [...contact, ...equipment] : [...equipment, ...contact])];
 }
 
-/** The service form as the page engine walks it: the frame's heading list, and no section on any control (before Part B). */
-function pageSnapshot(headings: readonly string[]): ReturnType<typeof toWindowSnapshot> {
-  const control = (id: string, name: string, y: number): PageControl => ({ id, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, y, 200, 24] });
+/** The service form as the page engine walks it: the frame's heading list, and each control's sections, by name (none before Part B). */
+function pageSnapshot(headings: readonly string[], sections: Readonly<Record<string, readonly string[]>> = {}): ReturnType<typeof toWindowSnapshot> {
+  const control = (id: string, name: string, y: number): PageControl => ({ id, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, y, 200, 24], ...(sections[name] === undefined ? {} : { sections: [...sections[name]] }) });
   const s = PageSnapshot.parse({
     type: "pageSnapshot",
     v: 1,
@@ -331,5 +333,71 @@ describe("what the veto leaves as it was (preservation)", () => {
       expect(written(a, shown)).toEqual(written(b, bare));
       expect(written(a, shown)).toEqual(ALL);
     }
+  });
+});
+
+/** Part B: the page walk says which sections each control sits in (extension content/sections.ts). */
+const PAGE_SECTIONS: Record<string, readonly string[]> = {
+  "Serial number": ["Service request", "Equipment details"],
+  Model: ["Service request", "Equipment details"],
+  "Contact name": ["Service request", "Service contact"],
+  "Contact phone": ["Service request", "Service contact"],
+};
+const HEADINGS = ["Service request", "Equipment details", "Service contact"];
+
+describe("a section-only Ask on the page walk (Part B: page fields carry their sections)", () => {
+  it("projects each control's sections onto its node, and leaves out a section name that names a secret", () => {
+    const secret = "Password and security";
+    expect(secretText(secret)).toBe(true);
+    const page = pageSnapshot(HEADINGS, { ...PAGE_SECTIONS, Model: ["Service request", secret] });
+    const node = (name: string): Node | undefined => page.nodes.find((n) => n.label === name);
+    expect(node("Serial number")?.sections).toEqual(["Service request", "Equipment details"]);
+    expect(node("Model")?.sections).toEqual(["Service request", secret]);
+    const d = desk({ page });
+    const w = d.model.windows.get(d.windowId);
+    if (w === undefined) throw new Error("no page");
+    const model = [...redactWindow(w).nodes.values()].find((n) => n.label === "Model");
+    expect(model?.sections).toEqual(["Service request"]);
+    // Nor is it ever offered as a section.
+    expect(intentSnapshot(INSTRUCTION, d.model, w, []).headings.map((h) => h.name)).toEqual(HEADINGS);
+  });
+
+  it("fills the named section's fields and leaves out the adjacent section's, though Jev answered asks and exact for both", async () => {
+    const d = desk({ page: pageSnapshot(HEADINGS, PAGE_SECTIONS) });
+    const r = (await plan(d, jev({ section: "Equipment details" }))) as AskDraft;
+    expect(written(r, d)).toEqual(EQUIPMENT);
+    expect(r.unsure ?? []).toEqual([]);
+    const g = await plan(d, jev({ section: "Equipment details" }), INSTRUCTION, true);
+    expect(written(g, d)).toEqual(EQUIPMENT);
+    expect([...((g as AskGoal).askScope?.fields ?? [])].length).toBe(2);
+  });
+
+  it("reads the page title over the form as a section holding every field, not as no field's", async () => {
+    const d = desk({ page: pageSnapshot(HEADINGS, PAGE_SECTIONS) });
+    const r = (await plan(d, jev({ section: "Service request" }))) as AskDraft;
+    expect(written(r, d)).toEqual(ALL);
+  });
+
+  it("offers only the sections the walk places a field in, once it places any", () => {
+    const d = desk({ page: pageSnapshot(["Service request", "Equipment details", "Service contact", "Need help?"], { "Serial number": ["Equipment details"], Model: ["Equipment details"], "Contact name": ["Service contact"], "Contact phone": ["Service contact"] }) });
+    const w = d.model.windows.get(d.windowId);
+    if (w === undefined) throw new Error("no page");
+    expect(intentSnapshot(INSTRUCTION, d.model, w, []).headings.map((h) => h.name)).toEqual(["Equipment details", "Service contact"]);
+  });
+
+  it("can't tell a section whose name the walk reaches by two outlines: its fields are the user's", async () => {
+    const d = desk({ page: pageSnapshot(["Service request"], { "Serial number": ["Equipment details", "Address"], Model: ["Equipment details"], "Contact name": ["Service contact", "Address"], "Contact phone": ["Service contact"] }) });
+    const r = await plan(d, jev({ asks: ["Serial number", "Contact name"], section: "Address" })).catch((e: unknown) => e);
+    expect(written(r, d)).toEqual([]);
+    expect((r as AskRefused).message).toContain("couldn't tell which section");
+  });
+
+  it("leaves a whole-form Ask on a sectioned page exactly as on a page without sections", async () => {
+    const sectioned = desk({ page: pageSnapshot(HEADINGS, PAGE_SECTIONS) });
+    const bare = desk({ page: pageSnapshot([]) });
+    const a = await plan(sectioned, jev({ section: "whole", route: "all" }), "fill out this form from my notes", true);
+    const b = await plan(bare, jev({ route: "all" }), "fill out this form from my notes", true);
+    expect(written(a, sectioned)).toEqual(written(b, bare));
+    expect(written(a, sectioned)).toEqual(ALL);
   });
 });

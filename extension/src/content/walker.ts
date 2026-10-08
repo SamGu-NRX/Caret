@@ -4,9 +4,10 @@
 // code, before anything leaves the frame: such controls are counted by reason and never named or read.
 import type { PageControl, PageControlKind, PageExclusion, Rect } from "../shared/messages.ts";
 import { authorIdentifier, isGeneratedId, strongKey } from "../shared/ids.ts";
-import { clean, composedParent, groupNames } from "./names.ts";
+import { clean, composedParent, groupNames, labelledByText } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
+import { sectionChains } from "./sections.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -286,6 +287,14 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
   const excluded: Partial<Record<PageExclusion, number>> = {};
   const ordinals = new Map<string, number>();
   let truncated = false;
+  // SCP1: the sections each control sits in (sections.ts). A section name the exclusions would match never leaves the frame.
+  const sections = sectionChains<Element>(document, {
+    wanted: (el) => el.matches(CANDIDATE),
+    shown: (el) => !ariaHidden(el) && visible(el),
+    labelledBy: labelledByText,
+    shadowRoot: shadowRootOf,
+    excluded: (name) => SELF_IDENTIFICATION.test(name),
+  });
   for (const f of candidates()) {
     const why = exclusionOf(f.el, f.name);
     if (why !== null) {
@@ -350,6 +359,8 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       if (token !== undefined) c.autocomplete = token;
     }
     if (f.shadow !== undefined) c.shadow = f.shadow;
+    const inside = sections.get(f.el) ?? [];
+    if (inside.length > 0) c.sections = inside;
     controls.push(c);
     onKept(f.el, c);
   }

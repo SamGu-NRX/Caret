@@ -15,7 +15,7 @@ import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { headingsBefore, observedSections, sectionName } from "../fill/ask-scope.ts";
+import { headingsBefore, observedSections, sectionEvidence, sectionName } from "../fill/ask-scope.ts";
 import { inWebArea, type Control } from "../fill/controls.ts";
 import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
@@ -247,9 +247,19 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     uploads.push({ ref: `u${uploads.length + 1}`, key: n.key, name, section: d.section, heading, control: "text", filled: false, neverTyped: null, upload: true });
   }
   // SCP1: the sections the window shows, for the section question. A heading the ledger does not take is never offered.
+  // Where the window places fields in sections, only the sections it places some field in: a page title heading over a
+  // form ("Rental Application", before every other heading) offered as a section would read "fill out the rental
+  // application" as that section, and the reader's window holds no field under it. Where it places none (a page walk
+  // from an extension before SCP1), every section it shows, so a section-only Ask still withholds rather than fills.
   const shown = observedSections(w);
+  const evidence = sectionEvidence(w, shown);
+  const placed = new Set([...fields, ...uploads].flatMap((f) => {
+    const e = evidence(f.key);
+    return e === "conflict" ? [] : e.map(sectionName);
+  }));
+  const offered = shown.names.some((n) => placed.has(sectionName(n))) ? shown.names.filter((n) => placed.has(sectionName(n))) : shown.names;
   const sectionHeadings: IntentSnapshot["headings"] = [];
-  for (const name of shown.names) {
+  for (const name of offered) {
     if (sectionHeadings.length >= MAX_INTENT_HEADINGS) break;
     if (!secretText(name) && ledger.take(w, "descriptor", [name])) sectionHeadings.push({ ref: `sec${sectionHeadings.length + 1}`, name, repeated: shown.repeated.has(sectionName(name)) });
   }

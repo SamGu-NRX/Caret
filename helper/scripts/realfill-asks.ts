@@ -181,7 +181,8 @@ const oracle: AskJev = async (req) => {
     // heading's option, else the whole form when the ask expects every field of it, else particular fields.
     else if (id === "section") {
       const label = SECTION_LABELS[ask?.id ?? ""];
-      const named = label === undefined ? undefined : Object.entries(q.criteria).find(([k, d]) => k.startsWith("sec") && d?.includes(`'${label}'`) === true)?.[0];
+      // The reader shows some headings in capitals ("EMERGENCY CONTACT"), so the label is matched without case.
+      const named = label === undefined ? undefined : Object.entries(q.criteria).find(([k, d]) => k.startsWith("sec") && d?.toLowerCase().includes(`'${label.toLowerCase()}'`) === true)?.[0];
       pick(named ?? (form !== undefined && form.fields.every((f) => wanted(f.label)) ? "whole" : "fields"));
     }
     // The scope ask's label, which may hold an apostrophe ("Guest's full name"), ends where the wording goes on.

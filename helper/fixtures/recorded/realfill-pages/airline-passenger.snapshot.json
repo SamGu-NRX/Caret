@@ -37,6 +37,10 @@
       181,
       242.7,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Passenger 1 (Adult)"
      ]
     },
     {
@@ -53,6 +57,10 @@
       181,
       242.7,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Passenger 1 (Adult)"
      ]
     },
     {
@@ -69,6 +77,10 @@
       181,
       242.7,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Passenger 1 (Adult)"
      ]
     },
     {
@@ -117,6 +129,10 @@
       249,
       760,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Passenger 1 (Adult)"
      ]
     },
     {
@@ -200,6 +216,11 @@
       344,
       242.7,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Passenger 1 (Adult)",
+      "Date of birth"
      ]
     },
     {
@@ -216,6 +237,11 @@
       344,
       242.7,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Passenger 1 (Adult)",
+      "Date of birth"
      ]
     },
     {
@@ -232,6 +258,11 @@
       344,
       242.7,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Passenger 1 (Adult)",
+      "Date of birth"
      ]
     },
     {
@@ -248,6 +279,10 @@
       567,
       760,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Passenger 1 (Adult)"
      ]
     },
     {
@@ -264,6 +299,10 @@
       635,
       760,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Passenger 1 (Adult)"
      ]
     },
     {
@@ -280,6 +319,10 @@
       767,
       372,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Contact information"
      ]
     },
     {
@@ -296,6 +339,10 @@
       767,
       372,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Contact information"
      ]
     },
     {
@@ -312,6 +359,10 @@
       835,
       760,
       37
+     ],
+     "sections": [
+      "Who's flying?",
+      "Contact information"
      ]
     },
     {
@@ -328,6 +379,10 @@
       887,
       13,
       13
+     ],
+     "sections": [
+      "Who's flying?",
+      "Contact information"
      ]
     },
     {
@@ -343,6 +398,10 @@
       931,
       108,
       42
+     ],
+     "sections": [
+      "Who's flying?",
+      "Contact information"
      ]
     }
    ],

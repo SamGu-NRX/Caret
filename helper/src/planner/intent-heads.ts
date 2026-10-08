@@ -238,8 +238,8 @@ export function sectionVeto(snap: IntentSnapshot, scope: readonly [JevResult, Je
   const section = held ?? sectionVerdict(snap, scope);
   if (section === null) return null;
   const w = redactWindow(snap.window);
-  const evidence = sectionEvidence(w);
   const shown = observedSections(w);
+  const evidence = sectionEvidence(w, shown);
   const outside = new Set<string>();
   const unknown = new Set<string>();
   for (const f of scopeFields(snap)) {

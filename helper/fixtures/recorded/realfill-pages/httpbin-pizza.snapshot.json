@@ -85,7 +85,10 @@
      "group": {
       "id": "e4",
       "name": "Pizza Size"
-     }
+     },
+     "sections": [
+      "Pizza Size"
+     ]
     },
     {
      "id": "e5",
@@ -105,7 +108,10 @@
      "group": {
       "id": "e4",
       "name": "Pizza Size"
-     }
+     },
+     "sections": [
+      "Pizza Size"
+     ]
     },
     {
      "id": "e6",
@@ -125,7 +131,10 @@
      "group": {
       "id": "e4",
       "name": "Pizza Size"
-     }
+     },
+     "sections": [
+      "Pizza Size"
+     ]
     },
     {
      "id": "e7",
@@ -141,6 +150,9 @@
       329.2,
       13,
       13
+     ],
+     "sections": [
+      "Pizza Toppings"
      ]
     },
     {
@@ -157,6 +169,9 @@
       365.2,
       13,
       13
+     ],
+     "sections": [
+      "Pizza Toppings"
      ]
     },
     {
@@ -173,6 +188,9 @@
       401.2,
       13,
       13
+     ],
+     "sections": [
+      "Pizza Toppings"
      ]
     },
     {
@@ -189,6 +207,9 @@
       437.2,
       13,
       13
+     ],
+     "sections": [
+      "Pizza Toppings"
      ]
     },
     {

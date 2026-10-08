@@ -84,6 +84,8 @@ export const Node = z.object({
    * may offer (fill/ask-scope.ts observedSections). It says nothing about which control is under which heading.
    */
   headings: z.array(z.string()).optional(),
+  /** SCP1, page controls and their groups only: the sections the control sits in, outermost first (PageControl.sections). */
+  sections: z.array(z.string()).optional(),
 });
 export type Node = z.infer<typeof Node>;
 
@@ -2775,6 +2777,11 @@ export const PageControl = z.object({
   accept: z.array(z.string().min(1).max(100)).max(20).optional(),
   /** W2: the autocomplete attribute's field name (extension walker.ts autocompleteOf), which the write contract reads. */
   autocomplete: AutocompleteToken.optional(),
+  /**
+   * SCP1: the sections the control sits in, outermost first (extension content/sections.ts): the page's heading outline
+   * at its place within its form or region, then each enclosing fieldset legend or group label. Absent when in none.
+   */
+  sections: z.array(z.string().min(1).max(200)).max(8).optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 

@@ -134,66 +134,95 @@ export function headingsBefore(w: WindowState): Map<string, string | null> {
 /** How the section veto compares section names: case, Unicode width and runs of whitespace aside. */
 export const sectionName = (s: string): string => s.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase();
 
+/** What a window shows of its sections: their names in document order, each once, and (by sectionName) those it shows twice. */
+export interface ShownSections {
+  readonly names: readonly string[];
+  readonly repeated: ReadonlySet<string>;
+}
+
 /**
- * SCP1: the section names a window shows, in document order, each once (`repeated` holds, by sectionName, those shown
- * more than once): its AXHeading nodes' text, and on a page each frame's heading list (PageFrame.headings, carried on
- * its web area node). These are the only sections an Ask's section question offers (intent-heads.ts).
+ * SCP1: the section names a window shows, in document order, each once: its AXHeading nodes' text, a page frame's
+ * heading list (PageFrame.headings, carried on its web area node), and the sections a page control sits in
+ * (Node.sections). `repeated` holds a name the window shows as two sections: two headings with that text, or one name
+ * reached by two different outlines on a page ("Address" under Billing and under Shipping). These are the only sections
+ * an Ask's section question offers (intent-heads.ts).
  */
-export function observedSections(w: WindowState): { names: string[]; repeated: Set<string> } {
+export function observedSections(w: WindowState): ShownSections {
   const nodes = [...w.nodes.values()];
-  const all: string[] = [];
+  const names: string[] = [];
+  const repeated = new Set<string>();
+  const counted = new Set<string>();
+  const add = (t: string): void => {
+    if (!names.some((n) => sectionName(n) === sectionName(t))) names.push(t);
+  };
+  // Headings: each one shown is a section of its own, so a text shown twice is two sections.
+  const heading = (t: string): void => {
+    const k = sectionName(t);
+    if (counted.has(k)) repeated.add(k);
+    counted.add(k);
+    add(t);
+  };
+  /** A page control's section name, by the outline above it there: one name under two outlines is two sections. */
+  const outlines = new Map<string, Set<string>>();
   for (const n of nodes) {
     if (n.role === "AXHeading") {
       const t = headingText(nodes, n);
-      if (t !== null) all.push(t);
+      if (t !== null) heading(t);
     }
-    for (const h of n.headings ?? []) if (h.trim() !== "") all.push(h.trim());
-  }
-  const names: string[] = [];
-  const repeated = new Set<string>();
-  const seen = new Set<string>();
-  for (const t of all) {
-    const k = sectionName(t);
-    if (seen.has(k)) {
-      repeated.add(k);
-      continue;
+    for (const h of n.headings ?? []) if (h.trim() !== "") heading(h.trim());
+    for (const [i, t] of (n.sections ?? []).entries()) {
+      const k = sectionName(t);
+      const path = (n.sections ?? []).slice(0, i).map(sectionName).join("\n");
+      outlines.set(k, (outlines.get(k) ?? new Set()).add(path));
+      add(t);
     }
-    seen.add(k);
-    names.push(t);
   }
+  for (const [k, paths] of outlines) if (paths.size > 1) repeated.add(k);
   return { names, repeated };
 }
 
 /**
- * SCP1: what the window shows of which section each field is in, by node key: the nearest heading before it in
- * document order and its group or fieldset label (describeField's section). A page's frame heading list says nothing
- * about which control is under which heading, so on a page this is only a radio group's question.
+ * What the window shows of which sections a field is in: the sections that enclose it, outermost first, or "conflict"
+ * when two readings of where it is disagree.
  */
-export function sectionEvidence(w: WindowState): (key: string) => string[] {
+export type SectionEvidence = readonly string[] | "conflict";
+
+/**
+ * SCP1: what the window shows of which sections each field is in, by node key. On a page, the sections the walk found
+ * around the control (Node.sections). Otherwise the nearest heading before it in document order and its group or
+ * fieldset label (describeField's section), which conflict when each names a different shown section: the heading's
+ * place says one section, the group around it another. A page control the walk found in no section has none.
+ */
+export function sectionEvidence(w: WindowState, shown: ShownSections): (key: string) => SectionEvidence {
   const before = headingsBefore(w);
+  const names = new Set(shown.names.map(sectionName));
   return (key) => {
     const n = w.nodes.get(key);
     if (n === undefined) return [];
-    return [before.get(key) ?? null, describeField(w, n).section].filter((x): x is string => x !== null && x.trim() !== "");
+    if (n.sections !== undefined) return n.sections;
+    const heading = before.get(key) ?? null;
+    const group = describeField(w, n).section;
+    if (heading !== null && group !== null && names.has(sectionName(heading)) && names.has(sectionName(group)) && sectionName(heading) !== sectionName(group)) return "conflict";
+    return [heading, group].filter((x): x is string => x !== null && x.trim() !== "");
   };
 }
 
 /**
  * SCP1: whether a field is in section `section`, by what the window shows (sectionEvidence), against the sections it
- * shows (observedSections). Only evidence that names one of those sections counts: a group labelled "Address" says
- * nothing about which heading it sits under. "in": the evidence names `section` and no other shown section; "outside":
- * it names another shown section and not `section`; "unknown": it names none, names `section` beside another (they
- * conflict), or `section` is shown more than once, so which one is meant cannot be told.
+ * shows (observedSections). Only evidence that names one of those sections counts: a group labelled "Address" that is
+ * no section the window shows says nothing. "in": a section around the field is `section`; "outside": some are shown
+ * sections, and none is `section`; "unknown": none is a shown section, the readings conflict, or `section` is shown
+ * twice, so which one is meant cannot be told.
  */
 export type Membership = "in" | "outside" | "unknown";
-export function membership(evidence: readonly string[], section: string, shown: { names: readonly string[]; repeated: ReadonlySet<string> }): Membership {
+export function membership(evidence: SectionEvidence, section: string, shown: ShownSections): Membership {
+  if (evidence === "conflict") return "unknown";
   const target = sectionName(section);
   const names = new Set(shown.names.map(sectionName));
   const named = new Set(evidence.map(sectionName).filter((x) => names.has(x)));
   if (named.size === 0) return "unknown";
   if (!named.has(target)) return "outside";
-  if (named.size > 1 || shown.repeated.has(target)) return "unknown";
-  return "in";
+  return shown.repeated.has(target) ? "unknown" : "in";
 }
 
 /**
@@ -211,7 +240,7 @@ export function fieldFingerprint(w: WindowState, key: string): string {
   const children = [...w.nodes.values()].filter((c) => c.parent === key).map((c) => [c.role, c.label ?? null, c.value ?? null, states(c.states)]);
   // The page's own input kind, autocomplete name and maxlength too (re-review): a field that now asks for a phone where it
   // asked for an email is not the field the Ask was about.
-  return JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children]);
+  return JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, n.sections ?? null, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children]);
 }
 
 /** What the scope check needs of a write: its target and fingerprint (FieldContract), and whose value it is. */

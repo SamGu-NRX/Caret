@@ -43,6 +43,11 @@ export interface PageControl {
   accept?: string[];
   /** W2: the autocomplete attribute's field name, when it is one Caret reads (walker.ts autocompleteOf). */
   autocomplete?: string;
+  /**
+   * SCP1: the sections the control sits in, outermost first (content/sections.ts): the page's heading outline at its
+   * place within its form or region, then each enclosing fieldset legend or group label. Absent when it is in none.
+   */
+  sections?: string[];
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";

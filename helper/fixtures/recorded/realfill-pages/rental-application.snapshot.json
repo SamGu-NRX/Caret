@@ -41,6 +41,10 @@
       181.1,
       250.7,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Applicant"
      ]
     },
     {
@@ -57,6 +61,10 @@
       181.1,
       250.7,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Applicant"
      ]
     },
     {
@@ -73,6 +81,10 @@
       181.1,
       250.7,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Applicant"
      ]
     },
     {
@@ -89,6 +101,10 @@
       247.1,
       383,
       38
+     ],
+     "sections": [
+      "Rental Application",
+      "Applicant"
      ]
     },
     {
@@ -105,6 +121,10 @@
       247.1,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Applicant"
      ]
     },
     {
@@ -121,6 +141,10 @@
       316.1,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Applicant"
      ]
     },
     {
@@ -137,6 +161,10 @@
       316.1,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Applicant"
      ]
     },
     {
@@ -153,6 +181,10 @@
       451.2,
       574.5,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Current residence"
      ]
     },
     {
@@ -169,6 +201,10 @@
       451.2,
       191.5,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Current residence"
      ]
     },
     {
@@ -185,6 +221,10 @@
       517.2,
       376,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Current residence"
      ]
     },
     {
@@ -463,6 +503,10 @@
       517.2,
       188,
       37
+     ],
+     "sections": [
+      "Rental Application",
+      "Current residence"
      ]
     },
     {
@@ -479,6 +523,10 @@
       517.2,
       188,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Current residence"
      ]
     },
     {
@@ -495,6 +543,10 @@
       585.2,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Current residence"
      ]
     },
     {
@@ -511,6 +563,10 @@
       585.2,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Current residence"
      ]
     },
     {
@@ -527,6 +583,10 @@
       651.2,
       780,
       54
+     ],
+     "sections": [
+      "Rental Application",
+      "Current residence"
      ]
     },
     {
@@ -543,6 +603,10 @@
       823.3,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Current landlord"
      ]
     },
     {
@@ -559,6 +623,10 @@
       823.3,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Current landlord"
      ]
     },
     {
@@ -575,6 +643,10 @@
       958.4,
       383,
       38
+     ],
+     "sections": [
+      "Rental Application",
+      "Move details"
      ]
     },
     {
@@ -623,6 +695,10 @@
       958.4,
       383,
       37
+     ],
+     "sections": [
+      "Rental Application",
+      "Move details"
      ]
     },
     {
@@ -643,7 +719,12 @@
      "group": {
       "id": "e20",
       "name": "Do you have pets? *"
-     }
+     },
+     "sections": [
+      "Rental Application",
+      "Move details",
+      "Do you have pets? *"
+     ]
     },
     {
      "id": "e21",
@@ -663,7 +744,12 @@
      "group": {
       "id": "e20",
       "name": "Do you have pets? *"
-     }
+     },
+     "sections": [
+      "Rental Application",
+      "Move details",
+      "Do you have pets? *"
+     ]
     },
     {
      "id": "e22",
@@ -679,6 +765,10 @@
       1162.5,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Employment and income"
      ]
     },
     {
@@ -695,6 +785,10 @@
       1162.5,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Employment and income"
      ]
     },
     {
@@ -711,6 +805,10 @@
       1228.5,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Employment and income"
      ]
     },
     {
@@ -727,6 +825,10 @@
       1228.5,
       383,
       35
+     ],
+     "sections": [
+      "Rental Application",
+      "Employment and income"
      ]
     },
     {
@@ -743,6 +845,10 @@
       1355.7,
       13,
       13
+     ],
+     "sections": [
+      "Rental Application",
+      "Agreements"
      ]
     },
     {
@@ -758,6 +864,10 @@
       1398.7,
       182.8,
       42
+     ],
+     "sections": [
+      "Rental Application",
+      "Agreements"
      ]
     }
    ],

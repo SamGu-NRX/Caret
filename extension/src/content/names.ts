@@ -9,6 +9,11 @@ export function clean(s: string | null | undefined, max = MAX_NAME): string {
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
 }
 
+/** The text of the elements an aria-labelledby value names, in `el`'s own tree (document or shadow root). */
+export function labelledByText(el: Element, ids: string): string {
+  return byIds(el, ids).map((e) => e.textContent ?? "").join(" ");
+}
+
 function byIds(el: Element, ids: string): Element[] {
   const root = el.getRootNode() as Document | ShadowRoot;
   return ids.split(/\s+/).filter(Boolean).map((id) => root.getElementById(id)).filter((e): e is HTMLElement => e !== null);

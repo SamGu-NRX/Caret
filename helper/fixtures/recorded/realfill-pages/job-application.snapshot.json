@@ -39,6 +39,10 @@
       146,
       484,
       37
+     ],
+     "sections": [
+      "Data Analyst",
+      "Submit your application"
      ]
     },
     {
@@ -55,6 +59,10 @@
       193,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Submit your application"
      ]
     },
     {
@@ -71,6 +79,10 @@
       234,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Submit your application"
      ]
     },
     {
@@ -87,6 +99,10 @@
       275,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Submit your application"
      ]
     },
     {
@@ -103,6 +119,10 @@
       316,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Submit your application"
      ]
     },
     {
@@ -119,6 +139,10 @@
       407,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Links"
      ]
     },
     {
@@ -135,6 +159,10 @@
       448,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Links"
      ]
     },
     {
@@ -151,6 +179,10 @@
       489,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Links"
      ]
     },
     {
@@ -167,6 +199,10 @@
       580,
       484,
       34
+     ],
+     "sections": [
+      "Data Analyst",
+      "A few questions"
      ]
     },
     {
@@ -187,7 +223,12 @@
      "group": {
       "id": "e10",
       "name": "Will you now or in the future require visa sponsorship to work in the US? ✱"
-     }
+     },
+     "sections": [
+      "Data Analyst",
+      "A few questions",
+      "Will you now or in the future require visa sponsorship to work in the US? ✱"
+     ]
     },
     {
      "id": "e11",
@@ -207,7 +248,12 @@
      "group": {
       "id": "e10",
       "name": "Will you now or in the future require visa sponsorship to work in the US? ✱"
-     }
+     },
+     "sections": [
+      "Data Analyst",
+      "A few questions",
+      "Will you now or in the future require visa sponsorship to work in the US? ✱"
+     ]
     },
     {
      "id": "e12",
@@ -260,6 +306,10 @@
       685.5,
       484,
       33
+     ],
+     "sections": [
+      "Data Analyst",
+      "A few questions"
      ]
     },
     {
@@ -276,6 +326,10 @@
       729,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "A few questions"
      ]
     },
     {
@@ -292,6 +346,10 @@
       770,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "A few questions"
      ]
     },
     {
@@ -308,6 +366,10 @@
       861,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Professional reference"
      ]
     },
     {
@@ -356,6 +418,10 @@
       902,
       484,
       33
+     ],
+     "sections": [
+      "Data Analyst",
+      "Professional reference"
      ]
     },
     {
@@ -372,6 +438,10 @@
       945,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Professional reference"
      ]
     },
     {
@@ -388,6 +458,10 @@
       986,
       484,
       31
+     ],
+     "sections": [
+      "Data Analyst",
+      "Professional reference"
      ]
     },
     {
@@ -404,6 +478,10 @@
       1077,
       484,
       104
+     ],
+     "sections": [
+      "Data Analyst",
+      "Additional information"
      ]
     },
     {
@@ -420,6 +498,10 @@
       1198,
       13,
       13
+     ],
+     "sections": [
+      "Data Analyst",
+      "Additional information"
      ]
     },
     {
@@ -435,6 +517,10 @@
       1254,
       227.5,
       40
+     ],
+     "sections": [
+      "Data Analyst",
+      "Additional information"
      ]
     }
    ],

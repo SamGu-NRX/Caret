@@ -39,6 +39,10 @@
       173.3,
       700,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Patient information"
      ]
     },
     {
@@ -55,6 +59,10 @@
       242.3,
       343,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Patient information"
      ]
     },
     {
@@ -71,6 +79,10 @@
       242.3,
       343,
       40
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Patient information"
      ]
     },
     {
@@ -129,6 +141,10 @@
       314.3,
       700,
       39
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Patient information"
      ]
     },
     {
@@ -145,6 +161,10 @@
       432.5,
       700,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details"
      ]
     },
     {
@@ -161,6 +181,10 @@
       501.5,
       343,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details"
      ]
     },
     {
@@ -177,6 +201,10 @@
       501.5,
       343,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details"
      ]
     },
     {
@@ -193,6 +221,10 @@
       570.5,
       457.3,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details"
      ]
     },
     {
@@ -209,6 +241,10 @@
       570.5,
       228.7,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details"
      ]
     },
     {
@@ -225,6 +261,10 @@
       639.5,
       336,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details"
      ]
     },
     {
@@ -503,6 +543,10 @@
       639.5,
       168,
       39
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details"
      ]
     },
     {
@@ -519,6 +563,10 @@
       639.5,
       168,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details"
      ]
     },
     {
@@ -539,7 +587,12 @@
      "group": {
       "id": "e13",
       "name": "How should we contact you? (required)"
-     }
+     },
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details",
+      "How should we contact you? (required)"
+     ]
     },
     {
      "id": "e14",
@@ -559,7 +612,12 @@
      "group": {
       "id": "e13",
       "name": "How should we contact you? (required)"
-     }
+     },
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details",
+      "How should we contact you? (required)"
+     ]
     },
     {
      "id": "e15",
@@ -579,7 +637,12 @@
      "group": {
       "id": "e13",
       "name": "How should we contact you? (required)"
-     }
+     },
+     "sections": [
+      "Harbor Family Clinic",
+      "Contact details",
+      "How should we contact you? (required)"
+     ]
     },
     {
      "id": "e16",
@@ -595,6 +658,10 @@
       882.8,
       343,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Emergency contact"
      ]
     },
     {
@@ -648,6 +715,10 @@
       882.8,
       343,
       39
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Emergency contact"
      ]
     },
     {
@@ -664,6 +735,10 @@
       953.8,
       700,
       37
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Emergency contact"
      ]
     },
     {
@@ -680,6 +755,10 @@
       1053.1,
       13,
       13
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Acknowledgements"
      ]
     },
     {
@@ -696,6 +775,10 @@
       1083.1,
       13,
       13
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Acknowledgements"
      ]
     },
     {
@@ -711,6 +794,10 @@
       1132.1,
       180.5,
       42
+     ],
+     "sections": [
+      "Harbor Family Clinic",
+      "Acknowledgements"
      ]
     }
    ],
