@@ -160,10 +160,16 @@ describe("a menu's option named by a source, through fill (G3's examples)", () =
    * HA2: an owner question shows the whole note, which fits its window's limit; a note it could not show whole would
    * withhold its address.
    */
-  // The Ask reads the windows that are no conversation: the desks' bystander mail holds an address too, which its own
-  // facts no longer fit beside (each candidate is admitted with all of them), so reading it would cut the address kind
-  // and withhold the note's state, which is not what these cases are about.
+  // An Ask that names the windows that are no conversation as its sources. From any source (the first test below), the
+  // desks' bystander mail's address does not fit beside its own facts and is cut, so the state is withheld: the cut
+  // address may be the one meant.
   const only = (label: string) => (d: Desk): FillScope => ({ fields: formControls(d.form).filter((c) => normLabel(c.label ?? "") === normLabel(label)).map((c) => c.node.key), windows: new Set([...d.model.windows.values()].filter((w) => w.window.windowId !== d.form.window.windowId && !isConversation(w)).map((w) => w.window.windowId)), memory: false, instruction: "fill in everything you can from my notes", person: null, literals: new Map(), consented: new Set([...d.model.windows.keys()].filter((id) => id !== d.form.window.windowId)) });
+
+  it("B24 ask-07 from any source: withholds State, since an address the bystander mail's cut left out may be the one meant", async () => {
+    const any = (d: Desk): FillScope => ({ ...only("State")(d), windows: null });
+    const { at } = await fill("rental-application", { State: "TX" }, any);
+    expect([at("State")?.handoff, at("State")?.withheld]).toEqual([null, "sourceCut"]);
+  });
 
   it("B24 ask-07: offers State 'TX' for the state of the note's Austin, Texas address", async () => {
     const { at } = await fill("rental-application", { State: "TX" }, only("State"));
@@ -313,17 +319,17 @@ describe("an Ask about a menu whose options the window does not show", () => {
   };
   const ask = (d: Desk) => planAsk("just the degree and my phone number", d.model, { values: () => d.memory }, d.about, { askJev: jev, maker: headsIntentMaker(jev), writer: null, offerKey: "v4", windowId: d.form.window.windowId, now: T0 });
 
-  it("B25 held-16 on the reader's window: fills Phone and says Degree is the user's, since Caret never opens a menu to read it", async () => {
-    const d = (await ask(readerDesk("greenhouse-apply"))) as AskDraft;
-    expect(d.checked.writes.map((w) => w.value)).toEqual(["(512) 555-0147"]);
-    expect(d.controls).toEqual([]);
-    expect(d.leftToYou).toBe("Caret can't see the choices in Degree without opening the menu, so Degree is yours to set.");
+  // B25 held-16 is an accepted loss (lead, Sol's round 4): windows are read by recency, the bystander venue mail before
+  // the note, and each candidate goes in with all its facts; the mail then takes the room the note's phone and degree
+  // need in it. Its sentence about the menu still differs by window.
+  it("B25 held-16 on the reader's window: finds nothing to fill, and still says Degree's menu is the user's to set", async () => {
+    const e = await ask(readerDesk("greenhouse-apply")).catch((x: unknown) => x);
+    expect(String(e), "held-16 is an accepted loss").toBe("Error: Caret found nothing to put in Phone. Caret can't see the choices in Degree without opening the menu, so Degree is yours to set.");
   });
 
-  it("B25 held-16 on the page's window: sets Degree to its option, with no such sentence", async () => {
-    const d = (await ask(pageDesk("greenhouse-apply"))) as AskDraft;
-    expect((d.controls ?? []).map((c) => [c.name, c.value])).toEqual([["Degree", "Bachelor's Degree"]]);
-    expect(d.leftToYou ?? "").not.toMatch(/can't see the choices/u);
+  it("B25 held-16 on the page's window: finds nothing to fill, with no sentence about the menu", async () => {
+    const e = await ask(pageDesk("greenhouse-apply")).catch((x: unknown) => x);
+    expect(String(e), "held-16 is an accepted loss").toBe("Error: Caret found nothing to put in Phone or Degree.");
   });
 
   it("names a menu once, as the user's, when it is all the Ask was about", async () => {

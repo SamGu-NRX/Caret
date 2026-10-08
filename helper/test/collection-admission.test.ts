@@ -7,7 +7,7 @@ import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { Node } from "../src/protocol.ts";
-import { field, snap, text } from "./builders.ts";
+import { field, node, snap, text } from "./builders.ts";
 
 const MESSAGES = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
 const FORM_APP = { pid: 5150, bundleId: "dev.caret.fixture", name: "Fixture" };
@@ -75,5 +75,71 @@ describe("a fill's candidates, admitted once with their facts", () => {
     // No whose questions: a conversation's value is never owner-judged (HA2 rule c), which is not what this case is about.
     const p = await proposeFill(m, picking({ City: "Austin" }), FORM, key("City"), 3000, { whose: false });
     expect(p.fields.find((x) => x.key === key("City"))?.value).toBe("Austin");
+  });
+});
+
+const NOTES = { pid: 6161, bundleId: "dev.caret.notes", name: "Notes" };
+
+describe("Sol's round 4: collection order, associations, one membership, kept ranges", () => {
+  it("reads the windows by recency: a note's eighty dates do not crowd out the date of the chat the user just left", async () => {
+    const m = new ScreenModel();
+    const day = (i: number): string => new Date(Date.UTC(2026, 0, 1 + i)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+    m.apply(snap(Array.from({ length: 80 }, (_, i) => text(`n${i}`, day(i))), { at: 500, windowId: "note-1", title: "Orders", app: NOTES }));
+    m.apply(snap([text("c0", "Date: 2026-10-08"), text("c1", "see you at the venue tomorrow morning")], { at: 1000, windowId: "chat-1", title: "K", app: MESSAGES, focused: true }));
+    m.apply(snap([field(key("Date"), "", { label: "Date", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const seen: JevRequest[] = [];
+    // A Jev that takes the note's first date whenever it is offered.
+    const p = await proposeFill(m, picking({ Date: "Jan 1, 2026" }, seen), FORM, key("Date"), 3000);
+    const f = p.fields.find((x) => x.key === key("Date"))!;
+    // The chat is read first, so its date is offered; the note's dates then reach the generator's cap partway, the date
+    // kind is cut, and the field is withheld rather than filled with a date that was not the only one.
+    expect(seen.flatMap((r) => offered(r, "Date")).concat(f.withheld === "sourceCut" ? ["2026-10-08"] : [])).toContain("2026-10-08");
+    expect(f.value, "never the note's first date as if the chat's were not there").not.toBe("Jan 1, 2026");
+  });
+
+  it("keeps a chat's 'Ref' association whose text a newer note offered: AB01 is not the only Ref value", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("c0", "Ref: AB01"), text("c1", "Ref: AB02")], { at: 1000, windowId: "chat-1", title: "K", app: MESSAGES }));
+    m.apply(snap([text("n0", "Other: AB02")], { at: 1500, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("Reference"), "", { label: "Reference", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const p = await proposeFill(m, picking({ Reference: "AB01" }), FORM, key("Reference"), 3000);
+    const f = p.fields.find((x) => x.key === key("Reference"))!;
+    expect(f.value, "the chat's other Ref value was offered only as the note's 'Other'").toBeNull();
+    expect(f.withheld).toBe("sourceCut");
+  });
+
+  it("omits at collection a name its line does not spell, rather than failing the fill when the request is built", async () => {
+    const m = desk([text("c0", "From: Dana (Whitfield) <dana@example.com>"), text("c1", "see you then")], ["Full name"]);
+    const p = await proposeFill(m, picking({ "Full name": "Dana Whitfield" }), FORM, key("Full name"), 3000);
+    expect(p.fields.find((x) => x.key === key("Full name"))?.value).not.toBe("Dana Whitfield");
+  });
+
+  it("keeps a value's ranges across an identical refresh of its window during the fill: 'Austin' is still verified", async () => {
+    const line = `Address: 123 Main St, Austin, TX 78701 ${"Z".repeat(80)}`;
+    const m = new ScreenModel();
+    const chat = (at: number): void => void m.apply(snap([text("c0", line)], { at, windowId: "chat-1", title: "Kofi", app: MESSAGES, values: [{ kind: "address", text: "123 Main St, Austin, TX 78701", nodeKey: "c0" }] }));
+    chat(1000);
+    m.apply(snap([field(key("City"), "", { label: "City", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const pick = picking({ City: "Austin" });
+    let refreshed = false;
+    const ask: AskJev = async (req) => {
+      if (!refreshed) {
+        refreshed = true;
+        chat(2500);
+      }
+      return pick(req);
+    };
+    const p = await proposeFill(m, ask, FORM, key("City"), 3000, { whose: false });
+    expect(p.fields.find((x) => x.key === key("City"))?.value).toBe("Austin");
+  });
+
+  it("does not count a Backup 'Ref' cut against a Primary 'Ref': they are other associations", async () => {
+    // T = 1 + 7 + 9 + 6 + 9 + 11 = 43, limit 21: AB01 with its label, section and the title is 15; AB02's 13 more do not fit.
+    const m = desk(
+      [node("g0", "AXGroup", { label: "Primary" }), text("c0", "Ref: AB01", undefined, "g0"), node("g1", "AXGroup", { label: "Backup" }), text("c1", "Ref: AB02", undefined, "g1"), { key: "c2", parent: null, role: "AXButton", label: "ZZZZZZZZZZZ" }],
+      ["Reference"],
+    );
+    const p = await proposeFill(m, picking({ Reference: "AB01" }), FORM, key("Reference"), 3000);
+    expect(p.fields.find((x) => x.key === key("Reference"))?.value).toBe("AB01");
   });
 });

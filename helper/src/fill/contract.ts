@@ -555,21 +555,10 @@ function where(app: string, title: string, admitted: (t: string) => boolean): st
 }
 
 /**
- * Where a value was read, as one phrase (AC1 section 4). A window's line is quoted when the ledger admitted it, else its
- * span with its label, else the span alone; a part names the value it was cut from when that was admitted.
- */
-export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean): string {
-  // The verifier's own phrase (mintProvenanceSays), over a ledger of no windows: nothing to charge, so every admitted
-  // text mints and the rest are named, not quoted.
-  // Never sealed, so no registry: a request built over it would refuse at seal.
-  const d = new Disclosure(null);
-  return mintProvenanceSays(d, pr, (t) => (admitted(t) ? d.planText(t) : null), () => true);
-}
-
-/**
- * provenanceSays's phrase, minted by the verifier's Disclosure: every quoted text as plan text (Disclosure.planText, which
- * refuses a text that shows a line redaction removed), Caret's words around them. A text that does not mint is named,
- * not quoted, as one the ledger refused always was. `shown` says whether a window's text may be quoted at all: the
+ * Where a value was read, as one phrase (AC1 section 4), minted by the verifier's Disclosure: every quoted text at its
+ * recorded range (READS) or as plan text (Disclosure.planText, which refuses a text that shows a line redaction
+ * removed), Caret's words around them. A text that does not mint is named, not quoted, as one the ledger refused always
+ * was. `shown` says whether a window's text may be quoted at all: the
  * verifier quotes a window's title, line, label, span or value only when its Disclosure was built over that window and
  * its redacted view shows the text (Disclosure.shownIn), since a provenance is not itself read from a view.
  */

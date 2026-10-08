@@ -1,4 +1,4 @@
-import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { Disclosure, viewHolds, type ModelText } from "../privacy/disclosure.ts";
 import { instructionForModel, redactWindow } from "./redact.ts";
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
 // the same candidate spans plus "none" (deep plan section 5, "Fill"). Jev picks a candidate id;
@@ -14,7 +14,7 @@ import { fieldFingerprint, scopeRefusal, type Authority, type DocumentReader } f
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, CANDIDATE_WORDING, candidateSpans, clauseSpans, sourceOf as readOf, type Candidate } from "./candidates.ts";
+import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, CANDIDATE_WORDING, candidateSpans, clauseSpans, sourceOf as readOf, associationOf, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import type { Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
@@ -1090,7 +1090,7 @@ export async function proposeFill(
   // An Ask that names its sources reads only those windows.
   const sourcesOnly = scope?.windows ?? null;
   const unread = sourcesOnly === null ? opts.exclude : new Set([...(opts.exclude ?? []), ...[...model.windows.keys()].filter((id) => id !== windowId && !sourcesOnly.has(id))]);
-  const { candidates, cut, cutTerms, cutAll, namesCut, clauses, cutLabels } = collectCandidates(model, windowId, {
+  const { candidates, cut, cutTerms, cutAll, namesCut, clauses, omitted } = collectCandidates(model, windowId, {
     now,
     ledger,
     deferClauses: true,
@@ -1164,9 +1164,8 @@ export async function proposeFill(
   };
   /** A candidate's text alone, the base a derivation reads: minted again where it was read (sourceOf), at no new charge. */
   const textSaid = (c: Candidate): (() => ModelText | null) => () => {
-    const v = viewOf(model, c.source.windowId) ?? w;
     const src = readOf(c);
-    return m.candidate(v, c.text, src.view === v ? src.text : undefined);
+    return src.view !== undefined ? m.candidate(src.view, c.text, src.text) : m.candidate(viewOf(model, c.source.windowId) ?? w, c.text);
   };
   /** "<value>" (the <part> of|in <whole>), the value a derivation of the whole's text. */
   const partSaid = (value: string, part: ModelText, rel: "of" | "in", whole: () => ModelText | null, base: () => ModelText | null): (() => ModelText | null) => () => {
@@ -1500,7 +1499,7 @@ export async function proposeFill(
   for (const [c, clause] of [...clauses].sort(([a], [b]) => clauseRank(a) - clauseRank(b))) {
     const sw = viewOf(model, c.source.windowId);
     // A candidate the anchor replaced (labelledCandidate above) is not sent, so neither is its clause.
-    if (sw !== undefined && candidates.includes(c) && ledger.take(sw, "candidate", [clause], clauseSpans(c, clause))) c.line = clause;
+    if (sw !== undefined && candidates.includes(c) && viewHolds(sw, clause) && ledger.take(sw, "candidate", [clause], clauseSpans(c, clause))) c.line = clause;
   }
   // G2: what code knows about whose each candidate is (fill/whose.ts), as fields on the candidate. Identity is the user's
   // own email, phone or full name from memory, matched exactly; an Ask that names no memory reads none. The memory
@@ -1928,10 +1927,11 @@ export async function proposeFill(
   // Picks of a kind a cut took are withheld (see above); a value from memory is of its own kind; a derived
   // value meets its source's rules.
   /**
-   * A value under a label a cut left another value of in its window (Collected.cutLabels): the one left out may be the
-   * one the field wants, so the kept one is not the only answer its label gives.
+   * A value whose association (window, section or block, label) another span of was not offered as its own
+   * (Collected.omitted): the one left out may be the one the field wants, so the kept one is not the only answer that
+   * label gives there.
    */
-  const labelCut = (c: Candidate): boolean => c.context !== null && cutLabels.get(c.source.windowId)?.has(c.context) === true;
+  const labelCut = (c: Candidate): boolean => c.context !== null && omitted.has(associationOf(c));
   const pickCut = (p: Pick): boolean =>
     p.from === "instruction"
       ? false
@@ -2602,10 +2602,11 @@ function deriveHow(part: FillPart | null, written: string, base: string, control
  */
 export function candidateProvenance(model: ScreenModel, c: Candidate, text?: string): Provenance {
   const pr = windowProvenance(viewOf(model, c.source.windowId), c, text);
-  const view = viewOf(model, c.source.windowId);
-  // Where its texts were read, so the verifier quotes them at those ranges (contract.ts withReads).
+  // Where its texts were read, in the view they were read from, so the verifier quotes them at those ranges (contract.ts
+  // withReads); a refresh since leaves that view as it was, and the recheck before a write decides whether it changed.
   const src = readOf(c);
-  if (view === undefined || src.view !== view) return pr;
+  const view = src.view;
+  if (view === undefined) return pr;
   const reads = new Map<string, SourceAt>();
   if (src.text !== undefined) reads.set(c.text, src.text);
   for (const f of [src.context, src.line, src.blockHead, src.section]) if (f !== undefined && !reads.has(f.text)) reads.set(f.text, f.at);

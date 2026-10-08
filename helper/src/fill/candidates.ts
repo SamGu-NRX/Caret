@@ -2,7 +2,7 @@
 // the form's own: typed values first, then single lines of visible text, splitting "Label: value"
 // lines so the value is the span and the label is its context. Jev later picks among these by id,
 // and code copies the chosen span verbatim.
-import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { Disclosure, viewHolds, type ModelText } from "../privacy/disclosure.ts";
 import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestLabel, nearestText } from "./descriptor.ts";
@@ -22,6 +22,24 @@ import { collapsedMap, collapsedRange, nodePart, sourceLine, TITLE, wholePart, t
  */
 function sourceField(node: Node): boolean {
   return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox";
+}
+
+/**
+ * Whether every text of `c`'s line stands in its source view as a mint requires (Disclosure viewHolds): the one source-
+ * membership contract collection and rendering share. A recorded range is held to its text by the mint itself.
+ */
+export function mintable(view: WindowState, c: Candidate): boolean {
+  return candidateTexts(c).every((t) => t === null || t === "" || viewHolds(view, t));
+}
+
+/** An association's key: a window, the section or block a span sits in, and the label it is read beside. */
+export function associationKey(windowId: string, place: string | null, label: string): string {
+  return `${windowId}\u0000${place ?? ""}\u0000${label}`;
+}
+
+/** A candidate's association (associationKey): its window, its section or else its block head, and its label. */
+export function associationOf(c: Candidate): string {
+  return associationKey(c.source.windowId, c.section ?? c.blockHead, c.context ?? "");
 }
 
 /**
@@ -403,10 +421,11 @@ export interface Collected {
   /** C1: with GenerateOptions.deferClauses, each offered span's clause, for the caller to charge and set; empty otherwise. */
   clauses: ReadonlyMap<Candidate, string>;
   /**
-   * By window id, the labels of spans a cut left out: an offered value under one of them is not the only value its label
-   * names there, so fill withholds a pick of it (fill.ts pickCut).
+   * The associations (window, section or block, label: associationOf) of spans not offered as their own: cut, left out,
+   * or whose text another association already offered. An offered value of one of them is not the only value that
+   * label gives there, so fill withholds a pick of it (fill.ts pickCut). Text is deduplicated in what is offered only.
    */
-  cutLabels: ReadonlyMap<string, ReadonlySet<string>>;
+  omitted: ReadonlySet<string>;
 }
 
 export interface GenerateStats {
@@ -554,16 +573,21 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    */
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => Read | null, quote?: string, partOf?: string, sourceOffset?: number, found?: Found): void => {
     // SC1 2a: a span holding a value the model withheld is never a candidate; its line may still be another's context.
-    if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId) || text.includes(WITHHELD)) return;
+    if (full() || text.includes(WITHHELD)) return;
+    // Text is deduplicated in what is offered; the association of a span not offered is kept (Collected.omitted).
+    if (seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId)) return void omit(w, node, text, context()?.text ?? null);
     const c = build(w, node, text, kind, context, quote, partOf, sourceOffset, found);
     if (c === null) return;
+    // The mint's own membership (Disclosure viewHolds), checked here when the candidates will be minted (a ledger): one
+    // whose line could not be minted is an omission now, never a failure when its request is built.
+    if (o.ledger !== undefined && !mintable(w, c)) return void omit(w, node, text, c.context);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c), candidateSpans(c))) {
       // W2: a part of a labelled value (line-values.ts valueParts) is an extra beside the whole value: one that does not
       // fit is dropped, and the window is neither cut nor closed for it. Counting it as a cut withheld Greenhouse's names
       // (W1's regression: 12/12 to 6/6 canned, evidence/screen/w1 CHECKLIST).
       if (partOf !== undefined) return;
       missed.add(w.window.windowId);
-      if (c.context !== null) labelCut(w.window.windowId, c.context);
+      if (c.context !== null) omitted.add(associationOf(c));
       // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
       // counts as cut, so the cut rules withhold its kind and words, but the spans after it are still read. Closing the
       // window instead cut every later line of a mail whose prose warns often (corpus clinic-intake, 7 -> 5).
@@ -577,16 +601,22 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (!ranked.has(w.window.windowId)) leftOutOf.add(w.window.windowId);
       return;
     }
-    seen.add(text);
-    out.push(c);
+    offer(c);
   };
   const touched = new Set<string>();
-  /** Collected.cutLabels. */
-  const cutLabels = new Map<string, Set<string>>();
-  const labelCut = (id: string, label: string): void => {
-    let set = cutLabels.get(id);
-    if (set === undefined) cutLabels.set(id, (set = new Set()));
-    set.add(label);
+  /** Collected.omitted, and the association each offered text was offered under. */
+  const omitted = new Set<string>();
+  const offeredAs = new Map<string, string>();
+  /** A span of `w` not offered as its own: its association is omitted, unless that text was offered under it. */
+  const omit = (w: WindowState, node: Node, text: string, label: string | null): void => {
+    if (label === null) return;
+    const key = associationKey(w.window.windowId, sectionAround(w, node) ?? blockHead(w, node, text), label);
+    if (offeredAs.get(text) !== key) omitted.add(key);
+  };
+  const offer = (c: Candidate): void => {
+    seen.add(c.text);
+    offeredAs.set(c.text, associationOf(c));
+    out.push(c);
   };
   /** The window the generator is reading, if it stops there. */
   let reading: string | null = null;
@@ -597,7 +627,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const sw = viewOf(model, c.source.windowId);
       if (clause === undefined || sw === undefined) continue;
       if (o.deferClauses === true) pending.set(c, clause);
-      else if (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause], clauseSpans(c, clause))) c.line = clause;
+      else if (viewHolds(sw, clause) && (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause], clauseSpans(c, clause)))) c.line = clause;
     }
     for (const id of leftOutOf) {
       const lw = viewOf(model, id);
@@ -606,7 +636,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     leftOutOf.clear();
     stats.windows = touched.size;
     stats.ms = performance.now() - t0;
-    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, cutLabels };
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
   };
   /**
    * Stops early, on either cap, partway through `reading`: what of it was offered is a partial
@@ -641,8 +671,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const v of windowValues(w)) valuesOf.set(v.nodeKey, [...(valuesOf.get(v.nodeKey) ?? []), v]);
     let n = 0;
     const note = (node: Node, text: string, line: string, kinds: readonly ValueKind[], label: string | null): boolean => {
+      omit(w, node, text, label);
       if (seen.has(text)) return true;
-      if (label !== null) labelCut(w.window.windowId, label);
       if (++n > LEFT_OUT_MAX || outOfWork()) {
         cutAll = true;
         return false;
@@ -698,11 +728,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // typed values, so NAME_TERM stays out of cutTerms.
     if (!built.done) cutAll = true;
     for (const sp of spans) {
+      omit(w, sp.node, sp.text, sp.context()?.text ?? null);
       if (seen.has(sp.text)) continue;
       for (const t of sp.terms) if (t !== NAME_TERM) cutTerms.add(t);
       cutNames.push(...sp.names);
-      const label = sp.context()?.text ?? null;
-      if (label !== null) labelCut(w.window.windowId, label);
     }
     return finished;
   };
@@ -821,7 +850,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         if (sp.group !== k || seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
         const c = build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset, sp.found);
-        if (c !== null) group.push(c);
+        if (c !== null && (o.ledger === undefined || mintable(w, c))) group.push(c);
+        else if (c !== null) omit(w, sp.node, sp.text, c.context);
       }
       if (group.length > 0) groups.set(k, group);
     }
@@ -845,8 +875,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (o.ledger?.take(w, "candidate", group.flatMap(candidateTexts), group.flatMap(candidateSpans)) !== true) throw new Error(`a kind priced to fit did not fit window ${w.window.windowId}`);
       for (const c of group) {
         c.id = `c${out.length + 1}`;
-        seen.add(c.text);
-        out.push(c);
+        offer(c);
       }
     }
     /** Kinds left out whole, since none of them fits what is left; a line holding a value of one stays out too. */
@@ -872,6 +901,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // its first lines, and the lines a form wanted came after the cut (evidence/screen/b24/dev-5).
     if (relevance !== null && heldAsConversation(w)) {
       ranked.add(w.window.windowId);
+      if (!byRelevance(w, relevance)) return stop();
       continue;
     }
     for (const v of windowValues(w)) {
@@ -902,14 +932,6 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         }
       }
     }
-  }
-  // Conversations last, each by relevance: a window that is no conversation is read whole first, so a conversation's
-  // coincidental text cannot spend its budget before the values of the note the user was reading.
-  for (const w of windows) {
-    if (full()) break;
-    if (!ranked.has(w.window.windowId)) continue;
-    reading = w.window.windowId;
-    if (!byRelevance(w, relevance as readonly ReadonlySet<string>[])) return stop();
   }
   return finish();
 }
@@ -1564,11 +1586,12 @@ export const CANDIDATE_WORDING: readonly string[] = ["the user's own \n, which t
  * `blockHead` false leaves the block head out (SC1 2c, the minimized candidate).
  */
 export function mintCandidate(d: Disclosure, model: ScreenModel, c: Candidate, o: { blockHead?: boolean; line?: string | null } = {}): ModelText | null {
-  const v = viewOf(model, c.source.windowId);
+  // The view the candidate was read from, which its ranges are of: a refresh since leaves it as it was, and the
+  // ledger still measures it (a kept state); whether the source changed is the write recheck's to say.
+  const src = sourceOf(c);
+  const v = src.view ?? viewOf(model, c.source.windowId);
   if (v === undefined) return null;
   const facts: ModelText[] = [];
-  // The span and its clause carry the ranges the generator read them at (sourceOf); the other facts have none.
-  const src = sourceOf(c).view === v ? sourceOf(c) : {};
   const text = d.candidate(v, c.text, src.text);
   if (text === null) return null;
   const view = (t: string, as: "descriptor" | "candidate"): ModelText | null => (as === "descriptor" ? d.descriptor(v, t) : d.candidate(v, t));

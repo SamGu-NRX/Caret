@@ -12,7 +12,7 @@ import { Store } from "../src/store.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import type { AboutValue } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { makeFieldContract, provenanceSays, setTestVerifier, verifyProposed, VerifierUnavailable, guardFor, type Proposed } from "../src/fill/contract.ts";
+import { makeFieldContract, setTestVerifier, verifyProposed, VerifierUnavailable, guardFor, type Proposed } from "../src/fill/contract.ts";
 import { fieldKinds } from "../src/fill/kinds.ts";
 import { fillPlan, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { assertNoExcludedValue } from "../src/privacy.ts";
@@ -131,16 +131,6 @@ describe("I1 joint 2: a secret on a source line never appears in a verifier requ
     await expect(verifyProposed([p], { authority: TEST_AUTHORITY, askJev: ask, ledger: null, now: T0 })).rejects.toBeInstanceOf(VerifierUnavailable);
     expect(sent.length).toBeGreaterThan(0);
     for (const secret of ["hunter2", "password"]) expect(sent.join("\n")).not.toContain(secret);
-  });
-});
-
-describe("I1 review: the verifier quotes a memory label or a saved answer's question only when the ledger admitted it", () => {
-  it("names them instead", () => {
-    const refused = (t: string): boolean => t !== "Home phone" && t !== "Why do you want to volunteer?";
-    expect(provenanceSays({ kind: "memory", id: "about-2", label: "Home phone", part: null, whose: "user" }, refused)).toBe("what the user told Caret");
-    expect(provenanceSays({ kind: "memory", id: "about-2", label: "Home phone", part: null, whose: "user" }, () => true)).toBe("what the user told Caret as 'Home phone'");
-    expect(provenanceSays({ kind: "answer", id: "answer-1", question: "Why do you want to volunteer?" }, refused)).toBe("one of the user's saved answers");
-    expect(provenanceSays({ kind: "derived", how: "namePart", base: { kind: "memory", id: "about-3", label: "Home phone", part: "first", whose: "user" }, also: null }, refused)).not.toContain("Home phone");
   });
 });
 
