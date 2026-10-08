@@ -46,7 +46,10 @@ describe("the ask-choices protocol lines", () => {
     expect(bad({ ...at(7), options: [{ kind: "field", id: "o1", label: "Name", section: null }] })).toBe(true);
     // An option names what the user sees, never a field key or window id.
     expect(AskQuestion.parse({ ...fields, options: [{ ...fields.options[0], key: "f0/x" }] }).options[0]).not.toHaveProperty("key");
-    expect(bad({ ...at(3), picks: [] })).toBe(true);
+    // An empty answer parses; the helper takes it only for a question beside fields it is filling (g35-clarify-wire).
+    expect(bad({ ...at(3), picks: [] })).toBe(false);
+    expect(bad({ ...source, filling: ["Name"] })).toBe(true);
+    expect(bad({ ...fields, filling: [] })).toBe(true);
     expect(bad({ ...at(3), questionId: "" })).toBe(true);
   });
 });

@@ -1859,7 +1859,6 @@
               "minLength": 1
             },
             "picks": {
-              "minItems": 1,
               "maxItems": 8,
               "type": "array",
               "items": {
@@ -8496,6 +8495,14 @@
                     "additionalProperties": false
                   }
                 ]
+              }
+            },
+            "filling": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "window": {

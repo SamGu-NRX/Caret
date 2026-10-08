@@ -450,7 +450,7 @@ describe("what the veto leaves as it was (preservation)", () => {
     expect(e).toBeInstanceOf(AskAsks);
     const q = (e as AskAsks).question;
     expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Model"]);
-    expect(q.settled).toEqual(["Serial number"]);
+    expect(q.filling).toEqual(["Serial number"]);
   });
 
   it("never lets not, unclear, a disagreement or a low answer to the section question take anything out", () => {

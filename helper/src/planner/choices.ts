@@ -137,6 +137,19 @@ export function fittingFields(snap: IntentSnapshot): IntentField[] {
 }
 
 /**
+ * What a field's row says beside its label: its group, else the innermost named section the window places it in that
+ * no other row of the same label sits in, else its innermost named section. So "City" under Delivery > Address and
+ * under Billing > Address read as Delivery and Billing; a section with no name is skipped, never invented.
+ */
+function rowDetail(f: IntentField, rows: readonly IntentField[]): string | null {
+  if (f.section !== null) return f.section;
+  const named = (x: IntentField): string[] => (x.place === "unknown" ? [] : x.place.flatMap((p) => (p.name === null ? [] : [p.name])));
+  const own = named(f).reverse();
+  const others = new Set(rows.filter((x) => x !== f && x.name === f.name).flatMap(named));
+  return own.find((n) => !others.has(n)) ?? own[0] ?? null;
+}
+
+/**
  * One field question listing `fit`, in the form's order; none when it lists nothing or more than one question shows.
  * `from` says where the fields came from, for the reason there is no question.
  */
@@ -149,7 +162,7 @@ function fieldChoices(snap: IntentSnapshot, fit: readonly IntentField[], from: "
       part: "fields",
       text: ASKS.fields,
       pick: "many",
-      options: sorted.map((f, i) => ({ option: { kind: "field", id: `o${i + 1}`, label: f.name, section: f.section }, fixes: { fields: [f.key] } })),
+      options: sorted.map((f, i) => ({ option: { kind: "field", id: `o${i + 1}`, label: f.name, section: rowDetail(f, sorted) }, fixes: { fields: [f.key] } })),
     },
     why: null,
   };

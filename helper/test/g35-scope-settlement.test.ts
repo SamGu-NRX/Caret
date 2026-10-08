@@ -11,13 +11,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { MAX_ASK_OPTIONS, Snapshot } from "../src/protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
-import { intentSnapshot, MAX_INTENT_FIELDS, type AskIntent, type IntentSnapshot } from "../src/planner/intent.ts";
+import { intentSnapshot, MAX_INTENT_FIELDS, type AskFixed, type AskIntent, type IntentSnapshot } from "../src/planner/intent.ts";
 import { headsIntentMaker, headsRequest, readHeads, SCOPE_CUTOFF, scopeId, scopeRequest, SECTION_QUESTION, settleFields } from "../src/planner/intent-heads.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft } from "../src/planner/ask.ts";
-import { PlannerError } from "../src/planner/validate.ts";
+import { PlannerError, validatePlan } from "../src/planner/validate.ts";
+import { checkValues, fieldContract, guardFor, windowProvenance } from "../src/fill/contract.ts";
+import { scopeRefusal } from "../src/fill/ask-scope.ts";
+import { traceValue } from "../src/planner/trace.ts";
+import { exactJev } from "./mint.ts";
 import { buildDesk, loadCorpus, pageForm, type Desk } from "../scripts/realfill-corpus.ts";
-import { field, node, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap } from "./builders.ts";
 
 beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => setGeneratorClock(null));
@@ -254,7 +258,7 @@ describe("clarification: at most MAX_ASK_OPTIONS unresolved fields are offered b
   it("an empty pick beside settled fields fills only those", async () => {
     const j = askJev((l) => (l === ANCHOR ? sure : l === TARGET ? low : not));
     const q = await question(plan(j));
-    expect(q.question.settled).toEqual([ANCHOR]);
+    expect(q.question.filling).toEqual([ANCHOR]);
     const d = (await plan(j, { resume: { ...q.question.resume, fixed: { ...q.question.resume.fixed, fields: [] } } })) as AskDraft;
     expect(written(d)).toEqual([ANCHOR]);
   });
@@ -262,7 +266,7 @@ describe("clarification: at most MAX_ASK_OPTIONS unresolved fields are offered b
   it("an empty pick with nothing settled beside it writes nothing", async () => {
     const j = askJev((l) => (l === TARGET || l === ANCHOR ? low : not));
     const q = await question(plan(j));
-    expect(q.question.settled).toEqual([]);
+    expect(q.question.filling).toEqual([]);
     const e = await plan(j, { resume: { ...q.question.resume, fixed: { ...q.question.resume.fixed, fields: [] } } }).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(AskRefused);
   });
@@ -354,5 +358,186 @@ describe("the scope question's context", () => {
       // The field's own value, and every value of the order note open beside it.
       for (const v of ["Quinn Abara", ...Object.values(NOTE)]) expect(body, v).not.toContain(v);
     }
+  });
+});
+
+// Scope stays narrow however confident Jev is about a field outside it, and however exact its value would be.
+describe("safety: the vetoes and narrower requests", () => {
+  const pageDeskOf = (form: string): Desk => {
+    const f = corpus.forms.find((x) => x.id === form) ?? (() => { throw new Error(`no form ${form}`); })();
+    return buildDesk(corpus, snaps, f, pageForm(f));
+  };
+  /** The section question's option that names `heading` in a scope request, else `fallback`. */
+  const sectionOption = (q: JevRequest["questions"][string], heading: string | null, fallback = "fields"): string =>
+    (heading === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.includes(`'${heading}'`) === true)?.[0]) ?? fallback;
+  /** A Jev for a page Ask: heads fill some fields for the user; scope by label; the section question names `section`. */
+  const pageJev = (by: (label: string, w: 0 | 1) => A, section: string | null): AskJev => {
+    let scopeWording = 0;
+    return async (req) => {
+      const w = req.purpose === "ask.scope" ? ((scopeWording++ % 2) as 0 | 1) : 0;
+      return result(Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
+        if (req.purpose === "ask.heads") return [id, { choice: { route: "some", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none", confidence: 0.9 }];
+        if (id === SECTION_QUESTION) return [id, { choice: sectionOption(q, section), confidence: 1 }];
+        if (req.purpose === "ask.scope") return [id, by(scopeLabel(String(q.instructions)), w)];
+        return [id, { choice: "exact" in q.criteria ? "exact" : "none", confidence: 1 }];
+      })));
+    };
+  };
+  const goalOf = async (form: string, instruction: string, ask: AskJev, documentOf?: () => string) => {
+    const d = pageDeskOf(form);
+    const r = await planAsk(instruction, d.model, { values: () => d.memory }, d.about, { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "g35-veto", windowId: d.form.window.windowId, now: 2000, goals: true, ...(documentOf === undefined ? {} : { documentOf }) });
+    if (r.route !== "goal" || r.askScope === undefined) throw new Error(`expected a page goal with a scope, got ${r.route}`);
+    const label = (k: string): string => intentSnapshot(instruction, d.model, d.form, []).fields.find((f) => f.key === k)?.name ?? k;
+    return { d, scope: r.askScope, labels: [...r.askScope.fields].map(label) };
+  };
+
+  const RESIDENCE = "fill the current residence section from my notes";
+  const LANDLORD = ["Landlord or property manager name", "Landlord phone"];
+  const RESIDENCE_FIELDS = ["Street address", "Apt / Unit (optional)", "City", "State", "ZIP code", "Moved in (MM/YYYY)", "Monthly rent ($)", "Reason for moving (optional)"];
+  // b31-07's live answers: both wordings "asks" for the landlord fields at 0.95 and 0.98.
+  const residenceVotes = (label: string, w: 0 | 1): A => (LANDLORD.includes(label) ? { choice: "asks", confidence: w === 0 ? 0.95 : 0.98 } : RESIDENCE_FIELDS.includes(label) ? sure : not);
+
+  it("the residence veto: both landlord votes 'asks' and every value exact, and neither landlord field is writable at settlement, mint or dispatch", async () => {
+    // Without a named section the same votes admit the landlord fields: the veto, not confidence, keeps them out.
+    const open = await goalOf("rental-application", RESIDENCE, pageJev(residenceVotes, null));
+    expect(open.labels).toEqual(expect.arrayContaining(LANDLORD));
+    const held = await goalOf("rental-application", RESIDENCE, pageJev(residenceVotes, "Current residence"));
+    expect(held.scope.section).toBe("Current residence");
+    expect(held.labels.sort()).toEqual([...RESIDENCE_FIELDS].sort());
+
+    // A landlord value minted exact under the open scope, then checked again under the held one.
+    const { d } = held;
+    const w = d.form;
+    const node = [...w.nodes.values()].find((n) => n.key === [...open.scope.fields].find((k) => open.labels[[...open.scope.fields].indexOf(k)] === "Landlord phone"));
+    if (node === undefined) throw new Error("no landlord phone");
+    const text = "(512) 555-0193";
+    const t = traceValue(text, d.model, [], RESIDENCE);
+    if (t?.from !== "window") throw new Error("the note does not show the landlord's phone");
+    const proposed = { field: fieldContract(w, node), text, display: text, provenance: windowProvenance(d.model.windows.get(t.windowId), { text, context: null, source: { windowId: t.windowId, nodeKey: t.nodeKey ?? "", appName: "", windowTitle: "" } }), owner: null };
+    const exact = { askJev: exactJev, ledger: null, instruction: RESIDENCE, now: 0 };
+    const minted = await checkValues([proposed], { ...exact, authority: { kind: "ask", scope: open.scope } });
+    expect(minted.ok).toHaveLength(1);
+    // At the mint: refused as out of scope, before any verifier.
+    const refused = await checkValues([proposed], { ...exact, authority: { kind: "ask", scope: held.scope } });
+    expect(refused.ok).toHaveLength(0);
+    expect(refused.refused[0]?.why).toBe("outOfScope");
+    // At acceptance: the plan's recheck under the held Ask refuses the open scope's mint.
+    const sel = { bundleId: w.app.bundleId, title: w.window.title, page: true as const, windowId: w.window.windowId };
+    const plan = { id: "g35-veto", title: RESIDENCE, slots: { v1: "the landlord's phone" }, steps: [{ says: "Landlord phone holds {{v1}}", end: { kind: "valueEquals" as const, window: sel, target: { key: node.key, describe: "the Landlord phone field" }, value: "{{v1}}" } }] };
+    const mint = minted.ok[0] as NonNullable<(typeof minted.ok)[number]>;
+    expect(() => validatePlan(plan, { v1: text }, { model: d.model, memory: [], instruction: RESIDENCE, origin: { kind: "ask", scope: held.scope }, documentOf: null }, new Map([["v1", mint]]))).toThrow(PlannerError);
+    // At dispatch: the executor's guard refuses it too.
+    const guard = guardFor(() => d.model, new Map([[0, mint]]), { kind: "ask", scope: held.scope }, null, null);
+    expect(guard(0, text, { windowId: w.window.windowId, node, window: w })).not.toBeNull();
+    expect(scopeRefusal({ field: { windowId: w.window.windowId, key: node.key, name: "Landlord phone", fingerprint: held.scope.seen[node.key] ?? null }, owner: "user" }, held.scope)).toMatch(/didn't ask Caret to fill/u);
+  });
+
+  // A section answer never adds a field: requests narrower than their section keep only the fields Jev chose.
+  it.each([
+    ["car-service-booking", "put the date and time in but make it 9:30 not 8:45", "Services and time", ["Preferred date", "Preferred time"], ["Oil and filter change", "Tire rotation", "Brake inspection", "Cabin air filter replacement", "Wheel alignment", "While we service your vehicle"]],
+    ["event-rsvp", "add bea as my plus one and pick her meal", "Dinner", ["Guest's full name", "Guest's meal choice"], ["Your meal choice", "How many in your party?", "Dietary restrictions or allergies (optional)"]],
+    ["job-application", "fill out the reference part", "Professional reference", ["Reference name", "Reference relationship", "Reference email", "Reference phone"], ["Referrer's name (if referred)", "How did you hear about this role?"]],
+  ])("%s: '%s' keeps to the fields asked for, though the section answer names '%s'", async (form, instruction, section, asked, outside) => {
+    const ask = pageJev((label) => (asked.includes(label) ? sure : not), section);
+    const { labels, scope } = await goalOf(form, instruction, ask);
+    expect(labels.sort()).toEqual([...asked].sort());
+    for (const l of outside) expect(labels, l).not.toContain(l);
+    expect(scope.section).toBe(section);
+  });
+});
+
+describe("continuations of a question beside settled fields", () => {
+  const low: A = { choice: "asks", confidence: 0.4 };
+  const besideJev = () => askJev((l) => (l === ANCHOR ? sure : l === TARGET ? low : not));
+  const resumed = (q: AskAsks, fixed: AskFixed) => ({ ...q.question.resume, fixed: { ...q.question.resume.fixed, ...fixed } });
+
+  it("a pick of a field the question did not offer adds nothing, though the desk would write it", async () => {
+    // Delivery instructions settled, E-mail address offered, Telephone "not" in both: the desk writes Telephone's note
+    // value whenever it is in scope (the truth table above).
+    const j = askJev((l) => (l === TARGET ? sure : l === "E-mail address" ? low : not));
+    const q = await question(plan(j));
+    const telephone = pizza().snap.fields.find((f) => f.name === ANCHOR)?.key ?? "";
+    const d = (await plan(j, { resume: resumed(q, { fields: [telephone] }) })) as AskDraft;
+    expect(written(d)).toEqual([TARGET]);
+  });
+
+  it("a person or source answer to it authorizes no field: the Ask asks which fields again", async () => {
+    const j = besideJev();
+    const q = await question(plan(j));
+    for (const fixed of [{ person: { kind: "user" } }, { source: { kind: "memory" } }] as AskFixed[]) {
+      const again = await question(plan(j, { resume: resumed(q, fixed) }));
+      expect(again.question.part).toBe("fields");
+      expect(again.question.options.map((o) => (o.option.kind === "field" ? o.option.label : ""))).toEqual([TARGET]);
+    }
+    expect(j.scopeRequests()).toBe(2);
+  });
+
+  it("a picked field that changed since the question is refused, and nothing is written", async () => {
+    const j = besideJev();
+    const q = await question(plan(j));
+    const pick = q.question.options[0]?.fixes.fields ?? [];
+    const d = deskOf(PIZZA);
+    const node = d.form.nodes.get(pick[0] ?? "");
+    if (node === undefined) throw new Error("no picked field");
+    const recorded = snaps.find((x) => x.window.windowId === d.form.window.windowId);
+    if (recorded === undefined) throw new Error("no recorded pizza window");
+    d.model.apply({ ...recorded, at: 1_800_000_000_900, focused: true, focusedKey: null, nodes: recorded.nodes.map((n) => (n.key === node.key ? { ...n, label: "Delivery notes for the driver" } : n)) });
+    const e = await planAsk(INSTRUCTION, d.model, { values: () => d.memory }, d.about, { askJev: j.ask, maker: headsIntentMaker(j.ask), writer: null, offerKey: "g35", windowId: d.form.window.windowId, now: 3000, resume: resumed(q, { fields: pick }) }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskRefused);
+    expect(j.scopeRequests()).toBe(2);
+  });
+
+  it("a page that became another document since the question is refused before anything is planned", async () => {
+    let doc = "doc-1";
+    const j = besideJev();
+    const d = deskOf(PIZZA);
+    const run = (resume?: Parameters<typeof planAsk>[4]["resume"]) => planAsk(INSTRUCTION, d.model, { values: () => d.memory }, d.about, { askJev: j.ask, maker: headsIntentMaker(j.ask), writer: null, offerKey: "g35", windowId: d.form.window.windowId, now: 2000, documentOf: () => doc, ...(resume === undefined ? {} : { resume }) });
+    const q = await question(run());
+    doc = "doc-2";
+    const e = await run(resumed(q, { fields: q.question.options[0]?.fixes.fields ?? [] })).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskRefused);
+    expect(j.scopeRequests()).toBe(2);
+  });
+});
+
+
+describe("the fields question's rows", () => {
+  it("names the shortest part of the section path that tells same-labelled rows apart, skipping unnamed sections", async () => {
+    const m = deskOf(PIZZA).model;
+    // A page walk: Delivery and Billing headings, each with an Address heading inside, and no group labels.
+    const outline = [{ key: "o1", heading: true, text: "Delivery" }, { key: "o2", heading: true, text: "Address" }, { key: "o3", heading: true, text: "Billing" }, { key: "o4", heading: true, text: "Address" }, { key: "o5", heading: true }];
+    m.apply(snap([
+      node("pg/area", "AXWebArea", { outline }),
+      field("f/name", "", { label: "Name", parent: "pg/area", sections: [] }),
+      field("f/dcity", "", { label: "City", parent: "pg/area", sections: ["o1", "o2"] }),
+      field("f/bcity", "", { label: "City", parent: "pg/area", sections: ["o3", "o4", "o5"] }),
+    ], { at: 1_800_000_001_000, windowId: "page:g35:nested", kind: "page", title: "Order", focused: true }));
+    const ask: AskJev = async (req) => result(Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
+      if (req.purpose === "ask.heads") return [id, { choice: { route: "some", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none", confidence: 0.9 }];
+      if (id === SECTION_QUESTION) return [id, { choice: "fields", confidence: 0.99 }];
+      return [id, scopeLabel(String(q.instructions)) === "City" ? { choice: "unclear", confidence: 0.9 } : sure];
+    })));
+    const q = await question(planAsk("put the city in", m, { values: () => [] }, [], { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "g35-nested", windowId: "page:g35:nested", now: 2000 }));
+    expect(q.question.options.map((o) => (o.option.kind === "field" ? o.option.section : null))).toEqual(["Delivery", "Billing"]);
+  });
+
+
+  it("tells two fields of one label apart by the section each sits in, when no group names them", async () => {
+    const m = deskOf(PIZZA).model;
+    m.apply(snap([
+      field("f/name", "", { label: "Name" }),
+      node("h/d", "AXHeading", { label: "Delivery" }), field("f/dcity", "", { label: "City" }),
+      node("h/b", "AXHeading", { label: "Billing" }), field("f/bcity", "", { label: "City" }),
+    ], { at: 1_800_000_001_000, windowId: "g35-rows", title: "Order", focused: true }));
+    const ask: AskJev = async (req) => result(Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
+      if (req.purpose === "ask.heads") return [id, { choice: { route: "some", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none", confidence: 0.9 }];
+      if (id === SECTION_QUESTION) return [id, { choice: "fields", confidence: 0.99 }];
+      return [id, scopeLabel(String(q.instructions)) === "City" ? { choice: "unclear", confidence: 0.9 } : sure];
+    })));
+    const q = await question(planAsk("put the city in", m, { values: () => [] }, [], { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "g35-rows", windowId: "g35-rows", now: 2000 }));
+    expect(q.question.options.map((o) => o.option)).toEqual([
+      { kind: "field", id: "o1", label: "City", section: "Delivery" },
+      { kind: "field", id: "o2", label: "City", section: "Billing" },
+    ]);
   });
 });

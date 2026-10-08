@@ -128,7 +128,7 @@ export interface AskQuestionDraft {
    * On a fields question, the labels of the fields Caret fills whatever the pick (the ones Jev settled); with any,
    * an answer that picks nothing fills only these. Empty on every other question.
    */
-  settled: string[];
+  filling: string[];
   window: { pid: number; windowId: string; appName: string; title: string };
   resume: AskResume;
 }
@@ -506,7 +506,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     return {
       ...r.choices,
       ...(sure.length === 0 ? {} : { text: asksFieldsBeside(sure) }),
-      settled: sure,
+      filling: sure,
       window: { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title },
       resume: {
         instruction,

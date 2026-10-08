@@ -1706,8 +1706,10 @@ export class Helper {
     if (picked.length !== m.picks.length || ids.size !== m.picks.length || (q.draft.pick === "one" && picked.length !== 1)) {
       return this.planFailed(m.requestId, "schema", `the answer picks ${m.picks.join(", ")}, which question ${m.questionId} did not list as ${q.draft.pick === "one" ? "one choice" : "choices"}`);
     }
+    // No pick declines every offered field: only a question beside fields it fills anyway takes that as an answer.
+    if (m.picks.length === 0 && q.draft.filling.length === 0) return this.planFailed(m.requestId, "schema", `the answer picks nothing, and question ${m.questionId} fills nothing without a pick`);
     // Each pick fixes only the part it names: the fields picked, else the one window or person.
-    const fixed: AskFixed = { ...q.draft.resume.fixed };
+    const fixed: AskFixed = { ...q.draft.resume.fixed, ...(m.picks.length === 0 ? { fields: [] } : {}) };
     for (const c of picked) {
       if (c.fixes.fields !== undefined) fixed.fields = [...(fixed.fields ?? []), ...c.fixes.fields];
       if (c.fixes.source !== undefined) fixed.source = c.fixes.source;
@@ -1881,7 +1883,7 @@ export class Helper {
   private askQuestion(requestId: string, q: AskQuestionDraft, from: string | undefined): AskQuestion | PlanProposal {
     const at = this.now();
     const questionId = `ask-${++this.askSeq}-${requestId}`.slice(0, 240);
-    const msg = AskQuestion.safeParse({ type: "askQuestion", v: PROTOCOL_VERSION, requestId, at, questionId, part: q.part, text: q.text, pick: q.pick, options: wireOptions(q), window: q.window, expires: at + ASK_QUESTION_MS });
+    const msg = AskQuestion.safeParse({ type: "askQuestion", v: PROTOCOL_VERSION, requestId, at, questionId, part: q.part, text: q.text, pick: q.pick, options: wireOptions(q), ...(q.filling.length === 0 ? {} : { filling: q.filling }), window: q.window, expires: at + ASK_QUESTION_MS });
     if (!msg.success) return this.planFailed(requestId, "schema", `the question failed the protocol check: ${msg.error.issues[0]?.message ?? "invalid"}`);
     this.askQuestions.set(questionId, { session: from, expires: msg.data.expires, draft: q });
     this.opts.store.count(`plan.asked_${q.part}`, 1);

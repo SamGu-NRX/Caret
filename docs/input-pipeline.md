@@ -180,3 +180,26 @@ Teddy, please change the onboarding privacy copy in `apps/caret/Sources/CaretHos
 The app bundler and the apps/mac Xcode privacy phase now generate that resource from `PRIVACY_PROMISE` after the build gate passes. In the existing `PermissionsScreen.privacyLine` binding, replace the string with a closure that uses `Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt")` and `String(contentsOf: url, encoding: .utf8)`. Keep `Text(Self.privacyLine)` rendering the result and remove the hard-coded promise. A missing resource must not fall back to the old text.
 
 Packaging is blocked until this view reads the resource and contains no hard-coded promise. The gate checks the binding and verifies the generated resource equals `PRIVACY_PROMISE`. The apps/mac permission panel currently shows no cloud-data promise; if it gains one, use the same bundled resource rather than another copy.
+
+## Request to Teddy: let the fields question fill only what Caret already settled
+
+An Ask now asks which fields far more often. Jev's two scope answers rarely say "unclear" (0 of 300 field pairs in B31's live run). They more often disagree, or both vote "asks" just under the cutoff. The helper now offers those fields by their exact labels whenever eight or fewer remain, beside the fields Jev settled. The question text names the settled ones: "Caret will fill Name. Which of these should it fill too?"
+
+Today the card has no way to say "just those". Tab with nothing selected picks the highlighted row, and Esc fills nothing, the settled fields included. The helper side is done (`helper/src/protocol.ts`, `helper/src/helper.ts` `handleAskAnswer`, tests in `helper/test/g35-clarify-wire.test.ts`):
+
+- `askQuestion.filling` (optional, fields questions only) lists the labels Caret fills whatever is picked.
+- An `askAnswer` with `picks: []` answers such a question: Caret fills only the `filling` fields. Any other empty answer is refused with `schema`.
+
+Please change the host to match:
+
+1. `CaretHostCore/AskChoices.swift`: decode `filling` on `AskQuestion` (absent, or one or more labels, fields questions only), and let `AskAnswer` carry zero picks.
+2. `CaretHostCore/AskCaret.swift`: on a question with `filling`, Tab with no row selected sends `picks: []`. Space still selects rows, and Tab with rows selected sends them. Leave every other question's Tab as it is.
+3. `AskCopy.answerLabel`: on such a question, say what Tab fills, counting the settled fields: "Fill 1" with nothing selected, "Fill 3" with two rows selected. Keep "Choose" for questions without `filling`.
+4. `AskCopy.questionHint`: for such a question, "Up and Down move between the fields. Space selects or clears one. Tab fills the selected fields and the ones Caret named. Escape fills nothing."
+5. No motion. The card redraws on each key at once, as it does now: the user is watching the key they pressed.
+6. VoiceOver (found in review, and true of every fields question today): a row has a label and a value but no action, so a VoiceOver user can't pick an arbitrary field. Give each row a Select/Clear action bound to its option id, and take `.isSelected` from the checkbox, not from the highlight, on a many-pick question.
+7. Tests: add golden lines for a question with `filling` and an answer with no picks to both copies of `ask-choices.ndjson`, and change `AskChoicesTests` where it expects an empty answer to fail to decode.
+
+The keyboard contract does not change: the card owns Tab, Space, the arrows and Esc only while it shows. Rows are unchanged, and a row's detail now names the field's section when no group does: two "City" rows under Delivery > Address and Billing > Address read "Delivery" and "Billing".
+
+Until this ships, a user who wants none of the offered fields has to dismiss the question, and the settled fields go unfilled too.
