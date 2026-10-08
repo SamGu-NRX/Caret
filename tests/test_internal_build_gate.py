@@ -7,7 +7,9 @@ release and packaging refuse it.
 import importlib.util
 import os
 from pathlib import Path
+import plistlib
 import re
+import runpy
 import shutil
 import subprocess
 import unittest
@@ -51,6 +53,68 @@ class InternalBuildGateTests(unittest.TestCase):
                 if status:
                     self.assertIn("pv2-sites-send", result.stderr)
 
+    def run_mac(self, root: Path) -> list:
+        """run_mac.py from the tree, up to its first command after the gate, which is recorded and not run."""
+        (root / "scripts/run_mac.py").write_text((ROOT / "scripts/run_mac.py").read_text())
+        calls, real_run = [], subprocess.run
+
+        class Stop(Exception):
+            pass
+
+        def runner(command, **kwargs):
+            if "privacy_gate.sh" in str(command):
+                return real_run(command, **{**kwargs, "env": clean_env(**{k: v for k, v in (kwargs.get("env") or os.environ).items() if k == "CARET_INTERNAL_BUILD"})})
+            calls.append((command, kwargs.get("env") or {}))
+            raise Stop
+
+        with patch("subprocess.run", side_effect=runner), patch("sys.argv", ["run_mac.py", "--build-only"]):
+            try:
+                runpy.run_path(str(root / "scripts/run_mac.py"), run_name="__main__")
+            except Stop:
+                pass
+        return calls
+
+    def test_make_app_is_an_internal_debug_build(self):
+        root = self.tree(accepted=False)
+        calls = self.run_mac(root)
+        self.assertEqual(len(calls), 1, "the gate must pass without the records and hand on to xcodebuild")
+        command, env = calls[0]
+        self.assertEqual(command[0], "xcodebuild")
+        self.assertEqual(command[command.index("-configuration") + 1], "Debug")
+        self.assertEqual(env.get("CARET_INTERNAL_BUILD"), "1")
+
+    def test_make_app_still_refuses_a_content_failure(self):
+        root = self.tree(accepted=False)
+        completions = root / "caret/completions.py"
+        completions.write_text(completions.read_text().replace("VERCEL_GEMINI_ENABLED = False", "VERCEL_GEMINI_ENABLED = True"))
+        with self.assertRaises(SystemExit) as refused:
+            self.run_mac(root)
+        self.assertIn("VERCEL_GEMINI_ENABLED", str(refused.exception))
+
+    def xcode_phase(self, root: Path, phase: str, **env: str) -> subprocess.CompletedProcess:
+        text = (ROOT / "Caret.xcodeproj/project.pbxproj").read_text()
+        script = re.search(rf'/\* {phase} \*/ = \{{.*?shellScript = "((?:[^"\\]|\\.)*)";', text, re.S).group(1)
+        return subprocess.run(["/bin/sh", "-c", script.replace('\\"', '"').replace("\\n", "\n")], capture_output=True, text=True, env=clean_env(
+            SRCROOT=str(root), TARGET_BUILD_DIR=str(root / "build"), INFOPLIST_PATH="Caret.app/Contents/Info.plist",
+            UNLOCALIZED_RESOURCES_FOLDER_PATH="Caret.app/Contents/Resources", **env))
+
+    def test_an_internal_xcode_debug_build_is_stamped_and_a_later_plain_one_is_not(self):
+        root = self.tree(accepted=False)
+        plist = root / "build/Caret.app/Contents/Info.plist"
+        plist.parent.mkdir(parents=True)
+        plist.write_bytes(plistlib.dumps({}))
+        internal = {"CONFIGURATION": "Debug", "CARET_INTERNAL_BUILD": "1"}
+        for phase in ("Privacy gate", "Processed privacy gate"):
+            result = self.xcode_phase(root, phase, **internal)
+            self.assertEqual(result.returncode, 0, f"{phase}: {result.stderr}")
+        self.assertIs(plistlib.loads(plist.read_bytes()).get("CaretInternalBuild"), True)
+        # Again, incrementally: the stamp is already there.
+        self.assertEqual(self.xcode_phase(root, "Processed privacy gate", **internal).returncode, 0)
+        # The flag counts only in Debug.
+        result = self.xcode_phase(root, "Processed privacy gate", CONFIGURATION="Release", CARET_INTERNAL_BUILD="1")
+        self.assertIn("pv2-sites-send", result.stderr)
+        self.assertNotIn("CaretInternalBuild", plistlib.loads(plist.read_bytes()))
+
     def test_packaging_and_xcode_ignore_an_inherited_internal_flag(self):
         root = self.tree(accepted=False)
         with patch.dict(os.environ, {"CARET_INTERNAL_BUILD": "1"}), self.assertRaises(SystemExit) as refused:
@@ -63,7 +127,7 @@ class InternalBuildGateTests(unittest.TestCase):
                 build = root / "xcode"
                 (build / "Caret.app/Contents/Resources").mkdir(parents=True, exist_ok=True)
                 result = subprocess.run(["/bin/sh", "-c", script.replace('\\"', '"').replace("\\n", "\n")], capture_output=True, text=True, env=clean_env(
-                    CARET_INTERNAL_BUILD="1", SRCROOT=str(root), TARGET_BUILD_DIR=str(build), INFOPLIST_PATH="Caret.app/Contents/Info.plist",
+                    CONFIGURATION="Release", CARET_INTERNAL_BUILD="1", SRCROOT=str(root), TARGET_BUILD_DIR=str(build), INFOPLIST_PATH="Caret.app/Contents/Info.plist",
                     UNLOCALIZED_RESOURCES_FOLDER_PATH="Caret.app/Contents/Resources"))
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("pv2-sites-send", result.stderr)
