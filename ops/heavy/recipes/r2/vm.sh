@@ -51,6 +51,13 @@ if [ -n "$RUN" ] && [ -d "$RUN" ] && [ "$(cat "$OUT/rig-run-scanned" 2>/dev/null
     [ -f "$RUN/$f" ] && cp "$RUN/$f" "$OUT/rig-run/$f"
   done
   [ -d "$RUN/out/jev-spend" ] && cp -R "$RUN/out/jev-spend" "$OUT/rig-run/out/"
+  # RAE: each target's per-field score, so its row can be checked now and re-checked later.
+  for f in "$RUN"/out/targets/*/score.json; do
+    [ -f "$f" ] || continue
+    t=$(basename "$(dirname "$f")")
+    mkdir -p "$OUT/rig-run/out/targets/$t"
+    cp "$f" "$OUT/rig-run/out/targets/$t/score.json"
+  done
 fi
 LIMIT=$(py -c 'import sys; print("%.6f" % (float(sys.argv[1]) - float(sys.argv[2])))' "$ALLOW" "$PRIOR")
 check r2 --harness "$H" --run "$OUT/rig-run" --rev "$CARET_HEAVY_REV" --exit "$rc" --spend-limit "$LIMIT" \

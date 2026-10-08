@@ -25,6 +25,13 @@ if os.path.exists(os.path.join(payload, "rae-options.json")):
     json.dump({"harness": "rae", "rev": rev, "mode": options["mode"], "options": options, "rows": rows, "notes": []},
               open(os.path.join(out, "results.json"), "w"))
     json.dump(rows, open(os.path.join(out, "rows.json"), "w"))
+    for r in rows:  # rae.py saves each target's score and run records under out/targets/<id>
+        if r["status"] == "ran":
+            os.makedirs(os.path.join(out, "targets", r["id"]))
+            json.dump({"target": r["id"], "verdict": "complete", "wrong": 0, "unexpected": [],
+                       "fields": [{"id": "f{}".format(i), "outcome": "right"} for i in range(2)]},
+                      open(os.path.join(out, "targets", r["id"], "score.json"), "w"))
+            open(os.path.join(out, "targets", r["id"], "run.json"), "w").write("{}")
     open(os.path.join(out, "scoreboard.md"), "w").write("# RAE (stub)\n")
     open(os.path.join(out, "leak-check.txt"), "w").write(
         "NO KEYS (nothing to scan for)\n" if options["mode"] == "probe" else "CLEAN (stub)\n")

@@ -26,8 +26,25 @@ def row(tid, status="ran", **k):
     return r
 
 
-def accept(d, opts=OPTS):
-    return rae_acceptance(d, opts, KNOWN)
+OUTCOMES = ("right", "partial", "kept", "missed", "abstained", "extra")
+
+
+def score_of(r, **k):
+    """The score.json rae.py saves for a ran row: one field per counted outcome, a wrong field when the row is wrong."""
+    fields = [{"id": "{}-{}".format(o, i), "outcome": o} for o in OUTCOMES for i in range(r[o])]
+    if r["wrong"] == "yes":
+        fields.append({"id": "wrong-0", "outcome": "wrong"})
+    score = {"target": r["id"], "verdict": r.get("verdict"), "wrong": int(r["wrong"] == "yes"), "fields": fields,
+             "unexpected": []}
+    score.update(k)
+    return score
+
+
+def accept(d, opts=OPTS, scores=None):
+    if scores is None:
+        scores = {r["id"]: score_of(r) for r in d.get("rows", []) if r.get("status") == "ran" and "right" in r
+                  and all(isinstance(r.get(o), int) for o in OUTCOMES) and r.get("wrong") in ("yes", "no")}
+    return rae_acceptance(d, opts, KNOWN, scores)
 
 
 class Acceptance(unittest.TestCase):
@@ -80,6 +97,35 @@ class Acceptance(unittest.TestCase):
             with self.subTest(bad=field):
                 p, _ = accept(data(row("contacts-me", **{field: bad}), row("mail-compose", "blocked"), row("usps-address")))
                 self.assertTrue(any("contacts-me" in x and field in x for x in p), p)
+
+    def test_each_ran_row_must_agree_with_its_score_json(self):
+        rows = (row("contacts-me"), row("mail-compose", "blocked"), row("usps-address"))
+        good = {r["id"]: score_of(r) for r in rows if r["status"] == "ran"}
+        self.assertEqual(accept(data(*rows), scores=good), ([], []))
+        bad = {
+            "missing": dict(good, **{"contacts-me": None}),
+            "another target's": dict(good, **{"contacts-me": score_of(row("usps-address"))}),
+            "a count": dict(good, **{"contacts-me": score_of(row("contacts-me"), fields=[])}),
+            "the wrong total": dict(good, **{"contacts-me": score_of(row("contacts-me"), wrong=2)}),
+            "the wrong flag": dict(good, **{"contacts-me": score_of(row("contacts-me", wrong="yes"), verdict="complete")}),
+            "the verdict": dict(good, **{"contacts-me": score_of(row("contacts-me"), verdict="partial")}),
+            "no field list": dict(good, **{"contacts-me": score_of(row("contacts-me"), fields=None)}),
+        }
+        for name, scores in bad.items():
+            with self.subTest(name):
+                p, _ = accept(data(*rows), scores=scores)
+                self.assertTrue(any("contacts-me" in x and "score.json" in x for x in p), p)
+
+    def test_unexpected_writes_and_a_submit_count_as_wrong(self):
+        r = row("contacts-me", wrong="yes", verdict="wrong")
+        score = score_of(r, fields=[f for f in score_of(r)["fields"] if f["outcome"] != "wrong"],
+                         unexpected=[{"element": {"role": "AXTextField"}}])
+        rows = (r, row("mail-compose", "blocked"), row("usps-address"))
+        scores = {"contacts-me": score, "usps-address": score_of(rows[2])}
+        self.assertEqual(accept(data(*rows), scores=scores), ([], []))
+        submitted = score_of(rows[2], wrong=1, verdict="wrong", submitted=["the compose window closed"])
+        rows = (r, row("mail-compose", "blocked"), row("usps-address", wrong="yes", verdict="wrong"))
+        self.assertEqual(accept(data(*rows), scores=dict(scores, **{"usps-address": submitted})), ([], []))
 
     def test_the_options_must_be_a_mode_and_known_targets(self):
         for opts in ({"mode": "fast", "targets": ["contacts-me"]}, {"mode": "run", "targets": []},

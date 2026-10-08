@@ -296,6 +296,23 @@ else:
             self.assertTrue(os.path.exists(os.path.join(self.out, "rig-run/out", name)), name)
         self.assertFalse(os.path.exists(os.path.join(job, "payload/CONFIG")))
 
+    def test_r2_vm_rae_run_copies_each_targets_score_json_back(self):
+        job = self.vm_inputs()
+        subprocess.run(["chmod", "u+w", os.path.join(job, "payload")], check=True)
+        os.unlink(os.path.join(job, "payload/h11-options.json"))
+        rae = {"mode": "run", "targets": ["contacts-me", "mail-compose"]}
+        write(os.path.join(job, "payload/rae-options.json"), json.dumps(rae))
+        for t in rae["targets"]:
+            write(os.path.join(job, "payload/tools/targets", t + ".json"), "{}")
+        os.chmod(os.path.join(job, "payload"), 0o555)
+        env = dict(self.vm_env(), RAE_OPTIONS=json.dumps(rae, sort_keys=True, separators=(",", ":")))
+        del env["H11_OPTIONS"]
+        done, result = self.run_recipe("r2/vm.sh", "rae", "30", "0.2000", "0.0000", "-", env=env)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        for t in rae["targets"]:
+            self.assertTrue(os.path.exists(os.path.join(self.out, "rig-run/out/targets", t, "score.json")), t)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "rig-run/out/targets/contacts-me/run.json")))
+
     def assert_key_nowhere(self):
         hits = []
         for root, _, names in os.walk(self.root):

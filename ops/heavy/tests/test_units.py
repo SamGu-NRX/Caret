@@ -443,7 +443,16 @@ class CheckTest(Temp):
 
     RAE_OPTS = {"mode": "run", "targets": ["contacts-me", "mail-compose"]}
 
-    def rae(self, opts=None, rows=None, leak="CLEAN SCANNED 40\n", plan_opts=None):
+    @staticmethod
+    def rae_score(r):
+        fields = [{"id": "{}-{}".format(o, i), "outcome": o}
+                  for o in ("right", "partial", "kept", "missed", "abstained", "extra") for i in range(r[o])]
+        fields += [{"id": "wrong-0", "outcome": "wrong"}] if r["wrong"] == "yes" else []
+        return {"target": r["id"], "verdict": r["verdict"], "wrong": int(r["wrong"] == "yes"), "fields": fields,
+                "unexpected": []}
+
+    def rae(self, opts=None, rows=None, leak="CLEAN SCANNED 40\n", plan_opts=None, missing_scores=None,
+            score_changes=None):
         opts = opts or self.RAE_OPTS
         if rows is None:
             rows = [self.rae_row(t) if opts["mode"] == "run" else {"id": t, "status": "probed", "wrong": "no"}
@@ -453,6 +462,10 @@ class CheckTest(Temp):
         self.write("out/rig-run/out/results.json", json.dumps({"harness": "rae", "rev": "c" * 40, "mode": opts["mode"],
                                                               "options": opts, "rows": rows, "notes": []}))
         self.write("out/rig-run/out/leak-check.txt", leak)
+        for r in rows:
+            if r.get("status") == "ran" and r["id"] not in (missing_scores or ()):
+                self.write("out/rig-run/out/targets/{}/score.json".format(r["id"]), json.dumps(dict(
+                    self.rae_score(r), **(score_changes or {}))))
         targets = os.path.join(self.root, "payload-targets")
         for t in ("contacts-me", "mail-compose"):
             self.write("payload-targets/{}.json".format(t), "{}")
@@ -476,6 +489,11 @@ class CheckTest(Temp):
         unknown = {"mode": "run", "targets": ["contacts-me", "keychain-login"]}  # not in this payload
         self.assertEqual(self.rae(opts=unknown, rows=[self.rae_row("contacts-me"), self.rae_row("keychain-login")]),
                          check.EVIDENCE)
+
+    def test_rae_ran_rows_are_checked_against_their_copied_score_json(self):
+        self.assertEqual(self.rae(missing_scores={"mail-compose"}), check.EVIDENCE)
+        self.assertEqual(self.rae(score_changes={"fields": []}), check.EVIDENCE)
+        self.assertEqual(self.rae(score_changes={"verdict": "partial"}), check.EVIDENCE)
 
     def test_a_probe_guest_holds_no_key_so_no_keys_is_its_leak_check(self):
         probe = {"mode": "probe", "targets": ["contacts-me", "mail-compose"]}
@@ -721,6 +739,14 @@ class ProfileAndEnqueueTest(Temp):
                                   allowance=0.2, prior_spend=0.0)
         with self.assertRaisesRegex(manifest.ManifestError, "rae-options.json"):
             caret_heavy._r2_vm_plan(args, "/w", "a" * 40, {})
+        self.write("vm/payload/tools/targets/contacts-me.json", "{}")
+        for bad in ('{"targets": ["contacts-me"], "mode": "fast"}', '{"targets": [], "mode": "run"}',
+                    '{"targets": ["contacts-me", "contacts-me"], "mode": "run"}', '{"targets": ["nowhere"], "mode": "run"}',
+                    '{"mode": "run"}', '["contacts-me"]'):
+            with self.subTest(bad):
+                self.write("vm/payload/rae-options.json", bad)
+                with self.assertRaisesRegex(manifest.ManifestError, "rae-options.json"):
+                    caret_heavy._r2_vm_plan(args, "/w", "a" * 40, {})
         self.write("vm/payload/rae-options.json", '{"targets": ["contacts-me"], "mode": "probe"}')
         argv, specs, recorded = caret_heavy._r2_vm_plan(args, "/w", "a" * 40, {})
         self.assertEqual(argv, ["rae", "3600", "0.2000", "0.0000", "-"])

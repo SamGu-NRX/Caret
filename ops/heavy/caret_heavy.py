@@ -40,6 +40,9 @@ if HERE not in sys.path:
 
 import manifest  # noqa: E402
 
+sys.path.insert(0, os.path.join(HERE, "recipes"))
+import check  # noqa: E402  (RAE's option rules: recipes/check.py owns them)
+
 HOME = os.path.expanduser("~")
 PYTHON = "/opt/homebrew/opt/python@3.14/bin/python3.14"
 # Isolated, writes no bytecode, and reads none from beside a module: with pycache_prefix at /var/empty (root-owned, empty)
@@ -398,9 +401,16 @@ def _r2_vm_plan(args, worktree, rev, paths):
         name, filename = options
         try:
             with open(os.path.join(job, "payload", filename), encoding="utf-8") as fh:
-                recorded[name] = json.dumps(json.load(fh), sort_keys=True, separators=(",", ":"))
+                loaded = json.load(fh)
         except (OSError, ValueError) as ex:
             raise manifest.ManifestError("payload has no readable {}: {}".format(filename, ex)) from None
+        if args.harness == "rae":
+            # The checker's rule, applied before the run takes the VM.
+            problem = check.rae_options_problem(loaded, check.rae_known_targets(
+                os.path.join(job, "payload", "tools", "targets")))
+            if problem:
+                raise manifest.ManifestError(problem)
+        recorded[name] = json.dumps(loaded, sort_keys=True, separators=(",", ":"))
     argv = [args.harness, str(args.rig_wait), "{:.4f}".format(args.allowance), "{:.4f}".format(args.prior_spend),
             args.config or "-"]
     return argv, inputs, recorded

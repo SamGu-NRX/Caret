@@ -342,7 +342,8 @@ RAE_STATUSES = {"ran", "probed", "absent", "blocked", "unreachable", "setup-fail
 RAE_ENVIRONMENT = {"absent", "blocked", "unreachable", "setup-failed"}
 RAE_VERDICTS = ("complete", "partial", "none", "wrong", "evidence-incomplete")
 # A ran row's scoring evidence: per-field outcome counts from score.py, and Caret's takes.
-RAE_COUNTS = ("taken", "right", "partial", "kept", "missed", "abstained", "extra")
+RAE_OUTCOMES = ("right", "partial", "kept", "missed", "abstained", "extra")
+RAE_COUNTS = ("taken",) + RAE_OUTCOMES
 RAE_COLUMNS = {"verdict": RAE_VERDICTS, "clipboard": ("restored", "changed"), "wrong": ("yes", "no"),
                "undone": ("yes", "no", "n/a"), "stopped": ("yes", "no", "finished-first", "n/a")}
 
@@ -374,9 +375,35 @@ def rae_row_problems(r):
     return problems
 
 
-def rae_acceptance(data, options, known_targets):
-    """(problems, failures) for one RAE results.json against the plan's rae-options.json and the targets the payload
-    has. Problems are untrustworthy evidence (12), failures a run that did not do its job (11); a wrong row is r2()'s."""
+def rae_score_problem(r, score):
+    """Why a ran row disagrees with its target's score.json (rae.py: out/targets/<id>/score.json, score.py's per-field
+    outcomes), or None. Its counts are the fields' outcomes; its wrong total is the wrong fields, the unexpected
+    writes and a submit; the row's wrong flag and verdict are the score's."""
+    tid = r["id"]
+    if score is None:
+        return "ran row {} has no score.json".format(tid)
+    fields = score.get("fields") if isinstance(score, dict) else None
+    if not isinstance(fields, list) or not all(isinstance(f, dict) for f in fields) or score.get("target") != tid:
+        return "ran row {}: score.json is not a per-field score of {}".format(tid, tid)
+    for outcome in RAE_OUTCOMES:
+        found = sum(1 for f in fields if f.get("outcome") == outcome)
+        if found != r[outcome]:
+            return "ran row {}: {} {} but score.json has {} such fields".format(tid, outcome, r[outcome], found)
+    wrong = sum(1 for f in fields if f.get("outcome") == "wrong") + len(score.get("unexpected") or []) + \
+        (1 if score.get("submitted") else 0)
+    if score.get("wrong") != wrong:
+        return "ran row {}: score.json says {} wrong but its fields give {}".format(tid, score.get("wrong"), wrong)
+    if (r["wrong"] == "yes") != (wrong > 0):
+        return "ran row {}: wrong={} but score.json has {} wrong".format(tid, r["wrong"], wrong)
+    if score.get("verdict") != r["verdict"]:
+        return "ran row {}: verdict {} but score.json says {}".format(tid, r["verdict"], score.get("verdict"))
+    return None
+
+
+def rae_acceptance(data, options, known_targets, scores):
+    """(problems, failures) for one RAE results.json against the plan's rae-options.json, the targets the payload has
+    and each ran target's score.json (*scores*: id -> parsed score, or None when it is missing). Problems are
+    untrustworthy evidence (12), failures a run that did not do its job (11); a wrong row is r2()'s."""
     problems, failures = [], []
     bad_options = rae_options_problem(options, known_targets)
     if bad_options:
@@ -409,6 +436,10 @@ def rae_acceptance(data, options, known_targets):
         problems += row_problems
         if row_problems:
             continue
+        disagreement = rae_score_problem(r, scores.get(tid))
+        if disagreement:
+            problems.append(disagreement)
+            continue
         if r["verdict"] == "evidence-incomplete":
             problems.append("{}: read-back could not score every field ({})".format(tid, str(r.get("note"))[:160]))
         if r["clipboard"] == "changed":
@@ -433,6 +464,21 @@ def leak_ok(leak_text, harness, mode):
     (the host feeder's scan of the copied-back run still covers it); every other guest holds one."""
     text = (leak_text or "").strip()
     return text.startswith("CLEAN") or (harness == "rae" and mode == "probe" and text.startswith("NO KEYS"))
+
+
+def rae_scores(run, data):
+    """Each ran row's out/targets/<id>/score.json in the copied-back run, parsed, or None when it is missing or unreadable."""
+    scores = {}
+    for r in (data or {}).get("rows", []):
+        tid = r.get("id")
+        if r.get("status") != "ran" or not isinstance(tid, str) or os.sep in tid or tid.startswith("."):
+            continue
+        try:
+            with open(os.path.join(run, "out", "targets", tid, "score.json"), encoding="utf-8") as fh:
+                scores[tid] = json.load(fh)
+        except (OSError, ValueError):
+            scores[tid] = None
+    return scores
 
 
 def rae_known_targets(targets_dir):
@@ -480,7 +526,7 @@ def r2(harness, run, rev, exit_code, options, spend_limit, rae_targets=None):
                 problems.append("results ran with options {}, not the plan's {}".format(data.get("options"), options))
             else:
                 p, f = h11_acceptance(data, want_options) if harness == "h11" else \
-                    rae_acceptance(data, want_options, rae_known_targets(rae_targets))
+                    rae_acceptance(data, want_options, rae_known_targets(rae_targets), rae_scores(run, data))
                 problems += p
                 failures += f
         else:
