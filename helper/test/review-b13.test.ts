@@ -182,7 +182,9 @@ describe("B13 second review: the fixes' own gaps", () => {
     const ledger = new Disclosure(m);
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Email"])] });
     expect(cut).toContain(CHAT);
-    expect(candidates.map((c) => c.text)).toContain("dana@example.com");
+    // The note's address ends with the chat's whole a@example.com, a run of 13, so offering it would charge the chat
+    // past its limit of 12 as well: neither is offered.
+    expect(candidates.map((c) => c.text)).not.toContain("dana@example.com");
     expect(candidates.map((c) => c.text)).not.toContain("a@example.com");
     const p = await proposeFill(m, fallthrough({ Email: ["a@example.com", "dana@example.com"] }), FORM, FORM_KEY("Email"), 3000);
     expect(fieldOf(p, "Email")?.value).toBeNull();
@@ -191,7 +193,7 @@ describe("B13 second review: the fixes' own gaps", () => {
 });
 
 describe("B13 review: executor plan text", () => {
-  it("F8: a goal cut one or two characters into a sourced value charges them", () => {
+  it("F8: a goal that quotes a sourced value whole charges it; cut one or two characters in, it is a residual", () => {
     const m = new ScreenModel();
     m.apply(snap([text(`${CHAT}/a`, "abcd")], { at: 1000, windowId: CHAT, title: "", app: MESSAGES }));
     m.apply(scheduleForm(2000, ["Notes"]));
@@ -201,7 +203,10 @@ describe("B13 review: executor plan text", () => {
     const goal = `${"The Notes field of the follow-up form holds the code that the chat gave for the meeting room, which is ".padEnd(117, ".")}abcd`;
     const form = m.windows.get(FORM)!;
     const t = { role: "AXTextField", label: "Notes", describe: "the Notes field" };
-    expect(targetSnippets(form, m, goal, t, [], [{ text: "abcd", window: chat }])).toBeNull();
+    // "ab" is under 12 characters and not a whole line, so the cut goes uncharged (OUTPUT-LEDGER-SPEC section 4).
+    expect(targetSnippets(form, m, goal, t, [], [{ text: "abcd", window: chat }])).not.toBeNull();
+    // Quoted whole, "abcd" is the chat's whole line: 4 over its limit of 1.
+    expect(targetSnippets(form, m, "The Notes field holds the room code abcd", t, [], [{ text: "abcd", window: chat }])).toBeNull();
     // A goal that does not quote the value asks.
     expect(targetSnippets(form, m, "The Notes field holds the room code", t, [], [{ text: "abcd", window: chat }])).not.toBeNull();
   });

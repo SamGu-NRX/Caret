@@ -228,7 +228,7 @@ describe("a date's or a contact's clause (G2)", () => {
     expect(sept).toMatch(/in the line '[^']*September 2016 to May 2020/u);
   });
 
-  it("G2: shows 'August 2022' with the sentence that says it is when the job started, where budget is left after every span", async () => {
+  it("G2: shows 'August 2022' with the sentence that says it is when the job started", async () => {
     const w = expectation("wizard-2").sources;
     const ask = async (note: string): Promise<string | undefined> => {
       const { ask: jev, requests } = scripted({}, () => ({ choice: "user", confidence: 0.95 }));
@@ -236,12 +236,10 @@ describe("a date's or a contact's clause (G2)", () => {
       await proposeFill(desk([control("e0", "Employer"), start], [mailWindow(w.email), noteWindow(note)]), jev, WIN, keyOf(start), 2000, { about: memoryOf("wizard-2") });
       return descriptions(requests).find((d) => d.startsWith(`"August 2022" (`));
     };
-    // A note of the job line alone leaves budget once its spans are in, and the clause part goes out.
     const job = w.note.split("\n").filter((l) => l.includes("Tallgrass")).join("\n");
     expect(await ask(job)).toContain("in the line 'Started at Tallgrass Mechatronics in August 2022'");
-    // On F1's whole note the spans spend the budget first, and the clause, optional context, does not go (G2 review:
-    // charged earlier, clauses pushed values out). wizard-2's Start date gets no clause from this change.
-    expect(await ask(w.note)).not.toContain("Started at Tallgrass");
+    // F1's whole note fits its window's limit of 1,200 with the clause beside every span.
+    expect(await ask(w.note)).toContain("in the line 'Started at Tallgrass Mechatronics in August 2022'");
   });
 });
 

@@ -21,7 +21,6 @@ import { asksCountry, fieldPart, namePart, splitAddress, splitName } from "../fi
 import { fieldKinds, isNameLike } from "../fill/kinds.ts";
 import { candidateProvenance, OWNER_CRITERIA, WHOSE_CRITERIA, WHOSE_CUTOFF } from "../fill/fill.ts";
 import type { CheckedValue, Provenance } from "../fill/contract.ts";
-import { WINDOW_CHARS } from "../privacy.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { runCodePlan } from "../codemode/sandbox.ts";
@@ -96,26 +95,21 @@ export interface Value {
  * The values a program may write: the instruction's own spans and memory (with a remembered name's parts),
  * listed with the form; then each other window's candidates and the parts code splits from a person's name or
  * an address, by window, most recent first, in at most MAX_SOURCE_WINDOWS windows, as the plan API's
- * readWindow(windowRef) shapes it. Each window's list is held to the writer's per-window budget (plan-prompt.ts).
+ * readWindow(windowRef) shapes it. A value whose display the ledger refuses is left out.
  */
-export function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: Disclosure, now: number, formRoom: number): Value[] {
+export function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: Disclosure, now: number): Value[] {
   const d = ledger;
   const out: Value[] = [];
   const retainedValues = new Set(instructionView(instruction).retained.flatMap(instructionValues));
-  const used = new Map<WindowState | null, number>();
   const LEFT = "[a field Caret leaves to you]";
   /** `said` mints the display; what the display was before SC1 is the oracle, so a display redaction changes is not listed. */
   const add = (text: string, said: () => ModelText | null, display: string, win: WindowState | null, owner: Value["owner"], provenance: Provenance, key: string | null = null, memoryRef: string | null = null): void => {
     // Preserve the local value ref for refusal, but disclose no span removed with a forbidden clause.
     const withheld = provenance.kind === "instruction" && !retainedValues.has(text);
     const safe = withheld ? LEFT : instructionForModel(display);
-    const shown = safe.length <= 400 ? safe : `${safe.slice(0, 399)}…`;
-    const room = win === null ? formRoom : WINDOW_CHARS - win.window.title.length;
-    const u = used.get(win) ?? 0;
-    if (out.length >= MAX_VALUES || out.some((v) => v.text === text) || u + shown.length > room) return;
+    if (out.length >= MAX_VALUES || out.some((v) => v.text === text)) return;
     const m = withheld ? d.own(LEFT) : safe === display ? said() : null;
     if (m === null) return;
-    used.set(win, u + shown.length);
     out.push({ text, display: d.cut(m, 400), window: win, owner, key, memory: memoryRef, provenance });
   };
   const spans = instructionValues(instruction);
@@ -200,9 +194,8 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
     return label === null || label === undefined ? [] : [{ ref: d.id(`t${i + 1}`), label, kind: d.id(fieldPart(f.label) ?? "textField"), canFill: true, options: [], allowedPressEffects: [] }];
   });
   const titleText = d.descriptor(w, title) ?? d.own("");
-  const room = WINDOW_CHARS - title.length - targets.reduce((n, t) => n + t.label.length, 0);
   const memoryValues = memory.values();
-  const values = valueList(instruction, model, w, memoryValues, ledger, now, room);
+  const values = valueList(instruction, model, w, memoryValues, ledger, now);
   if (values.length === 0) throw new PlannerError("nothingToDo", "nothing on screen, in memory or in your instruction could go in a field");
   // The form's snapshot holds its fields with the instruction's and memory's values; each source window is a
   // snapshot of its own, read by readWindow(window). Value refs are numbered across them.

@@ -17,7 +17,6 @@ import type { EventClock } from "../offers/event-time.ts";
 import { frozenNotes, valueList, type Value } from "../planner/codeplan.ts";
 import { mintFieldName, writableFields } from "../planner/planner.ts";
 import type { MemoryValue } from "../planner/trace.ts";
-import { WINDOW_CHARS } from "../privacy.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects } from "./capabilities.ts";
 import { markDerived } from "./gates.ts";
@@ -109,8 +108,8 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   let v = 0;
   const people = o.memory.filter((m) => m.whose === "other");
 
-  // Values first: the instruction, memory and other windows' candidates, measured against the first window's room.
-  const listed = valueList(o.instruction, model, first, o.memory, ledger, o.now, WINDOW_CHARS);
+  // Values first: the instruction, memory and other windows' candidates.
+  const listed = valueList(o.instruction, model, first, o.memory, ledger, o.now);
   const valueOf = (x: Value, snapshot: string): ReadValue => {
     const ref = `v${++v}`;
     const origin: ValueOrigin =

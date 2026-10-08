@@ -1,9 +1,8 @@
 // What the writer model sees when it writes a plan program, and how its answer becomes source text. The
 // writer gets the user's goal and a bounded inventory of the frozen snapshots: labels, kinds, refs,
 // value displays and question options. Value origins, digests and anything outside the snapshots stay
-// with the host. Each window's inventory text is held to the helper's per-window budget.
+// with the host. What the snapshots reveal of each window is the output ledger's to hold, at seal.
 import * as z from "zod";
-import { WINDOW_CHARS } from "../privacy.ts";
 import { PlanningSnapshotSchema, type PlanningSnapshot } from "../codemode/types.ts";
 
 export const PlanInputSchema = z.object({ goal: z.string().min(1).max(500), snapshots: z.array(PlanningSnapshotSchema).min(1).max(4) }).strict();
@@ -61,26 +60,17 @@ Rules:
 
 Reply with only the function in one \`\`\`ts code block.`;
 
-/** The text a window contributes to the writer's prompt, by the measure the per-window budget uses. */
-function windowText(s: PlanningSnapshot): string[] {
-  return [s.title, ...s.targets.map((t) => t.label), ...s.values.map((v) => v.display), ...s.questions.flatMap((q) => [q.text, ...q.options.map((o) => o.label)])];
-}
-
-/** The user message for a plan request. Throws when a window's inventory text is over budget. */
+/** The user message for a plan request. */
 export function planUserMessage(input: PlanInput): string {
-  const windows = input.snapshots.map((s, i) => {
-    const chars = windowText(s).reduce((n, t) => n + t.length, 0);
-    if (chars > WINDOW_CHARS) throw new Error(`window ${s.window} gives the writer ${chars} characters; the per-window budget is ${WINDOW_CHARS}`);
-    return {
-      window: s.window,
-      focused: i === 0,
-      title: s.title,
-      snapshot: s.snapshot,
-      targets: s.targets.map((t) => ({ ref: t.ref, label: t.label, kind: t.kind, canFill: t.canFill, ...(t.options.length > 0 ? { options: t.options } : {}), ...(t.allowedPressEffects.length > 0 ? { allowedPressEffects: t.allowedPressEffects } : {}) })),
-      values: s.values.map((v) => ({ ref: v.ref, display: v.display })),
-      questions: s.questions,
-    };
-  });
+  const windows = input.snapshots.map((s, i) => ({
+    window: s.window,
+    focused: i === 0,
+    title: s.title,
+    snapshot: s.snapshot,
+    targets: s.targets.map((t) => ({ ref: t.ref, label: t.label, kind: t.kind, canFill: t.canFill, ...(t.options.length > 0 ? { options: t.options } : {}), ...(t.allowedPressEffects.length > 0 ? { allowedPressEffects: t.allowedPressEffects } : {}) })),
+    values: s.values.map((v) => ({ ref: v.ref, display: v.display })),
+    questions: s.questions,
+  }));
   return `Goal: ${input.goal}\n\nWindows (the first is focused):\n${JSON.stringify(windows, null, 1)}`;
 }
 

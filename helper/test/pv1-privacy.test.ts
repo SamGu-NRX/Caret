@@ -169,7 +169,7 @@ describe("PV1 outbound redaction", () => {
       return { model: "fixture", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "refuse", confidence: 1 }])), inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 };
     }).make(snapshot);
     expect(calls).toBe(2);
-    const values = valueList(instruction, model, w, [], new Disclosure(model), 1000, 1000);
+    const values = valueList(instruction, model, w, [], new Disclosure(model), 1000);
     expect(values.find((v) => v.text === "Robin Vale")?.display).toBe("[a field Caret leaves to you]");
     expect(values.find((v) => v.text === "R-42")?.display).toContain("R-42");
   });

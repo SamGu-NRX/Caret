@@ -102,23 +102,24 @@ const viewOf = (w: WindowState): WindowState => (isRedacted(w) ? w : redactWindo
 /**
  * Section 1: every window the registry knows, as its redacted view, and every older snapshot the Disclosure holds that is
  * not the registry's current state, each measured on its own (a retained revision keeps its own bound; it does not
- * pool with the live one). Classified by the raw window where there is one, since redaction can empty a title the
- * conversation rule reads.
+ * pool with the live one). A window's first state is keyed by its id, so a window that has closed is still charged by
+ * name in the state the task found it; a later state of the same id is `id@n`. Classified by the raw window where there
+ * is one, since redaction can empty a title the conversation rule reads.
  */
 export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowState>): MeasuredWindow[] {
   const out: MeasuredWindow[] = [];
   const seen = new Set<WindowState>();
-  const add = (raw: WindowState, live: boolean): void => {
+  const add = (raw: WindowState): void => {
     const view = viewOf(raw);
     if (seen.has(view)) return;
     seen.add(view);
     const id = raw.window.windowId;
     const inv = viewInventory(view);
     const older = out.filter((m) => m.windowId === id).length;
-    out.push({ key: live && older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limit: limitOf(inv, heldAsConversation(raw)) });
+    out.push({ key: older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limit: limitOf(inv, heldAsConversation(raw)) });
   };
-  for (const w of registry.windows.values()) add(w, true);
-  for (const w of held) add(w, false);
+  for (const w of registry.windows.values()) add(w);
+  for (const w of held) add(w);
   return out;
 }
 
