@@ -86,11 +86,18 @@ describe("candidate generator", () => {
     const { candidates, stats } = collectCandidates(scene.model, scene.formWindowId, { now: NOW });
     expect(candidates).toHaveLength(MAX_CANDIDATES);
     const values = [...scene.model.windows.values()].reduce((k, w) => k + w.values.length, 0);
-    // The scene's most recent window alone holds enough typed values: no node is read for lines.
-    expect(stats.values).toBeLessThanOrEqual(MAX_CANDIDATES + 5);
+    // Each window is read whole, newest first: the newest, a files window, gives all 80 from its first 80 nodes, and
+    // no candidate is built from any other.
+    expect(stats.values).toBe(0);
+    expect(stats.nodes).toBe(MAX_CANDIDATES);
     expect(stats.values).toBeLessThan(values);
-    expect(stats.nodes).toBe(0);
-    expect(stats.overBudget).toBe(false);
+    // The files window, stopped partway, and the six windows the cap never reached count as cut, as a privacy cut would:
+    // reading the six for what they may hold runs past the visit cap, so every field the cut could touch is withheld
+    // (cutAll), not filled from a partial set.
+    const r = collectCandidates(scene.model, scene.formWindowId, { now: NOW });
+    expect(r.cut).toHaveLength(scene.model.windows.size - 1);
+    expect(r.cutAll, "withheld, not filled: what the unread windows hold is unknown").toBe(true);
+    expect(stats.overBudget).toBe(true);
   });
 
   it("counts duplicate typed values toward the visit cap", () => {

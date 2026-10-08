@@ -320,11 +320,10 @@ describe("the privacy line on every Jev request", () => {
       await s.replay([...scene.snapshots, focus(scene.formWindowId, "dev.caret.form/standard/textfield:email~0", 2_000_000)], "fill on focus");
       await s.firstLook();
     });
-    // Two stages of two asks for each fill (B24: whose details first, then values).
-    expect(rec.length).toBe(8);
-    expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
-    // Windows of thousands of characters each gave at most WINDOW_CHARS.
-    expect(Math.max(...rec.flatMap(measure).map((m) => m.covered))).toBeLessThanOrEqual(WINDOW_CHARS);
+    // Withheld, not asked: each window is read whole, newest first, so the files window fills the candidate cap and the
+    // six it never reached count as cut. What they hold is unknown, so the email field and the first look's fields are
+    // withheld (candidates.ts stop). Read every window's typed values first, this screen sent 8 requests.
+    expect(rec, "nothing is asked from a partial read of the screen").toEqual([]);
   }, 30_000);
 
   it("pending: a job window watched to the end, then a first look", async () => {

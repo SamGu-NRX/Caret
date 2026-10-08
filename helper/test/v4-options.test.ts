@@ -319,17 +319,18 @@ describe("an Ask about a menu whose options the window does not show", () => {
   };
   const ask = (d: Desk) => planAsk("just the degree and my phone number", d.model, { values: () => d.memory }, d.about, { askJev: jev, maker: headsIntentMaker(jev), writer: null, offerKey: "v4", windowId: d.form.window.windowId, now: T0 });
 
-  // B25 held-16 is an accepted loss: windows are read by recency, the bystander venue mail before
-  // the note, and each candidate goes in with all its facts; the mail then takes the room the note's phone and degree
-  // need in it. Its sentence about the menu still differs by window.
-  it("B25 held-16 on the reader's window: finds nothing to fill, and still says Degree's menu is the user's to set", async () => {
-    const e = await ask(readerDesk("greenhouse-apply")).catch((x: unknown) => x);
-    expect(String(e), "held-16 is an accepted loss").toBe("Error: Caret found nothing to put in Phone. Caret can't see the choices in Degree without opening the menu, so Degree is yours to set.");
+  // B25 held-16: windows are read whole by recency and each candidate goes in with all its facts.
+  it("B25 held-16 on the reader's window: fills Phone and says Degree is the user's, since Caret never opens a menu to read it", async () => {
+    const d = (await ask(readerDesk("greenhouse-apply"))) as AskDraft;
+    expect(d.checked.writes.map((w) => w.value)).toEqual(["(512) 555-0147"]);
+    expect(d.controls).toEqual([]);
+    expect(d.leftToYou).toBe("Caret can't see the choices in Degree without opening the menu, so Degree is yours to set.");
   });
 
-  it("B25 held-16 on the page's window: finds nothing to fill, with no sentence about the menu", async () => {
-    const e = await ask(pageDesk("greenhouse-apply")).catch((x: unknown) => x);
-    expect(String(e), "held-16 is an accepted loss").toBe("Error: Caret found nothing to put in Phone or Degree.");
+  it("B25 held-16 on the page's window: sets Degree to its option, with no such sentence", async () => {
+    const d = (await ask(pageDesk("greenhouse-apply"))) as AskDraft;
+    expect((d.controls ?? []).map((c) => [c.name, c.value])).toEqual([["Degree", "Bachelor's Degree"]]);
+    expect(d.leftToYou ?? "").not.toMatch(/can't see the choices/u);
   });
 
   it("names a menu once, as the user's, when it is all the Ask was about", async () => {
