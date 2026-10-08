@@ -8,7 +8,7 @@ import type { Node } from "./protocol.ts";
 import { excludedValue } from "./privacy/exclude.ts";
 import { isRedacted, redactWindow } from "./fill/redact.ts";
 import { heldAsConversation, measuredWindows, MintAccount, sectionTexts, viewInventory, type DeclaredSpans, type MeasuredWindow, type ScreenRegistry } from "./privacy/ledger/account.ts";
-import { CONVERSATION_CHARS, limitOf, WINDOW_CHARS, type DeclaredSpan } from "./privacy/ledger/measure.ts";
+import { CONVERSATION_CHARS, limitOf, spanKey, WINDOW_CHARS, type DeclaredSpan } from "./privacy/ledger/measure.ts";
 
 export { CONVERSATION_CHARS, WINDOW_CHARS };
 /** The longest screen line the pending and first-look questions quote, cut with an ellipsis past it. */
@@ -344,18 +344,16 @@ export function windowBudget(w: WindowState): number {
 
 const EMPTY_REGISTRY: ScreenRegistry = { windows: new Map() };
 
-/** Declared spans grouped by the view they were read from (privacy/ledger/account.ts DeclaredSpans). */
+/** Declared spans grouped by the view they were read from (privacy/ledger/account.ts DeclaredSpans), each once. */
 export function spansOf(spans: Iterable<ViewSpan>): DeclaredSpans {
   const out = new Map<WindowState, DeclaredSpan[]>();
   for (const { view, ...span } of spans) {
     const l = out.get(view);
     if (l === undefined) out.set(view, [span]);
-    else if (!l.some((x) => x.text === span.text && x.within === span.within)) l.push(span);
+    else if (!l.some((x) => spanKey(x) === spanKey(span))) l.push(span);
   }
   return out;
 }
-
-const spanKey = (sp: DeclaredSpan): string => `${sp.within ?? ""}\u0000${sp.text}`;
 
 /** A declared span with the redacted view it was read from. */
 export type ViewSpan = DeclaredSpan & { readonly view: WindowState };

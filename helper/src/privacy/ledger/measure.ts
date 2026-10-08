@@ -14,6 +14,7 @@
 // never contain BOUNDARY, so no run crosses a unit. O(B + S) for B measured scalars and S source scalars, up to the
 // transition map's lookups.
 import { BOUNDARY, ledgerNormalizeV1, type Normalized } from "./normalize.ts";
+import { sourceLines, type PartId, type PartMap, type SourceAt } from "./source.ts";
 
 /**
  * The shortest run that counts, in normalized scalars: the lead's 2026-10-08 ruling, chosen on the scripted corpus
@@ -48,10 +49,15 @@ export interface LineInventory {
    * `lines`, and any request measured against the window is refused.
    */
   readonly malformed: boolean;
+  /** Each part of the window's text (source.ts), its raw text mapped to positions: what a recorded source range charges. */
+  readonly parts: ReadonlyMap<PartId, PartMap>;
 }
 
-/** A window's inventory from its lines as section 1 collects them (already split, collapsed, trimmed and distinct). */
-export function inventoryOf(lines: readonly string[], malformed = false): LineInventory {
+/**
+ * A window's inventory from its lines as section 1 collects them (already split, collapsed, trimmed and distinct), and
+ * its parts' maps (source.ts readParts). With no maps, each line is its own part, `line:<index>`, as tests write them.
+ */
+export function inventoryOf(lines: readonly string[], malformed = false, parts?: ReadonlyMap<PartId, PartMap>): LineInventory {
   if (new Set(lines).size !== lines.length) throw new Error("inventoryOf: a line twice; section 1 deduplicates exact lines");
   const starts: number[] = [];
   let total = 0;
@@ -60,7 +66,8 @@ export function inventoryOf(lines: readonly string[], malformed = false): LineIn
     starts.push(total);
     total += l.length;
   }
-  return Object.freeze({ lines: Object.freeze([...lines]), normalized: Object.freeze(lines.map(ledgerNormalizeV1)), starts: Object.freeze(starts), total, malformed });
+  const maps = parts ?? new Map(lines.map((l, i) => [`line:${i}`, { raw: l, pos: Int32Array.from({ length: l.length }, (_, k) => starts[i]! + k) }] as const));
+  return Object.freeze({ lines: Object.freeze([...lines]), normalized: Object.freeze(lines.map(ledgerNormalizeV1)), starts: Object.freeze(starts), total, malformed, parts: maps });
 }
 
 /** What one request reveals of one window: the positions (bits over 0..total-1) and their count. */
@@ -189,103 +196,23 @@ export function reveal(index: UnitIndex, inv: LineInventory): Revealed {
 }
 
 /**
- * A minted unit's declared span: the source text it was read from (OUTPUT-LEDGER-SPEC section 4). A derivation's span
- * is what its text reproduces `within` its basis text.
+ * A minted unit's declared span (OUTPUT-LEDGER-SPEC section 4): the source range it was read from, charged as it is;
+ * or, from a producer that cannot know its range, its text, which charges every line of the window holding a line of
+ * it, whole. The second over-charges and never under-charges.
  */
-export interface DeclaredSpan {
-  readonly text: string;
-  readonly within?: string;
-}
+export type DeclaredSpan = { readonly at: SourceAt } | { readonly text: string };
 
-/**
- * A text's pieces as a span reads them: its lines, whitespace collapsed and trimmed, less an ellipsis at either end (a
- * cut's mark, as disclosure.ts viewHolds reads a text). An ellipsis inside a line stands in the source, so it stays.
- */
-function pieces(text: string): number[][] {
-  return text
-    .split(/\r?\n/u)
-    .map((x) => x.replace(/\s+/gu, " ").trim().replace(/^\u2026|\u2026$/gu, "").trim())
-    .filter((x) => x !== "" && x.isWellFormed())
-    .map((x) => [...ledgerNormalizeV1(x).cps])
-    .filter((x) => x.length > 0);
-}
+/** A span's identity, for a set of spans already charged. */
+export const spanKey = (sp: DeclaredSpan): string => ("at" in sp ? `${sp.at.part}\u0000${sp.at.start}\u0000${sp.at.end}` : `\u0001${sp.text}`);
 
-/** Each start in `hay` from `from` to `to` (exclusive of a match past `to`) where `needle` stands. */
-function* occurrences(hay: readonly number[], needle: readonly number[], from = 0, to = hay.length): Generator<number> {
-  outer: for (let a = from; a + needle.length <= to; a++) {
-    for (let k = 0; k < needle.length; k++) if (hay[a + k] !== needle[k]) continue outer;
-    yield a;
-  }
-}
-
-const WORD = /[\p{L}\p{N}]/u;
-const isWord = (cp: number | undefined): boolean => cp !== undefined && WORD.test(String.fromCodePoint(cp));
-
-/**
- * Where a piece is taken to stand in a window: one occurrence, chosen by a rule that does not depend on line order. A
- * whole line first, then an occurrence with no letter or digit either side, then any; among those, the one covering the
- * most source positions; then the line that sorts first, then the leftmost. Null when the piece stands nowhere.
- */
-function chosen(inv: LineInventory, piece: readonly number[]): { li: number; a: number } | null {
-  let best: { li: number; a: number; cls: number; size: number } | null = null;
-  const texts = lineTexts(inv);
-  const needle = String.fromCodePoint(...piece);
-  inv.normalized.forEach((line, li) => {
-    // A native substring test first: most lines of a large window do not hold the piece at all.
-    if (!texts[li]!.includes(needle)) return;
-    for (const a of occurrences(line.cps, piece)) {
-      const cls = a === 0 && piece.length === line.cps.length ? 0 : !isWord(line.cps[a - 1]) && !isWord(line.cps[a + piece.length]) ? 1 : 2;
-      const { lo, hi } = sourceRange(line, a, piece.length);
-      const size = hi - lo + 1;
-      const better =
-        best === null ||
-        cls < best.cls ||
-        (cls === best.cls && (size > best.size || (size === best.size && (inv.lines[li]! < inv.lines[best.li]! || (li === best.li && a < best.a)))));
-      if (better) best = { li, a, cls, size };
-    }
-  });
-  return best === null ? null : { li: (best as { li: number }).li, a: (best as { a: number }).a };
-}
-
-/**
- * The source positions normalized scalars `a` to `a + len` of a line came from, as one range: every position from the
- * first to the last, so a character normalization drops or merges inside the range is covered too.
- */
-function sourceRange(line: Normalized, a: number, len: number): { lo: number; hi: number } {
-  let lo = Infinity;
-  let hi = -1;
-  for (let k = a; k < a + len; k++) {
-    for (const p of line.origins[k]!) {
-      if (p < lo) lo = p;
-      if (p > hi) hi = p;
-    }
-  }
-  return { lo, hi };
-}
-
-/**
- * The positions of `inv` a declared span reveals, at any length, compared after ledgerNormalizeV1: for each piece of
- * its text, the source range of the one place it is taken to stand (chosen). For a derivation, within the place each
- * piece of its basis is taken to stand, what the derived text reproduces: from each position of the derived text in
- * turn, the longest stretch of it the piece holds, at its leftmost occurrence there, punctuation and marks included. A
- * span is what a builder read the unit from, so it is charged in full, however short; one place per piece, since the
- * unit shows the text once.
- */
+/** The positions of `inv` a declared span reveals (DeclaredSpan). Throws when a range names a part `inv` lacks or runs past it. */
 export function spanPositions(inv: LineInventory, span: DeclaredSpan): Uint8Array {
   let cache = SPANS.get(inv);
   if (cache === undefined) SPANS.set(inv, (cache = new Map()));
-  const key = `${span.within ?? ""}\u0000${span.text}`;
+  const key = spanKey(span);
   let bits = cache.get(key);
   if (bits === undefined) cache.set(key, (bits = placeSpan(inv, span)));
   return bits;
-}
-
-/** Each inventory's normalized lines as strings, for a fast substring test. */
-const TEXTS = new WeakMap<LineInventory, readonly string[]>();
-function lineTexts(inv: LineInventory): readonly string[] {
-  let t = TEXTS.get(inv);
-  if (t === undefined) TEXTS.set(inv, (t = inv.normalized.map((n) => String.fromCodePoint(...n.cps))));
-  return t;
 }
 
 /** Each inventory's span positions, by span: an inventory is immutable, and a request mints many texts over one window. */
@@ -293,33 +220,23 @@ const SPANS = new WeakMap<LineInventory, Map<string, Uint8Array>>();
 
 function placeSpan(inv: LineInventory, span: DeclaredSpan): Uint8Array {
   const bits = new Uint8Array(inv.total);
-  const mark = (li: number, a: number, len: number): void => {
-    const { lo, hi } = sourceRange(inv.normalized[li]!, a, len);
-    for (let p = lo; p <= hi; p++) bits[inv.starts[li]! + p] = 1;
-  };
-  const derived = span.within === undefined ? null : ledgerNormalizeV1(span.text).cps;
-  for (const piece of pieces(span.within ?? span.text)) {
-    const at = chosen(inv, piece);
-    if (at === null) continue;
-    if (derived === null) {
-      mark(at.li, at.a, piece.length);
-      continue;
-    }
-    const cps = inv.normalized[at.li]!.cps;
-    const segment = String.fromCodePoint(...piece);
-    for (let i = 0; i < derived.length; ) {
-      // The longest stretch from i the piece holds; a native substring test, then its leftmost place in the piece.
-      let len = 0;
-      while (i + len < derived.length && segment.includes(String.fromCodePoint(...derived.slice(i, i + len + 1)))) len++;
-      if (len === 0) {
-        i++;
-        continue;
-      }
-      const b = occurrences(cps, derived.slice(i, i + len), at.a, at.a + piece.length).next();
-      if (!b.done) mark(at.li, b.value, len);
-      i += len;
-    }
+  if ("at" in span) {
+    const { part, start, end } = span.at;
+    const map = inv.parts.get(part);
+    if (map === undefined) throw new Error(`spanPositions: the window has no part ${JSON.stringify(part)}`);
+    if (!(Number.isInteger(start) && Number.isInteger(end) && 0 <= start && start <= end && end <= map.raw.length)) throw new Error(`spanPositions: [${start}, ${end}) is not a range of part ${JSON.stringify(part)}`);
+    for (let i = start; i < end; i++) if (map.pos[i]! >= 0) bits[map.pos[i]!] = 1;
+    return bits;
   }
+  // Each line of the text, as written and with a cut's ellipsis taken off either end (viewHolds reads it both ways).
+  const pieces = new Set(sourceLines(span.text).flatMap((l) => [l, l.replace(/^\u2026|\u2026$/gu, "").trim()]).filter((l) => l !== ""));
+  inv.lines.forEach((line, li) => {
+    for (const piece of pieces) {
+      if (!line.includes(piece)) continue;
+      bits.fill(1, inv.starts[li]!, inv.starts[li]! + line.length);
+      return;
+    }
+  });
   return bits;
 }
 

@@ -13,7 +13,8 @@ import { seal } from "../src/privacy/send.ts";
 import { Disclosure, LedgerRefused, UnmintedText, type ModelText, registryOf } from "../src/privacy/disclosure.ts";
 import { decodeUnits } from "../src/privacy/ledger/units.ts";
 import { isConversation } from "../src/conversation.ts";
-import { refReveal, refUnits } from "./ledger-reference.ts";
+import { refReveal, refUnits, type RefSpan } from "./ledger-reference.ts";
+import { nodePart } from "../src/privacy/ledger/source.ts";
 import { windowBudget } from "../src/privacy.ts";
 import { noteSwitchedOff } from "../src/privacy/read-policy.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -103,35 +104,55 @@ describe("invariant: what a request's final bytes reveal of a window is exactly 
     const d = new Disclosure(m);
     const views = new Map([...m.windows.values()].map((w) => [w.window.windowId, redactWindow(w)]));
     const said: ModelText[] = [];
-    /** Each minted text's declared spans, as the test reads them: the window and the text it was read from (section 4). */
-    const declared = new Map<string, { id: string; text: string; within?: string }[]>();
-    const declare = (t: string, spans: readonly { id: string; text: string; within?: string }[]): void => {
+    /**
+     * Each minted text's declared spans, as the test reads them (section 4): the window, and either the range of one of
+     * its inventory lines the text was read from, or (a producer that records no range) the text itself.
+     */
+    type Decl = { id: string; li: number; start: number; end: number } | { id: string; text: string };
+    const declared = new Map<string, Decl[]>();
+    const keyOf = (x: Decl): string => ("text" in x ? `${x.id}:${x.text}` : `${x.id}:${x.li}:${x.start}:${x.end}`);
+    const declare = (t: string, spans: readonly Decl[]): void => {
       const l = declared.get(t) ?? [];
-      for (const sp of spans) if (!l.some((x) => x.id === sp.id && x.text === sp.text && x.within === sp.within)) l.push(sp);
+      for (const sp of spans) if (!l.some((x) => keyOf(x) === keyOf(sp))) l.push(sp);
       declared.set(t, l);
     };
     for (let step = 0; step < 12; step++) {
       const id = pick(r, [...lines.keys()]);
       const view = views.get(id) as WindowState;
-      const ws = pick(r, linesOfWindow(view).slice(1)).split(" ");
+      // A run of words cut from one node's label, with where it stands: in the label's raw text (what the producer
+      // records) and in the inventory's collapsed line (what the reference reads).
+      const node = pick(r, [...view.nodes.values()].filter((n) => (n.label ?? "").trim() !== ""));
+      const raw = node.label as string;
+      const ws = [...raw.matchAll(/\S+/gu)].map((m) => ({ w: m[0], at: m.index }));
       const a = Math.floor(r() * ws.length);
       const run = ws.slice(a, Math.min(ws.length, a + 1 + Math.floor(r() * 8)));
+      const text = run.map((x) => x.w).join(" ");
+      const at = { part: nodePart(node.key, "label"), start: run[0]!.at, end: run.at(-1)!.at + run.at(-1)!.w.length };
+      const li = linesOfWindow(view).indexOf(raw.replace(/\s+/gu, " ").trim());
+      const lineStart = ws.slice(0, a).reduce((n, x) => n + x.w.length + 1, 0);
+      const range = (): Decl => ({ id, li, start: lineStart, end: lineStart + text.length });
+      const recorded = r() < 0.7;
       const path = pick(r, ["candidate", "held", "derived", "joined"] as const);
       let got: ModelText | null = null;
-      const text = run.join(" ");
       if (path === "candidate" || path === "held") {
-        got = path === "candidate" ? d.candidate(view, text) : d.held(view, text);
-        if (got !== null) declare(got, [{ id, text }]);
+        got = path === "candidate" ? d.candidate(view, text, recorded ? at : undefined) : d.held(view, text, recorded ? at : undefined);
+        if (got !== null) declare(got, [recorded ? range() : { id, text }]);
       } else if (path === "derived") {
-        // A derivation's span is its words within its basis.
-        const b = d.basis(view, text);
-        if (b !== null) got = d.derived(b, run.map((w) => (r() < 0.3 ? w.toUpperCase() : w)).join(r() < 0.3 ? "  " : " "));
-        if (got !== null) declare(got, [{ id, text: got, within: text }]);
+        // A derivation's span is the whole basis it read.
+        const b = d.basis(view, text, recorded ? at : undefined);
+        if (b !== null) got = d.derived(b, run.map((x) => (r() < 0.3 ? x.w.toUpperCase() : x.w)).join(r() < 0.3 ? "  " : " "));
+        if (got !== null) declare(got, [recorded ? range() : { id, text }]);
       } else {
-        // Each word minted on its own, then joined in order: the join carries the words' spans, and its lexical runs are
-        // measured only at seal.
-        const parts = run.map((w) => d.candidate(view, w));
-        parts.forEach((x, i) => x !== null && declare(x, [{ id, text: run[i]! }]));
+        // Each word minted on its own, with its range, then joined in order: the join carries the words' spans, and its
+        // lexical runs are measured only at seal.
+        let off = lineStart;
+        const parts = run.map((x) => {
+          const sp: Decl = { id, li, start: off, end: off + x.w.length };
+          off += x.w.length + 1;
+          const t = d.candidate(view, x.w, { part: nodePart(node.key, "label"), start: x.at, end: x.at + x.w.length });
+          if (t !== null) declare(t, [sp]);
+          return t;
+        });
         if (parts.every((x): x is ModelText => x !== null)) {
           got = parts.slice(1).reduce((acc, x) => {
             const joined = d.t`${acc} ${x}`;
@@ -145,7 +166,7 @@ describe("invariant: what a request's final bytes reveal of a window is exactly 
     // The request as a fill sends it, sealed at the real sink (privacy/send.ts seal): its options are what was said.
     const wire = { state: {}, questions: { q: { type: "choice", instructions: d.own("Which of these is the value?"), criteria: Object.fromEntries(said.map((x, i) => [`c${i}`, x])) } } };
     const units = refUnits(JSON.stringify(wire));
-    const spansIn = (id: string): { text: string; within?: string }[] => units.flatMap((u) => (declared.get(u) ?? []).filter((x) => x.id === id).map(({ text, within }) => (within === undefined ? { text } : { text, within })));
+    const spansIn = (id: string): RefSpan[] => units.flatMap((u) => (declared.get(u) ?? []).filter((x) => x.id === id).map((x): RefSpan => ("text" in x ? { text: x.text } : { at: { part: `line:${x.li}`, start: x.start, end: x.end } })));
     const want = [...m.windows.values()].map((w) => ({ id: w.window.windowId, charged: refReveal(units, linesOfWindow(redactWindow(w)), spansIn(w.window.windowId)).charged, limit: windowBudget(w) }));
     let got: Record<string, number> | null = null;
     try {

@@ -8,6 +8,7 @@ import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef } from "../src/protocol.ts";
 import { CONVERSATION_CHARS, WINDOW_CHARS, windowBudget } from "../src/privacy.ts";
 import { snap, text } from "./builders.ts";
+import { nodePart, type SourceAt } from "../src/privacy/ledger/source.ts";
 
 const MESSAGES: AppRef = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
 const NOTES: AppRef = { pid: 6161, bundleId: "dev.caret.notes", name: "Notes" };
@@ -328,6 +329,8 @@ describe("owner notes at seal", () => {
 describe("declared spans at mint and at seal", () => {
   const LINES = ["Alice, Bob", "Cedar, Elm", "Paris, Rome"];
   const VALUES = ["Alice", "Bob", "Cedar", "Elm", "Paris", "Rome"];
+  /** Where each value was read: its line, and its offset there. */
+  const READ: SourceAt[] = VALUES.map((v, i) => ({ part: nodePart(`c${Math.floor(i / 2)}`, "label"), start: LINES[Math.floor(i / 2)]!.indexOf(v), end: LINES[Math.floor(i / 2)]!.indexOf(v) + v.length }));
   const chat = (): { m: ScreenModel; view: WindowState } => {
     const m = new ScreenModel();
     m.apply(snap(LINES.map((l, i) => text(`c${i}`, l)), { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
@@ -337,7 +340,7 @@ describe("declared spans at mint and at seal", () => {
   it("refuses the fifth of six short values a chat shows: 16 of its limit of 17 are taken, and Paris is 5 more", () => {
     const { m, view } = chat();
     const d = new Disclosure(m);
-    const minted = VALUES.map((v) => d.candidate(view, v));
+    const minted = VALUES.map((v, i) => d.candidate(view, v, READ[i]));
     expect(minted.map((x) => x !== null)).toEqual([true, true, true, true, false, false]);
     // The seal charges the four it holds, 16, by their declared spans.
     const sent = minted.filter((x): x is NonNullable<typeof x> => x !== null);
@@ -347,7 +350,7 @@ describe("declared spans at mint and at seal", () => {
   it("charges a composition its parts' spans: the values joined in one sentence cost what they cost apart", () => {
     const { m, view } = chat();
     const d = new Disclosure(m);
-    const [a, b] = [d.candidate(view, "Alice"), d.candidate(view, "Bob")];
+    const [a, b] = [d.candidate(view, "Alice", READ[0]), d.candidate(view, "Bob", READ[1])];
     const said = d.t`Meet ${a!} and ${b!}.`;
     expect(d.measureSent("test", [said]).charged["chat-1"]).toBe(8);
   });
@@ -362,19 +365,68 @@ describe("what a minted unit takes from its window", () => {
     return { m, d: new Disclosure(m), view: redactWindow(m.windows.get("note-1") as WindowState) };
   };
 
-  it("charges a value read with interior ellipses its whole range: 'a……b' from 'a……b.' is 4", () => {
+  it("charges a value read with interior ellipses its whole recorded range: 'a……b' from 'a……b.' is 4", () => {
     const { d, view } = note(["a\u2026\u2026b."]);
-    const v = d.candidate(view, "a\u2026\u2026b");
+    const v = d.candidate(view, "a\u2026\u2026b", { part: nodePart("n0", "label"), start: 0, end: 4 });
     expect(d.measureSent("test", [v!]).charged["note-1"]).toBe(4);
   });
 
-  it("charges a derivation the punctuation and combining marks it reproduces", () => {
+  it("charges a derivation the whole basis it read, punctuation and combining marks included", () => {
     const e = "\u00e9\u0300\u0302";
     const { d, view } = note(["(1), (2).", `${e}.`]);
-    const paren = d.derived(d.basis(view, "(1), (2).")!, "(1), (2)");
-    expect(d.measureSent("test", [paren!]).charged["note-1"]).toBe(8);
-    const marked = d.derived(d.basis(view, `${e}.`)!, e);
-    expect(d.measureSent("test", [marked!]).charged["note-1"]).toBe(3);
+    const paren = d.derived(d.basis(view, "(1), (2).", { part: nodePart("n0", "label"), start: 0, end: 9 })!, "(1), (2)");
+    expect(d.measureSent("test", [paren!]).charged["note-1"]).toBe(9);
+    const marked = d.derived(d.basis(view, `${e}.`, { part: nodePart("n1", "label"), start: 0, end: 4 })!, e);
+    expect(d.measureSent("test", [marked!]).charged["note-1"]).toBe(4);
+  });
+});
+
+// Astra's recheck of b5226a1f: a mint charges the exact source range its producer recorded, read by the one reader the
+// inventory uses.
+describe("a recorded source range", () => {
+  const desk = (lines: string[], o: { title?: string; chat?: boolean } = {}): { d: Disclosure; view: WindowState } => {
+    const m = new ScreenModel();
+    m.apply(snap(lines.map((l, i) => text(`c${i}`, l)), { at: 1, windowId: "w-1", title: o.title ?? "Kofi", app: o.chat === false ? NOTES : MESSAGES }));
+    return { d: new Disclosure(m), view: redactWindow(m.windows.get("w-1") as WindowState) };
+  };
+  const label = (key: string, start: number, end: number): SourceAt => ({ part: nodePart(key, "label"), start, end });
+
+  it("charges a mint across a bare CR the 18 characters it read: over a chat's limit of 11", () => {
+    const { d, view } = desk(["abcdefghij\rklmnopqrst"]);
+    expect(d.candidate(view, "bcdefghij\rklmnopqrs", label("c0", 1, 20))).toBeNull();
+    const note = desk(["abcdefghij\rklmnopqrst"], { chat: false });
+    const v = note.d.candidate(note.view, "bcdefghij\rklmnopqrs", label("c0", 1, 20));
+    expect(note.d.measureSent("test", [v!]).charged["w-1"]).toBe(18);
+  });
+
+  it("charges a derivation the whole basis it read: '1/1/2/2/3' from '1122334455' takes 10, over a limit of 6", () => {
+    const { d, view } = desk(["1122334455"]);
+    expect(d.derived(d.basis(view, "1122334455", label("c0", 0, 10))!, "1/1/2/2/3")).toBeNull();
+    const note = desk(["1122334455"], { chat: false });
+    const v = note.d.derived(note.d.basis(note.view, "1122334455", label("c0", 0, 10))!, "1/1/2/2/3");
+    expect(note.d.measureSent("test", [v!]).charged["w-1"]).toBe(10);
+  });
+
+  it("charges a mint from the body, not a title that normalizes alike: '\u682a\u5f0f\u4f1a\u793e' takes 4 of a limit of 2", () => {
+    const { d, view } = desk(["\u682a\u5f0f\u4f1a\u793ex"], { title: "\u337f" });
+    expect(d.candidate(view, "\u682a\u5f0f\u4f1a\u793e", label("c0", 0, 4))).toBeNull();
+  });
+
+  it("charges the source's own ellipses: '\u2026a\u2026' from '\u2026a\u2026.' takes 3", () => {
+    const { d, view } = desk(["\u2026a\u2026."], { chat: false });
+    const v = d.candidate(view, "\u2026a\u2026", label("c0", 0, 3));
+    expect(d.measureSent("test", [v!]).charged["w-1"]).toBe(3);
+  });
+
+  it("with no recorded range, charges every line holding the text, whole", () => {
+    const { d, view } = desk(["abcdefghij\rklmnopqrst"], { chat: false });
+    const v = d.candidate(view, "bcdefghij\rklmnopqrs");
+    expect(d.measureSent("test", [v!]).charged["w-1"]).toBe(20);
+  });
+
+  it("throws on a range that does not hold the text", () => {
+    const { d, view } = desk(["abcdefghij"], { chat: false });
+    expect(() => d.candidate(view, "bcdefghij", label("c0", 0, 5))).toThrow(/does not hold its text/u);
   });
 });
 
@@ -391,7 +443,11 @@ describe("text a chat shows that the request did not take from it", () => {
 
   it("the same six names minted from a note: the note pays 25, the chat 0", () => {
     const { d, noteView } = desk(["Alice, Bob", "Cedar, Elm", "Paris, Rome"]);
-    const names = ["Alice", "Bob", "Cedar", "Elm", "Paris", "Rome"].map((v) => d.candidate(noteView, v)!);
+    const lines = ["Alice, Bob", "Cedar, Elm", "Paris, Rome"];
+    const names = ["Alice", "Bob", "Cedar", "Elm", "Paris", "Rome"].map((v, i) => {
+      const line = lines[Math.floor(i / 2)]!;
+      return d.candidate(noteView, v, { part: nodePart(`n${Math.floor(i / 2)}`, "label"), start: line.indexOf(v), end: line.indexOf(v) + v.length })!;
+    });
     const c = d.measureSent("test", names).charged;
     expect([c["note-1"], c["chat-1"] ?? 0]).toEqual([25, 0]);
   });

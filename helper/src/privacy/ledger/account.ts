@@ -8,20 +8,13 @@
 // (superstring monotonicity, section 4), and the early check can only refuse what the seal would also refuse or charge
 // less than the seal will. It never authorizes anything.
 import type { WindowState } from "../../model.ts";
-import type { Node } from "../../protocol.ts";
 import { isConversation } from "../../conversation.ts";
 import { isRedacted, redactWindow } from "../../fill/redact.ts";
 import { LedgerEncodingError, ledgerNormalizeV1, type Normalized } from "./normalize.ts";
+import { partsOf, readParts } from "./source.ts";
 import { inventoryOf, limitOf, spanPositions, UnitProbe, withPositions, type DeclaredSpan, type LineInventory, type Revealed } from "./measure.ts";
 
-/**
- * SCP1: a page web area's heading list and section texts (Node.headings, Node.outline), which a section question sends:
- * lines of the window like its labels, so they count toward its limit and the ledger charges them.
- */
-export function sectionTexts(n: Node): string[] {
-  if (n.headings === undefined && n.outline === undefined) return [];
-  return [...(n.headings ?? []), ...(n.outline ?? []).flatMap((o) => (o.text === undefined ? [] : [o.text]))];
-}
+export { sectionTexts } from "./source.ts";
 
 let conversationCap = true;
 
@@ -38,39 +31,21 @@ export function heldAsConversation(w: WindowState): boolean {
   return conversationCap && isConversation(w);
 }
 
-/** Whitespace collapsed and trimmed, as every SC1 inventory line is (privacy.ts flat). */
-const flatLine = (s: string): string => s.replace(/\s+/gu, " ").trim();
-
 const INVENTORY = new WeakMap<WindowState, LineInventory>();
 
 /**
- * Section 1: a redacted view's inventory. Its title and every node's label, value and placeholder (and SCP1's section
- * texts), split at line breaks, whitespace collapsed and trimmed, empty lines removed, exact repeats kept once. Text the
- * view does not show (an excluded value, a line redaction removed) is not in it. Cached per view object, which is
- * immutable: a new snapshot is a new view.
+ * Section 1: a redacted view's inventory, read by source.ts readParts: its title and every node's label, value and
+ * placeholder (and SCP1's section texts), split at line breaks, whitespace collapsed and trimmed, empty lines removed,
+ * exact repeats kept once, with each part's map for recorded source ranges. Text the view does not show (an excluded
+ * value, a line redaction removed) is not in it. Cached per view object, which is immutable: a new snapshot is a new
+ * view. A line holding an unpaired surrogate cannot be measured: the inventory says so, and every request is refused
+ * while the window is on screen (MeasuredWindow.inv.malformed), rather than measured without the line.
  */
 export function viewInventory(view: WindowState): LineInventory {
   let inv = INVENTORY.get(view);
   if (inv !== undefined) return inv;
-  const lines = new Set<string>();
-  const add = (raw: string | undefined): void => {
-    if (raw === undefined || raw === "") return;
-    for (const l of raw.split(/\r\n|\r|\n/u)) {
-      const f = flatLine(l);
-      if (f !== "") lines.add(f);
-    }
-  };
-  add(view.window.title);
-  for (const n of view.nodes.values()) {
-    add(n.label);
-    add(n.value);
-    add(n.placeholder);
-    for (const t of sectionTexts(n)) add(t);
-  }
-  // A line holding an unpaired surrogate cannot be measured: the inventory says so, and every request is refused while
-  // the window is on screen (MeasuredWindow.inv.malformed), rather than measured without the line.
-  const measurable = [...lines].filter((l) => l.isWellFormed());
-  inv = inventoryOf(measurable, measurable.length !== lines.size);
+  const { lines, maps, malformed } = readParts(partsOf(view));
+  inv = inventoryOf(lines, malformed, maps);
   INVENTORY.set(view, inv);
   return inv;
 }

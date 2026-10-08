@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { LEDGER_NORMALIZATION, LedgerEncodingError, ledgerNormalizeV1 } from "../src/privacy/ledger/normalize.ts";
 import { decodeUnits } from "../src/privacy/ledger/units.ts";
 import { inventoryOf, limitOf, reveal, spanPositions, UnitIndex, UnitProbe, withPositions, type DeclaredSpan, type LineInventory } from "../src/privacy/ledger/measure.ts";
-import { refReveal, refUnits } from "./ledger-reference.ts";
+import { refReveal, refUnits, type RefSpan } from "./ledger-reference.ts";
 import { rng } from "./large-scene.ts";
 
 const cps = (s: string): string[] => [...s].map((c) => c.codePointAt(0)!.toString(16));
@@ -133,13 +133,16 @@ function positionsOf(inv: LineInventory, bits: Uint8Array): string[] {
 }
 
 /** Production's charge of one window, by the full scan and by the indexed scan, which must agree position by position. */
-type Span = string | DeclaredSpan;
+type Span = RefSpan;
+
+/** A recorded source range of line `li` of a test window (inventoryOf's part `line:<li>`). */
+const at = (li: number, start: number, end: number): Span => ({ at: { part: `line:${li}`, start, end } });
 
 function production(units: readonly string[], lines: readonly string[], spans: readonly Span[] = []): { positions: string[]; charged: number } {
   const inv = inventoryOf(lines);
   const normalized = units.map((u) => ledgerNormalizeV1(u));
   const declared = new Uint8Array(inv.total);
-  for (const t of spans) spanPositions(inv, typeof t === "string" ? { text: t } : t).forEach((b, p) => (declared[p] = declared[p]! | b));
+  for (const t of spans) spanPositions(inv, (typeof t === "string" ? { text: t } : t) as DeclaredSpan).forEach((b, p) => (declared[p] = declared[p]! | b));
   const r = withPositions(reveal(new UnitIndex(normalized), inv), declared);
   const out = { positions: positionsOf(inv, r.positions), charged: r.charged };
   const probed = withPositions(new UnitProbe(normalized).reveal(inv), declared);
@@ -209,9 +212,11 @@ describe("the Astra counterexamples", () => {
     const values = ["Alice", "Bob", "Cedar", "Elm", "Paris", "Rome"];
     // Lexically nothing: each value is under 12 scalars and no whole line.
     expect(charge(values, lines)).toBe(0);
-    // Declared, each is charged where it was read from.
-    expect(charge(values, lines, values)).toBe(25);
+    // Declared with the ranges they were read from, each is charged there.
+    expect(charge(values, lines, [at(1, 0, 5), at(1, 7, 10), at(2, 0, 5), at(2, 7, 10), at(3, 0, 5), at(3, 7, 11)])).toBe(25);
     expect(limitOf(inventoryOf(lines), true)).toBe(17);
+    // From a producer that cannot record its range, each charges the whole lines that hold it.
+    expect(charge(values, lines, values)).toBe(31);
   });
 
   it("a 22-character run that a later copy of the alphabet holds is charged 22", () => {
@@ -236,25 +241,25 @@ describe("the Astra counterexamples", () => {
   });
 });
 
-// Astra's recheck of 0deb3e23: what a minted unit takes from its source is every source position of what it reproduces.
-describe("a declared span covers its whole source range", () => {
-  it("charges a value read with interior ellipses all four of its characters", () => {
-    expect(charge(["a\u2026\u2026b"], ["a\u2026\u2026b."], ["a\u2026\u2026b"])).toBe(4);
+// Astra's rechecks of 0deb3e23 and b5226a1f: a recorded range charges every source character in it, as it is.
+describe("a declared span", () => {
+  it("charges a recorded range every character in it, ellipses and punctuation included", () => {
+    expect(charge(["a\u2026\u2026b"], ["a\u2026\u2026b."], [at(0, 0, 4)])).toBe(4);
+    expect(charge(["\u2026a\u2026"], ["\u2026a\u2026."], [at(0, 0, 3)])).toBe(3);
+    // A derivation declares the whole basis it read: '(1), (2)' from '(1), (2).' is charged the basis, 9.
+    expect(charge(["(1), (2)"], ["(1), (2)."], [at(0, 0, 9)])).toBe(9);
   });
 
-  it("charges a derivation the punctuation it reproduces: '(1), (2)' from '(1), (2).' is 8", () => {
-    expect(charge(["(1), (2)"], ["(1), (2)."], [{ text: "(1), (2)", within: "(1), (2)." }])).toBe(8);
+  it("charges a text with no range every line that holds one of its lines, whole", () => {
+    expect(charge(["Alice"], ["Alice, Bob", "Cedar", "Alice"], ["Alice"])).toBe(15);
+    expect(charge(["bcd\rxyz"], ["abcde", "wxyz", "q"], ["bcd\rxyz"])).toBe(9);
+    // A cut's ellipsis is read both ways: 'Alic…' charges the line that holds 'Alic'.
+    expect(charge(["Alic\u2026"], ["Alice, Bob", "Cedar"], ["Alic\u2026"])).toBe(10);
   });
 
-  it("charges a derivation the combining marks it reproduces", () => {
-    const e = "\u00e9\u0300\u0302";
-    expect(charge([e], [`${e}.`], [{ text: e, within: `${e}.` }])).toBe(3);
-  });
-
-  it("charges a derivation each stretch of its basis it reproduces, and nothing its basis does not hold", () => {
-    // 'Alice' and ' Bob' stand in the basis; the comma does not stand in the derivation.
-    expect(charge(["Alice Bob"], ["Alice, Bob"], [{ text: "Alice Bob", within: "Alice, Bob" }])).toBe(9);
-    expect(charge(["2026"], ["Tomorrow"], [{ text: "2026", within: "Tomorrow" }])).toBe(0);
+  it("throws on a range of a part the window does not have, or past its end", () => {
+    expect(() => production([], ["abc"], [at(1, 0, 1)])).toThrow(/no part/u);
+    expect(() => production([], ["abc"], [at(0, 2, 4)])).toThrow(/not a range/u);
   });
 });
 
@@ -296,14 +301,15 @@ describe("production equals the brute-force reference (section 9)", () => {
       const a = Math.floor(r() * l.length);
       units.push(`${gen(r, 2)}${l.slice(a, a + 1 + Math.floor(r() * l.length)).join("")}${gen(r, 2)}`);
     }
-    // Declared spans: short cuts of a line (what a builder minted), and now and then text no line shows.
-    // A derivation's span is what it reproduces within its basis: here a cut of a line, said with some of its letters.
+    // Declared spans: recorded ranges of a line (what a builder minted, where it read it), a cut of a line from a
+    // producer with no range, and now and then text no line shows.
     const spans = Array.from({ length: Math.floor(r() * 3) }, (): Span => {
       if (lines.length === 0 || r() < 0.2) return gen(r, 6);
-      const l = [...lines[Math.floor(r() * lines.length)]!];
+      const li = Math.floor(r() * lines.length);
+      const l = lines[li]!;
       const a = Math.floor(r() * l.length);
-      const cut = l.slice(a, a + 1 + Math.floor(r() * 6)).join("");
-      return r() < 0.3 ? { text: [...cut].filter(() => r() < 0.7).join(""), within: cut } : cut;
+      const b = Math.min(l.length, a + 1 + Math.floor(r() * 6));
+      return r() < 0.6 ? at(li, a, b) : l.slice(a, b);
     });
     return { units, lines, spans };
   };
@@ -354,7 +360,9 @@ describe("production equals the brute-force reference (section 9)", () => {
       if (lines.length === 0) continue;
       const byText = (ls: readonly string[], ps: readonly string[]): string[] => ps.map((p) => `${ls[Number(p.split(":")[0])]}@${p.split(":")[1]}`).sort();
       const a = production(units, lines, spans);
-      const b = production([...units].reverse(), [...lines].reverse(), [...spans].reverse());
+      // Reversed lines are renumbered, so a range names its line's new index.
+      const moved = spans.map((sp): Span => (typeof sp !== "string" && "at" in sp ? at(lines.length - 1 - Number(sp.at.part.slice(5)), sp.at.start, sp.at.end) : sp));
+      const b = production([...units].reverse(), [...lines].reverse(), moved.reverse());
       expect(byText([...lines].reverse(), b.positions)).toEqual(byText(lines, a.positions));
     }
   });
