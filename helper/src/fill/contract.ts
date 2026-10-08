@@ -13,6 +13,7 @@
 // (writeMisfit with the carried provenance) until the verifier replaces it family by family (AC1 section 6). Values
 // whose exactness code settles (an option's own label, a resolved date, the user's saved answer, a user transfer, a
 // draft) are minted under a named exemption instead (ExemptRule); only the never-typed check runs on them.
+import { ENV, processEnv } from "../host-env.ts";
 import { Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
 import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
@@ -786,7 +787,7 @@ export function setTestVerifier(f: AskJev | null): void {
   // Vitest's own worker state, which only a vitest worker has, as well as its environment flag (W2 review: the flag alone
   // can be set by anyone).
   const worker = (globalThis as { __vitest_worker__?: unknown }).__vitest_worker__;
-  if (process.env.VITEST !== "true" || typeof worker !== "object" || worker === null) throw new Error("setTestVerifier is for vitest only");
+  if (processEnv()[ENV.vitest] !== "true" || typeof worker !== "object" || worker === null) throw new Error("setTestVerifier is for vitest only");
   testVerifier = f;
 }
 

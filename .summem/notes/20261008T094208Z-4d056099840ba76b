@@ -1,0 +1,1 @@
+host-env.test.ts scans only helper/src for process.env; helper/scripts/privacy-gate.ts still reads its build-gate names (CARET_INTERNAL_BUILD, CARET_*PRIVACY_RESOURCE) through processEnv() and HELPER_ONLY_ENV, so new script env names go there too.

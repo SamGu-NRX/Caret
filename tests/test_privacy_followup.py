@@ -15,12 +15,14 @@ spec.loader.exec_module(checker)
 
 
 class PrivacyFollowupTests(unittest.TestCase):
-    def test_real_bundler_gates_before_any_side_effect_in_every_mode(self):
+    def test_real_bundler_gates_before_any_side_effect(self):
         text = (ROOT / "apps/caret/scripts/build-app.sh").read_text()
         self.assertIn("privacy_gate.sh", text)
         self.assertLess(text.index("privacy_gate.sh"), text.index('mode="'))
         self.assertLess(text.index("privacy_gate.sh"), text.index("mkdir -p"))
-        for mode in ("debug", "release", "acceptance"):
+        # Release only: debug and acceptance skip the acceptance records and would go on to build
+        # (tests/test_internal_build_gate.py runs their gate without the build).
+        for mode in ("release",):
             result = subprocess.run(["/bin/bash", str(ROOT / "apps/caret/scripts/build-app.sh"), mode], capture_output=True, text=True, env={**os.environ, "IDENTITY": ""})
             self.assertEqual(result.returncode, 1)
             self.assertIn("privacy gate: refusing", result.stderr)
@@ -61,11 +63,21 @@ class PrivacyFollowupTests(unittest.TestCase):
             with patch.dict(os.environ, {"CARET_BUILD_PLIST": str(plist)}, clear=True):
                 self.assertTrue(any("LSEnvironment" in why for why in checker.refusals(ROOT)))
 
-    def test_current_onboarding_blocks_the_gate(self):
-        result = subprocess.run(["/bin/sh", str(ROOT / "scripts/privacy_gate.sh")], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("OnboardingView.swift", result.stderr)
-        self.assertIn("the onboarding copy must render PRIVACY_PROMISE from privacy.ts", result.stderr)
+    def test_current_onboarding_renders_the_resource(self):
+        onboarding = importlib.util.spec_from_file_location("check_onboarding", ROOT / "scripts/check_onboarding_privacy.py")
+        module = importlib.util.module_from_spec(onboarding)
+        onboarding.loader.exec_module(module)
+        self.assertEqual(module.refusals(ROOT), [])
+
+    def test_every_app_build_checks_the_finished_apps_promise_before_signing(self):
+        bundler = (ROOT / "apps/caret/scripts/build-app.sh").read_text()
+        check = bundler.index('CARET_VERIFY_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt"')
+        self.assertLess(bundler.rindex("ditto "), check)
+        self.assertLess(check, bundler.index("sign --identifier"))
+        phase = re.search(r'/\* Processed privacy gate \*/ = \{(.*?)\n\t\t\};', (ROOT / "Caret.xcodeproj/project.pbxproj").read_text(), re.S)
+        self.assertIn('CARET_VERIFY_PRIVACY_RESOURCE=\\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyPromise.txt\\"', phase.group(1))
+        package = (ROOT / "scripts/package_mac.py").read_text()
+        self.assertLess(package.index("verify_privacy_resource(dist_app)"), package.index("adhoc_sign(dist_app)\n    print"))
 
     def test_effective_xcode_plist_is_checked_when_present(self):
         with tempfile.TemporaryDirectory() as directory:

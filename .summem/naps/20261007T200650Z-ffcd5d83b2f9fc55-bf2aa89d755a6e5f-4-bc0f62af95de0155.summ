@@ -1,1 +1,0 @@
-SC1: request text is ModelText only (derived for reformats; casts outside src/privacy/ fail sc1-boundary); exclude.ts counts lower/upper/digit; excluded values read in as [withheld]. Every slot needs a shapes.ts row. Field-format mints trace to their window source.

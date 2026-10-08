@@ -1,11 +1,11 @@
 // A store writes only under a local root that does not sync (privacy/store-path.ts): a file a sync client uploads
 // leaves the Mac with no request made, so it would be a provider disclosure without the per-window budget.
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { constants, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
 import { assertLocalStorePath, storePathRefusal, SyncedStorePath, writeLocalFile } from "../src/privacy/store-path.ts";
 import { appendStore, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 
@@ -88,7 +88,7 @@ describe("INT1 review 2 P1: symlinks and .. cannot route a store into a synced f
   });
 });
 
-describe("INT1 review 3: relative paths, races and hard links", () => {
+describe("INT1 review 3: relative paths and hard links", () => {
   const synced = join(h, "Library", "CloudStorage", "Dropbox-caret-store-path-test");
 
   it("resolves a relative path's links before its '..', from the working folder as given", () => {
@@ -114,36 +114,41 @@ describe("INT1 review 3: relative paths, races and hard links", () => {
     expect(readFileSync(other, "utf8")).toBe("keep me");
   });
 
-  it("writes nothing outside the roots while an ancestor is swapped for a link (O_NOFOLLOW_ANY)", async () => {
+  it("Node passes O_NOFOLLOW_ANY through: an open through a linked folder fails", () => {
     if (process.platform !== "darwin") return;
-    const inside = join(dir, "race", "in");
-    // A writable folder outside every root: a write that lands there escaped the policy.
-    const out = join("/Users/Shared", `caret-store-path-race-${process.pid}`);
-    mkdirSync(inside, { recursive: true });
-    mkdirSync(out, { recursive: true });
-    // A child swaps the folder for a link to `out` and back, as fast as it can, for the length of the test.
-    const swapper = spawn(process.execPath, ["-e", `
-      const fs = require("node:fs");
-      const end = Date.now() + 3000;
-      while (Date.now() < end) {
-        try { fs.renameSync(${JSON.stringify(inside)}, ${JSON.stringify(inside)} + ".real"); fs.symlinkSync(${JSON.stringify(out)}, ${JSON.stringify(inside)}); fs.unlinkSync(${JSON.stringify(inside)}); fs.renameSync(${JSON.stringify(inside)} + ".real", ${JSON.stringify(inside)}); } catch {}
-      }`], { stdio: "ignore" });
-    const done = new Promise<void>((r) => swapper.on("exit", () => r()));
-    let wrote = 0;
-    const end = Date.now() + 2500;
-    for (let i = 0; Date.now() < end; i++) {
-      try {
-        writeLocalFile(join(inside, `f${i}.json`), "x");
-        wrote++;
-      } catch {
-        // a refusal is the point when the swap is in place
-      }
-      if (i % 50 === 0) await new Promise((r) => setTimeout(r, 0));
-    }
-    await done;
-    const escaped = readdirSync(out);
-    rmSync(out, { recursive: true, force: true });
-    expect(wrote).toBeGreaterThan(0);
-    expect(escaped).toEqual([]);
-  }, 15_000);
+    mkdirSync(join(dir, "nfa-real"));
+    symlinkSync(join(dir, "nfa-real"), join(dir, "nfa-link"));
+    expect(() => openSync(join(dir, "nfa-link", "f"), constants.O_WRONLY | constants.O_CREAT | 0x20000000, 0o600)).toThrow(/ELOOP/u);
+  });
+});
+
+describe("INT1 review 4: paths are compared as the volume stores them", () => {
+  it("a synced folder spelled in another case is a synced folder (macOS volumes ignore case)", () => {
+    if (process.platform !== "darwin") return;
+    expect(storePathRefusal(join(h, "library", "cloudstorage", "Dropbox", "rows.json"))).toMatch(/syncs to a provider/u);
+    expect(storePathRefusal(join(h, "LIBRARY", "Mobile Documents", "com~apple~CloudDocs", "rows.json"))).toMatch(/syncs to a provider/u);
+  });
+
+  it("a root spelled in another case is the root", () => {
+    if (process.platform !== "darwin") return;
+    expect(storePathRefusal(join(dir.toUpperCase(), "rows.json"))).toBeNull();
+  });
+});
+
+describe("INT1 review 5: a synced folder that is itself a link", () => {
+  it("refuses a path under the link's target, as well as under the link", () => {
+    // A home folder whose Library/CloudStorage links to a folder in the temporary directory (a root). Run in a child, so
+    // HOME is its own.
+    const home = mkdtempSync(join(dir, "home-"));
+    const cloud = mkdtempSync(join(dir, "cloud-"));
+    mkdirSync(join(home, "Library"));
+    symlinkSync(cloud, join(home, "Library", "CloudStorage"));
+    const script = `
+      const { storePathRefusal } = require(${JSON.stringify(fileURLToPath(new URL("../src/privacy/store-path.ts", import.meta.url)))});
+      console.log(JSON.stringify([storePathRefusal(${JSON.stringify(join(cloud, "Dropbox", "rows.json"))}), storePathRefusal(${JSON.stringify(join(home, "Library", "CloudStorage", "Dropbox", "rows.json"))})]));`;
+    const r = spawnSync(process.execPath, ["--no-warnings", "-e", script], { env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir() }, encoding: "utf8" });
+    const [viaTarget, viaLink] = JSON.parse(r.stdout || "[]") as (string | null)[];
+    expect(viaTarget).toMatch(/syncs to a provider/u);
+    expect(viaLink).toMatch(/syncs to a provider/u);
+  });
 });

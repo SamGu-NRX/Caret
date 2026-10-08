@@ -6,10 +6,11 @@
 // The cap is CARET_JEV_DAILY_CAP, from the environment or the .env file named by CARET_ENV_FILE (where the Jev key
 // comes from), in dollars. Without it the cap is DEFAULT_DAILY_CAP_USD. The day's file is in CARET_JEV_SPEND_DIR, or
 // SPEND_DIR by default.
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
+import { ENV, processEnv, type HostEnv } from "../../host-env.ts";
+import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { writeLocalFile } from "../../privacy/store-path.ts";
+import { dirname, join } from "node:path";
+import { assertLocalStorePath, writeLocalFile } from "../../privacy/store-path.ts";
 
 /**
  * The cap when none is configured: $0.50 a day, the lead's development default (brief J1). It is also the shipped
@@ -19,7 +20,7 @@ import { writeLocalFile } from "../../privacy/store-path.ts";
  */
 export const DEFAULT_DAILY_CAP_USD = 0.5;
 export const SPEND_DIR = join(homedir(), "Library", "Application Support", "CaretV2", "jev-spend");
-const CAP_VAR = "CARET_JEV_DAILY_CAP";
+const CAP_VAR = ENV.caret_jev_daily_cap;
 
 /**
  * Body characters per Jev input token, low on purpose: a reservation (DailySpend.reserve) should overestimate a
@@ -55,12 +56,12 @@ export function localDay(d: Date): string {
 }
 
 /** The cap the environment configures, in dollars. A value that is not a dollar amount above zero fails here, at start. */
-export function capFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+export function capFromEnv(env: HostEnv = processEnv()): number {
   let raw = env[CAP_VAR];
-  const file = env.CARET_ENV_FILE;
+  const file = env[ENV.caret_env_file];
   if ((raw === undefined || raw === "") && file !== undefined && file !== "") {
     for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
-      const m = /^\s*(?:export\s+)?CARET_JEV_DAILY_CAP\s*=\s*(.*)\s*$/.exec(line);
+      const m = new RegExp(`^\\s*(?:export\\s+)?${CAP_VAR}\\s*=\\s*(.*)\\s*$`).exec(line);
       if (m?.[1] !== undefined) raw = m[1].replace(/^(['"])(.*)\1$/, "$2").trim();
     }
   }
@@ -99,6 +100,7 @@ export class DailySpend {
   private landed = 0;
   /** Estimates held by this process's requests in flight, by the day they were reserved on. */
   private readonly inFlight = new Map<string, number>();
+  private resolved: string | null = null;
 
   constructor(opts: DailySpendOptions) {
     if (!Number.isFinite(opts.capUsd) || opts.capUsd <= 0) throw new Error(`the daily Jev cap must be above $0, not ${opts.capUsd}`);
@@ -107,8 +109,8 @@ export class DailySpend {
     this.now = opts.now ?? (() => new Date());
   }
 
-  static fromEnv(env: NodeJS.ProcessEnv = process.env): DailySpend {
-    const dir = env.CARET_JEV_SPEND_DIR;
+  static fromEnv(env: HostEnv = processEnv()): DailySpend {
+    const dir = env[ENV.caret_jev_spend_dir];
     return new DailySpend({ dir: dir === undefined || dir === "" ? SPEND_DIR : dir, capUsd: capFromEnv(env) });
   }
 
@@ -139,9 +141,11 @@ export class DailySpend {
     return {
       settle: (costUsd, inputTokens) => {
         close();
-        mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+        const folder = this.folder();
+        mkdirSync(folder, { recursive: true, mode: 0o700 });
+        const file = join(folder, `${day}.ndjson`);
         // The day the request was reserved on, so one sent at 23:59:59 counts against the day that let it through.
-        writeLocalFile(join(this.dir, `${day}.ndjson`), `${JSON.stringify({ at: this.now().toISOString(), usd: costUsd, tokens: inputTokens, pid: process.pid })}\n`, { append: true, mode: 0o600 });
+        writeLocalFile(file, `${JSON.stringify({ at: this.now().toISOString(), usd: costUsd, tokens: inputTokens, pid: process.pid })}\n`, { append: true, mode: 0o600 });
       },
       release: close,
     };
@@ -152,6 +156,16 @@ export class DailySpend {
     return Math.ceil(chars / CHARS_PER_TOKEN) * usdPerToken;
   }
 
+  /**
+   * The spend folder, checked and resolved once (privacy/store-path.ts): every read and every write uses this one path,
+   * so a `link/..` in `dir` cannot send them to different folders, and a refused path leaves nothing behind. Joined as
+   * written, not with path.join, which would apply the `..` before the link resolves.
+   */
+  private folder(): string {
+    this.resolved ??= dirname(assertLocalStorePath(`${this.dir}/spend.ndjson`));
+    return this.resolved;
+  }
+
   /** Reads the lines appended to today's file since the last read; a new day starts from zero. */
   private catchUp(): void {
     const day = localDay(this.now());
@@ -160,31 +174,24 @@ export class DailySpend {
       this.offset = 0;
       this.landed = 0;
     }
-    const path = join(this.dir, `${day}.ndjson`);
-    let fd: number;
+    const path = join(this.folder(), `${day}.ndjson`);
+    let all: Buffer;
     try {
-      fd = openSync(path, "r");
+      all = readFileSync(path);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
       throw e;
     }
-    try {
-      const size = fstatSync(fd).size;
-      if (size <= this.offset) return;
-      const buf = Buffer.alloc(size - this.offset);
-      readSync(fd, buf, 0, buf.length, this.offset);
-      const text = buf.toString("utf8");
-      // Only whole lines; a line still being written is read next time.
-      const end = text.lastIndexOf("\n") + 1;
-      for (const line of text.slice(0, end).split("\n")) {
-        if (line === "") continue;
-        const usdSpent = (JSON.parse(line) as { usd?: unknown }).usd;
-        if (typeof usdSpent !== "number" || !Number.isFinite(usdSpent) || usdSpent < 0) throw new Error(`${path} has a line without a dollar amount: ${line.slice(0, 120)}`);
-        this.landed += usdSpent;
-      }
-      this.offset += Buffer.byteLength(text.slice(0, end), "utf8");
-    } finally {
-      closeSync(fd);
+    if (all.length <= this.offset) return;
+    const text = all.subarray(this.offset).toString("utf8");
+    // Only whole lines; a line still being written is read next time.
+    const end = text.lastIndexOf("\n") + 1;
+    for (const line of text.slice(0, end).split("\n")) {
+      if (line === "") continue;
+      const usdSpent = (JSON.parse(line) as { usd?: unknown }).usd;
+      if (typeof usdSpent !== "number" || !Number.isFinite(usdSpent) || usdSpent < 0) throw new Error(`${path} has a line without a dollar amount: ${line.slice(0, 120)}`);
+      this.landed += usdSpent;
     }
+    this.offset += Buffer.byteLength(text.slice(0, end), "utf8");
   }
 }

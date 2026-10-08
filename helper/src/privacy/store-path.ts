@@ -1,16 +1,17 @@
-// Where a store may write (OUTPUT-LEDGER-SPEC section 6, the coordinator's store boundary, 2026-10-07). A store does
-// not carry the per-window budget because a local file is not a provider disclosure: the bytes stay on the Mac. That
-// holds only while the file cannot leave the Mac on its own. A folder that a sync client or File Provider uploads
-// (iCloud Drive, ~/Library/Mobile Documents, ~/Library/CloudStorage for Dropbox, OneDrive, Google Drive and Box, or
-// their older home-folder mounts) sends what is written there to a provider with no request ever being made. So every
-// store path must resolve, after symlinks, under a local root:
-// - ~/.caret-run, the evidence, cache, socket and run root;
-// - the system temporary directory (tests, caches of one run);
-// - this repository's checkout, where captures write fixtures that are committed.
-// A path anywhere else, or under a synced location even inside a root (a symlink can put ~/.caret-run inside Dropbox),
-// throws SyncedStorePath before anything is written. There is no budgeted store path yet; one would have to seal its
-// bytes as a provider request is sealed.
-import { closeSync, constants, fchmodSync, fstatSync, ftruncateSync, lstatSync, openSync, readlinkSync, realpathSync, renameSync, writeSync } from "node:fs";
+// Where a store may write (OUTPUT-LEDGER-SPEC section 6). A store does not carry the per-window budget because a local
+// file is not a provider disclosure: the bytes stay on the Mac. That holds only while the file cannot leave the Mac on its
+// own. A folder that a sync client or File Provider uploads (iCloud Drive, ~/Library/Mobile Documents, ~/Library/
+// CloudStorage for Dropbox, OneDrive, Google Drive and Box, or their older home-folder mounts) sends what is written there
+// to a provider with no request ever being made. So every store path must resolve, after symlinks, under a local root:
+// the app's data and memory folders, ~/.caret-run, the temporary directory, or this repository's checkout; and not under
+// a synced folder. Anything else throws SyncedStorePath before anything is written.
+//
+// Threat model: this keeps Caret from writing into a synced location by accident, through configuration (a data or
+// memory folder, an env file) or a symbolic link that already exists. It does not defend against another process running
+// as the same user, which can read everything Caret reads anyway; races against the check (an ancestor swapped for a
+// link, a hard link planted after it) are out of scope. O_NOFOLLOW_ANY and the hard-link refusal stay because they cost
+// nothing, not because they close that threat.
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, lstatSync, openSync, readdirSync, readlinkSync, realpathSync, renameSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +30,7 @@ const MAX_LINKS = 32;
 /**
  * Where a path really lands, and whether its last component is itself a symlink. Components are walked from the root:
  * each existing one is checked with lstat and a symlink is replaced by its target before anything after it, `..`
- * included, is applied, so `link/../rows.json` is judged under the link's target, not beside the link (INT1 review 2).
+ * included, is applied, so `link/../rows.json` is judged under the link's target, not beside the link.
  * A link whose target does not exist is followed all the same: the write would create its target.
  */
 export function landing(path: string): { real: string; finalLink: boolean } {
@@ -74,16 +75,42 @@ export function resolvedPath(path: string): string {
 
 const home = (): string => realpathSync(homedir());
 
-/** Folders a sync client or File Provider uploads from, below the home folder (macOS). */
-function syncedRoots(): string[] {
-  const h = home();
-  return [join(h, "Library", "Mobile Documents"), join(h, "Library", "CloudStorage")];
-}
-
 /** A home-folder entry an older sync client mounts directly: Dropbox, Google Drive, OneDrive, Box, iCloud Drive. */
 const SYNCED_HOME_ENTRY = /^(?:Dropbox|Google Drive|GoogleDrive|OneDrive|Box|Box Sync|iCloud Drive)(?:\b|[ (-])/iu;
 
-const under = (path: string, root: string): boolean => path === root || path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
+/**
+ * Folders a sync client or File Provider uploads from (macOS): ~/Library/Mobile Documents, ~/Library/CloudStorage and
+ * the home folder's sync mounts, each as written and as resolved, since any of them can itself be a link to a folder
+ * elsewhere (a path under the link's target syncs too).
+ */
+function syncedRoots(): string[] {
+  const h = home();
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(h).filter((n) => SYNCED_HOME_ENTRY.test(n));
+  } catch {
+    entries = [];
+  }
+  const literal = [join(h, "Library", "Mobile Documents"), join(h, "Library", "CloudStorage"), ...entries.map((n) => join(h, n))];
+  return [...new Set([...literal, ...literal.map((r) => resolvedPath(r))])];
+}
+
+/**
+ * Whether the home folder's volume ignores case, as macOS volumes do by default: there `~/library/cloudstorage` is
+ * `~/Library/CloudStorage`, so paths are compared case-folded. Read once, from whether the home folder answers to its
+ * name in the other case.
+ */
+const CASELESS = (() => {
+  const h = realpathSync(homedir());
+  const other = h === h.toUpperCase() ? h.toLowerCase() : h.toUpperCase();
+  return other !== h && existsSync(other);
+})();
+const fold = (p: string): string => (CASELESS ? p.toLowerCase() : p);
+
+const under = (path: string, root: string): boolean => {
+  const [p, r] = [fold(path), fold(root)];
+  return p === r || p.startsWith(r.endsWith(sep) ? r : `${r}${sep}`);
+};
 
 /** The repository checkout this module belongs to (helper/src/privacy/ is three levels below it). */
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -120,7 +147,7 @@ function refusalOf(real: string): string | null {
  * resolved path, which has no symbolic link in it: the one to open.
  */
 export function assertLocalStorePath(path: string): string {
-  // Resolved once: the path judged is the path a caller opens (INT1 review 3: resolving again could land elsewhere).
+  // Resolved once: the path judged is the path a caller opens.
   const l = landing(path);
   const why = refusalOf(l.real);
   if (why !== null) throw new SyncedStorePath(path, why);
@@ -136,7 +163,7 @@ export function assertLocalStorePath(path: string): string {
 const O_NOFOLLOW_ANY = process.platform === "darwin" ? 0x20000000 : 0;
 
 /**
- * Opens a store file for writing, the one way a helper store does (INT1 reviews 2 and 3). The path is checked
+ * Opens a store file for writing, the one way a helper store does. The path is checked
  * (assertLocalStorePath) and resolved to where it lands; that resolved path, which has no symbolic link in it, is opened
  * with O_NOFOLLOW_ANY, so an ancestor swapped for a link after the check makes the open fail rather than follow it
  * (macOS; see O_NOFOLLOW_ANY). The open file must be a regular file with one link: a hard link to it elsewhere would

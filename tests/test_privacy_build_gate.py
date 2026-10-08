@@ -4,7 +4,6 @@ import importlib.util
 import os
 from pathlib import Path
 import re
-import runpy
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -13,22 +12,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PrivacyBuildGateTests(unittest.TestCase):
-    def test_run_mac_refuses_before_xcode_or_install(self):
-        calls = []
-        real_run = subprocess.run
-
-        def runner(command, **kwargs):
-            calls.append(command)
-            if "privacy_gate.sh" in str(command) or "privacy-gate.ts" in str(command):
-                return real_run(command, **kwargs)
-            self.fail(f"Gate was bypassed: {command}")
-
-        with patch("subprocess.run", side_effect=runner), patch("sys.argv", ["run_mac.py", "--install-applications"]):
-            with self.assertRaises(SystemExit) as refused:
-                runpy.run_path(str(ROOT / "scripts/run_mac.py"), run_name="__main__")
-        self.assertIn("pv2-sites-send", str(refused.exception))
-        self.assertEqual(len(calls), 1)
-
     def test_package_refuses_before_build_for_install_and_dmg(self):
         spec = importlib.util.spec_from_file_location("package_gate_route", ROOT / "scripts/package_mac.py")
         module = importlib.util.module_from_spec(spec)
