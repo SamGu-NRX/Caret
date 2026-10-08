@@ -2,7 +2,7 @@ import CaretScreenCore
 import Foundation
 
 // B29's Ask questions (helper/src/protocol.ts `askQuestion`, `askAnswer`; golden lines in
-// helper/fixtures/golden/ask-choices.ndjson, copied into the host's test fixtures). A host whose hello
+// helper/fixtures/golden/ask-choices.ndjson and ask-values.ndjson, copied into the host's test fixtures). A host whose hello
 // names `askChoices` may get a question in place of a plan: code listed the real choices for one part
 // of the request, and the user's pick goes back as the answer.
 
@@ -12,7 +12,7 @@ public struct AskQuestion: Codable, Equatable, Sendable {
     /// Options one question lists at most (protocol.ts MAX_ASK_OPTIONS).
     public static let maxOptions = 8
 
-    public enum Part: String, Codable, Sendable { case fields, source, person }
+    public enum Part: String, Codable, Sendable { case fields, source, person, value }
     public enum Pick: String, Codable, Sendable { case one, many }
 
     public enum Option: Codable, Equatable, Sendable {
@@ -21,10 +21,16 @@ public struct AskQuestion: Codable, Equatable, Sendable {
         case memory(id: String)
         case you(id: String)
         case person(id: String, name: String)
+        /// A value for a value question's field, exactly as Caret would put it in, and where Caret read it in the user's
+        /// words ("Your saved Email", or a window's title and the line).
+        case value(id: String, value: String, source: String)
+        /// Leave the value question's field blank.
+        case blank(id: String)
 
         public var id: String {
             switch self {
-            case .field(let id, _, _), .window(let id, _, _), .memory(let id), .you(let id), .person(let id, _): return id
+            case .field(let id, _, _), .window(let id, _, _), .memory(let id), .you(let id), .person(let id, _), .value(let id, _, _), .blank(let id):
+                return id
             }
         }
 
@@ -35,10 +41,12 @@ public struct AskQuestion: Codable, Equatable, Sendable {
             case .memory: return "memory"
             case .you: return "you"
             case .person: return "person"
+            case .value: return "value"
+            case .blank: return "blank"
             }
         }
 
-        enum CodingKeys: String, CodingKey { case kind, id, label, section, app, title, name }
+        enum CodingKeys: String, CodingKey { case kind, id, label, section, app, title, name, value, source }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -57,6 +65,12 @@ public struct AskQuestion: Codable, Equatable, Sendable {
                 let name = try c.decode(String.self, forKey: .name)
                 guard !name.isEmpty else { throw ProtocolError("a person option's name is empty") }
                 self = .person(id: id, name: name)
+            case "value":
+                let value = try c.decode(String.self, forKey: .value)
+                let source = try c.decode(String.self, forKey: .source)
+                guard !value.isEmpty, !source.isEmpty else { throw ProtocolError("a value option needs its value and where it was read") }
+                self = .value(id: id, value: value, source: source)
+            case "blank": self = .blank(id: id)
             case let other: throw ProtocolError("unknown option kind \(other)")
             }
         }
@@ -68,8 +82,9 @@ public struct AskQuestion: Codable, Equatable, Sendable {
             switch self {
             case .field(_, let label, let section): try c.encode(label, forKey: .label); try c.encode(section, forKey: .section)
             case .window(_, let app, let title): try c.encode(app, forKey: .app); try c.encode(title, forKey: .title)
-            case .memory, .you: break
+            case .memory, .you, .blank: break
             case .person(_, let name): try c.encode(name, forKey: .name)
+            case .value(_, let value, let source): try c.encode(value, forKey: .value); try c.encode(source, forKey: .source)
             }
         }
     }
@@ -89,8 +104,9 @@ public struct AskQuestion: Codable, Equatable, Sendable {
     public var text: String
     public var pick: Pick
     public var options: [Option]
-    /// G35, fields questions only: the labels of the fields Caret fills whatever is picked. With it, an answer with no
-    /// picks fills those alone.
+    /// G35, on a fields question: the labels of the fields Caret fills whatever is picked. With it, an answer with no
+    /// picks fills those alone. On a value question: the values already checked, each as "Label: value", which the
+    /// answer leaves as they are.
     public var filling: [String]?
     /// The form the Ask is about.
     public var window: Window
@@ -99,8 +115,9 @@ public struct AskQuestion: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey { case type, v, requestId, at, questionId, part, text, pick, options, filling, window, expires }
 
     /// protocol.ts's superRefine: a fields question picks many fields; a source question picks one
-    /// window or memory; a person question picks one of you or a person; ids do not repeat; only a fields question names
-    /// fields it is filling, at least one, none unlabelled.
+    /// window or memory; a person question picks one of you or a person; a value question picks one of its values, then
+    /// one blank, last; ids do not repeat; only a fields or value question names what it is filling, at least one entry,
+    /// none empty.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let type = try c.decode(String.self, forKey: .type)
@@ -125,15 +142,25 @@ public struct AskQuestion: Codable, Equatable, Sendable {
         case .fields: kinds = ["field"]
         case .source: kinds = ["window", "memory"]
         case .person: kinds = ["you", "person"]
+        case .value: kinds = ["value", "blank"]
         }
         guard pick == (part == .fields ? .many : .one) else { throw ProtocolError("a \(part.rawValue) question picks \(part == .fields ? "many" : "one")") }
         guard options.allSatisfy({ kinds.contains($0.kind) }) else { throw ProtocolError("a \(part.rawValue) question lists only \(kinds.sorted().joined(separator: " or ")) options") }
+        if part == .value {
+            guard options.count >= 2, options.last?.kind == "blank", options.filter({ $0.kind == "blank" }).count == 1 else {
+                throw ProtocolError("a value question lists its values, then one blank")
+            }
+        }
         guard Set(options.map(\.id)).count == options.count else { throw ProtocolError("option ids repeat") }
         if let filling {
-            guard part == .fields else { throw ProtocolError("only a fields question names fields it is filling") }
-            guard !filling.isEmpty, filling.allSatisfy({ !$0.isEmpty }) else { throw ProtocolError("filling names at least one field, each by its label") }
+            guard part == .fields || part == .value else { throw ProtocolError("only a fields or value question names what it is filling") }
+            guard !filling.isEmpty, filling.allSatisfy({ !$0.isEmpty }) else { throw ProtocolError("filling names at least one entry, none empty") }
         }
     }
+
+    /// Whether an answer with no picks answers this question: a fields question beside fields Caret fills anyway. A value
+    /// question names what it fills too, but its answer is always one pick.
+    public var answersWithNoPicks: Bool { part == .fields && filling != nil }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -146,7 +173,7 @@ public struct AskQuestion: Codable, Equatable, Sendable {
 
 /// Consumer to helper: the user's pick for a question, by option id, once, before it expires. The
 /// reply comes under this `requestId`: a plan, another question, or a `questionGone` refusal. No picks
-/// answers only a fields question with `filling`: Caret fills those fields alone.
+/// answers only a fields question with `filling`: Caret fills those fields alone. A value question takes one pick.
 public struct AskAnswer: Codable, Equatable, Sendable {
     public static let type = "askAnswer"
 

@@ -130,7 +130,8 @@ public final class AskCaret {
         /// A plan to take with Tab or dismiss with Esc.
         case proposed(Card)
         /// B29: the helper asks which of its choices the user means. Tab answers with the highlighted
-        /// choice, or with the ones Space selected; Esc dismisses it.
+        /// choice, or with the ones Space selected; Esc dismisses it. A value question opens with no row
+        /// highlighted, and Tab does nothing until an arrow highlights one.
         case question(Question)
         /// No plan, and why in a sentence (`AskCopy.planError`).
         case failed(String)
@@ -147,21 +148,33 @@ public final class AskCaret {
     /// the rows Space selected (a fields question only).
     public struct Question: Equatable, Sendable {
         public var ask: AskQuestion
-        public var highlight: Int
+        /// Nil while no row is highlighted, as a value question opens: neither of two values Jev disagreed on is
+        /// offered as the answer before the user moves to one.
+        public var highlight: Int?
         public var selected: Set<String>
 
-        public init(ask: AskQuestion, highlight: Int = 0, selected: Set<String> = []) {
+        /// The question as it opens: a value question with nothing highlighted, any other on its first row.
+        public init(ask: AskQuestion, selected: Set<String> = []) {
+            self.init(ask: ask, highlight: ask.part == .value ? nil : 0, selected: selected)
+        }
+
+        public init(ask: AskQuestion, highlight: Int?, selected: Set<String> = []) {
             self.ask = ask
             self.highlight = highlight
             self.selected = selected
         }
 
+        /// The highlighted row's option, if a row is highlighted.
+        public var highlighted: AskQuestion.Option? {
+            highlight.flatMap { ask.options.indices.contains($0) ? ask.options[$0] : nil }
+        }
+
         /// What Tab sends: the selected rows in the question's order. With none selected, nothing beside fields Caret
-        /// is filling (it fills those alone), else the highlighted row.
+        /// is filling (it fills those alone), else the highlighted row, if there is one.
         public var picks: [String] {
             let chosen = ask.options.map(\.id).filter(selected.contains)
-            if !chosen.isEmpty || ask.filling != nil { return chosen }
-            return ask.options.indices.contains(highlight) ? [ask.options[highlight].id] : []
+            if !chosen.isEmpty || ask.answersWithNoPicks { return chosen }
+            return highlighted.map { [$0.id] } ?? []
         }
     }
 
@@ -335,12 +348,17 @@ public final class AskCaret {
         return true
     }
 
-    /// Up or Down on a question moves the highlight, wrapping. False when no question shows.
+    /// Up or Down on a question moves the highlight, wrapping. With nothing highlighted, Down goes to the first row and
+    /// Up to the last. False when no question shows.
     @discardableResult
     public func move(_ step: Int) -> Bool {
         guard case .question(var q) = phase else { return false }
         let n = q.ask.options.count
-        q.highlight = ((q.highlight + step) % n + n) % n
+        if let at = q.highlight {
+            q.highlight = ((at + step) % n + n) % n
+        } else {
+            q.highlight = step > 0 ? 0 : n - 1
+        }
         settle(.question(q))
         return true
     }
@@ -351,8 +369,8 @@ public final class AskCaret {
     @discardableResult
     public func toggle() -> Bool {
         guard case .question(let q) = phase else { return false }
-        guard q.ask.options.indices.contains(q.highlight) else { return true }
-        return toggle(option: q.ask.options[q.highlight].id)
+        guard let row = q.highlighted else { return true }
+        return toggle(option: row.id)
     }
 
     /// Selects or clears one row of a fields question by its option id: Space on the highlighted row, or VoiceOver's
@@ -366,10 +384,21 @@ public final class AskCaret {
         return true
     }
 
-    /// Sends the question's picks; the reply comes under a new request id, as a plan or another question.
+    /// VoiceOver's Choose on one row of a value question, by option id: answers with that row, wherever the highlight is.
+    /// True while a value question shows; an id it does not list answers nothing. False on any other question, which
+    /// has no Choose on its rows.
+    @discardableResult
+    public func choose(option id: String) -> Bool {
+        guard case .question(let q) = phase, q.ask.part == .value else { return false }
+        guard let row = q.ask.options.firstIndex(where: { $0.id == id }) else { return true }
+        return answer(Question(ask: q.ask, highlight: row))
+    }
+
+    /// Sends the question's picks; the reply comes under a new request id, as a plan or another question. With nothing
+    /// to send (a value question before an arrow highlights a row), the key is taken and nothing goes.
     private func answer(_ q: Question) -> Bool {
         let picks = q.picks
-        guard !picks.isEmpty || q.ask.filling != nil else { return true }
+        guard !picks.isEmpty || q.ask.answersWithNoPicks else { return true }
         guard q.ask.expires > nowMs else {
             settle(.failed(AskCopy.planError(PlanProposal.Failure(code: .questionGone, detail: "the question expired"))))
             return true
@@ -816,9 +845,11 @@ public final class AskCaret {
 /// user asked it, as the brief's example reads ("I couldn't find the order number on screen").
 public enum AskCopy {
     /// B29: one choice of a question, as its row reads: the main words, and the quieter words after
-    /// them when there are any.
+    /// them when there are any. A value row reads the value exactly as Caret would write it, and where Caret read it.
     public static func option(_ o: AskQuestion.Option) -> (title: String, detail: String?) {
         switch o {
+        case .value(_, let value, let source): return (value, source)
+        case .blank: return (leaveBlank, nil)
         case .field(_, let label, let section): return (label, section)
         case .window(_, let app, let title):
             let t = title.trimmingCharacters(in: .whitespaces)
@@ -830,15 +861,50 @@ public enum AskCopy {
         }
     }
 
+    /// The blank row of a value question.
+    public static let leaveBlank = "Leave blank"
+
     /// What Tab does on a question: answer with the highlighted row, or fill the fields Space selected, counting the
-    /// fields Caret fills anyway.
+    /// fields Caret fills anyway. A value question chooses one row, whatever it names as filled.
     public static func answerLabel(_ q: AskCaret.Question) -> String {
+        if q.ask.part == .value { return "Choose" }
         if let filling = q.ask.filling { return "Fill \(filling.count + q.selected.count)" }
         return q.selected.isEmpty ? "Choose" : "Fill \(q.selected.count)"
     }
 
+    /// The quiet line above a value question's rows: what Caret fills whatever is chosen. Nil on any other question: a
+    /// fields question names what it fills in its own text ("Caret will fill Name. Which of these…").
+    public static func willFill(_ ask: AskQuestion) -> String? {
+        guard ask.part == .value, let filling = ask.filling, !filling.isEmpty else { return nil }
+        return "Caret will fill \(filling.joined(separator: ", "))"
+    }
+
+    /// A row as VoiceOver reads it: a value, then where Caret read it ("grace.oduya@example.com, from Your saved
+    /// Email"); any other row, its words and their detail.
+    public static func spokenOption(_ o: AskQuestion.Option) -> String {
+        if case .value(_, let value, let source) = o { return "\(value), from \(source)" }
+        let words = option(o)
+        return words.detail.map { "\(words.title), \($0)" } ?? words.title
+    }
+
+    /// What VoiceOver says as a question opens: the question, and how many values or choices it lists. A value
+    /// question counts its values, not the blank row.
+    public static func questionAnnouncement(_ ask: AskQuestion) -> String {
+        guard ask.part == .value else { return "\(ask.text) \(ask.options.count) choices." }
+        let values = ask.options.filter { if case .value = $0 { return true } else { return false } }.count
+        return "\(ask.text) \(values) \(values == 1 ? "value" : "values")."
+    }
+
+    /// What VoiceOver says after Up or Down on a value question: the highlighted row. Nil with nothing highlighted, and
+    /// on other questions, whose rows say it through their selected state.
+    public static func highlightAnnouncement(_ q: AskCaret.Question) -> String? {
+        guard q.ask.part == .value, let row = q.highlighted else { return nil }
+        return spokenOption(row)
+    }
+
     /// What VoiceOver says the field does while a question shows.
     public static func questionHint(_ ask: AskQuestion) -> String {
+        if ask.part == .value { return "Up and Down move between the values. Tab chooses one. Escape writes nothing." }
         if ask.filling != nil {
             return "Up and Down move between the fields. Space selects or clears one. Tab fills the selected fields and the ones Caret named. Escape fills nothing."
         }

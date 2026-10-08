@@ -20,7 +20,7 @@ final class RoutingTests: XCTestCase {
     func testTheFixtureCopiesAreTheHelpersGoldenFiles() throws {
         let repo = Self.fixture.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        for name in ["routing", "fill-all", "ask-choices"] {
+        for name in ["routing", "fill-all", "ask-choices", "ask-values"] {
             let copy = try Data(contentsOf: Self.fixture.deletingLastPathComponent().appendingPathComponent("\(name).ndjson"))
             let golden = try Data(contentsOf: repo.appendingPathComponent("helper/fixtures/golden/\(name).ndjson"))
             XCTAssertEqual(copy, golden, "Fixtures/\(name).ndjson differs from helper/fixtures/golden/\(name).ndjson")

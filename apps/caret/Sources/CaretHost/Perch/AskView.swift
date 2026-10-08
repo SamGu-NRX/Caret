@@ -20,6 +20,8 @@ final class AskModel: ObservableObject {
     var notRightAction: (DeskNotRight) -> Void = { _ in }
     /// VoiceOver's Select or Clear on one row of a fields question, by option id.
     var select: (String) -> Void = { _ in }
+    /// VoiceOver's Choose on one row of a value question, by option id.
+    var choose: (String) -> Void = { _ in }
 }
 
 /// What the desk's "Not right" row asks for.
@@ -51,6 +53,7 @@ struct AskSection: View {
     var onUndo: () -> Void = {}
     var onNotRight: (DeskNotRight) -> Void = { _ in }
     var onSelect: (String) -> Void = { _ in }
+    var onChoose: (String) -> Void = { _ in }
 
     static let fieldTitle = "Ask Caret"
     static let emptyLine = "Nothing running. Caret shows up where you type when it has something."
@@ -98,7 +101,7 @@ struct AskSection: View {
             AskCard(card: card, ending: nil, running: false, character: character, animated: animated, notRight: notRight,
                     onRun: onRun, onEscape: onEscape, onNotRight: onNotRight).padding(.top, 8)
         case .question(let q):
-            AskQuestionCard(question: q, onAnswer: onRun, onEscape: onEscape, onSelect: onSelect).padding(.top, 8)
+            AskQuestionCard(question: q, onAnswer: onRun, onEscape: onEscape, onSelect: onSelect, onChoose: onChoose).padding(.top, 8)
         case .running(let card):
             AskCard(card: card, ending: nil, running: true, character: character, animated: animated, onRun: onRun, onEscape: onEscape).padding(.top, 8)
         case .ended(let card, let line):
@@ -357,11 +360,18 @@ struct DeskNotRightRow: View {
 /// one row per choice, and the keys. The highlighted row has the popup's 2 pt Carrot edge and Ink
 /// words; the others are Ink 2. A fields question marks each row with a box Space ticks. Arrows and
 /// Space redraw at once with no motion: each follows a key the user is watching (`emil-design-eng`).
+///
+/// A value question (which value goes in one field) puts what Caret fills anyway in one quiet line under the
+/// question, and lists each value whole over where Caret read it, then "Leave blank". It opens with no row
+/// highlighted, so its keys start with the arrows. Its rows scroll within the card once they outgrow it.
 struct AskQuestionCard: View {
     var question: AskCaret.Question
     var onAnswer: () -> Void = {}
     var onEscape: () -> Void = {}
     var onSelect: (String) -> Void = { _ in }
+    var onChoose: (String) -> Void = { _ in }
+
+    private var isValue: Bool { question.ask.part == .value }
 
     var body: some View {
         Block {
@@ -371,18 +381,31 @@ struct AskQuestionCard: View {
                     .foregroundStyle(Color(token: Tokens.ink))
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(question.ask.options.enumerated()), id: \.element.id) { index, option in
-                        AskChoiceRow(
-                            option: option, highlighted: index == question.highlight,
-                            selected: question.ask.pick == .many ? question.selected.contains(option.id) : nil,
-                            onSelect: { onSelect(option.id) }
-                        )
-                    }
+                if let willFill = AskCopy.willFill(question.ask) {
+                    Text(willFill)
+                        .font(Tokens.Font.chromeSmall)
+                        .foregroundStyle(Color(token: Tokens.ink2))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 4)
                 }
-                .padding(.top, 6)
+                if isValue {
+                    AskValueRows(question: question, onChoose: onChoose).padding(.top, 8)
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(question.ask.options.enumerated()), id: \.element.id) { index, option in
+                            AskChoiceRow(
+                                option: option, highlighted: index == question.highlight,
+                                selected: question.ask.pick == .many ? question.selected.contains(option.id) : nil,
+                                onSelect: { onSelect(option.id) }
+                            )
+                        }
+                    }
+                    .padding(.top, 6)
+                }
                 Hairline().padding(.vertical, 9)
                 HStack(spacing: 12) {
+                    // Nothing is highlighted as a value question opens, and Tab waits for an arrow: the arrows lead.
+                    if isValue { HintView(hint: Hint(key: "\u{2191}\u{2193}", label: "Move")) }
                     HintView(hint: Hint(key: "Tab", label: AskCopy.answerLabel(question)))
                     if question.ask.pick == .many { HintView(hint: Hint(key: "Space", label: "Select")) }
                     HintView(hint: Hint(key: "Esc", label: "Dismiss"))
@@ -395,8 +418,13 @@ struct AskQuestionCard: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Caret's question")
-        .accessibilityAction(named: Text(AskCopy.answerLabel(question)), onAnswer)
-        .accessibilityAction(named: Text("Dismiss"), onEscape)
+        // The card's Tab action only when Tab would answer: a value question with nothing highlighted has none, and
+        // each of its rows has its own Choose. Inside one builder, so the card keeps its identity (and its rows their
+        // scroll) as the highlight comes and goes.
+        .accessibilityActions {
+            if !question.picks.isEmpty || question.ask.answersWithNoPicks { Button(AskCopy.answerLabel(question), action: onAnswer) }
+            Button("Dismiss", action: onEscape)
+        }
     }
 }
 
@@ -434,7 +462,7 @@ private struct AskChoiceRow: View {
             if highlighted { Rectangle().fill(Color(token: Tokens.carrot)).frame(width: 2, height: 18) }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(words.detail.map { "\(words.title), \($0)" } ?? words.title)
+        .accessibilityLabel(AskCopy.spokenOption(option))
         // A fields row is selected by its box, so VoiceOver can pick any row, not only the highlighted one.
         .accessibilityAddTraits((selected ?? highlighted) ? .isSelected : [])
         .accessibilityActions {
@@ -459,6 +487,117 @@ private struct AskChoiceRow: View {
             }
             .frame(width: 12, height: 12)
         }
+    }
+}
+
+/// A value question's rows: each value over where Caret read it, then "Leave blank". Up to `maxHeight` they take
+/// their text's height; past it they scroll, and the highlighted row is scrolled into view at once, with no animation.
+/// Off screen, where a ScrollView draws nothing, the rows draw from the top and are cut at the same height.
+struct AskValueRows: View {
+    var question: AskCaret.Question
+    var onChoose: (String) -> Void
+
+    /// Assumed, not measured on any display: about seven rows of a one-line value over a one-line source (near 40 pt
+    /// each). With the field, the question, the "Caret will fill" line and the keys, the desk stays near 450 pt tall,
+    /// so a full list never pushes the keys off a laptop screen.
+    static let maxHeight: CGFloat = 280
+
+    @Environment(\.rendersOffscreen) private var offscreen
+
+    var body: some View {
+        if offscreen {
+            CappedHeight(max: Self.maxHeight) { rows(scrollTargets: false) }.clipped()
+        } else {
+            ScrollViewReader { proxy in
+                CappedHeight(max: Self.maxHeight) {
+                    // Measured, never seen: the height comes from the rows themselves at the card's width, not from
+                    // whatever a scroll view reports for its own ideal size.
+                    rows(scrollTargets: false).hidden().accessibilityHidden(true)
+                    ScrollView(.vertical) { rows(scrollTargets: true) }
+                        .scrollIndicators(.automatic)
+                        .scrollBounceBehavior(.basedOnSize)
+                }
+                .onAppear { reveal(proxy) }
+                .onChange(of: question.highlight) { _, _ in reveal(proxy) }
+            }
+        }
+    }
+
+    /// The rows. `scrollTargets`: each carries its option id for `scrollTo`; only the scroll view's copy does, so the
+    /// measured copy outside it is never the row scrolled to.
+    private func rows(scrollTargets: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(question.ask.options.enumerated()), id: \.element.id) { index, option in
+                let row = AskValueRow(option: option, highlighted: index == question.highlight, onChoose: { onChoose(option.id) })
+                if scrollTargets { row.id(option.id) } else { row }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The least scroll that shows the highlighted row: no anchor, and no animation, since an arrow key moved it.
+    private func reveal(_ proxy: ScrollViewProxy) {
+        guard let row = question.highlighted else { return }
+        proxy.scrollTo(row.id)
+    }
+}
+
+/// One value: the value whole in 13 pt medium, never truncated (two addresses can differ only in their last
+/// characters), and under it where Caret read it in 12 pt Ink 2. Both wrap to as many lines as they need. The blank
+/// row reads "Leave blank" alone. The highlighted row has the 2 pt Carrot edge down its height and Ink words.
+private struct AskValueRow: View {
+    var option: AskQuestion.Option
+    var highlighted: Bool
+    var onChoose: () -> Void
+
+    var body: some View {
+        let words = AskCopy.option(option)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(words.title)
+                .font(Tokens.Font.row)
+                .foregroundStyle(Color(token: highlighted ? Tokens.ink : Tokens.ink2))
+                .fixedSize(horizontal: false, vertical: true)
+            if let source = words.detail {
+                Text(source)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 18, alignment: .leading)
+        .padding(.leading, AskChoiceRow.indent)
+        .padding(.trailing, 4)
+        .padding(.vertical, 4)
+        .overlay(alignment: .leading) {
+            if highlighted { Rectangle().fill(Color(token: Tokens.carrot)).frame(width: 2).padding(.vertical, 4) }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(AskCopy.spokenOption(option))
+        .accessibilityAddTraits(highlighted ? .isSelected : [])
+        .accessibilityAction(named: Text("Choose"), onChoose)
+    }
+}
+
+/// Measures its first child at its natural height for the width it is given, and lays out its last child at that
+/// height up to `max`, and at `max` past it: given the rows and then a scroll view of them, a list that hugs short
+/// content and scrolls long content. With one child, that child is both, drawn from the top (clip it to cut it at
+/// `max`). One layout pass with no measured state, so a fresh hosting view's fitting size (`HostedPanel.measure`) is
+/// already right.
+private struct CappedHeight: Layout {
+    var max: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let measured = subviews.first else { return .zero }
+        let natural = measured.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? natural.width, height: min(natural.height, max))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let shown = subviews.last else { return }
+        if subviews.count > 1, let measured = subviews.first {
+            measured.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: bounds.width, height: nil))
+        }
+        shown.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
 
@@ -568,11 +707,28 @@ struct AskLiveSection: View {
         AskSection(
             text: model.text, phase: model.phase, character: character, focusToken: model.focusToken, animated: animated, notRight: model.notRight,
             onEdit: { model.edit($0) }, onSubmit: { model.submit() }, onRun: { model.run() }, onEscape: { model.escape() }, onUndo: { model.undo() },
-            onNotRight: { model.notRightAction($0) }, onSelect: { model.select($0) }
+            onNotRight: { model.notRightAction($0) }, onSelect: { model.select($0) }, onChoose: { model.choose($0) }
         )
         .onChange(of: announcement) { _, words in
             if let words { AccessibilityNotification.Announcement(words).post() }
         }
+        // A value question: each Up or Down says the row it reached, since the keys stay in the field.
+        .onChange(of: highlighted) { _, row in
+            if let row { AccessibilityNotification.Announcement(row.words).post() }
+        }
+    }
+
+    /// The highlighted row of a value question, keyed by its question and place so that moving between two rows that
+    /// read alike still speaks.
+    private struct Highlighted: Equatable {
+        var question: String
+        var row: Int
+        var words: String
+    }
+
+    private var highlighted: Highlighted? {
+        guard case .question(let q) = model.phase, let row = q.highlight, let words = AskCopy.highlightAnnouncement(q) else { return nil }
+        return Highlighted(question: q.ask.questionId, row: row, words: words)
     }
 
     /// What VoiceOver says when the phase changes: the plan's title, the reason there is none, or the ending.
@@ -584,8 +740,9 @@ struct AskLiveSection: View {
         case .failed(let sentence): return sentence
         case .atForm: return AskCopy.atForm
         case .proposed(let card): return "\(card.title). Tab to \(card.action.lowercased()), Escape to dismiss."
-        // Said once when the question comes; moving between rows is the rows' own selected state.
-        case .question(let q): return "\(q.ask.text) \(q.ask.options.count) choices."
+        // Said once when the question comes. Moving between a value question's rows speaks the row (below); on
+        // other questions it is the rows' own selected state.
+        case .question(let q): return AskCopy.questionAnnouncement(q.ask)
         case .ended(_, let line): return line.text
         }
     }
