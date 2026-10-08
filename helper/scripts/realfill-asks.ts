@@ -187,7 +187,7 @@ const oracle: AskJev = async (req) => {
       pick(named ?? (form !== undefined && form.fields.every((f) => wanted(f.label)) ? "whole" : "fields"));
     }
     // The scope ask's label, which may hold an apostrophe ("Guest's full name"), ends where the wording goes on.
-    else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(/[Tt]he field '(.*?)'(?: is a |\. Kind: )/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
+    else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(/Field: "(.*?)"\. Control: "/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
     else if (id === "why") pick(ask?.reason === "payment" ? "payment" : ask?.reason === "neverTyped" ? "neverTyped" : ask?.reason === "noSuchField" ? "noSuchField" : "nothingToFill");
     else if (id === "source") pick("any");
     else if (id === "whose") pick("user");

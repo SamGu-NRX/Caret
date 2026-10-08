@@ -29,7 +29,7 @@ import { forgetWindows, SnippetLedger } from "../src/privacy.ts";
 import { secretText } from "../src/memory/sensitive.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { rng } from "./large-scene.ts";
-import { field, node, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap } from "./builders.ts";
 
 const NOTE_APP = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
 const NOTES = "Serial number: SN-4471-B\nModel: Kestrel 9\nContact name: Mira Vale\nContact phone: +1 202-555-0146";
@@ -141,7 +141,7 @@ function jev(o: { asks?: readonly string[]; unclear?: readonly string[]; section
           return [id, typeof s === "function" ? s(wording) : s] as const;
         }
         if (req.purpose === "ask.scope") {
-          const label = /[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "";
+          const label = scopeLabel(ins);
           if ((o.unclear ?? []).includes(label)) return a("unclear", 0.99);
           const once = (o.asksOnce ?? []).includes(label) && wording === 1;
           return a((o.asks ?? ALL).includes(label) && !once ? "asks" : "not", 0.99);

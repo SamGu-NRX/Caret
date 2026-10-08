@@ -19,7 +19,7 @@ import type { PlanningSnapshot } from "../src/codemode/types.ts";
 import type { WriterPort } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import { button, cannedProgram, fieldKey, goalScene, line, MAIL, standInJev, SUPPORT, textField, type CannedStep, type GoalScene } from "./goal-desk.ts";
-import { field, node, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -80,7 +80,7 @@ const jev = (asks: readonly string[], o: { route?: string; unclear?: readonly st
       const pick = (choice: string) => [id, { choice, confidence: 0.95 }] as const;
       if (req.purpose === "ask.heads") return pick({ route: o.route ?? "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
       if (req.purpose === "ask.scope") {
-        const label = /[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "";
+        const label = scopeLabel(ins);
         return pick((o.unclear ?? []).includes(label) ? "unclear" : asks.includes(label) ? "asks" : "not");
       }
       if (id === "press") return pick("none" in q.criteria ? "none" : (Object.keys(q.criteria).at(-1) ?? "none"));

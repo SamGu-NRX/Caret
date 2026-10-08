@@ -243,9 +243,11 @@ function axOutline(w: WindowState, nodes: readonly Node[]): WindowOutline {
       chains.set(n.key, "unknown");
       continue;
     }
-    // The innermost heading only: with no levels, a heading in an inner group replaces the ones it inherits.
-    const inner = [...stack].reverse().find((f) => f.heading !== null)?.heading ?? null;
-    chains.set(n.key, [...stack.flatMap((f) => (f.label === null ? [] : [f.label])), ...(inner === null ? [] : [inner])]);
+    // The innermost heading only: with no levels, a heading in an inner group replaces the ones it inherits. It sits
+    // after its own group's label and before the labels of groups opened after it, so the chain reads outermost first.
+    const at = stack.findLastIndex((f) => f.heading !== null);
+    const labels = (fs: readonly Frame[]): string[] => fs.flatMap((f) => (f.label === null ? [] : [f.label]));
+    chains.set(n.key, at < 0 ? labels(stack) : [...labels(stack.slice(0, at + 1)), (stack[at] as Frame).heading as string, ...labels(stack.slice(at + 1))]);
   }
   return { occurrences, chainOf: (key) => chains.get(key) ?? [], fallback: [], tokens: [], cut: false };
 }

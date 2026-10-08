@@ -13,7 +13,7 @@ import { PROTOCOL_VERSION, type GoalProgress } from "../src/protocol.ts";
 import { AskAsks, AskRefused, planAsk } from "../src/planner/ask.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { planTask } from "../src/planner/planner.ts";
-import { field, node, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap } from "./builders.ts";
 import { rig } from "./page-rig.ts";
 import { goalScene, mailWindow, replyWindow, standInJev, MAIL, line, textField, type CannedStep, type GoalScene } from "./goal-desk.ts";
 
@@ -68,7 +68,7 @@ const jev = (route: string, asks: readonly string[], log: JevRequest[] = []): As
         const pick = (c: string) => [id, { choice: c, confidence: 0.95 }] as const;
         if (req.purpose === "ask.heads") return pick({ route, why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
         if (req.purpose === "ask.scope" && id === "section") return pick("fields");
-        if (req.purpose === "ask.scope") return pick(asks.includes(/[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
+        if (req.purpose === "ask.scope") return pick(asks.includes(scopeLabel(ins)) ? "asks" : "not");
         if (id === "press") return pick("none" in q.criteria ? "none" : (Object.keys(q.criteria).at(-1) ?? "none"));
         const want = Object.entries(VALUES).find(([l]) => ins.includes(`'${l}'`))?.[1];
         const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => String(d).startsWith(`"${want}"`));
@@ -181,7 +181,7 @@ describe("reproduction 2: a continued Ask settles nothing again, and the attach 
     // Jev leaves Email unclear, so the Ask asks which fields; the user answers after the page moved to doc-2.
     const ask: AskJev = async (req) => {
       const r = await jev("some", ["Name"])(req);
-      if (req.purpose === "ask.scope") for (const [id, q] of Object.entries(req.questions)) if (/field 'Email'/u.test(String(q.instructions))) r.answers[id] = { choice: "unclear", confidence: 0.95 };
+      if (req.purpose === "ask.scope") for (const [id, q] of Object.entries(req.questions)) if (scopeLabel(String(q.instructions)) === "Email") r.answers[id] = { choice: "unclear", confidence: 0.95 };
       return r;
     };
     const first = await planAsk("fill in my details", m, { values: () => MEMORY }, ABOUT, { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "r1", windowId: P, now: 2000, documentOf: () => doc }).catch((e: unknown) => e);
@@ -222,7 +222,7 @@ describe("rulings 1 and 2: a resume settles nothing and refuses a changed docume
   /** Jev that leaves Email unclear, so the Ask asks which fields. */
   const unclearEmail = (log: JevRequest[] = []): AskJev => async (req) => {
     const r = await jev("some", ["Name"], log)(req);
-    if (req.purpose === "ask.scope") for (const [id, q] of Object.entries(req.questions)) if (/field 'Email'/u.test(String(q.instructions))) r.answers[id] = { choice: "unclear", confidence: 0.95 };
+    if (req.purpose === "ask.scope") for (const [id, q] of Object.entries(req.questions)) if (scopeLabel(String(q.instructions)) === "Email") r.answers[id] = { choice: "unclear", confidence: 0.95 };
     return r;
   };
 
@@ -330,7 +330,7 @@ describe("final rulings", () => {
   it("ruling 3: a field Jev answered \"asks\" below the cutoff is offered, and the user's pick puts it in the scope, recorded as theirs", async () => {
     const low: AskJev = async (req) => {
       const r = await jev("some", [])(req);
-      if (req.purpose === "ask.scope") for (const [id, q] of Object.entries(req.questions)) if (/field 'Email'/u.test(String(q.instructions))) r.answers[id] = { choice: "asks", confidence: 0.3 };
+      if (req.purpose === "ask.scope") for (const [id, q] of Object.entries(req.questions)) if (scopeLabel(String(q.instructions)) === "Email") r.answers[id] = { choice: "asks", confidence: 0.3 };
       return r;
     };
     const e = await planAsk("my email", desk(), { values: () => MEMORY }, ABOUT, { askJev: low, maker: headsIntentMaker(low), writer: null, offerKey: "lo", windowId: WIN, now: 2000 }).catch((x: unknown) => x);
@@ -352,8 +352,8 @@ describe("follow-up: a below-cutoff field is offered beside an unclear one", () 
       if (req.purpose === "ask.scope")
         for (const [id, q] of Object.entries(req.questions)) {
           const ins = String(q.instructions);
-          if (/field 'Name'/u.test(ins)) r.answers[id] = { choice: "unclear", confidence: 0.95 };
-          if (/field 'Email'/u.test(ins)) r.answers[id] = { choice: "asks", confidence: 0.3 };
+          if (scopeLabel(ins) === "Name") r.answers[id] = { choice: "unclear", confidence: 0.95 };
+          if (scopeLabel(ins) === "Email") r.answers[id] = { choice: "asks", confidence: 0.3 };
         }
       return r;
     };
