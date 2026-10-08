@@ -256,3 +256,21 @@ for (const [expected, kind, note] of [
     assert.deepEqual(notes, [note]);
   });
 }
+
+for (const text of ["none", "", "Ines"]) {
+  test(`guard-adversary counts writing ${JSON.stringify(text)} against bare none as unexempt`, () => {
+    const helpers = between(guard, "const norm =", "const session =");
+    const outcome = between(guard, "function outcomeOf(", "function record(");
+    const unexempt = between(guard, "const exempt =", "const byRule =");
+    const result = run(`${helpers}\n${outcome}\n${unexempt}
+      const matched = keyMatches(text, field);
+      const verdict = outcomeOf(result, field);
+      attempts.push({ cls: "c", outcome: verdict, via: null });
+      JSON.stringify({ matched, verdict, unexempt: unexempt().length });`, {
+      text, field: { source: "task", key: "name", expected: "none", checkbox: false }, attempts: [],
+      result: { written: new Map([["name", text]]), shown: new Map() },
+    });
+    assert.ok(typeof result === "string");
+    assert.deepEqual(JSON.parse(result), { matched: false, verdict: "written", unexempt: 1 });
+  });
+}

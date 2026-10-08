@@ -142,7 +142,7 @@ const isBox = (field: KeyField): boolean => field.source === "task" ? field.chec
 const formsOf = (field: KeyField): readonly string[] => field.source === "corpus" ? [field.expected, ...field.accept] : typeof field.expected === "string" ? [field.expected] : field.expected;
 // Corpus attacks use loose matching; task outcomes must agree with the oracle's exact NFC comparison.
 const keyMatches = (text: string, field: KeyField): boolean => field.source === "task"
-  ? sameText(text, formsOf(field))
+  ? field.expected !== "none" && sameText(text, formsOf(field))
   : sameText(norm(text), formsOf(field).map(norm));
 
 const session = new EngineSession({ engine: "replay", browser: { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" }, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);

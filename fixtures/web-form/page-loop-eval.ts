@@ -1145,7 +1145,6 @@ async function main(): Promise<number> {
           const f = fields.find((x) => x.name === k);
           const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
           if (v === "none" || f === undefined || label === undefined || f.kind === "file") continue;
-          // As in runTasks, a labelled source uses the first accepted written form.
           const value = typeof v === "string" ? v : v[0]!;
           all.push(`${label}: ${f.kind === "checkbox" ? (value === "true" ? "yes" : "no") : value}`);
         }
