@@ -4,21 +4,15 @@
 // (~/.caret-run/evidence/screen/b11/live/live-replay.md). These tests rebuild that window and stand in a
 // Jev that picks a same-kind decoy whenever the right value is missing, as live Jev did there.
 import { Disclosure } from "../src/privacy/disclosure.ts";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { collectCandidates, cutKinds, setGeneratorClock } from "../src/fill/candidates.ts";
+import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
 import { proposeFill, NOT_ASKED } from "../src/fill/fill.ts";
 import { fieldKinds, fieldTerms } from "../src/fill/kinds.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { windowBudget } from "../src/privacy.ts";
 import { snap, text, value } from "./builders.ts";
 import { FORM_KEY, MESSAGES, REF, R, SCHEDULE_FORM as FORM, reference, scheduleForm } from "./desks.ts";
-
-// The generator's time budget reads a fixed clock here: under the full suite's load the wall clock stopped a
-// conversation partway and withheld a field this file expects (B26's lead check of B25 at 5f0acf9: 1258/1259,
-// "fills more of the form than screen order did"; the file alone passed 3 of 3).
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
 
 const SCHEDULE = ["Meeting date", "Start time", "Video link", "Attendee email", "Attendee job title"] as const;
 const GOLD: Record<string, string> = {

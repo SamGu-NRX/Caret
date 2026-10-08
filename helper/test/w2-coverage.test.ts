@@ -5,16 +5,12 @@
 // text is synthetic fixture text.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { heldReason, proposeFill } from "../src/fill/fill.ts";
 import type { FillField } from "../src/protocol.ts";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { lineTexts } from "../src/fill/line-values.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
-
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
 
 describe("an organization with a legal suffix is a part (REVIEW-R2 round-1 item 4)", () => {
   it.each([

@@ -72,6 +72,7 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     expect((await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
   });
   afterEach(() => {
+    page.session.close();
     helper.shutdown();
     store.close();
     rmSync(dir, { recursive: true, force: true });

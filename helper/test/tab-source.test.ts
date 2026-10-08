@@ -324,6 +324,7 @@ describe("one fill from the tab the user just left (rules 1 to 7, through the he
     await new Promise((r) => setTimeout(r, 0));
   });
   afterEach(() => {
+    tabs.session.close();
     helper.shutdown();
     store.close();
     rmSync(dir, { recursive: true, force: true });
@@ -430,6 +431,7 @@ describe("a fill whose tab text expires while Jev answers (rule 6, P4 review)", 
       // At most the one question already on its way when the text expired.
       expect(calls).toBe(1);
     } finally {
+      session.close();
       helper.shutdown();
       store.close();
       rmSync(dir, { recursive: true, force: true });

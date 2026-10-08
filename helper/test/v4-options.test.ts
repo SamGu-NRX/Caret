@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, Snapshot, type Node, type PageControl, type PageSnapshot, type TypedValue } from "../src/protocol.ts";
 import { ScreenModel } from "../src/model.ts";
 import { isConversation } from "../src/conversation.ts";
@@ -15,7 +15,6 @@ import { formControls, labelTies, optionLink } from "../src/fill/controls.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { AskRefused, planAsk, type AskDraft } from "../src/planner/ask.ts";
@@ -24,11 +23,6 @@ import { saysOptionsUnseen } from "../src/planner/says.ts";
 import { buildDesk, loadCorpus, normLabel, pageForm, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { field, jevPickingText, scopeLabel, snap } from "./builders.ts";
-
-// The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and change an
-// answer these tests check (candidates.ts setGeneratorClock).
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));

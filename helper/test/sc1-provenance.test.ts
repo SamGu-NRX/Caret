@@ -17,7 +17,6 @@ import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { Snapshot, type Node } from "../src/protocol.ts";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { setTestVerifier, checkValues, makeFieldContract, type Proposed } from "../src/fill/contract.ts";
 import { fieldKinds } from "../src/fill/kinds.ts";
 import { fieldPart } from "../src/fill/derive.ts";
@@ -53,10 +52,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "caret-sc1-tp1-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 beforeAll(() => {
-  setGeneratorClock(() => 0);
   setTestVerifier(null);
 });
-afterAll(() => setGeneratorClock(null));
 
 /** What the stubbed fetch saw, and the requests each builder handed the client. */
 const fetched: string[] = [];

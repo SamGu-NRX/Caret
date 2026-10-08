@@ -27,7 +27,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import type { WindowState } from "../src/model.ts";
@@ -46,11 +45,6 @@ import { CHAT, COMPOSER_CHAT, LONG_THREAD, MAIL_THREAD, MESSAGES_CHAT, NOTES, RE
 import { skillStream } from "./skill-stream.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
-
-// The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
-// change an answer these tests check (candidates.ts setGeneratorClock).
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
 
 const MIN_LINE = 8;
 const PREFIX = 40;

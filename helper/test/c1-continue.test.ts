@@ -102,6 +102,7 @@ async function rig(onChoose: (v: Extract<PageVerb, { kind: "pageChooseOption" }>
     preview,
     accept: () => helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: preview.goalId, segment: 0, digest: preview.digest, at: Date.now() }),
     close: () => {
+      page.session.close();
       helper.shutdown();
       store.close();
       rmSync(dir, { recursive: true, force: true });

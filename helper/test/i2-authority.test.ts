@@ -3,7 +3,6 @@
 // guard. The property is checked on every path by recording every mint as it is made (contract.ts setMintObserver);
 // then the reviewer's two reproductions.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { authorityRefusal, type Origin } from "../src/fill/ask-scope.ts";
 import { setMintObserver, type CheckedValue } from "../src/fill/contract.ts";
 import { proposeFill } from "../src/fill/fill.ts";
@@ -19,12 +18,10 @@ import { goalScene, mailWindow, replyWindow, standInJev, MAIL, line, textField, 
 
 const seen: CheckedValue[] = [];
 beforeEach(() => {
-  setGeneratorClock(() => 0);
   seen.length = 0;
   setMintObserver((c) => seen.push(c));
 });
 afterEach(() => {
-  setGeneratorClock(null);
   setMintObserver(null);
 });
 
