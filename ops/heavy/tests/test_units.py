@@ -1421,8 +1421,8 @@ class WatchTest(Temp):
     leader is a real child of this test, so waitid answers for real; _stop_all is recorded, not run."""
 
     class Tracker:
-        def __init__(self, scans, tracked):
-            self.scans, self.tracked = list(scans), dict(tracked)
+        def __init__(self, scans, tracked, unverified=()):
+            self.scans, self.tracked, self.unverified = list(scans), dict(tracked), set(unverified)
 
         def owned(self, full=False):
             got = self.scans.pop(0) if len(self.scans) > 1 else self.scans[0]
@@ -1535,6 +1535,17 @@ class WatchTest(Temp):
                 self.assertEqual(stop is not None, stops, stop)
                 if stops:
                     self.assertEqual(stop[1], supervise.EXIT_WINDOW)
+
+    def test_an_unverified_process_owning_a_window_stops_the_job(self):
+        # A process of this user started during the job whose environment (and so its marker) cannot be read may be
+        # the job's: owning a window, it stops the job as a verified one would.
+        import supervise
+        sup = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}, unverified={5151}),
+                              probes=self.Probes(usage={4242: (1, 7)}), owners=self.owners_file(5151))
+        stop = sup._window_stop({4242: 1})
+        self.assertIsNotNone(stop)
+        self.assertEqual(stop[1], supervise.EXIT_WINDOW)
+        self.assertIn("5151", stop[2])
 
     def test_an_owner_whose_start_cannot_be_read_is_unknown(self):
         import supervise

@@ -1025,6 +1025,10 @@ class Supervisor:
         if unknown:
             return ("window", EXIT_WINDOW, "window owner(s) {} have a pid of this browser-lane job, but their start time "
                     "cannot be read, so whether they are its processes is unknown".format(unknown))
+        unverified = sorted(owners & self.tracker.unverified)
+        if unverified:
+            return ("window", EXIT_WINDOW, "process(es) {} started during this browser-lane job own an on-screen window, "
+                    "and their environment cannot be read to tell whether they are the job's".format(unverified))
         if windowed:
             return ("window", EXIT_WINDOW, "process(es) {} of this browser-lane job own an on-screen window; the "
                     "browser lane is for headless batches only".format(windowed))
