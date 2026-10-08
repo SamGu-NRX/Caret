@@ -8,16 +8,26 @@ import { Snapshot } from "../src/protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { mintOf, type FillTrace } from "../src/fill/fill.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
-import { AskAsks, AskRefused, planAsk, type AskDraft, type AskResume } from "../src/planner/ask.ts";
+import { AskAsks, AskRefused, answerQuestion, planAsk, type AskDraft, type AskResume } from "../src/planner/ask.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { buildDesk, loadAsks, loadCorpus, nodesFor, pageForm, T0, type CorpusAsk, type Desk } from "../scripts/realfill-corpus.ts";
-import { realfillOracle } from "../scripts/realfill-oracle.ts";
+import { realfillOracle, settlementCriterion } from "../scripts/realfill-oracle.ts";
 import { rng } from "./large-scene.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const corpus = loadCorpus(join(here, "../../fixtures/realfill"));
 const snaps = readFileSync(join(here, "../fixtures/recorded/realfill-windows.ndjson"), "utf8").trim().split("\n").map((l) => Snapshot.parse(JSON.parse(l)));
 export const B31 = loadAsks(join(here, "../../fixtures/realfill"), corpus, "asks-b31.json");
+
+/**
+ * The base question's answer that sends a field on to value settlement: its first wording picks a candidate, its second
+ * none, so they disagree. A field with no candidate is left with none in both.
+ */
+export const splitFirst = (criteria: Readonly<Record<string, unknown>>, wording: 0 | 1): string =>
+  wording === 1 ? "none" : (Object.keys(criteria).find((k) => k !== "none" && !k.includes("_")) ?? "none");
+
+/** Whether a value question is value settlement's (its options state exact outputs), not the base's first question. */
+export const isSettlement = (criteria: Readonly<Record<string, unknown>>): boolean => Object.values(criteria).some(settlementCriterion);
 
 /** The exact proposed output a value question's option states (fill.ts VALUE_CRITERION), or null for none or another format. */
 export function optionOutput(criterion: string | null | undefined): string | null {
@@ -40,6 +50,8 @@ export interface Option {
  */
 export interface Overrides {
   value?: (label: string, wording: 0 | 1, options: readonly Option[], req: JevRequest) => Answer | undefined;
+  /** Answers the base's value question for a field in one wording, from its criteria; undefined leaves `firstPass` to answer it. */
+  firstAnswer?: (label: string, wording: 0 | 1, criteria: Readonly<Record<string, string | null | undefined>>) => Answer | undefined;
   verify?: (label: string, wording: 0 | 1, output: string, instructions: string) => Answer | undefined;
 }
 
@@ -69,8 +81,13 @@ export function proposedOf(r: Pick<Run, "labelOf">, d: AskDraft | AskRefused | n
   return Object.fromEntries([...d.checked.writes.map((w) => [r.labelOf.get(w.node.key) ?? w.node.key, w.value] as const), ...(d.controls ?? []).map((c) => [r.labelOf.get(c.key) ?? c.key, c.value] as const)]);
 }
 
-/** Runs B31 Ask `id` on its desk (`page`: the page engine's walk, as the scoreboard's default), with `values` value questions on. */
-export async function runB31(id: string, o: Overrides & { window?: "page" | "reader"; values?: boolean; seed?: number } = {}): Promise<Run> {
+/**
+ * Runs B31 Ask `id` on its desk (`page`: the page engine's walk, as the scoreboard's default), with `values` value questions
+ * on. An Ask asks the base's value question first and settles only what that leaves unresolved (fill.ts). `firstPass`:
+ * "split" (the default) answers it with splitFirst, so every field with a candidate goes on to value settlement, where
+ * these tests look, as when settlement asked every field; "oracle" answers it as the scripted oracle does.
+ */
+export async function runB31(id: string, o: Overrides & { window?: "page" | "reader"; values?: boolean; seed?: number; firstPass?: "split" | "oracle" } = {}): Promise<Run> {
   const ask = B31.find((x) => x.id === id);
   if (ask === undefined) throw new Error(`no B31 ask ${id}`);
   const form = corpus.forms.find((f) => f.id === ask.form);
@@ -87,6 +104,15 @@ export async function runB31(id: string, o: Overrides & { window?: "page" | "rea
     const t = traces.find((x) => x.owns(req));
     const answers = { ...base.answers };
     for (const [qid, q] of Object.entries(req.questions)) {
+      const firstPass = req.purpose === "fill.values" && /^f\d+$/u.test(qid) && !isSettlement(q.criteria);
+      if (firstPass) {
+        const wording = (Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k)) ? 1 : 0) as 0 | 1;
+        const key = t?.fields.find((f) => f.id === qid)?.key;
+        const given = o.firstAnswer?.(key === undefined ? qid : (labelOf.get(key) ?? qid), wording, q.criteria);
+        if (given !== undefined) answers[qid] = given;
+        else if ((o.firstPass ?? "split") === "split") answers[qid] = { choice: splitFirst(q.criteria, wording), confidence: 0.99 };
+        continue;
+      }
       if (req.purpose === "fill.values" && /^f\d+$/u.test(qid) && o.value !== undefined && t !== undefined) {
         const key = t.fields.find((f) => f.id === qid)?.key;
         const label = key === undefined ? qid : (labelOf.get(key) ?? qid);
@@ -129,14 +155,14 @@ export async function runB31(id: string, o: Overrides & { window?: "page" | "rea
   };
 }
 
-/** The value requests fill sent for field `label` in a run: each wording's question with its options. */
+/** Value settlement's requests for field `label` in a run: each wording's question with its options. */
 export function valueQuestions(r: Run, label: string): { req: JevRequest; id: string; options: Option[]; instructions: string }[] {
   return r.requests.flatMap((req) => {
     if (req.purpose !== "fill.values") return [];
     const t = r.traces.find((x) => x.owns(req));
     const f = t?.fields.find((x) => r.labelOf.get(x.key) === label);
     const q = f === undefined ? undefined : req.questions[f.id];
-    if (f === undefined || q === undefined) return [];
+    if (f === undefined || q === undefined || !isSettlement(q.criteria)) return [];
     return [{ req, id: f.id, instructions: String(q.instructions), options: Object.entries(q.criteria).map(([k, c]) => ({ id: k, output: optionOutput(c), source: t?.options.get(k)?.text ?? null, criterion: c ?? "" })) }];
   });
 }
@@ -146,3 +172,17 @@ export const byOutput = (options: readonly Option[], text: string | null, confid
 
 /** Answers with the option a recorded answer named: its exact output, else the candidate it stands for; else none. */
 export const byRecorded = (options: readonly Option[], text: string | null, confidence: number): Answer => ({ choice: text === null ? "none" : (options.find((x) => x.output === text) ?? options.find((x) => x.source === text))?.id ?? "none", confidence });
+
+/** The value question an Ask's outcome asks about `label`, following Leave blank through earlier fields; null when none. */
+export async function valueQuestionFor(r: Run, label: string) {
+  let o = r.outcome;
+  for (let i = 0; i < 8 && o instanceof AskAsks && o.question.part === "value"; i++) {
+    const q = o.question;
+    if (q.options.some((c) => c.fixes.values?.some((v) => r.labelOf.get(v.key) === label) === true)) return q;
+    const blank = q.options.find((c) => c.option.kind === "blank");
+    const resume = answerQuestion(q, [blank?.option.id ?? ""]);
+    if (typeof resume === "string") throw new Error(resume);
+    o = await r.resume(resume);
+  }
+  return null;
+}

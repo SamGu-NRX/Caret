@@ -53,6 +53,7 @@ import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { cannedReply, type CannedAnswer, type CannedRules } from "../src/engines/decide/canned.ts";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { settlementCriterion } from "./realfill-oracle.ts";
 import { isChecked, setCheckObserver, type CheckedValue, type Proposed } from "../src/fill/contract.ts";
 import { aboutKind, type AboutValue } from "../src/fill/about.ts";
 import { words } from "../src/fill/kinds.ts";
@@ -336,13 +337,15 @@ function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { 
     const t = seen.traces.find((x) => x.owns(req));
     const key = t?.fields.find((f) => f.id === id)?.key;
     const want = key === undefined ? undefined : picks.get(key);
-    // An Ask's option is its exact proposed output (FillTrace.outputs); a fill on focus's is its candidate's text.
-    const outputs = t?.outputs?.get(id);
+    // Value settlement's option is its exact proposed output (FillTrace.outputs); the base question's is its candidate's text.
+    const outputs = Object.values(q.criteria).some(settlementCriterion) ? t?.outputs?.get(id) : undefined;
     const hit = want === undefined || t === undefined ? undefined : Object.keys(q.criteria).find((k) => (outputs === undefined ? t.options.get(k)?.text : outputs.get(k)) === want);
-    // splitFirst: the second wording of an Ask's first value questions answers none, so the field is asked about; a pick's
-    // fresh pair (its request names the user's selection) then chooses the attacked value in both wordings.
+    // splitFirst: the second wording (its ids v1, n1, e1...) of the base question and of value settlement's first pair
+    // answers none, so the field goes on to settlement and then a value question; a pick's fresh pair (its request names
+    // the user's selection) then chooses the attacked value in both wordings.
     const ins = String(q.instructions);
-    if (splitFirst && ins.startsWith("Field:") && !/Explicit user selections: (?!none)/u.test(ins)) return "none";
+    const second = Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k));
+    if (splitFirst && second && !/Explicit user selections: (?!none)/u.test(ins)) return "none";
     return hit ?? "none";
   };
   const rules: CannedRules = {
@@ -592,7 +595,7 @@ async function attack(d: Desk): Promise<void> {
         const key = t?.fields.find((f) => f.id === id)?.key;
         if (t === undefined || key === undefined) continue;
         const m = offered.get(key) ?? new Map();
-        const outputs = t.outputs?.get(id);
+        const outputs = Object.values(q.criteria).some(settlementCriterion) ? t.outputs?.get(id) : undefined;
         for (const k of Object.keys(q.criteria)) {
           const o = t.options.get(k);
           const text = outputs === undefined ? o?.text : outputs.get(k);

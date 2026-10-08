@@ -1,4 +1,5 @@
-// Every Ask's value questions quote the complete request, whatever it narrows. Every name is invented.
+// C1 item 6: an Ask for the whole form that narrows nothing asks each value as a Fill all does; any Ask that narrows its
+// sources, names a person or spells out a value keeps B25's wording, which quotes the instruction. Every name is invented.
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill, type FillScope } from "../src/fill/fill.ts";
@@ -19,11 +20,11 @@ async function questions(scope: Partial<FillScope>): Promise<string[]> {
 }
 
 describe("how an Ask words its value questions", () => {
-  it("asks a whole-form Ask that narrows nothing about the complete request too", async () => {
+  it("asks a whole-form Ask that narrows nothing as Fill all asks, without the instruction", async () => {
     const qs = await questions({});
     expect(qs).toHaveLength(2);
-    expect(qs[0]).toMatch(/^User request: "fill out this form"\. Explicit user selections: none\. Field: /u);
-    expect(qs[1]).toMatch(/^Field: .* User request: "fill out this form"\. /u);
+    for (const q of qs) expect(q).not.toContain("fill out this form");
+    expect(qs[0]).toMatch(/^A form in the .* has this field: .*Which candidate is the value the user should enter in this field\?/);
   });
 
   it("keeps the instruction for an Ask that names fields, a source, a person or a value", async () => {

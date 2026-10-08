@@ -32,11 +32,17 @@ export interface OracleContext {
   corpusLabel: () => ReadonlyMap<string, string>;
 }
 
-/** A value question's option as the oracle reads it: fill's exact proposed output for that field, else its traced text. */
+const PROPOSED = /^Proposed value: "([\s\S]*?)"\. Source: /u;
+
+/** Whether a criterion is value settlement's (it states an exact proposed output), not the base question's candidate. */
+export const settlementCriterion = (criterion: unknown): boolean => typeof criterion === "string" && PROPOSED.test(criterion);
+
+/** A value question's option as the oracle reads it: value settlement's exact proposed output, else the candidate's traced text. */
 export function oracleOptionText(trace: FillTrace | undefined, fieldId: string, optionId: string, criterion: string): string {
-  const quoted = /^Proposed value: "([\s\S]*?)"\. Source: /u.exec(criterion)?.[1] ?? /^"([^"]*)"/u.exec(criterion)?.[1] ?? criterion;
+  const quoted = PROPOSED.exec(criterion)?.[1] ?? /^"([^"]*)"/u.exec(criterion)?.[1] ?? criterion;
   if (trace === undefined) return quoted;
-  return trace.outputs?.get(fieldId)?.get(optionId) ?? trace.options.get(optionId)?.text ?? quoted;
+  const exact = settlementCriterion(criterion) ? trace.outputs?.get(fieldId)?.get(optionId) : undefined;
+  return exact ?? trace.options.get(optionId)?.text ?? quoted;
 }
 
 /** Whether a candidate's text is the value: the same words, the same day, or the same clock time. */

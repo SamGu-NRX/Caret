@@ -17,7 +17,7 @@ import { PlannerError } from "../src/planner/validate.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
 import { proposed } from "../src/planner/proposal.ts";
 import type { Node } from "../src/protocol.ts";
-import { field, node, snap, text, value, optionIs } from "./builders.ts";
+import { field, node, snap, text, value } from "./builders.ts";
 import { devWriterRoute } from "../src/writer/routes.ts";
 import type { WriterPort } from "../src/writer/port.ts";
 
@@ -176,7 +176,7 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
         if (id.endsWith("_owner")) return [id, { choice: owner(ins), confidence: 0.9 }];
         if ("yes" in q.criteria) return [id, { choice: confirm(ins), confidence: 0.9 }];
         const want = pick(ins);
-        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
+        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
         return [id, { choice: hit?.[0] ?? "none", confidence: 0.9 }];
       }),
     );
@@ -214,7 +214,7 @@ describe("the scoped fill", () => {
     expect(p.fields.find((f) => f.control === "time")).toMatchObject({ withheld: "ambiguous", handoff: null });
     const email = j.seen.flatMap((r) => Object.entries(r.questions)).filter(([, q]) => String(q.instructions).includes("'Email'"));
     for (const [, q] of email) expect(Object.values(q.criteria).some((d) => d?.includes("8:15"))).toBe(false);
-    const pm = await proposeFill(desk(), jevBy((q) => (q.includes("'Delivery time'") ? "20:15" : null)).ask, "form", `${P}/timefield:delivery time~0`, 2000, { scope: scopeOf({ fields: [`${P}/timefield:delivery time~0`], windows: new Set(), memory: false, instruction: "make the delivery 8:15 pm", literals: new Map([[`${P}/timefield:delivery time~0`, "8:15 pm"]]) }) });
+    const pm = await proposeFill(desk(), jevBy((q) => (q.includes("'Delivery time'") ? "8:15 pm" : null)).ask, "form", `${P}/timefield:delivery time~0`, 2000, { scope: scopeOf({ fields: [`${P}/timefield:delivery time~0`], windows: new Set(), memory: false, instruction: "make the delivery 8:15 pm", literals: new Map([[`${P}/timefield:delivery time~0`, "8:15 pm"]]) }) });
     expect(pm.fields[0]?.handoff).toMatchObject({ value: "20:15" });
   });
 
@@ -421,8 +421,7 @@ const about = [{ id: "about-1", label: "Name", value: "Elena Vance", kind: "name
 
 describe("planAsk", () => {
   it("turns the scoped fill's text values into a checked plan and lists its controls", async () => {
-    // An Ask's option states the time as the field takes it (fill.ts optionsOf).
-    const pick = (q: string): string | null => (q.includes("'Email'") ? "elena.vance@example.com" : q.includes("'Delivery time'") ? "20:15" : null);
+    const pick = (q: string): string | null => (q.includes("'Email'") ? "elena.vance@example.com" : q.includes("'Size'") ? "8:15 pm" : q.includes("'Delivery time'") ? "8:15 pm" : null);
     const d = await planAsk("my email, and the delivery at 8:15 pm", desk(), memory, about, {
       askJev: jevBy(pick, () => "user").ask,
       maker: maker((s) => ({ fields: [refOf(s, "Email"), refOf(s, "Delivery time")], literals: [{ field: refOf(s, "Delivery time"), text: "8:15 pm" }] })),
@@ -478,7 +477,7 @@ describe("planAsk", () => {
 
   it("hands over controls alone as one hand-off step, and refuses what the intent refuses", async () => {
     const d = await planAsk("delivery at 8:15 pm", desk(), memory, about, {
-      askJev: jevBy((q) => (q.includes("'Delivery time'") ? "20:15" : null)).ask,
+      askJev: jevBy((q) => (q.includes("'Delivery time'") ? "8:15 pm" : null)).ask,
       maker: maker((s) => ({ fields: [refOf(s, "Delivery time")], literals: [{ field: refOf(s, "Delivery time"), text: "8:15 pm" }] })),
       writer: null,
       offerKey: "ask-3",

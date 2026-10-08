@@ -23,7 +23,7 @@ import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts"
 import type { WriterRequest } from "../src/writer/port.ts";
 import { answeringScope, field, MAIL_APP, scopeLabel, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, wireButtons } from "./fake-app.ts";
-import { optionOutput, proposedOf } from "./vs1-kit.ts";
+import { isSettlement, optionOutput, proposedOf, splitFirst } from "./vs1-kit.ts";
 
 const unresolved = (n: number, values = 1): UnresolvedValue => ({
   key: `form/${n}`, name: `Field ${n}`, kind: "value", why: "selection",
@@ -93,6 +93,12 @@ function jev(values: Record<string, [[string | null, number], [string | null, nu
       else {
         const label = ["First name", "Work email", "Phone"].find((l) => ins.includes(`'${l}'`)) ?? "";
         const wording = Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k)) ? 1 : 0;
+        // The base question first: a field with a value to settle goes on to value settlement (splitFirst).
+        if (!isSettlement(q.criteria)) {
+          const wants = values[label]?.some(([v]) => v !== null) === true;
+          answers[id] = { choice: wants ? splitFirst(q.criteria, wording) : "none", confidence: 0.99 };
+          continue;
+        }
         const picked = /Explicit user selections: (?!none)/u.test(ins);
         const [want, confidence] = picked ? fresh(label, wording) : (values[label]?.[wording] ?? [null, 0.99]);
         answers[id] = { choice: Object.entries(q.criteria).find(([, d]) => want !== null && optionOutput(d) === want)?.[0] ?? "none", confidence };
@@ -241,7 +247,7 @@ const openFields = {
     return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };
   },
 };
-/** Name and Email in scope; Name settles; Email's wordings disagree until the user picks it, then both choose it. */
+/** Name and Email in scope; both go on to value settlement, where Name settles; Email's wordings disagree until the user picks it, then both choose it. */
 const wireJev: AskJev = async (req) => {
   const answers = Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
     const ins = String(q.instructions);
@@ -251,6 +257,7 @@ const wireJev: AskJev = async (req) => {
     if (req.purpose === "ask.confirm") return [id, { choice: "yes", confidence: 0.99 }];
     if (id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user", confidence: 0.9 }];
     const wording = Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k)) ? 1 : 0;
+    if (!isSettlement(q.criteria)) return [id, { choice: splitFirst(q.criteria, wording), confidence: 0.9 }];
     const want = ins.includes("'Name'") ? "Dana Ortiz" : ins.includes("'Email'") && (wording === 0 || /Explicit user selections: (?!none)/u.test(ins)) ? "dana.ortiz@example.com" : null;
     return [id, { choice: Object.entries(q.criteria).find(([, d]) => want !== null && optionOutput(d) === want)?.[0] ?? "none", confidence: 0.9 }];
   }));

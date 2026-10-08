@@ -11,7 +11,7 @@ import { aboutValues } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { FillField } from "../src/protocol.ts";
 import { field, snap } from "./builders.ts";
-import { optionOutput } from "./vs1-kit.ts";
+import { isSettlement, optionOutput, splitFirst } from "./vs1-kit.ts";
 
 const T0 = 2_000_000;
 const NOTE = ["Signup details for the pottery class", "Name: Odile Ferrant", "Email: odile.f@example.com"].join("\n");
@@ -52,6 +52,8 @@ function jev(c: Cell): AskJev {
       // The whose wordings differ in how they open (fill.ts WHOSE_WORDINGS); the second's owner ids are v1, v2...
       if (id.endsWith("_whose")) answers[id] = { choice: "user", confidence: (c.whose ?? [0.9, 0.9])[ins.startsWith("Field:") ? 1 : 0] ?? 0.9 };
       else if (id.endsWith("_owner")) answers[id] = { choice: "user", confidence: (c.owner ?? [0.9, 0.9])[id.startsWith("v") ? 1 : 0] ?? 0.9 };
+      // The base question first: every field goes on to value settlement, where the rule under test runs (splitFirst).
+      else if (!isSettlement(q.criteria)) answers[id] = { choice: splitFirst(q.criteria, w as 0 | 1), confidence: 0.99 };
       else {
         const label = LABELS.find((l) => ins.includes(`'${l}'`)) ?? "";
         const [want, given] = label === c.label ? c.values[w as 0 | 1] : [WANT[label] ?? null, 0.99];

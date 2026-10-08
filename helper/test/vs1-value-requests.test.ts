@@ -13,7 +13,7 @@ import { VALUE_NONE, VALUE_TASK } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { field, snap } from "./builders.ts";
-import { optionOutput } from "./vs1-kit.ts";
+import { isSettlement, optionOutput, splitFirst } from "./vs1-kit.ts";
 
 const T0 = 2_000_000;
 const TEXTEDIT = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
@@ -29,7 +29,10 @@ function desk(note: string, labels: readonly string[], title = "Ines contact.txt
 }
 const scope = (labels: readonly string[], instruction: string, o: Partial<FillScope> = {}): FillScope => ({ fields: labels.map((_, i) => `form/${i}`), windows: null, memory: true, instruction, person: null, literals: new Map(), ...o });
 
-/** Records every request; picks each field's `want` output in both wordings; owners and whose the user's; the verifier exact. */
+/**
+ * Records every request; sends every field on from the base question (splitFirst); picks each field's `want` output in
+ * both settlement wordings; owners and whose the user's; the verifier exact.
+ */
 function recorder(want: Record<string, string>): AskJev & { reqs: JevRequest[] } {
   const reqs: JevRequest[] = [];
   const f: AskJev = async (req) => {
@@ -38,6 +41,7 @@ function recorder(want: Record<string, string>): AskJev & { reqs: JevRequest[] }
       const ins = String(q.instructions);
       if (req.purpose === "fill.verify") return [id, { choice: "exact", confidence: 0.99 }];
       if (id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "person" in q.criteria ? "person" : "user", confidence: 0.99 }];
+      if (!isSettlement(q.criteria)) return [id, { choice: splitFirst(q.criteria, Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k)) ? 1 : 0), confidence: 0.99 }];
       const label = Object.keys(want).find((l) => ins.includes(`'${l}'`));
       const hit = Object.entries(q.criteria).find(([, d]) => label !== undefined && optionOutput(d) === want[label])?.[0];
       return [id, { choice: hit ?? "none", confidence: 0.99 }];
@@ -46,7 +50,8 @@ function recorder(want: Record<string, string>): AskJev & { reqs: JevRequest[] }
   };
   return Object.assign(f, { reqs });
 }
-const values = (reqs: readonly JevRequest[]): JevRequest[] => reqs.filter((r) => r.purpose === "fill.values");
+/** Value settlement's requests (the base question's carry fill's own task). */
+const values = (reqs: readonly JevRequest[]): JevRequest[] => reqs.filter((r) => r.purpose === "fill.values" && (r.state as { task?: unknown }).task === VALUE_TASK);
 const verifies = (reqs: readonly JevRequest[]): JevRequest[] => reqs.filter((r) => r.purpose === "fill.verify");
 const json = (r: JevRequest): string => JSON.stringify({ state: r.state, questions: r.questions });
 

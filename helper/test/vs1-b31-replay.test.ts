@@ -10,7 +10,7 @@ import { checkValues, makeFieldContract, setTestVerifier } from "../src/fill/con
 import type { AskJev } from "../src/fill/jev.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { AskAsks, answerQuestion } from "../src/planner/ask.ts";
-import { B31, byOutput, byRecorded, corpus, proposedOf, runB31, valueQuestions, type Answer, type Run } from "./vs1-kit.ts";
+import { B31, byOutput, byRecorded, corpus, proposedOf, runB31, valueQuestionFor, valueQuestions, type Answer, type Run } from "./vs1-kit.ts";
 
 // The verifier answers as each test says (the kit's oracle calls every value exact), not as the suite's stand-in.
 beforeEach(() => {
@@ -109,20 +109,6 @@ describe("the four wrong agreements are never written", () => {
     }
   });
 });
-
-/** The value question an Ask's outcome asks about `label`, following Leave blank through earlier fields; null when none. */
-async function valueQuestionFor(r: Run, label: string) {
-  let o = r.outcome;
-  for (let i = 0; i < 8 && o instanceof AskAsks && o.question.part === "value"; i++) {
-    const q = o.question;
-    if (q.options.some((c) => c.fixes.values?.some((v) => r.labelOf.get(v.key) === label) === true)) return q;
-    const blank = q.options.find((c) => c.option.kind === "blank");
-    const resume = answerQuestion(q, [blank?.option.id ?? ""]);
-    if (typeof resume === "string") throw new Error(resume);
-    o = await r.resume(resume);
-  }
-  return null;
-}
 
 describe("the recorded verifier pairs still fail", () => {
   // Isolated: the write contract alone, each recorded pair as the verifier's answer to the key's own value.

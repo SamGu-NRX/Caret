@@ -12,7 +12,7 @@ afterEach(closeRigs);
 describe("a month input (C2 decision 1)", () => {
   it("writes the month and year the user wrote, and undo empties it", async () => {
     const controls = (): PageControl[] => [c("e1", "text", "Employer", { value: "" }), c("e2", "month", "Start date", { value: "" })];
-    const r = await rig({ controls, note: "Employer: Tallgrass Mechatronics\nStart date: Aug '22", picks: { Employer: "Tallgrass Mechatronics", "Start date": "2022-08" } });
+    const r = await rig({ controls, note: "Employer: Tallgrass Mechatronics\nStart date: Aug '22", picks: { Employer: "Tallgrass Mechatronics", "Start date": "Aug '22" } });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     expect(preview.steps.map((s) => s.says)).toEqual(["Employer: Tallgrass Mechatronics", "Start date: 2022-08", "The rest is yours"]);
     expect((await r.accept(preview))?.outcome).toBe("done");
@@ -38,8 +38,7 @@ describe("a value from memory written through a control's conversion (C2 decisio
     const added = r.helper.handleMemory({ type: "memoryRequest", v: 1, requestId: `m-${label}`, op: "add", kind: "about", fields: { label, value, source: "typed" } });
     return added.entries?.[0]?.id as string;
   };
-  // An Ask's options state each value as the control takes it (fill.ts optionsOf), so Jev picks those.
-  const picks = { "First name": "Jo", "Date of birth": "1990-03-14", "Dietary needs": "Vegetarian", "Are you authorized to work in your country of residence?": "Yes" };
+  const picks = { "First name": "Jo", "Date of birth": "March 14, 1990", "Dietary needs": "vegetarian", "Are you authorized to work in your country of residence?": "yes" };
 
   it("runs to done: the entries still give what was written, though the page holds it in another form", async () => {
     const r = await rig({ controls, note: "First name: Jo", picks });
