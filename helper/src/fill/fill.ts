@@ -2318,10 +2318,11 @@ export async function proposeFill(
         ...f.about.filter((a) => (aboutSaidNow.get(a.id) ?? null) !== null).map((a) => ({ id: aboutIds.get(a.id) ?? "", second: aboutSecond.get(a.id) ?? "", pick: { from: "memory" as const, a } })),
         ...(derived.get(f.id) ?? []).filter((d) => derivedSaid.has(d.key)).map((d) => ({ id: derivedIds.get(d.key) ?? "", second: derivedSecond.get(d.key) ?? "", pick: { from: "derived" as const, text: d.text, base: d.base, also: d.also, ...(d.chose === undefined ? {} : { chose: d.chose }) } })),
       ];
-      const vetoed = new Map<string, OptionVeto>();
-      traceVetoed.set(f.id, vetoed);
+      // Why each candidate was kept out, recorded only for a trace consumer; the vetoes apply either way.
+      const vetoed = opts.trace === undefined ? null : new Map<string, OptionVeto>();
+      if (vetoed !== null) traceVetoed.set(f.id, vetoed);
       const members = picks.flatMap(({ id, second, pick }): Member[] => {
-        const veto = (why: OptionVeto): Member[] => (vetoed.set(id, why), []);
+        const veto = (why: OptionVeto): Member[] => (vetoed?.set(id, why), []);
         const read = controlValue(f, pick);
         // A value no reading resolves (a clock time with no year to place it) is never written, so it is no option.
         if ("why" in read || read.unresolved === true) {
@@ -2333,9 +2334,7 @@ export async function proposeFill(
         const unshown = noteUnshown(f, pick);
         if (unshown !== null && !privacyHeld.has(f.id)) privacyHeld.set(f.id, unshown);
         if (unshown !== null) return veto("ownerEvidence");
-        // After the G36 merge, b31-08's settlement listed Ines's office line for Theo's Home phone, which this rule
-        // withholds at admission. A listed value can come back through a pick, and her cell, offered so, was written
-        // after a fresh agreement (scripted oracle, before its owner rule was corrected).
+        // Settlement options satisfy the same owner rule as admission.
         if (ownerHold(f, pick) !== null) return veto("otherPerson");
         const chose = read.chose ?? (pick.from === "derived" ? pick.chose : undefined);
         const proposed: Proposed = { field: contracts[i] as FieldContract, text: read.value, display: read.display, provenance: bindOwned(provenanceOf(model, pick, f.part, read.value, judgedText, f.control, chose)), owner: ownerOf(pick) };
@@ -2467,7 +2466,8 @@ export async function proposeFill(
       const derivation = mintDerivation(m, first.proposed, (t) => m.heldText(t)) ?? m.own("literal copy");
       said.set(o.id, { output, units, said: m.t`Proposed value: "${output}". Source: ${source}. Observed label: ${mintLabel(first.pick)}. Supporting text: ${m.join(supports, "; ")}. Derivation: ${derivation}.` });
     }
-    for (const o of options) if (!said.has(o.id)) for (const x of o.members) traceVetoed.get(fid)?.set(x.id, "notSendable");
+    const vetoed = traceVetoed.get(fid);
+    if (vetoed !== undefined) for (const o of options) if (!said.has(o.id)) for (const x of o.members) vetoed.set(x.id, "notSendable");
     const stated = options.filter((o) => said.has(o.id));
     optionsOf.set(fid, stated);
     criteria.set(fid, said);
@@ -2737,10 +2737,21 @@ export async function proposeFill(
   const askedAgain = new Set<Field>();
   let s1: JevResult | null = null;
   let s2: JevResult | null = null;
+  /** Why value settlement's requests failed, if they did: its fields stay as the base left them, blank, and the rest go on. */
+  let settlementDown: string | null = null;
   if (unsettled.length > 0 && instructionFits()) {
     const ready = unsettled.filter((f) => statedOf(f).size > 0);
-    if (ready.length > 0) {
-      const [x1, x2] = await Promise.all([asking(askValueRequest(0, ready)), asking(askValueRequest(1, ready))]);
+    const pair = ready.length === 0 ? null : ([askValueRequest(0, ready), askValueRequest(1, ready)] as const);
+    let got: readonly [JevResult, JevResult] | null = null;
+    if (pair !== null) {
+      try {
+        got = await Promise.all([asking(pair[0]), asking(pair[1])]);
+      } catch (e) {
+        settlementDown = e instanceof Error ? e.message : String(e);
+      }
+    }
+    if (got !== null) {
+      const [x1, x2] = got;
       [s1, s2] = [x1, x2];
       for (const f of ready) {
         const i = fields.indexOf(f);
@@ -2795,8 +2806,20 @@ export async function proposeFill(
     return id === null || text === undefined ? null : { id, text };
   };
   /** The form's other address fields, by name, which take what a street line leaves out (CheckOptions.restOf). */
-  const restOf = (p: Proposed): readonly string[] =>
-    p.field.part !== "street" ? [] : fields.filter((x) => x.node.key !== p.field.key && x.part !== null && x.part !== "street" && PERSON_PLACE_PARTS.has(x.part)).map((x) => x.name);
+  // Read from the redacted form, not the Ask's scoped fields: an Ask for the street line alone has the same siblings.
+  // Read once, when a street line first meets the verifier.
+  let placeFields: readonly { key: string; name: string }[] | null = null;
+  const placeFieldsOf = (): readonly { key: string; name: string }[] => {
+    if (placeFields !== null) return placeFields;
+    const named = readableFields(localWindow).flatMap((x) => (x.shown === null ? [] : [{ key: x.key, name: x.shown, popup: w.nodes.get(x.key)?.role === "AXPopUpButton" }]));
+    const hasCity = named.some((x) => fieldPart(x.name, false) === "city");
+    placeFields = named.flatMap((x) => {
+      const part = x.popup ? menuPart(x.name) : fieldPart(x.name, hasCity);
+      return part !== null && part !== "street" && PERSON_PLACE_PARTS.has(part) ? [{ key: x.key, name: x.name }] : [];
+    });
+    return placeFields;
+  };
+  const restOf = (p: Proposed): readonly string[] => (p.field.part !== "street" ? [] : placeFieldsOf().filter((x) => x.key !== p.field.key).map((x) => x.name));
   /** What the verifier is told beyond the value: an Ask's request, picks, source units and address fields, and the user's memory entries. */
   const verifierContext = (selections?: ModelText): Omit<CheckOptions, "askJev" | "now"> => ({
     ledger,
@@ -3001,7 +3024,7 @@ export async function proposeFill(
         ? { model: NOT_ASKED, latencyMs: 0, inputTokens: 0, costUsd: 0 }
         : {
             // W2: a verifier that could not answer is named here, as AC1 asks; the fields say "unverified".
-            model: verifierDown === null ? r1.model : `${r1.model} (verifier unavailable: ${verifierDown.slice(0, 120)})`,
+            model: `${r1.model}${settlementDown === null ? "" : ` (value settlement unavailable: ${settlementDown.slice(0, 120)})`}${verifierDown === null ? "" : ` (verifier unavailable: ${verifierDown.slice(0, 120)})`}`,
             // The stages run one after the other: whose, values, value settlement, then the verifier (W2).
             latencyMs: Math.max(r1.latencyMs, r2.latencyMs) + (w1 === null || w2 === null ? 0 : Math.max(w1.latencyMs, w2.latencyMs)) + (s1 === null || s2 === null ? 0 : Math.max(s1.latencyMs, s2.latencyMs)) + (verify?.latencyMs ?? 0),
             inputTokens: r1.inputTokens + r2.inputTokens + (w1?.inputTokens ?? 0) + (w2?.inputTokens ?? 0) + (s1?.inputTokens ?? 0) + (s2?.inputTokens ?? 0) + (verify?.inputTokens ?? 0),

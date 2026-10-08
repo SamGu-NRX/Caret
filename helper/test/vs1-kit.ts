@@ -50,6 +50,8 @@ export interface Option {
  */
 export interface Overrides {
   value?: (label: string, wording: 0 | 1, options: readonly Option[], req: JevRequest) => Answer | undefined;
+  /** A request the provider fails, as an HTTP 503 would: the run's Jev throws instead of answering it. */
+  fail?: (req: JevRequest) => boolean;
   /** Answers the base's value question for a field in one wording, from its criteria; undefined leaves `firstPass` to answer it. */
   firstAnswer?: (label: string, wording: 0 | 1, criteria: Readonly<Record<string, string | null | undefined>>) => Answer | undefined;
   verify?: (label: string, wording: 0 | 1, output: string, instructions: string) => Answer | undefined;
@@ -100,6 +102,7 @@ export async function runB31(id: string, o: Overrides & { window?: "page" | "rea
   const oracle = realfillOracle({ asks: B31, corpus, current: () => current, traces: () => traces, corpusLabel: () => labelOf });
   const jev: AskJev = async (req) => {
     requests.push(req);
+    if (o.fail?.(req) === true) throw new Error("Jev HTTP 503: the provider failed this request");
     const base: JevResult = await oracle(req);
     const t = traces.find((x) => x.owns(req));
     const answers = { ...base.answers };

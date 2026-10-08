@@ -63,4 +63,16 @@ describe("the base's value question first", () => {
     await r.resume(resume);
     expect(r.requests.filter((x) => x.purpose === "fill.values" && String(Object.values(x.questions)[0]?.instructions).includes("Explicit user selections: the value"))).toHaveLength(2);
   });
+
+  // Sol review P2: a provider failure during settlement refused the whole Ask, so the base's own fills were lost too.
+  it("keeps the base's fills when the provider fails value settlement, and leaves the unresolved field blank", async () => {
+    const r = await runB31("b31-07", {
+      values: true,
+      firstPass: "oracle",
+      firstAnswer: (label, w) => (label === "Monthly rent ($)" && w === 1 ? { choice: "none", confidence: 0.99 } : undefined),
+      fail: (req) => req.purpose === "fill.values" && (req.state as { task?: string }).task === VALUE_TASK,
+    });
+    expect(settlementRequests(r)).toHaveLength(2);
+    expect(proposedOf(r, r.outcome)).toEqual({ "Moved in (MM/YYYY)": "08/2022" });
+  });
 });
