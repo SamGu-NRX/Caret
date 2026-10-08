@@ -1,11 +1,12 @@
 // A store writes only under a local root that does not sync (privacy/store-path.ts): a file a sync client uploads
 // leaves the Mac with no request made, so it would be a provider disclosure without the per-window budget.
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { constants, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { assertLocalStorePath, storePathRefusal, SyncedStorePath } from "../src/privacy/store-path.ts";
+import { spawnSync } from "node:child_process";
+import { assertLocalStorePath, storePathRefusal, SyncedStorePath, writeLocalFile } from "../src/privacy/store-path.ts";
 import { appendStore, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "store-path-"));
@@ -31,16 +32,17 @@ describe("the store path check", () => {
     ]) expect(storePathRefusal(p), p).toMatch(/syncs to a provider/u);
   });
 
-  it("refuses any other folder, such as Documents or Desktop, which macOS can sync to iCloud", () => {
-    expect(storePathRefusal(join(h, "Documents", "rows.json"))).toMatch(/outside the local store roots/u);
-    expect(storePathRefusal(join(h, "Desktop", "rows.json"))).toMatch(/outside the local store roots/u);
+  // Independent of where HOME is (it may be inside the temporary directory): a folder at the filesystem's root is under
+  // no store root.
+  const outside = join(sep, `caret-store-path-outside-${process.pid}`);
+
+  it("refuses any folder outside the roots", () => {
+    expect(storePathRefusal(join(outside, "rows.json"))).toMatch(/outside the local store roots/u);
   });
 
   it("follows symlinks: a link inside the temporary directory to a folder outside the roots refuses", () => {
-    const target = join(h, "Desktop");
-    if (!existsSync(target)) return;
-    const link = join(dir, "to-desktop");
-    symlinkSync(target, link);
+    const link = join(dir, "to-outside");
+    symlinkSync(outside, link);
     expect(storePathRefusal(join(link, "rows.json"))).toMatch(/outside the local store roots/u);
     expect(() => assertLocalStorePath(join(link, "rows.json"))).toThrow(SyncedStorePath);
   });
@@ -57,7 +59,7 @@ describe("the store path check", () => {
 });
 
 describe("INT1 review 2 P1: symlinks and .. cannot route a store into a synced folder", () => {
-  // Links only: nothing is written there, the old code would have followed them (CARET_TEST_SYNCED_ROOT is not needed).
+  // Links only: nothing is written there.
   const synced = join(h, "Library", "CloudStorage", "Dropbox-caret-store-path-test");
 
   it("refuses a dangling final symlink whose target is in a synced folder", () => {
@@ -83,5 +85,70 @@ describe("INT1 review 2 P1: symlinks and .. cannot route a store into a synced f
     const link = join(dir, "link-to-real.json");
     symlinkSync(real, link);
     expect(() => writeStoreJson(link, { n: 2 })).toThrow(SyncedStorePath);
+  });
+});
+
+describe("INT1 review 3: relative paths and hard links", () => {
+  const synced = join(h, "Library", "CloudStorage", "Dropbox-caret-store-path-test");
+
+  it("resolves a relative path's links before its '..', from the working folder as given", () => {
+    const work = join(dir, "w", "sub");
+    mkdirSync(work, { recursive: true });
+    symlinkSync(join(synced, "inner"), join(work, "to-sync"));
+    const was = process.cwd();
+    process.chdir(work);
+    try {
+      expect(storePathRefusal("rows.json")).toBeNull();
+      expect(storePathRefusal("to-sync/../rows.json")).toMatch(/syncs to a provider/u);
+    } finally {
+      process.chdir(was);
+    }
+  });
+
+  it("refuses a file with another hard link, without truncating it", () => {
+    const other = join(dir, "other-name.json");
+    writeFileSync(other, "keep me");
+    const p = join(dir, "hard.json");
+    linkSync(other, p);
+    expect(() => writeLocalFile(p, "x")).toThrow(SyncedStorePath);
+    expect(readFileSync(other, "utf8")).toBe("keep me");
+  });
+
+  it("Node passes O_NOFOLLOW_ANY through: an open through a linked folder fails", () => {
+    if (process.platform !== "darwin") return;
+    mkdirSync(join(dir, "nfa-real"));
+    symlinkSync(join(dir, "nfa-real"), join(dir, "nfa-link"));
+    expect(() => openSync(join(dir, "nfa-link", "f"), constants.O_WRONLY | constants.O_CREAT | 0x20000000, 0o600)).toThrow(/ELOOP/u);
+  });
+});
+
+describe("INT1 review 4: paths are compared as the volume stores them", () => {
+  it("a synced folder spelled in another case is a synced folder (macOS volumes ignore case)", () => {
+    if (process.platform !== "darwin") return;
+    expect(storePathRefusal(join(h, "library", "cloudstorage", "Dropbox", "rows.json"))).toMatch(/syncs to a provider/u);
+    expect(storePathRefusal(join(h, "LIBRARY", "Mobile Documents", "com~apple~CloudDocs", "rows.json"))).toMatch(/syncs to a provider/u);
+  });
+
+  it("a root spelled in another case is the root", () => {
+    if (process.platform !== "darwin") return;
+    expect(storePathRefusal(join(dir.toUpperCase(), "rows.json"))).toBeNull();
+  });
+});
+
+describe("INT1 review 5: a synced folder that is itself a link", () => {
+  it("refuses a path under the link's target, as well as under the link", () => {
+    // A home folder whose Library/CloudStorage links to a folder in the temporary directory (a root). Run in a child, so
+    // HOME is its own.
+    const home = mkdtempSync(join(dir, "home-"));
+    const cloud = mkdtempSync(join(dir, "cloud-"));
+    mkdirSync(join(home, "Library"));
+    symlinkSync(cloud, join(home, "Library", "CloudStorage"));
+    const script = `
+      const { storePathRefusal } = require(${JSON.stringify(fileURLToPath(new URL("../src/privacy/store-path.ts", import.meta.url)))});
+      console.log(JSON.stringify([storePathRefusal(${JSON.stringify(join(cloud, "Dropbox", "rows.json"))}), storePathRefusal(${JSON.stringify(join(home, "Library", "CloudStorage", "Dropbox", "rows.json"))})]));`;
+    const r = spawnSync(process.execPath, ["--no-warnings", "-e", script], { env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir() }, encoding: "utf8" });
+    const [viaTarget, viaLink] = JSON.parse(r.stdout || "[]") as (string | null)[];
+    expect(viaTarget).toMatch(/syncs to a provider/u);
+    expect(viaLink).toMatch(/syncs to a provider/u);
   });
 });

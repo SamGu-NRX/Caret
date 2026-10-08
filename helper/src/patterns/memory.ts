@@ -315,8 +315,7 @@ export class MemoryStore {
   routineSightings: number = LEVELS.balanced.routineSightings ?? 3;
 
   constructor(dir: string, opts: MemoryOptions = {}) {
-    // Held to the store path policy before anything is made (INT1 review 2); SQLite writes through the file opened here.
-    assertLocalStorePath(dir);
+    // The database path is checked once, here; SQLite then writes that file and its -wal and -shm beside it.
     assertLocalStorePath(join(dir, "memory.sqlite"));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.warn = opts.warn ?? (() => undefined);

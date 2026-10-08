@@ -205,7 +205,7 @@ const SECTION_WORDINGS = [
  * list is said to be incomplete, so a request naming it reads as "not in this list" and withholds (sectionVeto).
  */
 /**
- * The section refs each wording's question offered, by snapshot (INT1 review 2): the bounded list may leave headings out,
+ * The section refs each wording's question offered, by snapshot: the bounded list may leave headings out,
  * and an answer naming one of those was never a choice Jev was given. Read by sectionVerdict.
  */
 const OFFERED = new WeakMap<IntentSnapshot, [ReadonlySet<string> | null, ReadonlySet<string> | null]>();
@@ -226,7 +226,7 @@ function sectionQuestion(snap: IntentSnapshot, wording: 0 | 1): JevRequest["ques
     return name === null || name === SECTION ? [] : [{ ref: h.ref, name }];
   });
   // The question's words must fit their slot (privacy/shapes.ts ask.scope questions.*.instructions), or the whole request
-  // is refused before Jev runs (INT1 review P2: 40 headings beside a 543-character Ask reached 1,544 of 1,400). So the
+  // is refused before Jev runs (40 headings beside a 543-character Ask reach 1,544 of 1,400). So the
   // list keeps the first sections whose names fit, each whole, and says it may be incomplete: a request naming one left
   // out then reads as "not in this list", as for a name that did not mint. Names are never cut short.
   const max = shapeOf("ask.scope")?.["questions.*.instructions"]?.max ?? Number.POSITIVE_INFINITY;
@@ -285,17 +285,16 @@ export type SectionAnswer = { readonly kind: "section"; readonly name: string } 
  */
 export function sectionVerdict(snap: IntentSnapshot, scope: readonly [JevResult, JevResult], cutoff: number = SCOPE_CUTOFF): SectionAnswer | null {
   if (!asksSection(snap)) return null;
-  // Only what both wordings offered: a heading the bounded list left out of either question was no choice of Jev's, so
-  // an answer naming it is outside the options and fails closed (INT1 review 2).
-  const both = [offeredSections(snap, 0), offeredSections(snap, 1)];
-  const options = new Set([...Object.keys(SECTION_OPTIONS), ...snap.headings.map((h) => h.ref).filter((r) => both[0]!.has(r) && both[1]!.has(r))]);
-  const answers = scope.map((r) => {
+  // Each wording's answer is read against the options its own question offered (the bounded list may offer a heading
+  // in one wording and not the other). An answer outside them is no answer: the Ask fails as for a missing one, since a
+  // null verdict would mean "no section named" and lift the veto. Two valid answers that differ settle nothing (null).
+  const [x, y] = scope.map((r, i) => {
     const a = r.answers[SECTION_QUESTION];
     if (a === undefined) throw new PlannerError("jevFailed", "Jev gave no answer to the section question");
+    const options = new Set([...Object.keys(SECTION_OPTIONS), ...offeredSections(snap, i as 0 | 1)]);
     if (!options.has(a.choice)) throw new PlannerError("jevFailed", `Jev answered '${a.choice}' to the section question, which is not one of its options`);
     return a;
-  });
-  const [x, y] = answers as [{ choice: string; confidence: number }, { choice: string; confidence: number }];
+  }) as [{ choice: string; confidence: number }, { choice: string; confidence: number }];
   if (x.choice !== y.choice || x.confidence < cutoff || y.confidence < cutoff) return null;
   if (x.choice === "unlisted") return { kind: "unlisted" };
   const name = snap.headings.find((h) => h.ref === x.choice)?.name;

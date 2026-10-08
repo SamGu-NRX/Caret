@@ -1,99 +1,115 @@
-// INT1 review 2 P1: every file writer under helper/src holds its destination to the store path policy
-// (privacy/store-path.ts). The writers are found in the code, not listed by hand: any file that calls a primitive that
-// creates or changes a file or folder. Each found file must have an exerciser below, which aims it at a synced folder and
-// expects SyncedStorePath before anything is created; a new writer without one fails the first test.
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+// Every file a helper store writes goes through privacy/store-path.ts, which holds it to local, non-synced roots. The
+// guarantee is structural: outside ALLOWED, each with its reason, no module under helper/src imports anything from node:fs
+// but the functions that cannot write a file's content, or anything from node:sqlite (test/fs-writers.ts). The allowed
+// modules that write check their own paths, so each is aimed below at a folder outside every root and must refuse.
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { afterAll, describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
 import { storePathRefusal, SyncedStorePath } from "../src/privacy/store-path.ts";
 import { Store } from "../src/store.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { RecoveryJournal } from "../src/executor/journal.ts";
 import { MemoryDocumentStore } from "../src/memory/documents.ts";
-import { fileFailures, fileLog, filePace } from "../src/engines/decide/slow.ts";
-import { DailySpend } from "../src/engines/decide/daily-cap.ts";
-import { loadKey } from "../src/sealed.ts";
-import { cachedAsk } from "../src/engines/decide/cache.ts";
-import { HelperServer } from "../src/server.ts";
-import { EngineServer } from "../src/engines/server.ts";
 import { migrateSealedMemory } from "../src/memory/migrate.ts";
-import { DatabaseSync } from "node:sqlite";
+import { seal } from "../src/sealed.ts";
+import { fsImportViolations } from "./fs-writers.ts";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
 
-/** A call that creates or changes a file or folder; a read-only open is not one. */
-const WRITES = /\b(?:writeFileSync|appendFileSync|createWriteStream|renameSync|linkSync|copyFileSync|cpSync|symlinkSync|mkdirSync|mkdtempSync)\(|new DatabaseSync\(|openSync\([^)\n]*(?:O_CREAT|O_WRONLY|O_RDWR|O_APPEND|["'][wa]\+?["'])/u;
-
-/** Files whose writes are the policy itself. */
-const POLICY = new Set(["privacy/store-path.ts"]);
-
-function writerFiles(): string[] {
-  return files(SRC).map((f) => relative(SRC, f)).filter((f) => !POLICY.has(f) && WRITES.test(readFileSync(join(SRC, f), "utf8"))).sort();
-}
-
-// A folder the policy treats as synced (CARET_TEST_SYNCED_ROOT), inside the temporary directory: a writer that fails
-// this test writes there, never into a real synced folder.
-const tmp = mkdtempSync(join(tmpdir(), "store-writers-"));
-const synced = join(tmp, "synced");
-process.env.CARET_TEST_SYNCED_ROOT = synced;
-const at = (name: string): string => join(synced, name);
-afterAll(() => {
-  delete process.env.CARET_TEST_SYNCED_ROOT;
-  rmSync(tmp, { recursive: true, force: true });
-});
-
-/** Each writer aimed at a synced folder. Each must throw SyncedStorePath. */
-const EXERCISE: Record<string, () => unknown> = {
-  "store.ts": () => new Store(at("data")),
-  "patterns/memory.ts": () => new MemoryStore(at("patterns")),
-  "executor/journal.ts": () => new RecoveryJournal(at("journal")),
-  "memory/documents.ts": () => new MemoryDocumentStore(at("Memory")),
-  "engines/decide/slow.ts": () => {
-    expect(() => filePace(at("pace.txt")).write?.(1)).toThrow(SyncedStorePath);
-    expect(() => fileFailures(at("failures")).put("k", "e")).toThrow(SyncedStorePath);
-    fileLog(at("slow.ndjson"))({ type: "x" } as never);
-  },
-  "engines/decide/daily-cap.ts": () => new DailySpend({ dir: at("spend"), capUsd: 1 }).reserve(0.01).settle(0.01, 1),
-  "sealed.ts": () => loadKey(at("memory.key")),
-  "engines/decide/cache.ts": () => cachedAsk(async () => ({ model: "m", answers: {}, inputTokens: 0, latencyMs: 0, costUsd: 0 }), { dir: at("cache"), mode: "record", engine: "canned", model: "m", fixture: { windows: () => true, plan: true } as never, env: {} } as never),
-  "server.ts": () => new HelperServer(at("sockets/screen.sock"), () => null as never, () => undefined).listen(),
-  "engines/server.ts": () => new EngineServer({ path: at("sockets/page.sock") } as never).listen(),
-  "memory/migrate.ts": () => migrateSealedMemory({ db: new DatabaseSync(":memory:"), key: Buffer.alloc(32), dataDir: join(tmp, "data"), memoryDir: at("Memory"), now: 0 }),
+/** Modules that may use a write-capable fs function themselves, and why. */
+const ALLOWED: Readonly<Record<string, string>> = {
+  "privacy/store-path.ts": "the checked writer itself",
+  "memory/documents.ts": "the memory store's install protocol: writeSync on a descriptor openLocalFile opened, and rename and link of its own files inside the memory folder, which its constructor checks",
+  "store.ts": "opens its SQLite database at a checked path; SQLite writes only through that file and its -wal and -shm beside it",
+  "patterns/memory.ts": "opens its SQLite database at a checked path; SQLite writes only through that file and its -wal and -shm beside it",
+  "executor/journal.ts": "opens its SQLite database at a checked path; SQLite writes only through that file and its -wal and -shm beside it",
+  "engines/attach.ts": "opens an attachment read-only (O_RDONLY | O_NOFOLLOW) to check and read it; writes nothing",
 };
 
-describe("every file writer under helper/src holds its destination to the store path policy", () => {
-  it("has an exerciser for every writer the code holds, and every writer uses the policy", () => {
-    const found = writerFiles();
-    expect(found.filter((f) => EXERCISE[f] === undefined)).toEqual([]);
-    for (const f of found) expect(readFileSync(join(SRC, f), "utf8"), f).toMatch(/\b(?:assertLocalStorePath|writeLocalFile)\(/u);
+// A folder at the filesystem's root is outside every root wherever HOME is, and this user cannot create it: a module
+// that fails to refuse throws EACCES, not SyncedStorePath, and writes nothing.
+const outside = join(sep, `caret-store-writers-${process.pid}`);
+const tmp = mkdtempSync(join(tmpdir(), "store-writers-"));
+afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+const REFUSES: Record<string, () => unknown> = {
+  "store.ts": () => new Store(join(outside, "data")),
+  "patterns/memory.ts": () => new MemoryStore(join(outside, "patterns")),
+  "executor/journal.ts": () => new RecoveryJournal(join(outside, "journal")),
+  "memory/documents.ts": () => new MemoryDocumentStore(join(outside, "Memory")),
+};
+
+describe("every file a helper store writes goes through the checked writer", () => {
+  it("no module outside the allowlist imports a function that can write a file", () => {
+    const found = files(SRC).map((f) => relative(SRC, f)).flatMap((f) => (ALLOWED[f] !== undefined ? [] : fsImportViolations(readFileSync(join(SRC, f), "utf8")).map((w) => `${f}: ${w}`)));
+    expect(found).toEqual([]);
   });
 
-  for (const [file, run] of Object.entries(EXERCISE)) {
-    it(`${file} refuses a synced folder before creating anything`, async () => {
-      let threw: unknown = null;
+  it("every allowed module other than the writer refuses a folder outside the roots", () => {
+    expect(Object.keys(ALLOWED).filter((f) => f !== "privacy/store-path.ts" && f !== "engines/attach.ts").sort()).toEqual(Object.keys(REFUSES).sort());
+    for (const [file, run] of Object.entries(REFUSES)) expect(run, file).toThrow(SyncedStorePath);
+  });
+
+  it("the memory migration refuses a staging folder outside the roots, when the memory folder is itself a root", () => {
+    // Run with HOME in a folder outside every root, so the app's own memory folder (a root) has a parent that is not one:
+    // the staging folder made beside it would fall outside every root. A child process, so HOME is its own.
+    const home = join(homedir(), `.caret-store-writers-home-${process.pid}`);
+    if (storePathRefusal(join(home, "x")) === null) return;
+    const data = join(tmp, "data");
+    new MemoryStore(data).close();
+    const key = readFileSync(join(data, "memory.key"));
+    const db = new DatabaseSync(join(data, "memory.sqlite"));
+    db.exec("DELETE FROM meta");
+    db.prepare("INSERT INTO memory (id, kind, paused, match, fields, sealed, count, first_seen, last_seen, app) VALUES (?, 'about', 0, 'm', NULL, ?, 1, 1, 1, NULL)").run("about-1a2b3c4d", seal(key, JSON.stringify({ label: "Name", value: "Dana Whitfield", source: "typed" })));
+    db.close();
+    const script = `
+      const { DatabaseSync } = require("node:sqlite");
+      const { readFileSync } = require("node:fs");
+      const { join } = require("node:path");
+      const { migrateSealedMemory } = require(${JSON.stringify(fileURLToPath(new URL("../src/memory/migrate.ts", import.meta.url)))});
+      const data = ${JSON.stringify(data)};
       try {
-        await run();
-      } catch (e) {
-        threw = e;
-      }
-      expect(threw, file).toBeInstanceOf(SyncedStorePath);
-      expect(existsSync(synced)).toBe(false);
-    });
-  }
-
-  it("treats the test's synced folder as synced, and a real one too", () => {
-    expect(storePathRefusal(at("x.json"))).toMatch(/syncs to a provider/u);
-    expect(storePathRefusal(join(homedir(), "Library", "CloudStorage", "Dropbox", "x.json"))).toMatch(/syncs to a provider/u);
+        migrateSealedMemory({ db: new DatabaseSync(join(data, "memory.sqlite")), key: readFileSync(join(data, "memory.key")), dataDir: data, memoryDir: join(process.env.HOME, "Library", "Application Support", "Caret"), now: 0 });
+        console.log("no refusal");
+      } catch (e) { console.log(e.name); }`;
+    try {
+      mkdirSync(home);
+      const r = spawnSync(process.execPath, ["--no-warnings", "-e", script], { env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir() }, encoding: "utf8" });
+      expect(`${r.stdout.trim()} ${r.stderr.slice(0, 200)}`.trim()).toBe("SyncedStorePath");
+      expect(readdirSync(home)).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
-  it("the lint finds a new writer and a read-only open is not one", () => {
-    expect(WRITES.test('appendFileSync(join(dir, "x.log"), line);')).toBe(true);
-    expect(WRITES.test("const db = new DatabaseSync(path);")).toBe(true);
-    expect(WRITES.test('const fd = openSync(path, "a");')).toBe(true);
-    expect(WRITES.test("const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);")).toBe(false);
-    expect(WRITES.test('const fd = openSync(path, "r");')).toBe(false);
+  it("the import rule refuses every binding but the permitted ones, however it is spelled", () => {
+    const breaks = (src: string): boolean => fsImportViolations(src).length > 0;
+    for (const src of [
+      'import { appendFileSync } from "node:fs";',
+      'import { openSync as open } from "node:fs";',
+      'import { promises } from "node:fs";',
+      'import * as fs from "node:fs";',
+      'import fs from "fs";',
+      'import { writeFile } from "node:fs/promises";',
+      'import { readFileSync, renameSync } from "node:fs";',
+      'export { writeFileSync } from "node:fs";',
+      'export * from "node:fs/promises";',
+      'const fs = await import("node:fs");',
+      'const fs = require("node:fs");',
+      'const m = require(name);',
+      'import { createRequire } from "node:module"; const r = createRequire(import.meta.url);',
+      'import * as mod from "module";',
+      'import { DatabaseSync } from "node:sqlite";',
+    ]) expect(breaks(src), src).toBe(true);
+    for (const src of [
+      'import { readFileSync as read, existsSync, constants } from "node:fs"; import type { Stats } from "node:fs";',
+      'import type { DatabaseSync } from "node:sqlite";',
+      'const s = require("node:path");',
+    ]) expect(breaks(src), src).toBe(false);
   });
 });

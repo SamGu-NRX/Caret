@@ -2,8 +2,8 @@
 // metadata, and the times of the last hour's offers. Plain screen text never reaches it; the rolling
 // text window is memory only.
 import { createHmac, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { assertLocalStorePath, writeLocalFile } from "./privacy/store-path.ts";
 
@@ -90,12 +90,12 @@ export class Store {
   private pending = new Map<string, number>();
   readonly dir: string;
 
-  constructor(dir: string) {
-    this.dir = dir;
-    // The store's folder and its database are held to the store path policy before anything is made (INT1 review 2).
-    // SQLite writes through the file it opens here, so the check at open is the check of every write.
-    assertLocalStorePath(dir);
-    assertLocalStorePath(join(dir, "screen.sqlite"));
+  constructor(given: string) {
+    // The database path is checked once, here, and the folder made and opened as that one resolved path; SQLite then
+    // writes that file and its -wal and -shm beside it.
+    const dir = dirname(assertLocalStorePath(`${given}/screen.sqlite`));
+    // The folder as configured, which other stores beside this one are given and check for themselves.
+    this.dir = given;
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     // mkdirSync's mode applies only to a directory it creates; one that was already there is closed now (CodeRabbit on PR #5).
     chmodSync(dir, 0o700);
