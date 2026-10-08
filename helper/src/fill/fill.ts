@@ -1587,15 +1587,20 @@ export async function proposeFill(
         continue;
       }
     }
+    // MERGE-CASES b2: a value's notes are taken together or not at all, so a note that fails leaves no earlier one sent
+    // or charged on this value's account.
+    const views = units.map((u) => viewOf(model, u.windowId));
+    if (views.some((v) => v === undefined) || !m.notesFit(units.map((u, i) => ({ w: views[i]!, text: u.text })))) {
+      ownerNotes.set(c.id, { units, ids: null, why: "unshown" });
+      continue;
+    }
     const ids: string[] = [];
-    for (const u of units) {
+    for (const [i, u] of units.entries()) {
       let id = noteIds.get(unitKey(u));
       if (id === undefined) {
-        // INT1: minted through the request's Disclosure as a candidate of its redacted view, so it is charged to its
-        // window's own limit and declared, or refused. HA2's allotment past that budget waits for the
-        // output-based ledger (privacy.ts OWNER_NOTE_CHARS, TODO(INT1)).
-        const view = viewOf(model, u.windowId);
-        const said = view === undefined ? null : m.candidate(view, u.text);
+        // Minted as an owner note (OUTPUT-LEDGER-SPEC section 8): against its window's owner-note allotment when it is
+        // eligible, else as a candidate against the window's limit; declared, or refused.
+        const said = m.ownerNote(views[i]!, u.text);
         if (said === null) break;
         // The id is a key of the request's state, which PV2 holds to identifiers (disclosure.ts KEY): "note_1", not "note 1".
         id = `note_${notes.size + 1}`;

@@ -1,7 +1,8 @@
 // SnippetLedger charges a window for every character of it a request reveals, whichever window the text
 // was taken from, so the conversation cap holds at runtime and not only in privacy.test.ts. All text is
 // synthetic.
-import { Disclosure, LedgerRefused } from "../src/privacy/disclosure.ts";
+import { Disclosure, LedgerRefused, measureBytes } from "../src/privacy/disclosure.ts";
+import { redactWindow } from "../src/fill/redact.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef } from "../src/protocol.ts";
@@ -216,5 +217,109 @@ describe("repeated text at seal", () => {
     const quoted = chat([msg, `> ${msg}`, `> > ${msg}`]);
     expect(seal(quoted, [half])).toBe("test: it reveals 750 characters of window chat-1, over its limit of 600; it was not sent");
     expect(seal(quoted, [msg])).toBe("test: it reveals 1500 characters of window chat-1, over its limit of 600; it was not sent");
+  });
+});
+
+// OUTPUT-LEDGER-SPEC section 7: the requests sent through one Disclosure are one operation.
+describe("one operation's requests together", () => {
+  const LINES = ["the deposit is due on the sixteenth of the month", "and the venue holds the date for us until then", "bring the signed contract to the front desk"];
+  const chat = (): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap(LINES.map((l, i) => text(`c${i}`, l)), { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    return m;
+  };
+  const refusal = (f: () => unknown): string | null => {
+    try {
+      f();
+      return null;
+    } catch (e) {
+      if (e instanceof LedgerRefused) return e.message;
+      throw e;
+    }
+  };
+
+  it("cannot take a conversation past its limit by two requests that each fit", () => {
+    // T = 4 + 48 + 46 + 43 = 141, limit 70: each of the first two lines fits alone, not both.
+    const d = new Disclosure(chat());
+    expect(d.measureSent("first", [LINES[0]!]).charged["chat-1"]).toBe(48);
+    expect(refusal(() => d.measureSent("second", [LINES[1]!]))).toBe("second: with the requests sent before it, it reveals 94 characters of window chat-1, over its limit of 70; it was not sent");
+    // A refused request keeps nothing: one that adds within the limit still goes, and the first, sent again, adds nothing.
+    expect(d.measureSent("third", ["the deposit is due on"]).charged["chat-1"]).toBe(21);
+    expect(d.measureSent("first again", [LINES[0]!]).charged["chat-1"]).toBe(48);
+  });
+
+  it("gives a new Disclosure, a new operation, its own share", () => {
+    const m = chat();
+    new Disclosure(m).measureSent("first", [LINES[0]!]);
+    expect(new Disclosure(m).measureSent("other", [LINES[1]!]).charged["chat-1"]).toBe(46);
+  });
+});
+
+// OUTPUT-LEDGER-SPEC section 8: a whole owner note counts against its window's owner-note allotment, only where it
+// stands whole in state.source_notes.
+describe("owner notes at seal", () => {
+  const TE = { pid: 7100, bundleId: "com.apple.TextEdit", name: "TextEdit" };
+  /** Line i of a note: about 90 characters that share no 12-character run with any other line. */
+  const line = (i: number): string => {
+    let x = i * 7919 + 17;
+    const word = (): string => Array.from({ length: 6 }, () => String.fromCharCode(97 + ((x = (x * 1103515245 + 12345) % 2147483648) % 26))).join("");
+    return `Reminder ${i}: ${Array.from({ length: 12 }, word).join(" ")}`;
+  };
+  const noteOf = (n: number, from = 0): string => Array.from({ length: n }, (_, i) => line(from + i)).join("\n");
+  const desk = (note: string, app: AppRef = TE): { m: ScreenModel; view: WindowState } => {
+    const m = new ScreenModel();
+    m.apply(snap([{ key: "note/body", parent: null, role: "AXTextArea", value: note, editable: true }], { at: 1, windowId: "note-1", title: "Notes.txt", app }));
+    return { m, view: redactWindow(m.windows.get("note-1") as WindowState) };
+  };
+  const seal = (d: Disclosure, body: unknown): number | string => {
+    try {
+      return measureBytes({ purpose: "fill.whose", disclosure: d }, JSON.stringify(body)).charged["note-1"] ?? 0;
+    } catch (e) {
+      if (e instanceof LedgerRefused) return e.message;
+      throw e;
+    }
+  };
+
+  it("admits a note past its window's limit, whole in source_notes; the same text anywhere else is held to the limit", () => {
+    const note = noteOf(15);
+    expect(note.length).toBeGreaterThan(1200);
+    const { m, view } = desk(note);
+    const d = new Disclosure(m);
+    expect(d.ownerNote(view, note)).toBe(note);
+    // Its characters as the window's lines count them, line breaks aside.
+    const chars = note.replaceAll("\n", "").length;
+    expect(seal(d, { state: { source_notes: { note_1: note } } })).toBe(chars);
+    expect(seal(d, { state: { task: note } })).toBe(`fill.whose: it reveals ${chars} characters of window note-1, over its limit of 1200; it was not sent`);
+    // The rest of the request is held to the limit apart from the note.
+    expect(seal(d, { state: { source_notes: { note_1: note }, task: line(0) } })).toBe(chars);
+  });
+
+  it("holds a window's notes together to 2,000: a second note that would pass it is not minted", () => {
+    const a = noteOf(12);
+    const b = noteOf(12, 12);
+    const m = new ScreenModel();
+    m.apply(snap([0, 1].map((i) => ({ key: `note/${i}`, parent: null, role: "AXTextArea", value: [a, b][i], editable: true })), { at: 1, windowId: "note-1", title: "Notes.txt", app: TE }));
+    const view = redactWindow(m.windows.get("note-1") as WindowState);
+    const d = new Disclosure(m);
+    expect(d.ownerNote(view, a)).toBe(a);
+    expect(d.ownerNote(view, b)).toBeNull();
+    expect(seal(d, { state: { source_notes: { note_1: a } } })).toBe(a.replaceAll("\n", "").length);
+  });
+
+  it("charges every other window that shows a note's lines in full: a chat quoting three of them refuses it", () => {
+    const note = noteOf(15);
+    const { m, view } = desk(note);
+    const d = new Disclosure(m);
+    expect(d.ownerNote(view, note)).toBe(note);
+    // A chat that quotes three of the note's lines opens after the note was minted; the seal measures it too.
+    m.apply(snap([0, 1, 2].map((i) => text(`c${i}`, line(i))), { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    expect(() => measureBytes({ purpose: "fill.whose", disclosure: d }, JSON.stringify({ state: { source_notes: { note_1: note } } }))).toThrow(/window chat-1, over its limit/u);
+  });
+
+  it("gives no note of a conversation the allotment", () => {
+    const note = noteOf(15);
+    const { m, view } = desk(note, { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" });
+    const d = new Disclosure(m);
+    expect(d.ownerNote(view, note)).toBeNull();
   });
 });

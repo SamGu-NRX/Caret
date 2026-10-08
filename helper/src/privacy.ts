@@ -15,27 +15,25 @@ export { CONVERSATION_CHARS, WINDOW_CHARS };
 export const SNIPPET_CHARS = 120;
 
 /**
- * HA2 recall lever 1: the longest whole note an owner question may show beyond its window's limit, in characters; 0
- * turns the lever off. Why it exists: an owner judgement counts only when it saw every note that holds the value whole
- * (fill/note-unit.ts), so the user values of a note longer than its window's limit are withheld. What it sends: the whole note, as the redacted view shows it, in the owner questions
- * only (the value questions keep the window's budget), charged to the window and declared like any other text; nothing
- * redaction cut, no conversation (it keeps more than half of itself back, as ever), and no window the model does not
- * hold (Sites rules act before the model), is ever sent.
+ * HA2 recall lever 1: the owner-note allotment, in characters of a window's own whole notes (OUTPUT-LEDGER-SPEC section
+ * 8); 0 turns it off. Why it exists: an owner judgement counts only when it saw every note that holds the value whole
+ * (fill/note-unit.ts), so the user values of a note longer than its window's limit would be withheld. What it lets a
+ * request send: whole notes of at most this many characters, as the redacted view shows them, only where they stand
+ * whole in an owner question's state.source_notes, held together per window and per fill to this allotment instead of
+ * the window's limit; everything else in the request is held to the window's limit, and every other window measures
+ * the notes like any text. No conversation's note is eligible (it keeps more than half of itself back, as ever).
  * Sam approved 2,000 on 2026-10-07, on condition of latency, from an offline measurement of canned right 352 against 353
  * before HA2 (243 with the lever off), wrong 0; with conversations kept out it measured canned right 306, page oracle 132
  * (130 off), reader oracle 122 (120 off), wrong 0 on both oracles and the refuse-mode adversary (evidence/screen/ha2, tag
  * lever1). Live B31 (evidence/screen/ha2/live-cap0, live-cap2000): the owner (fill.whose) requests' p95 went from
- * 385.07 ms to 398.80 ms, +3.6% against a 20% budget; ten requests per run, a small sample. It sends more than the old
+ * 385.07 ms to 398.80 ms, +3.6% against a 20% budget; ten requests per run, a small sample. Those were measured on the
+ * pre-PV2 ledger. On the output ledger the scripted oracle and the adversary measure the same with it at 0 and at 2,000
+ * (evidence/screen/pv2/simplify, e-part and s8-off): what it recovered there, the prose share held back, and the
+ * oracle's losses are conversations, which it does not cover. Its latency is unmeasured here. It sends more than the old
  * onboarding promise allowed ("never a whole document"), so ownerNoteGate requires the whole-note disclosure in
  * PRIVACY_PROMISE. The build gate separately requires acceptance of the fixes behind its other privacy claims.
- *
- * TODO(INT1): temporary: re-express on the output-based ledger, then restore 2,000. HA2 built the allotment as a second
- * charge inside the pre-PV2 SnippetLedger's pricing, past the window's budget. PV2's span ledger has no such charge, and
- * INT1 may not add one to its internals while that ledger is being replaced by output-based accounting at seal(). So the
- * allotment is 0 here: an owner note is shown only when it fits its window's own limit (minted through
- * the Disclosure like any candidate), and a note that does not fit withholds its values (fill.ts NOTE_UNSHOWN).
  */
-export const OWNER_NOTE_CHARS = 0;
+export const OWNER_NOTE_CHARS = 2000;
 
 /** Approved draft 2; the host onboarding owner reuses this text. Required fix acceptances remain separate. */
 export const PRIVACY_PROMISE = `What Caret sends
@@ -382,7 +380,7 @@ export class SnippetLedger {
     this.registry = registry;
     for (const w of registry?.windows.values() ?? []) this.known.set(w.window.windowId, w);
     for (const w of o.snapshots ?? []) this.know(w);
-    this.account = new MintAccount(() => this.measuredWindows());
+    this.account = new MintAccount(() => this.measuredWindows(), OWNER_NOTE_CHARS);
   }
 
   /** Every window state this request is measured against (privacy/ledger/account.ts measuredWindows). */
@@ -478,12 +476,13 @@ export class SnippetLedger {
    * null), and with `as.lines` each window line they newly show under its own window (text no window gave: a plan's, an
    * app's name, the user's, which names every window whose line it carries).
    */
-  protected admitTexts(texts: readonly string[], as: { under: string | null; kind: Snippet["kind"]; lines?: boolean }): boolean {
+  protected admitTexts(texts: readonly string[], as: { under: string | null; kind: Snippet["kind"]; lines?: boolean; noteOf?: WindowState }): boolean {
     const set = as.under === null ? undefined : this.taken.get(as.under);
     const fresh = [...new Set(texts.filter((t) => t !== "" && set?.has(t) !== true))];
     if (fresh.some((t) => excludedValue(t) !== null)) return false;
     if (fresh.length === 0) return true;
-    const adds = this.account.admit(fresh, true);
+    const noteOf = as.noteOf;
+    const adds = this.account.admit(fresh, true, noteOf === undefined ? undefined : new Map(fresh.map((t) => [t, noteOf])));
     if (adds === null) return false;
     if (as.under !== null) {
       let s = this.taken.get(as.under);
@@ -503,6 +502,25 @@ export class SnippetLedger {
     const ts = texts.filter((t): t is string => typeof t === "string" && t !== "");
     if (!ts.every((t) => this.locatable(w, t))) return false;
     return this.admitTexts(ts, { under: w.window.windowId, kind });
+  }
+
+  /**
+   * Section 8: whether `text`, read whole from the redacted view `w`, may go as an owner note, against the window's
+   * owner-note allotment rather than its limit: the allotment is on, the note fits it, and the window is no conversation.
+   */
+  protected ownerNoteFits(w: WindowState, text: string): boolean {
+    return OWNER_NOTE_CHARS > 0 && text.length <= OWNER_NOTE_CHARS && !heldAsConversation(this.known.get(w.window.windowId) ?? w);
+  }
+
+  /**
+   * Whether every owner note could be taken from its window together (each locatable there, and all of them within
+   * every window's limit and allotment at once). Takes nothing: a caller that needs all or none checks here first.
+   */
+  notesFit(takes: readonly { w: WindowState; text: string }[]): boolean {
+    for (const t of takes) this.know(t.w);
+    if (takes.some((t) => excludedValue(t.text) !== null || !this.locatable(t.w, t.text))) return false;
+    const notes = new Map(takes.flatMap((t) => (this.ownerNoteFits(t.w, t.text) ? [[t.text, t.w] as const] : [])));
+    return this.account.admit(takes.map((t) => t.text), false, notes) !== null;
   }
 
   /** What taking these texts from `w` would add to `w`'s charge, or null when they cannot be taken. Takes nothing. */

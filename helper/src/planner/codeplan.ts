@@ -482,7 +482,7 @@ export async function verifyWrites(raw: string, writes: readonly WriteToVerify[]
   // W2: nothing to ask when no write asks its value and none takes a person's details.
   if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return { dropped: new Set(), jev: { calls: 0, costUsd: 0, latencyMs: 0 } };
   // HA2 (lead decision 3): fill's rule on this path. Both owner questions about a window value name the whole notes it
-  // was read from, sent once in the state (source_notes) and charged to their windows' unchanged budgets; a value whose
+  // was read from, sent once in the state (source_notes) and charged to their windows' owner-note allotments; a value whose
   // notes do not fit, or could not be read, is dropped below when its field wants the user's details.
   const notes = new Map<string, ModelText>();
   /** Each note's id ("note_1") as this request's Disclosure minted it. */
@@ -490,24 +490,19 @@ export async function verifyWrites(raw: string, writes: readonly WriteToVerify[]
   const noteIds = writes.map((x): string[] | null => {
     if (!personalField(x.field.label) || x.value.window === null) return [];
     if (x.value.notes === null || x.value.notes.length === 0) return null;
-    const ids: string[] = [];
-    for (const n of x.value.notes) {
-      let id = [...notes].find(([, t]) => t === n.text)?.[0];
-      if (id === undefined) {
-        // INT1: minted through this request's Disclosure as text a window it was built over shows in its redacted view
-        // (Disclosure.onScreen), within that window's own budget, or not at all: a frozen note no window still shows
-        // whole is never sent. HA2's allotment past the budget waits for the output-based ledger (privacy.ts
-        // OWNER_NOTE_CHARS, TODO(INT1)).
-        const said = d.onScreen(n.text);
-        if (said === null) return null;
-        // The id is a key of the request's state, which PV2 holds to identifiers (disclosure.ts KEY): "note_1", not "note 1".
-        id = `note_${notes.size + 1}`;
-        notes.set(id, said);
-        noteSaid.set(id, d.id(id));
-      }
-      ids.push(id);
-    }
-    return ids;
+    const idOf = (text: string): string | undefined => [...notes].find(([, t]) => t === text)?.[0];
+    // Minted as owner notes of windows this request was built over that still show them whole in their redacted views
+    // (OUTPUT-LEDGER-SPEC section 8), all of a value's notes or none: a frozen note no window still shows is never sent.
+    const fresh = [...new Set(x.value.notes.map((n) => n.text).filter((t) => idOf(t) === undefined))];
+    const said = d.ownerNotesOnScreen(fresh);
+    if (said === null) return null;
+    said.forEach((s) => {
+      // The id is a key of the request's state, which PV2 holds to identifiers (disclosure.ts KEY): "note_1", not "note 1".
+      const id = `note_${notes.size + 1}`;
+      notes.set(id, s);
+      noteSaid.set(id, d.id(id));
+    });
+    return x.value.notes.map((n) => idOf(n.text)!);
   });
   const noteSays = (i: number): ModelText => {
     const ids = noteIds[i];

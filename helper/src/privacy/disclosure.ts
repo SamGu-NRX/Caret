@@ -4,10 +4,10 @@
 // disappears at runtime, so the check that holds is `verify`, run on the body where each request is sent (the Jev
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
-import { assertNoExcludedValue, cut, flat, fold, sectionTexts, SnippetLedger, type Snippet } from "../privacy.ts";
-import { breach, measure, normalizedUnits, type Measurement } from "./ledger/account.ts";
+import { assertNoExcludedValue, cut, flat, fold, OWNER_NOTE_CHARS, sectionTexts, SnippetLedger, type Snippet } from "../privacy.ts";
+import { breachWithNotes, measure, normalizedUnits, OperationLedger, splitNotes, type Breach, type Measurement, type OwnerNotes } from "./ledger/account.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
-import { decodeUnits } from "./ledger/units.ts";
+import { decodeUnits, type DecodedUnit } from "./ledger/units.ts";
 import { LedgerEncodingError } from "./ledger/normalize.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
@@ -259,6 +259,10 @@ export class Disclosure extends SnippetLedger {
   readonly [IS_DISCLOSURE] = true;
   /** Every text minted for this request, with the reasons it was minted under. */
   private readonly mints = new Map<string, Set<MintReason>>();
+  /** Section 7: the requests sent through this Disclosure are one operation, held together to each conversation's limit. */
+  private readonly operation = new OperationLedger();
+  /** Section 8: each whole owner note this Disclosure minted, with the redacted view it was read from. */
+  private readonly ownerNotes = new Map<string, WindowState>();
   /** privacy/read-policy.ts switchedOffCount when this Disclosure was made: verify refuses once it moves. */
   private readonly policy = switchedOffCount();
   /**
@@ -363,6 +367,49 @@ export class Disclosure extends SnippetLedger {
   /** A kept node's value or a typed value, as the redacted view shows it. */
   candidate(view: RedactedWindow, text: string | null | undefined): ModelText | null {
     return text === null || text === undefined ? null : this.fromView(view, text, "candidate");
+  }
+
+  /**
+   * Section 8: a whole note an owner question shows, read from its redacted view. A note of at most OWNER_NOTE_CHARS
+   * from a window that is no conversation counts against that window's owner-note allotment instead of its limit, and
+   * only where it stands whole in a request's state.source_notes; any other note is a candidate like any text.
+   */
+  ownerNote(view: RedactedWindow, text: string): ModelText | null {
+    if (!this.ownerNoteFits(view, text)) return this.candidate(view, text);
+    if (!isRedacted(view)) throw new UnmintedText("an owner note was read from a window that is not a redacted view");
+    if (text === "" || !viewHolds(view, text)) return null;
+    this.know(view);
+    if (!this.admitTexts([text], { under: view.window.windowId, kind: "candidate", noteOf: view })) return null;
+    this.ownerNotes.set(text, view);
+    return this.record(text, ["candidate"]);
+  }
+
+  /**
+   * ownerNote for every text, each from the first window this Disclosure was built over whose redacted view shows it
+   * whole: all of them or, when one cannot go, none (MERGE-CASES b2).
+   */
+  ownerNotesOnScreen(texts: readonly string[]): ModelText[] | null {
+    const views = [...this.known.values()].map(redactWindow);
+    const takes = texts.map((text) => ({ w: views.find((v) => viewHolds(v, text)), text }));
+    if (!takes.every((t): t is { w: WindowState; text: string } => t.w !== undefined) || !this.notesFit(takes)) return null;
+    const out = takes.flatMap((t) => this.ownerNote(t.w, t.text) ?? []);
+    return out.length === takes.length ? out : null;
+  }
+
+  /**
+   * Section 8: which of a request's decoded units are its owner notes: a string standing whole at state.source_notes.<id>
+   * that this Disclosure minted as an owner note, by the view it was read from.
+   */
+  ownerNoteUnits(units: readonly DecodedUnit[]): OwnerNotes {
+    const out = new Map<WindowState, Set<number>>();
+    units.forEach((u, i) => {
+      const view = u.kind === "string" && u.path.length === 3 && u.path[0] === "state" && u.path[1] === "source_notes" ? this.ownerNotes.get(u.text) : undefined;
+      if (view === undefined) return;
+      let s = out.get(view);
+      if (s === undefined) out.set(view, (s = new Set()));
+      s.add(i);
+    });
+    return out;
   }
 
   /**
@@ -715,18 +762,24 @@ export class Disclosure extends SnippetLedger {
   }
 
   /**
-   * The seal's measure (OUTPUT-LEDGER-SPEC sections 4-6): the request's final decoded units against every window the
-   * registry knows now and every older snapshot this Disclosure holds, each held to its limit. Throws LedgerRefused,
-   * naming the purpose, window key and limit, when there is no registry, a unit cannot be measured, or a limit breaks.
+   * The seal's measure (OUTPUT-LEDGER-SPEC sections 4-7): the request's final decoded units against every window the
+   * registry knows now and every older snapshot this Disclosure holds, each held to its limit, and with every request
+   * sent through this Disclosure before it, held to each conversation's limit together. Throws LedgerRefused, naming the
+   * purpose, window key and limit, when there is no registry, a unit cannot be measured, or a limit breaks.
    */
-  measureSent(purpose: string, units: readonly string[]): Measurement {
+  measureSent(purpose: string, units: readonly string[], notes: OwnerNotes = new Map()): Measurement {
     if (this.registry === null) throw new LedgerRefused(`${purpose}: its Disclosure has no screen registry, so what it reveals cannot be measured; it was not sent`);
     const norm = normalizedUnits(units);
     if (norm === null) throw new LedgerRefused(`${purpose}: a text in it holds an unpaired surrogate and cannot be measured; it was not sent`);
     const ws = this.measuredWindows();
     const m = measure(norm, ws);
-    const b = breach(m, ws);
-    if (b !== null) throw new LedgerRefused(`${purpose}: it reveals ${b.charged} characters of window ${b.key}, over its limit of ${b.limit}; it was not sent`);
+    const split = splitNotes(norm, ws, notes);
+    const refuse = (b: Breach & { notes: boolean }, before: boolean): LedgerRefused =>
+      new LedgerRefused(`${purpose}: ${before ? "with the requests sent before it, " : ""}it reveals ${b.charged} characters of ${b.notes ? `window ${b.key}'s owner notes, over the owner-note allotment` : `window ${b.key}, over its limit`} of ${b.limit}; it was not sent`);
+    const b = breachWithNotes(m, ws, split, OWNER_NOTE_CHARS);
+    if (b !== null) throw refuse(b, false);
+    const ob = this.operation.admit(m, ws, split, OWNER_NOTE_CHARS);
+    if (ob !== null) throw refuse(ob, true);
     return m;
   }
 
@@ -755,14 +808,14 @@ export function measureBytes(req: { purpose?: string; kind?: string; disclosure?
   const purpose = req.purpose ?? req.kind ?? UNNAMED;
   const d = asDisclosure(req.disclosure);
   if (d === null) throw new UnmintedText(`${purpose} has no Disclosure, so nothing in it was minted; it was not sent`);
-  let units: string[];
+  let units: readonly DecodedUnit[];
   try {
-    units = decodeUnits(bytes).units.map((u) => u.text);
+    units = decodeUnits(bytes).units;
   } catch (e) {
     if (e instanceof LedgerEncodingError) throw new LedgerRefused(`${purpose}: its bytes do not decode as one well-formed JSON value (${e.message.replace(/^.*?: /u, "")}); it was not sent`);
     throw e;
   }
-  return d.measureSent(purpose, units);
+  return d.measureSent(purpose, units.map((u) => u.text), d.ownerNoteUnits(units));
 }
 
 /** The writer port's check: the request has a Disclosure and its input is all minted text. */

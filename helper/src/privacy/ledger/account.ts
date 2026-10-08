@@ -95,6 +95,7 @@ export interface MeasuredWindow {
   readonly view: WindowState;
   readonly inv: LineInventory;
   readonly limit: number;
+  readonly conversation: boolean;
 }
 
 const viewOf = (w: WindowState): WindowState => (isRedacted(w) ? w : redactWindow(w));
@@ -116,7 +117,8 @@ export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowS
     const id = raw.window.windowId;
     const inv = viewInventory(view);
     const older = out.filter((m) => m.windowId === id).length;
-    out.push({ key: older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limit: limitOf(inv, heldAsConversation(raw)) });
+    const conversation = heldAsConversation(raw);
+    out.push({ key: older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limit: limitOf(inv, conversation), conversation });
   };
   for (const w of registry.windows.values()) add(w);
   for (const w of held) add(w);
@@ -172,59 +174,167 @@ export function breach(m: Measurement, windows: readonly MeasuredWindow[]): Brea
 }
 
 /**
+ * Section 8: which units are whole owner notes, by the window state each was read from. A note counts against its own
+ * window's owner-note allotment instead of that window's limit; every other window measures it like any other unit.
+ */
+export type OwnerNotes = ReadonlyMap<WindowState, ReadonlySet<number>>;
+
+/** A window's own owner notes, split from the rest of a request: what each part reveals of that window. */
+export interface NoteSplit {
+  readonly key: string;
+  readonly ordinary: number;
+  readonly notes: Uint8Array;
+  readonly noted: number;
+}
+
+/** For every window with owner notes among `units`, what the rest and the notes each reveal of it. */
+export function splitNotes(units: readonly Normalized[], windows: readonly MeasuredWindow[], notes: OwnerNotes): NoteSplit[] {
+  const out: NoteSplit[] = [];
+  for (const w of windows) {
+    const mine = notes.get(w.view);
+    if (mine === undefined || mine.size === 0) continue;
+    const ordinary = new UnitProbe(units.filter((_, i) => !mine.has(i))).reveal(w.inv);
+    const noted = new UnitProbe(units.filter((_, i) => mine.has(i))).reveal(w.inv);
+    out.push({ key: w.key, ordinary: ordinary.charged, notes: noted.positions, noted: noted.charged });
+  }
+  return out;
+}
+
+/**
+ * The first window a measurement takes past its limit, or a window's own owner notes past `allotment`, or null. A
+ * window with owner notes holds the rest of the request to its limit and the notes to the allotment; the full charge
+ * is reported as `charged` either way.
+ */
+export function breachWithNotes(m: Measurement, windows: readonly MeasuredWindow[], split: readonly NoteSplit[], allotment: number): (Breach & { notes: boolean }) | null {
+  for (const w of windows) {
+    const s = split.find((x) => x.key === w.key);
+    if (s === undefined) {
+      const charged = m.charged[w.key] ?? 0;
+      if (charged > w.limit) return { key: w.key, charged, limit: w.limit, notes: false };
+    } else {
+      if (s.ordinary > w.limit) return { key: w.key, charged: s.ordinary, limit: w.limit, notes: false };
+      if (s.noted > allotment) return { key: w.key, charged: s.noted, limit: allotment, notes: true };
+    }
+  }
+  return null;
+}
+
+/** `had` with `bits` added, and how many positions the union holds. */
+function unionOf(had: Uint8Array | undefined, bits: Uint8Array): { u: Uint8Array; count: number } {
+  const u = had === undefined ? bits : had.map((b, p) => b | bits[p]!);
+  let count = 0;
+  for (const b of u) count += b;
+  return { u, count };
+}
+
+/**
+ * Sections 7 and 8: one operation's ledger. The positions every request it sent revealed of each conversation, unioned
+ * by window state, are held to that conversation's limit: two requests of one fill cannot each take just under half. A
+ * window's owner notes, unioned over the operation's requests, are held to the allotment: every wording and retry
+ * shares one. A retried or repeated request adds no positions. Other windows are held per request only.
+ */
+export class OperationLedger {
+  private readonly union = new Map<WindowState, Uint8Array>();
+  private readonly notes = new Map<WindowState, Uint8Array>();
+
+  /**
+   * Keeps a sent request's positions, or returns the conversation they would take past its limit, or the window whose
+   * owner notes would pass `allotment`, and keeps nothing.
+   */
+  admit(m: Measurement, windows: readonly MeasuredWindow[], split: readonly NoteSplit[] = [], allotment = 0): (Breach & { notes: boolean }) | null {
+    const next: [Map<WindowState, Uint8Array>, WindowState, Uint8Array][] = [];
+    for (const w of windows) {
+      const bits = w.conversation ? m.positions.get(w.key)?.bits : undefined;
+      if (bits !== undefined) {
+        const { u, count } = unionOf(this.union.get(w.view), bits);
+        if (count > w.limit) return { key: w.key, charged: count, limit: w.limit, notes: false };
+        next.push([this.union, w.view, u]);
+      }
+      const s = split.find((x) => x.key === w.key);
+      if (s !== undefined) {
+        const { u, count } = unionOf(this.notes.get(w.view), s.notes);
+        if (count > allotment) return { key: w.key, charged: count, limit: allotment, notes: true };
+        next.push([this.notes, w.view, u]);
+      }
+    }
+    for (const [map, view, u] of next) map.set(view, u);
+    return null;
+  }
+}
+
+/**
  * The early check while a request is built: each minted text's positions, unioned per window state, held to that
  * window's limit. A text that would break one is refused and nothing of it is kept. Superseded by the seal's measure of
  * the final bytes, which alone decides what is sent and what is declared charged.
  */
 export class MintAccount {
-  private readonly running = new WeakMap<WindowState, { readonly bits: Uint8Array; charged: number }>();
+  /** By window state: the positions the request's texts reveal, apart from that window's own owner notes, and those notes'. */
+  private readonly running = new WeakMap<WindowState, { readonly bits: Uint8Array; charged: number; readonly notes: Uint8Array; noted: number }>();
   /** Window keys charged so far, with the view each was charged in, in first-charged order. */
   private readonly charged = new Map<string, WindowState>();
   private readonly windows: () => readonly MeasuredWindow[];
+  /** Section 8's owner-note allotment, in characters of a window's own notes. */
+  private readonly allotment: number;
 
-  constructor(windows: () => readonly MeasuredWindow[]) {
+  constructor(windows: () => readonly MeasuredWindow[], allotment = 0) {
     this.windows = windows;
+    this.allotment = allotment;
   }
 
   /**
-   * What admitting these texts would add to each window, or null when one window would break its limit or a text cannot
-   * be measured. `commit` keeps the positions. Each window's newly shown stretches, as its lines spell them, are returned
-   * for declarations.
+   * What admitting these texts would add to each window, or null when one window would break its limit (or its owner
+   * notes the allotment) or a text cannot be measured. `notes` names the texts that are whole owner notes, by the window
+   * state each was read from. `commit` keeps the positions. Each window's newly shown stretches, as its lines spell them,
+   * are returned for declarations.
    */
-  admit(texts: readonly string[], commit: boolean): Map<string, { added: number; lines: string[] }> | null {
-    const units = normalizedUnits(texts.filter((t) => t !== ""));
+  admit(texts: readonly string[], commit: boolean, notes: ReadonlyMap<string, WindowState> = new Map()): Map<string, { added: number; lines: string[] }> | null {
+    const kept = texts.filter((t) => t !== "");
+    const units = normalizedUnits(kept);
     if (units === null) return null;
     if (units.length === 0) return new Map();
     const probe = new UnitProbe(units);
-    const adds: { m: MeasuredWindow; r: { bits: Uint8Array; charged: number }; bits: Uint8Array; added: number }[] = [];
+    const adds: { m: MeasuredWindow; r: { bits: Uint8Array; charged: number; notes: Uint8Array; noted: number }; bits: Uint8Array; notes: Uint8Array | null; added: number; addedNotes: number }[] = [];
     for (const m of this.windows()) {
-      const got = probe.reveal(m.inv);
-      if (got.charged === 0) continue;
+      const mine = new Set(kept.flatMap((t, i) => (notes.get(t) === m.view ? [i] : [])));
+      const got = mine.size === 0 ? probe.reveal(m.inv) : new UnitProbe(units.filter((_, i) => !mine.has(i))).reveal(m.inv);
+      const noted = mine.size === 0 ? null : new UnitProbe(units.filter((_, i) => mine.has(i))).reveal(m.inv);
+      if (got.charged === 0 && (noted === null || noted.charged === 0)) continue;
       let r = this.running.get(m.view);
-      if (r === undefined) this.running.set(m.view, (r = { bits: new Uint8Array(m.inv.total), charged: 0 }));
+      if (r === undefined) this.running.set(m.view, (r = { bits: new Uint8Array(m.inv.total), charged: 0, notes: new Uint8Array(m.inv.total), noted: 0 }));
       let added = 0;
       for (let p = 0; p < got.positions.length; p++) if (got.positions[p] === 1 && r.bits[p] !== 1) added++;
-      if (added === 0) continue;
-      if (r.charged + added > m.limit) return null;
-      adds.push({ m, r, bits: got.positions, added });
+      let addedNotes = 0;
+      if (noted !== null) for (let p = 0; p < noted.positions.length; p++) if (noted.positions[p] === 1 && r.notes[p] !== 1) addedNotes++;
+      if (added === 0 && addedNotes === 0) continue;
+      if (r.charged + added > m.limit || r.noted + addedNotes > this.allotment) return null;
+      adds.push({ m, r, bits: got.positions, notes: noted?.positions ?? null, added, addedNotes });
     }
     const out = new Map<string, { added: number; lines: string[] }>();
     for (const a of adds) {
-      out.set(a.m.key, { added: a.added, lines: newlyShown(a.m.inv, a.bits, a.r.bits) });
+      const had = a.r.bits.map((b, p) => b | a.r.notes[p]!);
+      const shown = a.notes === null ? a.bits : a.bits.map((b, p) => b | a.notes![p]!);
+      let added = 0;
+      for (let p = 0; p < shown.length; p++) if (shown[p] === 1 && had[p] !== 1) added++;
+      out.set(a.m.key, { added, lines: newlyShown(a.m.inv, shown, had) });
       if (!commit) continue;
       for (let p = 0; p < a.bits.length; p++) if (a.bits[p] === 1) a.r.bits[p] = 1;
+      if (a.notes !== null) for (let p = 0; p < a.notes.length; p++) if (a.notes[p] === 1) a.r.notes[p] = 1;
       a.r.charged += a.added;
+      a.r.noted += a.addedNotes;
       if (!this.charged.has(a.m.key)) this.charged.set(a.m.key, a.m.view);
     }
     return out;
   }
 
-  /** Characters charged so far, by window key. */
+  /** Characters charged so far, by window key: every position revealed, owner notes included, counted once. */
   charges(): Record<string, number> {
     const out: Record<string, number> = {};
     for (const [key, view] of this.charged) {
       const r = this.running.get(view);
-      if (r !== undefined && r.charged > 0) out[key] = r.charged;
+      if (r === undefined) continue;
+      let n = 0;
+      for (let p = 0; p < r.bits.length; p++) n += r.bits[p]! | r.notes[p]!;
+      if (n > 0) out[key] = n;
     }
     return out;
   }

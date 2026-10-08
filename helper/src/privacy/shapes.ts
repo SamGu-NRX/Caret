@@ -23,6 +23,7 @@
 import type { JevPurpose } from "../fill/jev.ts";
 import type { WriterRequest } from "../writer/port.ts";
 import type { MintReason } from "./disclosure.ts";
+import { OWNER_NOTE_CHARS } from "../privacy.ts";
 
 /** What one path of a request may hold: texts minted under these reasons only, at most `max` characters long. */
 export interface Slot {
@@ -124,9 +125,8 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "state.destination_window": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 99
     "state.form_fields": { reasons: ["candidate", "descriptor", "instruction", "memory", "ownWording"], max: 2900 }, // seen 1176
     "state.instruction": { reasons: ["instruction"], max: 700 }, // seen 92
-    // INT1 (HA2's notes): a note is a candidate cut whole from one window, within its budget while OWNER_NOTE_CHARS is 0
-    // (privacy.ts, TODO(INT1)), so WINDOW_CHARS; not observed in PV2's step 5 run, which predates the notes.
-    "state.source_notes.*": { reasons: ["candidate"], max: 1200 },
+    // A whole owner note, at most the owner-note allotment (privacy.ts OWNER_NOTE_CHARS).
+    "state.source_notes.*": { reasons: ["candidate"], max: OWNER_NOTE_CHARS },
     "state.task": { reasons: ["candidate", "descriptor", "instruction", "ownWording"], max: 1800 }, // seen 624
   },
   "goal": {
@@ -237,8 +237,8 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "questions.*.criteria.*": { reasons: ["ownWording"], max: 300 }, // seen 135
     "questions.*.instructions": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording", "plan"], max: 1200 }, // seen 278
     "state.instruction": { reasons: ["instruction"], max: 700 }, // seen 51
-    // INT1 (HA2's notes, verifyWrites): as fill.whose's source_notes.
-    "state.source_notes.*": { reasons: ["candidate"], max: 1200 },
+    // HA2's notes (verifyWrites): as fill.whose's source_notes.
+    "state.source_notes.*": { reasons: ["candidate"], max: OWNER_NOTE_CHARS },
     "state.task": { reasons: ["ownWording"], max: 200 }, // seen 76
   },
   "planner.fields": {
