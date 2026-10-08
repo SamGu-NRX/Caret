@@ -41,6 +41,7 @@ import re
 import select
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -544,6 +545,33 @@ class Owner:
         if resource["type"] == "group":
             self.watches[resource["id"]] = procs.GroupWatch(self.probes, resource["pgid"], resource["leader"])
 
+    def _socket_dir(self):
+        """The socket's directory, the supervisor's private one under /tmp: made 0700 if it is gone, else checked to be
+        this user's own 0700 directory, not a symlink. Raises OSError otherwise."""
+        path = os.path.dirname(self.sock_path)
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            pass
+        st = os.lstat(path)
+        if not stat.S_ISDIR(st.st_mode):
+            raise OSError("socket directory {} is not a directory".format(path))
+        if st.st_uid != os.getuid() or st.st_mode & 0o077:
+            raise OSError("socket directory {} is not private to this user (mode {:o}, uid {})".format(
+                path, st.st_mode & 0o777, st.st_uid))
+
+    def _close_listener(self, listener):
+        """After CLEAN. The socket's directory belongs to the supervisor, which removes it (Custody.finish): while it
+        lives it may restart an owner to have CLEAN replayed, and that owner binds there. Only a dead supervisor's is
+        removed here."""
+        listener.close()
+        os.unlink(self.sock_path)
+        if self.supervisor is None or same_process(self.probes, self.supervisor) is not True:
+            try:
+                os.rmdir(os.path.dirname(self.sock_path))
+            except OSError:
+                pass
+
     def run(self):
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
         lock = os.open(os.path.join(self.dir, "owner.lock"), os.O_RDWR | os.O_CREAT, 0o600)
@@ -561,6 +589,7 @@ class Owner:
                 return 0
             # The CLEAN reply may have died with the previous owner: answer the living supervisor again.
             self.log("journal says CLEAN; replaying it to supervisor {}".format(self.supervisor))
+        self._socket_dir()
         if os.path.lexists(self.sock_path):
             os.unlink(self.sock_path)  # owner.lock is ours, so no live owner is listening on it
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -593,12 +622,7 @@ class Owner:
         for fd in self.fds.values():
             os.close(fd)
         self.fds = {}
-        listener.close()
-        os.unlink(self.sock_path)
-        try:
-            os.rmdir(os.path.dirname(self.sock_path))  # the supervisor's private directory for this socket
-        except OSError:
-            pass
+        self._close_listener(listener)
         self.log("CLEAN; descriptors closed")
         if self.supervisor is None or same_process(self.probes, self.supervisor) is not True:
             self._bootout_self()

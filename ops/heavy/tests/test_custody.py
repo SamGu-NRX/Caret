@@ -648,6 +648,55 @@ class SlotLockIdentity(unittest.TestCase):
         self.assertIn("identity", reply["error"])
 
 
+class CleanReplayKeepsTheSocketDirectory(unittest.TestCase):
+    """The socket's directory is the supervisor's (Custody.finish removes it). An owner that reaches CLEAN while its
+    supervisor lives must leave it: when the supervisor's clean request timed out, it restarts the owner to have CLEAN
+    replayed, and that owner binds its socket there. (2026-10-08, load average ~20: the directory was gone, every
+    restarted owner died in bind, and the supervisor stayed QUARANTINED with the journal saying CLEAN.)"""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="caret-sockdir-"))
+        self.addCleanup(subprocess.run, ["rm", "-rf", self.tmp])
+        self.dir = os.path.join(self.tmp, "chr.x")
+        owner = recovery.Owner.__new__(recovery.Owner)
+        owner.sock_path = os.path.join(self.dir, "s")
+        owner.probes = procs.DarwinProbes()
+        owner.log = lambda *a, **k: None
+        self.owner = owner
+
+    def listener(self):
+        import socket
+        os.mkdir(self.dir, 0o700)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(self.owner.sock_path)
+        return sock
+
+    def test_a_living_supervisors_directory_is_left(self):
+        self.owner.supervisor = recovery.identity(self.owner.probes, os.getpid())
+        self.owner._close_listener(self.listener())
+        self.assertFalse(os.path.lexists(self.owner.sock_path))
+        self.assertTrue(os.path.isdir(self.dir))
+
+    def test_a_dead_supervisors_directory_is_removed(self):
+        self.owner.supervisor = [os.getpid(), 1]  # this pid, another start time: not a living process
+        self.owner._close_listener(self.listener())
+        self.assertFalse(os.path.exists(self.dir))
+
+    def test_a_missing_directory_is_made_private_and_a_foreign_one_refused(self):
+        self.owner._socket_dir()
+        st = os.lstat(self.dir)
+        self.assertEqual((st.st_mode & 0o777, st.st_uid), (0o700, os.getuid()))
+        self.owner._socket_dir()  # its own, already there
+        os.chmod(self.dir, 0o755)
+        with self.assertRaisesRegex(OSError, "not private"):
+            self.owner._socket_dir()
+        os.rmdir(self.dir)
+        os.symlink(self.tmp, self.dir)
+        with self.assertRaisesRegex(OSError, "not a directory"):
+            self.owner._socket_dir()
+
+
 class SupervisorErrorWithoutAnOwner(Custody):
     def test_an_error_with_no_confirmed_owner_keeps_the_locks_until_one_holds_them(self):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3),
