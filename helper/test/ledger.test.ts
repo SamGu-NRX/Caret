@@ -378,6 +378,46 @@ describe("what a minted unit takes from its window", () => {
   });
 });
 
+// The promise's scope (OUTPUT-LEDGER-SPEC section 4): a request is charged what it takes from a conversation's window.
+// Text equal to the chat's that came from elsewhere is not taken from it, so each of these charges the chat nothing.
+describe("text a chat shows that the request did not take from it", () => {
+  const LINES = ["Alice, Bob", "Cedar, Elm", "Paris, Rome", "none!", "room 4412 at noon", "Alix"];
+  const desk = (noteLines: string[]): { d: Disclosure; noteView: WindowState } => {
+    const m = new ScreenModel();
+    m.apply(snap(LINES.map((l, i) => text(`c${i}`, l)), { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    m.apply(snap(noteLines.map((l, i) => text(`n${i}`, l)), { at: 2, windowId: "note-1", title: "Note", app: NOTES }));
+    return { d: new Disclosure(m), noteView: redactWindow(m.windows.get("note-1") as WindowState) };
+  };
+
+  it("the same six names minted from a note: the note pays 25, the chat 0", () => {
+    const { d, noteView } = desk(["Alice, Bob", "Cedar, Elm", "Paris, Rome"]);
+    const names = ["Alice", "Bob", "Cedar", "Elm", "Paris", "Rome"].map((v) => d.candidate(noteView, v)!);
+    const c = d.measureSent("test", names).charged;
+    expect([c["note-1"], c["chat-1"] ?? 0]).toEqual([25, 0]);
+  });
+
+  it("the user's own instruction: 0", () => {
+    const { d } = desk(["x"]);
+    expect(d.measureSent("test", [d.instruction("Alice and Bob, then Paris")]).charged["chat-1"] ?? 0).toBe(0);
+  });
+
+  it("Caret's own wording 'none' against the chat line 'none!': 0", () => {
+    const { d } = desk(["x"]);
+    expect(d.measureSent("test", [d.own("none")]).charged["chat-1"] ?? 0).toBe(0);
+  });
+
+  it("a number code wrote that the chat also shows: 0", () => {
+    const { d } = desk(["x"]);
+    expect(measureBytes({ purpose: "test", disclosure: d }, JSON.stringify({ state: { count: 4412 } })).charged["chat-1"] ?? 0).toBe(0);
+  });
+
+  it("'Al' and 'ix' minted from a note as separate units, against the chat line 'Alix': 0", () => {
+    const { d, noteView } = desk(["Al", "ix"]);
+    const c = d.measureSent("test", [d.candidate(noteView, "Al")!, d.candidate(noteView, "ix")!]).charged;
+    expect([c["note-1"], c["chat-1"] ?? 0]).toEqual([4, 0]);
+  });
+});
+
 // Sol review of 9d110306, P1: a declared nested JSON text is measured as the text it decodes to.
 describe("a JSON state at seal", () => {
   it("measures the strings a JSON state holds, not its escaped spelling", () => {

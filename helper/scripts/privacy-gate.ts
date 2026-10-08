@@ -12,7 +12,7 @@ const owner = ownerNoteGate();
 if (owner !== null) reasons.push(owner);
 const required = [
   ["pv2-sites-send", "PV2's Sites and send-boundary fixes aren't accepted yet; the promise's switched-off sentence isn't backed", "It sends nothing from an app or website you've switched off."],
-  ["ha2-copied-conversation", "HA2's copied-conversation fix isn't accepted yet", "No request carries more than half of a conversation."],
+  ["ha2-copied-conversation", "HA2's copied-conversation fix isn't accepted yet", "No request takes more than half of any one conversation."],
 ] as const;
 for (const [id, missing, sentence] of required) {
   const acceptance = PRIVACY_ACCEPTANCES[id];

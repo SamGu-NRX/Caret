@@ -49,7 +49,7 @@ describe("privacy build gate", () => {
     const result = gate(path);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("ha2-copied-conversation");
-    expect(result.stderr).toContain("No request carries more than half of a conversation.");
+    expect(result.stderr).toContain("No request takes more than half of any one conversation.");
     expect(result.stderr).not.toContain("pv2-sites-send");
   });
   it("refuses the owner-note disclosure independently of PV2", () => {

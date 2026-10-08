@@ -12,7 +12,7 @@ def refusals(root: Path) -> list[str]:
         'Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt")',
         'String(contentsOf:', 'encoding: .utf8',
     ))
-    hardcoded = any(token in text for token in ("To decide what to offer, Caret sends", "Never a whole document or conversation", "No request carries more than half of a conversation"))
+    hardcoded = any(token in text for token in ("To decide what to offer, Caret sends", "Never a whole document or conversation", "No request takes more than half of any one conversation"))
     if not resource_read or hardcoded or "Text(Self.privacyLine)" not in text:
         return [f"{path}: the onboarding copy must render PRIVACY_PROMISE from privacy.ts"]
     # apps/mac's permission panel has no cloud-data promise. If one is added, require the resource there too.
