@@ -15,7 +15,7 @@ import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
 import { excludedValue, withholdValues } from "./exclude.ts";
-import { ANY_PATH, childGlob, containerAt, knownPath, scalarsAt, shapeItems, shapeOf, UNNAMED, type ScalarType, type Slot } from "./shapes.ts";
+import { ANY_PATH, childGlob, containerAt, knownPath, OWNER_QUESTION_PURPOSES, scalarsAt, shapeItems, shapeOf, UNNAMED, type ScalarType, type Slot } from "./shapes.ts";
 import { switchedOffCount } from "./read-policy.ts";
 import { describeField, descriptorSources, type FieldDescriptor } from "../fill/descriptor.ts";
 import type { Node } from "../protocol.ts";
@@ -56,6 +56,22 @@ function nodeSpans(view: WindowState, key: string): ViewSpan[] {
     const map = parts.get(nodePart(key, p));
     return map === undefined ? [] : [{ view, at: wholePart(nodePart(key, p), map.raw) }];
   });
+}
+
+/**
+ * A text's declared spans in `view` (OUTPUT-LEDGER-SPEC section 4): `at`, the range a producer recorded, or else the
+ * text, charging every line that holds a line of it. A typed value in the reader's own words ("2026-10-16" read off
+ * "the following Friday") stands in no line, so a text a typed value holds that some line does not also charges the node
+ * that value was read from, whole. The one rule for a candidate (fromView), a derivation's basis (basis) and plan text
+ * (planSpans): a derivation from a typed value charged nothing when only candidate() applied it.
+ */
+function textSpans(view: WindowState, text: string, at?: SourceAt | null): ViewSpan[] {
+  if (at !== undefined && at !== null) return [{ view, at }];
+  const spans: ViewSpan[] = [{ view, text }];
+  const lines = viewInventory(view).lines;
+  const pieces = sourceLines(text).map((l) => l.replace(/^\u2026|\u2026$/gu, "")).filter((l) => l !== "");
+  if (!pieces.every((p) => lines.some((l) => l.includes(p)))) for (const v of view.values) if (pieces.some((p) => v.text.includes(p))) spans.push(...nodeSpans(view, v.nodeKey));
+  return spans;
 }
 
 /**
@@ -244,14 +260,14 @@ export class Basis {
   readonly text: string;
   /** The redacted view the text was read from, which a derivation from it declares its span under. */
   readonly view: WindowState | null;
-  /** Where in `view` the text was read, if the producer recorded it; a derivation declares all of it. */
-  readonly at: SourceAt | null;
-  constructor(token: symbol, of: object, text: string, view: WindowState | null = null, at: SourceAt | null = null) {
+  /** What a derivation from it declares (textSpans): where in `view` the text was read, all of it, or the text's lines. */
+  readonly spans: readonly ViewSpan[];
+  constructor(token: symbol, of: object, text: string, view: WindowState | null = null, spans: readonly ViewSpan[] = []) {
     if (token !== BASIS_TOKEN) throw new UnmintedText("a Basis comes only from Disclosure.basis");
     this.of = of;
     this.text = text;
     this.view = view;
-    this.at = at;
+    this.spans = spans;
   }
 }
 
@@ -376,14 +392,7 @@ export class Disclosure extends SnippetLedger {
     if (text === "" || !viewHolds(view, text)) return null;
     if (at !== undefined && !rangeHolds(view, at, text)) throw new Error(`a ${reason}'s recorded source range [${at.start}, ${at.end}) of ${JSON.stringify(at.part)} does not hold its text`);
     this.know(view);
-    const spans: ViewSpan[] = [at === undefined ? { view, text } : { view, at }];
-    // A typed value in the reader's own words, which stands in no line of the view, charges the node it was read from,
-    // whole. One that stands in the view's text is charged where it stands, as any text.
-    if (at === undefined) {
-      const lines = viewInventory(view).lines;
-      const pieces = sourceLines(text).map((l) => l.replace(/^\u2026|\u2026$/gu, "")).filter((l) => l !== "");
-      if (!pieces.every((p) => lines.some((l) => l.includes(p)))) for (const v of view.values) if (pieces.some((p) => v.text.includes(p))) spans.push(...nodeSpans(view, v.nodeKey));
-    }
+    const spans = textSpans(view, text, at);
     if (!this.admitTexts([text], { under: view.window.windowId, kind: reason === "descriptor" ? "descriptor" : "candidate", spans })) return null;
     this.declareSpans(text, spans);
     return this.record(text, [reason]);
@@ -461,11 +470,14 @@ export class Disclosure extends SnippetLedger {
   }
 
   /**
-   * Section 8: which of a request's decoded units are its owner notes: a string standing whole at state.source_notes.<id>
-   * that this Disclosure minted as an owner note, by the view it was read from.
+   * Section 8: which of a request's decoded units are its owner notes: in a request that asks owner questions
+   * (OWNER_QUESTION_PURPOSES), a string standing whole at state.source_notes.<id> that this Disclosure minted as an owner
+   * note, by the view it was read from. Any other request has none: value settlement names the same notes, and they are
+   * held to their window's limit there.
    */
-  ownerNoteUnits(units: readonly DecodedUnit[]): OwnerNotes {
+  ownerNoteUnits(purpose: string, units: readonly DecodedUnit[]): OwnerNotes {
     const out = new Map<WindowState, Set<number>>();
+    if (!OWNER_QUESTION_PURPOSES.has(purpose)) return out;
     units.forEach((u, i) => {
       const view = u.kind === "string" && u.path.length === 3 && u.path[0] === "state" && u.path[1] === "source_notes" ? this.ownerNotes.get(u.text) : undefined;
       if (view === undefined) return;
@@ -519,7 +531,7 @@ export class Disclosure extends SnippetLedger {
    * them that holds a line of it (whatever its length) is charged whole (ledger/measure.ts spanPositions).
    */
   private planSpans(text: string): ViewSpan[] {
-    return this.measuredWindows().map((w) => ({ view: w.view, text }));
+    return this.measuredWindows().flatMap((w) => textSpans(w.view, text));
   }
 
 
@@ -670,7 +682,7 @@ export class Disclosure extends SnippetLedger {
     if (view !== null) this.know(view);
     // Its declared spans: each basis read from a view, whole (what it read, not what it reproduced), and a minted base's
     // own spans.
-    const spans: ViewSpan[] = bases.flatMap((b) => (b instanceof Basis ? (b.view === null ? [] : [b.at === null ? { view: b.view, text: b.text } : { view: b.view, at: b.at }]) : (this.spans.get(b) ?? [])));
+    const spans: ViewSpan[] = bases.flatMap((b) => (b instanceof Basis ? b.spans : (this.spans.get(b) ?? [])));
     if (!this.admitTexts([text], { under: view === null ? null : view.window.windowId, kind: "candidate", spans })) return null;
     this.declareSpans(text, spans);
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
@@ -687,7 +699,7 @@ export class Disclosure extends SnippetLedger {
     if (!viewHolds(view, text)) return null;
     if (at !== undefined && !rangeHolds(view, at, text)) throw new Error(`a basis's recorded source range [${at.start}, ${at.end}) of ${JSON.stringify(at.part)} does not hold its text`);
     this.know(view);
-    return new Basis(BASIS_TOKEN, this, text, view, at ?? null);
+    return new Basis(BASIS_TOKEN, this, text, view, textSpans(view, text, at));
   }
 
   /**
@@ -976,7 +988,7 @@ export function measureBytes(req: { purpose?: string; kind?: string; disclosure?
     throw e;
   }
   const texts = units.map((u) => u.text);
-  return d.measureSent(purpose, texts, d.ownerNoteUnits(units), spanned ?? texts, commit);
+  return d.measureSent(purpose, texts, d.ownerNoteUnits(purpose, units), spanned ?? texts, commit);
 }
 
 /** The writer port's check: the request has a Disclosure and its input is all minted text. */

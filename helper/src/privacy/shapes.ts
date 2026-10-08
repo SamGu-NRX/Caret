@@ -36,6 +36,13 @@ export interface Slot {
  * jev.ts JevRequest.purpose); it may carry Caret's own wording, at any path, and no screen text at all.
  */
 export const UNNAMED = "unnamed";
+
+/**
+ * The requests that ask owner questions, whose state.source_notes holds whole owner notes at the owner-note allotment
+ * (OUTPUT-LEDGER-SPEC section 8): fill's owner questions and HA2's on a plan's values. A value question that names the
+ * same notes (value settlement's fill.values and fill.verify) holds them to the window's limit.
+ */
+export const OWNER_QUESTION_PURPOSES: ReadonlySet<string> = new Set<ShapeKey>(["fill.whose", "plan.verify"]);
 /** The glob a row may use for every path: only UNNAMED's row does. */
 export const ANY_PATH = "**";
 

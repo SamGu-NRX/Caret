@@ -548,7 +548,20 @@ export const VERIFY_BATCH = 20;
  * range of the redacted view's text. The verifier quotes such a text at its range, not as plan text, whose fallback would
  * charge the whole line it stands in. Kept beside the provenance, not in it: a provenance is stored and compared whole.
  */
-const READS = new WeakMap<Provenance, { view: WindowState; reads: ReadonlyMap<string, SourceAt> }>();
+/**
+ * Where a window provenance's texts were read: the view, and the range of each text by its role in the provenance
+ * (its title, span, label, line), never by its spelling. A title and a value can read alike ("AB01" titling a chat whose
+ * label is "Ref: AB01"); each is charged where it stands. A role with no range is quoted as plan text.
+ */
+export interface ProvenanceReads {
+  readonly view: WindowState;
+  readonly title?: SourceAt;
+  readonly span?: SourceAt;
+  readonly label?: SourceAt;
+  readonly line?: SourceAt;
+}
+type ReadRole = Exclude<keyof ProvenanceReads, "view">;
+const READS = new WeakMap<Provenance, ProvenanceReads>();
 
 /** `copy`, a copy of `pr` (a clone, a spread), with `pr`'s reads and those of the provenances it names. */
 export function readsCopied<P extends Provenance>(pr: Provenance, copy: P): P {
@@ -561,9 +574,9 @@ export function readsCopied<P extends Provenance>(pr: Provenance, copy: P): P {
   return copy;
 }
 
-/** `pr`, with where its texts were read in `view` (READS). */
-export function withReads<P extends Provenance>(pr: P, view: WindowState, reads: ReadonlyMap<string, SourceAt>): P {
-  if (reads.size > 0) READS.set(pr, { view, reads });
+/** `pr`, a window provenance, with where its texts were read (READS). */
+export function withReads<P extends Extract<Provenance, { kind: "window" }>>(pr: P, reads: ProvenanceReads): P {
+  READS.set(pr, reads);
   return pr;
 }
 
@@ -585,27 +598,28 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
   const m = quote;
   switch (pr.kind) {
     case "window": {
-      // A text read at a recorded range is quoted there (READS); any other as `quote` mints it.
+      // A text read at a recorded range is quoted at its role's range (READS); any other as `quote` mints it.
       const read = READS.get(pr);
-      const m = (t: string): ModelText | null => {
+      const m = (role: ReadRole | null, t: string): ModelText | null => {
         if (!shown(pr.windowId, t)) return null;
-        const at = read?.reads.get(t);
+        const at = role === null ? undefined : read?.[role];
         return read === undefined || at === undefined ? quote(t) : at.part === TITLE ? d.descriptor(read.view, t, at) : d.candidate(read.view, t, at);
       };
       const t = pr.title.trim();
       // The app is reader metadata, named as it always was; a window of it is open, or the app's name is plan text.
       const app = pr.app === "" ? null : (d.appNamed(pr.app) ?? d.planText(pr.app));
-      const title = t === "" ? null : m(t);
+      const title = t === "" ? null : m("title", t);
       const at = title !== null ? d.t`${app ?? d.own("a window")} '${title}'` : (app ?? d.own("another window"));
-      const span = m(pr.span);
-      const line = pr.line === null ? null : m(pr.line);
-      const label = pr.label === null ? null : m(pr.label);
+      const span = m("span", pr.span);
+      const line = pr.line === null ? null : m("line", pr.line);
+      const label = pr.label === null ? null : m("label", pr.label);
       const base =
         line !== null ? d.t`the line "${line}" in ${at}`
         : span !== null && label !== null ? d.t`"${span}" labelled '${label}' in ${at}`
         : span !== null ? d.t`"${span}" in ${at}`
         : d.t`a value in ${at}`;
-      const whole = pr.partOf !== null && pr.partOf !== pr.line ? m(pr.partOf) : null;
+      // The labelled value a span was cut from has no recorded range: it is quoted as plan text.
+      const whole = pr.partOf !== null && pr.partOf !== pr.line ? m(null, pr.partOf) : null;
       return whole !== null ? d.t`${base}, which is part of "${whole}"` : base;
     }
     case "memory": {
@@ -640,36 +654,36 @@ const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of th
  */
 function derivedAtBase(d: Disclosure, pr: Provenance, text: string): ModelText | null {
   if (pr.kind !== "derived" || pr.base.kind !== "window") return null;
-  const read = readOf(pr.base, pr.base.span);
-  if (read === null) return null;
-  const base = d.candidate(read.view, pr.base.span, read.at);
+  const read = READS.get(pr.base);
+  if (read?.span === undefined) return null;
+  const base = d.candidate(read.view, pr.base.span, read.span);
   return base === null ? null : d.derived(base, text);
 }
 
-/** Whether a window provenance (or the one a derived value's names) recorded where `t` was read. */
-function hasRead(pr: Provenance, t: string): boolean {
-  return readOf(pr, t) !== null;
+/** Where a proposed value was read, when it is its window provenance's span and that span's range was recorded. */
+function valueRead(p: Proposed): { view: WindowState; at: SourceAt } | null {
+  const pr = p.provenance;
+  const read = pr.kind === "window" && p.text === pr.span ? READS.get(pr) : undefined;
+  return read?.span === undefined ? null : { view: read.view, at: read.span };
 }
 
-/** Where a provenance (or the one a derived value's names) read `t`, with its view, or null. */
-function readOf(pr: Provenance, t: string): { view: WindowState; at: SourceAt } | null {
-  if (pr.kind === "derived") return readOf(pr.base, t) ?? (pr.also === null ? null : readOf(pr.also, t));
-  const r = READS.get(pr);
-  const at = r?.reads.get(t);
-  return r === undefined || at === undefined ? null : { view: r.view, at };
-}
-
-/** The texts of a provenance a question may quote, for the ledger: its window's title, line, label, span and whole value. */
-function provenanceTexts(pr: Provenance): string[] {
+/**
+ * The texts of a provenance a question may quote that it recorded no range for, for the ledger to admit as plan text:
+ * its window's title, line, label, span and whole value, each by its own role (READS).
+ */
+function unreadTexts(pr: Provenance): string[] {
   switch (pr.kind) {
-    case "window":
-      return [pr.title, pr.line, pr.label, pr.span, pr.partOf].filter((t): t is string => t !== null && t.trim() !== "");
+    case "window": {
+      const read = READS.get(pr);
+      const roles: [ReadRole | null, string | null][] = [["title", pr.title], ["line", pr.line], ["label", pr.label], ["span", pr.span], [null, pr.partOf]];
+      return roles.flatMap(([role, t]) => (t === null || t.trim() === "" || (role !== null && read?.[role] !== undefined) ? [] : [t]));
+    }
     case "memory":
       return [pr.label];
     case "answer":
       return [pr.question];
     case "derived":
-      return [...provenanceTexts(pr.base), ...(pr.also === null ? [] : provenanceTexts(pr.also))];
+      return [...unreadTexts(pr.base), ...(pr.also === null ? [] : unreadTexts(pr.also))];
     default:
       return [];
   }
@@ -885,11 +899,11 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     // The field's descriptor and the text itself must go; a value whose own text the ledger refuses is not verified.
     const descriptor = admit(p.field.descriptor);
     // The value is quoted where it was read when its provenance recorded that, else as plan text.
-    const valueRead = readOf(p.provenance, p.text);
-    const text = valueRead !== null ? d.candidate(valueRead.view, p.text, valueRead.at) : (derivedAtBase(d, p.provenance, p.text) ?? admit(p.text));
+    const read = valueRead(p);
+    const text = read !== null ? d.candidate(read.view, p.text, read.at) : (derivedAtBase(d, p.provenance, p.text) ?? admit(p.text));
     if (descriptor === null || text === null) return null;
     // Each text a provenance quotes is admitted as it is minted (mintProvenanceSays): at its range when it has one.
-    for (const t of provenanceTexts(p.provenance)) if (!hasRead(p.provenance, t)) admit(t);
+    for (const t of unreadTexts(p.provenance)) admit(t);
     const rest = (o.restOf?.(p) ?? []).map(admit);
     const admitted = rest.filter((x): x is ModelText => x !== null);
     const named = admitted.length > 0 && admitted.length === rest.length ? admitted : null;

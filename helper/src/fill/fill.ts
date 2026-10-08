@@ -2462,11 +2462,13 @@ export async function proposeFill(
   const unitNote = (source: { windowId: string; nodeKey: string }): ModelText | null => {
     const u = unitOf(model, source.windowId, source.nodeKey);
     if (u === null || !u.complete || unread?.has(u.windowId) === true) return null;
+    // Minted as a candidate each time, against its window's limit: an owner question may have sent it as an owner note
+    // (OUTPUT-LEDGER-SPEC section 8), an allotment value settlement's requests do not have (OWNER_QUESTION_PURPOSES).
+    const view = viewOf(model, u.windowId);
+    const said = view === undefined ? null : m.candidate(view, u.text);
+    if (said === null) return null;
     let id = noteIds.get(unitKey(u));
     if (id === undefined) {
-      const view = viewOf(model, u.windowId);
-      const said = view === undefined ? null : m.candidate(view, u.text);
-      if (said === null) return null;
       id = `note_${notes.size + 1}`;
       notes.set(id, said);
       noteSaid.set(id, m.id(id));
@@ -3270,14 +3272,16 @@ export function candidateProvenance(model: ScreenModel, c: Candidate, text?: str
   const pr = windowProvenance(viewOf(model, c.source.windowId), c, text);
   // Where its texts were read, in the view they were read from, so the verifier quotes them at those ranges (contract.ts
   // withReads); a refresh since leaves that view as it was, and the recheck before a write decides whether it changed.
+  // Each text by its role, never by its spelling: a title that reads like the value is charged as the title, and the
+  // value where the generator read it. A recorded fact is used for its role only while it is still that role's text.
   const src = readOf(c);
   const view = src.view;
-  if (view === undefined) return pr;
-  const reads = new Map<string, SourceAt>();
-  if (src.text !== undefined) reads.set(c.text, src.text);
-  for (const f of [src.context, src.line, src.blockHead, src.section]) if (f !== undefined && !reads.has(f.text)) reads.set(f.text, f.at);
-  if (c.source.windowTitle === view.window.title && c.source.windowTitle !== "") reads.set(c.source.windowTitle, wholePart(TITLE, view.window.title));
-  return withReads(pr, view, reads);
+  if (view === undefined || pr.kind !== "window") return pr;
+  const at = (f: { text: string; at: SourceAt } | undefined, t: string | null): SourceAt | undefined => (f !== undefined && t !== null && f.text === t ? f.at : undefined);
+  const label = pr.label === null ? undefined : at(src.context, pr.label);
+  const line = at(src.line, pr.line);
+  const title = pr.title !== "" && pr.title === view.window.title ? wholePart(TITLE, view.window.title) : undefined;
+  return withReads(pr, { view, ...(src.text === undefined ? {} : { span: src.text }), ...(label === undefined ? {} : { label }), ...(line === undefined ? {} : { line }), ...(title === undefined ? {} : { title }) });
 }
 
 /**
