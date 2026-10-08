@@ -57,6 +57,7 @@ describe("the store path check", () => {
 });
 
 describe("INT1 review 2 P1: symlinks and .. cannot route a store into a synced folder", () => {
+  // Links only: nothing is written there, the old code would have followed them (CARET_TEST_SYNCED_ROOT is not needed).
   const synced = join(h, "Library", "CloudStorage", "Dropbox-caret-store-path-test");
 
   it("refuses a dangling final symlink whose target is in a synced folder", () => {

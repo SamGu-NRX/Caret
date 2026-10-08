@@ -2,6 +2,7 @@
 // journal (B23). Moved here from patterns/memory.ts unchanged, so both seal with the same key.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { assertLocalStorePath } from "./privacy/store-path.ts";
 
 /** iv (12 bytes) | tag (16 bytes) | ciphertext. */
 export function seal(key: Buffer, text: string): Buffer {
@@ -19,6 +20,7 @@ export function open(key: Buffer, b: Buffer): string {
 
 /** The 32-byte key at `path`, created once with mode 0600. Any other length is refused. */
 export function loadKey(path: string): Buffer {
+  assertLocalStorePath(path);
   if (!existsSync(path)) {
     try {
       // Exclusive create: two helpers starting at once must not each write a different key.

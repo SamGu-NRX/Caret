@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { MEMORY_SNIPPETS } from "../../privacy.ts";
 import { frozenRequest, wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
 import { seal, writeStoredLine } from "../../privacy/send.ts";
+import { assertLocalStorePath } from "../../privacy/store-path.ts";
 
 export type CacheMode = "record" | "replay" | "replay-or-record";
 const MODES: readonly CacheMode[] = ["record", "replay", "replay-or-record"];
@@ -202,6 +203,8 @@ export function checkFixture(req: JevRequest, fixture: FixtureSources): void {
 /** `ask` with the cache in front of it (see the file's header). */
 export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
   refuseShipped(opts.env ?? process.env);
+  // The cache's folder is held to the store path policy when it is set up and before each entry is written.
+  assertLocalStorePath(opts.dir);
   if (!(MODES as readonly string[]).includes(opts.mode)) throw new Error(`cache mode '${opts.mode}' is not one of ${MODES.join(", ")}`);
   return async (req) => {
     refuseShipped(opts.env ?? process.env);
@@ -247,6 +250,7 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
       recordedAt: new Date().toISOString(),
       };
     };
+    assertLocalStorePath(path);
     mkdirSync(join(opts.dir, c.key.slice(0, 2)), { recursive: true, mode: 0o700 });
     mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
     const tmp = `${path}.${process.pid}.tmp`;

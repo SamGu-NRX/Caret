@@ -76,7 +76,10 @@ const home = (): string => realpathSync(homedir());
 /** Folders a sync client or File Provider uploads from, below the home folder (macOS). */
 function syncedRoots(): string[] {
   const h = home();
-  return [join(h, "Library", "Mobile Documents"), join(h, "Library", "CloudStorage")];
+  // CARET_TEST_SYNCED_ROOT adds a folder treated as synced, so a test of a writer that fails writes into a temporary
+  // folder rather than a real synced one. It can only refuse more paths, never fewer.
+  const extra = process.env.CARET_TEST_SYNCED_ROOT;
+  return [join(h, "Library", "Mobile Documents"), join(h, "Library", "CloudStorage"), ...(extra === undefined || extra === "" ? [] : [resolvedPath(extra)])];
 }
 
 /** A home-folder entry an older sync client mounts directly: Dropbox, Google Drive, OneDrive, Box, iCloud Drive. */
@@ -89,7 +92,10 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 /** The local roots a store may write under, resolved. */
 export function localStoreRoots(): string[] {
-  const roots = [join(home(), ".caret-run"), tmpdir(), "/tmp", REPO];
+  // The app's own data and memory folders (main.ts DEFAULT_DATA_DIR and the memory folder; lead decision 1: Application
+  // Support, not Documents, which may sync to iCloud), the evidence and run root, the temporary directory and the checkout.
+  const support = join(home(), "Library", "Application Support");
+  const roots = [join(support, "CaretV2"), join(support, "Caret"), join(home(), ".caret-run"), tmpdir(), "/tmp", REPO];
   return [...new Set(roots.map((r) => resolvedPath(r)))];
 }
 

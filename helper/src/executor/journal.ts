@@ -17,6 +17,7 @@ import * as z from "zod";
 import { AppRef, Frame } from "../protocol.ts";
 import { loadKey, open, seal } from "../sealed.ts";
 import { Plan } from "./schema.ts";
+import { assertLocalStorePath } from "../privacy/store-path.ts";
 
 const step = z.number().int().nonnegative();
 
@@ -101,6 +102,9 @@ export class RecoveryJournal {
   private readonly del: StatementSync;
 
   constructor(dir: string) {
+    // Held to the store path policy before anything is made (INT1 review 2); SQLite writes through the file opened here.
+    assertLocalStorePath(dir);
+    assertLocalStorePath(join(dir, "recovery.sqlite"));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
     this.key = loadKey(join(dir, "memory.key"));

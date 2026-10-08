@@ -35,7 +35,7 @@ const ROOT = join(HELPER, "..");
 const EVIDENCE = join(homedir(), ".caret-run", "evidence", "screen");
 const LAYA = "gateway:convaiinnovations/laya-free";
 /** The signing identity every page eval in this run has used (C2, J1, P3 run scripts). */
-const SIGN_ID = "472BDE15DB7ADCB740F9E2508F0916EE1671FD75";
+const SIGN_ID = "DC7B5D99A0E1EE3CFA464E216C400A5A91F7F439";
 const LOCK_FILE = join(homedir(), ".caret-run", "locks", "laya.lock");
 const WITH_HEAVY = join(homedir(), ".long-run", "rig", "bin", "with-heavy.sh");
 /** C2's estimate for one page-eval run (c2/run-evals.sh under with-heavy.sh 2.5 0.5). */
