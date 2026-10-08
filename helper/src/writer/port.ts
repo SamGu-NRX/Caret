@@ -1,15 +1,15 @@
 // WriterPort (action-engine-v2 section 5): one bounded write by the configured model. This batch serves
 // `plan`; `polish` and `memoryProposal` are refused until their schemas exist. The output is untrusted
 // text: a plan program still has to pass compileProgram and the sandbox.
-import { chat, type ChatRoute } from "./chat.ts";
+import { chat, chatSink, type ChatRoute } from "./chat.ts";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
-import { type Disclosure, type ModelValue } from "../privacy/disclosure.ts";
+import { verifyWriterInput, type Disclosure, type ModelValue } from "../privacy/disclosure.ts";
 import { seal } from "../privacy/send.ts";
 import { writerPolicy, type ProviderPolicy } from "../privacy/providers.ts";
 import { readKey } from "./env.ts";
-import { extractProgram, PLAN_SYSTEM, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
+import { extractProgram, PLAN_SYSTEM, PLAN_WORDING, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
 import { GOAL_SYSTEM } from "./goal-prompt.ts";
-import { INTENT_SYSTEM, IntentInputSchema, intentResponseFormat, intentUserMessage } from "./intent-prompt.ts";
+import { INTENT_SYSTEM, INTENT_WORDING, IntentInputSchema, intentResponseFormat, intentUserMessage } from "./intent-prompt.ts";
 
 export interface WriterRequest {
   /**
@@ -74,19 +74,21 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
       // A kind with no schema yet is refused before its input is read (privacy/shapes.ts gives it no slot).
       if (req.kind !== "plan" && req.kind !== "goal" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
       assertNoExcludedValue(req);
-      // SC1 2b: every string in the input was minted for this request, before schema parsing, key access or transport.
-      // Sealed once (privacy/send.ts): parsed, rendered and sent from this frozen copy only.
-      const sealed = seal({ writer: req });
       if (retains && opts.evaluation !== true) throw new WriterProviderRefused(`${route.provider}:${route.model} keeps what it is sent, so it writes only for evaluation harnesses over fixture text`);
       if (req.disclosureId.length === 0) throw new Error("writer request has no disclosureId");
+      // SC1 2b: every string in the input was minted for this request, before schema parsing, key access or transport.
+      // Then sealed once for the chat sink (privacy/send.ts): rendered from the frozen input, validated, measured, and
+      // sent as those bytes only.
+      verifyWriterInput(req);
       if (req.kind === "intent") {
-        const input = IntentInputSchema.parse(sealed.wire);
+        const input = IntentInputSchema.parse(req.input);
         const messages = (wire: unknown) => [
           { role: "system" as const, content: INTENT_SYSTEM },
           { role: "user" as const, content: intentUserMessage(IntentInputSchema.parse(wire)) },
         ];
+        const sealed = seal({ writer: req }, chatSink(route, messages, INTENT_WORDING, req.maxOutputTokens, intentResponseFormat(input)));
         const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);
-        const r = await chat(route, key(), sealed, messages, req.maxOutputTokens, signal, opts.fetchFn, intentResponseFormat(input));
+        const r = await chat(route, key(), sealed, signal, opts.fetchFn);
         let json: unknown;
         try {
           json = JSON.parse(r.text);
@@ -95,14 +97,15 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
         }
         return { model: r.servedModel, provider: route.provider, output: { program: null, reply: r.text, json }, inputTokens: r.inputTokens, outputTokens: r.outputTokens, reasoningTokens: r.reasoningTokens, latencyMs: r.latencyMs, costUsd: r.costUsd };
       }
-      PlanInputSchema.parse(sealed.wire);
+      PlanInputSchema.parse(req.input);
       const system = req.kind === "goal" ? GOAL_SYSTEM : PLAN_SYSTEM;
       const messages = (wire: unknown) => [
         { role: "system" as const, content: system },
         { role: "user" as const, content: planUserMessage(PlanInputSchema.parse(wire)) },
       ];
+      const sealed = seal({ writer: req }, chatSink(route, messages, [system, ...PLAN_WORDING], req.maxOutputTokens));
       const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);
-      const r = await chat(route, key(), sealed, messages, req.maxOutputTokens, signal, opts.fetchFn);
+      const r = await chat(route, key(), sealed, signal, opts.fetchFn);
       return {
         model: r.servedModel,
         provider: route.provider,

@@ -1,3 +1,5 @@
+// Builder-only: these tests' Jev answers the requests as built; none goes through the production transport (jev.ts
+// sealRequest, then send.ts sendable), as every request of the B31 kit (test/vs1-kit.ts) does.
 // Value clarification in the existing Ask panel: a field in settled scope whose value questions did not settle (or whose
 // verifier said exact twice under its cutoff) is asked about by its eligible proposed values and Leave blank, one field
 // at a time in form order, at most eight fields and seven values a field. A pick is new evidence for one fresh pair of

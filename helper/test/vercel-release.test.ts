@@ -39,7 +39,7 @@ describe("release Vercel refusal", () => {
   it("refuses helper writer gateway under release marker", async () => {
     vi.stubEnv("CARET_RELEASE_HOST", "1"); vi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1");
     const send = vi.fn<typeof fetch>();
-    await expect(chat(gatewayRoute("openai/gpt-oss-120b"), "fixture-key", seal({ req, wire: { state: req.state, questions: req.questions } }), () => [], 20, new AbortController().signal, send)).rejects.toThrow(/release host/);
+    await expect(chat(gatewayRoute("openai/gpt-oss-120b"), "fixture-key", seal({ req, wire: { state: req.state, questions: req.questions } }), new AbortController().signal, send)).rejects.toThrow(/release host/);
     expect(send).not.toHaveBeenCalled();
   });
 });

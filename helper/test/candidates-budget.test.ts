@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { collectCandidates, countSpans, generateCandidates, MAX_CANDIDATES, MAX_GENERATOR_VISITS } from "../src/fill/candidates.ts";
+import { collectCandidates, countSpans, generateCandidates, MAX_CANDIDATES, MAX_GENERATOR_VISITS, valuesIncomplete, windowValues } from "../src/fill/candidates.ts";
+import { redactWindow } from "../src/fill/redact.ts";
 import { ScreenModel } from "../src/model.ts";
 import type { Node, TypedValue } from "../src/protocol.ts";
 import { legacyGenerateCandidates } from "./legacy-candidates.ts";
@@ -86,10 +87,18 @@ describe("candidate generator", () => {
     const { candidates, stats } = collectCandidates(scene.model, scene.formWindowId, { now: NOW });
     expect(candidates).toHaveLength(MAX_CANDIDATES);
     const values = [...scene.model.windows.values()].reduce((k, w) => k + w.values.length, 0);
-    // The scene's most recent window alone holds enough typed values: no node is read for lines.
-    expect(stats.values).toBeLessThanOrEqual(MAX_CANDIDATES + 5);
+    // Each window is read whole, newest first: the newest, a files window, gives all 80 from its first 80 nodes, and
+    // no candidate is built from any other.
+    expect(stats.values).toBe(0);
+    expect(stats.nodes).toBe(MAX_CANDIDATES);
     expect(stats.values).toBeLessThan(values);
-    expect(stats.nodes).toBe(0);
+    // The files window, stopped partway, and the six windows the cap never reached count as cut. Their unread text is read
+    // whole by its own bound (candidates.ts unreadRest, UNREAD_MAX lines a window), within which each of them fits: its
+    // words, kinds and names are cut, so every field they could serve is withheld, and nothing else is.
+    const r = collectCandidates(scene.model, scene.formWindowId, { now: NOW });
+    expect(r.cut).toHaveLength(scene.model.windows.size - 1);
+    expect(r.cutAll, "each unread window was read within its bound").toBe(false);
+    expect(r.cutTerms.size).toBeGreaterThan(100);
     expect(stats.overBudget).toBe(false);
   });
 
@@ -121,7 +130,11 @@ describe("candidate generator", () => {
     model.apply(snap([], { at: 2000, windowId: "form", focused: true }));
     const capped = collectCandidates(model, "form", { now: 3000 });
     expect(capped.candidates).toHaveLength(MAX_CANDIDATES);
+    // The candidate cap stops it in the log, whose unread rest is then read for what it may hold (candidates.ts
+    // unreadRest): 20,000 lines are past UNREAD_MAX, so what the rest holds is unknown and everything it could touch is
+    // withheld. The generator's own visits stay under its cap.
     expect(capped.stats.overBudget).toBe(false);
+    expect(capped.cutAll, "the unread rest is past its bound").toBe(true);
     const visited = collectCandidates(model, "form", { max: 20_000, now: 3000 });
     expect(visited.stats.overBudget).toBe(true);
     expect(visited.candidates).toHaveLength(MAX_GENERATOR_VISITS - 1);
@@ -130,5 +143,18 @@ describe("candidate generator", () => {
 
   it("keeps generateCandidates' signature and default cap", () => {
     expect(generateCandidates(scene.model, scene.formWindowId, undefined, NOW)).toEqual(legacyGenerateCandidates(scene.model, scene.formWindowId, MAX_CANDIDATES, NOW));
+  });
+});
+
+describe("work counted as it is done", () => {
+  it("reads at most its bound of a window's lines for typed values, and says the rest is not known", () => {
+    const model = new ScreenModel();
+    model.apply(snap(Array.from({ length: 10_000 }, (_, i) => ({ key: `n${i}`, parent: null, role: "AXStaticText", label: `Phone: 555-${String(i).padStart(4, "0")}` })), { at: 1000, windowId: "big", focused: true }));
+    model.apply(snap([], { at: 2000, windowId: "form", focused: true }));
+    const w = redactWindow(model.windows.get("big")!);
+    expect(windowValues(w).length).toBeLessThan(2000);
+    expect(valuesIncomplete(w)).toBe(true);
+    // A window whose values are not all known holds anything: everything is withheld.
+    expect(collectCandidates(model, "form", { now: 3000 }).cutAll).toBe(true);
   });
 });

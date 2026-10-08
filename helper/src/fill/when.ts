@@ -7,6 +7,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import { ValueResolver, type ResolveContext } from "../values/resolve.ts";
 import { dateOrder, sayDate, sayMoment } from "../values/date-time.ts";
 import { monthYear, type DateOrder } from "./derive.ts";
+import { splitLines } from "../privacy/ledger/source.ts";
 
 const resolver = new ValueResolver();
 
@@ -124,7 +125,7 @@ export interface SentLine {
  * "> …"), and a whole date with its year in it. Null otherwise.
  */
 export function sentLineFor(nodes: readonly { key: string; text: string }[], spanKey: string, span: string): SentLine | null {
-  const lines = nodes.flatMap((n) => n.text.split(/\r?\n/u).map((line) => ({ key: n.key, text: n.text, line })));
+  const lines = nodes.flatMap((n) => splitLines(n.text).map((line) => ({ key: n.key, text: n.text, line })));
   if (lines.filter((l) => FROM_LINE.test(l.line)).length !== 1) return null;
   const sent = lines.flatMap((l, i) => {
     const v = SENT_LINE.exec(l.line)?.[1];

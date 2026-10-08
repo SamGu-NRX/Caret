@@ -234,7 +234,7 @@ describe("proposeFill on a real-shaped form (B24)", () => {
     // B13 set cutAll for any such window, which withheld every name and every field whose label names no kind.
     // Since B25 a mixed note's short lines all fit its budget, so this draft runs past WINDOW_CHARS with agenda lines.
     const m = desk(NOTE, [], Array.from({ length: 30 }, (_, i) => `Agenda item ${i + 1}: slide ${i + 3} and the open questions from week ${i + 1}`));
-    const g = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m.windows.values()), fields: [fieldTerms(["Customer name"]), fieldTerms(["Delivery instructions"])] });
+    const g = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m), fields: [fieldTerms(["Customer name"]), fieldTerms(["Delivery instructions"])] });
     expect(g.cut).toContain("draft");
     expect(g.cutAll).toBe(false);
     // The draft's left-out sentence names Priya beside a time: a sentence, not a contact line, so no name counts as kept out.
@@ -333,7 +333,7 @@ describe("B24 review fixes", () => {
     // More contacts than the chat's budget holds as a group, so names are kept out (candidates.ts namesCut).
     const chat = Array.from({ length: 30 }, (_, i) => `Person ${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}lvarez-Quintero Delacroix <p${i}@example.org>`);
     m.apply(snap(chat.map((l, i) => text(`chat/m${i}`, l)), { at: 850, windowId: "chat", title: "Team chat", app: MESSAGES, values: chat.map((_, i) => value("email", `p${i}@example.org`, `chat/m${i}`)) }));
-    const g = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m.windows.values()), fields: [fieldTerms(["Customer name"])] });
+    const g = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m), fields: [fieldTerms(["Customer name"])] });
     expect(g.namesCut).toBe(true);
     return proposeFill(m, jevPickingText((_, ins) => (ins.includes("'Customer name'") ? "Jordan Reyes" : null)), "form", `${P}/textfield:customer name~0`, 2000).then((p) => {
       expect(fieldOf(p, "customer name")).toMatchObject({ value: null, withheld: "sourceCut" });
@@ -396,7 +396,7 @@ describe("B24 review fixes: the owner questions' cap", () => {
       m.apply(snap(lines.map((l, i) => text(`src${w}/l${i}`, l)), { at: 100 + w, windowId: `src${w}`, title: `List ${w}`, app: MAIL_APP, values: lines.map((l, i) => value("email", l, `src${w}/l${i}`)) }));
     }
     m.apply(snap([...page(), field(`${P}/textfield:email~0`, "", { parent: `${P}/webarea:~0`, label: "Email", frame: [100, 520, 200, 20] })], { at: 1000, windowId: "form", title: "Order", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: `${P}/textfield:customer name~0` }));
-    const all = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m.windows.values()), fields: [fieldTerms(["Email"])] }).candidates.filter((c) => c.text.includes("@"));
+    const all = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m), fields: [fieldTerms(["Email"])] }).candidates.filter((c) => c.text.includes("@"));
     expect(all.length).toBeGreaterThan(40);
     const past = (all[all.length - 1] as { text: string }).text;
     const requests: JevRequest[] = [];

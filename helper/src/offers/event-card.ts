@@ -207,7 +207,7 @@ export async function askAttend(ask: AskJev, model: ScreenModel, w: WindowState,
   // Changed-node events may supply raw sentence text. Admit it only when the redacted view retains it.
   w = redactWindow(w);
   if (![...w.nodes.values()].some((n) => nodeText(n).includes(sentence))) return null;
-  const d = new Disclosure(model.windows.values());
+  const d = new Disclosure(model);
   const minted = d.candidate(w, sentence);
   if (minted === null) return null;
   const [r1, r2] = await Promise.all([ask(buildAttendRequest(d, minted, 0, source)), ask(buildAttendRequest(d, minted, 1, source))]);

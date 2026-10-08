@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { makeJevClient, jevSettings, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import { DailySpend } from "../src/engines/decide/daily-cap.ts";
-import { UnmintedText, verifyWriterInput } from "../src/privacy/disclosure.ts";
+import { UnmintedText, verifyWriterInput, registryOf } from "../src/privacy/disclosure.ts";
 import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -148,7 +148,7 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     const note = rentalDesk();
     const job = makeFieldContract({ windowId: "form", node: { key: "k:email", parent: null, role: "AXTextField", label: "Email" }, descriptor: "Email", name: "Email", labelWords: ["Email"], control: "text", kinds: fieldKinds(["Email"]), part: fieldPart("Email") });
     const p: Proposed = { field: job, text: "elena.vance@example.com", display: "elena.vance@example.com", owner: null, provenance: { kind: "window", windowId: "note", nodeKey: "te/note", app: "TextEdit", title: "Rental notes.txt", span: "elena.vance@example.com", label: "Email", line: "Email: elena.vance@example.com", partOf: null, context: "Email", lines: [], sentences: [] } };
-    await swallow(checkValues([p], { askJev: ask, ledger: new Disclosure(note.windows.values()), now: 1, authority: { mint: () => { throw new Error("no mint in T-P1"); } } as never }));
+    await swallow(checkValues([p], { askJev: ask, ledger: new Disclosure(note), now: 1, authority: { mint: () => { throw new Error("no mint in T-P1"); } } as never }));
   });
 
   it("Ask: heads, scope, confirm, the Jev intent maker, the writer intent maker, and a code plan", async () => {
@@ -164,7 +164,7 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     await swallow(planWithCode("do the landlord part from my notes", rentalDesk(), memory, { writer: writer(() => { const p = fillByText([["Landlord name", "Gary Pruitt"], ["Email", "elena.vance@example.com"]]); return { program: p, reply: p }; }), askJev: ask, offerKey: "tp1-plan", windowId: "form", now: 2000 }));
     const v = rentalDesk();
     // As the code plan mints them: the field's name from the form's view, the value from the note's.
-    const vd = new Disclosure(v.windows.values());
+    const vd = new Disclosure(v);
     const name = vd.descriptor(redactWindow(v.windows.get("form") as WindowState), "Email");
     const email = vd.candidate(redactWindow(v.windows.get("note") as WindowState), "elena.vance@example.com");
     expect(name !== null && email !== null).toBe(true);
@@ -223,8 +223,8 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     const lines = ["Build #42", "Running tests… 12 of 48", "Done. 48 of 48 tests passed."];
     model.apply(snap(lines.map((l, i) => text(`job/statictext:${i}~0`, l)), { at: 1000, windowId: "job", title: "CI — Build #42" }));
     const w = model.windows.get("job") as WindowState;
-    await swallow(ask(buildPendingRequest(w, model.windows.values(), lines.slice(0, 2), lines, [{ rule: "running", line: lines[1]! }] as never, [])));
-    await swallow(ask(buildLookRequest(w, model.windows.values(), [{ rule: "running", line: lines[1]! }] as never).req));
+    await swallow(ask(buildPendingRequest(w, model, lines.slice(0, 2), lines, [{ rule: "running", line: lines[1]! }] as never, [])));
+    await swallow(ask(buildLookRequest(w, model, [{ rule: "running", line: lines[1]! }] as never).req));
   });
 
   it("event card, routine naming, the executor's target, a code-mode choice and a draft's claims", async () => {
@@ -239,7 +239,7 @@ describe("T-P1: every wire string a builder sends is minted", () => {
       { key: "m/to", parent: null, role: "AXTextField", label: "To", editable: true },
     ], { at: 1, windowId: "6160-1", app: MAIL_APP, title: "New message" }));
     const facts: RoutineFacts = { routineId: "r1", dstApp: "Mail Fixture", dstWindow: m.windows.get("6160-1") as WindowState, dstLabels: ["Subject", "To"], srcApps: ["Caret Fixture"], srcLabels: [], count: 3, values: ["Design review 4"] };
-    await swallow(nameRoutine(facts, ask, () => m.windows.values(), () => 0));
+    await swallow(nameRoutine(facts, ask, () => m, () => 0));
     // An ambiguous target, asked by the elements' labels.
     const t = new ScreenModel();
     const city = (group: string): Node[] => [
@@ -248,8 +248,8 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     ];
     t.apply(notesWindow(500) as Snapshot);
     t.apply(snap([...city("Shipping"), ...city("Billing")], { at: 1000, windowId: "5150-9", title: "Addresses" }));
-    await swallow(resolveTarget(t.windows.get("5150-9") as WindowState, t.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", ask));
-    const snaps = new Disclosure([]);
+    await swallow(resolveTarget(t.windows.get("5150-9") as WindowState, t, { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", ask));
+    const snaps = new Disclosure(registryOf([]));
     for (const x of ["Which session time does the email confirm?", "Tue Oct 20, 3:00 PM", "Wed Oct 21, 10:00 AM"]) snaps.own(x as never);
     await swallow(jevChooser(ask, "sign me up", snaps)({ window: "win:form", question: { ref: "q", text: "Which session time does the email confirm?" }, options: [{ ref: "o1", label: "Tue Oct 20, 3:00 PM" }, { ref: "o2", label: "Wed Oct 21, 10:00 AM" }], signal: new AbortController().signal }));
     await swallow(confirmClaims("draft a reply that accepts", [{ text: "Hi Priya, I'm in! See you then.", basis: { instruction: "reply to Priya Raman", windows: [], memory: [] } as never }], ask, []));

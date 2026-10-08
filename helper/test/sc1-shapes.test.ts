@@ -4,8 +4,8 @@
 // builder through the real client, holds each builder to its row. This file checks the rule itself, each part with one
 // correct answer, and that a builder adding a slot without a row fails.
 import { describe, expect, it } from "vitest";
-import { Disclosure, OutOfShape, setShapeLengthLog, UnmintedText, verifySent, type MintReason, type ModelText, type ShapeLengthRefusal } from "../src/privacy/disclosure.ts";
-import { ANY_PATH, childGlob, SHAPES, UNNAMED } from "../src/privacy/shapes.ts";
+import { Disclosure, OutOfShape, setShapeLengthLog, UnmintedText, verifySent, type MintReason, type ModelText, type ShapeLengthRefusal, registryOf } from "../src/privacy/disclosure.ts";
+import { ANY_PATH, childGlob, ITEMS, SHAPES, UNNAMED } from "../src/privacy/shapes.ts";
 import { OPTION_DESCRIPTIONS, wireBody, type JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { redactWindow } from "../src/fill/redact.ts";
@@ -66,7 +66,7 @@ describe("T-M1: verify holds each text to its slot", () => {
 
   it("refuses a text minted for a reason its slot does not allow, naming the reasons, never the text", () => {
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const name = d.candidate(view, "Elena Vance") as ModelText;
     // route.judge's task is Caret's wording only.
     expect(() => d.seal({ purpose: "route.judge", state: { task: name }, questions: {} })).toThrow(/state\.task carries text minted as candidate, which its shape allows only as ownWording/u);
@@ -83,7 +83,7 @@ describe("T-M1: verify holds each text to its slot", () => {
 
   it("accepts a text one way of minting fits: a count Caret wrote that a window also shows", () => {
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     expect(d.candidate(view, "2")).toBe("2");
     const two = d.count(2);
     expect([...(d.reasonsOf(two) ?? [])].sort()).toEqual(["candidate", "ownWording"]);
@@ -92,7 +92,7 @@ describe("T-M1: verify holds each text to its slot", () => {
   });
 
   it("refuses a text longer than its slot, naming the lengths, never the text, and logs the purpose, slot and length", () => {
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const long = d.own(`${"x".repeat(296)}-pw7Q` as "x");
     const logged: ShapeLengthRefusal[] = [];
     const was = setShapeLengthLog((r) => logged.push(r));
@@ -109,7 +109,7 @@ describe("T-M1: verify holds each text to its slot", () => {
   it("gives the intent writer one value from a source window, its sender, by an explicit row, and no other", () => {
     expect(Object.entries(SHAPES.intent).filter(([, slot]) => slot.reasons.includes("candidate")).map(([glob]) => glob)).toEqual(["input.windows[*].from"]);
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const sender = d.candidate(view, "Elena Vance") as ModelText;
     const window = { ref: d.id("w1"), app: d.app(view), title: d.descriptor(view, "Notes") as ModelText, from: sender };
     expect(() => d.seal({ kind: "intent", input: { windows: [window] } })).not.toThrow();
@@ -119,7 +119,7 @@ describe("T-M1: verify holds each text to its slot", () => {
 
   it("checks a hoisted option description as the option it came from, and a JSON state as the value it writes", () => {
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const name = d.candidate(view, "Elena Vance") as ModelText;
     const q = { type: "choice" as const, instructions: d.own("Which?"), criteria: { a: d.t`"${name}"`, none: d.own("None.") } };
     const ok = d.seal({ purpose: "fill.values", state: { task: d.own("Fill.") }, questions: { f1: q, f2: q }, snippets: [], charged: {} });
@@ -136,11 +136,61 @@ describe("T-M1: verify holds each text to its slot", () => {
 
   it("holds a request with no purpose to Caret's own wording, and refuses a purpose with no shape", () => {
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     expect(() => d.seal({ state: { anything: d.own("Fixture wording.") }, questions: {} })).not.toThrow();
     expect(() => d.seal({ state: { anything: d.candidate(view, "Elena Vance") } , questions: {} })).toThrow(/unnamed: state\.anything carries text minted as candidate/u);
     expect(() => d.verify("no.such.purpose", { state: {} })).toThrow(/no\.such\.purpose has no request shape/u);
     // OutOfShape is an UnmintedText: every caller that handles one handles both.
     expect(new OutOfShape("x")).toBeInstanceOf(UnmintedText);
+  });
+});
+
+describe("every list in a request has an item count (privacy/shapes.ts ITEMS)", () => {
+  it("names one for every list a shape's rows reach", () => {
+    const missing: string[] = [];
+    for (const [purpose, rows] of Object.entries(SHAPES)) {
+      for (const glob of Object.keys(rows)) {
+        for (const m of glob.matchAll(/\[\*\]|\.\*/gu)) {
+          const items = glob.slice(0, m.index + m[0].length);
+          if ((ITEMS as Record<string, Record<string, number>>)[purpose]?.[items] === undefined) missing.push(`${purpose} ${items}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("refuses a list over its count, naming the counts, never the text, and logs the purpose, list and count", () => {
+    const d = new Disclosure(registryOf([]));
+    const ask = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`q${i}`, { type: "choice" as const, instructions: d.own(`Question ${i}?` as "x"), criteria: {} }]));
+    const logged: ShapeLengthRefusal[] = [];
+    const was = setShapeLengthLog((r) => logged.push(r));
+    try {
+      expect(() => d.seal({ purpose: "route.task", state: {}, questions: ask(3) })).toThrow(/questions holds 3 items, more than its shape's 2/u);
+      expect(() => d.seal({ purpose: "route.task", state: {}, questions: ask(2) })).not.toThrow();
+    } finally {
+      setShapeLengthLog(was);
+    }
+    expect(logged).toEqual([{ purpose: "route.task", slot: "questions.*", items: 3, max: 2 }]);
+  });
+});
+
+// A shape holds a request's keys and scalar types, not only its strings and lists.
+describe("a request's keys and scalar types are its shape's too", () => {
+  it("refuses a number where its shape has an object, and an object where it has none", () => {
+    const d = new Disclosure(registryOf([]));
+    expect(() => d.seal({ purpose: "fill.whose", state: { source_notes: 12 as never }, questions: {} })).toThrow(OutOfShape);
+    expect(() => d.seal({ purpose: "fill.whose", state: {}, questions: 4 as never })).toThrow(OutOfShape);
+  });
+
+  it("refuses ten thousand numeric fields no row names", () => {
+    const d = new Disclosure(registryOf([]));
+    const state = Object.fromEntries(Array.from({ length: 10_000 }, (_, i) => [`f${i}`, i]));
+    expect(() => d.seal({ purpose: "route.judge", state, questions: {} })).toThrow(OutOfShape);
+  });
+
+  it("accepts the scalars a shape names, at their type only", () => {
+    const d = new Disclosure(registryOf([]));
+    expect(() => d.seal({ purpose: "pattern.naming", state: { timesSeen: 3 }, questions: {} })).not.toThrow();
+    expect(() => d.seal({ purpose: "pattern.naming", state: { timesSeen: true as never }, questions: {} })).toThrow(OutOfShape);
   });
 });

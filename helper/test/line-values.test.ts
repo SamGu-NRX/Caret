@@ -63,7 +63,8 @@ describe("typed values inside a line", () => {
 
 describe("free text a line bounds", () => {
   it("takes a labelled value before its remark in parentheses, quoting the remark, and none before a warning", () => {
-    expect(lineTexts("Preferred first name: Dima (legal name Dmitri Halvorsen).")).toEqual([{ text: "Dima", label: "Preferred first name", with: "Dima (legal name Dmitri Halvorsen)." }]);
+    // `at` and `withAt`: where the reading found each in the line, the value's start after "Preferred first name: ".
+    expect(lineTexts("Preferred first name: Dima (legal name Dmitri Halvorsen).")).toEqual([{ text: "Dima", label: "Preferred first name", with: "Dima (legal name Dmitri Halvorsen).", at: 22, withAt: 22 }]);
     // C1 review: a remark that warns against the value keeps it whole.
     expect(texts("Preferred first name: Alex (do not use this old name; use Robin instead for all future applications).")).toEqual([]);
     expect(texts("Phone: 555-0101 (my old number, no longer works)")).toEqual([]);

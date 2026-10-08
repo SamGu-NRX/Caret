@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { bareLine, LABELLED, lineDigests, logicalLines, sentenceAround } from "./line-values.ts";
 import { spanContexts } from "./candidates.ts";
 import { redactWindow } from "./redact.ts";
+import { type SourceAt, splitLines, TITLE } from "../privacy/ledger/source.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, PART_SAYS, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
@@ -542,6 +543,43 @@ export function neverTypedRefusal(p: Proposed, instruction = ""): string | null 
 export const VERIFY_BATCH = 20;
 
 
+/**
+ * Where a window provenance's texts were read (OUTPUT-LEDGER-SPEC section 4), when the producer recorded it: by text, a
+ * range of the redacted view's text. The verifier quotes such a text at its range, not as plan text, whose fallback would
+ * charge the whole line it stands in. Kept beside the provenance, not in it: a provenance is stored and compared whole.
+ */
+/**
+ * Where a window provenance's texts were read: the view, and the range of each text by its role in the provenance
+ * (its title, span, label, line), never by its spelling. A title and a value can read alike ("AB01" titling a chat whose
+ * label is "Ref: AB01"); each is charged where it stands. A role with no range is quoted as plan text.
+ */
+export interface ProvenanceReads {
+  readonly view: WindowState;
+  readonly title?: SourceAt;
+  readonly span?: SourceAt;
+  readonly label?: SourceAt;
+  readonly line?: SourceAt;
+}
+type ReadRole = Exclude<keyof ProvenanceReads, "view">;
+const READS = new WeakMap<Provenance, ProvenanceReads>();
+
+/** `copy`, a copy of `pr` (a clone, a spread), with `pr`'s reads and those of the provenances it names. */
+export function readsCopied<P extends Provenance>(pr: Provenance, copy: P): P {
+  const r = READS.get(pr);
+  if (r !== undefined) READS.set(copy, r);
+  if (pr.kind === "derived" && copy.kind === "derived") {
+    readsCopied(pr.base, copy.base);
+    if (pr.also !== null && copy.also !== null) readsCopied(pr.also, copy.also);
+  }
+  return copy;
+}
+
+/** `pr`, a window provenance, with where its texts were read (READS). */
+export function withReads<P extends Extract<Provenance, { kind: "window" }>>(pr: P, reads: ProvenanceReads): P {
+  READS.set(pr, reads);
+  return pr;
+}
+
 /** The source window's own words for a window provenance: its app and title, quoted only when the ledger admitted them. */
 function where(app: string, title: string, admitted: (t: string) => boolean): string {
   const t = title.trim();
@@ -549,20 +587,10 @@ function where(app: string, title: string, admitted: (t: string) => boolean): st
 }
 
 /**
- * Where a value was read, as one phrase (AC1 section 4). A window's line is quoted when the ledger admitted it, else its
- * span with its label, else the span alone; a part names the value it was cut from when that was admitted.
- */
-export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean): string {
-  // The verifier's own phrase (mintProvenanceSays), over a ledger of no windows: nothing to charge, so every admitted
-  // text mints and the rest are named, not quoted.
-  const d = new Disclosure([]);
-  return mintProvenanceSays(d, pr, (t) => (admitted(t) ? d.planText(t) : null), () => true);
-}
-
-/**
- * provenanceSays's phrase, minted by the verifier's Disclosure: every quoted text as plan text (Disclosure.planText, which
- * refuses a text that shows a line redaction removed), Caret's words around them. A text that does not mint is named,
- * not quoted, as one the ledger refused always was. `shown` says whether a window's text may be quoted at all: the
+ * Where a value was read, as one phrase (AC1 section 4), minted by the verifier's Disclosure: every quoted text at its
+ * recorded range (READS) or as plan text (Disclosure.planText, which refuses a text that shows a line redaction
+ * removed), Caret's words around them. A text that does not mint is named, not quoted, as one the ledger refused always
+ * was. `shown` says whether a window's text may be quoted at all: the
  * verifier quotes a window's title, line, label, span or value only when its Disclosure was built over that window and
  * its redacted view shows the text (Disclosure.shownIn), since a provenance is not itself read from a view.
  */
@@ -570,21 +598,28 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
   const m = quote;
   switch (pr.kind) {
     case "window": {
-      const m = (t: string): ModelText | null => (shown(pr.windowId, t) ? quote(t) : null);
+      // A text read at a recorded range is quoted at its role's range (READS); any other as `quote` mints it.
+      const read = READS.get(pr);
+      const m = (role: ReadRole | null, t: string): ModelText | null => {
+        if (!shown(pr.windowId, t)) return null;
+        const at = role === null ? undefined : read?.[role];
+        return read === undefined || at === undefined ? quote(t) : at.part === TITLE ? d.descriptor(read.view, t, at) : d.candidate(read.view, t, at);
+      };
       const t = pr.title.trim();
       // The app is reader metadata, named as it always was; a window of it is open, or the app's name is plan text.
       const app = pr.app === "" ? null : (d.appNamed(pr.app) ?? d.planText(pr.app));
-      const title = t === "" ? null : m(t);
+      const title = t === "" ? null : m("title", t);
       const at = title !== null ? d.t`${app ?? d.own("a window")} '${title}'` : (app ?? d.own("another window"));
-      const span = m(pr.span);
-      const line = pr.line === null ? null : m(pr.line);
-      const label = pr.label === null ? null : m(pr.label);
+      const span = m("span", pr.span);
+      const line = pr.line === null ? null : m("line", pr.line);
+      const label = pr.label === null ? null : m("label", pr.label);
       const base =
         line !== null ? d.t`the line "${line}" in ${at}`
         : span !== null && label !== null ? d.t`"${span}" labelled '${label}' in ${at}`
         : span !== null ? d.t`"${span}" in ${at}`
         : d.t`a value in ${at}`;
-      const whole = pr.partOf !== null && pr.partOf !== pr.line ? m(pr.partOf) : null;
+      // The labelled value a span was cut from has no recorded range: it is quoted as plan text.
+      const whole = pr.partOf !== null && pr.partOf !== pr.line ? m(null, pr.partOf) : null;
       return whole !== null ? d.t`${base}, which is part of "${whole}"` : base;
     }
     case "memory": {
@@ -612,17 +647,56 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
 
 const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format", amountNumber: "the number of the amount", boxTicked: "the ticked state stated" } as const satisfies Record<DeriveHow, string>;
 
-/** The texts of a provenance a question may quote, for the ledger: its window's title, line, label, span and whole value. */
-function provenanceTexts(pr: Provenance): string[] {
+/**
+ * The proposed value as the verifier quotes it, minted from where it was read (READS): a window value at its recorded
+ * range, else in the view it was read from; a derived value from its window bases, each minted where it was read and
+ * refusing it with them, as a derivation (Disclosure.derived) or else as a choice made from them (chosen); a value from
+ * memory, the instruction or an answer, and a window value with no recorded view, as plan text. Null when the ledger
+ * refuses it, and the value is not asked about. Re-minted as plan text when its base was refused, "2026-10-16" from a
+ * chat's "16/10/2026" charged the chat 4 where 14 was owed.
+ */
+function mintValue(d: Disclosure, p: Proposed, admit: (t: string) => ModelText | null): ModelText | null {
+  const pr = p.provenance;
+  if (pr.kind === "window") {
+    const read = READS.get(pr);
+    return read === undefined ? admit(p.text) : d.candidate(read.view, p.text, p.text === pr.span ? read.span : undefined);
+  }
+  if (pr.kind !== "derived") return admit(p.text);
+  const roots = windowRoots(pr);
+  if (roots.length === 0) return admit(p.text);
+  const bases = roots.map((r) => {
+    const read = READS.get(r);
+    return read === undefined ? admit(r.span) : d.candidate(read.view, r.span, read.span);
+  });
+  const minted = bases.filter((b): b is ModelText => b !== null);
+  if (minted.length < bases.length) return null;
+  return d.derived(minted, p.text) ?? d.chosen(minted, p.text);
+}
+
+/** The window provenances a derived value was read from: its base's, and its second source's (`also`). */
+function windowRoots(pr: Provenance): Extract<Provenance, { kind: "window" }>[] {
+  if (pr.kind === "window") return [pr];
+  if (pr.kind !== "derived") return [];
+  return [...windowRoots(pr.base), ...(pr.also === null ? [] : windowRoots(pr.also))];
+}
+
+/**
+ * The texts of a provenance a question may quote that it recorded no range for, for the ledger to admit as plan text:
+ * its window's title, line, label, span and whole value, each by its own role (READS).
+ */
+function unreadTexts(pr: Provenance): string[] {
   switch (pr.kind) {
-    case "window":
-      return [pr.title, pr.line, pr.label, pr.span, pr.partOf].filter((t): t is string => t !== null && t.trim() !== "");
+    case "window": {
+      const read = READS.get(pr);
+      const roles: [ReadRole | null, string | null][] = [["title", pr.title], ["line", pr.line], ["label", pr.label], ["span", pr.span], [null, pr.partOf]];
+      return roles.flatMap(([role, t]) => (t === null || t.trim() === "" || (role !== null && read?.[role] !== undefined) ? [] : [t]));
+    }
     case "memory":
       return [pr.label];
     case "answer":
       return [pr.question];
     case "derived":
-      return [...provenanceTexts(pr.base), ...(pr.also === null ? [] : provenanceTexts(pr.also))];
+      return [...unreadTexts(pr.base), ...(pr.also === null ? [] : unreadTexts(pr.also))];
     default:
       return [];
   }
@@ -816,7 +890,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
   if (proposed.length === 0) return { asks: [], jev };
   if (o.askJev === null) throw new VerifierUnavailable("no Jev to verify values with");
   const ask = testVerifier ?? o.askJev;
-  const ledger = o.ledger ?? new Disclosure([]);
+  const ledger = o.ledger ?? new Disclosure(null);
   const d = ledger;
   // What the ledger admits: a text the request may quote, minted as plan text (Disclosure.planText), which declares it,
   // charging each window whose lines it holds; text already taken for the value asks costs nothing more.
@@ -833,19 +907,21 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
   const instruction = raw === undefined ? undefined : d.instruction(raw);
   const userRequest = instruction === undefined ? d.own("none") : d.t`"${instruction}"`;
   const selections = o.selections ?? d.own("none");
-  const notes: Record<string, ModelText> = {};
+  /** Each value's whole unit (CheckOptions.unitOf), sent in the state of the batch that asks about the value. */
+  const notes = new Map<Proposed, { id: ModelText; text: ModelText }>();
   const questions = proposed.map((p) => {
     // The field's descriptor and the text itself must go; a value whose own text the ledger refuses is not verified.
     const descriptor = admit(p.field.descriptor);
-    const text = admit(p.text);
+    const text = mintValue(d, p, admit);
     if (descriptor === null || text === null) return null;
-    for (const t of provenanceTexts(p.provenance)) admit(t);
+    // Each text a provenance quotes is admitted as it is minted (mintProvenanceSays): at its range when it has one.
+    for (const t of unreadTexts(p.provenance)) admit(t);
     const rest = (o.restOf?.(p) ?? []).map(admit);
     const admitted = rest.filter((x): x is ModelText => x !== null);
     const named = admitted.length > 0 && admitted.length === rest.length ? admitted : null;
     const contract = named === null ? contractSays(p.field) : null;
     const unit = o.unitOf?.(p) ?? null;
-    if (unit !== null) notes[unit.id] = unit.text;
+    if (unit !== null) notes.set(p, unit);
     const parts: VerifyParts = {
       descriptor,
       contract: named !== null ? d.t`only the street line of an address; the form's fields ${listSaid(d, named.map((x) => d.t`'${x}'`))} take the rest` : contract === null ? d.own(CONTRACT_UNSTATED) : (admit(contract) ?? d.own(CONTRACT_UNSTATED)),
@@ -862,7 +938,15 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     return [WORDINGS[0](d, parts), WORDINGS[1](d, parts)] as const;
   });
   const declared = ledger.declared();
-  const state: Record<string, ModelValue> = { task: d.own(VERIFY_TASK), ...(instruction === undefined ? {} : { instruction }), ...(Object.keys(notes).length === 0 ? {} : { source_notes: notes }) };
+  // A batch's source_notes hold its own values' units only: all of them in every batch went past the shape's 20 at 21
+  // values, and every batch was refused.
+  const stateOf = (batch: readonly number[]): Record<string, ModelValue> => {
+    const mine = Object.fromEntries(batch.flatMap((i) => {
+      const u = notes.get(proposed[i] as Proposed);
+      return u === undefined ? [] : [[u.id, u.text] as const];
+    }));
+    return { task: d.own(VERIFY_TASK), ...(instruction === undefined ? {} : { instruction }), ...(Object.keys(mine).length === 0 ? {} : { source_notes: mine }) };
+  };
   const batches: number[][] = [];
   const asked = proposed.flatMap((_, i) => (questions[i] === null ? [] : [i]));
   for (let i = 0; i < asked.length; i += VERIFY_BATCH) batches.push(asked.slice(i, i + VERIFY_BATCH));
@@ -870,6 +954,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     // The second wording asks in reverse order, so neither order nor wording alone decides.
     const order = wording === 0 ? batch : [...batch].reverse();
     const qs: JevRequest["questions"] = Object.fromEntries(order.map((i) => [`x${i + 1}`, { type: "choice" as const, instructions: (questions[i] ?? [d.own(""), d.own("")])[wording], criteria: d.ownRecord(VERDICTS) }]));
+    const state = stateOf(batch);
     const sent = sentStrings([state, qs]);
     const req: JevRequest = d.seal({ purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged });
     // I1, SC1 2b: the verifier's request is sealed like every other (privacy/disclosure.ts): its provenance sentences
@@ -950,7 +1035,7 @@ export async function checkValues(proposed: readonly Proposed[], o: CheckOptions
 /** A deep copy of a value with everything frozen; a field contract already frozen (makeFieldContract) is kept as it is. */
 function snapshot(p: Proposed): Proposed {
   const field = Object.isFrozen(p.field) && Object.isFrozen(p.field.labelWords) ? p.field : Object.freeze({ ...p.field, labelWords: Object.freeze([...p.field.labelWords]), kinds: new Set(p.field.kinds) });
-  return Object.freeze({ field, text: p.text, display: p.display, provenance: deepFrozen(structuredClone(p.provenance)), owner: p.owner });
+  return Object.freeze({ field, text: p.text, display: p.display, provenance: deepFrozen(readsCopied(p.provenance, structuredClone(p.provenance))), owner: p.owner });
 }
 function deepFrozen<T>(x: T): T {
   if (typeof x === "object" && x !== null) {
@@ -1047,7 +1132,7 @@ export function sentenceDigests(text: string, span: string): string[] {
   const flat = (t: string): string => t.replace(/\s+/gu, " ").trim();
   const want = flat(span);
   if (want === "") return [];
-  const lines = text.split(/\r?\n/u).map(bareLine).filter((l) => l !== "");
+  const lines = splitLines(text).map(bareLine).filter((l) => l !== "");
   const records: string[] = [];
   for (const l of lines) {
     if (records.length === 0 || LABELLED.test(l)) records.push(l);

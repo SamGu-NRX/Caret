@@ -65,7 +65,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
       }),
     );
     m.apply(scheduleForm(2000, ["Meeting date", "Start time"]));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Meeting date"]), fieldTerms(["Start time"])] });
     expect(cut).toContain(CHAT);
     expect(candidates.map((c) => c.text)).not.toContain(MEETING);
@@ -91,7 +91,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
       ),
     );
     m.apply(scheduleForm(2000, ["Start time"]));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Start time"])] });
     expect(cut).toContain(CHAT);
     expect(candidates.map((c) => c.text)).toContain("3:45 PM");
@@ -107,8 +107,8 @@ describe("B13 review: no wrong fill from a partial set", () => {
     const m = new ScreenModel();
     const times = Array.from({ length: 79 }, (_, i) => `${10 + Math.floor(i / 60)}:${String(i % 60).padStart(2, "0")}`);
     const nodes = times.map((t, i) => text(`${CHAT}/t${i}`, t));
-    // Enough filler that the note is large (privacy.ts): a short note held to half its text is read by relevance
-    // since B24, which leaves the times out as a group rather than letting the cap stop partway.
+    // A note is no conversation, so it is read in screen order and the cap stops it partway; a conversation is read by
+    // relevance, which leaves the times out as a group. The filler keeps the note over its 1,200-character limit as well.
     const pad = Array.from({ length: 40 }, (_, i) => text(`${CHAT}/p${i}`, `a longer filler message, number ${i}, about where to have lunch today`));
     const values = times.map((t, i) => value("time", t, `${CHAT}/t${i}`));
     nodes.push(text(`${CHAT}/d`, `Review on ${MEETING}`));
@@ -117,7 +117,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
     m.apply(calendar(1500));
     const labels = ["Start time", "Meeting date"];
     m.apply(scheduleForm(2000, labels));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])) });
     expect(candidates).toHaveLength(80);
     expect(candidates.map((c) => c.text)).toContain(DECOY);
@@ -173,10 +173,12 @@ describe("B13 second review: the fixes' own gaps", () => {
     m.apply(snap([text(`${CHAT}/e`, "Email: a@example.com"), text(`${CHAT}/k`, "ok")], { at: 1000, windowId: CHAT, title: "Kofi", app: MESSAGES, values: [value("email", "a@example.com", `${CHAT}/e`)] }));
     m.apply(snap([text("notes/0", "dana@example.com")], { at: 1200, windowId: "6464-1", title: "Notes", app: NOTES, values: [value("email", "dana@example.com", "notes/0")] }));
     m.apply(scheduleForm(2000, ["Email"]));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Email"])] });
     expect(cut).toContain(CHAT);
-    expect(candidates.map((c) => c.text)).toContain("dana@example.com");
+    // The note's address ends with the chat's whole a@example.com, a run of 13, so offering it would charge the chat
+    // past its limit of 12 as well: neither is offered.
+    expect(candidates.map((c) => c.text)).not.toContain("dana@example.com");
     expect(candidates.map((c) => c.text)).not.toContain("a@example.com");
     const p = await proposeFill(m, fallthrough({ Email: ["a@example.com", "dana@example.com"] }), FORM, FORM_KEY("Email"), 3000);
     expect(fieldOf(p, "Email")?.value).toBeNull();
@@ -185,7 +187,7 @@ describe("B13 second review: the fixes' own gaps", () => {
 });
 
 describe("B13 review: executor plan text", () => {
-  it("F8: a goal cut one or two characters into a sourced value charges them", () => {
+  it("F8: a goal that quotes a sourced value whole charges it; cut one or two characters in, it is a residual", () => {
     const m = new ScreenModel();
     m.apply(snap([text(`${CHAT}/a`, "abcd")], { at: 1000, windowId: CHAT, title: "", app: MESSAGES }));
     m.apply(scheduleForm(2000, ["Notes"]));
@@ -195,9 +197,12 @@ describe("B13 review: executor plan text", () => {
     const goal = `${"The Notes field of the follow-up form holds the code that the chat gave for the meeting room, which is ".padEnd(117, ".")}abcd`;
     const form = m.windows.get(FORM)!;
     const t = { role: "AXTextField", label: "Notes", describe: "the Notes field" };
-    expect(targetSnippets(form, m.windows.values(), goal, t, [], [{ text: "abcd", window: chat }])).toBeNull();
+    // "ab" is under 12 characters and not a whole line, so the cut goes uncharged (OUTPUT-LEDGER-SPEC section 4).
+    expect(targetSnippets(form, m, goal, t, [], [{ text: "abcd", window: chat }])).not.toBeNull();
+    // Quoted whole, "abcd" is the chat's whole line: 4 over its limit of 1.
+    expect(targetSnippets(form, m, "The Notes field holds the room code abcd", t, [], [{ text: "abcd", window: chat }])).toBeNull();
     // A goal that does not quote the value asks.
-    expect(targetSnippets(form, m.windows.values(), "The Notes field holds the room code", t, [], [{ text: "abcd", window: chat }])).not.toBeNull();
+    expect(targetSnippets(form, m, "The Notes field holds the room code", t, [], [{ text: "abcd", window: chat }])).not.toBeNull();
   });
 });
 
