@@ -135,6 +135,7 @@ final class PerchController {
         askModel.run = { [weak self] in self?.ask.tab() }
         askModel.escape = { [weak self] in self?.ask.escape() }
         askModel.undo = { [weak self] in self?.ask.undo() }
+        askModel.select = { [weak self] in self?.ask.toggle(option: $0) }
         askModel.notRightAction = { [weak self] in self?.deskNotRight($0) }
         ask.onChange = { [weak self] in self?.askChanged() }
         ask.onAtForm = { [weak self] in self?.stepAside() }

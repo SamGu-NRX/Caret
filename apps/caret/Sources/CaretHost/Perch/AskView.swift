@@ -18,6 +18,8 @@ final class AskModel: ObservableObject {
     var escape: () -> Void = {}
     var undo: () -> Void = {}
     var notRightAction: (DeskNotRight) -> Void = { _ in }
+    /// VoiceOver's Select or Clear on one row of a fields question, by option id.
+    var select: (String) -> Void = { _ in }
 }
 
 /// What the desk's "Not right" row asks for.
@@ -48,6 +50,7 @@ struct AskSection: View {
     var onEscape: () -> Void = {}
     var onUndo: () -> Void = {}
     var onNotRight: (DeskNotRight) -> Void = { _ in }
+    var onSelect: (String) -> Void = { _ in }
 
     static let fieldTitle = "Ask Caret"
     static let emptyLine = "Nothing running. Caret shows up where you type when it has something."
@@ -61,7 +64,7 @@ struct AskSection: View {
     private var fieldHint: String {
         switch phase {
         case .proposed: return "Tab runs the plan below. Escape puts it away."
-        case .question(let q): return AskCopy.questionHint(q.ask.pick)
+        case .question(let q): return AskCopy.questionHint(q.ask)
         case .running: return "A plan is running. Escape stops it."
         case .asking: return "Caret is planning what you asked."
         case .atForm: return "The preview is at the form. Tab there fills it."
@@ -95,7 +98,7 @@ struct AskSection: View {
             AskCard(card: card, ending: nil, running: false, character: character, animated: animated, notRight: notRight,
                     onRun: onRun, onEscape: onEscape, onNotRight: onNotRight).padding(.top, 8)
         case .question(let q):
-            AskQuestionCard(question: q, onAnswer: onRun, onEscape: onEscape).padding(.top, 8)
+            AskQuestionCard(question: q, onAnswer: onRun, onEscape: onEscape, onSelect: onSelect).padding(.top, 8)
         case .running(let card):
             AskCard(card: card, ending: nil, running: true, character: character, animated: animated, onRun: onRun, onEscape: onEscape).padding(.top, 8)
         case .ended(let card, let line):
@@ -358,6 +361,7 @@ struct AskQuestionCard: View {
     var question: AskCaret.Question
     var onAnswer: () -> Void = {}
     var onEscape: () -> Void = {}
+    var onSelect: (String) -> Void = { _ in }
 
     var body: some View {
         Block {
@@ -371,7 +375,8 @@ struct AskQuestionCard: View {
                     ForEach(Array(question.ask.options.enumerated()), id: \.element.id) { index, option in
                         AskChoiceRow(
                             option: option, highlighted: index == question.highlight,
-                            selected: question.ask.pick == .many ? question.selected.contains(option.id) : nil
+                            selected: question.ask.pick == .many ? question.selected.contains(option.id) : nil,
+                            onSelect: { onSelect(option.id) }
                         )
                     }
                 }
@@ -401,6 +406,7 @@ private struct AskChoiceRow: View {
     var highlighted: Bool
     /// Nil for a question that takes one answer.
     var selected: Bool?
+    var onSelect: () -> Void = {}
 
     static let indent: CGFloat = 12
 
@@ -429,8 +435,11 @@ private struct AskChoiceRow: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(words.detail.map { "\(words.title), \($0)" } ?? words.title)
-        .accessibilityAddTraits(highlighted ? .isSelected : [])
-        .accessibilityValue(selected.map { $0 ? "Selected" : "Not selected" } ?? "")
+        // A fields row is selected by its box, so VoiceOver can pick any row, not only the highlighted one.
+        .accessibilityAddTraits((selected ?? highlighted) ? .isSelected : [])
+        .accessibilityActions {
+            if let selected { Button(selected ? "Clear" : "Select", action: onSelect) }
+        }
     }
 
     /// A 12 pt box in Ink 2, filled in Ink with a check when selected.
@@ -559,7 +568,7 @@ struct AskLiveSection: View {
         AskSection(
             text: model.text, phase: model.phase, character: character, focusToken: model.focusToken, animated: animated, notRight: model.notRight,
             onEdit: { model.edit($0) }, onSubmit: { model.submit() }, onRun: { model.run() }, onEscape: { model.escape() }, onUndo: { model.undo() },
-            onNotRight: { model.notRightAction($0) }
+            onNotRight: { model.notRightAction($0) }, onSelect: { model.select($0) }
         )
         .onChange(of: announcement) { _, words in
             if let words { AccessibilityNotification.Announcement(words).post() }

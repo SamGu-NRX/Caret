@@ -89,14 +89,18 @@ public struct AskQuestion: Codable, Equatable, Sendable {
     public var text: String
     public var pick: Pick
     public var options: [Option]
+    /// G35, fields questions only: the labels of the fields Caret fills whatever is picked. With it, an answer with no
+    /// picks fills those alone.
+    public var filling: [String]?
     /// The form the Ask is about.
     public var window: Window
     public var expires: Int64
 
-    enum CodingKeys: String, CodingKey { case type, v, requestId, at, questionId, part, text, pick, options, window, expires }
+    enum CodingKeys: String, CodingKey { case type, v, requestId, at, questionId, part, text, pick, options, filling, window, expires }
 
     /// protocol.ts's superRefine: a fields question picks many fields; a source question picks one
-    /// window or memory; a person question picks one of you or a person; ids do not repeat.
+    /// window or memory; a person question picks one of you or a person; ids do not repeat; only a fields question names
+    /// fields it is filling, at least one, none unlabelled.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let type = try c.decode(String.self, forKey: .type)
@@ -110,6 +114,8 @@ public struct AskQuestion: Codable, Equatable, Sendable {
         text = try c.decode(String.self, forKey: .text)
         pick = try c.decode(Pick.self, forKey: .pick)
         options = try c.decode([Option].self, forKey: .options)
+        // Absent or a list, never null, as zod reads it.
+        filling = c.contains(.filling) ? try c.decode([String].self, forKey: .filling) : nil
         window = try c.decode(Window.self, forKey: .window)
         expires = try c.decode(Int64.self, forKey: .expires)
         guard !questionId.isEmpty, !text.isEmpty else { throw ProtocolError("askQuestion needs a questionId and its text") }
@@ -123,6 +129,10 @@ public struct AskQuestion: Codable, Equatable, Sendable {
         guard pick == (part == .fields ? .many : .one) else { throw ProtocolError("a \(part.rawValue) question picks \(part == .fields ? "many" : "one")") }
         guard options.allSatisfy({ kinds.contains($0.kind) }) else { throw ProtocolError("a \(part.rawValue) question lists only \(kinds.sorted().joined(separator: " or ")) options") }
         guard Set(options.map(\.id)).count == options.count else { throw ProtocolError("option ids repeat") }
+        if let filling {
+            guard part == .fields else { throw ProtocolError("only a fields question names fields it is filling") }
+            guard !filling.isEmpty, filling.allSatisfy({ !$0.isEmpty }) else { throw ProtocolError("filling names at least one field, each by its label") }
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -130,12 +140,13 @@ public struct AskQuestion: Codable, Equatable, Sendable {
         try c.encode(Self.type, forKey: .type); try c.encode(Proto.version, forKey: .v)
         try c.encode(requestId, forKey: .requestId); try c.encode(at, forKey: .at); try c.encode(questionId, forKey: .questionId)
         try c.encode(part, forKey: .part); try c.encode(text, forKey: .text); try c.encode(pick, forKey: .pick)
-        try c.encode(options, forKey: .options); try c.encode(window, forKey: .window); try c.encode(expires, forKey: .expires)
+        try c.encode(options, forKey: .options); try c.encodeIfPresent(filling, forKey: .filling); try c.encode(window, forKey: .window); try c.encode(expires, forKey: .expires)
     }
 }
 
 /// Consumer to helper: the user's pick for a question, by option id, once, before it expires. The
-/// reply comes under this `requestId`: a plan, another question, or a `questionGone` refusal.
+/// reply comes under this `requestId`: a plan, another question, or a `questionGone` refusal. No picks
+/// answers only a fields question with `filling`: Caret fills those fields alone.
 public struct AskAnswer: Codable, Equatable, Sendable {
     public static let type = "askAnswer"
 
@@ -158,8 +169,8 @@ public struct AskAnswer: Codable, Equatable, Sendable {
         at = try c.decode(Int64.self, forKey: .at)
         questionId = try c.decode(String.self, forKey: .questionId)
         picks = try c.decode([String].self, forKey: .picks)
-        guard (1...200).contains(requestId.count), !questionId.isEmpty, (1...AskQuestion.maxOptions).contains(picks.count), picks.allSatisfy({ !$0.isEmpty }) else {
-            throw ProtocolError("askAnswer needs a request id, a question id and 1 to \(AskQuestion.maxOptions) picks")
+        guard (1...200).contains(requestId.count), !questionId.isEmpty, picks.count <= AskQuestion.maxOptions, picks.allSatisfy({ !$0.isEmpty }) else {
+            throw ProtocolError("askAnswer needs a request id, a question id and at most \(AskQuestion.maxOptions) picks")
         }
     }
 

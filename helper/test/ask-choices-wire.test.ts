@@ -26,7 +26,7 @@ const at = (i: number): Record<string, unknown> => JSON.parse(lines[i] as string
 
 describe("the ask-choices protocol lines", () => {
   it("parses every golden line and writes it back byte for byte", () => {
-    expect(lines.map((l) => (JSON.parse(l) as { type: string }).type)).toEqual(["hello", "planRequest", "askQuestion", "askAnswer", "askQuestion", "askAnswer", "planProposal", "askQuestion", "askAnswer", "planProposal"]);
+    expect(lines.map((l) => (JSON.parse(l) as { type: string }).type)).toEqual(["hello", "planRequest", "askQuestion", "askAnswer", "askQuestion", "askAnswer", "planProposal", "askQuestion", "askAnswer", "planProposal", "askQuestion", "askAnswer"]);
     for (const l of lines) {
       const m = JSON.parse(l) as { type: string };
       expect(JSON.stringify((CONSUMER.has(m.type) ? ConsumerMessage : HelperMessage).parse(m)), m.type).toBe(l);
@@ -51,6 +51,11 @@ describe("the ask-choices protocol lines", () => {
     expect(bad({ ...source, filling: ["Name"] })).toBe(true);
     expect(bad({ ...fields, filling: [] })).toBe(true);
     expect(bad({ ...at(3), questionId: "" })).toBe(true);
+  });
+
+  it("carries G35's fields question beside the fields Caret fills, and its answer with no picks", () => {
+    expect(at(10)).toMatchObject({ part: "fields", filling: ["Landlord name"] });
+    expect(at(11)).toMatchObject({ questionId: at(10).questionId, picks: [] });
   });
 });
 

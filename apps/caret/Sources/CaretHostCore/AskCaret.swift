@@ -156,10 +156,11 @@ public final class AskCaret {
             self.selected = selected
         }
 
-        /// What Tab sends: the selected rows in the question's order, else the highlighted one.
+        /// What Tab sends: the selected rows in the question's order. With none selected, nothing beside fields Caret
+        /// is filling (it fills those alone), else the highlighted row.
         public var picks: [String] {
             let chosen = ask.options.map(\.id).filter(selected.contains)
-            if !chosen.isEmpty { return chosen }
+            if !chosen.isEmpty || ask.filling != nil { return chosen }
             return ask.options.indices.contains(highlight) ? [ask.options[highlight].id] : []
         }
     }
@@ -349,9 +350,17 @@ public final class AskCaret {
     /// question shows, so the space is not typed into the instruction.
     @discardableResult
     public func toggle() -> Bool {
+        guard case .question(let q) = phase else { return false }
+        guard q.ask.options.indices.contains(q.highlight) else { return true }
+        return toggle(option: q.ask.options[q.highlight].id)
+    }
+
+    /// Selects or clears one row of a fields question by its option id: Space on the highlighted row, or VoiceOver's
+    /// action on any row. True while a question shows.
+    @discardableResult
+    public func toggle(option id: String) -> Bool {
         guard case .question(var q) = phase else { return false }
-        guard q.ask.pick == .many, q.ask.options.indices.contains(q.highlight) else { return true }
-        let id = q.ask.options[q.highlight].id
+        guard q.ask.pick == .many, q.ask.options.contains(where: { $0.id == id }) else { return true }
         if q.selected.remove(id) == nil { q.selected.insert(id) }
         settle(.question(q))
         return true
@@ -360,7 +369,7 @@ public final class AskCaret {
     /// Sends the question's picks; the reply comes under a new request id, as a plan or another question.
     private func answer(_ q: Question) -> Bool {
         let picks = q.picks
-        guard !picks.isEmpty else { return true }
+        guard !picks.isEmpty || q.ask.filling != nil else { return true }
         guard q.ask.expires > nowMs else {
             settle(.failed(AskCopy.planError(PlanProposal.Failure(code: .questionGone, detail: "the question expired"))))
             return true
@@ -821,14 +830,19 @@ public enum AskCopy {
         }
     }
 
-    /// What Tab does on a question: answer with the highlighted row, or fill the fields Space selected.
+    /// What Tab does on a question: answer with the highlighted row, or fill the fields Space selected, counting the
+    /// fields Caret fills anyway.
     public static func answerLabel(_ q: AskCaret.Question) -> String {
-        q.selected.isEmpty ? "Choose" : "Fill \(q.selected.count)"
+        if let filling = q.ask.filling { return "Fill \(filling.count + q.selected.count)" }
+        return q.selected.isEmpty ? "Choose" : "Fill \(q.selected.count)"
     }
 
     /// What VoiceOver says the field does while a question shows.
-    public static func questionHint(_ pick: AskQuestion.Pick) -> String {
-        pick == .many
+    public static func questionHint(_ ask: AskQuestion) -> String {
+        if ask.filling != nil {
+            return "Up and Down move between the fields. Space selects or clears one. Tab fills the selected fields and the ones Caret named. Escape fills nothing."
+        }
+        return ask.pick == .many
             ? "Up and Down move between the choices. Space selects one. Tab answers. Escape dismisses."
             : "Up and Down move between the choices. Tab answers. Escape dismisses."
     }

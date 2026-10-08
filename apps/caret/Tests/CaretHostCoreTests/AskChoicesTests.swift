@@ -32,7 +32,7 @@ final class AskChoicesTests: XCTestCase {
         }
         XCTAssertEqual(kinds, [
             "skip:hello", "skip:planRequest", "question:fields", "skip:askAnswer", "question:source", "skip:askAnswer",
-            "plan:proposed", "question:person", "skip:askAnswer", "plan:error",
+            "plan:proposed", "question:person", "skip:askAnswer", "plan:error", "question:fields", "skip:askAnswer",
         ])
         guard case .planProposal(let gone) = try HelperInbound.decode(Self.lines("ask-choices")[9]) else { return XCTFail("line 10") }
         XCTAssertEqual(gone.error?.code, .questionGone)
@@ -41,11 +41,11 @@ final class AskChoicesTests: XCTestCase {
     /// The host's answers and its fillAll are the golden lines; a question re-encodes to itself.
     func testTheHostsLinesAreTheGoldenLines() throws {
         let ask = try Self.lines("ask-choices")
-        for i in [3, 5, 8] {
+        for i in [3, 5, 8, 11] {
             let answer = try JSONDecoder().decode(AskAnswer.self, from: ask[i])
             XCTAssertEqual(try Self.object(NDJSON.line(answer)), try Self.object(ask[i]), "ask-choices line \(i + 1)")
         }
-        for i in [2, 4, 7] {
+        for i in [2, 4, 7, 10] {
             XCTAssertEqual(try Self.object(JSONEncoder().encode(Self.question(i))), try Self.object(ask[i]), "ask-choices line \(i + 1)")
         }
         let fill = try Self.lines("fill-all")
@@ -92,9 +92,18 @@ final class AskChoicesTests: XCTestCase {
             $0["options"] = [["kind": "field", "id": "o1", "label": "A", "section": NSNull()], ["kind": "field", "id": "o1", "label": "B", "section": NSNull()]]
         }), "ids repeat")
         XCTAssertThrowsError(try HelperInbound.decode(changed { $0["options"] = [["kind": "field", "id": "o1", "label": "A"]] }), "section is nullable, not optional")
+        XCTAssertThrowsError(try HelperInbound.decode(changed { $0["filling"] = [] }), "filling names at least one field")
+        XCTAssertThrowsError(try HelperInbound.decode(changed { $0["filling"] = [""] }), "a filled field's label is not empty")
+        XCTAssertThrowsError(try HelperInbound.decode(changed { $0["filling"] = NSNull() }), "filling is absent or a list, never null")
+        let source = try XCTUnwrap(Self.object(Self.lines("ask-choices")[4]).mutableCopy() as? NSMutableDictionary)
+        source["filling"] = ["Name"]
+        XCTAssertThrowsError(try HelperInbound.decode(JSONSerialization.data(withJSONObject: source)), "only a fields question names fields it is filling")
+        // G35: an answer with no picks decodes; the helper takes it only for a question with `filling`.
         let answer = try XCTUnwrap(Self.object(Self.lines("ask-choices")[3]).mutableCopy() as? NSMutableDictionary)
         answer["picks"] = []
-        XCTAssertThrowsError(try HelperInbound.decode(JSONSerialization.data(withJSONObject: answer)), "an answer picks at least one")
+        XCTAssertEqual(try JSONDecoder().decode(AskAnswer.self, from: JSONSerialization.data(withJSONObject: answer)).picks, [])
+        answer["picks"] = (1...9).map { "o\($0)" }
+        XCTAssertThrowsError(try JSONDecoder().decode(AskAnswer.self, from: JSONSerialization.data(withJSONObject: answer)), "at most eight picks")
     }
 
     // MARK: - The desk
@@ -162,6 +171,65 @@ final class AskChoicesTests: XCTestCase {
         XCTAssertTrue(ask.move(-1), "Up from the first row wraps to the last")
         XCTAssertTrue(ask.tab())
         XCTAssertEqual(lastAnswer?.picks, ["o2"])
+    }
+
+    // MARK: - G35: a fields question beside the fields Caret fills
+
+    func testBesideFilledFieldsTabWithNothingSelectedFillsOnlyThose() throws {
+        let q = try asked(10)
+        XCTAssertEqual(q.filling, ["Landlord name"])
+        guard case .question(let shown) = ask.phase else { return XCTFail("the desk shows the question") }
+        XCTAssertEqual(AskCopy.answerLabel(shown), "Fill 1", "Tab fills the one field Caret named")
+        XCTAssertTrue(ask.tab())
+        let answer = try XCTUnwrap(lastAnswer)
+        XCTAssertEqual(answer.picks, [], "not the highlighted row")
+        XCTAssertEqual(try Self.object(NDJSON.line(AskAnswer(requestId: "ask-13", at: 1_790_000_503_000, questionId: answer.questionId, picks: answer.picks))),
+                       try Self.object(Self.lines("ask-choices")[11]))
+        guard case .asking(let id) = ask.phase else { return XCTFail("the desk waits for the answer's reply") }
+        XCTAssertEqual(id, answer.requestId)
+    }
+
+    func testBesideFilledFieldsTheSelectedRowsAreAddedAndCounted() throws {
+        _ = try asked(10)
+        XCTAssertTrue(ask.toggle())
+        XCTAssertTrue(ask.move(1))
+        XCTAssertTrue(ask.toggle())
+        guard case .question(let shown) = ask.phase else { return XCTFail("still the question") }
+        XCTAssertEqual(AskCopy.answerLabel(shown), "Fill 3")
+        XCTAssertTrue(ask.tab())
+        XCTAssertEqual(lastAnswer?.picks, ["o1", "o2"])
+    }
+
+    func testAQuestionWithoutFillingStillChoosesTheHighlightedRow() throws {
+        _ = try asked(2)
+        guard case .question(let shown) = ask.phase else { return XCTFail("the question") }
+        XCTAssertEqual(AskCopy.answerLabel(shown), "Choose")
+        XCTAssertEqual(AskCopy.questionHint(shown.ask), "Up and Down move between the choices. Space selects one. Tab answers. Escape dismisses.")
+        XCTAssertEqual(AskCopy.questionHint(try Self.question(4)), "Up and Down move between the choices. Tab answers. Escape dismisses.")
+        XCTAssertEqual(AskCopy.questionHint(try Self.question(10)),
+                       "Up and Down move between the fields. Space selects or clears one. Tab fills the selected fields and the ones Caret named. Escape fills nothing.")
+    }
+
+    /// VoiceOver's Select and Clear on a row: the row's own option, wherever the highlight is.
+    func testARowsSelectActionTogglesThatRowOnly() throws {
+        _ = try asked(10)
+        XCTAssertTrue(ask.toggle(option: "o2"))
+        guard case .question(let once) = ask.phase else { return XCTFail("the question") }
+        XCTAssertEqual(once.selected, ["o2"])
+        XCTAssertEqual(once.highlight, 0, "the highlight stays where the arrows left it")
+        XCTAssertTrue(ask.toggle(option: "o2"))
+        guard case .question(let twice) = ask.phase else { return XCTFail("the question") }
+        XCTAssertEqual(twice.selected, [])
+        XCTAssertTrue(ask.toggle(option: "o9"))
+        guard case .question(let unknown) = ask.phase else { return XCTFail("the question") }
+        XCTAssertEqual(unknown.selected, [], "an id the question doesn't list selects nothing")
+    }
+
+    func testARowsSelectActionSelectsNothingOnAQuestionWithOneAnswer() throws {
+        _ = try asked(4)
+        XCTAssertTrue(ask.toggle(option: "o1"))
+        guard case .question(let one) = ask.phase else { return XCTFail("the question") }
+        XCTAssertEqual(one.selected, [], "a question with one answer selects nothing")
     }
 
     func testEscDismissesTheQuestionAndKeepsTheInstruction() throws {
