@@ -4,6 +4,7 @@
 // occurrence the window shows, and a field is in it when that occurrence contains it. A correct value for a field is no
 // authority to write it. A synthetic service form ("Equipment details", "Service contact"); every name is invented.
 import { readFileSync } from "node:fs";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { PageSnapshot, type Node, type PageControl } from "../src/protocol.ts";
@@ -49,7 +50,7 @@ function readerForm(o: { headings?: boolean; contactFirst?: boolean } = {}): Nod
 
 /** A page walk's outline: the frame's occurrences, and each control's chain of occurrence ids, by control name. */
 interface Walked {
-  occurrences: { id: string; heading: boolean; text?: string }[];
+  occurrences: { id: string; heading: boolean; text?: string; name?: string }[];
   chains: Record<string, readonly string[]>;
 }
 
@@ -369,7 +370,8 @@ describe("sections are occurrences (review of fc233af and 3e8a129)", () => {
   it("drops a self-identification heading's text where the walk is projected, and never offers it", () => {
     const page = pageSnapshot(["Equipment details", "Voluntary Self-Identification"], { occurrences: [{ id: "o1", heading: true, text: "Equipment details" }, { id: "o2", heading: true, text: "Voluntary Self-Identification" }], chains: { "Serial number": ["o1"], Model: ["o1"], "Contact name": ["o2"] } });
     const area = page.nodes.find((n) => n.role === "AXWebArea");
-    expect(area?.headings).toEqual(["Equipment details"]);
+    // One source of section text: beside an outline, no heading list is carried.
+    expect(area?.headings).toBeUndefined();
     expect(area?.outline).toEqual([{ key: `${area?.key}#o1`, heading: true, text: "Equipment details" }, { key: `${area?.key}#o2`, heading: true }]);
     const d = desk({ page });
     const s = snapFor(d, "fill the voluntary self-identification section");
@@ -565,6 +567,15 @@ describe("a section-only Ask on the page walk (Part B: page fields carry their s
 
 describe("re-review of 9939ac2: a named section the list can't offer, and a page that changes after the mint", () => {
   const occ = (id: string, text: string, heading = true) => ({ id, heading, text });
+/**
+ * Section name tokens as the extension's worker makes them for one snapshot (worker/section-names.ts): HMAC-SHA256 under
+ * a fresh salt over the frame's SHA-256 digest of the name, read by sectionName. `salt` is kept for the leak checks.
+ */
+function tokens(): ((text: string) => string) & { salt: string } {
+  const salt = randomBytes(32);
+  const t = (text: string): string => createHmac("sha256", salt).update(createHash("sha256").update(sectionName(text)).digest("hex")).digest("hex");
+  return Object.assign(t, { salt: salt.toString("hex") });
+}
 
   // Re-review 1: "the request names a section that isn't in this list" withholds every field.
   it("withholds every field, said, when both wordings say the named section isn't in the list", async () => {
@@ -792,6 +803,15 @@ describe("confirmation of 516ac15: veto decisions read the raw outline", () => {
 });
 
 const occ = (id: string, text: string, heading = true) => ({ id, heading, text });
+/**
+ * Section name tokens as the extension's worker makes them for one snapshot (worker/section-names.ts): HMAC-SHA256 under
+ * a fresh salt over the frame's SHA-256 digest of the name, read by sectionName. `salt` is kept for the leak checks.
+ */
+function tokens(): ((text: string) => string) & { salt: string } {
+  const salt = randomBytes(32);
+  const t = (text: string): string => createHmac("sha256", salt).update(createHash("sha256").update(sectionName(text)).digest("hex")).digest("hex");
+  return Object.assign(t, { salt: salt.toString("hex") });
+}
 
 describe("final check of 4f644e3: one reading of a section name, and the raw window only takes away", () => {
   const FULLWIDTH = "Ｖｏｌｕｎｔａｒｙ ｓｅｌｆ－ｉｄｅｎｔｉｆｉｃａｔｉｏｎ";
@@ -833,14 +853,14 @@ describe("final check of 4f644e3: one reading of a section name, and the raw win
     for (const r of j.seen) expect(JSON.stringify(r)).not.toMatch(/identification|ｉｄｅｎｔ/iu);
   });
 
-  // P1 (b): a name kept in one place and excluded by context in another is two sections.
-  it("withholds a section whose name the walk flags as an excluded section's too", async () => {
+  // P1 (b): a name kept in one place and excluded by context in another is two sections (now by name token).
+  it("withholds a section whose name token an excluded section in the same frame has too", async () => {
+    const t = tokens();
     const walked: Walked = {
-      occurrences: [{ id: "o1", heading: false }, { id: "o2", heading: true }, occ("o3", "Service contact"), { id: "o4", heading: true, text: "Address", sharesExcludedName: true } as Walked["occurrences"][number]],
+      occurrences: [{ id: "o1", heading: false, name: t("Voluntary self-identification") }, { id: "o2", heading: true, name: t("Address") }, { ...occ("o3", "Service contact"), name: t("Service contact") }, { ...occ("o4", "Address"), name: t("Address") }],
       chains: { "Serial number": ["o3", "o4"], Model: ["o3", "o4"], "Contact name": ["o3"], "Contact phone": ["o3"] },
     };
     const d = desk({ page: pageSnapshot(["Service contact"], walked) });
-    expect(windowOutline(windowOf(d)).occurrences.find((x) => x.text === "Address")?.sharesExcludedName).toBe(true);
     const j = jev({ asks: EQUIPMENT, section: "Address" });
     expectSectionRefusal(await refusal(plan(d, j, "fill the address section")), EQUIPMENT);
     expect(sectionPlacement(windowOf(d), "Address").withhold).toBe("duplicate");
@@ -898,4 +918,164 @@ describe("final check of 4f644e3: one reading of a section name, and the raw win
       }
     }
   });
+});
+
+describe("check of 5fdb385: one source of section text, and name tokens across the window", () => {
+  type Frame = { frameId: number; parentFrameId: number; headings: string[]; walked: Walked; controls: string[]; sectionNames?: string[] };
+  /** A tab of several frames as the worker composes it: each frame's sections, tokens and controls. */
+  function tab(frames: readonly Frame[]): ReturnType<typeof toWindowSnapshot> {
+    const s = PageSnapshot.parse({
+      type: "pageSnapshot", v: 1, id: "walk-2", at: 2000, tabId: 42, browserWindowId: 40, active: true, inFocusedWindow: true, title: "Service request",
+      frames: frames.map((f) => ({
+        frameId: f.frameId, parentFrameId: f.parentFrameId, documentId: `doc-${f.frameId}`, origin: "https://service.example", path: `/f${f.frameId}`, navGen: 0, title: "Service request", headings: f.headings,
+        sections: f.walked.occurrences, ...(f.sectionNames === undefined ? {} : { sectionNames: f.sectionNames }),
+        controls: f.controls.map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, 80 + i * 40, 200, 24], ...((f.walked.chains[name] ?? []).length === 0 ? {} : { sections: [...(f.walked.chains[name] ?? [])] }) })),
+        iframes: [], excluded: {}, truncated: false,
+      })),
+      missing: [], focused: null,
+    });
+    const session = new EngineSession({ engine: "scp1", browser: { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" }, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+    return toWindowSnapshot(s, session, 1);
+  }
+  /** The top frame of the service form: "Equipment details" over Serial number and Model, under its token. */
+  const top = (t: (x: string) => string, extra: Walked["occurrences"] = [], sectionNames?: string[]): Frame => ({
+    frameId: 0, parentFrameId: -1, headings: ["Equipment details"],
+    walked: { occurrences: [{ ...occ("o1", "Equipment details"), name: t("Equipment details") }, ...extra], chains: { "Serial number": ["o1"], Model: ["o1"] } },
+    controls: ["Serial number", "Model"], ...(sectionNames === undefined ? {} : { sectionNames }),
+  });
+  /**
+   * The Ask, its refusal said for both fields, then a plan minted while the section was unique, refused once the window
+   * shows the duplicate: at acceptance (validatePlan) and at dispatch (guardFor). No request carries excluded text, a
+   * token's salt, or a digest.
+   */
+  async function expectWithheld(unique: ReturnType<typeof toWindowSnapshot>, duplicated: ReturnType<typeof toWindowSnapshot>, salt: string, excluded: RegExp) {
+    const d = desk({ page: duplicated });
+    const j = jev({ asks: EQUIPMENT, section: "Equipment details" });
+    expectSectionRefusal(await refusal(plan(d, j)), EQUIPMENT);
+    const u = desk({ page: unique });
+    const ju = jev({ asks: EQUIPMENT, section: "Equipment details" });
+    const r = (await plan(u, ju)) as AskDraft;
+    expect(written(r, u)).toEqual(EQUIPMENT);
+    const serial = r.checked.writes[0];
+    if (serial === undefined) throw new Error("no write");
+    const guard = guardFor(() => u.model, new Map([[0, serial.checked]]), r.checked.origin, null, null);
+    const accept = () => validatePlan(r.plan, r.slots, { model: u.model, memory: [], instruction: INSTRUCTION, origin: r.checked.origin, documentOf: null }, r.checked.mints);
+    u.model.apply({ ...duplicated, at: 2500, focused: true });
+    const w = windowOf(u);
+    expect(() => accept()).toThrow(/more than once/u);
+    expect(guard(0, serial.value, { windowId: w.window.windowId, node: w.nodes.get(serial.node.key) as Node, window: w })).toMatch(/more than once/u);
+    for (const req of [...j.seen, ...ju.seen]) {
+      const sent = JSON.stringify(req);
+      expect(sent).not.toMatch(excluded);
+      expect(sent).not.toContain(salt);
+      expect(sent).not.toMatch(/[0-9a-f]{64}/u);
+    }
+  }
+
+  // Item 1: one source of section text. A frame with an outline carries no separate heading list.
+  it("takes no heading list beside a frame's outline, so a context-excluded h2 never reaches the helper", async () => {
+    const t = tokens();
+    const leaked: Frame = { ...top(t, [{ id: "o2", heading: false, name: t("Voluntary self-identification") }, { id: "o3", heading: true, name: t("Survey detail DAHLIA-73") }]), headings: ["Equipment details", "Survey detail DAHLIA-73"] };
+    const page = tab([leaked]);
+    const area = page.nodes.find((n) => n.role === "AXWebArea");
+    expect(area?.headings).toBeUndefined();
+    const d = desk({ page });
+    const j = jev({ asks: EQUIPMENT, section: "unlisted" });
+    expect((await refusal(plan(d, j, "fill the survey detail part"))).message).toBe(SAYS.sectionNotFound);
+    for (const req of j.seen) expect(JSON.stringify(req)).not.toMatch(/DAHLIA/u);
+    const serial = [...windowOf(d).nodes.values()].find((x) => x.label === "Serial number")?.key ?? "";
+    const scope = askScope(d.windowId, null, [serial], { [serial]: "seen" }, null, "a", [], "Survey detail DAHLIA-73");
+    expect(sectionRefusal({ key: serial, name: "Serial number" }, scope, windowOf(d))).toMatch(/no longer on the form/u);
+  });
+
+  // Item 2: a child frame's excluded "Equipment details" is the same name as the top frame's.
+  it("withholds when a child frame's self-identification fieldset holds another 'Equipment details'", async () => {
+    const t = tokens();
+    const child: Frame = { frameId: 1, parentFrameId: 0, headings: [], walked: { occurrences: [{ id: "o1", heading: false, name: t("Voluntary self-identification") }, { id: "o2", heading: true, name: t("Equipment details") }], chains: { "Survey answer": ["o1", "o2"] } }, controls: ["Survey answer"] };
+    await expectWithheld(tab([top(t)]), tab([top(t), child]), t.salt, /identification/iu);
+  });
+
+  // Item 2: past the occurrence cap a name still has its token.
+  it("withholds when an excluded 'Equipment details' comes after 199 Detail headings, past the cap", async () => {
+    const t = tokens();
+    const details = Array.from({ length: 199 }, (_, i) => ({ ...occ(`o${i + 2}`, `Detail ${i + 1}`), name: t(`Detail ${i + 1}`) }));
+    await expectWithheld(tab([top(t, details, [t("Voluntary self-identification")])]), tab([top(t, details, [t("Voluntary self-identification"), t("Equipment details")])]), t.salt, /identification/iu);
+  });
+
+  it("says the list is incomplete when a frame tokened fewer sections than it has", () => {
+    const t = tokens();
+    const session = new EngineSession({ engine: "scp1", browser: { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" }, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+    const raw = tabRaw(t);
+    expect(snapFor(desk({ page: toWindowSnapshot(PageSnapshot.parse(raw), session, 1) })).sectionsCut).toBe(false);
+    const cut = PageSnapshot.parse({ ...raw, frames: raw.frames.map((f) => ({ ...f, sectionsCut: true })) });
+    expect(snapFor(desk({ page: toWindowSnapshot(cut, session, 1) })).sectionsCut).toBe(true);
+  });
+
+  // Item 4: on page paths with several frames, tokens and caps, the field admitted is exactly the provable one.
+  it("admits a field exactly when its frame places it in the one section of that name in the whole tab", () => {
+    const r = rng(5385);
+    const names = ["Equipment details", "Service contact", "Notes"];
+    let admitted = 0;
+    for (let n = 0; n < 300; n++) {
+      const t = tokens();
+      const frames: Frame[] = [];
+      /** Every occurrence by frame, with whether its text was kept. */
+      const all: { frameId: number; id: string; name: string; kept: boolean }[] = [];
+      const overflow: { name: string }[] = [];
+      const frameCount = 1 + Math.floor(r() * 3);
+      for (let fi = 0; fi < frameCount; fi++) {
+        const occurrences: Walked["occurrences"] = [];
+        const sectionNames: string[] = [];
+        const count = 1 + Math.floor(r() * 4);
+        for (let k = 0; k < count; k++) {
+          const name = names[Math.floor(r() * names.length)] as string;
+          const roll = r();
+          if (roll < 0.15) {
+            sectionNames.push(t(name));
+            overflow.push({ name });
+            continue;
+          }
+          const kept = roll >= 0.35;
+          const id = `o${occurrences.length + 1}`;
+          occurrences.push({ id, heading: true, ...(kept ? { text: name } : {}), name: t(name) });
+          all.push({ frameId: fi, id, name, kept });
+        }
+        const controls = [`Field ${fi}a`, `Field ${fi}b`];
+        const chains: Record<string, string[]> = {};
+        for (const c of controls) chains[c] = occurrences.filter(() => r() < 0.5).map((o) => o.id);
+        frames.push({ frameId: fi, parentFrameId: fi === 0 ? -1 : 0, headings: [], walked: { occurrences, chains }, controls, ...(sectionNames.length === 0 ? {} : { sectionNames }) });
+      }
+      const page = tab(frames);
+      forgetWindows();
+      const m = new ScreenModel();
+      m.apply({ ...page, at: 2000, focused: true });
+      const w = m.windows.get(page.window.windowId);
+      if (w === undefined) throw new Error("no window");
+      const placement = sectionPlacement(w, "Equipment details");
+      // The reference, from the generated tab alone: one occurrence of the name anywhere, its text kept, and the field's
+      // frame placing it there.
+      const same = all.filter((o) => o.name === "Equipment details");
+      const unique = same.length === 1 && overflow.every((o) => o.name !== "Equipment details") && same[0]?.kept === true ? same[0] : null;
+      for (const f of frames) {
+        for (const c of f.controls) {
+          const key = [...w.nodes.values()].find((x) => x.label === c)?.key ?? "";
+          const expected = unique !== null && unique.frameId === f.frameId && (f.walked.chains[c] ?? []).includes(unique.id);
+          expect(placement.member(key) === "in", `seed ${n} ${c}`).toBe(expected);
+          if (expected) admitted++;
+        }
+      }
+    }
+    // Not a withhold-everything implementation: provably unique fields in the section were admitted.
+    expect(admitted).toBeGreaterThan(20);
+  });
+
+  /** One frame's tab as the worker would send it, before projection. */
+  function tabRaw(t: (x: string) => string) {
+    const f = top(t);
+    return {
+      type: "pageSnapshot" as const, v: 1 as const, id: "walk-3", at: 2000, tabId: 43, browserWindowId: 40, active: true, inFocusedWindow: true, title: "Service request",
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: "doc-0", origin: "https://service.example", path: "/f0", navGen: 0, title: "Service request", headings: f.headings, sections: f.walked.occurrences, controls: [{ id: "e1", key: "form@0/textbox:serial number~0", strongKey: null, kind: "text" as const, role: "textbox", name: "Serial number", value: "", form: "form@0", rect: [20, 80, 200, 24] as [number, number, number, number], sections: ["o1"] }], iframes: [], excluded: {}, truncated: false }],
+      missing: [], focused: null,
+    };
+  }
 });

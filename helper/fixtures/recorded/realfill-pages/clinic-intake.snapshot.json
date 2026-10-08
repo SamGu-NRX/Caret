@@ -28,32 +28,38 @@
     {
      "id": "o1",
      "heading": true,
-     "text": "Harbor Family Clinic"
+     "text": "Harbor Family Clinic",
+     "name": "6de0313bbd87e8eb50ce32f78cab038794f36bbd55aae04f78de9e5bdc965bd3"
     },
     {
      "id": "o2",
      "heading": true,
-     "text": "Patient information"
+     "text": "Patient information",
+     "name": "ee2a0332fdda95110363ec4094b20e5caa46b195cc480bb67756df7694b0289f"
     },
     {
      "id": "o3",
      "heading": true,
-     "text": "Contact details"
+     "text": "Contact details",
+     "name": "d383a46422539baf23e830ced0469318c978637367a738296523220960be5dbf"
     },
     {
      "id": "o4",
      "heading": false,
-     "text": "How should we contact you? (required)"
+     "text": "How should we contact you? (required)",
+     "name": "0f2ba10f5028aabed41950f7423ad72943f7436b79a375fce00a3b40e9c14b66"
     },
     {
      "id": "o5",
      "heading": true,
-     "text": "Emergency contact"
+     "text": "Emergency contact",
+     "name": "956a02f1d0b04e2df335e8e48c79b49a7b184e3ab691b7d23aa25290ab201e06"
     },
     {
      "id": "o6",
      "heading": true,
-     "text": "Acknowledgements"
+     "text": "Acknowledgements",
+     "name": "514a9b94a6ff4cf4a45fec5962999b1464fc952a947bcdebd9856eabe7066723"
     }
    ],
    "controls": [

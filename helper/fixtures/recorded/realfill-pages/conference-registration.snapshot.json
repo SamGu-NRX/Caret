@@ -27,32 +27,38 @@
     {
      "id": "o1",
      "heading": true,
-     "text": "DevHarbor Summit 2026"
+     "text": "DevHarbor Summit 2026",
+     "name": "1bd42876691ef52fe4030f497aa5cb147ca37541cb040cd19c01f084118d8ffd"
     },
     {
      "id": "o2",
      "heading": true,
-     "text": "About you"
+     "text": "About you",
+     "name": "85b4b2578e1039da87ef991ac87b8c7b6efcdaa4de546990c03e7ff742b70415"
     },
     {
      "id": "o3",
      "heading": true,
-     "text": "Your ticket"
+     "text": "Your ticket",
+     "name": "2528b954a2aa9ff8bd65992cdcdffe0b00c2c61e008a9a56ad26add62dd0b038"
     },
     {
      "id": "o4",
      "heading": false,
-     "text": "Ticket type*"
+     "text": "Ticket type*",
+     "name": "2619414d26ee4e44b15ed63ed051145148b5f203f5a5225ee2f50a5bf2db797a"
     },
     {
      "id": "o5",
      "heading": false,
-     "text": "Workshops (choose any)"
+     "text": "Workshops (choose any)",
+     "name": "9f295485c7fe368a3e9d600d220bdebf1815b8e9b9ca466c0d1c95aae9baafde"
     },
     {
      "id": "o6",
      "heading": true,
-     "text": "On-site details"
+     "text": "On-site details",
+     "name": "3a381c7e17364b030042e27dc0033016e7eddf0542cac59bca5bf8e6d02952a7"
     }
    ],
    "controls": [

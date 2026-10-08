@@ -146,8 +146,8 @@ export interface SectionOccurrence {
   readonly key: string;
   readonly heading: boolean;
   readonly text: string | null;
-  /** A page walk's flag: an excluded occurrence has this name too, so the name is two sections (PageFrame.sections). */
-  readonly sharesExcludedName?: true;
+  /** A page walk's token of its name (PageFrame.sections), equal for equal names across the window, excluded ones too. */
+  readonly name?: string;
 }
 
 /**
@@ -160,6 +160,10 @@ export interface WindowOutline {
   readonly occurrences: readonly SectionOccurrence[];
   chainOf(key: string): readonly string[] | "unknown";
   readonly fallback: readonly string[];
+  /** A page walk's name tokens across every frame: each occurrence's, and those past each frame's cap. */
+  readonly tokens: readonly string[];
+  /** A page frame has more sections than its walk tokens: the window's section list is incomplete. */
+  readonly cut: boolean;
 }
 
 /** Roles that group what they hold on the Accessibility path: a heading in one ends with it. */
@@ -184,10 +188,11 @@ export function windowOutline(w: WindowState): WindowOutline {
   const areas = nodes.filter((n) => n.role === "AXWebArea");
   let o: WindowOutline;
   if (areas.some((a) => a.outline !== undefined)) {
-    const occurrences = areas.flatMap((a) => (a.outline ?? []).map((x) => ({ key: x.key, heading: x.heading, text: x.text ?? null, ...(x.sharesExcludedName === true ? { sharesExcludedName: true as const } : {}) })));
-    o = { occurrences, chainOf: (key) => w.nodes.get(key)?.sections ?? [], fallback: [] };
+    const occurrences = areas.flatMap((a) => (a.outline ?? []).map((x) => ({ key: x.key, heading: x.heading, text: x.text ?? null, ...(x.name === undefined ? {} : { name: x.name }) })));
+    const tokens = [...occurrences.flatMap((x) => (x.name === undefined ? [] : [x.name])), ...areas.flatMap((a) => a.sectionNames ?? [])];
+    o = { occurrences, chainOf: (key) => w.nodes.get(key)?.sections ?? [], fallback: [], tokens, cut: areas.some((a) => a.sectionsCut === true) };
   } else if (areas.some((a) => a.headings !== undefined)) {
-    o = { occurrences: [], chainOf: () => "unknown", fallback: areas.flatMap((a) => a.headings ?? []) };
+    o = { occurrences: [], chainOf: () => "unknown", fallback: areas.flatMap((a) => a.headings ?? []), tokens: [], cut: false };
   } else o = axOutline(w, nodes);
   outlines.set(w, o);
   return o;
@@ -240,7 +245,7 @@ function axOutline(w: WindowState, nodes: readonly Node[]): WindowOutline {
     const inner = [...stack].reverse().find((f) => f.heading !== null)?.heading ?? null;
     chains.set(n.key, [...stack.flatMap((f) => (f.label === null ? [] : [f.label])), ...(inner === null ? [] : [inner])]);
   }
-  return { occurrences, chainOf: (key) => chains.get(key) ?? [], fallback: [] };
+  return { occurrences, chainOf: (key) => chains.get(key) ?? [], fallback: [], tokens: [], cut: false };
 }
 
 /**
@@ -359,9 +364,9 @@ export function sectionRefusal(f: { readonly key: string; readonly name: string 
  * acceptance and dispatch. The section is the occurrence the redacted view names, since that is what Jev chose from; the
  * raw window, read locally and sent nowhere, can only take away (final check of 4f644e3):
  *   - "missing": the redacted view names no occurrence by that text;
- *   - "duplicate": it names more than one, or one flagged as sharing an excluded name, or the raw window names by that
- *     text more than one occurrence, a flagged one, or another occurrence than the redacted view's (a heading whose own
- *     label redaction cut to that text, beside one whose placeholder redaction removed);
+ *   - "duplicate": it names more than one, or the raw window names by that text more than one occurrence or another
+ *     occurrence than the redacted view's (a heading whose own label redaction cut to that text, beside one whose
+ *     placeholder redaction removed), or, on a page, another occurrence anywhere in the tab has its name's token;
  *   - otherwise a field is "in" only when both outlines place it in that occurrence, so the fields admitted are a subset
  *     of what either outline alone admits.
  */
@@ -379,7 +384,10 @@ export function sectionPlacement(window: WindowState, section: string): SectionP
   if (shown.length === 0) return unknown("missing");
   const chosen = shown[0] as SectionOccurrence;
   const local = named(raw);
-  if (shown.length > 1 || chosen.sharesExcludedName === true || local.length !== 1 || local[0]?.key !== chosen.key || local[0].sharesExcludedName === true) return unknown("duplicate");
+  if (shown.length > 1 || local.length !== 1 || local[0]?.key !== chosen.key) return unknown("duplicate");
+  // A page's token of the name: any other occurrence in the window with it (in another frame, excluded, or past a
+  // frame's cap, none of which the text shows) makes the name two sections.
+  if (chosen.name !== undefined && raw.tokens.filter((t) => t === chosen.name).length > 1) return unknown("duplicate");
   const inRed = sectionMembership(red, section);
   const inRaw = sectionMembership(raw, section);
   return {

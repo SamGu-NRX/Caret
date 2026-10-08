@@ -26,26 +26,31 @@
     {
      "id": "o1",
      "heading": true,
-     "text": "Who's flying?"
+     "text": "Who's flying?",
+     "name": "0e1322e8b036980149fbf5a9258246574339977b225dbe8cb5c55b4d5df8f255"
     },
     {
      "id": "o2",
      "heading": true,
-     "text": "Passenger 1 (Adult)"
+     "text": "Passenger 1 (Adult)",
+     "name": "dd1cb34c8c6eed39e34aaed168ccf9ede71ccbade1d36d68fa3745ab19c7ea27"
     },
     {
      "id": "o3",
      "heading": false,
-     "text": "Date of birth"
+     "text": "Date of birth",
+     "name": "f24072d97145bfb5bc241c7f73a12de4b833c3ea559278c0334f763d614e67b6"
     },
     {
      "id": "o4",
-     "heading": false
+     "heading": false,
+     "name": "a51915a2a669aa7ddbab23e926760fe412571d72d3748c56a6508ed67d135507"
     },
     {
      "id": "o5",
      "heading": true,
-     "text": "Contact information"
+     "text": "Contact information",
+     "name": "7015877c3a1706ccae880f236c324209e281fb4c3c39455f16156a5f1416add3"
     }
    ],
    "controls": [

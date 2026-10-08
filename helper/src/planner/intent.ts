@@ -261,7 +261,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   const sectionHeadings: IntentSnapshot["headings"] = [];
   // A section whose text an exclusion or redaction took can't be listed either: the list is said to be incomplete, so a
   // request naming it gets "not in this list" and withholds, rather than reading as particular fields.
-  let sectionsCut = outline.occurrences.some((x) => x.text === null);
+  let sectionsCut = outline.cut || outline.occurrences.some((x) => x.text === null);
   for (const name of shownSections(outline, [...fields, ...uploads].map((f) => f.key))) {
     if (sectionHeadings.length >= MAX_INTENT_HEADINGS) {
       sectionsCut = true;

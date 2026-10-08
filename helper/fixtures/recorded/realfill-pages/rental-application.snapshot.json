@@ -30,42 +30,50 @@
     {
      "id": "o1",
      "heading": true,
-     "text": "Rental Application"
+     "text": "Rental Application",
+     "name": "e0d03c14055c8e33db4bea985aac7ca811015ab7354b20f4135bfb1f32cb3eec"
     },
     {
      "id": "o2",
      "heading": true,
-     "text": "Applicant"
+     "text": "Applicant",
+     "name": "1700ee621c7527a9268d0303b40a0e5638d76803b91599eb34377416f45bcb43"
     },
     {
      "id": "o3",
      "heading": true,
-     "text": "Current residence"
+     "text": "Current residence",
+     "name": "bd1f49448e1b91da43398127a15994c11e5506dd8297564e6ed9e17703dbb68d"
     },
     {
      "id": "o4",
      "heading": true,
-     "text": "Current landlord"
+     "text": "Current landlord",
+     "name": "0eaf23678176b811b08e49f04677eeb335f7773e18546d9f7ece9d70f21eefa5"
     },
     {
      "id": "o5",
      "heading": true,
-     "text": "Move details"
+     "text": "Move details",
+     "name": "086771d22ac60eaeaa3365c159b1a8c8829ed36d51747d7f15291a9fd9bacf8c"
     },
     {
      "id": "o6",
      "heading": false,
-     "text": "Do you have pets? *"
+     "text": "Do you have pets? *",
+     "name": "4fc2c3f359054b85f57807587a2fdf2259e237fb5cd7d7c152df75b537dc0434"
     },
     {
      "id": "o7",
      "heading": true,
-     "text": "Employment and income"
+     "text": "Employment and income",
+     "name": "2a3359c78ccb45fefa060763987a996bdbd9a6678a49ee3fd0ad072e801db114"
     },
     {
      "id": "o8",
      "heading": true,
-     "text": "Agreements"
+     "text": "Agreements",
+     "name": "5a6ee24fc22558360131fceeb6b28f104fb2c5349d8e95aa8d6837d667aaf370"
     }
    ],
    "controls": [

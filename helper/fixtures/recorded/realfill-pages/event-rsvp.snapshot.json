@@ -26,22 +26,26 @@
     {
      "id": "o1",
      "heading": true,
-     "text": "Jun & Priscilla"
+     "text": "Jun & Priscilla",
+     "name": "cfdc70b59572f4f173d74d4a537cf604cbfbd704d138fccd73e8e7a03a38bd08"
     },
     {
      "id": "o2",
      "heading": false,
-     "text": "Will you be joining us? *"
+     "text": "Will you be joining us? *",
+     "name": "4fb3b5e139b9c8c677edfa4a1447fb953e8a74790d39870c5eaf2598b2da810b"
     },
     {
      "id": "o3",
      "heading": true,
-     "text": "Dinner"
+     "text": "Dinner",
+     "name": "8c8d5f8b13a2779144cfd44f47fb28aab27b146e5232e36f5f70bb0163db266b"
     },
     {
      "id": "o4",
      "heading": true,
-     "text": "The evening"
+     "text": "The evening",
+     "name": "09bc47b089b222fa46b7b8aa8348fe24ad7e41bed3651ba933e0ab2f68dfab03"
     }
    ],
    "controls": [

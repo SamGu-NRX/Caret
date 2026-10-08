@@ -24,12 +24,14 @@
     {
      "id": "o1",
      "heading": true,
-     "text": "See Ledgerline in action"
+     "text": "See Ledgerline in action",
+     "name": "d0d939c0b9170d4017a7031bbfbe6257e6bdc0a3b54d78972c84ea2173f1ef06"
     },
     {
      "id": "o2",
      "heading": false,
-     "text": "What are you interested in?"
+     "text": "What are you interested in?",
+     "name": "27cbf037945c5bfb6727566fdda952ab1f6bc6076d7023670e240f933385d976"
     }
    ],
    "controls": [

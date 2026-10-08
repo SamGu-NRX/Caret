@@ -265,7 +265,7 @@ function build(w: WindowState): WindowState {
     // SCP1: a page's heading or section text that names a secret is left out, as a label that names one is. A section
     // keeps its place in the outline without its text, so it still ends the section before it.
     const headings = n.headings?.filter((h) => !secretText(h));
-    const outline = n.outline?.some((o) => o.text !== undefined && secretText(o.text)) === true ? n.outline.map((o) => (o.text !== undefined && secretText(o.text) ? { key: o.key, heading: o.heading, ...(o.sharesExcludedName === true ? { sharesExcludedName: true as const } : {}) } : o)) : n.outline;
+    const outline = n.outline?.some((o) => o.text !== undefined && secretText(o.text)) === true ? n.outline.map((o) => (o.text !== undefined && secretText(o.text) ? { key: o.key, heading: o.heading, ...(o.name === undefined ? {} : { name: o.name }) } : o)) : n.outline;
     if (value === n.value && label === n.label && headings?.length === n.headings?.length && outline === n.outline) nodes.set(n.key, n);
     else {
       const m: Node = { ...n };

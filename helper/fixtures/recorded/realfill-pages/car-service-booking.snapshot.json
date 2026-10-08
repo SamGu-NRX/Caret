@@ -27,32 +27,38 @@
     {
      "id": "o1",
      "heading": true,
-     "text": "Summit Subaru Service"
+     "text": "Summit Subaru Service",
+     "name": "13531acd1600525166a8977906444c8a67960efca43b1b85ff3532b2426acc6d"
     },
     {
      "id": "o2",
      "heading": true,
-     "text": "Your vehicle"
+     "text": "Your vehicle",
+     "name": "96b970f387be0291bd1b3e1e0bd940a61e286992a011522fe1cf30bb7271d56b"
     },
     {
      "id": "o3",
      "heading": true,
-     "text": "Services and time"
+     "text": "Services and time",
+     "name": "627362fe5d41cacbae26dbac23de9b7552cdacdc26e01e03789c8754fad03dfa"
     },
     {
      "id": "o4",
      "heading": false,
-     "text": "Services requested *"
+     "text": "Services requested *",
+     "name": "f88a87e0c7ddf948c57bf7a9bfa4403b293f88300bca909afbc4641b5d5984e4"
     },
     {
      "id": "o5",
      "heading": false,
-     "text": "While we service your vehicle"
+     "text": "While we service your vehicle",
+     "name": "1d2e140d15d030588e3cedc3ad145b5bf144e26220a8facf5ee9ca5c7fc9993d"
     },
     {
      "id": "o6",
      "heading": true,
-     "text": "Contact information"
+     "text": "Contact information",
+     "name": "7015877c3a1706ccae880f236c324209e281fb4c3c39455f16156a5f1416add3"
     }
    ],
    "controls": [

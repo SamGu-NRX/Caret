@@ -4,7 +4,9 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { frameHeadings, MAX_OCCURRENCES, MAX_SECTIONS, Outline, sectionName, sectionOutline, type OutlineElement, type OutlineReader } from "../src/content/sections.ts";
+import { MAX_OCCURRENCES, MAX_SECTION_DIGESTS, MAX_SECTIONS, Outline, sectionName, sectionOutline, type OutlineElement, type OutlineReader } from "../src/content/sections.ts";
+import { sha256Hex } from "../src/shared/sha256.ts";
+import { sectionTokens } from "../src/worker/section-names.ts";
 import { SELF_IDENTIFICATION } from "../src/content/walker.ts";
 
 interface El extends OutlineElement<El> {
@@ -68,7 +70,8 @@ function walk(...body: El[]) {
     if (e.name in chains) throw new Error(`control ${e.name} was walked twice`);
     chains[e.name] = ids.map((id) => text.get(id) ?? id);
   }
-  return { chains, occurrences: r.occurrences, ids: Object.fromEntries([...r.chains].map(([e, ids]) => [e.name, ids])) };
+  // The occurrences as compared below, digests apart (each name's digest is checked on its own).
+  return { chains, occurrences: r.occurrences.map(({ digest: _, ...o }) => o), outline: r, ids: Object.fromEntries([...r.chains].map(([e, ids]) => [e.name, ids])) };
 }
 
 describe("the sections a control sits in", () => {
@@ -183,7 +186,14 @@ describe("the outline", () => {
 describe("the frame's heading list", () => {
   // Review P1 8: an excluded heading never leaves the frame in the heading list either.
   it("leaves out a heading the walk's exclusions match", () => {
-    expect(frameHeadings(["Apply", "  Voluntary Self-Identification ", "Education"], (t) => SELF_IDENTIFICATION.test(t))).toEqual(["Apply", "Education"]);
+    expect(walk(el("h1", {}, "Apply"), el("h2", {}, "  Voluntary Self-Identification "), el("h2", {}, "Education"), el("h3", {}, "Degree")).outline.headings).toEqual(["Apply", "Education"]);
+  });
+
+  // Check of 5fdb385, item 1: one source of section text; a heading excluded by where it is stays out of the list too.
+  it("comes from the outline, so a context-excluded h2 is not in it", () => {
+    const r = walk(el("form", {}, el("h1", {}, "Service request"), el("fieldset", {}, el("legend", {}, "Voluntary self-identification"), el("h2", {}, "Survey detail DAHLIA-73"), input("a")), el("h2", {}, "Equipment details"), input("serial")));
+    expect(r.outline.headings).toEqual(["Service request", "Equipment details"]);
+    expect(JSON.stringify(r.occurrences)).not.toContain("DAHLIA");
   });
 
   it("holds the same self-identification cases as the helper's copy", () => {
@@ -207,11 +217,11 @@ describe("one reading of a section name (final check of 4f644e3)", () => {
     const r = walk(el("form", {}, el("h2", {}, "Voluntary self-identification"), input("a"), el("h2", {}, "Ｖｏｌｕｎｔａｒｙ ｓｅｌｆ－ｉｄｅｎｔｉｆｉｃａｔｉｏｎ"), input("b")));
     expect(r.occurrences).toEqual([{ id: "o1", heading: true }, { id: "o2", heading: true }]);
     expect(r.chains).toEqual({ a: ["(excluded)"], b: ["(excluded)"] });
-    expect(frameHeadings(["Ｖｏｌｕｎｔａｒｙ ｓｅｌｆ－ｉｄｅｎｔｉｆｉｃａｔｉｏｎ", "Equipment details"], (n) => SELF_IDENTIFICATION.test(n))).toEqual(["Equipment details"]);
+    expect(walk(el("h2", {}, "Ｖｏｌｕｎｔａｒｙ ｓｅｌｆ－ｉｄｅｎｔｉｆｉｃａｔｉｏｎ"), el("h2", {}, "Equipment details")).outline.headings).toEqual(["Equipment details"]);
   });
 
   // P1 (b): a name excluded by where it is, kept elsewhere, is flagged and never sent.
-  it("excludes a heading inside an excluded section, and flags a kept one that shares its name", () => {
+  it("excludes a heading inside an excluded section, keeping the digest of its name only", () => {
     const r = walk(
       el("form", {}, el("fieldset", {}, el("legend", {}, "Voluntary self-identification"), el("h3", {}, "Address"), input("survey"))),
       el("h2", {}, "Service contact"),
@@ -220,18 +230,54 @@ describe("one reading of a section name (final check of 4f644e3)", () => {
       el("h2", {}, "Voluntary self-identification"),
       el("h3", {}, "Questions"),
       input("q"),
-      el("h2", {}, "Questions"),
-      input("other"),
     );
     expect(r.occurrences).toEqual([
       { id: "o1", heading: false },
       { id: "o2", heading: true },
       { id: "o3", heading: true, text: "Service contact" },
-      { id: "o4", heading: true, text: "Address", sharesExcludedName: true },
+      { id: "o4", heading: true, text: "Address" },
       { id: "o5", heading: true },
       { id: "o6", heading: true },
-      { id: "o7", heading: true, text: "Questions", sharesExcludedName: true },
     ]);
+    // The excluded "Address" and the kept one share a digest, which is all that leaves the frame of the excluded one.
+    const digests = r.outline.occurrences.map((o) => o.digest);
+    expect(digests[1]).toBe(sha256Hex("address"));
+    expect(digests[3]).toBe(digests[1]);
     expect(JSON.stringify(r.occurrences)).not.toMatch(/identification/iu);
+  });
+});
+
+describe("section name tokens (check of 5fdb385, item 2)", () => {
+  it("digests by SHA-256 (FIPS 180-4 vectors)", () => {
+    expect(sha256Hex("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    expect(sha256Hex("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    expect(sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")).toBe("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+  });
+
+  it("gives a name one token across frames, past the cap too, and sends no digest, salt or excluded text", async () => {
+    const top = walk(el("h2", {}, "Equipment details"), input("serial"), ...Array.from({ length: MAX_OCCURRENCES }, (_, i) => el("h3", {}, `Detail ${i + 1}`)), el("fieldset", {}, el("legend", {}, "Voluntary self-identification"), el("h3", {}, "Equipment details")));
+    const child = walk(el("fieldset", {}, el("legend", {}, "Voluntary self-identification"), el("h2", {}, "Equipment details"), input("other")));
+    // Past the cap: the last Detail, the fieldset's legend and its "Equipment details".
+    expect(top.outline.overflow).toHaveLength(3);
+    const reports = [top.outline, child.outline].map((o) => ({ sections: o.occurrences, sectionOverflow: o.overflow, ...(o.cut ? { sectionsCut: true as const } : {}) }));
+    const [a, b] = await sectionTokens(reports);
+    const kept = a?.sections[0];
+    expect(kept?.text).toBe("Equipment details");
+    // The child frame's excluded heading and the top frame's past-cap one carry the kept occurrence's token.
+    expect(b?.sections.find((o) => o.id === "o2")?.name).toBe(kept?.name);
+    expect(a?.sectionNames).toContain(kept?.name);
+    const sent = JSON.stringify([a, b]);
+    expect(sent).not.toContain(sha256Hex("equipment details"));
+    expect(sent).not.toMatch(/digest|identification/iu);
+    // A fresh salt per snapshot: the same name gets another token next time.
+    const [again] = await sectionTokens(reports);
+    expect(again?.sections[0]?.name).not.toBe(kept?.name);
+  });
+
+  it("says a frame's sections are cut past the digest ceiling", () => {
+    const r = walk(...Array.from({ length: MAX_SECTION_DIGESTS + 5 }, (_, i) => el("h3", {}, `Detail ${i + 1}`)));
+    expect(r.outline.occurrences).toHaveLength(MAX_OCCURRENCES);
+    expect(r.outline.occurrences.length + r.outline.overflow.length).toBe(MAX_SECTION_DIGESTS);
+    expect(r.outline.cut).toBe(true);
   });
 });

@@ -24,8 +24,7 @@ import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
-import { deepActiveElement, SELF_IDENTIFICATION, visible, walkControls } from "./content/walker.ts";
-import { frameHeadings } from "./content/sections.ts";
+import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
 import { EntryTracker } from "./content/entry.ts";
 import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 import { docsKind, readFrameText } from "./content/text.ts";
@@ -131,9 +130,12 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
     origin: self.origin,
     path: location.protocol === "about:" ? location.href : location.pathname,
     title: clean(document.title, 200),
-    // SCP1: a heading the walk's exclusions match (a self-identification section) never leaves the frame.
-    headings: frameHeadings([...document.querySelectorAll("h1, h2")].filter((x) => visible(x)).map((h) => h.textContent ?? ""), (name) => SELF_IDENTIFICATION.test(name)),
+    // SCP1: one source of section text: the heading list comes from the walk's section outline, after its exclusions
+    // by name and by where a heading is, never from a separate read of the page's headings.
+    headings: out.headings,
     sections: out.sections,
+    ...(out.sectionOverflow.length === 0 ? {} : { sectionOverflow: out.sectionOverflow }),
+    ...(out.sectionsCut ? { sectionsCut: true as const } : {}),
     controls: out.controls,
     iframes: visibleIframes(),
     viewport: [window.innerWidth, window.innerHeight],

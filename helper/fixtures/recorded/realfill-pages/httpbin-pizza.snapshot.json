@@ -22,12 +22,14 @@
     {
      "id": "o1",
      "heading": false,
-     "text": "Pizza Size"
+     "text": "Pizza Size",
+     "name": "54d9adf427ae3589d21ebbd97ffbe2180a5a1a3853873caacb4c0b4465f1aafd"
     },
     {
      "id": "o2",
      "heading": false,
-     "text": "Pizza Toppings"
+     "text": "Pizza Toppings",
+     "name": "df9619ffddfe40c7a697ac7a60f1b9887ed2455464ed7d17fa238359bd12fff1"
     }
    ],
    "controls": [

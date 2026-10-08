@@ -177,14 +177,16 @@ const occurrenceKey = (frameId: number, id: string): string => `${frameKey(frame
 const sectionsOf = (frameId: number, c: PageControl): Pick<Node, "sections"> => (c.sections === undefined || c.sections.length === 0 ? {} : { sections: c.sections.map((id) => occurrenceKey(frameId, id)) });
 
 /**
- * SCP1: the frame's heading list and section occurrences as its web area node carries them, with any text the walk's
- * self-identification exclusion matches taken out again here (page-exclusions.ts): an occurrence keeps its key and its
- * place, so it still ends the section before it, and loses only its text.
+ * SCP1: the frame's section occurrences as its web area node carries them, with any text the walk's self-identification
+ * exclusion matches taken out again here (page-exclusions.ts): an occurrence keeps its key, its place and its name's
+ * token, so it still ends the section before it and still counts as a section of that name, and loses only its text.
+ * One source of section text: a frame with an outline carries no separate heading list; one from an extension before
+ * SCP1 carries its heading list alone.
  */
-function frameSections(f: PageFrame): Pick<Node, "headings" | "outline"> {
-  const headings = f.headings.filter((h) => !excludedSection(h));
-  const outline = (f.sections ?? []).map((o) => ({ key: occurrenceKey(f.frameId, o.id), heading: o.heading, ...(o.text === undefined || excludedSection(o.text) ? {} : { text: o.text }), ...(o.sharesExcludedName === true ? { sharesExcludedName: true as const } : {}) }));
-  return { ...(headings.length === 0 ? {} : { headings }), ...(outline.length === 0 ? {} : { outline }) };
+function frameSections(f: PageFrame): Pick<Node, "headings" | "outline" | "sectionNames" | "sectionsCut"> {
+  const outline = (f.sections ?? []).map((o) => ({ key: occurrenceKey(f.frameId, o.id), heading: o.heading, ...(o.text === undefined || excludedSection(o.text) ? {} : { text: o.text }), ...(o.name === undefined ? {} : { name: o.name }) }));
+  const headings = outline.length > 0 ? [] : f.headings.filter((h) => !excludedSection(h));
+  return { ...(headings.length === 0 ? {} : { headings }), ...(outline.length === 0 ? {} : { outline }), ...(f.sectionNames === undefined || f.sectionNames.length === 0 ? {} : { sectionNames: f.sectionNames }), ...(f.sectionsCut === true ? { sectionsCut: true as const } : {}) };
 }
 
 /**

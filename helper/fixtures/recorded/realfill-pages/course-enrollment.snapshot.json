@@ -27,27 +27,32 @@
     {
      "id": "o1",
      "heading": true,
-     "text": "Course Enrollment Form"
+     "text": "Course Enrollment Form",
+     "name": "a9a478f86c6dd9a1b607ebe1fbae3b4d6cb38dae5375b6010936af6d0cd3dd3a"
     },
     {
      "id": "o2",
      "heading": true,
-     "text": "Student information"
+     "text": "Student information",
+     "name": "0d53b2b4094ee8290a1770242e24eeba09d82c8890e3565bc8bc47cad74c7c29"
     },
     {
      "id": "o3",
      "heading": true,
-     "text": "Course selection"
+     "text": "Course selection",
+     "name": "ccdec224f0aad5e1eb4eb0c02d96e21e1626fcb1e8858da42b835352a348d314"
     },
     {
      "id": "o4",
      "heading": false,
-     "text": "Section *"
+     "text": "Section *",
+     "name": "3cc0bdff047df6586188b9ffe5a8b0ce48243a193b4d74ea433d057137705012"
     },
     {
      "id": "o5",
      "heading": true,
-     "text": "Background"
+     "text": "Background",
+     "name": "2172d207c710bd05f7a9d208ecd40699155b743d8d21c66503600c67322e8014"
     }
    ],
    "controls": [

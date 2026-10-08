@@ -21,6 +21,7 @@
 // The rules run without a browser: sectionOutline reads an element only through OutlineReader and the few members of
 // OutlineElement, so tests walk plain objects and walker.ts walks the DOM.
 import { clean } from "./names.ts";
+import { sha256Hex } from "../shared/sha256.ts";
 
 /** Sections one control carries at most; past it the outermost are dropped. Not measured: deep outlines are rare. */
 export const MAX_SECTIONS = 8;
@@ -31,14 +32,33 @@ export const MAX_SECTION_NAME = 120;
 
 /**
  * One section-defining element of the walk: its id, its text unless an exclusion matched it, and whether it is a
- * heading. `sharesExcludedName`: its name, normalized (sectionName), is also an excluded occurrence's, whose text never
- * leaves the frame; the helper reads the name as two sections and withholds.
+ * heading. `digest`: the SHA-256 of its name (sectionName), excluded or not, which the worker keys with a salt it never
+ * sends (worker/section-names.ts) so the helper can tell two sections share a name anywhere in the tab, without the
+ * name of one an exclusion took ever leaving the frame. Never sent past the worker.
  */
 export interface Occurrence {
   id: string;
   heading: boolean;
   text?: string;
-  sharesExcludedName?: true;
+  digest?: string;
+}
+
+/**
+ * Section names one walk digests at most, past MAX_OCCURRENCES too; past it the walk says its sections are cut, and the
+ * helper treats its list as incomplete. Not measured: far over any form's sections.
+ */
+export const MAX_SECTION_DIGESTS = 2000;
+
+/** What a walk reads of a frame's sections. */
+export interface SectionOutline<E> {
+  occurrences: Occurrence[];
+  chains: Map<E, string[]>;
+  /** The digests of section names past MAX_OCCURRENCES, which have no id or text. */
+  overflow: string[];
+  /** More section names than MAX_SECTION_DIGESTS. */
+  cut: boolean;
+  /** The frame's heading list: shown h1 and h2 text that no exclusion took, by name or by where it is, at most 10. */
+  headings: string[];
 }
 
 /**
@@ -174,26 +194,39 @@ function isContainer(el: OutlineElement<unknown>, label: { text: string } | null
 }
 
 /** The walk's section occurrences in document order, and each wanted control under `root` with the ids of the occurrences it sits in, outermost first. */
-export function sectionOutline<E extends OutlineElement<E>>(root: { readonly children: ArrayLike<E> }, r: OutlineReader<E>): { occurrences: Occurrence[]; chains: Map<E, string[]> } {
+export function sectionOutline<E extends OutlineElement<E>>(root: { readonly children: ArrayLike<E> }, r: OutlineReader<E>): SectionOutline<E> {
   const occurrences: Occurrence[] = [];
   const chains = new Map<E, string[]>();
   const outline = new Outline();
-  /** Excluded occurrences by id, and their names (sectionName), which never leave the frame. */
+  const overflow: string[] = [];
+  const headings: string[] = [];
+  let cut = false;
+  /** Excluded occurrences by id: a section inside one is excluded too. */
   const excludedIds = new Set<string>();
-  const excludedNames = new Set<string>();
   /**
-   * A new occurrence's id, or null past MAX_OCCURRENCES. `within` is the chain it sits in: inside an excluded section
-   * (a self-identification fieldset's "Address" heading) its text is excluded too, by context.
+   * A new occurrence's id, or null past MAX_OCCURRENCES, where only its name's digest is kept. `within` is the chain it
+   * sits in: inside an excluded section (a self-identification fieldset's "Address" heading) its text is excluded
+   * too, by context. `level` is a heading's, for the frame's heading list.
    */
-  const occur = (heading: boolean, text: string, within: readonly string[]): string | null => {
-    if (occurrences.length >= MAX_OCCURRENCES) return null;
-    const id = `o${occurrences.length + 1}`;
+  const occur = (heading: boolean, text: string, within: readonly string[], level: number | null = null): string | null => {
     const name = sectionName(text);
+    const digest = name === "" ? undefined : sha256Hex(name);
+    if (occurrences.length >= MAX_OCCURRENCES) {
+      if (digest !== undefined) {
+        if (occurrences.length + overflow.length < MAX_SECTION_DIGESTS) overflow.push(digest);
+        else cut = true;
+      }
+      return null;
+    }
+    const id = `o${occurrences.length + 1}`;
+    const withDigest = digest === undefined ? {} : { digest };
     if (name !== "" && (r.excluded(name) || within.some((x) => excludedIds.has(x)))) {
       excludedIds.add(id);
-      excludedNames.add(name);
-      occurrences.push({ id, heading });
-    } else occurrences.push({ id, heading, ...(text === "" ? {} : { text }) });
+      occurrences.push({ id, heading, ...withDigest });
+    } else {
+      occurrences.push({ id, heading, ...(text === "" ? {} : { text }), ...withDigest });
+      if (text !== "" && level !== null && level <= 2 && headings.length < 10) headings.push(text);
+    }
     return id;
   };
   const children = (el: E): ArrayLike<E> => r.assigned(el) ?? r.shadowRoot(el)?.children ?? el.children;
@@ -207,7 +240,7 @@ export function sectionOutline<E extends OutlineElement<E>>(root: { readonly chi
         // The heading's context is the chain it opens a section in: the headings it ends are not around it.
         const probe = new Outline(outline);
         probe.heading(level, "");
-        outline.heading(level, occur(true, clean(el.textContent, MAX_SECTION_NAME), probe.here().filter((x) => x !== "")));
+        outline.heading(level, occur(true, clean(el.textContent, MAX_SECTION_NAME), probe.here().filter((x) => x !== ""), level));
       }
       if (r.wanted(el)) chains.set(el, outline.here());
       // A heading's content is its text, not more of the outline. A shadow root is a container of its own.
@@ -221,12 +254,5 @@ export function sectionOutline<E extends OutlineElement<E>>(root: { readonly chi
     }
   };
   visit(root.children);
-  // A kept occurrence whose name an excluded one has: flagged, so the helper counts that name as two sections.
-  for (const o of occurrences) if (o.text !== undefined && excludedNames.has(sectionName(o.text))) o.sharesExcludedName = true;
-  return { occurrences, chains };
-}
-
-/** The frame's heading list as it leaves the frame: shown h1 and h2 text, none an exclusion matches (by sectionName). */
-export function frameHeadings(texts: readonly string[], excluded: (name: string) => boolean, max = 10): string[] {
-  return texts.map((t) => clean(t, MAX_SECTION_NAME)).filter((t) => t !== "" && !excluded(sectionName(t))).slice(0, max);
+  return { occurrences, chains, overflow, cut, headings };
 }

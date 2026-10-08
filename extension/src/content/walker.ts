@@ -280,6 +280,11 @@ export interface WalkOutput {
   controls: PageControl[];
   /** SCP1: the walk's section occurrences in document order (sections.ts), which controls' `sections` name by id. */
   sections: Occurrence[];
+  /** SCP1: the digests of section names past the occurrence cap, and whether there were more than the walk digests. */
+  sectionOverflow: string[];
+  sectionsCut: boolean;
+  /** SCP1: the frame's heading list, from the same outline after its exclusions (sections.ts). */
+  headings: string[];
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
 }
@@ -373,7 +378,7 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     controls.push(c);
     onKept(f.el, c);
   }
-  return { controls, excluded, truncated, sections: outline.occurrences };
+  return { controls, excluded, truncated, sections: outline.occurrences, sectionOverflow: outline.overflow, sectionsCut: outline.cut, headings: outline.headings };
 }
 
 /** A slot's assigned elements, slots within flattened, or its own children when nothing is assigned (its fallback). */

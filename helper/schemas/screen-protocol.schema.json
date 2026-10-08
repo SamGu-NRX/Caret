@@ -343,9 +343,8 @@
                         "text": {
                           "type": "string"
                         },
-                        "sharesExcludedName": {
-                          "type": "boolean",
-                          "const": true
+                        "name": {
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -354,6 +353,16 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "sectionNames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "sectionsCut": {
+                    "type": "boolean",
+                    "const": true
                   },
                   "sections": {
                     "type": "array",

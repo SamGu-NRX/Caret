@@ -25,17 +25,20 @@
     {
      "id": "o1",
      "heading": true,
-     "text": "Contact"
+     "text": "Contact",
+     "name": "eba7404650e6f1d2e052e0b6fc05d0cb6bbb15f65f5f6f4884492cd9e76a390b"
     },
     {
      "id": "o2",
      "heading": true,
-     "text": "Delivery"
+     "text": "Delivery",
+     "name": "4624b7769aaa1cc1e188eba5607bed7249c5470410a48772de74412729ca368e"
     },
     {
      "id": "o3",
      "heading": false,
-     "text": "Shipping method"
+     "text": "Shipping method",
+     "name": "daaffb443c181e53310f5c277b8e3cc23cb1375430ac7d85ca6a72da4b9d9739"
     }
    ],
    "controls": [
