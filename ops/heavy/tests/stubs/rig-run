@@ -19,8 +19,9 @@ if os.path.exists(os.path.join(payload, "rae-options.json")):
     # RAE: one row per target; a probe guest never holds a key, so its leak check says NO KEYS.
     options = json.load(open(os.path.join(payload, "rae-options.json")))
     status = "probed" if options["mode"] == "probe" else "ran"
-    rows = [{"id": t, "status": status, "verdict": "complete", "clipboard": "restored", "wrong": wrong, "note": ""}
-            for t in options["targets"]]
+    evidence = {"verdict": "complete", "taken": 1, "right": 2, "partial": 0, "kept": 0, "missed": 0, "abstained": 0,
+                "extra": 0, "clipboard": "restored", "undone": "n/a", "stopped": "n/a"} if status == "ran" else {}
+    rows = [dict({"id": t, "status": status, "wrong": wrong, "note": ""}, **evidence) for t in options["targets"]]
     json.dump({"harness": "rae", "rev": rev, "mode": options["mode"], "options": options, "rows": rows, "notes": []},
               open(os.path.join(out, "results.json"), "w"))
     json.dump(rows, open(os.path.join(out, "rows.json"), "w"))

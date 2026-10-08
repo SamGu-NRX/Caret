@@ -54,5 +54,5 @@ if [ -n "$RUN" ] && [ -d "$RUN" ] && [ "$(cat "$OUT/rig-run-scanned" 2>/dev/null
 fi
 LIMIT=$(py -c 'import sys; print("%.6f" % (float(sys.argv[1]) - float(sys.argv[2])))' "$ALLOW" "$PRIOR")
 check r2 --harness "$H" --run "$OUT/rig-run" --rev "$CARET_HEAVY_REV" --exit "$rc" --spend-limit "$LIMIT" \
-  ${H11_OPTIONS:+--options "$H11_OPTIONS"} ${RAE_OPTIONS:+--options "$RAE_OPTIONS"}
+  ${H11_OPTIONS:+--options "$H11_OPTIONS"} ${RAE_OPTIONS:+--options "$RAE_OPTIONS" --rae-targets "$JOB/payload/tools/targets"}
 finish

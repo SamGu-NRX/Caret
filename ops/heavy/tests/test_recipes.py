@@ -284,6 +284,8 @@ else:
         os.unlink(os.path.join(job, "payload/h11-options.json"))
         rae = {"mode": "probe", "targets": ["contacts-me", "mail-compose"]}
         write(os.path.join(job, "payload/rae-options.json"), json.dumps(rae))
+        for t in rae["targets"]:
+            write(os.path.join(job, "payload/tools/targets", t + ".json"), "{}")
         os.chmod(os.path.join(job, "payload"), 0o555)
         env = dict(self.vm_env(), RAE_OPTIONS=json.dumps(rae, sort_keys=True, separators=(",", ":")))
         del env["H11_OPTIONS"]

@@ -334,26 +334,62 @@ def h14_acceptance(data):
     return problems, failures
 
 
-# RAE (the real-app eval) as its harness defines acceptance: rae_acceptance and leak_ok are copied unchanged from
-# ~/.caret-run/evidence/host/rae/harness/queue_rae.py, with its two sets renamed RAE_*, and tests/test_queue_rae.py
-# runs that harness's own cases on them.
+# RAE, the real-app eval (~/.caret-run/evidence/host/rae): acceptance is defined here, and the harness's own tests import
+# it. Row columns are those rae.py's row() writes.
+RAE_MODES = ("probe", "run")
 RAE_STATUSES = {"ran", "probed", "absent", "blocked", "unreachable", "setup-failed", "budget", "not-run", "crashed"}
 # The guest app or site was not there to test: recorded, not a failure of the run.
 RAE_ENVIRONMENT = {"absent", "blocked", "unreachable", "setup-failed"}
+RAE_VERDICTS = ("complete", "partial", "none", "wrong", "evidence-incomplete")
+# A ran row's scoring evidence: per-field outcome counts from score.py, and Caret's takes.
+RAE_COUNTS = ("taken", "right", "partial", "kept", "missed", "abstained", "extra")
+RAE_COLUMNS = {"verdict": RAE_VERDICTS, "clipboard": ("restored", "changed"), "wrong": ("yes", "no"),
+               "undone": ("yes", "no", "n/a"), "stopped": ("yes", "no", "finished-first", "n/a")}
 
 
-def rae_acceptance(data, options):
-    """(problems, failures) for one RAE results.json against the plan's rae-options.json."""
+def rae_options_problem(options, known_targets):
+    """Why the plan's rae-options.json cannot be run, or None: a mode of RAE_MODES, and a non-empty list of distinct
+    targets the staged payload has."""
+    targets = options.get("targets") if isinstance(options, dict) else None
+    if not isinstance(options, dict) or options.get("mode") not in RAE_MODES:
+        return "rae-options.json mode must be one of {}".format(RAE_MODES)
+    if not isinstance(targets, list) or not targets or len(set(map(str, targets))) != len(targets):
+        return "rae-options.json targets must be a non-empty list of distinct target ids"
+    unknown = [t for t in targets if t not in known_targets]
+    if unknown:
+        return "rae-options.json names targets the payload does not have: {}".format(unknown)
+    return None
+
+
+def rae_row_problems(r):
+    """What a ran row lacks of its scoring evidence."""
+    tid, problems = r.get("id"), []
+    for column in RAE_COUNTS:
+        value = r.get(column)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            problems.append("ran row {} has no count {} ({!r})".format(tid, column, value))
+    for column, allowed in RAE_COLUMNS.items():
+        if r.get(column) not in allowed:
+            problems.append("ran row {} has no valid {} ({!r})".format(tid, column, r.get(column)))
+    return problems
+
+
+def rae_acceptance(data, options, known_targets):
+    """(problems, failures) for one RAE results.json against the plan's rae-options.json and the targets the payload
+    has. Problems are untrustworthy evidence (12), failures a run that did not do its job (11); a wrong row is r2()'s."""
     problems, failures = [], []
+    bad_options = rae_options_problem(options, known_targets)
+    if bad_options:
+        return [bad_options], failures
     if data.get("harness") != "rae":
         problems.append("results are not RAE's (harness={!r})".format(data.get("harness")))
         return problems, failures
     if data.get("options") != options:
         problems.append("results ran with options {}, not the plan's {}".format(data.get("options"), options))
         return problems, failures
-    mode = options.get("mode")
+    mode = options["mode"]
     rows = {r.get("id"): r for r in data["rows"]}
-    for tid in options.get("targets", []):
+    for tid in options["targets"]:
         r = rows.get(tid)
         if r is None:
             problems.append("row {} is missing".format(tid))
@@ -367,27 +403,47 @@ def rae_acceptance(data, options):
             problems.append("run row {} says probed".format(tid))
         elif status in ("crashed", "not-run", "budget"):
             failures.append("{} {}: {}".format(tid, status, str(r.get("note"))[:160]))
-        if status == "ran":
-            if r.get("verdict") == "evidence-incomplete":
-                problems.append("{}: read-back could not score every field ({})".format(tid, str(r.get("note"))[:160]))
-            if r.get("clipboard") == "changed":
-                failures.append("{}: the clipboard was not put back".format(tid))
+        if status != "ran":
+            continue
+        row_problems = rae_row_problems(r)
+        problems += row_problems
+        if row_problems:
+            continue
+        if r["verdict"] == "evidence-incomplete":
+            problems.append("{}: read-back could not score every field ({})".format(tid, str(r.get("note"))[:160]))
+        if r["clipboard"] == "changed":
+            failures.append("{}: the clipboard was not put back".format(tid))
+        # As H11's undo gate: a check that ran and failed fails the run.
+        if r["undone"] == "no":
+            failures.append("{}: the undo did not restore the fields ({})".format(tid, str(r.get("note"))[:160]))
+        if r["stopped"] == "no":
+            failures.append("{}: the stop did not stop the run ({})".format(tid, str(r.get("note"))[:160]))
     for note in data.get("notes") or []:
         if isinstance(note, str) and note.startswith("harness: ") and " crashed" in note:
             failures.append(note[:200])
-    if mode == "run" and not any(r.get("status") == "ran" for r in data["rows"]):
+    # A row with no take: Caret never acted on the target, so it does not count as having run.
+    if mode == "run" and not any(r.get("status") == "ran" and isinstance(r.get("taken"), int) and r["taken"] > 0
+                                 for r in data["rows"]):
         failures.append("no target ran")
     return sorted(set(problems)), failures
 
 
-def leak_ok(leak_text, mode):
-    """The guest's leak-check.txt: CLEAN after a scan; in probe mode the guest never had a key, so NO KEYS is right (the
-    host feeder's scan of the copied-back run still covers it)."""
+def leak_ok(leak_text, harness, mode):
+    """The guest's leak-check.txt: CLEAN after a scan. A RAE probe guest never has a key, so NO KEYS is right there
+    (the host feeder's scan of the copied-back run still covers it); every other guest holds one."""
     text = (leak_text or "").strip()
-    return text.startswith("CLEAN") or (mode == "probe" and text.startswith("NO KEYS"))
+    return text.startswith("CLEAN") or (harness == "rae" and mode == "probe" and text.startswith("NO KEYS"))
 
 
-def r2(harness, run, rev, exit_code, options, spend_limit):
+def rae_known_targets(targets_dir):
+    """The target ids the staged payload has: payload/tools/targets/<id>.json (RAE's stage.sh)."""
+    try:
+        return {name[:-len(".json")] for name in os.listdir(targets_dir or "") if name.endswith(".json")}
+    except OSError:
+        return set()
+
+
+def r2(harness, run, rev, exit_code, options, spend_limit, rae_targets=None):
     """A rig run's copied-back evidence: rig.json, the guest's results, its leak check and its spend, then the
     harness's acceptance rows."""
     step = {"kind": "r2", "name": harness, "exit": exit_code, "evidence": []}
@@ -411,7 +467,7 @@ def r2(harness, run, rev, exit_code, options, spend_limit):
     want_options = json.loads(options) if options else None
     try:
         with open(leak, encoding="utf-8") as fh:
-            clean = leak_ok(fh.read(), (want_options or {}).get("mode"))
+            clean = leak_ok(fh.read(), harness, (want_options or {}).get("mode"))
     except OSError:
         clean = False
     if not clean:
@@ -423,7 +479,8 @@ def r2(harness, run, rev, exit_code, options, spend_limit):
             if want_options is None or data.get("options") != want_options:
                 problems.append("results ran with options {}, not the plan's {}".format(data.get("options"), options))
             else:
-                p, f = (h11_acceptance if harness == "h11" else rae_acceptance)(data, want_options)
+                p, f = h11_acceptance(data, want_options) if harness == "h11" else \
+                    rae_acceptance(data, want_options, rae_known_targets(rae_targets))
                 problems += p
                 failures += f
         else:
@@ -578,6 +635,7 @@ def main(argv=None):
     r.add_argument("--rev", required=True)
     r.add_argument("--exit", type=int, required=True)
     r.add_argument("--options")
+    r.add_argument("--rae-targets", metavar="DIR", help="RAE: the staged payload's tools/targets, the known target ids")
     r.add_argument("--spend-limit", type=float, required=True)
     la = sub.add_parser("laya")
     la.add_argument("name")
@@ -601,7 +659,7 @@ def main(argv=None):
     if args.cmd == "spend":
         return spend(args.day, args.from_line, args.limit, args.ledger_dir)
     if args.cmd == "r2":
-        return r2(args.harness, args.run, args.rev, args.exit, args.options, args.spend_limit)
+        return r2(args.harness, args.run, args.rev, args.exit, args.options, args.spend_limit, args.rae_targets)
     if args.cmd == "vm-proof":
         return vm_proof(args.exit)
     if args.cmd == "laya":

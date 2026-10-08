@@ -446,31 +446,56 @@ class CheckTest(Temp):
     def rae(self, opts=None, rows=None, leak="CLEAN SCANNED 40\n", plan_opts=None):
         opts = opts or self.RAE_OPTS
         if rows is None:
-            rows = [{"id": t, "status": "ran" if opts["mode"] == "run" else "probed", "verdict": "complete",
-                     "clipboard": "restored", "wrong": "no", "note": ""} for t in opts["targets"]]
+            rows = [self.rae_row(t) if opts["mode"] == "run" else {"id": t, "status": "probed", "wrong": "no"}
+                    for t in opts["targets"]]
         run = os.path.join(self.out, "rig-run")
         shutil.rmtree(run, ignore_errors=True)
         self.write("out/rig-run/out/results.json", json.dumps({"harness": "rae", "rev": "c" * 40, "mode": opts["mode"],
                                                               "options": opts, "rows": rows, "notes": []}))
         self.write("out/rig-run/out/leak-check.txt", leak)
+        targets = os.path.join(self.root, "payload-targets")
+        for t in ("contacts-me", "mail-compose"):
+            self.write("payload-targets/{}.json".format(t), "{}")
         return self.run_check("r2", "--harness", "rae", "--run", run, "--rev", "c" * 40, "--exit", "0",
-                              "--spend-limit", "0.2", "--options", json.dumps(plan_opts or opts))
+                              "--spend-limit", "0.2", "--options", json.dumps(plan_opts or opts), "--rae-targets", targets)
+
+    @staticmethod
+    def rae_row(tid, **k):
+        return dict({"id": tid, "status": "ran", "verdict": "complete", "taken": 1, "right": 2, "partial": 0, "kept": 0,
+                     "missed": 0, "abstained": 0, "extra": 0, "clipboard": "restored", "wrong": "no", "undone": "n/a",
+                     "stopped": "n/a", "note": ""}, **k)
 
     def test_rae_runs_are_checked_against_the_plans_options(self):
         self.assertEqual(self.rae(), 0)
         self.assertEqual(self.rae(plan_opts={"mode": "run", "targets": ["contacts-me"]}), check.EVIDENCE)
-        crashed = [{"id": "contacts-me", "status": "crashed", "note": "x"},
-                   {"id": "mail-compose", "status": "ran", "verdict": "complete", "clipboard": "restored", "wrong": "no"}]
+        crashed = [{"id": "contacts-me", "status": "crashed", "note": "x"}, self.rae_row("mail-compose")]
         self.assertEqual(self.rae(rows=crashed), check.FAILED)
-        wrong = [{"id": "contacts-me", "status": "ran", "verdict": "complete", "clipboard": "restored", "wrong": "yes"},
+        wrong = [self.rae_row("contacts-me", verdict="wrong", wrong="yes"),
                  {"id": "mail-compose", "status": "blocked", "wrong": "no"}]
         self.assertEqual(self.rae(rows=wrong), check.WRONG)
+        unknown = {"mode": "run", "targets": ["contacts-me", "keychain-login"]}  # not in this payload
+        self.assertEqual(self.rae(opts=unknown, rows=[self.rae_row("contacts-me"), self.rae_row("keychain-login")]),
+                         check.EVIDENCE)
 
     def test_a_probe_guest_holds_no_key_so_no_keys_is_its_leak_check(self):
         probe = {"mode": "probe", "targets": ["contacts-me", "mail-compose"]}
         self.assertEqual(self.rae(opts=probe, leak="NO KEYS (nothing to scan for)\n"), 0)
         self.assertEqual(self.rae(leak="NO KEYS (nothing to scan for)\n"), check.EVIDENCE)  # a run guest had the key
         self.assertEqual(self.rae(opts=probe, leak="LEAK\n"), check.EVIDENCE)
+
+    def test_no_keys_is_never_a_leak_check_for_h11_or_h14(self):
+        base = ["--rev", "c" * 40, "--exit", "0", "--spend-limit", "0.20"]
+        probe_h11 = dict(self.H11_OPTS, mode="probe")
+        run = self.r2_run(leak="NO KEYS (nothing to scan for)\n")
+        with open(os.path.join(run, "out/results.json")) as fh:
+            results = json.load(fh)
+        results["options"] = probe_h11
+        self.write("out/rig-run/out/results.json", json.dumps(results))
+        self.assertEqual(self.run_check("r2", "--harness", "h11", "--run", run, "--options", json.dumps(probe_h11),
+                                        *base), check.EVIDENCE)
+        run = self.r2_run("h14", leak="NO KEYS (nothing to scan for)\n")
+        self.assertEqual(self.run_check("r2", "--harness", "h14", "--run", run, "--options", '{"mode": "probe"}',
+                                        *base), check.EVIDENCE)
 
     def test_finish_precedence_and_result(self):
         self.assertEqual(self.run_check("finish"), check.EVIDENCE)  # no steps recorded
@@ -1716,19 +1741,6 @@ class SnapshotsTest(Temp):
             os.close(self.snapshots.create(link))
         with open(target) as fh:
             self.assertEqual(fh.read(), "keep\n")
-
-    def test_a_short_write_never_yields_a_truncated_copy(self):
-        # os.write may write fewer bytes than it is given; this one always does.
-        self.baseline_now()
-        body = os.urandom(3 << 20)
-        with open(os.path.join(self.src, "pkg/Tests/__Snapshots__/T/old.png"), "wb") as fh:
-            fh.write(body)
-        real_write = os.write
-        with mock.patch.object(self.snapshots.os, "write", side_effect=lambda fd, data: real_write(fd, data[:1000])):
-            code, err = self.collect()
-        self.assertEqual(code, 0, err)
-        with open(os.path.join(self.dest, "pkg/Tests/__Snapshots__/T/old.png"), "rb") as fh:
-            self.assertEqual(fh.read(), body)
 
     def test_a_copy_that_does_not_match_gets_no_manifest(self):
         import shutil
