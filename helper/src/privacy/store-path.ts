@@ -32,10 +32,9 @@ const MAX_LINKS = 32;
  * included, is applied, so `link/../rows.json` is judged under the link's target, not beside the link (INT1 review 2).
  * A link whose target does not exist is followed all the same: the write would create its target.
  */
-export function landing(path: string, cwd: string = process.cwd()): { real: string; finalLink: boolean } {
-  // A relative path is put after the working folder as written: no `..` is collapsed before its links are resolved
-  // (path.join would normalize `to-sync/../rows.json` to `rows.json`, INT1 review 3).
-  const parts = (isAbsolute(path) ? path : `${cwd}${sep}${path}`).split(sep).filter((c) => c !== "" && c !== ".");
+export function landing(path: string): { real: string; finalLink: boolean } {
+  // A relative path follows the working folder as written: path.join would collapse `link/..` before the link is read.
+  const parts = (isAbsolute(path) ? path : `${process.cwd()}${sep}${path}`).split(sep).filter((c) => c !== "" && c !== ".");
   // Each component, and whether it is the path's own last one (a link target's components never are).
   const queue = parts.map((c, i) => ({ c, last: i === parts.length - 1 }));
   let at: string = sep;
@@ -69,8 +68,8 @@ export function landing(path: string, cwd: string = process.cwd()): { real: stri
 }
 
 /** A path with every symlink resolved, for a file that may not exist yet (landing). */
-export function resolvedPath(path: string, cwd?: string): string {
-  return landing(path, cwd).real;
+export function resolvedPath(path: string): string {
+  return landing(path).real;
 }
 
 const home = (): string => realpathSync(homedir());
@@ -78,10 +77,7 @@ const home = (): string => realpathSync(homedir());
 /** Folders a sync client or File Provider uploads from, below the home folder (macOS). */
 function syncedRoots(): string[] {
   const h = home();
-  // CARET_TEST_SYNCED_ROOT adds a folder treated as synced, so a test of a writer that fails writes into a temporary
-  // folder rather than a real synced one. It can only refuse more paths, never fewer.
-  const extra = process.env.CARET_TEST_SYNCED_ROOT;
-  return [join(h, "Library", "Mobile Documents"), join(h, "Library", "CloudStorage"), ...(extra === undefined || extra === "" ? [] : [resolvedPath(extra)])];
+  return [join(h, "Library", "Mobile Documents"), join(h, "Library", "CloudStorage")];
 }
 
 /** A home-folder entry an older sync client mounts directly: Dropbox, Google Drive, OneDrive, Box, iCloud Drive. */
@@ -102,8 +98,8 @@ export function localStoreRoots(): string[] {
 }
 
 /** Why `path` may not be a store's, or null when it may. */
-export function storePathRefusal(path: string, cwd?: string): string | null {
-  return refusalOf(resolvedPath(path, cwd));
+export function storePathRefusal(path: string): string | null {
+  return refusalOf(resolvedPath(path));
 }
 
 /** Why a resolved path may not be a store's, or null. */

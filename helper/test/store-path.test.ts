@@ -59,7 +59,7 @@ describe("the store path check", () => {
 });
 
 describe("INT1 review 2 P1: symlinks and .. cannot route a store into a synced folder", () => {
-  // Links only: nothing is written there, the old code would have followed them (CARET_TEST_SYNCED_ROOT is not needed).
+  // Links only: nothing is written there.
   const synced = join(h, "Library", "CloudStorage", "Dropbox-caret-store-path-test");
 
   it("refuses a dangling final symlink whose target is in a synced folder", () => {
@@ -95,8 +95,14 @@ describe("INT1 review 3: relative paths, races and hard links", () => {
     const work = join(dir, "w", "sub");
     mkdirSync(work, { recursive: true });
     symlinkSync(join(synced, "inner"), join(work, "to-sync"));
-    expect(storePathRefusal("rows.json", work)).toBeNull();
-    expect(storePathRefusal("to-sync/../rows.json", work)).toMatch(/syncs to a provider/u);
+    const was = process.cwd();
+    process.chdir(work);
+    try {
+      expect(storePathRefusal("rows.json")).toBeNull();
+      expect(storePathRefusal("to-sync/../rows.json")).toMatch(/syncs to a provider/u);
+    } finally {
+      process.chdir(was);
+    }
   });
 
   it("refuses a file with another hard link, without truncating it", () => {
@@ -110,13 +116,11 @@ describe("INT1 review 3: relative paths, races and hard links", () => {
 
   it("writes nothing outside the roots while an ancestor is swapped for a link (O_NOFOLLOW_ANY)", async () => {
     if (process.platform !== "darwin") return;
-    const base = join(dir, "race");
-    const inside = join(base, "in");
-    const out = join(base, "out");
+    const inside = join(dir, "race", "in");
+    // A writable folder outside every root: a write that lands there escaped the policy.
+    const out = join("/Users/Shared", `caret-store-path-race-${process.pid}`);
     mkdirSync(inside, { recursive: true });
     mkdirSync(out, { recursive: true });
-    // `out` stands for a synced folder (CARET_TEST_SYNCED_ROOT): a write that lands there escaped the policy.
-    process.env.CARET_TEST_SYNCED_ROOT = out;
     // A child swaps the folder for a link to `out` and back, as fast as it can, for the length of the test.
     const swapper = spawn(process.execPath, ["-e", `
       const fs = require("node:fs");
@@ -137,8 +141,9 @@ describe("INT1 review 3: relative paths, races and hard links", () => {
       if (i % 50 === 0) await new Promise((r) => setTimeout(r, 0));
     }
     await done;
-    delete process.env.CARET_TEST_SYNCED_ROOT;
+    const escaped = readdirSync(out);
+    rmSync(out, { recursive: true, force: true });
     expect(wrote).toBeGreaterThan(0);
-    expect(readdirSync(out)).toEqual([]);
+    expect(escaped).toEqual([]);
   }, 15_000);
 });

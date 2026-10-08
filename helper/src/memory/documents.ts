@@ -77,7 +77,7 @@ import {
 } from "./parse.ts";
 import { refusal, sensitiveKind, valueKind } from "./sensitive.ts";
 import { WITHHELD, WITHHELD_SAYS } from "../privacy/exclude.ts";
-import { assertLocalStorePath } from "../privacy/store-path.ts";
+import { assertLocalStorePath, openLocalFile } from "../privacy/store-path.ts";
 
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_TOTAL_BYTES = 2 * 1024 * 1024;
@@ -157,8 +157,8 @@ export class MemoryDocumentStore {
 
   constructor(root: string) {
     this.root = resolve(root);
-    // A memory folder that is a symlink keeps its own refusal, which says what to do; then the folder is held to the
-    // store path policy at start and at every save (INT1 review 2).
+    // A memory folder that is a symlink keeps its own refusal, which says what to do. Every file this store writes,
+    // renames or links is inside this folder, checked once here; ensureDir refuses a link in its place later.
     if (existsSync(this.root) && lstatSync(this.root).isSymbolicLink()) checkDir(this.root);
     assertLocalStorePath(this.root);
     ensureDir(this.root);
@@ -356,13 +356,12 @@ export class MemoryDocumentStore {
     const bytes = Buffer.from(text, "utf8");
     if (bytes.length > MAX_FILE_BYTES) throw new MemoryDocumentError(file, `${file} would be ${bytes.length} bytes; the limit is ${MAX_FILE_BYTES}`);
     const target = this.path(doc);
-    assertLocalStorePath(target);
     const dir = resolve(target, "..");
     // A folder the user deleted is made again; a symlink or another user's folder is refused.
     ensureDir(this.root);
     ensureDir(dir);
     const tmp = join(dir, `.${baseName(target)}${TEMP_TAG}${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-    const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const fd = openLocalFile(tmp, { exclusive: true, mode: 0o600 });
     try {
       writeAll(fd, bytes);
       fsyncSync(fd);

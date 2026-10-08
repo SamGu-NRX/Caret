@@ -6,6 +6,11 @@ import { Disclosure } from "../src/privacy/disclosure.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { node, snap, text } from "./builders.ts";
 import { ownedOf, ownedStale, unitsHolding } from "../src/fill/note-unit.ts";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DailySpend, localDay } from "../src/engines/decide/daily-cap.ts";
+import { SyncedStorePath } from "../src/privacy/store-path.ts";
 
 const SECRET = "API key: Zq7x";
 
@@ -113,4 +118,24 @@ describe("INT1 review 2 P1: a container labelled for a secret takes everything u
     m.apply(snap([group("Password"), { ...node("p", "AXWebArea", { placeholder: SECRET, headings: [SECRET], outline: [{ key: "p#o1", heading: true, text: SECRET }] }), parent: "g" }], { at: 1000, windowId: "w", title: "Notes" }));
     expect(textOf(m)).not.toContain(SECRET);
   });
+});
+
+describe("INT1 review 3", () => {
+  it("the spend log refuses a day file that is a symbolic link, and leaves its target unchanged", () => {
+    const base = mkdtempSync(join(tmpdir(), "spend-link-"));
+    try {
+      const now = new Date("2026-10-08T12:00:00");
+      const target = join(base, "elsewhere.ndjson");
+      writeFileSync(target, "");
+      const dir = join(base, "spend");
+      mkdirSync(dir);
+      symlinkSync(target, join(dir, `${localDay(now)}.ndjson`));
+      const spend = new DailySpend({ dir, capUsd: 1, now: () => now });
+      expect(() => spend.reserve(0.01).settle(0.01, 1)).toThrow(SyncedStorePath);
+      expect(readFileSync(target, "utf8")).toBe("");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
 });

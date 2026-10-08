@@ -15,7 +15,6 @@ import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
 import { planError } from "./planner/proposal.ts";
-import { assertLocalStorePath } from "./privacy/store-path.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
 const MAX_LINE_CHARS = 32 * 1024 * 1024;
@@ -151,8 +150,6 @@ export class HelperServer {
 
   async listen(): Promise<void> {
     const dir = dirname(this.path);
-    // A socket's folder is made like a store's, so it is held to the same policy.
-    assertLocalStorePath(this.path);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     // The directory must be the user's own and closed to others: the reader refuses a socket in any other (B23).
     const st = lstatSync(dir);

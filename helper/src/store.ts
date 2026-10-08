@@ -2,7 +2,7 @@
 // metadata, and the times of the last hour's offers. Plain screen text never reaches it; the rolling
 // text window is memory only.
 import { createHmac, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { assertLocalStorePath, writeLocalFile } from "./privacy/store-path.ts";
@@ -92,9 +92,7 @@ export class Store {
 
   constructor(dir: string) {
     this.dir = dir;
-    // The store's folder and its database are held to the store path policy before anything is made (INT1 review 2).
-    // SQLite writes through the file it opens here, so the check at open is the check of every write.
-    assertLocalStorePath(dir);
+    // SQLite writes through the file it opens here (and its -wal and -shm beside it), so this check covers every write.
     assertLocalStorePath(join(dir, "screen.sqlite"));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     // mkdirSync's mode applies only to a directory it creates; one that was already there is closed now (CodeRabbit on PR #5).
