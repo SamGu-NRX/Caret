@@ -46,6 +46,10 @@ HAND_OFF = [
 ]
 # What PrivacyPromiseText may construct: layout and the two text views, each fed only the block's own text.
 DRAWING_TYPES = {"ScrollingColumn", "VStack", "ForEach", "Array", "GroupHead", "Text", "Color", "LinearGradient", "CGFloat"}
+LOOP = "ForEach(Array(promise.blocks.enumerated()), id: \\.offset) { index, block in"
+PARSE = "blocks = text.components(separatedBy: Self.separator).map { block in"
+# Blocks come from the parser alone: elsewhere a block's case may only be matched, never made.
+BLOCK_MADE = re.compile(r"Block\s*\.\s*(?:heading|paragraph)\b|(?<![\w)\]])\.(?:heading|paragraph)\s*\((?!let text\))")
 LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 
 
@@ -118,6 +122,12 @@ def view_problems(text: str) -> list[str]:
         problems.append(f"PrivacyPromiseText may draw only layout and the block's text, not {sorted(constructed - DRAWING_TYPES)}")
     if set(re.findall(r"\b(?:Self|PrivacyPromiseText)\.\w+", body)) - {"Self.fade", "Self.gap"}:
         problems.append("PrivacyPromiseText may read no other value to show")
+    # The data flow: the stored promise's parsed blocks, looped over once, each switched on as it comes.
+    if (len(re.findall(r"^\s*var promise: PrivacyPromise\s*$", body, re.M)) != 1 or len(re.findall(r"\bpromise\b\s*[:=]", body)) != 1
+            or body.count(LOOP) != 1 or "ForEach" in body.replace(LOOP, "", 1)
+            or re.findall(r"\bswitch\b[^{]*\{", body) != ["switch block {", "switch (previous, block) {"]
+            or re.search(r"\b(let|var)\s+block\b|\bblock\s*=[^=]", body)):
+        problems.append("PrivacyPromiseText must switch on each block of the given promise's parsed blocks, as it loops over them")
     return problems
 
 
@@ -132,11 +142,17 @@ def refusals(root: Path) -> list[str]:
     model = code((root / MODEL).read_text())
     if set(LITERAL.findall(model)) - {r"\n\n", r"\n", r".,;:!?\"'\u{201D}\u{2019})"} or '"""' in model:
         problems.append(f"{root / MODEL}: the parse may add no words of its own")
-    # Only renders pass their own promise; the window uses the binding's default.
+    made = re.findall(r"\.(?:heading|paragraph)\s*\(\s*([^)]*)\)", model)
+    if sorted(made) != ["block", "block", "let text", "let text"] or model.count(PARSE) != 1:
+        problems.append(f"{root / MODEL}: the parse must make each block from the resource's own text")
     for swift in sorted((root / "apps/caret/Sources").rglob("*.swift")):
-        if swift.name.startswith("Gallery"):
+        if swift == root / MODEL:
             continue
-        if any("promise:" in call for call in calls(code(swift.read_text()), "OnboardingView")):
+        source = code(swift.read_text())
+        if BLOCK_MADE.search(source):
+            problems.append(f"{swift}: a promise block is made outside the parse")
+        # Only renders pass their own promise; the window uses the binding's default.
+        if not swift.name.startswith("Gallery") and any("promise:" in call for call in calls(source, "OnboardingView")):
             problems.append(f"{swift}: the window must show the bundled promise, not pass its own")
     if problems:
         return [f"{path}: the onboarding copy must render PRIVACY_PROMISE from privacy.ts: {why}" for why in problems]

@@ -18,8 +18,41 @@ HEAD = "apps/caret/Sources/CaretHost/Design/WindowParts.swift"
 CONTROLLER = "apps/caret/Sources/CaretHost/Onboarding/OnboardingController.swift"
 SWITCHED_OFF = "It sends nothing from an app or website you've switched off."
 
-# (name, file, original, replacement)
+SHORT = '"Caret sends very little."'
+SCREEN = "struct PermissionsScreen: View {\n"
+SWITCH = "switch block {"
+
+# (name, file, original, replacement) or, for an edit in two places, (name, file, [(original, replacement), ...])
 MUTATIONS = [
+    ("switch shows a computed property", VIEW, [
+        (SCREEN, SCREEN + f"    static var shortPrivacyPromise: String {{ {SHORT} }}\n"),
+        (SWITCH, "switch PrivacyPromise.Block.paragraph(PermissionsScreen.shortPrivacyPromise) {"),
+    ]),
+    ("switch shows a stored property", VIEW, [
+        (SCREEN, SCREEN + f"    static let shortPrivacyPromise = {SHORT}\n"),
+        (SWITCH, "switch PrivacyPromise.Block.paragraph(PermissionsScreen.shortPrivacyPromise) {"),
+    ]),
+    ("switch shows a free function's literal", VIEW, [
+        ("// MARK: - 4. Permissions\n", f"// MARK: - 4. Permissions\n\nfunc shortPrivacyPromise() -> String {{ {SHORT} }}\n"),
+        (SWITCH, "switch .paragraph(shortPrivacyPromise()) as PrivacyPromise.Block {"),
+    ]),
+    ("switch rebinds the block", VIEW, [
+        (SCREEN, SCREEN + f"    static let shortPrivacyPromise = {SHORT}\n"),
+        ("                    let gap = index", "                    let block = PrivacyPromise.Block.paragraph(PermissionsScreen.shortPrivacyPromise)\n                    let gap = index"),
+    ]),
+    ("loop over made-up blocks", VIEW, [
+        (SCREEN, SCREEN + f"    static let shortPrivacyPromise = {SHORT}\n"),
+        ("ForEach(Array(promise.blocks.enumerated())", "ForEach(Array([PrivacyPromise.Block.paragraph(PermissionsScreen.shortPrivacyPromise)].enumerated())"),
+    ]),
+    ("drawing view's promise replaced", VIEW, [
+        (SCREEN, SCREEN + f"    static let shortPrivacyPromise = PrivacyPromise({SHORT})!\n"),
+        ("    var promise: PrivacyPromise\n", "    var promise: PrivacyPromise { PermissionsScreen.shortPrivacyPromise }\n"),
+    ]),
+    ("a block made outside the parser", HEAD, [
+        ("struct GroupHead: View {", f"let madeUp = PrivacyPromise.Block.paragraph({SHORT})\n\nstruct GroupHead: View {{"),
+    ]),
+    ("the parser makes a block from other text", MODEL, [(".paragraph(block)", ".paragraph(String(block.prefix(3)))")]),
+
     ("paragraph shows a literal sentence", VIEW, "Text(text)\n", f'Text("{SWITCHED_OFF}")\n'),
     ("paragraph shows another static", VIEW, "Text(text)\n", "Text(PermissionsScreen.missingPromiseLine)\n"),
     ("paragraph shows verbatim text", VIEW, "Text(text)\n", "Text(verbatim: text + \".\")\n"),
@@ -54,12 +87,15 @@ class OnboardingPrivacyCheckTests(unittest.TestCase):
         self.assertEqual(check.refusals(self.tree()), [])
 
     def test_every_recorded_mutation_is_refused(self):
-        for name, file, original, replacement in MUTATIONS:
+        for name, file, *edit in MUTATIONS:
+            edits = edit[0] if len(edit) == 1 else [tuple(edit)]
             with self.subTest(name):
                 path = self.tree()
                 text = (path / file).read_text()
-                self.assertEqual(text.count(original), 1, f"{name}: the mutation must apply to exactly one place")
-                (path / file).write_text(text.replace(original, replacement))
+                for original, replacement in edits:
+                    self.assertEqual(text.count(original), 1, f"{name}: the mutation must apply to exactly one place: {original!r}")
+                    text = text.replace(original, replacement)
+                (path / file).write_text(text)
                 self.assertNotEqual(check.refusals(path), [], name)
 
 
