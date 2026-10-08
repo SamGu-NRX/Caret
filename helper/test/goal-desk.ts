@@ -314,7 +314,10 @@ export function standInJev(o: { p?: number; noul?: number; belongs?: (instructio
       for (const [id, q] of Object.entries(req.questions)) {
         const text = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
         f.asked.push(text);
-        if ("yes" in q.criteria) answers[id] = { choice: (o.belongs ?? (() => true))(text) ? "yes" : "no", confidence: o.p ?? 0.95 };
+        // W2: the write contract's verifier (fill/contract.ts), in a file that turns the suite's stand-in off, says what
+        // `belongs` says of the value: exactly the field's, or not this field's.
+        if (req.purpose === "fill.verify") answers[id] = { choice: (o.belongs ?? (() => true))(text) ? "exact" : "other", confidence: o.p ?? 0.95 };
+        else if ("yes" in q.criteria) answers[id] = { choice: (o.belongs ?? (() => true))(text) ? "yes" : "no", confidence: o.p ?? 0.95 };
         else answers[id] = { choice: "unclear" in q.criteria ? "unclear" : (Object.keys(q.criteria)[0] ?? ""), confidence: o.p ?? 0.95 };
       }
       return { model: "jev-stand-in", answers, nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, o.noul ?? 0.99])), inputTokens: 10, latencyMs: 1, costUsd: 0 };

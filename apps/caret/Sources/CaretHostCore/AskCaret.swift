@@ -641,7 +641,8 @@ public final class AskCaret {
     // MARK: - The card
 
     /// The card for a proposal: each field write, then each control the user sets (H5: a fields row
-    /// in the state `yours`, "Pizza size: Large"), then the press left to the user. Nil when the
+    /// in the state `yours`, "Pizza size: Large"), then each field left to the user with the helper's
+    /// reason (H1), then the press left to the user. Nil when the
     /// proposal has no spec or no Tab action, which the helper's schema never sends.
     public static func card(_ proposal: PlanProposal, file: ProposedFile? = nil, now: Date = Date(), calendar: Calendar = .current) -> Card? {
         guard let spec = proposal.spec, let key = proposal.offerKey,
@@ -685,6 +686,9 @@ public final class AskCaret {
         let writesNow = writes - attachRow
         if moreToSet > 0 { controls.append(Step(text: AskCopy.moreToSet(moreToSet), yours: true)) }
         steps += controls
+        // H1: the fields the plan leaves to the user, each with the helper's reason (I3's "Left to you", B25's "You type"),
+        // before the press, which stays last so the plan's hand-off step maps to it (`cardIndex`).
+        steps += left(spec)
         if let handoff = proposal.handoff { steps.append(Step(text: AskCopy.press(handoff.label, why: handoff.why), yours: true)) }
         let app = proposal.window?.appName ?? "the app"
         let press = proposal.handoff.map { $0.label.isEmpty ? AskCopy.unlabelled : $0.label }
@@ -695,6 +699,21 @@ public final class AskCaret {
             action: tab.label, offerKey: key, actionId: tab.id, writes: writesNow, press: press,
             pid: proposal.window.map { Int32(truncatingIfNeeded: $0.pid) }, attach: attach
         )
+    }
+
+    /// The steps for the fields a plan leaves to the user: every row of a facts block whose first row carries one of the
+    /// helper's left-to-you labels (`AskCopy.leftLabels`). A row says the helper's sentence; its "and N more" row (the
+    /// helper's `count` rule) says how many more. Each is the user's, so it never takes a mark or counts as filled.
+    static func left(_ spec: PopupSpec) -> [Step] {
+        spec.blocks.flatMap { block -> [Step] in
+            guard case .facts(let facts) = block.content, let label = facts.rows.first?.label, AskCopy.leftLabels.contains(label) else { return [] }
+            return facts.rows.map { row in
+                if case .derived(let rule, let from) = row.value.ref, rule == AskCopy.countRule, !from.isEmpty {
+                    return Step(text: AskCopy.moreLeft(from.count), yours: true)
+                }
+                return Step(text: AskCopy.left(row.value.text), yours: true)
+            }
+        }
     }
 
     /// The card's step for a plan step: the listed writes first, then the hand-off, which follows
@@ -920,6 +939,23 @@ public enum AskCopy {
     /// Controls past the listed ones: "and 2 more to set".
     public static func moreToSet(_ n: Int) -> String { "and \(n) more to set" }
 
+    /// H1: the labels of the plan spec's facts blocks that name fields left to the user (helper/src/planner/proposal.ts
+    /// YOU_TYPE_LABEL and LEFT_TO_YOU_LABEL). The helper writes them for this host to read, as it writes `eventCard`.
+    public static let leftLabels: Set<String> = ["You type", "Left to you"]
+    /// The rule of a row that counts what a list did not show ("and 3 more").
+    static let countRule = "count"
+
+    /// A field left to the user, in the helper's words, as a step says it: no closing period, as no other step has one.
+    ///   Pizza Size: Caret wasn't sure your request asks for it
+    ///   Social Security number is yours to type. Caret doesn't type Social Security numbers
+    public static func left(_ says: String) -> String {
+        let s = says.trimmingCharacters(in: .whitespacesAndNewlines)
+        return s.hasSuffix(".") ? String(s.dropLast()) : s
+    }
+
+    /// The fields left to the user past the ones the card lists.
+    public static func moreLeft(_ n: Int) -> String { "and \(n) more Caret wasn't sure about" }
+
     /// A field's label as a title names it: without the marker a form puts after a required
     /// field's label. Q1 (A18, bug 16) showed "Fill Email * in Google Chrome" with the asterisk
     /// wrapped onto its own line. Strips trailing asterisks (ASCII, full-width, heavy), a trailing
@@ -1005,6 +1041,8 @@ public enum AskCopy {
         case .internal: return "Something went wrong while I planned, so nothing will run."
         // B29: says.ts's sentence, for a helper that sends none.
         case .questionGone: return "That question has expired. Ask again."
+        // I2: says.ts's sentence for outOfScope, for a helper that sends none.
+        case .outOfScope: return "The form changed while Caret worked on it. Ask again."
         }
     }
 

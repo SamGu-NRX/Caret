@@ -190,6 +190,7 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
       else criteria[o] = OUTCOME_SAYS[o];
     }
     const request: JevRequest = {
+      purpose: "route.judge",
       state: t.state,
       questions: {
         outcome: {
@@ -209,6 +210,7 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
   const t = describe(model, ctx, [cand], false);
   if (!t.quoted.has(cand.id)) return { outcome, task: null, taskPrivacy: true };
   const request: JevRequest = {
+    purpose: "route.task",
     state: { ...t.state, offer: { task: ev.task, sentence: ev.sentence, found: ev.found } },
     questions: { task: { type: "choice", instructions: taskInstructions(ev.offerWhen), criteria: { abstain: TASK_QUESTION.abstain, act: TASK_QUESTION.act } } },
     ...t.ledger.declared(),
@@ -224,6 +226,7 @@ export function router2Request(model: ScreenModel, ctx: RoutingContext, reg: Reg
   const criteria: Record<string, string> = {};
   for (const r of reg.routes) criteria[r.option] = r.candidate === null ? `None of these: ${r.reason ?? ""}. Offer nothing.` : (t.says.get(r.candidate.id) ?? r.candidate.plain);
   const request: JevRequest = {
+    purpose: "route.pick",
     state: { ...t.state, decided: "Caret will offer to do one task now." },
     questions: { route: { type: "choice", instructions: "Which one task fits what the user is doing now?", criteria } },
     ...t.ledger.declared(),

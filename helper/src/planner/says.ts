@@ -158,6 +158,9 @@ export function jevFailureSays(e: unknown, otherwise: string): string {
  * failed, and the client's own text kept for the log.
  */
 export function jevFailedError(e: unknown): SaidError {
+  // A failure already said (an inner caller's jevFailedError, the helper's own Jev wrapper) keeps its sentence: the
+  // second wrap read no kind from it and said "couldn't reach" for an out-of-credits account (I2, the scope question).
+  if (e instanceof SaidError && e.code === "jevFailed") return e;
   return new SaidError("jevFailed", jevFailureSays(e, SAYS.unreachable), `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
 }
 
@@ -202,6 +205,9 @@ export function saysFor(code: PlanErrorCode): string {
       return SAYS.privacy;
     case "questionGone":
       return SAYS.questionGone;
+    // I2: the plan wrote outside the Ask's fields, or a field changed since Caret asked about it.
+    case "outOfScope":
+      return SAYS.windowChanged;
   }
 }
 
@@ -274,6 +280,25 @@ export function saysLeftToYou(fields: readonly { name: string; kind: SensitiveKi
   if (fields.length === 0) return null;
   const kinds = [...new Set(fields.map((f) => (saysSsn(f.name) ? "Social Security numbers" : SENSITIVE_SAYS[f.kind])))];
   return `${capital(list(fields.map((f) => f.name), "and"))} ${fields.length === 1 ? "is" : "are"} yours to type. Caret doesn't type ${list(kinds, "or")}.`;
+}
+
+/**
+ * I3: a field an Ask leaves to the user because Jev wasn't sure the request asks for it: "Pizza Size: Caret wasn't sure
+ * your request asks for it."
+ */
+export function saysUnsureField(name: string): string {
+  return `${field(name)}: ${UNSURE_FIELD}.`;
+}
+export const UNSURE_FIELD = "Caret wasn't sure your request asks for it";
+
+/** I3: an Ask with no field Jev settled and more unsettled ones than one question lists. */
+export function saysUnsureFields(names: readonly string[]): string {
+  return `Caret wasn't sure your request asks for ${list(names, "or")}, so it filled nothing. Name the fields you want filled.`;
+}
+
+/** I3: the fields question beside fields Jev settled: "Caret will fill Customer name and Telephone. Which of these should it fill too?" */
+export function asksFieldsBeside(sure: readonly string[]): string {
+  return `Caret will fill ${list(sure, "and")}. Which of these should it fill too?`;
 }
 
 /** A field's label as a sentence says it: no "(optional)", required marks or trailing colon. */

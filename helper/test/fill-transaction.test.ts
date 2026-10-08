@@ -233,7 +233,6 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     it.each([
       ["an input of type number", "number", {}, "ok"],
       ["a text input with a numeric inputmode", "text", { numeric: true as const }, "ok"],
-      ["an input of type number, answered failed", "number", {}, "failed"],
     ] as const)("undoes the write in %s: 1 and 1.00 are the same number", async (_, kind, extra, answer) => {
       page.onAct = reformatting(["n"], answer);
       const { key } = await written("n", kind, extra);
@@ -243,6 +242,17 @@ describe("one Fill all over a mixed form (D2-04)", () => {
       const u = await helper.executor.undo("n1");
       expect(u).toMatchObject({ restored: 1, notRestored: [] });
       expect(page.find("n").value).toBe("");
+    });
+
+    it("leaves an unconfirmed number's reformatted value outside S1's exact recognized states", async () => {
+      page.onAct = reformatting(["n"], "failed");
+      await written("n", "number");
+      expect(helper.executor.ledger("n1")).toMatchObject([{ before: "", after: "1", unconfirmed: true }]);
+      expect(await helper.executor.undo("n1")).toMatchObject({
+        restored: 0,
+        notRestored: [{ reason: 'the field does not hold what Caret was writing, so Caret left it as it is; the field now holds "1.00"; before the write it held ""' }],
+      });
+      expect(page.find("n").value).toBe("1.00");
     });
 
     it("never compares a text field as a number: the same reformat leaves an undo that refuses", async () => {
@@ -384,7 +394,7 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
     expect(g.fields.map((f) => [f.value, f.context])).toEqual([["Canada", null], ["2026-10-20", "Start"]]);
     expect(recheckFill(m, g, () => null)).toBeNull();
     m.apply(snap([field("te/note", "Not Canada\nStart: Tuesday, October 20, 2026", { role: "AXTextArea" })], { at: 1100, windowId: "note", title: "Details.txt", app: NOTE_APP }));
-    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed");
+    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed: what its source says around it changed");
   });
 
   it("never offers the review's marketing and certification boxes, nor ticks a conditional statement even as a hand-off (R1, R5)", async () => {
@@ -403,7 +413,7 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
     expect(g.fields.map((f) => [f.value, f.context])).toEqual([[PAGE_CHECKED, "Valid driving license"]]);
     expect(recheckFill(m, g, () => null)).toBeNull();
     m.apply(snap([field("te/note", "Valid driving license: no\nNeeds renewal: yes", { role: "AXTextArea" })], { at: 1100, windowId: "note", title: "Details.txt", app: NOTE_APP }));
-    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed");
+    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed: what its source says around it changed");
   });
 
   it("never asks about a box whose nearest text is a sign-up, and leaves a switch's tick to the user", async () => {

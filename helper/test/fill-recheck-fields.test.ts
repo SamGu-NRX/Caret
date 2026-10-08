@@ -1,7 +1,8 @@
 // P2, from P1's findings: one field that fails its recheck no longer cancels the whole Fill all. It is listed as the
 // user's, with why, and the rest is offered and written. And the decision on a span inside a longer source line: a
-// control's value passes only when its own "Label:" line still holds it, or (with no label) when code derives exactly
-// that part from the line again; a short answer inside a longer sentence never passes. Every name and value is invented.
+// control's value passes only when its own "Label:" line still holds it, or the line it was read from reads as it did.
+// I1: the recheck is the write contract's (fill/contract.ts provenanceStale), which holds a value to the digests of the
+// lines it was read from, so a line that changed in any way refuses it. Every name and value is invented.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,50 +14,53 @@ import { wirePageEngines } from "../src/engines/wire.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { ScreenModel } from "../src/model.ts";
-import { sourceHolds } from "../src/offers/fill-popup.ts";
+import { holds } from "./recheck.ts";
 import { field, focus, jevPickingText, snap } from "./builders.ts";
 import { c, chrome, FakePage, hello, okReader, TEXTEDIT, WIN } from "./fake-page.ts";
 
 /** A source window whose one text area holds `text`. */
-const source = (text: string) => {
+const source = (text: string): ScreenModel => {
   const m = new ScreenModel();
   m.apply(snap([field("te/n", text, { role: "AXTextArea" })], { at: 1, windowId: "n", title: "Notes.txt", app: TEXTEDIT, focused: true }));
-  return m.windows.get("n")!;
+  return m;
 };
+/** Whether `span`, read from the note as `was` (beside `context`), is still held once the note reads `now`. */
+const held = (was: string, now: string, span: string, context: string | null = null): boolean => holds(source, { windowId: "n", nodeKey: "te/n" }, was, now, span, context);
 
-describe("sourceHolds: a span inside a longer source line (P2 decision)", () => {
+describe("the recheck of a span inside a longer source line (P2 decision)", () => {
   const LOCATION = "Location: Oakland, California, United States (in the Bay Area)";
 
   it("passes a control's value on its own 'Label:' line, which still holds it", () => {
-    expect(sourceHolds(source(LOCATION), "te/n", "United States", "Location", "combobox")).toBe(true);
+    expect(held(LOCATION, LOCATION, "Oakland, California, United States", "Location")).toBe(true);
     // The line under another label no longer says it is the location.
-    expect(sourceHolds(source("Moving from: Oakland, California, United States"), "te/n", "United States", "Location", "combobox")).toBe(false);
+    expect(held(LOCATION, "Moving from: Oakland, California, United States", "Oakland, California, United States", "Location")).toBe(false);
   });
 
-  it("passes an unlabelled control's value only when code derives exactly that part from the whole line again", () => {
-    expect(sourceHolds(source("Oakland, California, United States"), "te/n", "United States", null, "combobox")).toBe(true);
-    expect(sourceHolds(source("12 Harbor Way, Oakland, CA 94607"), "te/n", "94607", null, "select")).toBe(true);
+  it("passes an unlabelled line's value only while the line reads as it did", () => {
+    expect(held("Oakland, California, United States", "Oakland, California, United States", "Oakland, California, United States")).toBe(true);
+    expect(held("12 Harbor Way, Oakland, CA 94607", "12 Harbor Way, Oakland, CA 94607", "12 Harbor Way, Oakland, CA 94607")).toBe(true);
     // A line that gained a label is not the line the value was read from (P2 review), whatever the label says.
-    expect(sourceHolds(source("Do not use: Oakland, California, United States"), "te/n", "United States", null, "combobox")).toBe(false);
-    expect(sourceHolds(source(LOCATION), "te/n", "California", null, "select")).toBe(false);
+    expect(held("Oakland, California, United States", "Do not use: Oakland, California, United States", "Oakland, California, United States")).toBe(false);
   });
 
-  it("refuses a short answer inside a sentence that now says otherwise, and a span that is no derived part", () => {
-    expect(sourceHolds(source("I have a valid driving license? No."), "te/n", "No", null, "select")).toBe(false);
-    expect(sourceHolds(source("We ship to the United States only."), "te/n", "United States", null, "combobox")).toBe(false);
-    // The same line whole still passes, as before P2.
-    expect(sourceHolds(source("Yes\nNo"), "te/n", "No", null, "select")).toBe(true);
+  it("refuses a short answer inside a line that now says otherwise", () => {
+    // D2-04 review: "Valid driving license: no" became a question whose answer is the same word.
+    expect(held("Valid driving license: no", "I have a valid driving license? No.", "no", "Valid driving license")).toBe(false);
+    expect(held("Ship to: United States", "We ship to the United States only.", "United States", "Ship to")).toBe(false);
+    expect(held("Yes\nNo", "Yes\nNo", "No")).toBe(true);
   });
 
-  it("holds a text field's value to the node's text, as before", () => {
-    expect(sourceHolds(source(LOCATION), "te/n", "Oakland", null, "text")).toBe(true);
-    expect(sourceHolds(source(LOCATION), "te/n", "Berkeley", null, "text")).toBe(false);
+  it("holds a text field's value to the lines it was read from", () => {
+    expect(held(LOCATION, LOCATION, "Oakland")).toBe(true);
+    expect(held(LOCATION, LOCATION.replace("Oakland", "Berkeley"), "Oakland")).toBe(false);
   });
 });
 
 /** A short apply form: two text fields and a country dropdown named only by its label, as W4's Greenhouse pages show it. */
 const form = (): PageControl[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "" }), c("e3", "combobox", "Country", { value: "" })];
-const NOTE = ["Full name: Robin Vale", "Email: robin@example.test", "Location: Oakland, California, United States (in the Bay Area)"].join("\n");
+// G2 round 4: a value's recheck reads its line and the lines either side (fill/line-values.ts lineDigests), so a line
+// between the values keeps an edit to one from touching another's neighbourhood.
+const NOTE = ["Full name: Robin Vale", "", "Phone: none on file", "", "Email: robin@example.test", "", "Notes: none", "", "Location: Oakland, California, United States (in the Bay Area)"].join("\n");
 const PICKS: Record<string, string> = { "Full name": "Robin Vale", Email: "robin@example.test", Country: "United States" };
 
 const cleanups: (() => void)[] = [];

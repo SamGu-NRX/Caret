@@ -1,0 +1,1 @@
+I3 ruling: an Ask never refuses for unclear fields or a too-long question; Jev's settled fields fill, unclear ones are asked beside them (AskIntent.sure) only when <= 8, else listed as left to the user (AskIntent.unsure).

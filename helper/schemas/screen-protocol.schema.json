@@ -277,6 +277,51 @@
                       "minLength": 1,
                       "maxLength": 100
                     }
+                  },
+                  "inputKind": {
+                    "type": "string",
+                    "enum": [
+                      "text",
+                      "email",
+                      "tel",
+                      "url",
+                      "number",
+                      "search",
+                      "date",
+                      "time",
+                      "datetime",
+                      "month",
+                      "week",
+                      "textarea"
+                    ]
+                  },
+                  "autocomplete": {
+                    "type": "string",
+                    "enum": [
+                      "name",
+                      "given-name",
+                      "additional-name",
+                      "family-name",
+                      "nickname",
+                      "organization",
+                      "organization-title",
+                      "street-address",
+                      "address-line1",
+                      "address-line2",
+                      "address-level1",
+                      "address-level2",
+                      "country",
+                      "country-name",
+                      "postal-code",
+                      "email",
+                      "tel",
+                      "tel-national",
+                      "url",
+                      "bday",
+                      "bday-day",
+                      "bday-month",
+                      "bday-year"
+                    ]
                   }
                 },
                 "required": [
@@ -2533,7 +2578,10 @@
                           "sourceCut",
                           "wrongKind",
                           "otherPerson",
-                          "ambiguous"
+                          "ambiguous",
+                          "notExact",
+                          "unverified",
+                          "outOfScope"
                         ]
                       },
                       {
@@ -2669,6 +2717,47 @@
                       "savedOn",
                       "withheld"
                     ],
+                    "additionalProperties": false
+                  },
+                  "basis": {
+                    "type": "object",
+                    "properties": {
+                      "identity": {
+                        "type": "object",
+                        "properties": {
+                          "memoryId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "email",
+                              "phone",
+                              "name"
+                            ]
+                          },
+                          "key": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "part": {
+                            "type": "string",
+                            "enum": [
+                              "first",
+                              "middle",
+                              "last"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "memoryId",
+                          "kind",
+                          "key"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
                     "additionalProperties": false
                   }
                 },
@@ -7514,7 +7603,8 @@
                         "privacy",
                         "internal",
                         "unseenWindow",
-                        "questionGone"
+                        "questionGone",
+                        "outOfScope"
                       ]
                     },
                     "detail": {

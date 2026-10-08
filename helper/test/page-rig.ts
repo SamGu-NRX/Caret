@@ -87,11 +87,13 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
   const asked: JevRequest[] = [];
   const picks = o.picks ?? PICKS;
   const pick = jevPickingText((_, ins) => picks[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? (o.picks === undefined ? byLabel(_, ins) : null), 0.95);
-  // Confirmation questions (planner/ask.ts confirmScope) answer yes; everything else is fill's.
+  // Confirmation questions (planner/ask.ts confirmScope) answer yes, the scope ask asks; everything else is fill's.
   const canned: AskJev = async (req) => {
     asked.push(req);
     const r = await pick(req);
     for (const [id, q] of Object.entries(req.questions)) if ("yes" in q.criteria) r.answers[id] = { choice: "yes", confidence: 0.95 };
+    // I2: Jev's scope ask, which settles a plan's, a next page's and a reveal's fields, says every field is asked for.
+    if (req.purpose === "ask.scope") for (const id of Object.keys(req.questions)) r.answers[id] = { choice: "asks", confidence: 0.95 };
     return r;
   };
   const jev = o.jev === undefined ? canned : o.jev(canned);

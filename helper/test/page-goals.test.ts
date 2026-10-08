@@ -82,7 +82,9 @@ function revealing(page: FakePage): void {
 }
 
 describe("the reveal continuation (P2)", () => {
-  it("offers the fields the writes revealed as a second preview, which one more acceptance fills", async () => {
+  // I2 lead ruling B: an Ask's scope is settled once, by the scope question, and changes only for a new document or a new
+  // Ask. A field the writes revealed on the same page was never asked about, so an Ask's goal leaves it to the user.
+  it("leaves the fields an Ask's writes revealed to the user: no second preview writes them (I2 ruling B)", async () => {
     const r = await rig({ note: `${NOTE}\nProvince: Ontario`, picks: { ...PICKS, Province: "Ontario" } });
     revealing(r.page);
     const preview = (await r.ask("fill out this form from my note")) as Segment;
@@ -92,12 +94,8 @@ describe("the reveal continuation (P2)", () => {
     await r.helper.goals.idle();
     const next = goalMessages(r).find((m): m is Segment => m.event === "segment" && m.goalId !== preview.goalId);
     expect(Date.now() - t0).toBeLessThan(1500);
-    expect(next).toMatchObject({ reason: "afterReveal", replaces: preview.goalId, segment: 0 });
-    expect(next?.steps.map((s) => s.says)).toEqual(["Province: Ontario", "You press Submit Application"]);
+    expect(next?.steps.some((s) => s.says.startsWith("Province")) ?? false).toBe(false);
     expect(r.page.shown("e20")).toBe("");
-    await r.accept(next as Segment);
-    await r.helper.goals.idle();
-    expect(r.page.shown("e20")).toBe("Ontario");
     expect(presses(r)).toBe(0);
   });
 
@@ -159,8 +157,11 @@ describe("the size hand-off (P2), in parts since C2", () => {
     const firsts = [1, 21, 41, 61, 81];
     const r = await rig({ controls: many, note: firsts.map((i) => `Q${i}: a${i}`).join("\n"), picks: Object.fromEntries(firsts.map((i) => [`Q${i}`, `a${i}`])) });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
-    expect(preview).toMatchObject({ segments: 4 });
+    // I2 ruling: the Ask's scope is the fields its own question saw (the intent snapshot holds the first ones a request
+    // may carry), so Q41 and Q61 past it are the user's, said as such, and the plan has two parts, not four.
+    expect(preview).toMatchObject({ segments: 2 });
     expect(preview.warnings.some((w) => /Caret fills 80 fields of a form, 20 at a time, so 5 more are yours: 'Q81'/.test(w))).toBe(true);
+    expect(preview.warnings).toContain("'Q41' is yours: your request didn't ask Caret to fill it.");
   });
 });
 
@@ -229,6 +230,7 @@ describe("the fill gate cannot be borrowed (P2)", () => {
     const ask: AskJev = jevPickingText(byLabel, 0.95);
     const plan = await planPage(r.helper.model, { goalId: "g-copy", instruction: "fill out this form", windowId: WIN, scope: null, kind: "all", section: null, about: [], askJev: ask, now: Date.now(), clock: macClock(new Date()), readerSession: 0, pageDocument: (id) => r.host.registry.documentOf(id) });
     expect(plan.segments[0]?.steps.filter((s) => s.row !== true).every((s) => s.gate === "fill")).toBe(true);
-    expect(() => r.helper.goals.propose(structuredClone(plan), undefined, null)).toThrow(/without passing the value gates/);
+    // W2: a copy carries no write-contract mint (fill/contract.ts isChecked), so it is refused as unchecked.
+    expect(() => r.helper.goals.propose(structuredClone(plan), undefined, null)).toThrow(/without passing the value gates|has no check from the write contract/);
   });
 });

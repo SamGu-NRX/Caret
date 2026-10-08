@@ -17,6 +17,9 @@ import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { FillProposal, PROTOCOL_VERSION, type AnswerFields, type HelperMessage, type Node } from "../src/protocol.ts";
 import { field, node, snap } from "./builders.ts";
+import { minted } from "./mint.ts";
+/** W2: writtenFields on a hand-built proposal whose written fields the write contract minted first (test/mint.ts). */
+const writtenMinted = async (p: FillProposal, ...rest: Parameters<typeof writtenFields> extends [unknown, ...infer R] ? R : never): Promise<ReturnType<typeof writtenFields>> => writtenFields(await minted(p), ...rest);
 
 const CHROME = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const RAMP = "https://jobs.ashbyhq.com/ramp/34413f8d/application";
@@ -360,10 +363,10 @@ describe("a saved answer is never written without the user seeing it whole", () 
   const proposal = (fields: unknown[]): FillProposal =>
     FillProposal.parse({ type: "fillProposal", v: PROTOCOL_VERSION, id: "p1", at: 1, pid: CHROME.pid, windowId: "page-eng1-7", bundleId: CHROME.bundleId, triggerKey: "q1", fields, candidates: 1, jev: { model: "jev-test", latencyMs: 1, inputTokens: 1, costUsd: 0 }, cutoff: 0.75 });
 
-  it("shows every answer in a pop-up row, whole, ahead of fields that fold into 'and N more'", () => {
+  it("shows every answer in a pop-up row, whole, ahead of fields that fold into 'and N more'", async () => {
     const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Proudest accomplishment?" }]);
     const fields = [...["a", "b", "c", "d", "e", "f"].map((k) => valueField(`v-${k}`, `value ${k}`)), answerField("q1", PROJECT)];
-    const spec = buildFillPopup(model, writtenFields(proposal(fields))).spec;
+    const spec = buildFillPopup(model, await writtenMinted(proposal(fields))).spec;
     const block = spec.blocks.find((b) => b.type === "fields") as { rows: { value?: { text: string; ref: unknown } }[]; more?: number };
     const row = block.rows.find((r) => r.value?.text === PROJECT);
     expect(row?.value?.ref).toEqual({ rule: SAVED_ANSWER_RULE, derived: [{ memory: "ans-q1" }] });
@@ -371,15 +374,15 @@ describe("a saved answer is never written without the user seeing it whole", () 
     expect(block.more).toBe(2);
   });
 
-  it("writes no more answers than one pop-up shows, and none from Command-1, which shows nothing first", () => {
+  it("writes no more answers than one pop-up shows, and none from Command-1, which shows nothing first", async () => {
     const six = ["a", "b", "c", "d", "e", "f"].map((k) => answerField(`q-${k}`, `${PROJECT} (${k})`));
-    expect(writtenFields(proposal(six)).fields).toHaveLength(5);
-    expect(writtenFields(proposal([...six.slice(0, 1), valueField("v", "x")]), undefined, { answers: false }).fields.map((f) => f.key)).toEqual(["v"]);
+    expect((await writtenMinted(proposal(six))).fields).toHaveLength(5);
+    expect((await writtenMinted(proposal([...six.slice(0, 1), valueField("v", "x")]), undefined, { answers: false })).fields.map((f) => f.key)).toEqual(["v"]);
   });
 
-  it("keeps an answer out of step sentences, and gates a task that writes one (fix-check finding 1)", () => {
+  it("keeps an answer out of step sentences, and gates a task that writes one (fix-check finding 1)", async () => {
     const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Proudest accomplishment?" }]);
-    const g = writtenFields(proposal([answerField("q1", PROJECT), valueField("v", "x")]));
+    const g = await writtenMinted(proposal([answerField("q1", PROJECT), valueField("v", "x")]));
     const { plan } = fillPlan(model, g);
     expect((plan as { steps: { says: string }[] }).steps.map((s) => s.says)).toEqual(["{{l0}} holds your saved answer", "{{l1}} holds {{v1}}"]);
     const progress = { type: "taskProgress", v: PROTOCOL_VERSION, at: 1, taskId: "p1", planId: "p1", phase: "acting", step: 0, steps: 2, says: null, detail: `write value; expect q1: '' becomes '${PROJECT.slice(0, 30)}'`, stopReason: null } as unknown as HelperMessage;
@@ -387,14 +390,14 @@ describe("a saved answer is never written without the user seeing it whole", () 
     expect(carriesAnswer(progress, () => false)).toBe(false);
   });
 
-  it("sends a host without the capability no answer, and stops a pop-up whose answer changed in answers.md", () => {
+  it("sends a host without the capability no answer, and stops a pop-up whose answer changed in answers.md", async () => {
     const p = proposal([answerField("q1", PROJECT), valueField("v", "x")]);
     expect(carriesAnswer(p)).toBe(true);
     const stripped = withoutAnswers(p);
     expect(JSON.stringify(stripped)).not.toContain(PROJECT.slice(0, 40));
     expect(FillProposal.parse(stripped).fields[0]).toMatchObject({ value: null, memory: null, choice: "none" });
     const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Proudest accomplishment?" }]);
-    const g = writtenFields(proposal([answerField("q1", PROJECT)]));
+    const g = await writtenMinted(proposal([answerField("q1", PROJECT)]));
     g.fields[0] = { ...g.fields[0]!, descriptor: "Text area. Label: 'Proudest accomplishment?'." };
     const same = (): SavedAnswer => saved("ans-q1", "What has been your proudest accomplishment?", PROJECT, null);
     expect(recheckFill(model, g, () => null, same)).toBeNull();

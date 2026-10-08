@@ -300,19 +300,31 @@ public struct LineFramer: Sendable {
 ///   confirm (⌘2 or a click; never Tab alone), sent as `goalAccept.confirmedFile`; the host shows `fileSaveOffer` and
 ///   lists kept files. Declared only when the host has both the file chooser and the save line wired
 ///   (`PageTaskMachine.filesWired`); a helper then never sends this host an attach row it cannot show.
+/// - `valueChecks` (W2, H1): the host decodes a fill field withheld as `notExact` or `unverified`, and offers nothing
+///   for it, as for every withheld field (`FillSelection.Skip.withheld`). A host without it is sent `wrongKind`.
+/// - `askScope` (I2, H1): the host decodes `outOfScope` as a withheld fill field and as a plan refusal, which it says
+///   in the helper's words, or `AskCopy`'s for a helper that sends none. A host without it is sent `wrongKind` and
+///   `unknownWindow` in its place.
 /// - `routing` (D2-02, H6): only while the user's setting "Caret decides when to help" is on. The
 ///   helper then sends route decisions, and its offers wait for them.
 /// A helper from before any of these ignores the names it does not know (its hello schema is not strict).
 public enum HostHello {
     public static let fillAllCapability = "fillAll"
     public static let askChoicesCapability = "askChoices"
+    /// protocol.ts VALUE_CHECKS_CAPABILITY.
+    public static let valueChecksCapability = "valueChecks"
+    /// protocol.ts ASK_SCOPE_CAPABILITY.
+    public static let askScopeCapability = "askScope"
 
     public static func capabilities(routing: Bool, goalFiles: Bool = false) -> [String] {
         // H11: goalPlans, so an Ask about a page comes back as a page goal for the panel at the form; savedAnswers,
         // since the host shows an answer whole before inserting it (`SavedAnswers`), offers to save one on ⌘1 only,
         // and decodes the answers document. No localModel: this host serves no local text (`LocalText`).
         // H13: pageText, so a page field arrives with the text around its caret for inline text.
-        [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability, PageInline.capability]
+        // H1: valueChecks and askScope, since CaretScreenCore's FillWithheld and PlanProposal.ErrorCode decode the
+        // reasons they add; without them the helper would send this host the older, less exact reasons.
+        [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability, PageInline.capability,
+         valueChecksCapability, askScopeCapability]
             + (goalFiles ? [GoalFiles.capability] : [])
             + (routing ? [Routing.capability] : [])
     }

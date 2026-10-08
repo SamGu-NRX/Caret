@@ -160,6 +160,7 @@ export function buildTargetRequest(w: WindowState, goal: string, t: Target, cand
   for (const c of cands) criteria[c.id] = describeElement(w, c.node);
   criteria[NONE] = "None of these elements.";
   return {
+    purpose: "executor.target",
     state: { window: `${w.app.name} window '${w.window.title}'`, task: "Choose the element an automated step should act on." },
     // The goal and target are plan text, which can quote a value copied from any window: each goes out cut to SNIPPET_CHARS.
     questions: { target: { type: "choice", instructions: WORDINGS[wording](cut(goal), cut(t.describe)), criteria } },

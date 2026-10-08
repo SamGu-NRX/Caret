@@ -8,7 +8,7 @@ import type { PopupBlock, PopupRef, PopupSpecT } from "../popup.ts";
 import { MAX_FILL_ROWS } from "../offers/fill-popup.ts";
 import { fieldName, type PlanDraft } from "./planner.ts";
 import type { Trace } from "./trace.ts";
-import { saysFor } from "./says.ts";
+import { saysFor, saysUnsureField } from "./says.ts";
 
 const node = (windowId: string, key: string): { node: string } => ({ node: `${windowId}/${key}` });
 
@@ -30,6 +30,14 @@ export function runLabel(d: PlanDraft): string {
   if (d.checked.attach !== null) return n === 0 ? "Attach it" : `Fill ${n === 1 ? "1 field" : `${n} fields`} and attach`;
   return n === 0 ? "Got it" : n === 1 ? "Fill 1 field" : `Fill ${n} fields`;
 }
+
+/**
+ * H1: the labels of the facts blocks that name fields the plan leaves to the user: those Caret never types (B25), and
+ * those Jev wasn't sure the request asks for (I3). The host's Ask card lists a block whose first row carries one of
+ * these as the user's steps (AskCaret.swift AskCopy.leftLabels), so they are part of the wire.
+ */
+export const YOU_TYPE_LABEL = "You type";
+export const LEFT_TO_YOU_LABEL = "Left to you";
 
 export function planSpec(d: PlanDraft): PopupSpecT {
   const w = d.checked.window;
@@ -82,10 +90,7 @@ export function planSpec(d: PlanDraft): PopupSpecT {
       ...(controls.length > shown.length ? { more: controls.length - shown.length } : {}),
     });
   }
-  // The fields Caret never types (B25).
-  if ((d.leftToYou ?? null) !== null) {
-    blocks.push({ type: "facts", rows: [{ label: "You type", value: { text: d.leftToYou as string, ref: { rule: "plan", derived: [{ node: windowId }] } } }] });
-  }
+  blocks.push(...leftToYouBlocks(windowId, d.leftToYou ?? null, d.unsure ?? []));
   const h = d.checked.handoff;
   // A hand-off step that only carries an Ask's controls is listed above, not as a press.
   if (h !== null && !controlHandoff(d)) {
@@ -94,6 +99,27 @@ export function planSpec(d: PlanDraft): PopupSpecT {
   }
   blocks.push({ type: "actions", items: [{ id: "run", label: runLabel(d), key: "tab" }] });
   return { v: 1, id: d.plan.id, figure: "offering", blocks };
+}
+
+/**
+ * The facts blocks naming the fields a plan leaves to the user, as planSpec places them after the writes and controls:
+ * the fields Caret never types (B25, `leftToYou` is their sentence), then the fields Jev wasn't sure the request asks for
+ * (I3), each the user's with its sentence, as fill's "You set" rows are, and past MAX_FILL_ROWS one row that counts the
+ * rest. H1: exported so the golden line the host's Ask card reads (fixtures/golden/ask-left.ndjson) is held to it.
+ */
+export function leftToYouBlocks(windowId: string, leftToYou: string | null, unsure: readonly { key: string; name: string }[]): PopupBlock[] {
+  const blocks: PopupBlock[] = [];
+  if (leftToYou !== null) {
+    blocks.push({ type: "facts", rows: [{ label: YOU_TYPE_LABEL, value: { text: leftToYou, ref: { rule: "plan", derived: [{ node: windowId }] } } }] });
+  }
+  if (unsure.length > 0) {
+    const shown = unsure.slice(0, MAX_FILL_ROWS);
+    const rows = shown.map((u, i) => ({ label: i === 0 ? LEFT_TO_YOU_LABEL : "", value: { text: saysUnsureField(u.name), ref: { rule: "fieldLabel", derived: [node(windowId, u.key)] } }, secondary: true as const }));
+    const more = unsure.length - shown.length;
+    if (more > 0) rows.push({ label: "", value: { text: `and ${more} more`, ref: { rule: "count", derived: unsure.slice(MAX_FILL_ROWS).map((u) => node(windowId, u.key)) } }, secondary: true });
+    blocks.push({ type: "facts", rows });
+  }
+  return blocks;
 }
 
 /** The plan's hand-off is the step that hands an Ask's controls to the user, not a press. */

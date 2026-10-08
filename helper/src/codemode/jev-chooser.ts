@@ -19,6 +19,7 @@ export function jevChooser(ask: AskJev, goal: string): ChooserPort {
     criteria[NONE] = "None of these is supported by what is on screen";
     const snippets: Snippet[] = [{ windowId: window, kind: "descriptor", text: question.text }, ...options.map((o): Snippet => ({ windowId: window, kind: "candidate", text: o.label }))];
     const req: JevRequest = {
+      purpose: "codemode.choice",
       state: { goal },
       questions: { choice: { type: "choice", instructions: question.text, criteria } },
       snippets,

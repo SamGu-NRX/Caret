@@ -86,6 +86,12 @@ export interface PassHandle {
 
 export interface RunnerDeps {
   clock: SlowClock;
+  /**
+   * Passes that sent requests and finished, before the last is scored (MAX_SETTLE for free Laya). A paid live engine
+   * gives 0: live Jev answers a repeated request anew, so its passes never settle, and LV1's tasks-blind took 5 passes
+   * of 43-81 new requests each, about 3x one pass's cost (evidence/screen/lv1/CHECKLIST.md). Its one pass is scored.
+   */
+  settlePasses: number;
   stopCheck(): { reason: "hold" | "disk"; detail: string } | null;
   /** Waits for a heavy lease and holds it; null when the lease wrapper gave up (the runner tries again). */
   lease(): Promise<Held | null>;
@@ -316,7 +322,7 @@ export class Runner {
         continue;
       }
       st.crashes = 0;
-      if (c.ok > 0 && st.settling < MAX_SETTLE) {
+      if (c.ok > 0 && st.settling < this.d.settlePasses) {
         st.settling++;
         this.d.say(`${set.id} pass ${pass}: finished with ${c.ok} new answers; running it again from the cache to score`);
         continue;

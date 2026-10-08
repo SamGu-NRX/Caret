@@ -47,6 +47,10 @@ export type NodeState = z.infer<typeof NodeState>;
 export const PageEntry = z.enum(["typed", "pasted", "other"]);
 export type PageEntry = z.infer<typeof PageEntry>;
 
+/** W2: the autocomplete field names a page control may carry (extension walker.ts AUTOCOMPLETE_TOKENS), one value's meaning each. */
+export const AutocompleteToken = z.enum(["name", "given-name", "additional-name", "family-name", "nickname", "organization", "organization-title", "street-address", "address-line1", "address-line2", "address-level1", "address-level2", "country", "country-name", "postal-code", "email", "tel", "tel-national", "url", "bday", "bday-day", "bday-month", "bday-year"]);
+export type AutocompleteToken = z.infer<typeof AutocompleteToken>;
+
 export const Node = z.object({
   /** Caret's element key: app, window kind, named ancestors, role, normalized label, ordinal. */
   key: z.string(),
@@ -68,6 +72,13 @@ export const Node = z.object({
   entry: PageEntry.optional(),
   /** H14, page file controls only: the accept attribute's tokens, lowercased. */
   accept: z.array(z.string().min(1).max(100)).max(20).optional(),
+  /**
+   * W2, page text inputs only: the input's kind as the page walk read it (PageControlKind, one of page-link.ts
+   * TEXT_KINDS), which the write contract checks a value's shape against (fill/contract.ts FieldContract.inputKind).
+   */
+  inputKind: z.enum(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea"]).optional(),
+  /** W2, page controls only: the autocomplete field name the page gives it (PageControl.autocomplete). */
+  autocomplete: AutocompleteToken.optional(),
 });
 export type Node = z.infer<typeof Node>;
 
@@ -1251,6 +1262,13 @@ export type PageInsert = z.infer<typeof PageInsert>;
  * answer: a fill value with `answer`, a pop-up that writes one, an answerSaveOffer; and only it may send answerSave.
  */
 export const SAVED_ANSWERS_CAPABILITY = "savedAnswers";
+/** W2: a consumer that reads FillWithheld's "notExact" and "unverified"; any other is sent "wrongKind" for both. */
+export const VALUE_CHECKS_CAPABILITY = "valueChecks";
+/**
+ * I2: a consumer that reads "outOfScope", as FillWithheld and as PlanErrorCode (fill/ask-scope.ts: a value for a field the
+ * Ask did not settle, or that changed since). Any other is sent "wrongKind" and "unknownWindow" in its place.
+ */
+export const ASK_SCOPE_CAPABILITY = "askScope";
 
 /** The longest answer Caret keeps. Its record line must stay under memory/parse.ts MAX_LINE_CHARS once JSON-quoted. */
 export const MAX_ANSWER_CHARS = 4000;
@@ -1388,8 +1406,12 @@ export type FillMemory = z.infer<typeof FillMemory>;
  * wants the user's and the asks did not both say the value is the user's;
  * "ambiguous": code could not read the value without guessing (a single name for First/Last, a date that
  * could be two days, no option or more than one that the source names).
+ * W2 (fill/contract.ts) adds "notExact": Caret's check of the value says it is not exactly the field's value, and
+ * "unverified": that check could not run just now, so nothing was written. A consumer whose hello lacks
+ * VALUE_CHECKS_CAPABILITY is sent "wrongKind" for both (server.ts), the nearest of the six it reads.
  */
-export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "wrongKind", "otherPerson", "ambiguous"]);
+// I2: "outOfScope", a value for a field the Ask did not settle, changed since, or not the picked person's (fill/ask-scope.ts).
+export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "wrongKind", "otherPerson", "ambiguous", "notExact", "unverified", "outOfScope"]);
 export type FillWithheld = z.infer<typeof FillWithheld>;
 
 /**
@@ -1498,6 +1520,21 @@ export const FillField = z.object({
    * that has one; absent everywhere else.
    */
   answer: FillAnswer.optional(),
+  /**
+   * G2: what a proposed value's reading rests on besides its source, which a recheck holds it to again (offers/
+   * fill-popup.ts valueStale, goals/runs.ts precheck). `identity`: the value (or, for a part, the value it was split
+   * from) is exactly the user's own email, phone or full name in memory entry `memoryId`, which made it the user's
+   * without asking Jev (fill/whose.ts); `key` is that identity as fill compared it (identityKey). Editing or forgetting
+   * the entry withdraws the offer, and the write is checked against it. Absent from a helper before G2.
+   * I1: G2's `clause`, `lines`, `from` and `how` are gone from the wire: the helper keeps them in each value's
+   * write-contract provenance (fill/contract.ts Provenance), which its one recheck reads; no host read them.
+   */
+  basis: z
+    .object({
+      // `part`: the value is that part of the identity (a first or last name split from a full name), as FillMemory.part.
+      identity: z.object({ memoryId: z.string().min(1), kind: z.enum(["email", "phone", "name"]), key: z.string().min(1), part: z.enum(["first", "middle", "last"]).optional() }).optional(),
+    })
+    .optional(),
 })
   .refine((f) => f.answer === undefined || (f.answer.withheld === null ? f.control === "text" && f.value !== null && f.memory?.id === f.answer.id : f.value === null), {
     message: "an offered answer is a text field's value from that answer's memory entry, and a withheld one gives no value",
@@ -2102,6 +2139,8 @@ export const PlanErrorCode = z.enum([
   "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
   "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "wrongKind", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
   "unseenWindow", "questionGone",
+  // I2: a write outside the Ask's settled scope (fill/ask-scope.ts).
+  "outOfScope",
 ]);
 export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
 
@@ -2335,8 +2374,9 @@ export const GoalStepView = z
      * P3: on an attach step only, the file its row offers. `choose`: none yet; the host's row says "Choose a file" and
      * opens a file chooser. `saved`: a file the user saved for this question before (fileSave), which a Jev choice matched
      * to this field; the row shows its `name` and when it was last `edited` (its modification time, so a stale resume
-     * shows as one), and is confirmed only by the user's Tab on this preview, which sends its path as confirmedFile. Caret
-     * never looks for a file on disk.
+     * shows as one), and is confirmed only by the user's own action on this preview's row (⌘2/⌘3 or a click in H14's
+     * host; Tab alone never confirms a file), after which the next Tab sends its path as confirmedFile. Caret never
+     * looks for a file on disk.
      */
     file: z
       .discriminatedUnion("source", [
@@ -2728,6 +2768,8 @@ export const PageControl = z.object({
   entry: PageEntry.optional(),
   /** H14, page file controls only: the accept attribute's tokens, lowercased. */
   accept: z.array(z.string().min(1).max(100)).max(20).optional(),
+  /** W2: the autocomplete attribute's field name (extension walker.ts autocompleteOf), which the write contract reads. */
+  autocomplete: AutocompleteToken.optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 

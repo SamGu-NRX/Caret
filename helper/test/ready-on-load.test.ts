@@ -2,13 +2,14 @@
 // when code finds two empty fields with a candidate from memory or the window the user left (lead decision). A
 // search box, a login form's credentials and a payment form never count, and none of them sends a Jev request. Every
 // name and value is invented.
+import { PROTOCOL_VERSION } from "../src/protocol.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import type { HelperMessage, Node, PageControl } from "../src/protocol.ts";
 import type { AboutValue } from "../src/fill/about.ts";
 import { readyOnLoad } from "../src/offers/ready-on-load.ts";
 import { field, node, snap, text } from "./builders.ts";
-import { c, chrome, mixedControls, NOTE } from "./fake-page.ts";
+import { c, chrome, mixedControls, NOTE, WIN } from "./fake-page.ts";
 import { closeRigs, rig, type Rig } from "./page-rig.ts";
 import type { Store } from "../src/store.ts";
 

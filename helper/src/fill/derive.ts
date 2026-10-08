@@ -165,14 +165,67 @@ export function splitAddress(text: string): Partial<Record<AddressPart, string>>
  * a word that says a date ("Graduation date month", "Start date year", "Year of graduation", "Graduation month"). A
  * label with both, or with neither, asks for no part. Written for common form labels, not measured.
  */
-export function datePart(label: string | null): DatePart | null {
+export function datePart(label: string | null, section: string | null = null): DatePart | null {
   if (label === null) return null;
   const ws = new Set(words(label));
   // C2: a day too ("Date of birth day"); exactly one of the three.
   const named = (["month", "day", "year"] as const).filter((p) => ws.has(p));
   if (named.length !== 1) return null;
   const dated = ["date", "graduation", "start", "end", "began", "started", "ended", "birth", "from", "to", "completion", "expected"].some((w) => ws.has(w));
-  return dated ? (named[0] as DatePart) : null;
+  if (dated) return named[0] as DatePart;
+  // V3 (B24 ask-04): a label that is only the part's word ("Day") inside a group whose heading names a date (the "Date of
+  // birth" fieldset around Month, Day and Year). Narrower words than the label's: "Delivery to" heads no date.
+  const headed = section !== null && words(section).some((w) => SECTION_DATED.has(w));
+  return ws.size === 1 && headed ? (named[0] as DatePart) : null;
+}
+
+/** Words of a group's heading that say its Month, Day and Year fields are one date's. Written for common form headings, not measured. */
+const SECTION_DATED: ReadonlySet<string> = new Set(["date", "birth", "birthday", "dob", "graduation", "completion"]);
+
+/** V3: the order of a numeric date's first two numbers: month then day ("md") or day then month ("dm"). */
+export type DateOrder = "md" | "dm";
+
+/**
+ * V3: the order a format written beside a date states ("DOB (MM/DD/YYYY)", "dd.mm.yyyy"), or null when none is. Read from
+ * the source's own text (a value's label), which says how that source writes its dates. A destination field's format
+ * hint is not read here: it says how the form writes a date, not how the source did.
+ */
+export function dateOrderHint(text: string | null): DateOrder | null {
+  if (text === null) return null;
+  const md = /\bm{1,2}\s*[/.-]\s*d{1,2}\s*[/.-]\s*y{2,4}\b/iu.test(text);
+  const dm = /\bd{1,2}\s*[/.-]\s*m{1,2}\s*[/.-]\s*y{2,4}\b/iu.test(text);
+  // V3 review A5: a hint that names both orders, or sits beside a negation, alternative or condition ("DD/MM/YYYY, not
+  // MM/DD/YYYY", "… or …"), says nothing about which one this date uses.
+  if (md === dm || /\b(?:not|never|no|or|unless|except|if|maybe|either)\b/iu.test(text)) return null;
+  return md ? "md" : "dm";
+}
+
+const NUMERIC_DATE = /^(\d{1,2})([/.-])(\d{1,2})\2((?:1[89]|2\d)\d{2})$/u;
+
+/** Whether month `m` of `year` has a day `d`. */
+function dayExists(year: number, m: number, d: number): boolean {
+  if (m < 1 || m > 12 || d < 1) return false;
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  return d <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]!;
+}
+
+/**
+ * V3 (B24 ask-04): a numeric date with a four-digit year ("04/22/1990", "22.04.1990"). Which number is the month comes
+ * only from evidence: one of them over 12, both the same, or `order` (dateOrderHint). Without it the month and day are
+ * null and the year alone is given, since the year does not depend on the order. Evidence that contradicts the date, or
+ * a day the month does not have, gives null.
+ */
+function numericDateParts(text: string, order: DateOrder | null): { month: string | null; day: string | null; year: string } | null {
+  const m = NUMERIC_DATE.exec(text);
+  if (m === null) return null;
+  const [a, b, year] = [m[1] as string, m[3] as string, m[4] as string];
+  const [na, nb] = [Number(a), Number(b)];
+  const shown: DateOrder | null = na > 12 ? "dm" : nb > 12 ? "md" : na === nb ? "md" : null;
+  if (shown !== null && order !== null && shown !== order && na !== nb) return null;
+  const settled = shown ?? order;
+  if (settled === null) return dayExists(Number(year), na, nb) || dayExists(Number(year), nb, na) ? { month: null, day: null, year } : null;
+  const [month, day] = settled === "md" ? [a, b] : [b, a];
+  return dayExists(Number(year), Number(month), Number(day)) ? { month, day, year } : null;
 }
 
 const NAMED_DAY_FIRST = /^(\d{1,2})(?:st|nd|rd|th)? (?:of )?([A-Za-z]+)\.?,? (\d{4})$/u;
@@ -182,10 +235,12 @@ const NAMED_MONTH_FIRST = /^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,? )?([A-Za-
  * C2 (lead decision 5): a date's month, day and year as the date writes them, each a substring of it, for the fields of a
  * date split over several ("Date of birth month", "... day", "... year"): "March 14, 1990" gives "March", "14" and
  * "1990"; "1990-03-14" gives "03", "14" and "1990" (an ISO date's order is fixed); "March 1990" has no day. Null when
- * the text is not one date splitDate reads.
+ * the text is not one date splitDate reads. V3: a numeric date too, ordered only on evidence (numericDateParts).
  */
-export function dateParts(text: string): { month: string | null; day: string | null; year: string } | null {
+export function dateParts(text: string, order: DateOrder | null = null): { month: string | null; day: string | null; year: string } | null {
   const t = text.trim();
+  const numeric = numericDateParts(t, order);
+  if (numeric !== null || NUMERIC_DATE.test(t)) return numeric;
   const d = splitDate(t);
   if (d === null) return null;
   const iso = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(t);
@@ -195,6 +250,16 @@ export function dateParts(text: string): { month: string | null; day: string | n
   const monthFirst = NAMED_MONTH_FIRST.exec(t);
   if (monthFirst !== null && monthIndex(monthFirst[1] as string) !== null) return { month: d.month, day: monthFirst[2] ?? null, year: d.year };
   return null;
+}
+
+/**
+ * V3: the part `part` of a whole date as a field takes it: a named date's month as written and its year (splitDate), else
+ * dateParts' part, a numeric date's ordered only on evidence (`order`). Null when the date does not settle that part.
+ */
+export function datePartOf(part: DatePart, text: string, order: DateOrder | null = null): string | null {
+  const named = splitDate(text);
+  if (named !== null && part !== "day") return part === "month" ? named.month : named.year;
+  return dateParts(text, order)?.[part] ?? null;
 }
 
 const MONTH_NAME = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/u;
@@ -381,7 +446,8 @@ export function partFits(part: FillPart, value: string): boolean {
     case "city":
       return true;
     case "month":
-      return MONTH_NAME.test(v) && v.split(" ").length === 1;
+      // V3: or its number, as a numeric date gives it ("04" of "04/22/1990").
+      return (MONTH_NAME.test(v) && v.split(" ").length === 1) || /^(?:0?[1-9]|1[0-2])$/u.test(v);
     case "day":
       return /^(?:0?[1-9]|[12]\d|3[01])$/u.test(v);
     case "year":

@@ -3,12 +3,14 @@
 // fill, the planner and Ask refuse exactly what memory refuses to keep; its label and shape rules are tested with
 // memory. Here: that every path agrees with it, and secretIn's reading of the instruction around a value. All numbers
 // are invented; the card numbers are standard test numbers.
+import { TEST_AUTHORITY } from "./mint.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { writableFields } from "../src/planner/planner.ts";
-import { PlannerError, validatePlan } from "../src/planner/validate.ts";
+import { PlannerError } from "../src/planner/validate.ts";
+import { validateMinted } from "./mint.ts";
 import { secretIn } from "../src/planner/trace.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { SnippetLedger } from "../src/privacy.ts";
@@ -81,25 +83,25 @@ describe("fill and the planner agree on what is never typed", () => {
     for (const secret of [...SECRETS, "card 4242 4242 4242 4242"]) expect(c).not.toContain(secret);
   });
 
-  it("keeps the planner's fields to the same ones, and validatePlan refuses a secret by its field, its shape or the instruction's words", () => {
+  it("keeps the planner's fields to the same ones, and validatePlan refuses a secret by its field, its shape or the instruction's words", async () => {
     const m = desk();
     const w = m.windows.get("form");
     if (w === undefined) throw new Error("no form");
     expect(writableFields(w).map((f) => f.label)).toEqual(["Full name", "Phone", "Notes"]);
     const step = (key: string, v: string) => ({ id: "p", title: "t", slots: {}, steps: [{ says: "x", end: { kind: "valueEquals", window: { bundleId: w.app.bundleId, title: w.window.title }, target: { key, describe: "f" }, value: v } }] });
-    const code = (instruction: string, key: string, v: string): string | null => {
+    const code = async (instruction: string, key: string, v: string): Promise<string | null> => {
       try {
-        validatePlan(step(key, v), {}, { model: m, memory: [], instruction });
+        await validateMinted(step(key, v), {}, { model: m, memory: [], instruction });
         return null;
       } catch (e) {
         return e instanceof PlannerError ? e.code : String(e);
       }
     };
-    expect(code("x", `${F}/textfield:ssn~0`, "Elena Vance")).toBe("notEditable");
-    expect(code("my ssn is 123-45-6789", `${F}/textfield:name~0`, "123-45-6789")).toBe("notEditable");
+    expect(await code("x", `${F}/textfield:ssn~0`, "Elena Vance")).toBe("notEditable");
+    expect(await code("my ssn is 123-45-6789", `${F}/textfield:name~0`, "123-45-6789")).toBe("notEditable");
     // A word in the instruction says what it is: no shape needed.
-    expect(code("Put my password sw0rdfish in Notes", `${F}/textfield:notes~0`, "sw0rdfish")).toBe("notEditable");
-    expect(code("Put sw0rdfish in Notes", `${F}/textfield:notes~0`, "sw0rdfish")).toBeNull();
-    expect(code("x", `${F}/textfield:name~0`, "Elena Vance")).toBeNull();
+    expect(await code("Put my password sw0rdfish in Notes", `${F}/textfield:notes~0`, "sw0rdfish")).toBe("notEditable");
+    expect(await code("Put sw0rdfish in Notes", `${F}/textfield:notes~0`, "sw0rdfish")).toBeNull();
+    expect(await code("x", `${F}/textfield:name~0`, "Elena Vance")).toBeNull();
   });
 });

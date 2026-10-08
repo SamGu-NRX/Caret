@@ -17,16 +17,18 @@
 // effect other than the predicted one revokes the task's grant and stops the goal. When a replanner is configured, the
 // goal is then offered again as a fresh plan built from the screen as it is now; it needs its own acceptance. Nothing
 // here persists: a helper that crashes leaves the executor's journal row (B23), and no goal resumes on its own.
+import { fieldFingerprint } from "../fill/ask-scope.ts";
+import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
 import type { Change, ScreenModel } from "../model.ts";
 import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
 import { nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
-import { isDerived, isFilled } from "./gates.ts";
-import { sourceHolds } from "../offers/fill-popup.ts";
+import { isDerived } from "./gates.ts";
 import { memoryWrites, parseMemoryRef } from "../fill/fill.ts";
-import { continuationScope, pageInputKeys } from "./page-planner.ts";
+import { identityKey } from "../fill/whose.ts";
+import { continuationScope, pageInputKeys, readsForward } from "./page-planner.ts";
 import { pageView } from "./page-view.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
@@ -34,7 +36,8 @@ import { fieldName } from "../planner/planner.ts";
 import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
-import { effectKey, segmentOf, type DonePress } from "./lower.ts";
+import { effectKey, proposedFor, segmentOf, type DonePress } from "./lower.ts";
+import { contractStale, ContractError, exemptRefusal, guardFor, mintExempt, type Proposed, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
 import { codeGate } from "./gates.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
@@ -82,6 +85,8 @@ export interface GoalCursor {
 type State = "awaiting" | "running" | "finished" | "stopped";
 
 interface Run {
+  /** W2: each write step's write-contract mint, by `${segment}:${ref}` (GoalRuns.propose; edit replaces one). */
+  mints: Map<string, CheckedValue>;
   plan: GoalPlan;
   /** The host session it was offered to; acceptances from any other are refused. Undefined in process. */
   session: string | undefined;
@@ -137,6 +142,10 @@ interface Carry {
   completed: StepReceipt[];
   owed: LeftItem[];
   until: number;
+  /** I2: the carried goal's scopes (GoalPlan.scopes), kept for its next page. */
+  scopes?: ScopeSet;
+  /** I2 ruling: the origin the page showed when the goal offered its "You press Next" hand-off; the carry's must match. */
+  origin: string;
 }
 
 export interface Replan {
@@ -158,11 +167,15 @@ export interface Replan {
    * fresh plan's only fields.
    */
   page?: PageGoal & { revealed?: readonly string[] };
+  /** I2 ruling C: the stopped plan's scopes (GoalPlan.scopes), which the fresh plan reuses and adds to only for a new document. */
+  scopes?: ScopeSet;
 }
 
 export interface GoalRunDeps {
   executor: Executor;
   model: ScreenModel;
+  /** I2: which page document a window shows now (the helper's page engine), for the Ask's scope checks. */
+  documentOf?: DocumentReader;
   publish: (m: GoalProgress) => void;
   now: () => number;
   readerSession: () => number;
@@ -172,6 +185,8 @@ export interface GoalRunDeps {
   memoryHolds: (ref: string, value: string) => boolean;
   /** A page window's document generation now; null for a native window or one whose engine is gone. */
   pageDocument?: (windowId: string) => string | null;
+  /** I2: the origin a page window shows now (scheme, host and port of its top frame), or null when unknown. */
+  pageOrigin?: (windowId: string) => string | null;
   /** Builds a fresh plan for what remains, from the screen as it is now; null when none can be offered. */
   replan?: (r: Replan) => Promise<GoalPlan | null>;
   /**
@@ -281,9 +296,17 @@ export class GoalRuns {
     if (misplacedRow !== undefined) throw new Error(`goal ${given.goalId}: step ${misplacedRow.ref} is not a hand-off row a page plan may offer`);
     // Only lowering's gates (G2, gates.ts) mark a write: a plan built any other way is a bug, never offered.
     // A "derived" step skipped Jev, so it must be the very object lowering marked (gates.ts isDerived), not a copy.
-    // A "fill" step (P2) skipped Jev because fill agreed on its very value for its very target: only lowering marks one.
-    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && (s.gate === null || (s.gate === "derived" && !isDerived(s)) || (s.gate === "fill" && !isFilled(s))));
+    // A "fill" step (P2) carries fill's own mint for its target, which the write contract check below requires (W2).
+    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && (s.gate === null || (s.gate === "derived" && !isDerived(s)) || (s.gate === "fill" && s.checked?.verdict.by !== "verifier" && s.checked?.verdict.by !== "exempt")));
     if (unchecked !== undefined) throw new Error(`goal ${given.goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
+    // W2: every write carries the write contract's mint for exactly what it writes, in exactly its target
+    // (fill/contract.ts); checked here, on the very objects lowering built, before the run keeps its own copy.
+    // The mints themselves, kept by segment and ref: the run's own copy below is a structuredClone, which carries none,
+    // so acceptance and the executor's guard read these (W2 review: what runs is checked against the very mint).
+    const mints = new Map<string, CheckedValue>();
+    for (const seg of given.segments) for (const s of seg.steps) if (s.kind === "write" && s.row !== true) mints.set(`${seg.index}:${s.ref}`, requireChecked(s.checked, s.writes ?? "", s.target.key, s.target.domain.kind === "window" ? s.target.domain.windowId : "", `goal ${given.goalId}: step ${s.ref}`));
+    // I2 ruling A: and every attachment carries its "attachment" mint (goals/lower.ts), for what its step wants.
+    for (const seg of given.segments) for (const s of seg.steps) if (s.kind === "attach") mints.set(`${seg.index}:${s.ref}`, requireChecked(s.checked, s.checked?.text ?? "", s.target.key, s.target.domain.kind === "window" ? s.target.domain.windowId : "", `goal ${given.goalId}: step ${s.ref}`));
     // P3: an attach step is a page plan's, into a page's file control, with the file its row offers, after every other
     // step of its segment (runs drop the ones the acceptance gives no file, which must hold up nothing after them).
     for (const seg of given.segments) {
@@ -316,6 +339,7 @@ export class GoalRuns {
       acting: new Map(),
       stepMap: [],
       confirmed: null,
+      mints,
     };
     this.runs.set(plan.goalId, run);
     return this.segmentMessage(run, replaces === null ? undefined : "freshPlan");
@@ -380,6 +404,29 @@ export class GoalRuns {
     run.stepMap = seg.steps.flatMap((_, i) => (keep[i] === true ? [i] : []));
     run.confirmed = cf === undefined || attachStep === undefined ? null : { step: attachStep.index, path: cf.path };
     const plan = { ...seg.plan, steps: seg.plan.steps.filter((_, i) => keep[i] === true) };
+    // W2 review: every write the executor will make, as its slots resolve, must be the very mint checked for its step's
+    // text and target; then the executor rechecks each one's source right before its dispatch (guard).
+    const runMints = new Map<number, CheckedValue>();
+    for (const [j, i] of run.stepMap.entries()) {
+      const s = seg.steps[i] as GoalStep;
+      const end = plan.steps[j]?.end;
+      // I2 ruling A: an attachment's mint, by what the step wants, as a write's is by its value.
+      const attaching = s.kind === "attach" && end?.kind === "fileAttached";
+      if (!attaching && (s.kind !== "write" || end?.kind !== "valueEquals")) continue;
+      if (end === undefined || (end.kind !== "valueEquals" && end.kind !== "fileAttached")) continue;
+      const resolved = (end.kind === "fileAttached" ? end.wants : end.value).replace(/\{\{(\w+)\}\}/gu, (_, k: string) => seg.slots[k] ?? "");
+      const key = end.target.key === undefined ? "" : end.target.key.replace(/\{\{(\w+)\}\}/gu, (_, k: string) => seg.slots[k] ?? "");
+      try {
+        runMints.set(j, requireChecked(run.mints.get(`${seg.index}:${s.ref}`), resolved, key, seg.domain.kind === "window" ? seg.domain.windowId : "", `step ${s.ref}`));
+      } catch (e) {
+        if (!(e instanceof ContractError)) throw e;
+        // Nothing was dispatched: refused as the executor's own refusal of a plan is.
+        const says = `${SAYS.error}: ${e.message.slice(0, 200)}`;
+        this.endTask(run);
+        this.stop(run, "error", null, says);
+        return { refused: says };
+      }
+    }
     this.tasks.set(taskId, run.plan.goalId);
     this.ever.add(taskId);
     this.deps.bind(taskId, session);
@@ -389,7 +436,7 @@ export class GoalRuns {
     try {
       // C1: a pick the page put back and the executor read back as it was is listed as the user's (leftNow), and the
       // segment's other steps still run.
-      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true }) };
+      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true, guard: guardFor(() => this.sourcesOf(run), runMints, run.plan.origin, this.deps.documentOf ?? null) }) };
     } catch (e) {
       // The executor refused the plan before its first step (PlanError): nothing was dispatched.
       const says = `${SAYS.error}: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`;
@@ -429,7 +476,22 @@ export class GoalRuns {
     const gated = codeGate(s.target, text, text, "draft", run.plan.instruction);
     if (gated !== null) return { refused: gated };
     const value: ValueBinding = { ...s.value, text, display: text, origin: { kind: "you", digest: sha256(text) }, source: null, memory: null, event: null, draft: null, owner: "user" };
-    const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you" };
+    // W2: the user's own words over a draft, under the draft's exemption: its field rule passed (codeGate above).
+    // I2: under the Ask's scope the plan was made under; a field outside it, or changed since, takes no edit.
+    // I2: under the scope the drafted value was minted under (the Ask's, or one settled for that window), against the
+    // field as it reads now: an edit is a new write, so a field that changed since the Ask takes none.
+    // The authority the drafted value was minted under: the Ask's scope for its window, or the goal's own.
+    const authority = run.mints.get(`${seg.index}:${s.ref}`)?.authority;
+    if (authority === undefined) return { refused: `step ${m.step + 1} has no check from the write contract` };
+    const scope = authority.kind === "ask" ? authority.scope : undefined;
+    const base = proposedFor(s.target, value, text);
+    const nowW = s.target.domain.kind === "window" ? this.deps.model.windows.get(s.target.domain.windowId) : undefined;
+    const proposed: Proposed = scope === undefined ? base : { ...base, field: Object.freeze({ ...base.field, fingerprint: nowW === undefined ? null : fieldFingerprint(nowW, base.field.key) }) };
+    const outside = exemptRefusal(proposed, "userTyped", run.plan.instruction, authority, this.deps.documentOf ?? null);
+    if (outside !== null) return { refused: outside };
+    const checked = mintExempt(proposed, "userTyped", this.deps.now(), run.plan.instruction, authority, this.deps.documentOf ?? null);
+    const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you", checked };
+    run.mints.set(`${seg.index}:${s.ref}`, checked);
     const edited = segmentOf(run.plan.programHash, { index: seg.index, domain: seg.domain, reason: seg.reason, steps: seg.steps.map((x, k) => (k === i ? step : x)) }, run.plan.warnings);
     deepFreeze(edited);
     run.plan.segments[at] = edited;
@@ -467,6 +529,9 @@ export class GoalRuns {
           if (now !== s.target.value && now !== s.writes) return { reason: "targetChanged", says: `'${s.target.label}' changed since Caret planned this` };
           // The gates judged the value against this field's name (G2): a field that now reads as another is not that field.
           if (!sameField(w, s)) return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' now reads as another field` };
+          // W2: nor one whose input kind, autocomplete field name or maxlength changed since its value was checked.
+          const m = run.mints.get(`${seg.index}:${s.ref}`);
+          if (m !== undefined && contractStale(n, m.field, s.writes ?? "") !== null) return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' now asks for something else` };
         }
       }
     }
@@ -489,15 +554,31 @@ export class GoalRuns {
         const now = this.deps.aboutNow?.(ref.id) ?? null;
         if (now === null || !memoryWrites(now.value, ref.part, v.text, ref.conv) || now.label !== v.fill.memoryLabel) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
       }
+      // W2: a copied value's source must still say what it said when its value was checked (fill/contract.ts).
+      const m = s.kind === "write" ? run.mints.get(`${seg.index}:${s.ref}`) : undefined;
+      if (m !== undefined && provenanceStale(this.sourcesOf(run), m.provenance) !== null) return { reason: "sourceChanged", says: `what '${s.target.label}' was copied from changed since Caret planned this` };
+      // G2: a value code decided was the user's by their identity in memory, a part split from one included, holds only
+      // while the entry is still that identity (no way to read the entry is no entry).
+      const id = v.fill?.identity;
+      if (id !== undefined) {
+        const now = this.deps.aboutNow?.(id.memoryId) ?? null;
+        if (now === null || identityKey(id.kind, now.value) !== id.key) return { reason: "sourceChanged", says: `what you told Caret about yourself, which '${s.target.label}' rests on, changed or is gone` };
+      }
       if (v.source === null) continue;
       if (!this.sourceShows(run, v)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
     return null;
   }
 
+  /** The model a goal's sources are read from: the tab text its plan read (I6), else the screen. */
+  private sourcesOf(run: Run): ScreenModel {
+    return this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model;
+  }
+
   /**
-   * Whether a value's source window still shows it: a value fill read (P2) the way fill read it (offers/fill-popup.ts
-   * sourceHolds, the same rule a Fill all's recheck holds it to), any other the text it copies (an event its sentence).
+   * Whether a value's source window still shows it: a value fill read (P2) by its write-contract provenance (fill/
+   * contract.ts provenanceStale, the one recheck a Fill all's acceptance and every write's guard hold it to; I1: it
+   * replaced offers/fill-popup.ts sourceHolds here), any other the text it copies (an event its sentence).
    */
   private sourceShows(run: Run, v: NonNullable<GoalStep["value"]>): boolean {
     const src = v.source;
@@ -505,7 +586,8 @@ export class GoalRuns {
     // I6: a value from the tab the user left is shown only while this goal still holds that tab's text.
     const sw = (this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model).windows.get(src.windowId);
     if (sw === undefined) return false;
-    if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control);
+    // A fill value always carries its provenance (goals/page-planner.ts); one without is not shown.
+    if (v.fill !== undefined) return v.provenance !== undefined && provenanceStale(this.sourcesOf(run), v.provenance) === null;
     const node = sw.nodes.get(src.key);
     const want = v.event?.sentence ?? v.text;
     const typed = sw.values.some((x) => x.nodeKey === src.key && x.text === want);
@@ -720,10 +802,23 @@ export class GoalRuns {
     if (page === undefined || page.kind === "list") return;
     const doc = run.plan.inventory.documents.get(page.windowId);
     if (doc === undefined) return;
+    // I2 ruling: a carry is the goal's own state, not an event: the goal offered its "You press Next" hand-off (a forward
+    // control of the form it filled) and waits on it, on a page whose origin it knows.
+    const handedOff = run.plan.segments.at(-1)?.steps.some((x) => x.kind === "handoff" && x.row === true && readsForward(x.target.label)) === true;
+    if (!handedOff) return;
+    // I2 ruling: armed only while the page still shows the document the goal planned on. A page that navigated during
+    // the goal's final walk (another origin included) is not one the hand-off waits on: the goal stops, says the page
+    // changed, and arms nothing, so no scope is settled there.
+    if (this.deps.pageDocument?.(page.windowId) !== doc) {
+      this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: null, step: null, reason: "reload", says: "The page changed before Caret could wait on its Next, so Caret stopped here. Ask again for this page.", freshPlan: null });
+      return;
+    }
+    const origin = this.deps.pageOrigin?.(page.windowId) ?? null;
+    if (origin === null) return;
     const qualify = (windowId: string | null, key: string): string => (windowId === page.windowId && !key.startsWith("doc(") ? `doc(${doc}):${key}` : key);
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")].map((r) => ({ ...r, target: { ...r.target, key: qualify(r.target.windowId, r.target.key) } }));
     const owed = left.map((l): LeftItem => ({ ...l, key: qualify(l.windowId, l.key), why: "dropped", says: l.key.startsWith("doc(") ? l.says : `On an earlier page, ${l.says.charAt(0).toLowerCase()}${l.says.slice(1)}` }));
-    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, until: this.deps.now() + CARRY_MS });
+    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, origin, until: this.deps.now() + CARRY_MS, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
   }
 
   /**
@@ -747,7 +842,9 @@ export class GoalRuns {
     // The carry goes on waiting for the page after this one, under the same instruction and scope, until a carried goal
     // finishes (keepCarry then replaces it with what that goal did and left): a page Caret found nothing for, or whose
     // preview the user did not take, does not end it (P3 eval: wizard-2 had nothing to fill, and wizard-3 then got none).
-    this.carries.set(windowId, { ...c, document, until: this.deps.now() + CARRY_MS });
+    // I2 ruling: one carry per hand-off. The page after this one carries only when this page's goal offers its own
+    // "You press Next" and waits on it (keepCarry).
+    this.carries.delete(windowId);
     this.carried.set(windowId, document);
     if (this.carried.size > 64) this.carried.delete(this.carried.keys().next().value as string);
     for (const run of this.runs.values()) {
@@ -759,7 +856,7 @@ export class GoalRuns {
       (async () => {
         let plan: GoalPlan | null;
         try {
-          plan = await replan({ goalId: `${c.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: c.instruction, completed: c.completed, pressed: [], owed: c.owed, why: "nextPage", session: c.session, page: c.page });
+          plan = await replan({ goalId: `${c.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: c.instruction, completed: c.completed, pressed: [], owed: c.owed, why: "nextPage", session: c.session, page: c.page, ...(c.scopes === undefined ? {} : { scopes: c.scopes }) });
         } catch {
           plan = null;
         }
@@ -905,7 +1002,7 @@ export class GoalRuns {
     let plan: GoalPlan | null;
     try {
       const page = run.plan.page === undefined ? undefined : { ...run.plan.page, ...(revealed === undefined ? {} : { revealed }) };
-      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, session: run.session, ...(page === undefined ? {} : { page }) });
+      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, session: run.session, ...(page === undefined ? {} : { page }), ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
     } catch {
       plan = null;
     }
@@ -977,7 +1074,15 @@ export class GoalRuns {
         continue;
       }
       const doc = this.deps.pageDocument?.(windowId) ?? null;
-      if (doc !== null && doc !== c.document) this.carryOn(c, windowId, doc);
+      if (doc === null || doc === c.document) continue;
+      // I2 ruling: while the goal waits on its "You press Next" hand-off, the next document in the same tab on the same
+      // origin is the carry. Any other change (another origin: a redirect away) ends the carry, says the page changed,
+      // and settles nothing.
+      if (this.deps.pageOrigin?.(windowId) === c.origin) this.carryOn(c, windowId, doc);
+      else {
+        this.carries.delete(windowId);
+        this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: now, goalId: c.goalId, requestId: null, event: "stopped", segment: null, step: null, reason: "reload", says: "The page changed without a Next Caret saw, so Caret stopped here. Ask again for this page.", freshPlan: null });
+      }
     }
     for (const run of this.runs.values()) {
       if (run.state !== "running" || run.task === null) continue;
@@ -1059,7 +1164,10 @@ export class GoalRuns {
     const fromTab = (v: ValueBinding | null): boolean => v !== null && ((v.source !== null && windows.has(v.source.windowId)) || (v.origin.kind === "span" && windows.has(v.origin.source)));
     const blank = (v: ValueBinding): ValueBinding => {
       for (const t of [v.text, v.fill?.span ?? "", v.fill?.context ?? ""]) if (t.trim() !== "") quoted.add(t);
-      return { ...v, text: "", display: "", ...(v.fill === undefined ? {} : { fill: { ...v.fill, span: "", context: null } }) };
+      // W2: the write contract's provenance and mint quote the source too (its span, line and label); a goal that ended
+      // needs neither. I1: G2's clause and source texts now travel only in the provenance, so they go with it.
+      const { provenance: _p, checked: _c, ...rest } = v;
+      return { ...rest, text: "", display: "", ...(v.fill === undefined ? {} : { fill: { ...v.fill, span: "", context: null } }) };
     };
     // A left item's quoted value (a hand-off's), wherever the item went: the plan, the run's obligations, a carry.
     const items = [...run.plan.left, ...run.owed, ...[...this.carries.values()].filter((c) => c.goalId === goalId).flatMap((c) => c.owed)];
@@ -1071,6 +1179,7 @@ export class GoalRuns {
       for (const s of seg.steps) {
         if (s.value === null || !fromTab(s.value)) continue;
         s.value = blank(s.value);
+        delete s.checked;
         if (s.writes !== null) s.writes = "";
       }
     }

@@ -6,6 +6,7 @@
 //   CARET_LLAMA_URL (http://127.0.0.1:8091), CARET_LLAMA_MODEL (a name for reports and cache keys), CARET_LLAMA_PROMPT
 //   (chat or document), CARET_LLAMA_THINKING=off (tells a thinking model's template not to think), and
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
+import { assertNoSecrets } from "../../privacy.ts";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -80,7 +81,9 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
   switch (o.name) {
     case "canned":
       if (o.canned === null) throw new Error("this harness has no canned engine");
-      return { name: "canned", model: "canned", reach: "mac", ask: o.canned };
+      // G2 round 4: a canned engine meets the Jev client's disclosure check too (privacy.ts assertNoSecrets), so a canned
+      // run fails where a live one would.
+      return { name: "canned", model: "canned", reach: "mac", ask: (req) => (assertNoSecrets(req), (o.canned as AskJev)(req)) };
     case "llama": {
       const prompt = env.CARET_LLAMA_PROMPT ?? "chat";
       if (prompt !== "chat" && prompt !== "document") throw new Error(`CARET_LLAMA_PROMPT is '${prompt}'; it must be chat or document`);

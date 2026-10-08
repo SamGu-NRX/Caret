@@ -94,12 +94,20 @@ function labelTexts(w: WindowState): LabelText[] {
 
 /** Nearest short static text to the left on the same row, else directly above. `labelOnly` keeps texts that pass isLabelLike. */
 export function nearestText(w: WindowState, target: Node, labelOnly = false): string | null {
+  return stripColon(nearestLabel(w, target, labelOnly)?.t ?? null);
+}
+
+/**
+ * The static text nearestText reads for `target`: its node key and text, or null. G2: the redacted view (fill/redact.ts)
+ * drops a node whose nearest label names a secret, and that label's own node with it.
+ */
+export function nearestLabel(w: WindowState, target: Node, labelOnly = false): { key: string; t: string } | null {
   const f = target.frame;
   if (f === undefined) return null;
   const [fx, fy, , fh] = f;
   const cy = fy + fh / 2;
-  let left: { d: number; t: string } | null = null;
-  let above: { d: number; t: string } | null = null;
+  let left: { d: number; e: LabelText } | null = null;
+  let above: { d: number; e: LabelText } | null = null;
   for (const e of labelTexts(w)) {
     if (e.key === target.key || (labelOnly && !e.labelLike)) continue;
     const [x, y, wd, h] = e.frame;
@@ -107,16 +115,100 @@ export function nearestText(w: WindowState, target: Node, labelOnly = false): st
     const textCy = y + h / 2;
     if (Math.abs(textCy - cy) <= Math.max(fh, h) / 2 && right <= fx + 4) {
       const d = fx - right;
-      if (d <= MAX_LEFT_GAP && (left === null || d < left.d)) left = { d, t: e.t };
+      if (d <= MAX_LEFT_GAP && (left === null || d < left.d)) left = { d, e };
       continue;
     }
     const bottom = y + h;
     if (bottom <= fy + 4 && overlapsHorizontally(e.frame, f)) {
       const d = fy - bottom;
-      if (d <= MAX_ABOVE_GAP && (above === null || d < above.d)) above = { d, t: e.t };
+      if (d <= MAX_ABOVE_GAP && (above === null || d < above.d)) above = { d, e };
     }
   }
-  return stripColon((left ?? above)?.t ?? null);
+  const hit = (left ?? above)?.e;
+  return hit === undefined ? null : { key: hit.key, t: hit.t };
+}
+
+/**
+ * G2: the keys of the nodes whose nearest text `marked` says names a secret, and of those texts' own nodes. Admission
+ * reads every static text in full (G2 round 5: the presentation list, labelTexts, leaves out texts over MAX_LABEL_CHARS,
+ * so a long label naming a password did not keep the field beside it out), and a node is dropped when its nearest text
+ * by that full list, or by either reading nearestText presents (any text, or label-like texts only), is marked. Marked
+ * texts are few, so this looks only at the nodes each one could be nearest to (to its right on its row, or below it):
+ * about one pass over the window, not one lookup per field (G2 round 4: one per field cost about 30 ms on 2,000).
+ */
+export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean): Set<string> {
+  const out = new Set<string>();
+  const all = allTexts(w);
+  // A one-line text that names a secret is a label: it goes, and so does each node it is nearest to. A text of several
+  // lines is a document, whose own lines the redacted view drops one by one, and which labels nothing (G2 round 6: a
+  // document lost its name and phone, and then took "Robin Vale" beside it).
+  const labels = all.filter((e) => !e.document && marked(e.t));
+  if (labels.length === 0) return out;
+  const isDocument = new Set(all.filter((e) => e.document).map((e) => e.key));
+  for (const e of labels) out.add(e.key);
+  const isMarkedLabel = (key: string, t: string): boolean => !isDocument.has(key) && marked(t);
+  for (const n of w.nodes.values()) {
+    const f = n.frame;
+    // A document is checked too: a one-line label naming a secret beside it takes it whole.
+    if (f === undefined || out.has(n.key)) continue;
+    const [fx, fy, , fh] = f;
+    const near = labels.some((e) => {
+      const [x, y, wd, h] = e.frame;
+      const sameRow = Math.abs(y + h / 2 - (fy + fh / 2)) <= Math.max(fh, h) / 2 && x + wd <= fx + 4 && fx - (x + wd) <= MAX_LEFT_GAP;
+      const below = y + h <= fy + 4 && overlapsHorizontally(e.frame, f) && fy - (y + h) <= MAX_ABOVE_GAP;
+      return sameRow || below;
+    });
+    if (!near) continue;
+    const full = nearestIn(all, n);
+    const shown = [nearestLabel(w, n, false), nearestLabel(w, n, true)];
+    if ((full !== null && isMarkedLabel(full.key, full.t)) || shown.some((l) => l !== null && isMarkedLabel(l.key, l.t))) out.add(n.key);
+  }
+  return out;
+}
+
+/** Every static text with a frame, in full and cleaned of runs of white space: what admission reads (nodesLabelledBy). */
+function allTexts(w: WindowState): FullText[] {
+  let out = fullIndex.get(w);
+  if (out !== undefined) return out;
+  out = [];
+  for (const n of w.nodes.values()) {
+    if (n.role !== "AXStaticText" || n.frame === undefined) continue;
+    const raw = n.label ?? n.value;
+    const t = clean(raw);
+    if (t === null) continue;
+    out.push({ key: n.key, frame: n.frame, t, labelLike: false, document: /\S\s*\n\s*\S/u.test(raw ?? "") });
+  }
+  fullIndex.set(w, out);
+  return out;
+}
+const fullIndex = new WeakMap<WindowState, FullText[]>();
+/** A static text as admission reads it: in full, and whether it is a document of several lines rather than a label. */
+type FullText = LabelText & { document: boolean };
+
+/** nearestLabel's rule over a given list of texts. */
+function nearestIn(texts: readonly LabelText[], target: Node): LabelText | null {
+  const f = target.frame;
+  if (f === undefined) return null;
+  const [fx, fy, , fh] = f;
+  const cy = fy + fh / 2;
+  let left: { d: number; e: LabelText } | null = null;
+  let above: { d: number; e: LabelText } | null = null;
+  for (const e of texts) {
+    if (e.key === target.key) continue;
+    const [x, y, wd, h] = e.frame;
+    const right = x + wd;
+    if (Math.abs(y + h / 2 - cy) <= Math.max(fh, h) / 2 && right <= fx + 4) {
+      const d = fx - right;
+      if (d <= MAX_LEFT_GAP && (left === null || d < left.d)) left = { d, e };
+      continue;
+    }
+    const bottom = y + h;
+    if (bottom <= fy + 4 && overlapsHorizontally(e.frame, f)) {
+      const d = fy - bottom;
+      if (d <= MAX_ABOVE_GAP && (above === null || d < above.d)) above = { d, e };
+    }
+  }
+  return (left ?? above)?.e ?? null;
 }
 
 function overlapsHorizontally(a: Frame, b: Frame): boolean {

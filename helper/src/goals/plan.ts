@@ -3,11 +3,13 @@
 // Nothing here acts. The digests are what an acceptance names, so a plan that changes in any way a user could care
 // about (order, target, value, where the value came from, what must hold first, what a press does, a warning) is
 // another plan that needs its own acceptance.
+import type { Origin, ScopeSet } from "../fill/ask-scope.ts";
 import { createHash } from "node:crypto";
 import type * as z from "zod";
 import type { ValueOriginSchema } from "../codemode/types.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { FillScope } from "../fill/fill.ts";
+import type { CheckedValue, FieldContract, Provenance } from "../fill/contract.ts";
 import type { HandoffWhy } from "./capabilities.ts";
 import type { OwedField } from "./left.ts";
 
@@ -40,6 +42,11 @@ export interface TargetBinding {
    */
   own: string;
   placeholder: string | null;
+  /**
+   * W2: what the field takes, read when the target was frozen (fill/contract.ts fieldContract), which a copied value
+   * meets before it is written. Absent for a button, a file control, the calendar, and a field Caret never types.
+   */
+  field?: FieldContract;
 }
 
 /** What a value ref stood for: its exact text and where it came from. */
@@ -66,13 +73,28 @@ export interface ValueBinding {
   owner: "user" | "other" | null;
   /**
    * P2: how fill read a value the page planner took from proposeFill (goals/page-planner.ts), which the source must still
-   * show the same way right before the write (offers/fill-popup.ts sourceHolds): the span the pick came from, the label
+   * show the same way right before the write (fill/contract.ts provenanceStale, on `provenance`): the span the pick came from, the label
    * of the "Label: value" line it was read from, and the control it was read for. `text` is then what the control takes
    * (an option's name, a resolved date), which need not be a span of the source. `memoryLabel`: for a value from what
    * the user told Caret, the entry's label then, which decided the fields it was offered to (fill/about.ts), so a
    * renamed entry no longer stands behind it (P2 review). Absent for every other value.
    */
-  fill?: { span: string; context: string | null; control: string; memoryLabel?: string };
+  fill?: {
+    span: string;
+    context: string | null;
+    control: string;
+    memoryLabel?: string;
+    /** G2: the memory identity that made the value the user's (FillField.basis.identity), which must still hold. */
+    identity?: { memoryId: string; kind: "email" | "phone" | "name"; key: string };
+  };
+  /**
+   * W2: where the value was read, as the write contract carries it (fill/contract.ts Provenance); absent for a draft or
+   * an event. I1: it holds the digests of the source lines around the value that G2 kept in `fill` (clause, lines, from,
+   * how); the one recheck before each write (contract.ts provenanceStale) takes them from here.
+   */
+  provenance?: Provenance;
+  /** W2: the mint fill made for this very value in its target (goals/page-planner.ts), which lowering passes on. */
+  checked?: CheckedValue;
 }
 
 /** A value code read or derived for a planning snapshot: never the user's edit, so its origin is one the sandbox knows. */
@@ -131,12 +153,17 @@ export interface GoalStep {
    * question (lead decision 3), "derived" for a value the helper built with nothing to choose (G3: the To lowering adds
    * with the answered message's sender, an event inventory.ts derived), which passed the code checks without Jev. "fill"
    * (P2) for a value proposeFill chose for that very field, its two wordings agreeing at FILL_CUTOFF with the owner veto
-   * (goals/page-planner.ts), which skips Jev's second question and keeps the code checks; only an object lowering marked
-   * (gates.ts markFilled) may carry it. "you" for the user's own words typed over a draft in the preview (H9, runs.ts
+   * (goals/page-planner.ts), which carries fill's write-contract mint for that field (W2: the mint replaced the
+   * markFilled mark) and is asked nothing again. "you" for the user's own words typed over a draft in the preview (H9, runs.ts
    * edit), which pass the draft's field and never-typed checks and no fact check. Null for presses and hand-offs. GoalRuns.propose refuses a write or calendar step that has none, and a "derived" step
    * gates.ts did not mark (isDerived).
    */
   gate: "jev" | "fill" | "draft" | "derived" | "you" | null;
+  /**
+   * W2: on a write step, the write contract's mint for exactly `writes` in `target` (fill/contract.ts); GoalRuns.propose
+   * refuses a plan whose write step has none.
+   */
+  checked?: CheckedValue;
   /** P3: on an attach step only, the file its row offers. */
   file?: AttachOffer;
   /**
@@ -224,6 +251,11 @@ export interface GoalPlan {
   /** Over every segment's digest, in order. */
   digest: string;
   inventory: GoalInventory;
+  /** I2: the Ask's settled scope the plan was made under (fill/ask-scope.ts); a fresh plan of the same goal keeps it. */
+  /** I2 ruling C: an Ask's goal's scopes, one per window and document, settled once each and kept across replans. */
+  scopes?: ScopeSet;
+  /** I2: where the plan started (ask-scope.ts Origin), which every write's and attachment's mint matches; the guard checks it. */
+  origin: Origin;
 }
 
 /** JSON with object keys sorted, so equal content always hashes equal. */

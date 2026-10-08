@@ -71,6 +71,8 @@ async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => PageContr
     (async (req) => {
       const r = await pick(req);
       for (const [id, q] of Object.entries(req.questions)) if ("yes" in q.criteria) r.answers[id] = { choice: "yes", confidence: 0.95 };
+      // I2: Jev's scope ask, which settles a reveal's fields, says every field is asked for (page-rig.ts does the same).
+      if (req.purpose === "ask.scope") for (const id of Object.keys(req.questions)) r.answers[id] = { choice: "asks", confidence: 0.95 };
       return r;
     });
   let helper: Helper;
@@ -144,16 +146,15 @@ function revealing(page: FakePage): void {
 }
 
 describe("a reveal's preview (H11)", () => {
-  it("carries a view of its own: the revealed field's row, the same page window", async () => {
+  it("shows no row for a field an Ask's writes revealed (I2 ruling B: the scope is settled once)", async () => {
     const r = await rig({ note: `${NOTE}\nProvince: Ontario`, picks: { ...PICKS, Province: "Ontario" } });
     revealing(r.page);
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     await r.helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: preview.goalId, segment: 0, digest: preview.digest, at: Date.now() });
     await r.helper.goals.idle();
     const next = r.published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.goalId !== preview.goalId);
-    expect(next).toMatchObject({ reason: "afterReveal", replaces: preview.goalId });
-    expect(next?.page?.windowId).toBe(WIN);
-    expect(next?.page?.rows).toEqual([{ step: 0, label: "Province", value: "Ontario", picked: true }]);
+    // I2 lead ruling B: the revealed Province was never asked about, so an Ask's goal shows no row that writes it.
+    expect(next?.page?.rows?.some((x) => x.label === "Province") ?? false).toBe(false);
   });
 });
 
@@ -182,11 +183,13 @@ describe("Jev's 402 (H11)", () => {
     expect(JSON.stringify(r)).not.toContain(SAYS.unreachable);
   });
 
-  it("a page planned after the intent stops with the same sentence, not the planner's internal failure", async () => {
+  it("an Ask whose scope question meets the 402 says the same sentence, not the planner's internal failure", async () => {
     unpaid();
     const r = await rig({ jev: makeJevClient(() => "k") });
     const reply = await r.ask("fill out this form from my note");
-    expect(reply).toMatchObject({ type: "goalProgress", event: "stopped", reason: "refused", says: SAYS.jevBilling });
+    // I2 ruling D: the Ask's per-field scope question is its first Jev request, so the out-of-credits sentence comes
+    // back as the Ask's own refusal, before any page is planned; still not as the planner's internal failure.
+    expect(reply).toMatchObject({ type: "planProposal", outcome: "error", error: { says: SAYS.jevBilling } });
   });
 });
 

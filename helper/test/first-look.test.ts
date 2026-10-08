@@ -5,9 +5,10 @@
 // walk yields an error, each inside the request's deadline. Jev is a fake that answers by rule.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { performance as deadlineClock } from "node:perf_hooks";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
@@ -331,9 +332,25 @@ describe("the first look over the socket", () => {
   it("answers inside the deadline when Jev does not, naming the family and no screen text", async () => {
     await seed("offers-fill.ndjson");
     ask = () => new Promise(() => {});
-    const { reply, ms } = await look({ deadlineMs: 1500 });
-    expect(ms).toBeLessThan(1500);
-    expect(reply).toMatchObject({ outcome: "error", error: "fill: did not finish before the deadline" });
+    // P2 recorded a 1,506 ms reply against this 1,500 ms deadline under full-suite load.
+    // Advance the deadline clock and its timers together; socket I/O and until's setImmediate stay real.
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    // Vitest replaces global performance, but the runner imports node:perf_hooks directly.
+    const clock = vi.spyOn(deadlineClock, "now").mockImplementation(performance.now.bind(performance));
+    try {
+      let answered = false;
+      const pending = look({ deadlineMs: 1500 }).then((result) => (answered = true, result));
+      await until(() => asked > 0);
+      await vi.advanceTimersByTimeAsync(1349);
+      expect(answered).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const { reply, ms } = await pending;
+      expect(ms).toBe(1350);
+      expect(reply).toMatchObject({ outcome: "error", error: "fill: did not finish before the deadline", scanned: { ms: 1350 } });
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("refuses an unknown family by name, and runs no generator a Quiet level holds", async () => {

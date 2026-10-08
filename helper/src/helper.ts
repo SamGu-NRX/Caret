@@ -3,6 +3,7 @@
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
+import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
 import { MEMORY_SNIPPETS, SnippetLedger, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
@@ -79,7 +80,8 @@ import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
-import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFields, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
+import { guardFor, type CheckedValue } from "./fill/contract.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFields, recheckFill, valueStale, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
 import { describeField } from "./fill/descriptor.ts";
@@ -97,7 +99,7 @@ import { SavedFiles, type AttachedFile } from "./goals/saved-files.ts";
 import { readyOnLoad } from "./offers/ready-on-load.ts";
 import { GoalRuns, type Replan } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
-import { continuationScope, planPage } from "./goals/page-planner.ts";
+import { continuationScope, fileControls, planPage } from "./goals/page-planner.ts";
 import { GoalError, type DonePress } from "./goals/lower.ts";
 import type { AttachOffer, GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts";
 import type { FillScope } from "./fill/fill.ts";
@@ -105,9 +107,9 @@ import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
 import { fillSays, jevFailureSays, SaidError, SAYS, saysFor } from "./planner/says.ts";
 import { planAttach } from "./planner/attach.ts";
-import { isPageWindow } from "./engines/windows.ts";
+import { isPageWindow, PAGE_WINDOW_KIND } from "./engines/windows.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
-import { headsIntentMaker } from "./planner/intent-heads.ts";
+import { headsIntentMaker, settleFields } from "./planner/intent-heads.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
 import type { LocalModelPort } from "./writer/local-port.ts";
@@ -118,7 +120,7 @@ const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingT
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
 import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
-import type { AskFixed } from "./planner/intent.ts";
+import { intentSnapshot, type AskFixed } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
 import { ASK_ROUTES, type RouteCandidate, type TaskEvidence } from "./routing/routes.ts";
 import { ConsentLedger, type Consent } from "./routing/consent.ts";
@@ -135,6 +137,26 @@ import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
 import { TabSource, TabTextExpired, type DocsApp, type TabReader } from "./engines/tab-source.ts";
 
+/** The origin of a page address ("https://host:port"), or null when there is none or it does not parse. */
+function originOf(site: string | null): string | null {
+  if (site === null) return null;
+  try {
+    return new URL(site).origin;
+  } catch {
+    return null;
+  }
+}
+
+declare const settleMark: unique symbol;
+/**
+ * I2 lead ruling: the capability to settle an Ask's scope by its per-field question. Only two entry points hold one: a
+ * fresh Ask (handlePlanRequest with no question being answered) and an explicit carry to the next page (replanPage on
+ * "nextPage"). A continued Ask, a replan after a stop, a reveal and every other path hold none, so nothing they reach
+ * can settle a scope: they go on from the frozen one, or write nothing.
+ */
+type SettleTicket = { readonly from: "freshAsk" | "carry"; readonly [settleMark]: true };
+const settleTicket = (from: SettleTicket["from"]): SettleTicket => ({ from }) as SettleTicket;
+
 /**
  * The router above the producers (routing/coordinator.ts). With it, no producer makes an ambient offer on its own: a
  * focus, a finished sentence, a heard conversation line, a held pattern offer or a resolved watch is a candidate the
@@ -145,7 +167,7 @@ export interface RoutingOptions {
   hostWrites?: () => boolean;
   /** Replaces setTimeout for the routers' cooldown, for tests and evaluations with a fake clock. */
   setTimer?: (fn: () => void, ms: number) => () => void;
-  /** Sees every decision, for evaluations. */
+/** Sees every decision, for evaluations. */
   onDecision?: (d: Decision) => void;
 }
 
@@ -630,6 +652,9 @@ export class Helper {
     this.goals = new GoalRuns({
       executor: this.executor,
       model: this.model,
+      // I2: a carry's origin check reads the page's top frame (scheme, host and port).
+      pageOrigin: (id) => originOf(opts.pageContext?.(id)?.site ?? null),
+      ...(opts.pageDocument === undefined ? {} : { documentOf: opts.pageDocument }),
       publish: (m) => {
         if (this.mode === "live") this.opts.publish(m);
       },
@@ -638,7 +663,7 @@ export class Helper {
       bind: (taskId, session) => this.bindNew(taskId, session),
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
-      replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed) : this.replanPage(r.goalId, r.instruction, r.page, r.owed, r)),
+      replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed, r.scopes) : this.replanPage(r.goalId, r.instruction, r.page, r.owed, r)),
       // P3: the file the user confirmed in a preview, read once and bound to that attach step's field for that task.
       confirmFile: (taskId, path, windowId, key) => this.files.confirm(taskId, path, ConfirmedFiles.target(windowId, key)),
       forgetFile: (taskId) => this.files.forget(taskId),
@@ -672,7 +697,7 @@ export class Helper {
       run: (taskId, plan, slots, expect, opts) => {
         if (opts !== undefined) this.taskDeps.set(taskId, { family: opts.family, routineId: opts.routineId });
         if (opts?.unprompted === true) this.taskHosts.set(taskId, new Set(this.hosts));
-        return this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true });
+        return this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true, ...(opts?.guard === undefined ? {} : { guard: opts.guard }) });
       },
       hostConnected: () => this.hostPresent,
       // A run of a skill that just went back on Tab, still going with no Tab, is revoked now (B22 review).
@@ -739,7 +764,7 @@ export class Helper {
       events: this.events,
       // A first look's offer runs only from the host's offerAccept.
       // The family is recorded when the offer is withdrawn as taken, just before this (withdrawFirstLook).
-      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
+      run: (taskId, plan, slots, expect, guard) => this.executor.run(taskId, plan, slots, expect, { grant: true, ...(guard === undefined ? {} : { guard }) }),
       record: (msg, family, accept, underlying) => {
         this.offers.record(msg, accept);
         this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
@@ -1185,9 +1210,21 @@ export class Helper {
   }
 
   /** Runs an accepted offer of this settings family under a grant, recording the family it depends on. */
-  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>): Promise<TaskResult> {
+  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, guard?: (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null): Promise<TaskResult> {
     if (family !== null) this.taskDeps.set(taskId, { family, routineId: null });
-    return this.executor.run(taskId, plan, slots, expect, { grant: true });
+    return this.executor.run(taskId, plan, slots, expect, { grant: true, ...(guard === undefined ? {} : { guard }) });
+  }
+
+  /**
+   * W2: the model a run's copied values are rechecked against right before each write (contract.ts guardFor): the
+   * screen as it is then, with the text of the tab the user left that `owner`'s fill read (P4) as it was at acceptance,
+   * since that text is let go once the run carries its values and a tab the user left does not change under them.
+   */
+  private guardSources(owner: string): () => ScreenModel {
+    const captured = this.fillModel(owner);
+    if (captured === this.model) return () => this.model;
+    const held = [...captured.windows].filter(([id, w]) => this.model.windows.get(id) !== w).map(([id, w]) => [id, { nodes: [...w.nodes.values()], title: w.window.title }] as const);
+    return () => (held.length === 0 ? this.model : this.model.withNodes(new Map(held)));
   }
 
   /**
@@ -1265,7 +1302,7 @@ export class Helper {
    * Plans `instruction` as a goal and offers its first segment to `session`, as the reply to `requestId`: a goalRequest's,
    * or an Ask's whose intent route is plan (B30), which names the window the Ask was about so the goal reads it first.
    */
-  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null, page: NonNullable<AskGoal["page"]> | null = null): Promise<GoalProgress> {
+  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null, page: NonNullable<AskGoal["page"]> | null = null, ask?: { scope: AskScope | null; askId: string; ticket: SettleTicket | null }): Promise<GoalProgress> {
     let goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     const refuse = (says: string): GoalProgress => this.goals.refused(goalId, requestId, says);
@@ -1277,7 +1314,11 @@ export class Helper {
     if (!this.readerConnected) return refuse("No screen reader is connected");
     const session0 = this.readerSession;
     try {
-      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session }) : await this.goalPlan(goalId, instruction, [], first);
+      // I2 ruling C: an Ask's goal is held to its ScopeSet, which starts with the Ask's own scope (none, when the Ask came
+      // from a window with no field) and gains a window's only by the scope question, once.
+      const scopes = ask === undefined ? undefined : scopeSet(ask.askId, ask.scope?.person ?? null, ask.scope === null ? [] : [ask.scope]);
+      const ticket = ask?.ticket ?? null;
+      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session, ...(scopes === undefined ? {} : { scopes: await this.withPageScope(ticket, instruction, first, scopes) }) }) : await this.goalPlan(goalId, instruction, [], first, [], scopes, ticket);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
       this.opts.store.count("goal.proposed", 1);
       return this.goals.propose(plan, session, requestId);
@@ -1288,6 +1329,12 @@ export class Helper {
         this.opts.store.count(`goal.refused_jev_${kind}`, 1);
         this.opts.warn?.(`goal ${goalId}: ${e instanceof Error ? e.message : String(e)}`);
         return refuse(jevFailureSays(e, SAYS.unreachable));
+      }
+      // I2: the scope ask that settles a goal window's fields failing (intent-heads.ts settleFields), already said.
+      if (e instanceof PlannerError && e.code === "jevFailed") {
+        this.opts.store.count("goal.refused_jev_scope", 1);
+        this.opts.warn?.(`goal ${goalId}: ${e.message}`);
+        return refuse(e.message);
       }
       if (!(e instanceof GoalError)) throw e;
       this.opts.store.count(`goal.refused_${e.code}`, 1);
@@ -1353,7 +1400,7 @@ export class Helper {
     return [...(user === null ? [] : [user]), ...rest].map((w) => w.window.windowId);
   }
 
-  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null, carried: readonly LeftItem[] = []): ReturnType<typeof planGoal> {
+  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null, carried: readonly LeftItem[] = [], scopes?: ScopeSet, ticket: SettleTicket | null = null): ReturnType<typeof planGoal> {
     const writer = this.writer;
     if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
     const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
@@ -1372,14 +1419,60 @@ export class Helper {
       done,
       carried,
       ...(this.opts.drafter === undefined ? {} : { drafter: this.opts.drafter }),
+      // I2 ruling C: an Ask's goal holds each window it writes in to its ScopeSet; a window and document the set does
+      // not hold yet is settled once by the scope question (settleScopeFor).
+      ...(scopes === undefined ? {} : { scopes, documentOf: this.documentReader(), ...(ticket === null ? {} : { settleScope: (id: string, doc: string | null) => this.settleScopeFor(ticket, instruction, id, scopes, doc) }) }),
     });
   }
+
+  /** I2: this helper's reader of which page document a window shows (its page engine); null with none. */
+  private documentReader(): DocumentReader | null {
+    return this.opts.pageDocument ?? null;
+  }
+
+  /**
+   * I2 rulings B and C: an Ask's scope on a window and document no settled scope holds (a next page, a reply window, a
+   * page the direct attach rule meets): the per-field scope question on its fields and upload fields together, in
+   * document order, from the original instruction; the ones it chose, as they read now, on the document read before
+   * the question was sent. Caret cannot ask the user mid-goal, so an unclear field is not chosen. With no Jev or no such
+   * window, a scope of no field: nothing is written there.
+   */
+  private async settleScopeFor(ticket: SettleTicket, instruction: string, windowId: string, of: { askId: string; person: string | null }, document?: string | null): Promise<AskScope> {
+    const r = await this.settleRequest(ticket, instruction, windowId, of.askId, document);
+    return askScope(windowId, r.document, r.asks, r.seen, of.person, of.askId);
+  }
+
+  /** The per-field scope question on a window for a request holding a ticket: what it settled (fill/ask-scope.ts Settled). */
+  private async settleRequest(_ticket: SettleTicket, instruction: string, windowId: string, askId: string, document?: string | null): Promise<Settled> {
+    const reader = this.documentReader();
+    const doc = document !== undefined ? document : reader === null ? null : reader(windowId);
+    const w = this.model.windows.get(windowId);
+    const ask = this.ask;
+    if (w === undefined || ask === null) return { askId, windowId, document: doc, seen: {}, asks: [], unclear: [] };
+    const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory());
+    const seen = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldFingerprint(w, f.key)]));
+    const { asks, unclear } = await settleFields(snap, ask);
+    return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unclear: unclear.map((f) => f.key) };
+  }
+
+
+  /** The set with the page's scope for its document now: the one it holds, or one settled for a document it has none for. */
+  private async withPageScope(ticket: SettleTicket | null, instruction: string, windowId: string, scopes: ScopeSet): Promise<ScopeSet> {
+    const reader = this.documentReader();
+    const doc = reader === null ? null : reader(windowId);
+    if (scopes.scopes[scopeKey(windowId, doc)] !== undefined) return scopes;
+    // Without a ticket nothing is settled: the page planner then withholds every mint, loudly (page-planner.ts).
+    if (ticket === null) return scopes;
+    return withScope(scopes, await this.settleScopeFor(ticket, instruction, windowId, scopes, doc));
+  }
+
+
 
   /**
    * A page goal (P2): the page planner over the Ask's scope on that page, fill's picks gated by fill. Throws GoalError
    * when nothing can be offered; with no Jev, no page engine document, or no page, it refuses.
    */
-  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string> } = {}): Promise<GoalPlan> {
+  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet } = {}): Promise<GoalPlan> {
     const ask = this.ask;
     const pageDocument = this.opts.pageDocument;
     if (ask === null) throw new GoalError("unchecked", "Jev is off, so Caret can't choose this page's values");
@@ -1440,7 +1533,7 @@ export class Helper {
     queueMicrotask(() => this.goals.forgetSource(goalId, windows));
   }
 
-  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string> }): Promise<GoalPlan> {
+  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet }): Promise<GoalPlan> {
     return planPage(this.model, {
       goalId,
       ...(sources === this.model ? {} : { sources }),
@@ -1449,6 +1542,7 @@ export class Helper {
       scope: page.scope,
       kind: page.kind,
       section: page.section,
+      ...(page.unsure === undefined ? {} : { unsure: page.unsure }),
       about: this.aboutValues(),
       askJev: ask,
       now: this.now(),
@@ -1457,6 +1551,7 @@ export class Helper {
       pageDocument,
       ...(more.owed === undefined ? {} : { carried: { owed: more.owed } }),
       ...(more.revealed === undefined ? {} : { revealed: more.revealed }),
+      ...(more.scopes === undefined ? {} : { scopes: more.scopes, documentOf: this.documentReader() }),
       ...(this.opts.newId === undefined ? {} : { fill: { newId: this.opts.newId } }),
       // P3: attach rows only for a host that shows them; each offers a saved file a Jev choice matched, or a chooser.
       ...(this.filesFor(more.session) ? { attachOffer: (w: WindowState, n: Node, label: string) => this.attachOffer(w, n, label), attached: more.attached ?? new Set<string>() } : {}),
@@ -1494,27 +1589,34 @@ export class Helper {
    * A fresh plan for a page goal (P2): after a stop, the same scope on the page as it is now; after its writes revealed
    * controls (runs.ts afterReveal), those controls alone, under the scope's sources and person. Null when none.
    */
-  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[], r: Pick<Replan, "completed" | "session" | "why">): Promise<GoalPlan | null> {
+  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[], r: Pick<Replan, "completed" | "session" | "why" | "scopes">): Promise<GoalPlan | null> {
     if (this.mode !== "live" || this.gate.settings.paused) return null;
     // P3: a file control this goal (or one it replaces) already attached to, on this document, gets no second file. A
     // carried goal's receipts name the old document's keys (runs.ts keepCarry), so none of them match the new page.
     const attached = new Set(r.completed.filter((x) => x.target.windowId === page.windowId).map((x) => x.target.key));
     try {
-      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
+      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(r.scopes === undefined ? {} : { scopes: await this.withPageScope(r.why === "nextPage" ? settleTicket("carry") : null, instruction, page.windowId, r.scopes) }), ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
     } catch (e) {
+      // I2: the scope ask for a next page or a reveal failing (settleScopeFor) leaves no fresh plan, as a planner refusal does.
+      if (e instanceof PlannerError) {
+        this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.code}: ${e.message}`);
+        return null;
+      }
       if (!(e instanceof GoalError)) throw e;
       this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.fromTab ? `${e.code}; not logged, since it may quote the tab you left` : e.message}`);
       return null;
     }
   }
 
+
+
   /** A fresh plan for a stopped goal's instruction, from the screen as it is now; null when none can be offered. */
-  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[], carried: readonly LeftItem[]): Promise<GoalPlan | null> {
+  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[], carried: readonly LeftItem[], scopes?: ScopeSet): Promise<GoalPlan | null> {
     if (this.writer === null || this.mode !== "live" || this.gate.settings.paused) return null;
     try {
-      return await this.goalPlan(goalId, instruction, done, null, carried);
+      return await this.goalPlan(goalId, instruction, done, null, carried, scopes);
     } catch (e) {
-      if (!(e instanceof GoalError)) throw e;
+      if (!(e instanceof GoalError) && !(e instanceof PlannerError)) throw e;
       this.opts.warn?.(`goal ${goalId}: no fresh plan: ${e.message}`);
       return null;
     }
@@ -1619,8 +1721,18 @@ export class Helper {
     const tab = this.askTabRead(offerKey, ask);
     // "Attach my resume" (H5): code plans it, with no model, when the page holds a file input that fits.
     let attachDraft: PlanDraft | null = null;
+    let requestSettled: Settled | undefined;
     try {
-      attachDraft = planAttach(instruction, this.model, windowId, offerKey);
+      // I2 ruling A: never unscoped: the page's fields and upload fields are settled by the scope question first. A
+      // continued Ask never comes here: it goes on from its frozen scope (planner/ask.ts AskResume), settling nothing.
+      // I2 ruling: one request, one settlement. The rule's settlement is kept, and an Ask after it falls through uses it.
+      if (resume === undefined)
+        attachDraft = await planAttach(instruction, this.model, windowId, offerKey, async (id) => {
+          if (this.ask === null) return null;
+          const r = await this.settleRequest(settleTicket("freshAsk"), instruction, id, randomUUID());
+          requestSettled = r;
+          return askScope(r.windowId, r.document, r.asks, r.seen, null, r.askId);
+        }, this.now(), this.documentReader());
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;
       return fail(e.code, e.message, said(e));
@@ -1632,14 +1744,16 @@ export class Helper {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
         const maker = askConfig.maker === "writer" ? writerIntentMaker(askConfig.writer, () => offerKey) : askConfig.maker === "heads" ? headsIntentMaker(ask) : jevIntentMaker(ask);
-        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
+        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...(requestSettled === undefined ? {} : { settled: requestSettled }), ...(this.opts.pageDocument === undefined ? {} : { documentOf: this.opts.pageDocument }), ...this.opts.plannerHooks });
         // Rule 6: text that was dropped while Jev answered offers nothing made from it.
         if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired, SAYS.tabExpired);
         store.count(`plan.ask_${d.route}`, 1);
         this.countAskRoute(d.route === "goal" ? "plan" : d.route);
         if (d.route === "goal") {
           if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
-          return await this.offerGoal(requestId, instruction, from, d.windowId, d.page ?? null);
+          // I2: an Ask's goal: its own scope, or null when it came from a window with no field (its windows settle theirs).
+          // A fresh Ask's goal may settle the windows it writes in; a continued one's settles nothing (I2 ruling).
+          return await this.offerGoal(requestId, instruction, from, d.windowId, d.page ?? null, { scope: d.askScope ?? null, askId: d.askId, ticket: d.resumed ? null : settleTicket("freshAsk") });
         }
         draft = d;
       } catch (e) {
@@ -1786,18 +1900,36 @@ export class Helper {
     // (a value from text that was dropped is then in no window, so the check refuses it), as fill's recheck is. Taken
     // here, before the withdrawal lets the text go: the run carries its values as slots.
     const sources = this.fillModel(offerKey);
+    const guardModel = this.guardSources(offerKey);
     this.withdrawPlan(offerKey, "taken");
+    let mints: ReadonlyMap<number, CheckedValue> = new Map();
     try {
-      const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction });
+      // W2: with the mints the plan was drafted with (CheckedPlan.mints): a value is never re-judged without them.
+      // I2: under the Ask's scope it was checked with (CheckedPlan.scope), again.
+      const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction, origin: p.draft.checked.origin, documentOf: this.documentReader() }, p.draft.checked.mints);
       // The plan names its window by app and title; a window that replaced the proposed one under the same
       // title is another window, and the destinations' expected values were read from the first.
       const proposed = p.draft.checked.window.window.windowId;
       if (now.window.window.windowId !== proposed) return { refused: `unknownWindow: the window the plan was made for (${proposed}) closed; nothing was written` };
+      // W2: each write's mint, by its step, for the executor's recheck of its source right before it (contract.ts guardFor).
+      mints = new Map([...now.writes.map((wr) => [wr.step, wr.checked] as const), ...(now.attach === null ? [] : [[now.attach.step, now.attach.checked] as const])]);
+      // G2 review: every value an Ask's fill read is checked against what it rests on again, as a Fill all's are
+      // (offers/fill-popup.ts valueStale): a saved answer, a memory entry, an identity, and the source by its mint's
+      // provenance. The destinations may hold values an Ask changes, so only the values are checked here; the plan's own
+      // end states read the destinations. I1: validatePlan above and guardFor before each write recheck the source by the
+      // same provenance; this adds the memory side.
+      const fill = "fill" in p.draft ? (p.draft as { fill: FillProposal | null }).fill : null;
+      if (fill !== null) {
+        for (const f of writtenFields(fill).fields) {
+          const stale = valueStale(sources, now.window, f, this.aboutNow, this.answerText, this.opts.pageContext?.(fill.windowId) ?? null);
+          if (stale !== null) return { refused: `sourceChanged: ${stale.log}; nothing was written` };
+        }
+      }
     } catch (e) {
       if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
       throw e;
     }
-    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true });
+    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints, p.draft.checked.origin, this.documentReader()) });
   }
 
   private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings" | "stale"): void {
@@ -2038,11 +2170,12 @@ export class Helper {
     if ("refused" in checked) return this.refuseAccept(taskId, checked.refused);
     const p = checked.p;
     this.bindNew(taskId, session);
-    const { plan, slots } = fillPlan(this.model, p);
+    const { plan, slots, checks } = fillPlan(this.model, p);
+    const guard = guardFor(this.guardSources(m.proposalId), checks, { kind: "fill", proposalId: m.proposalId }, this.documentReader());
     // P4: the run carries its values as slots; the text they were read from is not needed past this point.
     this.tabSource?.release(m.proposalId);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.runFrom("fill", taskId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+    return this.runFrom("fill", taskId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guard);
   }
 
   /**
@@ -3063,7 +3196,8 @@ export class Helper {
       return checked;
     }
     const p = checked.p;
-    const { plan, slots } = fillPlan(this.model, p);
+    const { plan, slots, checks } = fillPlan(this.model, p);
+    const guard = guardFor(this.guardSources(p.id), checks, { kind: "fill", proposalId: p.id }, this.documentReader());
     this.withdrawFill(p.id, "taken");
     const answers = p.fields.flatMap((f) => (f.answer === undefined ? [] : [{ answerId: f.answer.id, windowId: p.windowId, key: f.key }]));
     if (answers.length > 0) {
@@ -3072,7 +3206,7 @@ export class Helper {
       this.answerWrites.set(p.id, answers);
     }
     // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.runFrom("fill", p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+    return this.runFrom("fill", p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guard);
   }
 
   /**

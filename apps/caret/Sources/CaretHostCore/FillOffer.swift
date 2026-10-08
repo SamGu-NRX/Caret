@@ -44,6 +44,9 @@ public struct FillOrigin: Equatable, Sendable {
     /// proposal gives a value it can write, in one transaction (D2-04). True when the proposal has
     /// at least two (`FillSelection.fillAllWrites`); while false, Command-1 keeps the app's meaning.
     public var fillAll = false
+    /// G2, H1: the memory entry a window's value rests on because it is exactly the user's own identity there
+    /// (`FillField.basis.identity`). Editing, pausing or forgetting it takes the offer down, as for a value from memory.
+    public var identityMemoryID: String?
 
     public init(proposalID: String, windowID: String, fieldKey: String, source: Source, proposedAtMs: Int64) {
         self.proposalID = proposalID
@@ -101,6 +104,9 @@ public struct FillOrigin: Equatable, Sendable {
         if case .memory(let id) = source { return id }
         return nil
     }
+
+    /// The value came from memory entry `id`, or rests on it as the user's identity.
+    public func restsOn(memory id: String) -> Bool { memoryID == id || identityMemoryID == id }
 }
 
 public enum OfferKind: Equatable, Sendable {
@@ -166,8 +172,8 @@ public enum FillSelection {
         /// This value was refused or undone in this field already; it is not offered there again
         /// (IDENTITY.md: the same offer never comes back for the same phrase in the same field).
         case suppressed
-        /// The value came from a memory entry that was edited, paused or forgotten after the
-        /// proposal arrived: what the user told Caret is no longer that value.
+        /// The value came from, or rests on (`FillField.basis.identity`), a memory entry that was edited,
+        /// paused or forgotten after the proposal arrived: what the user told Caret is no longer that value.
         case memoryChanged
         /// S1, H11: the value is one of the user's saved answers. A host that names `savedAnswers` shows
         /// one whole before inserting it, which ghost text in the field cannot promise (an answer runs to
@@ -205,6 +211,10 @@ public enum FillSelection {
         guard field.withheld == nil else { return .skip(.withheld) }
         guard field.choice != "none", let value = field.value, !value.isEmpty else { return .skip(.answerNone) }
         guard field.answer == nil else { return .skip(.savedAnswer) }
+        // G2, H1: a value the helper took as the user's own because it is exactly their identity in memory rests on that
+        // entry too (FillField.basis): edited, paused or forgotten since, the helper withdraws it, and until that arrives
+        // the host offers nothing, as it does for a value from memory.
+        if let identity = field.basis?.identity, changedMemory.contains(identity.memoryId) { return .skip(.memoryChanged) }
         let from: FillOrigin.Source
         if let source = field.source {
             // The source's own pid (protocol.ts FillSource.pid): a source that is a page window names no pid in its id.
@@ -222,6 +232,7 @@ public enum FillSelection {
         }
         var origin = FillOrigin(proposalID: proposal.id, windowID: proposal.windowId, fieldKey: field.key, source: from, proposedAtMs: proposal.at)
         origin.fillAll = fillAllWrites(proposal) >= minFillAll
+        origin.identityMemoryID = field.basis?.identity?.memoryId
         return .offer(field: field, origin: origin)
     }
 

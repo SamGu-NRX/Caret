@@ -2,6 +2,7 @@
 // a hello that declares "askChoices", a planRequest answered with a question, the answer, a second question, the
 // proposal, a person question, and an answer to a question already answered. Then the helper's side: who gets a
 // question, who may answer it, and that an answer is taken once and only as listed. All text is synthetic.
+import { answeringScope } from "./builders.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,7 +93,7 @@ describe("Ask questions in the helper (B29)", () => {
     wireButtons(app);
     app.enforceGrants = true;
     clock = 10_000;
-    helper = new Helper({ store, memory, askJev: cityJev, shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "writer", writer: openFields } });
+    helper = new Helper({ store, memory, askJev: answeringScope(cityJev), shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "writer", writer: openFields } });
     app.helper = helper;
     app.show();
     void helper.handleReader(mailWindow());
@@ -126,6 +127,30 @@ describe("Ask questions in the helper (B29)", () => {
     expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: r.offerKey ?? "", actionId: "run", overrides: {}, at: clock })).toMatchObject({ outcome: "done", acted: 1 });
     expect(app.node(K("group:shipping/textfield:city~0"))?.value).toBe("Austin");
     expect(app.node(K("group:billing/textfield:city~0"))?.value).toBeUndefined();
+  });
+
+  it("I2: refuses the acceptance once the picked field reads differently than when the Ask was asked, and writes nothing", async () => {
+    const q = AskQuestion.parse(await helper.handlePlanRequest(request, "s1", true));
+    const r = PlanProposal.parse(await helper.handleAskAnswer(answer(q.questionId, ["o2"]), "s1"));
+    expect(r).toMatchObject({ outcome: "proposed" });
+    // Between the proposal and Tab the app puts a heading right before the picked field: it is not the field the Ask was about.
+    const at = app.nodes.findIndex((n) => n.key === K("group:shipping/textfield:city~0"));
+    app.nodes.splice(at, 0, { key: K("heading:pickup~0"), parent: null, role: "AXHeading", label: "Pickup instead" });
+    app.show();
+    expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: r.offerKey ?? "", actionId: "run", overrides: {}, at: clock })).toBeNull();
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(0);
+  });
+
+  it("G2 review: refuses the acceptance once the line its value was read from warns about it, and writes nothing", async () => {
+    const q = AskQuestion.parse(await helper.handlePlanRequest(request, "s1", true));
+    const r = PlanProposal.parse(await helper.handleAskAnswer(answer(q.questionId, ["o2"]), "s1"));
+    expect(r).toMatchObject({ outcome: "proposed" });
+    // The value is still on screen, so the plan's own trace check passes; the sentences it was read from now warn.
+    const M = (x: string): string => `dev.caret.mail/standard/${x}`;
+    await helper.handleReader(snap([text(M("statictext:ship to: austin~0"), "Ship to: Austin, but not anymore"), text(M("statictext:city: austin~0"), "City: Austin is the old one")], { at: 600, windowId: REF, title: "Order 48213", app: MAIL_APP }));
+    const done = await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: r.offerKey ?? "", actionId: "run", overrides: {}, at: clock });
+    expect(done).toBeNull();
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(0);
   });
 
   it("takes an answer once, from the connection asked, before it lapses, and only as listed", async () => {

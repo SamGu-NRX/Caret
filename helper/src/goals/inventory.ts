@@ -6,7 +6,9 @@
 import { createHash } from "node:crypto";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { PlanningSnapshot } from "../codemode/types.ts";
-import { formControls } from "../fill/controls.ts";
+import { formControls, type FormControl } from "../fill/controls.ts";
+import { ContractError, fieldContract, type FieldContract } from "../fill/contract.ts";
+import type { Node } from "../protocol.ts";
 import { eventCandidate, sentences, spansIn } from "../offers/event-card.ts";
 import type { EventClock } from "../offers/event-time.ts";
 import { valueList, type Value } from "../planner/codeplan.ts";
@@ -103,7 +105,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
         ? { kind: "memory", entryId: x.memory, fileRevision: "", digest: digest(x.text) }
         : { kind: "span", snapshot, source: x.window?.window.windowId ?? "instruction", startUTF16: 0, endUTF16: x.text.length, digest: digest(x.text) };
     const source = x.window !== null && x.key !== null ? { windowId: x.window.window.windowId, key: x.key, revision: windowRevision(x.window) } : null;
-    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null, draft: null, owner: x.owner };
+    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null, draft: null, owner: x.owner, provenance: x.provenance };
   };
 
   windows.forEach((w, i) => {
@@ -127,14 +129,14 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     };
     for (const f of writableFields(w)) {
       if ((f.node.value ?? "") !== "") continue;
-      bind({ key: f.node.key, role: f.node.role, label: f.name, own: f.label, placeholder: f.node.placeholder ?? null, control: "text", value: "", options: null }, true, []);
+      bind({ key: f.node.key, role: f.node.role, label: f.name, own: f.label, placeholder: f.node.placeholder ?? null, control: "text", value: "", options: null, ...contractOf(w, f.node, null) }, true, []);
     }
     // A page's controls the page engine sets (D2-04, W2). Boxes are left out: a goal plan never ticks one.
     if (domain.kind === "window" && domain.page) {
       for (const c of formControls(w)) {
         const control = CONTROL[c.control];
         if (control === undefined || c.label === null) continue;
-        bind({ key: c.node.key, role: c.node.role, label: c.label, own: c.label, placeholder: c.node.placeholder ?? null, control, value: "", options: c.options }, true, [], c.options === null ? c.label : `${c.label} (one of: ${c.options.join(", ")})`);
+        bind({ key: c.node.key, role: c.node.role, label: c.label, own: c.label, placeholder: c.node.placeholder ?? null, control, value: "", options: c.options, ...contractOf(w, c.node, c) }, true, [], c.options === null ? c.label : `${c.label} (one of: ${c.options.join(", ")})`);
       }
     }
     let buttons = 0;
@@ -183,6 +185,19 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     snapshots.push({ snapshot: `s${snapshots.length + 1}`, window: `w${snapshots.length + 1}`, revision: "calendar", title: `Calendar '${o.calendar}'`, targets: [{ ref, label: o.calendar, kind: "calendar", canFill: true, options: [], allowedPressEffects: [] }], values: [], questions: [] });
   }
   return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed }, ledger };
+}
+
+/**
+ * W2: a target's field contract (fill/contract.ts fieldContract), or none for a field Caret never types, whose write
+ * gates.ts codeGate refuses by name before any contract is asked for.
+ */
+function contractOf(w: WindowState, node: Node, form: FormControl | null): { field?: FieldContract } {
+  try {
+    return { field: fieldContract(w, node, form) };
+  } catch (e) {
+    if (e instanceof ContractError && e.code === "neverTyped") return {};
+    throw e;
+  }
 }
 
 /** Events code reads from a source window's sentences: a resolved time and a person, as an event card would offer. */

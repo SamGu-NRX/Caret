@@ -11,6 +11,8 @@ import { goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type Go
 import { macClock } from "../src/offers/event-time.ts";
 import { SnippetLedger } from "../src/privacy.ts";
 import { cannedProgram, caseWindow, detailsWindow, goalScene, mailWindow, replyWindow, standInJev, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { targetField } from "./mint.ts";
+import { isChecked } from "../src/fill/contract.ts";
 
 const native = { windowKind: "standard", bundleId: "dev.caret.supportfixture", page: false } as const;
 
@@ -164,7 +166,11 @@ describe("lowering", () => {
 
 const win = { kind: "window" as const, windowId: "w-a", pid: 10, bundleId: "dev.caret.a", appName: "A", title: "Form A", number: null, windowKind: "standard", page: false };
 const page = { ...win, windowId: "page:e1:3", bundleId: "com.google.Chrome", appName: "Chrome", title: "Apply", windowKind: "page", page: true };
-const tgt = (ref: string, over: Partial<TargetBinding> = {}): TargetBinding => ({ ref, domain: win, key: `k-${ref}`, role: "AXTextField", label: `Field ${ref}`, own: over.label ?? `Field ${ref}`, placeholder: null, control: "text", value: "", options: null, ...over });
+const tgt = (ref: string, over: Partial<TargetBinding> = {}): TargetBinding => {
+  const t: TargetBinding = { ref, domain: win, key: `k-${ref}`, role: "AXTextField", label: `Field ${ref}`, own: over.label ?? `Field ${ref}`, placeholder: null, control: "text", value: "", options: null, ...over };
+  const field = t.field ?? targetField(t);
+  return field === undefined ? t : { ...t, field };
+};
 const val = (ref: string, text: string, over: Partial<ValueBinding> = {}): ValueBinding => ({ ref, text, display: `"${text}"`, origin: { kind: "span", snapshot: "s1", source: "w-src", startUTF16: 0, endUTF16: text.length, digest: "d" }, source: { windowId: "w-src", key: "src", revision: "r" }, memory: null, event: null, draft: null, owner: null, ...over });
 
 function inventory(targets: TargetBinding[], values: ValueBinding[]): GoalInventory {
@@ -289,10 +295,14 @@ describe("G2 review finding 4: the gates read what a control will hold", () => {
     expect(g.warnings).toEqual(["Caret left 'Plan' empty: Caret never types passwords; that is yours to enter."]);
   });
 
-  it("asks Jev about the option written, with the value it came from", async () => {
+  it("checks a writer's option with the write contract's verifier, with the value it came from, and asks Jev's yes/no nothing (W2)", async () => {
     const jev = standInJev();
-    await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: jev, ledger: new SnippetLedger([]) });
-    expect(jev.asked[0]).toBe(`A form has the field 'Country'. Is this value the right one for it? "Canada" (written for "canada") The user asked: "x".`);
+    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: jev, ledger: new SnippetLedger([]) });
+    const step = g.segments[0]?.steps[0];
+    expect(step?.writes).toBe("Canada");
+    expect(isChecked(step?.checked)).toBe(true);
+    expect(step?.checked).toMatchObject({ text: "Canada", verdict: { by: "verifier" }, provenance: { kind: "window", span: "canada" } });
+    expect(jev.asked).toEqual([]);
   });
 });
 

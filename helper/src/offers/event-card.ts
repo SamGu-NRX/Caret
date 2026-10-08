@@ -180,6 +180,7 @@ export const OFFER_WHEN: Record<SentenceSource, string> = {
 /** One of the two asks. `declared` is the sentence as its window's ledger took it. */
 export function buildAttendRequest(sentence: string, wording: 0 | 1, declared: { snippets: JevRequest["snippets"]; charged: JevRequest["charged"] }, source: SentenceSource = "typed"): JevRequest {
   return {
+    purpose: "event.card",
     state: { sentence, task: source === "typed" ? "The user is typing this sentence. Caret is deciding whether to offer adding an event to the user's calendar." : "The user is reading this line in a conversation. Caret is deciding whether to offer adding an event to the user's calendar." },
     questions: { attend: { type: "choice", instructions: WORDINGS[source][wording], criteria: { yes: "Yes: a future event the user will attend.", no: "No." } } },
     snippets: declared.snippets,
