@@ -1,7 +1,7 @@
 // SnippetLedger charges a window for every character of it a request reveals, whichever window the text
 // was taken from, so the conversation cap holds at runtime and not only in privacy.test.ts. All text is
 // synthetic.
-import { Disclosure } from "../src/privacy/disclosure.ts";
+import { Disclosure, LedgerRefused } from "../src/privacy/disclosure.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef } from "../src/protocol.ts";
@@ -172,5 +172,49 @@ describe("the B26 review's undercharges", () => {
     // The chat is a conversation held under half of its text, so 99 characters of its line do not fit.
     expect(ledger.take(note, "candidate", [`${LINE.slice(0, 99)}…`])).toBe(false);
     expect(ledger.chars("chat-4")).toBe(0);
+  });
+});
+
+// Run-level dedupe (N_w) was measured and dropped (~/.caret-run/evidence/screen/pv2/simplify/NW-DECISION.md): it lost
+// held-16. So every copy of a text a window shows is charged, and a conversation's limit is under half of all its lines.
+describe("repeated text at seal", () => {
+  const chat = (lines: string[]): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap(lines.map((l, i) => text(`c${i}`, l)), { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    return m;
+  };
+  /** The chat's charge at seal, or the refusal's message. */
+  const seal = (m: ScreenModel, units: string[]): number | string => {
+    try {
+      return new Disclosure(m).measureSent("test", units).charged["chat-1"] ?? 0;
+    } catch (e) {
+      if (e instanceof LedgerRefused) return e.message;
+      throw e;
+    }
+  };
+
+  it("refuses lines A, A, A, B sent whole: a repeated line is one line, so that is all of the chat but its title", () => {
+    const [a, b] = ["the deposit is due on the sixteenth", "and the venue holds the date until then"];
+    // T = 4 + 35 + 39 = 78, limit floor(77 / 2) = 38.
+    expect(seal(chat([a, a, a, b]), [a, b])).toBe("test: it reveals 74 characters of window chat-1, over its limit of 38; it was not sent");
+  });
+
+  it("refuses 'see you at five tomorrow' three times and 'bring the deposit', sent as one sentence", () => {
+    // Both lines are whole in the unit: 24 + 17 = 41 of T = 45, limit 22.
+    expect(seal(chat(["see you at five tomorrow", "see you at five tomorrow", "see you at five tomorrow", "bring the deposit"]), ["see you at five tomorrow, bring the deposit"])).toBe(
+      "test: it reveals 41 characters of window chat-1, over its limit of 22; it was not sent",
+    );
+  });
+
+  it("charges each quoted copy of a 500-character message: 250 of it costs 750 when it is quoted at two levels", () => {
+    const msg = Array.from({ length: 84 }, (_, i) => `w${String(i).padStart(4, "0")}`).join(" ").slice(0, 500);
+    expect(msg.length).toBe(500);
+    const half = msg.slice(100, 350);
+    // Unquoted, T = 504 and the limit is 251: 250 fits.
+    expect(seal(chat([msg]), [half])).toBe(250);
+    // Quoted at two levels, T = 4 + 500 + 502 + 504 = 1510 and the limit is 600: 250 is charged in each copy.
+    const quoted = chat([msg, `> ${msg}`, `> > ${msg}`]);
+    expect(seal(quoted, [half])).toBe("test: it reveals 750 characters of window chat-1, over its limit of 600; it was not sent");
+    expect(seal(quoted, [msg])).toBe("test: it reveals 1500 characters of window chat-1, over its limit of 600; it was not sent");
   });
 });

@@ -189,10 +189,11 @@ describe("the fixed desks (OUTPUT-LEDGER-SPEC section 11), as units against a wi
     expect(production(["Echo Echo"], [line]).charged).toBe(0);
   });
 
-  it("has no occurrence cap: 65 and 103 repeats of a 13-scalar run", () => {
+  it("has no occurrence cap: 65 and 103 repeats of a 15-scalar run, as charge against the window's size", () => {
     for (const k of [65, 103]) {
       const line = Array.from({ length: k }, () => "see you at five").join(" ");
-      expect(production(["see you at five"], [line]).charged).toBe(15 * k);
+      // Every copy is charged; only the spaces between copies are not.
+      expect([production(["see you at five"], [line]).charged, inventoryOf([line]).total]).toEqual([15 * k, 16 * k - 1]);
     }
   });
 });
