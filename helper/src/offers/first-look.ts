@@ -8,6 +8,7 @@
 // the host's offerAccept with that key runs it as the task with that id. Errors carry window ids, family
 // names and outcome codes only: never a reader detail, a Jev error body or an element key, all of which
 // can hold screen text.
+import type { OwnerVerdicts } from "../fill/owner-cache.ts";
 import { performance } from "node:perf_hooks";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { FirstLookReply, PROTOCOL_VERSION, type FillProposal, type FirstLook, type FirstLookFound, type OfferPopup, type PatternOffer, type VerbResult } from "../protocol.ts";
@@ -75,6 +76,8 @@ export interface FirstLookDeps {
   /** What an About entry holds now, for the recheck before a fill from memory (fill-popup.ts). */
   aboutNow: AboutNow;
   now: () => number;
+  /** HA2 recall lever 2: the session's owner verdicts (fill/owner-cache.ts); absent, every owner question is asked. */
+  ownerCache?: OwnerVerdicts;
 }
 
 /** A generator's offer before it has a key: how good it is, and how to build and take it under a key. */
@@ -267,7 +270,7 @@ export class FirstLookRunner {
     const results = await Promise.allSettled(
       forms.map(({ w, empty }, i) => {
         const trigger = w.focusedKey !== null && empty.includes(w.focusedKey) ? w.focusedKey : (empty[0] as string);
-        return proposeFill(model, ask, w.window.windowId, trigger, now, { newId: () => `${requestId}.form${i}`, exclude, about: this.deps.about() });
+        return proposeFill(model, ask, w.window.windowId, trigger, now, { newId: () => `${requestId}.form${i}`, exclude, about: this.deps.about(), ...(this.deps.ownerCache === undefined ? {} : { ownerCache: this.deps.ownerCache }) });
       }),
     );
     const out: Candidate[] = [];
@@ -279,7 +282,7 @@ export class FirstLookRunner {
         continue;
       }
       asked++;
-      const p = stillGrounded(model, r.value, this.deps.aboutNow);
+      const p = stillGrounded(model, r.value, this.deps.aboutNow, this.deps.about);
       if (p === null) continue;
       const w = model.windows.get(p.windowId);
       if (w === undefined) continue;
@@ -301,13 +304,13 @@ export class FirstLookRunner {
   }
 
   private async acceptFill(offerKey: string, p: GroundedProposal): Promise<AcceptResult> {
-    const stale = recheckFill(this.deps.model, p, this.deps.aboutNow);
+    const stale = recheckFill(this.deps.model, p, this.deps.aboutNow, undefined, null, this.deps.about);
     this.deps.withdraw(offerKey, stale === null ? "taken" : "stale");
     if (stale !== null) return { refused: `${stale}; nothing was written` };
     const { plan, slots, checks } = fillPlan(this.deps.model, p);
     // The destinations were empty just now; one the user fills before the run's first read stops it. W2: each copied
     // value's source is rechecked right before its write (contract.ts guardFor).
-    return this.deps.run(offerKey, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guardFor(() => this.deps.model, checks, { kind: "fill", proposalId: p.id }, null));
+    return this.deps.run(offerKey, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guardFor(() => this.deps.model, checks, { kind: "fill", proposalId: p.id }, null, this.deps.about));
   }
 
   // MARK: - pending
@@ -452,7 +455,7 @@ function emptyFields(w: WindowState): string[] {
 }
 
 /** The proposal with only fields still empty whose source is still open, when that leaves a pop-up's worth; else null. */
-function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow): GroundedProposal | null {
+function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow, saved: () => readonly AboutValue[]): GroundedProposal | null {
   const w = model.windows.get(p.windowId);
   if (w === undefined || !fillPopupEligible(p)) return null;
   // The fields Caret writes: text, and in a page the engine owns, the controls it writes (D2-04); the pop-up lists the rest.
@@ -462,7 +465,7 @@ function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow):
     return n !== undefined && (n.value ?? "") === "" && (f.source === null || model.windows.has(f.source.windowId));
   });
   const q = { ...written, fields };
-  return fields.length >= 2 && recheckFill(model, q, aboutNow) === null ? q : null;
+  return fields.length >= 2 && recheckFill(model, q, aboutNow, undefined, null, saved) === null ? q : null;
 }
 
 function sourceText(app: string, title: string): string {

@@ -95,8 +95,8 @@ describe("I1 joint 1: the user's own email offered for 'Reference 2 email' is re
     // The verifier still saw the user's email for their own Email field, at the same 0.87, and passed it.
     expect(p.fields.find((f) => f.key === keyOf("Email"))?.value).toBe(ME);
     expect(j.questions().some((q) => q.includes("Reference 2 email"))).toBe(false);
-    // G2 fills AC1's Owner slot: the verifier is told whose the value is.
-    expect(j.questions().filter((q) => q.includes(ME)).every((q) => q.includes("the screen says it is the user's"))).toBe(true);
+    // HA2: the verifier is no longer told whose the value is; that restated an earlier answer of Jev's as a screen fact.
+    expect(j.questions().filter((q) => q.includes(ME)).some((q) => q.includes("the screen says"))).toBe(false);
   });
 });
 
@@ -150,7 +150,8 @@ describe("I1 joint 3: an owner-vetoed pick reaches no verifier question", () => 
     // whose cutoff, so stage one does not take it out of the value question and the value asks pick it. The veto then
     // withholds it (fill.ts otherPerson), before checkValues.
     const note = "Hi Jo, thanks for helping out.\nTamsin Reyes, Riverside Shelter\n555-0139\nCity: Austin";
-    const j = scripted({ pick: (l) => (l === "Phone" ? "555-0139" : l === "City" ? "Austin" : null), owner: (t) => (t.includes("555-0139") ? { choice: "other", confidence: 0.45 } : { choice: "unclear", confidence: 0.45 }) });
+    // HA2: a city is a person's detail and is asked whose it is too; the note's own City line is the user's.
+    const j = scripted({ pick: (l) => (l === "Phone" ? "555-0139" : l === "City" ? "Austin" : null), owner: (t) => (t.includes("555-0139") ? { choice: "other", confidence: 0.45 } : t === "Austin" ? { choice: "user", confidence: 0.95 } : { choice: "unclear", confidence: 0.45 }) });
     const p = await proposeFill(desk(["Phone", "City"], note), j.ask, "form", keyOf("Phone"), T0, { rand: () => 0 });
     expect(p.fields.find((f) => f.key === keyOf("Phone"))).toMatchObject({ value: null, withheld: "otherPerson" });
     expect(p.fields.find((f) => f.key === keyOf("City"))?.value).toBe("Austin");
@@ -199,7 +200,7 @@ describe("I1 joint 4: a source line edited after acceptance stops the write", ()
     // After acceptance, before the write: the value's own line is unchanged, a warning goes in under it. W2's sentence
     // digests, which saw only the value's own sentence, would have let it through.
     showSource("Contact: Dana Reyes\nDo not use this name, it is my old one\nCity: Austin");
-    await run("t-i1", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null));
+    await run("t-i1", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null, null));
     expect(app.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect(progress("t-i1").at(-1)?.stopReason).toBe("changed");
   });
@@ -213,7 +214,7 @@ describe("I1 joint 4: a source line edited after acceptance stops the write", ()
     const { plan, slots, checks } = fillPlan(helper.model, g);
     // Outside the value's line and the line after it: only the sentence digests see it.
     showSource("Contact: Dana Reyes\nand this is my current\nname, do not use it.");
-    await run("t-i1-wrap", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null));
+    await run("t-i1-wrap", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null, null));
     expect(app.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect(progress("t-i1-wrap").at(-1)?.stopReason).toBe("changed");
   });

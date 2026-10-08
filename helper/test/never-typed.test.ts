@@ -7,7 +7,7 @@ import { Disclosure } from "../src/privacy/disclosure.ts";
 import { TEST_AUTHORITY } from "./mint.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { proposeFill } from "../src/fill/fill.ts";
+import { heldReason, NOTE_PRIVATE, proposeFill } from "../src/fill/fill.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { writableFields } from "../src/planner/planner.ts";
 import { PlannerError } from "../src/planner/validate.ts";
@@ -66,7 +66,11 @@ describe("fill and the planner agree on what is never typed", () => {
     expect(p.fields.map((f) => f.key).sort()).toEqual([`${F}/textfield:name~0`, `${F}/textfield:notes~0`, `${F}/textfield:phone~0`]);
     const sent = JSON.stringify(asked.map((r) => [r.state, r.questions]));
     for (const secret of SECRETS) expect(sent).not.toContain(secret);
-    expect(p.fields.find((f) => f.key.includes("phone"))?.value).toBe("(737) 555-0112");
+    // HA2 review (b): the note's SSN and card lines are cut from the view, so the note is incomplete and its phone, a value
+    // only an owner judgement admits, is withheld; nothing cut is shown or named.
+    const phone = p.fields.find((f) => f.key.includes("phone"));
+    expect(phone?.value).toBeNull();
+    expect(phone === undefined ? null : heldReason(phone)).toBe(`Caret left Phone: ${NOTE_PRIVATE}.`);
     expect(p.fields.find((f) => f.key.includes("notes"))?.value).toBeNull();
   });
 

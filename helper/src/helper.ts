@@ -3,6 +3,7 @@
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
+import { OwnerVerdicts } from "./fill/owner-cache.ts";
 import { Disclosure, type ModelText } from "./privacy/disclosure.ts";
 import { redactWindow } from "./fill/redact.ts";
 import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
@@ -63,7 +64,7 @@ import {
   type ReaderVerb,
   type VerbResult,
   type RunPlan,
-  type Settings,
+  type SessionLocked, type Settings,
   type SkillAnswer,
   type TaskControl,
   type TaskCause,
@@ -468,6 +469,12 @@ export class Helper {
    */
   private readonly tabWindows = new Set<string>();
   /**
+   * HA2 recall lever 2: this session's owner verdicts (fill/owner-cache.ts), in memory only: cleared when the reader
+   * restarts, Sites change or the helper shuts down, and a window's entries dropped when it closes. A fill that reads the
+   * tab the user left does not use it, so nothing from that tab outlives the fill.
+   */
+  private readonly ownerVerdicts = new OwnerVerdicts();
+  /**
    * Each fill request in flight, with every focus in an editable field of the app the user is in since
    * it began, so a pop-up whose Jev answer arrives late can see whether one of them left the form.
    */
@@ -677,6 +684,7 @@ export class Helper {
       forgetFile: (taskId) => this.files.forget(taskId),
       onAttached: (a) => this.offerFileSave(a),
       aboutNow: (id) => this.aboutNow(id),
+      savedNow: () => this.aboutValues(),
       // I6: a page goal's sources may be the tab the user left, which its plan read and holds until the goal ends.
       sourceModel: (goalId) => this.fillModel(goalId),
       ended: (goalId) => this.goalEnded(goalId),
@@ -780,6 +788,7 @@ export class Helper {
       withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
       about: () => this.aboutValues(),
       aboutNow: this.aboutNow,
+      ownerCache: this.ownerVerdicts,
       now: this.now,
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
@@ -905,6 +914,7 @@ export class Helper {
         this.model.reset();
         this.tabSource?.drop();
         forgetWindows();
+        this.ownerVerdicts.clear();
         this.text.clear();
         this.executor.readerRestarted(m.session);
         this.patterns.readerRestarted();
@@ -1028,6 +1038,7 @@ export class Helper {
         this.audit?.onWindowClosed(m.windowId, m.at);
         this.model.close(m.windowId, m.at);
         forgetWindow(m.windowId);
+        this.ownerVerdicts.forget(new Set([m.windowId]));
         // A goal segment that copies from this window, or acts in it, stops now (D2-06).
         this.goals.onChanges([]);
         this.checkFills(m.windowId);
@@ -1110,6 +1121,10 @@ export class Helper {
    * session that sent it. Only a host session's records the watch role as the user's consent (routing/consent.ts).
    */
   handleSettings(m: Settings, from?: string): void {
+    // HA2 lever 2, Sam's rule 3 (i, ii): a change to the sites switched off clears the session's owner verdicts first,
+    // before anything else reacts (the page engines hear the list last, below). The whole cache goes, not only the
+    // entries from windows that show those sites: an entry records the windows its notes came from, not their sites.
+    if (m.sitesOff !== undefined && !sameList(m.sitesOff, this.sitesOffList)) this.ownerVerdicts.clear();
     this.consent.settings(m.roles, from !== undefined && this.hosts.has(from));
     const off = this.gate.apply(m);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
@@ -1131,6 +1146,15 @@ export class Helper {
       this.opts.store.count("settings.sitesOff", 1);
       for (const l of this.sitesOffListeners) l(this.sitesOffList);
     }
+  }
+
+  /**
+   * HA2 lever 2, Sam's rule 3 (iii): the user locked the screen or signed out (the host's sessionLocked). The session's
+   * owner verdicts are cleared; nothing else changes here.
+   */
+  handleSessionLocked(m: SessionLocked): void {
+    this.ownerVerdicts.clear();
+    this.opts.store.count(`session.${m.why}`, 1);
   }
 
   /** Whether a task id is in use by a run or an activity record: new offer ids skip these (B23). */
@@ -1937,7 +1961,7 @@ export class Helper {
       if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
       throw e;
     }
-    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints, p.draft.checked.origin, this.documentReader()) });
+    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints, p.draft.checked.origin, this.documentReader(), () => this.aboutValues()) });
   }
 
   private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings" | "stale"): void {
@@ -2179,7 +2203,7 @@ export class Helper {
     const p = checked.p;
     this.bindNew(taskId, session);
     const { plan, slots, checks } = fillPlan(this.model, p);
-    const guard = guardFor(this.guardSources(m.proposalId), checks, { kind: "fill", proposalId: m.proposalId }, this.documentReader());
+    const guard = guardFor(this.guardSources(m.proposalId), checks, { kind: "fill", proposalId: m.proposalId }, this.documentReader(), () => this.aboutValues());
     // P4: the run carries its values as slots; the text they were read from is not needed past this point.
     this.tabSource?.release(m.proposalId);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
@@ -2680,6 +2704,7 @@ export class Helper {
     // First, so nothing a late reply or a producer's answer starts reaches the router after the stores close (R2).
     this.routing?.stop();
     this.tabSource?.drop();
+    this.ownerVerdicts.clear();
     this.record(this.transfers.flush());
     this.patterns.shutdown();
     this.pending.shutdown();
@@ -2835,6 +2860,7 @@ export class Helper {
       const saved = this.answersForFill(windowId);
       const asked = await proposeFill(this.fillModel(reading), askHere, windowId, key, now, {
         about: this.aboutValues(),
+        ...(fromTab ? {} : { ownerCache: this.ownerVerdicts }),
         ...(saved === null ? {} : saved),
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
         ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),
@@ -3262,7 +3288,7 @@ export class Helper {
     }
     const p = checked.p;
     const { plan, slots, checks } = fillPlan(this.model, p);
-    const guard = guardFor(this.guardSources(p.id), checks, { kind: "fill", proposalId: p.id }, this.documentReader());
+    const guard = guardFor(this.guardSources(p.id), checks, { kind: "fill", proposalId: p.id }, this.documentReader(), () => this.aboutValues());
     this.withdrawFill(p.id, "taken");
     const answers = p.fields.flatMap((f) => (f.answer === undefined ? [] : [{ answerId: f.answer.id, windowId: p.windowId, key: f.key }]));
     if (answers.length > 0) {
@@ -3280,7 +3306,7 @@ export class Helper {
    * empty for the user, and the log names why.
    */
   private recheckKept(p: GroundedProposal): { p: GroundedProposal } | { refused: string } {
-    const r = recheckFields(this.fillModel(p.id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(p.id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues());
     if ("stale" in r || r.dropped.length > 0) this.whyGone(p);
     if ("stale" in r) return { refused: `${r.stale}; nothing was written` };
     if (r.proposal.fields.length === 0) return { refused: `${r.dropped[0]?.log ?? "no field is left to fill"}; nothing was written` };
@@ -3312,7 +3338,7 @@ export class Helper {
     for (const [id, { p, form }] of this.fillPopups) {
       if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
       const w = this.model.windows.get(p.windowId);
-      let changed = recheckFill(this.fillModel(id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null) !== null;
+      let changed = recheckFill(this.fillModel(id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues()) !== null;
       if (!changed && w !== undefined) {
         try {
           changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
@@ -3347,7 +3373,7 @@ export class Helper {
   private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[], owner: string): { stale: string } | { p: GroundedProposal } {
     if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return { stale: "focus left the form" };
     // P2: a field whose recheck fails is the user's, with why; the pop-up still needs two fields Caret writes (fillPopupEligible).
-    const r = recheckFields(this.fillModel(owner), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(owner), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues());
     if ("stale" in r) return r;
     if (r.proposal.fields.length < 2) return { stale: r.dropped[0]?.log ?? "fewer than two fields are left to fill" };
     if (r.dropped.length > 0) this.opts.store.count("fill.recheck_dropped", r.dropped.length);
@@ -3704,4 +3730,12 @@ function inFillForm(p: GroundedProposal, windowId: string, key: string): boolean
 function issuePath(path: readonly PropertyKey[]): string {
   if (path.length === 0) return "the message";
   return path.map((p, i) => (typeof p === "number" ? `[${p}]` : i === 0 ? String(p) : `.${String(p)}`)).join("");
+}
+
+/** Whether two lists of sites switched off hold the same sites; null, no list yet, matches nothing. */
+function sameList(a: readonly string[], b: readonly string[] | null): boolean {
+  if (b === null) return false;
+  const x = new Set(a);
+  const y = new Set(b);
+  return x.size === y.size && [...x].every((o) => y.has(o));
 }

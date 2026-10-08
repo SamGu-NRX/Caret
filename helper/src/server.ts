@@ -369,6 +369,8 @@ export class HelperServer {
             }
           }
           else if (m.data.type === "settings") this.helper().handleSettings(m.data, from);
+          // HA2: only clears the session's owner verdicts, so any consumer may send it.
+          else if (m.data.type === "sessionLocked") this.helper().handleSessionLocked(m.data);
           // The user's Keep makes a skill, which is consent the router acts on (routing/consent.ts): only the host,
           // which shows the question, may answer it.
           else if (m.data.type === "skillAnswer") {

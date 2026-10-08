@@ -135,12 +135,14 @@ describe("through planAsk", () => {
   });
 
   it("fills the settled fields and lists each other field as the user's, with a sentence, when they do not fit one question", async () => {
-    const sure = ["Customer name"];
-    const rest = ["Telephone", "E-mail address", "Pizza Size", "Bacon", "Extra Cheese", "Onion", "Mushroom", "Preferred delivery time", "Delivery instructions"];
+    // HA2 review (a)(c): the customer's name and email are also in another window of the desk (732 characters, a mail that
+    // gives under half its text), which no owner question can show whole, so they are withheld; the phone is the note's.
+    const sure = ["Telephone"];
+    const rest = ["Customer name", "E-mail address", "Pizza Size", "Bacon", "Extra Cheese", "Onion", "Mushroom", "Preferred delivery time", "Delivery instructions"];
     const by: ScopeBy = (label) => (sure.includes(label) ? settled : label === "Delivery instructions" ? unclear : rest.includes(label) ? below : not);
     // Nine unsettled fields: one question lists eight at most.
     const d = (await run(ASK_01, jevFor(by, NOTE))) as AskDraft;
-    expect(d.checked.writes.map((w) => w.value)).toEqual(["Jordan Reyes"]);
+    expect(d.checked.writes.map((w) => w.value)).toEqual(["(512) 555-0147"]);
     expect(d.unsure?.map((u) => u.name)).toEqual(rest);
     const yours = planSpec(d).blocks.find((b) => b.type === "facts" && b.rows.some((r) => /wasn't sure/u.test(r.value.text)));
     expect(yours?.type === "facts" && yours.rows.map((r) => r.value.text)).toEqual(expect.arrayContaining(["Pizza Size: Caret wasn't sure your request asks for it."]));
@@ -158,7 +160,8 @@ describe("through planAsk", () => {
     const email = q.options[0];
     if (email === undefined) throw new Error("no option");
     const after = (await run(ASK_01, jev, { ...q.resume, fixed: { ...q.resume.fixed, ...email.fixes } })) as AskDraft;
-    expect(after.checked.writes.map((w) => w.value)).toEqual(["Jordan Reyes", "(512) 555-0147", "jordan.reyes@example.org"]);
+    // HA2 review (a)(c): the name and email are withheld, as above; the phone is written.
+    expect(after.checked.writes.map((w) => w.value)).toEqual(["(512) 555-0147"]);
   });
 
   it("leaves the unsettled fields of a page goal to the user in its scope, never writing them", async () => {

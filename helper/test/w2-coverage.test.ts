@@ -7,7 +7,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { proposeFill } from "../src/fill/fill.ts";
+import { heldReason, proposeFill } from "../src/fill/fill.ts";
+import type { FillField } from "../src/protocol.ts";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { lineTexts } from "../src/fill/line-values.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
@@ -41,7 +42,9 @@ describe("a part never cuts its note (W1's Greenhouse regression)", () => {
     const by = Object.fromEntries(LABELS.map((l, i) => [l, p.fields.find((f) => f.key === `form/f${i}`)]));
     expect(LABELS.filter((l) => by[l]?.withheld === "sourceCut")).toEqual([]);
     // The note's name and the School line's dates are written; the School line's own part does not fit beside them and is
-    // dropped alone (the note gives no first or last name of its own: those come from the task's mail and memory).
+    // dropped alone (the note gives no first or last name of its own: those come from the task's mail and memory). HA2:
+    // the name and phone's owner questions show the whole note under the owner-note allotment (privacy.ts).
+    expect(["Preferred First Name", "Phone"].map((l) => heldReason(by[l] as FillField))).toEqual([null, null]);
     expect(Object.fromEntries(LABELS.map((l) => [l, by[l]?.value ?? null]))).toEqual({ "First Name": null, "Last Name": null, "Preferred First Name": "Dima", Phone: "555-0126", School: null, "Start date month": "September", "Start date year": "2016", "End date month": "May", "End date year": "2020" });
   });
 });

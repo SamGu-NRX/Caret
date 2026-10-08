@@ -116,16 +116,15 @@ describe("one field that fails its recheck (P2)", () => {
     expect([page.shown("e1"), page.shown("e2"), page.shown("e3")]).toEqual(["Robin Vale", "robin@example.test", "United States"]);
   });
 
-  it("lists a field whose source changed while Jev answered as the user's, with why, and offers the rest", async () => {
+  it("offers nothing from a note that changed while Jev answered (HA2 review P1: every value from it rests on the whole note)", async () => {
     const changed = NOTE.replace("Email: robin@example.test", "Email: (ask Robin)");
     const { helper, page, published } = await rig(async (h) => {
       await h.handleReader(snap([field("te/note", changed, { role: "AXTextArea" })], { at: Date.now() - 4000, windowId: "note", title: "Robin.txt", app: TEXTEDIT, focused: false }));
     });
     await helper.handleReader(focus(WIN, KEY("e1"), Date.now(), { app: chrome }));
-    const popup = published.find((m): m is OfferPopup => m.type === "popup");
-    expect(popup, "the pop-up was refused whole").toBeDefined();
-    expect(rows(popup as OfferPopup)).toEqual(["Robin Vale", "United States", "Email: where Caret read its value changed"]);
-    await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: (popup as OfferPopup).offerKey, actionId: "fillAll", overrides: {}, at: Date.now() });
-    expect([page.shown("e1"), page.shown("e2"), page.shown("e3")]).toEqual(["Robin Vale", "", "United States"]);
+    // Before HA2's review the Email row alone went to the user and the rest were offered. Each value is now bound to the
+    // whole note its owner questions showed (contract.ts Provenance owned), and that note changed, so none is offered.
+    expect(published.some((m) => m.type === "popup")).toBe(false);
+    expect([page.shown("e1"), page.shown("e2"), page.shown("e3")]).toEqual(["", "", ""]);
   });
 });

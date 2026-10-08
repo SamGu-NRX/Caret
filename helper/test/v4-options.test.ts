@@ -154,8 +154,12 @@ describe("a menu's option named by a source, through fill (G3's examples)", () =
     expect(mintOf(rel as NonNullable<typeof rel>)?.verdict.by).toBe("verifier");
   });
 
-  /** An Ask's scope of the one menu, as B24 ask-07's settled scope holds State (the form has more fields than one fill takes). */
-  const only = (label: string) => (d: Desk): FillScope => ({ fields: formControls(d.form).filter((c) => normLabel(c.label ?? "") === normLabel(label)).map((c) => c.node.key), windows: null, memory: false, instruction: "fill in everything you can from my notes", person: null, literals: new Map() });
+  /**
+   * An Ask's scope of the one menu, as B24 ask-07's settled scope holds State (the form has more fields than one fill takes).
+   * HA2: the instruction names the notes, so the Ask path reads them as consented (privacy.ts CONSENTED) and an owner
+   * question can show the whole note; without that the note's prose share keeps it back and its address is withheld.
+   */
+  const only = (label: string) => (d: Desk): FillScope => ({ fields: formControls(d.form).filter((c) => normLabel(c.label ?? "") === normLabel(label)).map((c) => c.node.key), windows: null, memory: false, instruction: "fill in everything you can from my notes", person: null, literals: new Map(), consented: new Set([...d.model.windows.keys()].filter((id) => id !== d.form.window.windowId)) });
 
   it("B24 ask-07: offers State 'TX' for the state of the note's Austin, Texas address", async () => {
     const { at } = await fill("rental-application", { State: "TX" }, only("State"));

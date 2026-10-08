@@ -50,6 +50,8 @@ describe("values inside a note's lines", () => {
       "Reach me at jo.cole@example.org any time after five; weekdays and weekends are both fine with me for calls.",
     ].join("\n");
     const { values } = await fill(note, { "Mobile phone": "555-0164", "Graduation date": "May 2027", Email: "jo.cole@example.org" });
+    // HA2: the phone and the email are admitted only by owner questions that showed the whole note; this note's prose
+    // lines go to them under the owner-note allotment (privacy.ts OWNER_NOTE_CHARS).
     expect(values).toEqual({ "Mobile phone": "555-0164", "Graduation date": "May 2027", Email: "jo.cole@example.org" });
   });
 

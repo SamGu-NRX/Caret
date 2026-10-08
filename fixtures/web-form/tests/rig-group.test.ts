@@ -217,3 +217,21 @@ test("a member whose environment cannot be read is not signalled, not taken as g
   assert.ok((out.said as string[]).some((s) => s.includes("cannot be read")), JSON.stringify(out.said));
   assert.equal(out.aliveAfter, false);
 });
+
+test("a held Chrome that dies before its release line arrives does not crash the rig", () => {
+  // The registration succeeds, but the held shell's group is gone before rig.ts writes the line that releases it, so
+  // that write fails with EPIPE: an error on the release pipe must not escape as an uncaught exception.
+  script("register-kills", `#!/bin/sh\n[ "$1" = group ] && kill -KILL -"$2"\nexit 0\n`);
+  const out = inChild(
+    `const said = [];
+    rig.setSay((s) => said.push(s));
+    const proc = rig.spawnChrome(dir + "/fake-chrome", [], process.env, ["ignore", "ignore", "ignore", "pipe", "pipe"]);
+    if (proc.exitCode === null && proc.signalCode === null) await new Promise((r) => proc.once("exit", r));
+    await sleep(200);
+    await rig.groupStop(proc)();
+    return { signal: proc.signalCode, said };`,
+    { CARET_HEAVY_REGISTER: join(dir, "register-kills") },
+  );
+  assert.equal(out.signal, "SIGKILL");
+  assert.ok(!existsSync(join(dir, "started")));
+});

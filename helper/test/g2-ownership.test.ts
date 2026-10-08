@@ -176,7 +176,9 @@ describe("structural evidence in whose-value questions (G2)", () => {
   it("gives a mail with several recipients, or a Cc:, no structural evidence", async () => {
     const several = await ownerAsk({ ...forty.email, to: "Jo Abernathy-Cole <jo.abernathycole@example.com>, Tamsin Reyes <tamsin.reyes@example.org>" });
     for (const t of ["jo.abernathycole@example.com", "tamsin.reyes@example.org"]) expect(ownerQuestionOf(several, t), t).toBeDefined();
-    for (const q of ownerQuestions(several).filter((x) => x.includes("Mail window"))) expect(q).not.toContain("Where it sits");
+    // HA2: the form's address fields also ask whose the mail's other lines are (its Subject included); only the To: line's
+    // values are about recipients here.
+    for (const q of ownerQuestions(several).filter((x) => x.includes("Mail window") && x.includes("labelled 'To'"))) expect(q).not.toContain("Where it sits");
     const cc = await ownerAsk(forty.email, ["Cc: Tamsin Reyes <tamsin.reyes@example.org>"]);
     for (const q of ownerQuestions(cc).filter((x) => x.includes("labelled 'To'"))) expect(q).not.toContain("only recipient");
   });
@@ -189,16 +191,16 @@ describe("structural evidence in whose-value questions (G2)", () => {
     }
   });
 
-  it("G2: says which note sentences name no other person, and which name someone else", async () => {
+  it("G2: says which note sentences name someone else; HA2: never that a sentence names no other person", async () => {
     const r = await ownerAsk(forty.email);
-    const alone = "it is in a sentence of the note the user just left that names no other person";
+    const alone = "names no other person";
     const other = "it is in a sentence that names someone other than the user";
-    expect(ownerQuestionOf(r, "2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214")).toContain(alone);
-    expect(ownerQuestionOf(r, "555-0164")).toContain(alone);
+    // HA2: one sentence can't say whose a value is, so code no longer claims it (whose.ts header).
+    for (const q of ownerQuestions(r)) expect(q).not.toContain(alone);
+    expect(ownerQuestionOf(r, "555-0164")).not.toContain("Where it sits");
     expect(ownerQuestionOf(r, "555-0171")).toContain(other);
     expect(ownerQuestionOf(r, "marcus.cole@example.net")).toContain(other);
     expect(ownerQuestionOf(r, "Marcus Cole")).toContain(other);
-    for (const t of ["555-0171", "marcus.cole@example.net"]) expect(ownerQuestionOf(r, t)).not.toContain(alone);
   });
 
   it("reads the sentence, not the line: the user's cell beside a warning about the parents' landline", async () => {
@@ -544,7 +546,11 @@ describe("G2 review round 2: provenance", () => {
     const entry = about.find((a) => a.value === "jo.abernathycole@example.com") as AboutValue;
     const pick: Record<string, string> = { Phone: "555-0164", City: "Portland", "ZIP code": "97214", Apartment: "Apt 5B", Street: "2210 Willow Bend Drive", "Mobile phone": "555-0164", Email: "jo.abernathycole@example.com" };
     const { ask } = scripted(pick, () => ({ choice: "user", confidence: 0.95 }));
-    const m = desk(fields, [mailWindow(forty.email), noteWindow(forty.note)]);
+    // HA2: the owner questions must show the whole note, and a note with a line over 80 characters is prose, of which a
+    // fill on focus sends under half; its values for the user's fields are withheld (fill.ts NOTE_UNSHOWN). This test is
+    // about the pop-up's rows, so it reads the note's card lines alone, which may go whole.
+    const card = forty.note.split("\n").filter((l) => l.length <= 80).join("\n");
+    const m = desk(fields, [mailWindow(forty.email), noteWindow(card)]);
     const p = await proposeFill(m, ask, WIN, keyOf(fields[0] as PageControl), 2000, { about });
     const g = writtenFields(p);
     expect(g.fields.length).toBeGreaterThan(5);
@@ -699,9 +705,10 @@ describe("G2 round 4: recheck by neighbourhood", () => {
       return "stale" in r ? ["stale"] : r.dropped.map((d) => d.key);
     };
     expect(after("First name: Kenji\nLandlord\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin")).toContain(keyOf(full));
-    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nDo not use this old number\nCity: Austin")).toEqual([keyOf(phone)]);
-    // An edit two lines away touches neither.
-    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin\nZIP: 78751")).toEqual([]);
+    // HA2 review P1: each value is also bound to the whole note its owner questions showed, so any edit of the note refuses
+    // every value from it; the neighbourhood rule above still names its own cause first.
+    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nDo not use this old number\nCity: Austin")).toEqual([keyOf(full), keyOf(phone)]);
+    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin\nZIP: 78751")).toEqual([keyOf(full), keyOf(phone)]);
   });
 });
 

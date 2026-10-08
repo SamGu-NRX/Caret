@@ -171,7 +171,7 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     const name = vd.descriptor(redactWindow(v.windows.get("form") as WindowState), "Email");
     const email = vd.candidate(redactWindow(v.windows.get("note") as WindowState), "elena.vance@example.com");
     expect(name !== null && email !== null).toBe(true);
-    await swallow(verifyWrites("my email please", [{ key: "e", field: { name: name!, label: "Email" }, value: { display: vd.t`"${email!}"`, window: "note", owner: null }, askValue: true }], ask, vd));
+    await swallow(verifyWrites("my email please", [{ key: "e", field: { name: name!, label: "Email" }, value: { display: vd.t`"${email!}"`, window: "note", owner: null, notes: null }, askValue: true }], ask, vd));
   });
 
   it("intent.fields: a list scope both wordings settle", async () => {

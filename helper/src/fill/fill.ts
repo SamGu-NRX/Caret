@@ -21,9 +21,12 @@ import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
-import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
+import { ownedOf, unitKey, unitsHolding, type NoteUnit } from "./note-unit.ts";
+import { OwnerVerdicts, type CacheTicket, type OwnerAnswer } from "./owner-cache.ts";
+import { alternateVetoes, readableFields, setAlternateReason, type AlternateWrite, type PartPicks } from "./alternate.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { formatForField } from "./field-format.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
@@ -371,6 +374,11 @@ export interface RequestMore {
   memoryWhose?: ReadonlyMap<string, ModelText>;
   /** Candidates whose owner is asked, by this ask's candidate id. */
   owners?: readonly AskExtra[];
+  /**
+   * HA2: the whole notes the owner questions' values were read from, by note id ("note_1"), sent once in the request's
+   * state (source_notes) beside the owner questions that name them; each minted by the request's Disclosure.
+   */
+  notes?: ReadonlyMap<string, ModelText>;
   /** Each field's control, which words its question. Text when absent. */
   controls?: ReadonlyMap<string, Control>;
   /**
@@ -495,6 +503,7 @@ export function buildFillRequest(
   }
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
   const anyDerived = fields.some((f) => (more.derived?.get(f.id)?.length ?? 0) > 0);
+  const notes = more.stage !== "values" && (more.owners?.length ?? 0) > 0 && (more.notes?.size ?? 0) > 0 ? Object.fromEntries(more.notes as ReadonlyMap<string, ModelText>) : null;
   const task = [
     d.own("The user is filling in this form. The candidates are values visible in the user's other open windows. Users most often copy from the window they were in just before the form."),
     ...(anyAbout ? [d.own(" A few candidates are the user's own details, which the user told Caret; one fits a field only when the form asks for the user's own details there.")] : []),
@@ -507,6 +516,7 @@ export function buildFillRequest(
     purpose: more.stage === "whose" ? "fill.whose" : "fill.values",
     state: {
       ...(more.instruction === undefined ? {} : { instruction: more.instruction }),
+      ...(notes === null ? {} : { source_notes: notes }),
       destination_window: where,
       form_fields: d.join([...fields.map((f) => f.name), ...(more.answers ?? []).map((a) => a.descriptor)], "; "),
       task: d.join(task, ""),
@@ -581,6 +591,16 @@ export interface FillOptions {
   authority?: Authority;
   /** Which page document a window shows now (the owning helper's page engine), for an Ask's scope. */
   documentOf?: DocumentReader | null;
+  /**
+   * V6 B1: this fill is part `part` of a page plan whose parts ask together (page-planner.ts): its alternate-field veto
+   * waits for every part's proposals on `board` and reads them all. Absent, the fill's own proposals are the form's.
+   */
+  peers?: { board: PartPicks; part: number };
+  /**
+   * HA2 recall lever 2: the session's owner verdicts (owner-cache.ts). A candidate whose owner question, notes and all,
+   * was answered before in this session is not asked again; its earlier answers stand. Absent, every one is asked.
+   */
+  ownerCache?: OwnerVerdicts;
   cutoff?: number;
   rand?: (n: number) => number;
   /** Makes the proposal id; tests pass a counter. */
@@ -735,6 +755,10 @@ const ADDRESS_PARTS: ReadonlySet<FillPart> = new Set(["street", "unit", "city", 
 const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"]);
 /** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate); C2 adds its day. */
 const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "day", "year"]);
+/** HA2: the parts of a person's address and place (derive.ts FillPart): a field asking one of these takes a person's detail. */
+const PERSON_PLACE_PARTS: ReadonlySet<FillPart> = new Set([...ADDRESS_PARTS, ...PLACE_PARTS]);
+/** HA2: kinds of value that are no person's address part (an event's date or time, an amount, a link, a reference). */
+const NOT_ADDRESS_KINDS: ReadonlySet<ValueKind> = new Set(["date", "time", "amount", "url", "id", "email", "phone"]);
 /** C1: the part a menu asks for, if any: a date's month or year, a state, or a country. */
 /** The parts a menu's autocomplete field name may give it: those menuPart reads from a label. */
 const MENU_AUTOCOMPLETE: ReadonlySet<string> = new Set(["month", "day", "year", "state", "country"]);
@@ -813,11 +837,16 @@ const MAX_OWNERS = 40;
  */
 const VALUE_BLOCK_HEAD = false;
 
-/** describeOwned's words, minted: the candidate's line (its whole source line when given), then where it sits in Caret's words. */
-function mintOwned(d: Disclosure, model: ScreenModel, c: Candidate, line?: string): ModelText | null {
+/**
+ * describeOwned's words, minted: the candidate's line (its whole source line when given), then where it sits in Caret's
+ * words, then (HA2) the whole notes that hold it, by their minted ids in source_notes (notesSay's words).
+ */
+function mintOwned(d: Disclosure, model: ScreenModel, c: Candidate, line?: string, notes?: readonly ModelText[]): ModelText | null {
   const said = mintCandidate(d, model, c, line === undefined ? {} : { line });
   if (said === null) return null;
-  return c.placements === undefined ? said : d.t`${said} Where it sits: ${d.join(c.placements.map((p) => d.own(PLACEMENT_SAYS[p])), "; ")}.`;
+  const placed = c.placements === undefined ? said : d.t`${said} Where it sits: ${d.join(c.placements.map((p) => d.own(PLACEMENT_SAYS[p])), "; ")}.`;
+  if (notes === undefined || notes.length === 0) return placed;
+  return d.t`${placed} Every text on screen that holds it, whole: ${d.join(notes, " and ")} in source_notes; whose it is depends on all of that text.`;
 }
 
 /** What a memory entry of a kind is, as MEMORY_WHOSE_WORDINGS says it (OWN_SAYS, else ABOUT_KIND_SAYS). */
@@ -830,6 +859,25 @@ function describeOwned(c: Candidate, line?: string): string {
   const d = describeCandidate({ ...c, id: "", ...(line === undefined ? {} : { line }) });
   return c.placements === undefined ? d : `${d} Where it sits: ${c.placements.map((p) => PLACEMENT_SAYS[p]).join("; ")}.`;
 }
+
+/** HA2: how an owner question names the whole texts that hold its value (mintOwned mints these words); noteShown looks for exactly this. */
+export function notesSay(ids: readonly string[]): string {
+  return `Every text on screen that holds it, whole: ${ids.join(" and ")} in source_notes; whose it is depends on all of that text.`;
+}
+
+/** HA2 review 3, item 3: why a value is withheld when its cached owner verdict was invalidated while Caret worked. */
+export const OWNER_STALE = "what Caret knew about whose this value is was cleared while it worked";
+
+/** HA2 review item 7: why a value is withheld when a window Caret may not read for this fill also holds it. */
+export const OWNER_UNREADABLE = "a window Caret may not read here also holds it, so Caret can't show Jev whose it is";
+
+/** HA2 (b): why a value is withheld when redaction cut part of a text that holds it. */
+export const NOTE_PRIVATE = "part of the note is private, so Caret can't show Jev whose this value is";
+
+/** HA2: why a value is withheld when the owner questions could not show the whole text it was read from (ownerNotes). */
+export const NOTE_UNSHOWN = "the note is too long for Caret to show Jev whose this value is";
+/** HA2: why an address part is withheld when its value was asked no owner question (past MAX_OWNERS). */
+export const OWNER_UNASKED = "Caret couldn't ask Jev whose this value is";
 
 /** The person's name a candidate holds, when it is a person's: the display name of "Name <email>", the head of "Name, more", or the whole span. */
 function personName(c: Candidate): string | null {
@@ -954,7 +1002,9 @@ export async function proposeFill(
     // its options are names, which a whole date or address is not (C1, MENU_PARTS).
     // W2: the page's own autocomplete field name, when it names a part, outranks the label (fill/contract.ts).
     const part = !derive ? null : typed ? (autocompletePart(n.autocomplete) ?? datePart(name, d.section) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : x.control === "select" ? (MENU_AUTOCOMPLETE.has(autocompletePart(n.autocomplete) ?? "none") ? autocompletePart(n.autocomplete) : menuPart(name, d.section)) : null;
-    // A country is no one's detail, so it asks no whose question. A dropdown that takes a person's details meets the owner
+    // HA2 (lead decision 2): every part of an address is a person's detail, a country included: someone else's address in
+    // the user's note is the same failure as their phone. Before HA2 a country asked no whose question, as no one's detail.
+    // A dropdown that takes a person's details meets the owner
     // veto and the whose gate as a text field does (B27 review: "Your full name" took another person's name otherwise).
     // So does a list of options, read by its label alone: a "Your full name" pop-up menu listing two people was handed
     // the other one's name (B27 second review).
@@ -962,7 +1012,7 @@ export async function proposeFill(
     const personKinds = typed ? kinds : listed ? fieldKinds(labelWords) : new Set<ValueKind>();
     const personal =
       (typed || listed) &&
-      ((part !== null && part !== "country" && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
+      ((part !== null && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
     const about = memoryOk ? (opts.about ?? []).filter((a) => aboutFits(a, x.control) && fieldAsksFor(a, name, w.window.title)) : [];
@@ -1301,9 +1351,11 @@ export async function proposeFill(
   // A value the instruction spells out for a field (FillScope.literals) is offered in that field's question, as
   // what the user wrote; Jev still chooses it, and a date or time is read by the value resolver like any other.
   const literalOf = (f: { node: Node }): string | undefined => scope?.literals.get(f.node.key);
+  // HA2 review 2, item 8: always, even when a window's candidate has the same text. That candidate meets the owner rules
+  // (an "other" verdict takes it out of the field's question); the user's own words for the field never do.
   for (const f of fields) {
     const lit = literalOf(f);
-    if (lit === undefined || candidates.some((c) => c.text === lit)) continue;
+    if (lit === undefined) continue;
     const instruction = scope?.instruction ?? "";
     derived.set(f.id, [{ key: `${f.id}:said`, text: lit, describe: `"${lit}" (written in the user's instruction for this field)`, said: () => {
       const said = m.instructionSpan(instruction, lit);
@@ -1415,11 +1467,10 @@ export async function proposeFill(
   const memoryRead = scope === undefined || scope.memory;
   const ids = memoryRead ? identitiesOf(opts.about ?? []) : [];
   const userEmails = new Set(ids.filter((x) => x.kind === "email").map((x) => x.key));
-  const userNames = ids.filter((x) => x.kind === "name").map((x) => x.key);
   for (const c of candidates) {
     const id = identityOf(c.text, ids);
     if (id !== null && ledger.memory([id.label])) c.identity = id;
-    const sits = placementsOf(model, c, userEmails, userNames);
+    const sits = placementsOf(model, c, userEmails);
     if (sits.length > 0) c.placements = sits;
     snapshotOf(c);
   }
@@ -1442,7 +1493,15 @@ export async function proposeFill(
   const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
   // G2: a candidate that is the user's own identity (whose.ts) is the user's without asking; it is "asked" in every
   // sense below (ownerKnown), its answer "user" from both asks.
-  const ownerCands = owners && personal.size > 0 ? candidates.filter((c) => personalCand(c) && c.identity === undefined).slice(0, MAX_OWNERS) : [];
+  // HA2 (lead decision 2): a field asking an address part takes a person's detail, and a lone city, ZIP or country line is
+  // no person's kind of value by its shape. Each window value that could be one of the asked parts (derive.ts partFits,
+  // never a date, time, amount, link or reference) is asked whose it is too, after the person's values, within MAX_OWNERS;
+  // one past the cap is withheld from those fields (noteUnshown).
+  const addressAsked = asked.filter((f) => f.personal && f.part !== null && PERSON_PLACE_PARTS.has(f.part));
+  // A value a part is derived from for such a field ("Oakland, California, United States" for Country) counts too.
+  const derivedFrom = (f: Field, c: Candidate): boolean => (derived.get(f.id) ?? []).some((d) => (d.base.from === "window" && d.base.c.id === c.id) || d.also?.id === c.id);
+  const addressCand = (c: Candidate): boolean => addressAsked.some((f) => partFits(f.part as FillPart, c.text) || derivedFrom(f, c)) && ![...candidateKinds(model, c)].some((k) => NOT_ADDRESS_KINDS.has(k));
+  const ownerCands = owners && personal.size > 0 ? [...candidates.filter((c) => personalCand(c)), ...candidates.filter((c) => !personalCand(c) && addressCand(c))].filter((c) => c.identity === undefined).slice(0, MAX_OWNERS) : [];
   // I3 (N1): for an Ask that names a person, both owner questions show each value's whole source line, read from the
   // redacted view and charged to its window's budget after every span and clause, before the asks' declaration is taken
   // (review: taken after, the line went out undeclared). The clause alone can lose the name
@@ -1458,6 +1517,96 @@ export async function proposeFill(
       if (line === undefined || line === c.text || line === c.line) continue;
       if (ledger.take(sw, "candidate", [line])) ownerLines.set(c.id, line);
     }
+  }
+  // HA2 (lead decision): an owner judgement about a window's value counts only when both owner questions showed the
+  // whole text it was read from, its source node as the redacted view shows it, charged to its window's budget and prose
+  // share, which are unchanged. A held-out note held the user's profile, then another person's contact lines and a
+  // sentence saying they were that person's; the owner questions showed the value's own line and the note's first 60
+  // characters, and Jev called the phone the user's. One rule, with no name detection and no choice of sentences: a
+  // disclaimer that names nobody ("neither line is mine") is shown as any other text is. A note that does not fit is not
+  // sent in part; its values are withheld from fields that want the user's details (noteUnshown, below).
+  // Lead decisions on the review: the evidence is every unit that holds the value (note-unit.ts: (a) all of them, (b) none
+  // a redaction cut, (c) a text area or its whole window), each taken through the ledger once and sent once.
+  const notes = new Map<string, ModelText>();
+  /** Each note's id ("note_1") as the request's Disclosure minted it, by id. */
+  const noteSaid = new Map<string, ModelText>();
+  const noteIds = new Map<string, string>();
+  const ownerNotes = new Map<string, { units: NoteUnit[]; ids: string[] | null; why: "private" | "unshown" | "unreadable" | "stale" | null }>();
+  /** Lever 2: the cache's invalidations as they stand now, before any owner question is read from it or sent (item 3). */
+  const cacheTicket = opts.ownerCache?.ticket();
+  /** Lever 2: what shapes how an owner question is read beyond its own words: the Ask's instruction and person (item 4). */
+  const cacheContext = JSON.stringify({ instruction: scope?.instruction ?? null, person: scope?.person ?? null, plainAsk });
+  /** Lever 2: by candidate id, its owner question's cache key, and the session's earlier answers when it has them. */
+  const ownerKeys = new Map<string, string>();
+  /**
+   * Lever 2, by candidate id: an answer read from the session's cache, with the invalidations as they stood when it was
+   * read and the windows its notes came from. HA2 review 3, item 3: it is checked again after every await and right
+   * before it is consumed (hitLive); one invalidated meanwhile is dropped, and its value is withheld, never written.
+   */
+  const cachedOwners = new Map<string, { answers: readonly [OwnerAnswer, OwnerAnswer]; ticket: CacheTicket; windows: readonly string[] }>();
+  const hitLive = (cid: string): boolean => {
+    const h = cachedOwners.get(cid);
+    return h !== undefined && opts.ownerCache !== undefined && opts.ownerCache.still(h.ticket, h.windows);
+  };
+  /** Drops every cached answer invalidated since it was read: its value is withheld (OWNER_STALE). */
+  const dropStaleHits = (): void => {
+    for (const cid of [...cachedOwners.keys()]) {
+      if (hitLive(cid)) continue;
+      cachedOwners.delete(cid);
+      const ev = ownerNotes.get(cid);
+      ownerNotes.set(cid, { units: ev?.units ?? [], ids: null, why: "stale" });
+    }
+  };
+  // Lever 2's key is a local digest, never sent: the owner criteria in Caret's words, and the person an Ask names.
+  const criteriaNow: Record<string, string> = scope?.person === null || scope?.person === undefined ? { ...OWNER_CRITERIA } : { ...OWNER_CRITERIA, person: scope.person };
+  for (const c of ownerCands) {
+    const units = unitsHolding(model, c.text, windowId, { windowId: c.source.windowId, nodeKey: c.source.nodeKey });
+    if (units === null || units.length === 0) {
+      ownerNotes.set(c.id, { units: [], ids: null, why: "unshown" });
+      continue;
+    }
+    // HA2 review 2, item 7: evidence in a window this fill may not read (excluded, or outside the Ask's sources) is never
+    // sent; the value it would judge is withheld. Finding it reads that window locally and authorizes nothing.
+    if (units.some((u) => unread?.has(u.windowId) === true)) {
+      ownerNotes.set(c.id, { units, ids: null, why: "unreadable" });
+      continue;
+    }
+    if (units.some((u) => !u.complete)) {
+      ownerNotes.set(c.id, { units, ids: null, why: "private" });
+      continue;
+    }
+    if (opts.ownerCache !== undefined) {
+      // The question's own words, raw: a local digest, never sent (the request mints its words in mintOwned).
+      const key = OwnerVerdicts.key(describeOwned(c, ownerLines.get(c.id)), c.text, units.map((u) => u.digest), criteriaNow, cacheContext);
+      ownerKeys.set(c.id, key);
+      const readAt = opts.ownerCache.ticket();
+      const hit = opts.ownerCache.get(key);
+      if (hit !== undefined) {
+        // Asked before in this session over the same notes, by digest: nothing is sent again.
+        cachedOwners.set(c.id, { answers: hit, ticket: readAt, windows: units.map((u) => u.windowId) });
+        ownerNotes.set(c.id, { units, ids: [], why: null });
+        continue;
+      }
+    }
+    const ids: string[] = [];
+    for (const u of units) {
+      let id = noteIds.get(unitKey(u));
+      if (id === undefined) {
+        // INT1: minted through the request's Disclosure as a candidate of its redacted view, so it is charged to its
+        // window's own budget and prose share and declared, or refused. HA2's allotment past that budget waits for the
+        // output-based ledger (privacy.ts OWNER_NOTE_CHARS, TODO(INT1)).
+        const view = viewOf(model, u.windowId);
+        const said = view === undefined ? null : m.candidate(view, u.text);
+        if (said === null) break;
+        // The id is a key of the request's state, which PV2 holds to identifiers (disclosure.ts KEY): "note_1", not "note 1".
+        id = `note_${notes.size + 1}`;
+        notes.set(id, said);
+        noteSaid.set(id, m.id(id));
+        noteIds.set(unitKey(u), id);
+      }
+      ids.push(id);
+    }
+    ownerNotes.set(c.id, ids.length === units.length ? { units, ids, why: null } : { units, ids: null, why: "unshown" });
   }
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
   // window was still charged for them, which errs on the side of saying less.
@@ -1561,8 +1710,10 @@ export async function proposeFill(
     }),
   );
   // The owner questions' lines, minted; a candidate whose line does not mint is asked about no further (ownerKnown).
+  // HA2: each names the whole notes that hold its value, by their minted ids (noteSaid); notes is what source_notes carries.
   const ownerSaid = new Map(ownerCands.flatMap((c) => {
-    const said = mintOwned(m, model, c, ownerLines.get(c.id));
+    const ids = ownerNotes.get(c.id)?.ids ?? [];
+    const said = mintOwned(m, model, c, ownerLines.get(c.id), ids.flatMap((id) => noteSaid.get(id) ?? []));
     return said === null ? [] : [[c.id, said] as const];
   }));
   const asksInstruction = scope === undefined || plainAsk ? null : m.instruction(scope.instruction);
@@ -1573,10 +1724,12 @@ export async function proposeFill(
     derived: askDerived(dIds),
     personal: whose ? whoseAsked : new Set(),
     memoryWhose,
+    // Lever 2: a candidate the session's cache answered is not asked again (cachedOwners).
     owners: ownerCands.flatMap((c) => {
       const said = ownerSaid.get(c.id);
-      return said === undefined ? [] : [{ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: said, text: c.text }];
+      return said === undefined || cachedOwners.has(c.id) ? [] : [{ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: said, text: c.text }];
     }),
+    notes,
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
   const titleSaid = title === null ? null : m.descriptor(w, title);
@@ -1601,13 +1754,47 @@ export async function proposeFill(
   // values on the corpus's four memory forms).
   const staged = whose && personal.size > 0;
   const describedWhose = !staged || VALUE_BLOCK_HEAD ? described : describe(true);
-  const [w1, w2] =
+  const whoseAsks =
     asked.length === 0 || !staged
-      ? [null, null]
-      : await Promise.all([
-          asking(buildFillRequest(m, w, asked.map((f) => f.said), candidates, describedWhose, 0, declared, titleSaid, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" })),
-          asking(buildFillRequest(m, w, asked.map((f) => f.said), second, describedWhose, 1, declared, titleSaid, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })),
-        ]);
+      ? null
+      : ([
+          buildFillRequest(m, w, asked.map((f) => f.said), candidates, describedWhose, 0, declared, titleSaid, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" }),
+          buildFillRequest(m, w, asked.map((f) => f.said), second, describedWhose, 1, declared, titleSaid, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" }),
+        ] as const);
+  const [w1, w2] = whoseAsks === null ? [null, null] : await Promise.all([asking(whoseAsks[0]), asking(whoseAsks[1])]);
+  // Lever 2: the session's earlier answers stand in for the questions not asked again; each new answer to a question that
+  // showed its notes whole is kept for the rest of the session.
+  dropStaleHits();
+  if (w1 !== null && w2 !== null) {
+    for (const [cid, { answers: [a, b] }] of cachedOwners) {
+      w1.answers[ownerId(cid)] = { ...a };
+      w2.answers[ownerId(secondId.get(cid) ?? "")] = { ...b };
+    }
+  }
+  /**
+   * HA2: whether both owner questions about `c` showed the whole text it was read from: each request's question names
+   * its note, and each request's state carries that note whole. Read from the requests as sent, not from what was meant.
+   */
+  const noteShown = (c: Candidate): boolean => {
+    // Lever 2: a cached verdict was given by questions that showed these very notes, by digest (ownerKeys).
+    if (cachedOwners.has(c.id)) return hitLive(c.id);
+    const ids = ownerNotes.get(c.id)?.ids ?? null;
+    if (whoseAsks === null || ids === null || ids.length === 0) return false;
+    return ([[whoseAsks[0], c.id], [whoseAsks[1], secondId.get(c.id) ?? ""]] as const).every(([req, cid]) => {
+      const q = req.questions[ownerId(cid)];
+      const sent = (req.state as { source_notes?: Record<string, string> }).source_notes ?? {};
+      return q !== undefined && String(q.instructions).includes(notesSay(ids)) && ids.every((id) => sent[id] === notes.get(id));
+    });
+  };
+  if (opts.ownerCache !== undefined && w1 !== null && w2 !== null) {
+    for (const c of ownerCands) {
+      const key = ownerKeys.get(c.id);
+      const a = w1.answers[ownerId(c.id)];
+      const b = w2.answers[ownerId(secondId.get(c.id) ?? "")];
+      if (key === undefined || cachedOwners.has(c.id) || a === undefined || b === undefined || !noteShown(c)) continue;
+      opts.ownerCache.set(key, [{ choice: a.choice, confidence: a.confidence }, { choice: b.choice, confidence: b.confidence }], (ownerNotes.get(c.id)?.units ?? []).map((u) => u.windowId), cacheTicket as NonNullable<typeof cacheTicket>);
+    }
+  }
   /** Both stage-one asks' answer to a whose or owner question, agreed at the whose cutoff, or null. */
   const stageOne = (q: string, q2: string = q): string | null => {
     const a1 = w1?.answers[q];
@@ -1778,6 +1965,29 @@ export async function proposeFill(
     // the user's identity Jev cannot know who the user is, and requiring a settled owner there blanked B13's fill desk
     // (evidence/screen/b24/adv-live-replay-final).
     return wants === "user";
+  };
+  /**
+   * HA2 rule 2: a window's value for a field both asks say wants the user's details, admitted on an owner judgement that
+   * did not see the whole text the value was read from (noteShown), the window bases and extra sources of a derived
+   * value included. Exceptions, as before: a value that is exactly the user's identity from memory (Candidate.identity),
+   * what the user told Caret, and a value the user's instruction spells out. Only withholds.
+   */
+  const noteUnshown = (f: Field, p: Pick): string | null => {
+    // HA2 review 2, item 5: an Ask that names a person meets the same gate on every personal field, whatever the field's
+    // whose answer: its owner judgement ("the person named") counts only on complete, disclosed evidence too.
+    if (!owners || !f.personal || (namedPerson === null && sameChoice(whoseId(f.id)) !== "user")) return null;
+    const sources = p.from === "window" ? [p.c] : p.from === "derived" ? [...(p.base.from === "window" ? [p.base.c] : []), ...(p.also === null ? [] : [p.also])] : [];
+    // A value whose owner was asked counts only when its note was shown (noteShown). A field asking an address part also
+    // takes no value whose owner was never asked (lead decision 2: one past MAX_OWNERS); any other field's unasked value
+    // is no person's kind (a date, an amount) and stays as before HA2.
+    const asked1 = (c: Candidate): boolean => ownerCands.some((x) => x.id === c.id);
+    const address = f.part !== null && PERSON_PLACE_PARTS.has(f.part);
+    const open = sources.filter((c) => c.identity === undefined);
+    if (open.some((c) => asked1(c) && ownerNotes.get(c.id)?.why === "unreadable")) return OWNER_UNREADABLE;
+    if (open.some((c) => asked1(c) && (ownerNotes.get(c.id)?.why === "stale" || (cachedOwners.has(c.id) && !hitLive(c.id))))) return OWNER_STALE;
+    if (open.some((c) => asked1(c) && ownerNotes.get(c.id)?.why === "private")) return NOTE_PRIVATE;
+    if (open.some((c) => asked1(c) && !noteShown(c))) return NOTE_UNSHOWN;
+    return address && open.some((c) => !asked1(c)) ? OWNER_UNASKED : null;
   };
   /** Whether the named person has several values of the pick's kind and nothing on the pick's line names the field. */
   const personHasSeveral = (f: Field, p: Pick): boolean => {
@@ -1998,7 +2208,13 @@ export async function proposeFill(
     const a2 = readAsk(r2, f, (id) => back.get(id));
     const agree = a1.choice === a2.choice;
     const confidence = agree ? Math.min(a1.confidence, a2.confidence) : 0;
-    const picked = agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
+    const chosen = agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
+    // HA2 review P2: the value the user's instruction spells out for this field is theirs, whatever window also shows the
+    // same text. The literal is offered as the window's candidate when one has its text (literals, above), so a pick of
+    // that candidate is the instruction's own value: its provenance is the instruction, which no owner rule withholds.
+    // Before, a phone the user typed into the Ask and that a long note also held was withheld as the note's.
+    const said = literalOf(f);
+    const picked: Pick | undefined = chosen !== undefined && chosen.from === "window" && said !== undefined && chosen.c.text === said ? { from: "instruction", text: said } : chosen;
     const fromMemory = picked !== undefined && memoryOf(picked) !== null;
     // An anchored field's pick from the anchor window is judged on its own; any other pick meets the cut rules.
     const anchoredPick = picked !== undefined && anchored(f) && fromAnchor(f, picked);
@@ -2015,6 +2231,7 @@ export async function proposeFill(
     // signature's office phone in Emergency contact phone, where her mail says "my cell is …" beside "emergency
     // contact" (evidence/screen/b25/asks-dev-3-gpt-oss-20b, ask-10; a rule tuned on the B24 corpus).
     const whichOfTheirs = namedPerson !== null && picked !== undefined && f.personal && personHasSeveral(f, picked);
+    const unshown = picked === undefined ? null : noteUnshown(f, picked);
     const withheld: FillWithheld | null =
       a1.choice === NONE && a2.choice === NONE
         ? null
@@ -2030,7 +2247,9 @@ export async function proposeFill(
                   ? "ambiguous"
                   : picked !== undefined && otherPerson(f, picked)
                   ? "otherPerson"
-                  : null;
+                  : unshown !== null
+                    ? "ambiguous"
+                    : null;
     const p = withheld === null ? picked : undefined;
     const got = p === undefined || read === null || "why" in read ? null : read;
     // A text field's value is `value`, which Caret writes. Any other control's is a hand-off, which a Fill all writes
@@ -2059,7 +2278,7 @@ export async function proposeFill(
     const basisOf = line?.identity ?? (p?.from === "derived" ? (p.also?.identity ?? undefined) : undefined);
     const idPart = p?.from === "derived" && f.part !== null && NAME_PARTS.has(f.part) ? (f.part as "first" | "middle" | "last") : undefined;
     const basis = p === undefined || got === null || basisOf === undefined ? undefined : { identity: { memoryId: basisOf.memoryId, kind: basisOf.kind, key: basisOf.key, ...(idPart === undefined ? {} : { part: idPart }) } };
-    return {
+    const field: FillField = {
       ...empty,
       ...(basis === undefined ? {} : { basis }),
       handoff,
@@ -2071,13 +2290,53 @@ export async function proposeFill(
       withheld,
       asks: [a1, a2],
     };
+    if (unshown !== null && withheld === "ambiguous") setHeldReason(field, `Caret left ${f.name}: ${unshown}.`);
+    return field;
   });
 
+  // The alternate-field veto (alternate.ts): a secondary field never repeats its primary's value or the user's own. A
+  // held-out run's log records the user's primary email in Alternate email; identity ownership and an exact verifier
+  // answer did not catch it. Every pick is checked here, controls and derived values included, before checkValues or an
+  // exemption can approve it, against:
+  //   - every field of the form Caret can read, filled, read-only or a dropdown (formFields omits populated fields);
+  //   - every value proposed into the form, by every part of a page plan (V6 B1: the parts ask concurrently);
+  //   - the form as it reads after the asks, so a primary that changed while they were out counts (V6 B3).
+  // The form is the window: page-link.ts keeps no HTML form ids. A primary in another form can only withhold an extra
+  // alternate, never admit a write; preserving those ids is the lead's deferred follow-up.
+  const ownWrites: AlternateWrite[] = [...picksOf].map(([i, x]) => ({ key: (fields[i] as Field).node.key, name: (fields[i] as Field).name, text: x.text }));
+  let proposedHere: readonly AlternateWrite[] = ownWrites;
+  if (opts.peers !== undefined) {
+    opts.peers.board.arrive(opts.peers.part, ownWrites);
+    proposedHere = await opts.peers.board.all();
+  }
+  const vetoes = alternateVetoes({ fields: readableFields(model.windows.get(windowId) ?? localWindow), writes: proposedHere, saved: opts.about ?? [] });
+  for (const i of [...picksOf.keys()]) {
+    const f = fields[i] as Field;
+    const veto = vetoes.get(f.node.key);
+    if (veto === undefined) continue;
+    const held: FillField = { ...out[i]!, choice: NONE, value: null, source: null, memory: null, handoff: null, basis: undefined, withheld: "notExact" };
+    setAlternateReason(held, `Caret left ${f.name}: ${veto.says}.`);
+    out[i] = held;
+    picksOf.delete(i);
+  }
+
+  /**
+   * HA2 review P1: a window value an owner judgement saw whole (noteShown) is bound to every unit that held it, by digest
+   * (note-unit.ts ownedOf), its derived bases and extra sources included; the one recheck of a source refuses it once any
+   * of them changes (contract.ts provenanceStale). Values from memory, an identity or the instruction carry no binding.
+   */
+  const bindOwned = (pr: Provenance): Provenance => {
+    if (pr.kind === "derived") return { ...pr, base: bindOwned(pr.base), also: pr.also === null ? null : bindOwned(pr.also) };
+    if (pr.kind !== "window") return pr;
+    const c = ownerCands.find((x) => x.source.windowId === pr.windowId && x.source.nodeKey === pr.nodeKey && x.text === pr.span);
+    const ev = c === undefined ? undefined : ownerNotes.get(c.id);
+    return c === undefined || ev === undefined || !noteShown(c) ? pr : { ...pr, owned: ownedOf(windowId, ev.units) };
+  };
   /** Each candidate's source text as Jev was shown it (`judged`, taken before the asks), for its provenance's digests. */
   const judgedText = (c: Candidate): string | undefined => judged.get(nodeKeyOf(c));
   /**
-   * AC1's Owner slot, which G2's ownership fills and the contract only reads into the verifier's question ("the screen
-   * says it is the user's"): the user's for what they told Caret and for their own identity on screen (whose.ts), else
+   * AC1's Owner slot, which G2's ownership fills and the contract carries for the Ask's scope check; since HA2 the
+   * verifier's question no longer says it, so no earlier answer is restated as a screen fact: the user's for what they told Caret and for their own identity on screen (whose.ts), else
    * whose both asks agreed a window's value is, at the whose cutoff (ownerAgreed); null when it was not asked or not
    * settled, and for the user's instruction. A value derived from two window values has their owner only when they agree.
    * The owner veto (otherPerson, above) has already withheld every pick it refuses: those never reach checkValues, so
@@ -2109,7 +2368,7 @@ export async function proposeFill(
     // V3 review: a control's value code chose (an order, a year, an option a word names) is no plain conversion, so it
     // meets the verifier as text does, with the choice said in its provenance, and is never minted under an exemption.
     if (f.control !== "text" && f.control !== "combobox" && chose === undefined) continue;
-    proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: provenanceOf(model, p, f.part, text, judgedText, f.control, chose), owner: ownerOf(p) } });
+    proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: bindOwned(provenanceOf(model, p, f.part, text, judgedText, f.control, chose)), owner: ownerOf(p) } });
   }
   let verify: VerifyUse | null = null;
   let verifierDown: string | null = null;
@@ -2134,13 +2393,30 @@ export async function proposeFill(
       if (isChecked(c)) fieldMints.set(out[(proposed[k] as { i: number }).i] as FillField, c);
     });
   }
+  // HA2 review 3, item 3: after the verifier's await, before a value resting on a cached owner verdict is handed back to be
+  // written: a verdict invalidated meanwhile withholds it, mint and all.
+  const restsOnStale = (p: Pick): boolean => {
+    const cs = p.from === "window" ? [p.c] : p.from === "derived" ? [...(p.base.from === "window" ? [p.base.c] : []), ...(p.also === null ? [] : [p.also])] : [];
+    return cs.some((c) => cachedOwners.has(c.id) && !hitLive(c.id));
+  };
+  const withholdStale = (): void => {
+    for (const [i, x] of picksOf) {
+      const o = out[i] as FillField;
+      if (!restsOnStale(x.p) || (o.value === null && o.handoff === null)) continue;
+      fieldMints.delete(o);
+      const held: FillField = { ...o, choice: NONE, value: null, source: null, memory: null, handoff: null, withheld: "ambiguous" };
+      setHeldReason(held, `Caret left ${(fields[i] as Field).name}: ${OWNER_STALE}.`);
+      out[i] = held;
+    }
+  };
+  withholdStale();
   for (const [i, o] of out.entries()) {
     const f = fields[i] as Field;
     const exempt: ExemptRule | null = o.answer !== undefined && o.value !== null ? "savedAnswerShown" : o.handoff?.writes === true ? EXEMPT_BY_CONTROL[f.control] : null;
     if (exempt === null || picksOf.get(i)?.chose !== undefined) continue;
     const text = o.value ?? o.handoff?.value ?? "";
     const pick = picksOf.get(i);
-    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : provenanceOf(model, pick.p, f.part, text, judgedText, f.control);
+    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : bindOwned(provenanceOf(model, pick.p, f.part, text, judgedText, f.control));
     const proposedExempt: Proposed = { field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: pick === undefined ? null : ownerOf(pick.p) };
     // I2: a control outside the Ask's scope is withheld, as the contract would refuse to mint it.
     if (authority.kind === "ask" && scopeRefusal(proposedExempt, authority.scope, documentOf) !== null) {
@@ -2190,6 +2466,19 @@ export async function proposeFill(
  * refuses to write it.
  */
 const fieldMints = new WeakMap<FillField, CheckedValue>();
+
+/**
+ * HA2: the sentence a preview says for a field proposeFill withheld for a reason the protocol's FillWithheld has no word
+ * for (NOTE_UNSHOWN), by the very FillField object. Helper-local, like fieldMints: the host's wire contract is unchanged.
+ */
+const heldReasons = new WeakMap<FillField, string>();
+function setHeldReason(f: FillField, says: string): void {
+  heldReasons.set(f, says);
+}
+/** The sentence a preview says for a field proposeFill withheld (heldReasons), or null. */
+export function heldReason(f: FillField): string | null {
+  return heldReasons.get(f) ?? null;
+}
 
 /** The write contract's mint for a field proposeFill returned, or undefined (fieldMints). */
 export function mintOf(f: FillField): CheckedValue | undefined {

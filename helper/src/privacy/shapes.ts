@@ -122,6 +122,9 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "state.destination_window": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 99
     "state.form_fields": { reasons: ["candidate", "descriptor", "instruction", "memory", "ownWording"], max: 2900 }, // seen 1176
     "state.instruction": { reasons: ["instruction"], max: 700 }, // seen 92
+    // INT1 (HA2's notes): a note is a candidate cut whole from one window, within its budget while OWNER_NOTE_CHARS is 0
+    // (privacy.ts, TODO(INT1)), so WINDOW_CHARS; not observed in PV2's step 5 run, which predates the notes.
+    "state.source_notes.*": { reasons: ["candidate"], max: 1200 },
     "state.task": { reasons: ["candidate", "descriptor", "instruction", "ownWording"], max: 1800 }, // seen 624
   },
   "goal": {
@@ -232,6 +235,8 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "questions.*.criteria.*": { reasons: ["ownWording"], max: 300 }, // seen 135
     "questions.*.instructions": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording", "plan"], max: 1200 }, // seen 278
     "state.instruction": { reasons: ["instruction"], max: 700 }, // seen 51
+    // INT1 (HA2's notes, verifyWrites): as fill.whose's source_notes.
+    "state.source_notes.*": { reasons: ["candidate"], max: 1200 },
     "state.task": { reasons: ["ownWording"], max: 200 }, // seen 76
   },
   "planner.fields": {
@@ -316,5 +321,7 @@ export function childGlob(glob: string, key: string | number): string {
   if (glob === "questions") return "questions.*";
   if (glob.endsWith(".criteria")) return `${glob}.*`;
   if (glob === "state.option_descriptions") return "questions.*.criteria.*";
+  // HA2: the whole notes an owner question names, by note id (fill.ts, codeplan.ts verifyWrites): one slot for any id.
+  if (glob === "state.source_notes") return "state.source_notes.*";
   return glob === "" ? key : `${glob}.${key}`;
 }

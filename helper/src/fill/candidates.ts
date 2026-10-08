@@ -78,15 +78,14 @@ export interface CandidateIdentity {
 /**
  * G2: where a candidate sits, read by code from its window (whose.ts placementsOf), for Jev to weigh in a whose-value
  * question, never as a rule. `soleRecipient`: on the To: line of a mail, as its only recipient. `toUsersAddress`: on a
- * To: line whose one address is the user's own email from memory. `ownNoteAlone`: in a sentence of the note the user
- * just left that names no other person. `namesOther`: in a sentence that names someone other than the user ("my
- * husband Marcus Cole, …").
+ * To: line whose one address is the user's own email from memory. `namesOther`: in a sentence that names someone other
+ * than the user ("my husband Marcus Cole, …"). HA2 removed `ownNoteAlone` ("in a sentence that names no other person"):
+ * one sentence can't say whose a value is (whose.ts header).
  */
-export type Placement = "soleRecipient" | "toUsersAddress" | "ownNoteAlone" | "namesOther";
+export type Placement = "soleRecipient" | "toUsersAddress" | "namesOther";
 export const PLACEMENT_SAYS = {
   soleRecipient: "it is the only recipient on the To: line of this mail",
   toUsersAddress: "it is on a To: line whose address is the email the user told Caret is theirs",
-  ownNoteAlone: "it is in a sentence of the note the user just left that names no other person",
   namesOther: "it is in a sentence that names someone other than the user",
 } as const satisfies Record<Placement, string>;
 

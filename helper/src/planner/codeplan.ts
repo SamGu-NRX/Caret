@@ -1,4 +1,5 @@
 import { Disclosure, type Minted, type ModelText } from "../privacy/disclosure.ts";
+import { savedValuesOf } from "../fill/alternate.ts";
 import { instructionForModel, instructionView } from "../fill/redact.ts";
 import { viewOf } from "../fill/candidates.ts";
 // Ask with natural phrasing (Q1 bugs 3 and 4). When the deterministic planner cannot ground an instruction
@@ -14,8 +15,9 @@ import { viewOf } from "../fill/candidates.ts";
 import type { Authority, DocumentReader } from "../fill/ask-scope.ts";
 import { createHash } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
+import { unitKey, unitsHolding } from "../fill/note-unit.ts";
 import { describeCandidate, generateCandidates, mintCandidate, type Candidate } from "../fill/candidates.ts";
-import { fieldPart, namePart, splitAddress, splitName } from "../fill/derive.ts";
+import { asksCountry, fieldPart, namePart, splitAddress, splitName } from "../fill/derive.ts";
 import { fieldKinds, isNameLike } from "../fill/kinds.ts";
 import { candidateProvenance, OWNER_CRITERIA, WHOSE_CRITERIA, WHOSE_CUTOFF } from "../fill/fill.ts";
 import type { CheckedValue, Provenance } from "../fill/contract.ts";
@@ -266,11 +268,16 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   // are the same person's (fill's owner veto); a write that fails is dropped. Live, the writer put the user's own
   // phone in Reference phone and an RSVP sender's email in the user's Email (asks-dev-3). Whether the value is exactly
   // the field's is the write contract's verifier, below (W2: it replaced this check's yes/no value question).
-  const dropped = await verifyWrites(instruction, kept.flatMap((f) => {
+  // HA2 review 2, item 1: each value's notes are read once, before the owner check is sent, and bound as read.
+  const disclosed = new Map(kept.flatMap((f) => {
+    const value = values[Number(f.value.slice(1)) - 1];
+    return value === undefined ? [] : [[f.ref, sourceNotes(model, value.provenance, w.window.windowId)] as const];
+  }));
+  const { dropped, jev: owners } = await verifyWrites(instruction, kept.flatMap((f) => {
     const field = fields[Number(f.target.slice(1)) - 1];
     const value = values[Number(f.value.slice(1)) - 1];
     const name = field === undefined ? null : (names.get(field) ?? null);
-    return field === undefined || value === undefined || name === null ? [] : [{ key: f.ref, field: { name, label: field.label }, value }];
+    return field === undefined || value === undefined || name === null ? [] : [{ key: f.ref, field: { name, label: field.label }, value: { ...value, notes: disclosed.get(f.ref) ?? null } }];
   }), o.askJev, ledger);
   const unvetoed = kept.filter((f) => !dropped.has(f.ref));
   if (unvetoed.length === 0) throw new PlannerError("unsure", "Jev said every value the plan program chose is another person's");
@@ -284,8 +291,10 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   for (const f of unvetoed) if (pairOf(f) === null) throw new PlannerError("schema", `the plan program named ${f.target} and ${f.value}, which the snapshot did not list`);
   const minted = await mintWrites(unvetoed.map((f) => {
     const { field, value } = pairOf(f) as { field: Field; value: Value };
-    return { key: f.ref, w, node: field.node, name: field.name, text: value.text, provenance: value.provenance, owner: value.owner };
-  }), { askJev: o.askJev, ledger, instruction, now, authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null });
+    // HA2 review P1: a person's value is bound to the notes its owner check showed, rechecked before each write.
+    const notes = personalField(field.label) ? (disclosed.get(f.ref) ?? null) : null;
+    return { key: f.ref, w, node: field.node, name: field.name, text: value.text, provenance: notes === null ? value.provenance : bindNotes(value.provenance, notes, w.window.windowId), owner: value.owner };
+  }), { askJev: o.askJev, ledger, instruction, now, authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null }, savedValuesOf(memoryValues));
   const checkedFills = unvetoed.filter((f) => minted.mints.has(f.ref));
   if (checkedFills.length === 0) throw allRefused(minted.refused);
   const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
@@ -320,7 +329,8 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
     checked,
     answers: {},
     withheld: [],
-    jev: { calls: ran.stats.chooseCalls, costUsd: 0, latencyMs: 0 },
+    // HA2: the owner checks' requests count, as the chooser's do.
+    jev: { calls: ran.stats.chooseCalls + owners.calls, costUsd: owners.costUsd, latencyMs: owners.latencyMs },
     writer: use,
   };
 }
@@ -366,9 +376,78 @@ async function confirmFields(raw: string, unnamed: readonly Field[], askJev: Ask
   return out;
 }
 
-/** A field that takes a person's details: a name or a part of one, an email, a phone or an address. */
-function personalField(label: string): boolean {
-  return fieldPart(label) !== null || [...fieldKinds([label])].some((k) => k === "email" || k === "phone" || k === "address");
+/** A field that takes a person's details: a name or a part of one, an email, a phone, an address or a part of one. */
+export function personalField(label: string): boolean {
+  // HA2 (lead decision 2): a country is a part of a person's address too.
+  return fieldPart(label) !== null || asksCountry(label) || [...fieldKinds([label])].some((k) => k === "email" || k === "phone" || k === "address");
+}
+
+/**
+ * HA2: a whole text that holds a value (fill/note-unit.ts NoteUnit, complete), with its window's id. verifyWrites mints
+ * it through its request's Disclosure (onScreen). No window is held, so a goal inventory that freezes notes keeps only these.
+ */
+export interface SourceNote {
+  windowId: string;
+  /** The text area it is, or null for its whole window (note-unit.ts (c)). */
+  nodeKey: string | null;
+  text: string;
+  digest: string;
+}
+
+/** HA2: the window nodes a value was read from, with the span read there: a window provenance's, a derived value's base's and extra source's. */
+export function sourceRefs(pr: Provenance): { windowId: string; nodeKey: string; span: string }[] {
+  if (pr.kind === "window") return [{ windowId: pr.windowId, nodeKey: pr.nodeKey, span: pr.span }];
+  if (pr.kind !== "derived") return [];
+  return [...sourceRefs(pr.base), ...(pr.also === null ? [] : sourceRefs(pr.also))];
+}
+
+/**
+ * HA2: the notes an owner question about a value must show (fill/note-unit.ts, the lead's rules on the review): every
+ * unit on screen that holds each span it was read from, (a) all of them, (c) a text area or its whole window, never the
+ * form `form`. Null, which withholds a value from a field that wants the user's details, when a source is gone or (b) a
+ * unit redaction cut. Empty for a value from the instruction or memory, which no owner question judges.
+ */
+export function sourceNotes(model: ScreenModel, pr: Provenance, form: string | null): SourceNote[] | null {
+  const out = new Map<string, SourceNote>();
+  for (const r of sourceRefs(pr)) {
+    const units = unitsHolding(model, r.span, form, r);
+    if (units === null || units.some((u) => !u.complete)) return null;
+    for (const u of units) out.set(unitKey(u), { windowId: u.windowId, nodeKey: u.nodeKey, text: u.text, digest: u.digest });
+  }
+  return [...out.values()];
+}
+
+/**
+ * HA2 review P1: `pr` with every window source bound to the notes its owner judgement showed (contract.ts Provenance
+ * owned), so the recheck before each write refuses it once any of them changes. `notes` are the units that held each
+ * span (sourceNotes, or a goal's frozen ones).
+ */
+export function bindNotes(pr: Provenance, notes: readonly SourceNote[], form: string | null): Provenance {
+  if (pr.kind === "derived") return { ...pr, base: bindNotes(pr.base, notes, form), also: pr.also === null ? null : bindNotes(pr.also, notes, form) };
+  if (pr.kind !== "window") return pr;
+  const units = notes.filter((n) => n.text.replace(/\s+/gu, " ").includes(pr.span.replace(/\s+/gu, " ").trim()) || (n.windowId === pr.windowId && (n.nodeKey === null || n.nodeKey === pr.nodeKey)));
+  return { ...pr, owned: { form, units: units.map((u) => ({ windowId: u.windowId, nodeKey: u.nodeKey, digest: u.digest })) } };
+}
+
+/**
+ * HA2: each value's notes as they are now (sourceNotes), by the value's ref, or null for a value whose notes cannot be
+ * shown: what a goal inventory freezes at plan time for its gate's owner questions (goals/gates.ts jevGate). A value
+ * with no entry is withheld there from a field that wants the user's details.
+ */
+export function frozenNotes(model: ScreenModel, values: Iterable<{ ref: string; provenance?: Provenance; source: { windowId: string; key: string } | null }>, form: string | null): Map<string, readonly SourceNote[] | null> {
+  const out = new Map<string, readonly SourceNote[] | null>();
+  for (const v of values) {
+    const pr: Provenance | null = v.provenance ?? (v.source === null ? null : { kind: "window", windowId: v.source.windowId, nodeKey: v.source.key, app: "", title: "", span: "", label: null, line: null, partOf: null, context: null, lines: [], sentences: [] });
+    if (pr !== null) out.set(v.ref, sourceNotes(model, pr, form));
+  }
+  return out;
+}
+
+/** What verifyWrites' requests cost, for a draft's or a goal's Jev usage. */
+export interface CheckUse {
+  calls: number;
+  costUsd: number;
+  latencyMs: number;
 }
 
 const VERIFY = { yes: "Yes: this is the value this field asks for.", no: "No: it is another value, another person's, or not what this field asks for." } as const;
@@ -382,7 +461,12 @@ export interface WriteToVerify {
   key: string;
   /** `name` as the request's Disclosure minted it; `label`, code's reading of what the field takes, never sent. */
   field: { name: ModelText; label: string };
-  value: { display: ModelText; window: unknown; owner: "user" | "other" | null };
+  /**
+   * HA2: `notes` are the whole texts a window value was read from (sourceNotes, or a goal inventory's frozen ones), which
+   * both owner questions must show for the owner judgement to count; null when a source could not be read. A window
+   * value given no notes is treated as unread: it never passes.
+   */
+  value: { display: ModelText; window: unknown; owner: "user" | "other" | null; notes: readonly SourceNote[] | null };
   /**
    * Whether Jev is asked if the value belongs in the field (the `c` question). W2: a page write's exactness is the
    * write contract's verifier (fill/contract.ts checkValues), so only a calendar event, which no page step writes,
@@ -399,11 +483,43 @@ export interface WriteToVerify {
  * the value is another's (fill.ts WHOSE_CRITERIA and OWNER_CRITERIA, at WHOSE_CUTOFF); a value from memory is
  * the user's, and one written in the instruction is the user's own choice.
  */
-export async function verifyWrites(raw: string, writes: readonly WriteToVerify[], askJev: AskJev, ledger: Disclosure): Promise<Set<string>> {
+export async function verifyWrites(raw: string, writes: readonly WriteToVerify[], askJev: AskJev, ledger: Disclosure): Promise<{ dropped: Set<string>; jev: CheckUse }> {
   const d = ledger;
   const instruction = d.instruction(raw);
   // W2: nothing to ask when no write asks its value and none takes a person's details.
-  if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return new Set();
+  if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return { dropped: new Set(), jev: { calls: 0, costUsd: 0, latencyMs: 0 } };
+  // HA2 (lead decision 3): fill's rule on this path. Both owner questions about a window value name the whole notes it
+  // was read from, sent once in the state (source_notes) and charged to their windows' unchanged budgets; a value whose
+  // notes do not fit, or could not be read, is dropped below when its field wants the user's details.
+  const notes = new Map<string, ModelText>();
+  /** Each note's id ("note_1") as this request's Disclosure minted it. */
+  const noteSaid = new Map<string, ModelText>();
+  const noteIds = writes.map((x): string[] | null => {
+    if (!personalField(x.field.label) || x.value.window === null) return [];
+    if (x.value.notes === null || x.value.notes.length === 0) return null;
+    const ids: string[] = [];
+    for (const n of x.value.notes) {
+      let id = [...notes].find(([, t]) => t === n.text)?.[0];
+      if (id === undefined) {
+        // INT1: minted through this request's Disclosure as text a window it was built over shows in its redacted view
+        // (Disclosure.onScreen), within that window's own budget, or not at all: a frozen note no window still shows
+        // whole is never sent. HA2's allotment past the budget waits for the output-based ledger (privacy.ts
+        // OWNER_NOTE_CHARS, TODO(INT1)).
+        const said = d.onScreen(n.text);
+        if (said === null) return null;
+        // The id is a key of the request's state, which PV2 holds to identifiers (disclosure.ts KEY): "note_1", not "note 1".
+        id = `note_${notes.size + 1}`;
+        notes.set(id, said);
+        noteSaid.set(id, d.id(id));
+      }
+      ids.push(id);
+    }
+    return ids;
+  });
+  const noteSays = (i: number): ModelText => {
+    const ids = noteIds[i];
+    return ids === null || ids === undefined || ids.length === 0 ? d.own("") : d.t` The whole text it was read from is ${d.join(ids.flatMap((id) => noteSaid.get(id) ?? []), " and ")} in source_notes; whose it is depends on all of that text.`;
+  };
   const declared = ledger.declared();
   const req = (wording: 0 | 1): JevRequest => {
     const questions: JevRequest["questions"] = {};
@@ -420,13 +536,25 @@ export async function verifyWrites(raw: string, writes: readonly WriteToVerify[]
       };
       if (!personalField(x.field.label)) return;
       questions[`f${i + 1}`] = { type: "choice", instructions: wording === 0 ? d.t`The user asked: "${instruction}". A form has the field '${name}'. Whose details does this field ask for?` : d.t`Field: '${name}'. Instruction: "${instruction}". Is this field for the details of the user filling in the form, of someone else, or can you not tell?`, criteria: d.ownRecord(WHOSE_CRITERIA) };
-      if (x.value.window !== null) questions[`v${i + 1}`] = { type: "choice", instructions: wording === 0 ? d.t`A value on the user's screen: ${shown} Whose details is it?` : d.t`Whose details is this value, the user's or someone else's? ${shown}`, criteria: d.ownRecord(OWNER_CRITERIA) };
+      if (x.value.window !== null) questions[`v${i + 1}`] = { type: "choice", instructions: wording === 0 ? d.t`A value on the user's screen: ${shown}${noteSays(i)} Whose details is it?` : d.t`Whose details is this value, the user's or someone else's? ${shown}${noteSays(i)}`, criteria: d.ownRecord(OWNER_CRITERIA) };
     });
-    return sentOnly(d.seal({ purpose: "plan.verify", state: { instruction, task: d.own("Caret checks each value a drafted plan would write before offering the plan.") }, questions, snippets: declared.snippets, charged: declared.charged }));
+    const state = { instruction, task: d.own("Caret checks each value a drafted plan would write before offering the plan."), ...(notes.size === 0 ? {} : { source_notes: Object.fromEntries(notes) }) };
+    return sentOnly(d.seal({ purpose: "plan.verify", state, questions, snippets: declared.snippets, charged: declared.charged }));
+  };
+  const reqs = [req(0), req(1)] as const;
+  /** HA2: whether both requests, as built, show every note of write `i` in its owner question and carry it whole. */
+  const shown = (i: number): boolean => {
+    const ids = noteIds[i];
+    if (ids === null || ids === undefined) return false;
+    return reqs.every((q) => {
+      const ins = String(q.questions[`v${i + 1}`]?.instructions ?? "");
+      const sent = (q.state as { source_notes?: Record<string, string> }).source_notes ?? {};
+      return (ids.length === 0 || ins.includes(`${ids.join(" and ")} in source_notes`)) && ids.every((id) => sent[id] === notes.get(id));
+    });
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {
-    r = await Promise.all([askJev(req(0)), askJev(req(1))]);
+    r = await Promise.all([askJev(reqs[0]), askJev(reqs[1])]);
   } catch (e) {
     throw jevFailedError(e);
   }
@@ -440,9 +568,11 @@ export async function verifyWrites(raw: string, writes: readonly WriteToVerify[]
     if (!personalField(x.field.label)) return;
     const wants = agreed(`f${i + 1}`, WHOSE_CRITERIA, WHOSE_CUTOFF);
     const is = x.value.window === null ? x.value.owner : agreed(`v${i + 1}`, OWNER_CRITERIA, WHOSE_CUTOFF);
-    if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is) out.add(x.key);
+    if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is) return void out.add(x.key);
+    // HA2: an owner judgement about a window value counts only when both questions showed its whole notes.
+    if (wants === "user" && x.value.window !== null && !shown(i)) out.add(x.key);
   });
-  return out;
+  return { dropped: out, jev: { calls: 2, costUsd: (r[0]?.costUsd ?? 0) + (r[1]?.costUsd ?? 0), latencyMs: Math.max(r[0]?.latencyMs ?? 0, r[1]?.latencyMs ?? 0) } };
 }
 
 /** Every string a request carries in its state and questions. */

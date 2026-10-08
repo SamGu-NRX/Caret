@@ -14,7 +14,7 @@ import { ContractError, fieldContract, type FieldContract } from "../fill/contra
 import type { Node } from "../protocol.ts";
 import { eventCandidate, eventWord, sentences, spansIn } from "../offers/event-card.ts";
 import type { EventClock } from "../offers/event-time.ts";
-import { valueList, type Value } from "../planner/codeplan.ts";
+import { frozenNotes, valueList, type Value } from "../planner/codeplan.ts";
 import { mintFieldName, writableFields } from "../planner/planner.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { WINDOW_CHARS } from "../privacy.ts";
@@ -22,6 +22,7 @@ import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects } from "./capabilities.ts";
 import { markDerived } from "./gates.ts";
 import { owedFields, type OwedField } from "./left.ts";
+import { readableFields, savedValuesOf, type ReadableField } from "../fill/alternate.ts";
 import type { GoalControl, GoalDomain, GoalInventory, ReadValue, TargetBinding, ValueBinding, ValueOrigin } from "./plan.ts";
 
 /** Windows one goal may act in. With the calendar, that is the writer's four snapshots (PlanInputSchema). */
@@ -101,6 +102,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   const windowRefs = new Map<string, string>();
   const texts = new Map<string, { title: string; text: string; message: string }>();
   const owed = new Map<string, OwedField[]>();
+  const readable = new Map<string, readonly ReadableField[]>();
   const snapshots: Minted<PlanningSnapshot>[] = [];
   const d = ledger;
   let t = 0;
@@ -127,6 +129,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     // Completion is local: a required field Caret never types still needs the user.
     // Raw obligation labels stay in inventory.owed, never in the writer's snapshots.
     owed.set(w.window.windowId, owedFields(localWindows.get(w.window.windowId) ?? w));
+    readable.set(w.window.windowId, readableFields(localWindows.get(w.window.windowId) ?? w));
     const doc = o.pageDocument?.(w.window.windowId) ?? null;
     if (doc !== null) documents.set(w.window.windowId, doc);
     const title = w.window.title.slice(0, 200);
@@ -214,7 +217,10 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     const name = d.memoryText(null, o.calendar);
     if (name !== null) snapshots.push({ snapshot: d.id(`s${snapshots.length + 1}`), window: d.id(`w${snapshots.length + 1}`), revision: d.own("calendar"), title: d.t`Calendar '${name}'`, targets: [{ ref: d.id(ref), label: name, kind: d.own("calendar"), canFill: true, options: [], allowedPressEffects: [] }], values: [], questions: [] });
   }
-  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed }, ledger };
+  // V6 B2: the user's own values of a kind, for the alternate-field veto; a person's entry is not the user's.
+  const saved = savedValuesOf(o.memory);
+  // HA2: every value's source note, frozen now, for the value gate's owner questions (gates.ts jevGate).
+  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed, alternates: { fields: readable, saved }, notes: frozenNotes(model, values.values(), null) }, ledger };
 }
 
 /**
