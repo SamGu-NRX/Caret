@@ -81,7 +81,12 @@ export interface Revealed {
  * any other window gives 1200.
  */
 export function limitOf(inv: LineInventory, conversation: boolean): number {
-  return conversation ? Math.min(CONVERSATION_CHARS, Math.max(0, Math.floor((inv.total - 1) / 2))) : WINDOW_CHARS;
+  return limitOfTotal(inv.total, conversation);
+}
+
+/** limitOf for a window of `total` characters: the conversation limit, or WINDOW_CHARS. */
+export function limitOfTotal(total: number, conversation: boolean): number {
+  return conversation ? Math.min(CONVERSATION_CHARS, Math.max(0, Math.floor((total - 1) / 2))) : WINDOW_CHARS;
 }
 
 /** A suffix automaton over normalized measured units, BOUNDARY between them. */

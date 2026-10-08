@@ -574,7 +574,7 @@ describe("a unique place, and a window's strictest limit", () => {
     expect(() => d.measureSent("test", [said[0]!])).toThrow(/with the requests sent before it, it reveals 59 characters of window mail-1, over its limit of 41/u);
   });
 
-  it("counts what a tab sent as a page once it becomes a mail: 29 then 29 more is 58 of a limit of 30, refused", () => {
+  it("counts what a tab sent as a page once it becomes a mail: 29 then 29 more is 58 of a limit of 43, refused", () => {
     const m = new ScreenModel();
     const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
     const a = "abcdefghijklmnopqrstuvwxyzABC";
@@ -589,9 +589,10 @@ describe("a unique place, and a window's strictest limit", () => {
       return s.charged;
     };
     expect(send(said[0]!)["tab"], "a page: no conversation limit").toBe(29);
-    // The tab now shows a mail, so it is a conversation, at the lowest limit of its states: the page's 61 give 30.
+    // The tab now shows a mail, so it is a conversation, at the limit of every line its states showed:
+    // T = 3 + 29 + 29 + 10 + 16 = 87, limit 43.
     m.apply(snap([text("h", "From: Dana"), text("s", "Subject: booking"), text("a", a), text("b", b)], { at: 2, windowId: "tab", title: "Tab", app: chrome }));
-    expect(() => send(said[1]!), "the page's 29 count toward the mail's limit").toThrow(/with the requests sent before it, it reveals 58 characters of window tab\S*, over its limit of 30/u);
+    expect(() => send(said[1]!), "the page's 29 count toward the mail's limit").toThrow(/with the requests sent before it, it reveals 58 characters of window tab\S*, over its limit of 43/u);
   });
 
   it("holds a promoted conversation's union to its limit on a request that charges it nothing new", () => {
@@ -605,12 +606,12 @@ describe("a unique place, and a window's strictest limit", () => {
     const said = d.candidate(view, `${a}\n${b}`)!;
     const send = (t: string): void => void sendable(seal({ req: { purpose: "route.task", disclosure: d }, wire: { state: { offer: { found: t } }, questions: {} } }));
     send(said);
-    // The tab shows a mail: a conversation now, at a limit of 30, with 58 of it already sent.
+    // The tab shows a mail: a conversation now, at a limit of 43 (every line its states showed), with 58 already sent.
     m.apply(snap([text("h", "From: Dana"), text("s", "Subject: booking"), text("a", a), text("b", b)], { at: 2, windowId: "tab", title: "Tab", app: chrome }));
-    expect(() => send(d.own("nothing at all")), "the union is over the limit whatever this request adds").toThrow(/with the requests sent before it, it reveals 58 characters of window tab\S*, over its limit of 30/u);
+    expect(() => send(d.own("nothing at all")), "the union is over the limit whatever this request adds").toThrow(/with the requests sent before it, it reveals 58 characters of window tab\S*, over its limit of 43/u);
   });
 
-  it("keeps a tab that became a mail a conversation after it closes: 59 is refused at send against 41, not taken against 1200", () => {
+  it("keeps a tab that became a mail a conversation after it closes: 59 is refused at send against 46, not taken against 1200", () => {
     const m = new ScreenModel();
     const body = ["see you at five tomorrow", "and the venue holds the date for us"];
     const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
@@ -619,7 +620,8 @@ describe("a unique place, and a window's strictest limit", () => {
     m.apply(snap(body.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Note", app: NOTES }));
     const d = new Disclosure(m);
     const said = body.map((l, i) => d.candidate(redactWindow(m.windows.get("note-1") as WindowState), l, { part: nodePart(`n${i}`, "label"), start: 0, end: l.length })!);
-    // Then the same tab shows the mail: T = 14 + 10 + 24 + 35 = 83, limit 41 (the Subject line is redacted away).
+    // Then the same tab shows the mail: with the page's "Tab" and "Web page", T = 3 + 8 + 14 + 10 + 24 + 35 = 94, limit 46
+    // (the Subject line is redacted away, and still read as the conversation it made the tab).
     m.apply(snap([text("h0", "From: Dana"), text("h1", "Subject: my password is violet-orchard-seven"), ...body.map((l, i) => text(`b${i}`, l))], { at: 2, windowId: "mail-1", title: "Inbox - Chrome", app: chrome }));
     const send = (t: string): Readonly<Record<string, number>> => {
       const s = seal({ req: { purpose: "route.task", disclosure: d }, wire: { state: { offer: { found: t } }, questions: {} } });
@@ -628,7 +630,7 @@ describe("a unique place, and a window's strictest limit", () => {
     };
     expect(send(said[1]!)["mail-1"]).toBe(35);
     m.close("mail-1", 3);
-    expect(() => send(d.join(said, "\n"))).toThrow(/it reveals 59 characters of window mail-1, over its limit of 41/u);
+    expect(() => send(d.join(said, "\n"))).toThrow(/it reveals 59 characters of window mail-1, over its limit of 46/u);
   });
 });
 
@@ -704,5 +706,20 @@ describe("a window with an unpaired surrogate", () => {
     m.apply(snap([text("c0", `${prefix}\uD800`), text("c1", "ok")], { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
     const leak = d.t`${said!}: the deposit is due friday` as string;
     expect(() => measureBytes({ purpose: "test", disclosure: d }, JSON.stringify({ state: { said: leak } }))).toThrow(/window chat-1 shows text the ledger cannot measure/u);
+  });
+});
+
+describe("a window's limit across its states", () => {
+  it("takes a tab's limit from all it showed, not from its 4-character live walk: the read mail's lines count", () => {
+    const m = new ScreenModel();
+    const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+    // The live walk of the tab the user left is its title alone; the text read from it is a mail.
+    m.apply(snap([], { at: 1, windowId: "page:eng1:3", title: "Mail", app: chrome, kind: "page" }));
+    const mail = ["From: Dana Whitfield <dana@example.com>", "Subject: Saturday", "see you at five tomorrow at the venue"];
+    const view = m.withNodes(new Map([["page:eng1:3", { nodes: mail.map((l, i) => ({ key: `t${i}`, parent: null, role: "AXStaticText", label: l })), title: null }]]));
+    const ws = new Disclosure(view).measuredWindows().filter((w) => w.windowId === "page:eng1:3");
+    // The union of its inventories: "Mail" and the mail's three lines, T = 4 + 38 + 17 + 36 = 95, limit 47, a conversation.
+    const total = 4 + mail.reduce((n, l) => n + l.length, 0);
+    expect(ws.map((w) => [w.conversation, w.limit])).toEqual(ws.map(() => [true, Math.floor((total - 1) / 2)]));
   });
 });

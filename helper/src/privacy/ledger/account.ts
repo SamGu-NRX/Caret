@@ -12,7 +12,7 @@ import { isConversation } from "../../conversation.ts";
 import { builtFromConversation, isRedacted, redactWindow } from "../../fill/redact.ts";
 import { LedgerEncodingError, ledgerNormalizeV1, type Normalized } from "./normalize.ts";
 import { partsOf, readParts } from "./source.ts";
-import { inventoryOf, limitOf, spanPositions, UnitProbe, withPositions, type DeclaredSpan, type LineInventory, type Revealed } from "./measure.ts";
+import { inventoryOf, limitOfTotal, spanPositions, UnitProbe, withPositions, type DeclaredSpan, type LineInventory, type Revealed } from "./measure.ts";
 
 export { sectionTexts } from "./source.ts";
 
@@ -88,18 +88,22 @@ const viewOf = (w: WindowState): WindowState => (isRedacted(w) ? w : redactWindo
  * name in the state the task found it; a later state of the same id is `id@n`. Classified by the raw window where there
  * is one, since redaction can empty a title the conversation rule reads.
  */
-/** A window's strictest classification and lowest limit in an operation so far (measuredWindows' `fixed`). */
+/**
+ * A window's strictest classification and every line any of its states showed, in an operation so far
+ * (measuredWindows' `fixed`). Keyed by line, as the operation's charges are (sourceKeys).
+ */
 export interface FixedClass {
   readonly conversation: boolean;
-  readonly limit: number;
+  readonly lines: ReadonlySet<string>;
 }
 
 /**
- * `fixed`: each window id's strictest classification and lowest limit the operation has measured, kept for the
- * operation. Once any state of a window is a conversation, every state of it is one, at the lowest limit any state had:
- * a tab first measured as a page that later shows a mail, or a mail whose redacted view loses the headers that made it
- * one, or a closed window's kept view, cannot go back to a page's limit. All of a call's states are classified before
- * any is measured, so the order they are listed in does not matter.
+ * `fixed`: each window id's strictest classification and the union of its states' inventory lines, kept for the
+ * operation. Once any state of a window is a conversation every state of it is one, at the limit of everything its
+ * states showed: a tab first measured as a page that later shows a mail, or a mail whose kept view lost the headers
+ * that made it one, cannot go back to a page's limit, and a partial view (a tab's 4-character live walk beside the text
+ * read from it) cannot set the limit of what the window showed (OUTPUT-LEDGER-SPEC section 7). All of a call's states
+ * are classified before any is measured, so the order they are listed in does not matter.
  */
 export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowState>, fixed: Map<string, FixedClass> = new Map()): MeasuredWindow[] {
   const states: { raw: WindowState; view: WindowState; inv: LineInventory }[] = [];
@@ -113,20 +117,18 @@ export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowS
   for (const { raw, inv } of states) {
     const id = raw.window.windowId;
     const was = fixed.get(id);
-    const conversation = was?.conversation === true || heldAsConversation(raw);
-    fixed.set(id, { conversation, limit: Math.min(limitOf(inv, conversation), was?.limit ?? Number.POSITIVE_INFINITY) });
+    const lines = new Set(was?.lines ?? []);
+    for (const l of inv.lines) lines.add(l);
+    fixed.set(id, { conversation: was?.conversation === true || heldAsConversation(raw), lines });
   }
-  // A page state measured before a later state made the window a conversation is held to that state's limit too.
-  for (const { raw, inv } of states) {
-    const id = raw.window.windowId;
-    const was = fixed.get(id)!;
-    if (was.conversation) fixed.set(id, { conversation: true, limit: Math.min(was.limit, limitOf(inv, true)) });
-  }
+  const limits = new Map<string, number>();
   const out: MeasuredWindow[] = [];
   for (const { raw, view, inv } of states) {
     const id = raw.window.windowId;
     const older = out.filter((m) => m.windowId === id).length;
-    const { conversation, limit } = fixed.get(id)!;
+    const { conversation, lines } = fixed.get(id)!;
+    let limit = limits.get(id);
+    if (limit === undefined) limits.set(id, (limit = limitOfTotal([...lines].reduce((n, l) => n + l.length, 0), conversation)));
     out.push({ key: older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limit, conversation });
   }
   return out;
