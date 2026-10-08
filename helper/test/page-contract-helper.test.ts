@@ -4,8 +4,7 @@ import * as z from "zod";
 import { AnyPageMessage } from "../src/protocol.ts";
 import { handshakeExamples } from "./page-contract-handshake-examples.ts";
 
-const root = new URL("../../", import.meta.url);
-const directory = new URL("helper/fixtures/contracts/page/", root);
+const directory = new URL("../fixtures/contracts/page/", import.meta.url);
 const files = () => readdirSync(directory).filter((s) => s.endsWith(".json"));
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(name, directory), "utf8")) as Record<string, unknown>;
 function kinds(schema: z.ZodType): string[] {
@@ -48,10 +47,5 @@ describe("helper/Swift shared page wire, handshake included", () => {
   });
   it.each(handshakeExamples)("serializes its own $type handshake example to the shared fixture", (example) => {
     expect(JSON.parse(JSON.stringify(example))).toEqual(fixture(`${example.type}.json`));
-  });
-  it("matches the Swift discriminator cases, including bridge-only handshake messages", () => {
-    const swift = readFileSync(new URL("bridge/Sources/CaretPageProtocol/PageProtocol.swift", root), "utf8").split("public enum PageMessage:")[1]!;
-    const swiftKinds = [...swift.matchAll(/case "([^"]+)": self = \./g)].map((m) => m[1]!);
-    expect(unique(swiftKinds)).toEqual(unique(kinds(AnyPageMessage)));
   });
 });

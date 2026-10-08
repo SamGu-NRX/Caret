@@ -44,7 +44,19 @@ export const ENV = Object.fromEntries(entries.map((e) => [e.key, e.name])) as {
 /** The environment typed to the names above, so reading an unlisted name is a type error. */
 export type HostEnv = { readonly [N in Entry["name"]]?: string };
 
-/** The helper's only reference to process.env (test/host-env.test.ts). Read per call: test setup replaces process.env. */
+const listed: ReadonlySet<string> = new Set(entries.map((e) => e.name));
+const present = (name: string | symbol): name is Entry["name"] => typeof name === "string" && listed.has(name) && Object.hasOwn(process.env, name);
+
+/**
+ * The helper's only reference to process.env (test/host-env.test.ts): listed names, read live, by key, enumeration or
+ * spread; any other name reads as unset. Live because test setup replaces process.env with a guard on reads.
+ */
+const view: HostEnv = new Proxy({}, {
+  get: (_, name) => (typeof name === "string" && listed.has(name) ? process.env[name] : undefined),
+  ownKeys: () => [...listed].filter(present),
+  getOwnPropertyDescriptor: (_, name) => (present(name) ? { value: process.env[name], enumerable: true, configurable: true } : undefined),
+});
+
 export function processEnv(): HostEnv {
-  return process.env;
+  return view;
 }

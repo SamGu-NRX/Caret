@@ -26,8 +26,10 @@ const Completion = z
   })
   .strict();
 const Failure = z.object({ id: z.string().nullable(), ok: z.literal(false), error: z.string() }).strict();
-/** Every line caret-local-model writes, keyed by its Swift type in apps/local-model/Sources/LocalModelCore/Wire.swift. */
-export const LOCAL_MODEL_RESPONSES = { Ready, NotReady, Completion, Failure };
+/** The tool's first line, after loading the model. */
+export const LoadLine = z.discriminatedUnion("ready", [Ready, NotReady]);
+/** The tool's answer to one request. */
+export const AnswerLine = z.discriminatedUnion("ok", [Completion, Failure]);
 
 export type LocalCompletion = z.infer<typeof Completion>;
 
@@ -154,19 +156,18 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
       timer = setTimeout(() => reject(new LocalModelError("timeout", `loading, ${loadTimeout} ms`)), loadTimeout);
     }),
   ]).finally(() => clearTimeout(timer));
-  const head = parse(first);
-  const notReady = NotReady.safeParse(head);
-  if (notReady.success) throw new LocalModelError(classify(notReady.data.error) === "crash" ? "modelMissing" : classify(notReady.data.error), "loading");
-  const ready = Ready.safeParse(head);
-  if (!ready.success) throw new LocalModelError("protocol", "no Ready line");
+  const head = LoadLine.safeParse(parse(first));
+  if (!head.success) throw new LocalModelError("protocol", "no Ready line");
+  if (!head.data.ready) throw new LocalModelError(classify(head.data.error) === "crash" ? "modelMissing" : classify(head.data.error), "loading");
+  const ready = head.data;
 
   let seq = 0;
   // One request at a time: each waits for the one before it, so answers pair with requests by order and id.
   let queue: Promise<unknown> = Promise.resolve();
   return {
-    model: ready.data.model,
-    loadMs: ready.data.loadMs,
-    memoryAtLoad: ready.data.memory,
+    model: ready.model,
+    loadMs: ready.loadMs,
+    memoryAtLoad: ready.memory,
     complete(req, signal) {
       assertNoExcludedValue({ input: { prefix: req.prefix, prompt: req.prompt } });
       const id = `r${++seq}`;
@@ -176,13 +177,12 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
         stdin.write(JSON.stringify({ id, prefix: req.prefix, prompt: req.prompt, grammar: req.grammar, maxTokens: req.maxTokens }) + "\n");
         // An abort cannot stop the tool mid-request; the answer is read and dropped so the next pairs correctly.
         const body = parse(await nextLine());
-        const f = Failure.safeParse(body);
-        if (f.success) throw new LocalModelError("refused", `request ${id}`);
-        const c = Completion.safeParse(body);
-        if (!c.success) throw new LocalModelError("protocol", `request ${id}: not a completion`);
-        if (c.data.id !== id) throw new LocalModelError("protocol", `request ${id}: answered out of turn`);
+        const answer = AnswerLine.safeParse(body);
+        if (!answer.success) throw new LocalModelError("protocol", `request ${id}: not a completion`);
+        if (!answer.data.ok) throw new LocalModelError("refused", `request ${id}`);
+        if (answer.data.id !== id) throw new LocalModelError("protocol", `request ${id}: answered out of turn`);
         signal?.throwIfAborted();
-        return c.data;
+        return answer.data;
       };
       const p = queue.then(run, run);
       queue = p.catch(() => undefined);

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 import { tokenizer } from "acorn";
 import { describe, expect, it } from "vitest";
-import { ENV, HOST_ENV, HELPER_ONLY_ENV } from "../src/host-env.ts";
+import { ENV, HOST_ENV, HELPER_ONLY_ENV, processEnv } from "../src/host-env.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const read = (path: string) => readFileSync(join(root, path), "utf8");
@@ -57,6 +57,20 @@ describe("native/helper environment contract", () => {
     "const { env } = process", "const p = process; p.env.E", "Object.entries(process.env)", 'import { env } from "node:process"',
   ])("reports %s with its file and line", (sample) => {
     expect(envReferences(`// process.env in a comment\n${sample};`, "probe.ts")).toEqual(["probe.ts:2: process.env outside host-env.ts"]);
+  });
+  it("exposes listed names only, by key, by enumeration or by spreading", () => {
+    process.env.CARET_NOT_LISTED = "unlisted";
+    process.env[ENV.caret_jev_model] = "listed";
+    try {
+      const env = processEnv();
+      expect(Object.entries(env).find(([k]) => k === "CARET_NOT_LISTED")?.[1]).toBeUndefined();
+      expect((env as Record<string, unknown>).CARET_NOT_LISTED).toBeUndefined();
+      expect(env[ENV.caret_jev_model]).toBe("listed");
+      expect({ ...env }[ENV.caret_jev_model]).toBe("listed");
+    } finally {
+      delete process.env.CARET_NOT_LISTED;
+      delete process.env[ENV.caret_jev_model];
+    }
   });
   it("ignores other process members and the word in strings", () => {
     expect(envReferences('process.exit(1); process.stdout.write("process.env"); const s = "process";', "probe.ts")).toEqual([]);

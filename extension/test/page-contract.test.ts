@@ -71,12 +71,13 @@ describe("extension/helper page contract", () => {
     expect(outcomes.sort()).toEqual(["late:error", "press:handoff", "read:ok", "walk:ok", "write:ok"]);
   });
 
-  it("sends only messages the helper's schema accepts", () => {
-    for (const m of sent) expect(EngineMessage.safeParse(m).error?.issues ?? [], `${String(m.type)} ${String(m.id ?? "")}`).toEqual([]);
+  // Zod drops keys a schema does not name, so equality after parsing catches a field the helper would lose.
+  it("sends only messages the helper's schema accepts whole", () => {
+    for (const m of sent) expect(EngineMessage.parse(m), `${String(m.type)} ${String(m.id ?? "")}`).toEqual(m);
   });
 
-  it.each(fixtures)("$name parses with the helper's schema", ({ value }) => {
-    expect(AnyPageMessage.safeParse(value).error?.issues ?? []).toEqual([]);
+  it.each(fixtures)("$name parses whole with the helper's schema", ({ value }) => {
+    expect(AnyPageMessage.parse(value)).toEqual(value);
   });
 
   it("decodes every helper-to-extension fixture with the worker's own decoder", () => {
