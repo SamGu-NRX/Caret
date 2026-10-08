@@ -353,6 +353,31 @@ describe("declared spans at mint and at seal", () => {
   });
 });
 
+// Astra's recheck of 0deb3e23, inside the promise's scope: a minted or derived unit is charged every source position of
+// what it reproduces, punctuation, ellipses and combining marks included.
+describe("what a minted unit takes from its window", () => {
+  const note = (lines: string[]): { m: ScreenModel; d: Disclosure; view: WindowState } => {
+    const m = new ScreenModel();
+    m.apply(snap(lines.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Note", app: NOTES }));
+    return { m, d: new Disclosure(m), view: redactWindow(m.windows.get("note-1") as WindowState) };
+  };
+
+  it("charges a value read with interior ellipses its whole range: 'a……b' from 'a……b.' is 4", () => {
+    const { d, view } = note(["a\u2026\u2026b."]);
+    const v = d.candidate(view, "a\u2026\u2026b");
+    expect(d.measureSent("test", [v!]).charged["note-1"]).toBe(4);
+  });
+
+  it("charges a derivation the punctuation and combining marks it reproduces", () => {
+    const e = "\u00e9\u0300\u0302";
+    const { d, view } = note(["(1), (2).", `${e}.`]);
+    const paren = d.derived(d.basis(view, "(1), (2).")!, "(1), (2)");
+    expect(d.measureSent("test", [paren!]).charged["note-1"]).toBe(8);
+    const marked = d.derived(d.basis(view, `${e}.`)!, e);
+    expect(d.measureSent("test", [marked!]).charged["note-1"]).toBe(3);
+  });
+});
+
 // Sol review of 9d110306, P1: a declared nested JSON text is measured as the text it decodes to.
 describe("a JSON state at seal", () => {
   it("measures the strings a JSON state holds, not its escaped spelling", () => {

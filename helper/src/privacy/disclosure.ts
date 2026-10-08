@@ -606,7 +606,7 @@ export class Disclosure extends SnippetLedger {
     // measure it, and declared under the first basis's window (OUTPUT-LEDGER-SPEC: charge the final text, not its bases).
     const view = bases.find((b): b is Basis => b instanceof Basis && b.view !== null)?.view ?? null;
     if (view !== null) this.know(view);
-    // Its declared spans: its words where they stand in a basis read from a view, and a minted base's own spans.
+    // Its declared spans: what it reproduces of a basis read from a view, and a minted base's own spans.
     const spans: ViewSpan[] = bases.flatMap((b) => (b instanceof Basis ? (b.view === null ? [] : [{ view: b.view, text, within: b.text }]) : (this.spans.get(b) ?? [])));
     if (!this.admitTexts([text], { under: view === null ? null : view.window.windowId, kind: "candidate", spans })) return null;
     this.declareSpans(text, spans);

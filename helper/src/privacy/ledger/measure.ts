@@ -190,19 +190,21 @@ export function reveal(index: UnitIndex, inv: LineInventory): Revealed {
 
 /**
  * A minted unit's declared span: the source text it was read from (OUTPUT-LEDGER-SPEC section 4). A derivation's span
- * is its own words where they stand `within` its basis text.
+ * is what its text reproduces `within` its basis text.
  */
 export interface DeclaredSpan {
   readonly text: string;
   readonly within?: string;
 }
 
-/** A text's pieces as a span reads them: split at line breaks and at an ellipsis, whitespace collapsed and trimmed. */
+/**
+ * A text's pieces as a span reads them: its lines, whitespace collapsed and trimmed, less an ellipsis at either end (a
+ * cut's mark, as disclosure.ts viewHolds reads a text). An ellipsis inside a line stands in the source, so it stays.
+ */
 function pieces(text: string): number[][] {
   return text
-    .split("\n")
-    .flatMap((l) => l.split("\u2026"))
-    .map((x) => x.replace(/\s+/gu, " ").trim())
+    .split(/\r?\n/u)
+    .map((x) => x.replace(/\s+/gu, " ").trim().replace(/^\u2026|\u2026$/gu, "").trim())
     .filter((x) => x !== "" && x.isWellFormed())
     .map((x) => [...ledgerNormalizeV1(x).cps])
     .filter((x) => x.length > 0);
@@ -233,7 +235,8 @@ function chosen(inv: LineInventory, piece: readonly number[]): { li: number; a: 
     if (!texts[li]!.includes(needle)) return;
     for (const a of occurrences(line.cps, piece)) {
       const cls = a === 0 && piece.length === line.cps.length ? 0 : !isWord(line.cps[a - 1]) && !isWord(line.cps[a + piece.length]) ? 1 : 2;
-      const size = new Set(line.origins.slice(a, a + piece.length).flat()).size;
+      const { lo, hi } = sourceRange(line, a, piece.length);
+      const size = hi - lo + 1;
       const better =
         best === null ||
         cls < best.cls ||
@@ -245,10 +248,28 @@ function chosen(inv: LineInventory, piece: readonly number[]): { li: number; a: 
 }
 
 /**
+ * The source positions normalized scalars `a` to `a + len` of a line came from, as one range: every position from the
+ * first to the last, so a character normalization drops or merges inside the range is covered too.
+ */
+function sourceRange(line: Normalized, a: number, len: number): { lo: number; hi: number } {
+  let lo = Infinity;
+  let hi = -1;
+  for (let k = a; k < a + len; k++) {
+    for (const p of line.origins[k]!) {
+      if (p < lo) lo = p;
+      if (p > hi) hi = p;
+    }
+  }
+  return { lo, hi };
+}
+
+/**
  * The positions of `inv` a declared span reveals, at any length, compared after ledgerNormalizeV1: for each piece of
- * its text, the one place it is taken to stand (chosen); or, for a derivation, each of its words (runs of letters and
- * digits) where it first stands inside the place each piece of its basis is taken to stand. A span is what a builder
- * read the unit from, so it is charged in full, however short; one place per piece, since the unit shows the text once.
+ * its text, the source range of the one place it is taken to stand (chosen). For a derivation, within the place each
+ * piece of its basis is taken to stand, what the derived text reproduces: from each position of the derived text in
+ * turn, the longest stretch of it the piece holds, at its leftmost occurrence there, punctuation and marks included. A
+ * span is what a builder read the unit from, so it is charged in full, however short; one place per piece, since the
+ * unit shows the text once.
  */
 export function spanPositions(inv: LineInventory, span: DeclaredSpan): Uint8Array {
   let cache = SPANS.get(inv);
@@ -273,20 +294,30 @@ const SPANS = new WeakMap<LineInventory, Map<string, Uint8Array>>();
 function placeSpan(inv: LineInventory, span: DeclaredSpan): Uint8Array {
   const bits = new Uint8Array(inv.total);
   const mark = (li: number, a: number, len: number): void => {
-    for (let k = a; k < a + len; k++) for (const p of inv.normalized[li]!.origins[k]!) bits[inv.starts[li]! + p] = 1;
+    const { lo, hi } = sourceRange(inv.normalized[li]!, a, len);
+    for (let p = lo; p <= hi; p++) bits[inv.starts[li]! + p] = 1;
   };
-  const words = span.within === undefined ? null : String.fromCodePoint(...ledgerNormalizeV1(span.text).cps).split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "").map((w) => Array.from(w, (c) => c.codePointAt(0)!));
+  const derived = span.within === undefined ? null : ledgerNormalizeV1(span.text).cps;
   for (const piece of pieces(span.within ?? span.text)) {
     const at = chosen(inv, piece);
     if (at === null) continue;
-    if (words === null) {
+    if (derived === null) {
       mark(at.li, at.a, piece.length);
       continue;
     }
     const cps = inv.normalized[at.li]!.cps;
-    for (const w of words) {
-      const b = occurrences(cps, w, at.a, at.a + piece.length).next();
-      if (!b.done) mark(at.li, b.value, w.length);
+    const segment = String.fromCodePoint(...piece);
+    for (let i = 0; i < derived.length; ) {
+      // The longest stretch from i the piece holds; a native substring test, then its leftmost place in the piece.
+      let len = 0;
+      while (i + len < derived.length && segment.includes(String.fromCodePoint(...derived.slice(i, i + len + 1)))) len++;
+      if (len === 0) {
+        i++;
+        continue;
+      }
+      const b = occurrences(cps, derived.slice(i, i + len), at.a, at.a + piece.length).next();
+      if (!b.done) mark(at.li, b.value, len);
+      i += len;
     }
   }
   return bits;

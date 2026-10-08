@@ -28,11 +28,12 @@ export function refUnits(json: string): string[] {
  * The positions of one window (its distinct lines, in order) that the units reveal, as sorted `line:offset` keys: every
  * source substring of K or more normalized scalars, or a whole line of any length, that equals a stretch of some unit;
  * and, for each piece of a declared span (`spans`: the source texts the window's minted units present in the output were
- * read from), at any length, the one place it is taken to stand: a whole line first, then an occurrence with no letter
- * or digit either side, then any; the most source positions; the line that sorts first; the leftmost. A span's pieces
- * are its text split at line breaks and at "…", each with its whitespace collapsed and trimmed. A derivation's span
- * (`within` its basis) marks each of its words (runs of letters and digits) where it first stands inside the place of
- * a piece of the basis.
+ * read from), at any length, every source position from the first to the last of the one place it is taken to stand: a
+ * whole line first, then an occurrence with no letter or digit either side, then any; the widest source range; the line
+ * that sorts first; the leftmost. A span's pieces are its lines, each with its whitespace collapsed and trimmed and an
+ * ellipsis at either end dropped. A derivation's span (`within` its basis) marks, inside the place of each piece of the
+ * basis, what the derived text reproduces: from each of its positions in turn, the longest stretch of it the piece
+ * holds anywhere, at the leftmost such place, then on past that stretch.
  */
 export function refReveal(units: readonly string[], lines: readonly string[], spans: readonly (string | { text: string; within?: string })[] = []): { positions: string[]; charged: number } {
   const us = units.map((u) => ledgerNormalizeV1(u).cps);
@@ -60,11 +61,23 @@ export function refReveal(units: readonly string[], lines: readonly string[], sp
       }
     }
   });
-  const piecesOf = (t: string): (readonly number[])[] => t.split("\n").flatMap((l) => l.split("\u2026")).map((x) => x.replace(/\s+/gu, " ").trim()).filter((x) => x !== "").map((x) => ledgerNormalizeV1(x).cps).filter((x) => x.length > 0);
+  const piecesOf = (t: string): (readonly number[])[] =>
+    t
+      .split(/\r?\n/u)
+      .map((x) => x.replace(/\s+/gu, " ").trim().replace(/^\u2026|\u2026$/gu, "").trim())
+      .filter((x) => x !== "")
+      .map((x) => ledgerNormalizeV1(x).cps)
+      .filter((x) => x.length > 0);
   const norm = lines.map((l) => ledgerNormalizeV1(l));
   const at = (hay: readonly number[], needle: readonly number[], a: number): boolean => needle.every((c, k) => hay[a + k] === c);
   const word = (cp: number | undefined): boolean => cp !== undefined && /[\p{L}\p{N}]/u.test(String.fromCodePoint(cp));
-  const keysOf = (li: number, a: number, len: number): string[] => [...new Set(norm[li]!.origins.slice(a, a + len).flat())].map((p) => `${li}:${p}`);
+  /** Every source position of line `li` from the first to the last that normalized scalars `a` to `a + len` came from. */
+  const keysOf = (li: number, a: number, len: number): string[] => {
+    const ps = norm[li]!.origins.slice(a, a + len).flat();
+    const out: string[] = [];
+    for (let p = Math.min(...ps); p <= Math.max(...ps); p++) out.push(`${li}:${p}`);
+    return out;
+  };
   /** Every occurrence of `piece`, ranked: whole line, then bounded by no letter or digit, then any; most positions; line text; offset. */
   const place = (piece: readonly number[]): { li: number; a: number } | null => {
     const all: { li: number; a: number; cls: number; size: number }[] = [];
@@ -81,20 +94,28 @@ export function refReveal(units: readonly string[], lines: readonly string[], sp
   };
   for (const sp of spans) {
     const { text, within } = typeof sp === "string" ? { text: sp, within: undefined } : sp;
-    const words = within === undefined ? null : String.fromCodePoint(...ledgerNormalizeV1(text).cps).split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "").map((w) => Array.from(w, (c) => c.codePointAt(0)!));
+    const derived = within === undefined ? null : ledgerNormalizeV1(text).cps;
     for (const piece of piecesOf(within ?? text)) {
       const p = place(piece);
       if (p === null) continue;
-      if (words === null) {
+      if (derived === null) {
         for (const k of keysOf(p.li, p.a, piece.length)) marked.add(k);
         continue;
       }
-      for (const w of words) {
-        for (let b = p.a; b + w.length <= p.a + piece.length; b++) {
-          if (!at(norm[p.li]!.cps, w, b)) continue;
-          for (const k of keysOf(p.li, b, w.length)) marked.add(k);
-          break;
+      /** The leftmost start in the piece's place where `needle` stands, or -1. */
+      const first = (needle: readonly number[]): number => {
+        for (let b = p.a; b + needle.length <= p.a + piece.length; b++) if (at(norm[p.li]!.cps, needle, b)) return b;
+        return -1;
+      };
+      for (let i = 0; i < derived.length; ) {
+        let len = derived.length - i;
+        while (len > 0 && first(derived.slice(i, i + len)) < 0) len--;
+        if (len === 0) {
+          i++;
+          continue;
         }
+        for (const k of keysOf(p.li, first(derived.slice(i, i + len)), len)) marked.add(k);
+        i += len;
       }
     }
   }

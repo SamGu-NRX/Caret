@@ -236,6 +236,28 @@ describe("the Astra counterexamples", () => {
   });
 });
 
+// Astra's recheck of 0deb3e23: what a minted unit takes from its source is every source position of what it reproduces.
+describe("a declared span covers its whole source range", () => {
+  it("charges a value read with interior ellipses all four of its characters", () => {
+    expect(charge(["a\u2026\u2026b"], ["a\u2026\u2026b."], ["a\u2026\u2026b"])).toBe(4);
+  });
+
+  it("charges a derivation the punctuation it reproduces: '(1), (2)' from '(1), (2).' is 8", () => {
+    expect(charge(["(1), (2)"], ["(1), (2)."], [{ text: "(1), (2)", within: "(1), (2)." }])).toBe(8);
+  });
+
+  it("charges a derivation the combining marks it reproduces", () => {
+    const e = "\u00e9\u0300\u0302";
+    expect(charge([e], [`${e}.`], [{ text: e, within: `${e}.` }])).toBe(3);
+  });
+
+  it("charges a derivation each stretch of its basis it reproduces, and nothing its basis does not hold", () => {
+    // 'Alice' and ' Bob' stand in the basis; the comma does not stand in the derivation.
+    expect(charge(["Alice Bob"], ["Alice, Bob"], [{ text: "Alice Bob", within: "Alice, Bob" }])).toBe(9);
+    expect(charge(["2026"], ["Tomorrow"], [{ text: "2026", within: "Tomorrow" }])).toBe(0);
+  });
+});
+
 // Sol review of 9d110306: full coverage by separate runs is not whole-line containment.
 describe("whole-line containment is one match, not full coverage", () => {
   it("charges two runs that cover a line's scalars only their positions: a leading NEL, which normalizes to nothing, is not", () => {
@@ -275,7 +297,7 @@ describe("production equals the brute-force reference (section 9)", () => {
       units.push(`${gen(r, 2)}${l.slice(a, a + 1 + Math.floor(r() * l.length)).join("")}${gen(r, 2)}`);
     }
     // Declared spans: short cuts of a line (what a builder minted), and now and then text no line shows.
-    // A derivation's span is its words within its basis: here a cut of a line, said with some of its letters.
+    // A derivation's span is what it reproduces within its basis: here a cut of a line, said with some of its letters.
     const spans = Array.from({ length: Math.floor(r() * 3) }, (): Span => {
       if (lines.length === 0 || r() < 0.2) return gen(r, 6);
       const l = [...lines[Math.floor(r() * lines.length)]!];
