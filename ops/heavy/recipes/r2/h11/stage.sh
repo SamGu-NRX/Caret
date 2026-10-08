@@ -52,5 +52,9 @@ python3 -c 'import json,sys; print(json.dumps({"pages": [x for x in sys.argv[1].
   "$pages" "$sources" "$next" "$scen" > "$P/h11-options.json"
 
 cp "$H/job.sh" "$H/tcc.txt" "$Q/vm/"; echo 1920x1200 > "$Q/vm/display"
-python3 -m py_compile "$P/tools/q2.py" "$P/tools/q2_site.py"; bash -n "$Q/vm/job.sh"
+# py_compile writes bytecode even with -B, which fails at the job's /var/empty cache prefix.
+python3 -c 'import sys
+for path in sys.argv[1:]:
+    with open(path, "rb") as source: compile(source.read(), path, "exec")' "$P/tools/q2.py" "$P/tools/q2_site.py"
+bash -n "$Q/vm/job.sh"
 echo "staged $(cat "$P/REV") options $(cat "$P/h11-options.json")"

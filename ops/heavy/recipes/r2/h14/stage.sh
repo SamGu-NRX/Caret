@@ -29,6 +29,9 @@ find "$P/site" -type f -exec chmod a-w {} +
 echo '{"entries": []}' > "$P/ghost/replay.json"
 
 cp "$H/job.sh" "$H/tcc.txt" "$J/"; echo 1920x1200 > "$J/display"
-python3 -m py_compile "$P/tools/h14.py" "$P/tools/cdp.py"; bash -n "$J/job.sh"
-rm -rf "$P/tools/__pycache__"
+# py_compile writes bytecode even with -B, which fails at the job's /var/empty cache prefix.
+python3 -c 'import sys
+for path in sys.argv[1:]:
+    with open(path, "rb") as source: compile(source.read(), path, "exec")' "$P/tools/h14.py" "$P/tools/cdp.py"
+bash -n "$J/job.sh"
 echo "staged $(cat "$P/REV"): site $(find "$P/site" -type f | wc -l | tr -d ' ') files, empty replay"
