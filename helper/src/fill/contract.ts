@@ -894,7 +894,8 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
   const instruction = raw === undefined ? undefined : d.instruction(raw);
   const userRequest = instruction === undefined ? d.own("none") : d.t`"${instruction}"`;
   const selections = o.selections ?? d.own("none");
-  const notes: Record<string, ModelText> = {};
+  /** Each value's whole unit (CheckOptions.unitOf), sent in the state of the batch that asks about the value. */
+  const notes = new Map<Proposed, { id: ModelText; text: ModelText }>();
   const questions = proposed.map((p) => {
     // The field's descriptor and the text itself must go; a value whose own text the ledger refuses is not verified.
     const descriptor = admit(p.field.descriptor);
@@ -909,7 +910,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     const named = admitted.length > 0 && admitted.length === rest.length ? admitted : null;
     const contract = named === null ? contractSays(p.field) : null;
     const unit = o.unitOf?.(p) ?? null;
-    if (unit !== null) notes[unit.id] = unit.text;
+    if (unit !== null) notes.set(p, unit);
     const parts: VerifyParts = {
       descriptor,
       contract: named !== null ? d.t`only the street line of an address; the form's fields ${listSaid(d, named.map((x) => d.t`'${x}'`))} take the rest` : contract === null ? d.own(CONTRACT_UNSTATED) : (admit(contract) ?? d.own(CONTRACT_UNSTATED)),
@@ -926,7 +927,15 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     return [WORDINGS[0](d, parts), WORDINGS[1](d, parts)] as const;
   });
   const declared = ledger.declared();
-  const state: Record<string, ModelValue> = { task: d.own(VERIFY_TASK), ...(instruction === undefined ? {} : { instruction }), ...(Object.keys(notes).length === 0 ? {} : { source_notes: notes }) };
+  // A batch's source_notes hold its own values' units only: all of them in every batch went past the shape's 20 at 21
+  // values, and every batch was refused.
+  const stateOf = (batch: readonly number[]): Record<string, ModelValue> => {
+    const mine = Object.fromEntries(batch.flatMap((i) => {
+      const u = notes.get(proposed[i] as Proposed);
+      return u === undefined ? [] : [[u.id, u.text] as const];
+    }));
+    return { task: d.own(VERIFY_TASK), ...(instruction === undefined ? {} : { instruction }), ...(Object.keys(mine).length === 0 ? {} : { source_notes: mine }) };
+  };
   const batches: number[][] = [];
   const asked = proposed.flatMap((_, i) => (questions[i] === null ? [] : [i]));
   for (let i = 0; i < asked.length; i += VERIFY_BATCH) batches.push(asked.slice(i, i + VERIFY_BATCH));
@@ -934,6 +943,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     // The second wording asks in reverse order, so neither order nor wording alone decides.
     const order = wording === 0 ? batch : [...batch].reverse();
     const qs: JevRequest["questions"] = Object.fromEntries(order.map((i) => [`x${i + 1}`, { type: "choice" as const, instructions: (questions[i] ?? [d.own(""), d.own("")])[wording], criteria: d.ownRecord(VERDICTS) }]));
+    const state = stateOf(batch);
     const sent = sentStrings([state, qs]);
     const req: JevRequest = d.seal({ purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged });
     // I1, SC1 2b: the verifier's request is sealed like every other (privacy/disclosure.ts): its provenance sentences

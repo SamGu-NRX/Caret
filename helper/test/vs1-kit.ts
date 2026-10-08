@@ -55,6 +55,8 @@ export interface Overrides {
   /** Answers the base's value question for a field in one wording, from its criteria; undefined leaves `firstPass` to answer it. */
   firstAnswer?: (label: string, wording: 0 | 1, criteria: Readonly<Record<string, string | null | undefined>>) => Answer | undefined;
   verify?: (label: string, wording: 0 | 1, output: string, instructions: string) => Answer | undefined;
+  /** Answers an owner question (fill.whose, `<candidate>_owner`) by the candidate's text; undefined leaves the oracle's. */
+  owner?: (text: string) => Answer | undefined;
 }
 
 export interface Run {
@@ -122,6 +124,11 @@ export async function runB31(id: string, o: Overrides & { window?: "page" | "rea
         const options = Object.entries(q.criteria).map(([k, c]) => ({ id: k, output: optionOutput(c), source: t.options.get(k)?.text ?? null, criterion: c ?? "" }));
         const wording = (Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k)) ? 1 : 0) as 0 | 1;
         const a = o.value(label, wording, options, req);
+        if (a !== undefined) answers[qid] = a;
+      }
+      if (req.purpose === "fill.whose" && qid.endsWith("_owner") && o.owner !== undefined) {
+        const text = t?.options.get(qid.replace(/_owner$/u, ""))?.text;
+        const a = text === undefined ? undefined : o.owner(text);
         if (a !== undefined) answers[qid] = a;
       }
       if (req.purpose === "fill.verify" && o.verify !== undefined) {

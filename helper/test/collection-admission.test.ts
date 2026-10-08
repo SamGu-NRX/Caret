@@ -4,8 +4,10 @@
 // Every name and value is invented.
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { proposeFill, type FillScope } from "../src/fill/fill.ts";
+import { proposeFill, valueSettlementOf, type FillScope } from "../src/fill/fill.ts";
 import { sealRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
+import { setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, node, snap, text } from "./builders.ts";
 import { associationKey, collectCandidates } from "../src/fill/candidates.ts";
@@ -229,5 +231,72 @@ describe("value settlement's wording, reserved when settlement decides to ask", 
     // Settlement's wording does not fit beside AB01 in the chat, so it is not asked: the field stays as the base left it.
     expect(seen.filter((r) => r.purpose === "fill.values").length, "no settlement request").toBe(2);
     expect(p.fields.find((x) => x.key === key("Reference"))?.withheld).toBe("disagree");
+  });
+});
+
+describe("one admission path for every value settlement request", () => {
+  const scoped = (label: string): FillScope => ({ fields: [key(label)], windows: null, memory: false, instruction: "put the value in", person: null, literals: new Map() });
+  /**
+   * A Jev that seals each request as the client does and records its purpose, or the seal's refusal. Unless `agree`, the
+   * base question's second wording answers none, so a field goes on to settlement; settlement's wordings and the verifier
+   * answer as told.
+   */
+  function sealingPicker(want: string, o: { verifyLow?: boolean; agree?: boolean; seen: { purpose: string; refused?: string }[] }): AskJev {
+    return async (req) => {
+      try {
+        sealRequest(req);
+        o.seen.push({ purpose: req.purpose ?? "" });
+      } catch (e) {
+        o.seen.push({ purpose: req.purpose ?? "", refused: e instanceof Error ? e.message : String(e) });
+        throw e;
+      }
+      const answers: Record<string, { choice: string; confidence: number }> = {};
+      for (const [id, q] of Object.entries(req.questions)) {
+        if (req.purpose === "fill.verify") {
+          answers[id] = { choice: "exact", confidence: o.verifyLow === true ? 0.1 : 0.99 };
+          continue;
+        }
+        const hit = Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`) || d?.startsWith(`Proposed value: "${want}"`))?.[0];
+        const second = String(q.instructions).startsWith("Instruction from the user:");
+        answers[id] = { choice: second && o.agree !== true ? "none" : (hit ?? Object.keys(q.criteria).find((k) => k !== "none" && !k.includes("_")) ?? "none"), confidence: 0.99 };
+      }
+      return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+    };
+  }
+
+  it("admits settlement by the wording it sends: 'rewritten' in a derivation's sentence keeps it from being asked, not refused at seal", async () => {
+    // T = 1 + 17 + 9 + 10 = 37, limit 18. The resolved date's derivation says "rewritten", the chat's other line.
+    const m = desk([text("c0", "Date: Oct 8, 2026"), node("word", "AXButton", { label: "rewritten" }), node("pad", "AXButton", { label: "Z".repeat(10) })], []);
+    m.apply(snap([field(key("Date"), "", { label: "Date", role: "AXDateField", subrole: "CaretDateInput", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const seen: { purpose: string; refused?: string }[] = [];
+    const p = await proposeFill(m, sealingPicker("2026-10-08", { seen }), FORM, key("Date"), 3000, { scope: scoped("Date"), whose: false });
+    expect(seen.filter((r) => r.refused !== undefined), "no request is refused at seal").toEqual([]);
+    expect(p.jev.model).not.toMatch(/value settlement unavailable/u);
+    expect(p.fields.find((x) => x.key === key("Date"))?.withheld).toBe("disagree");
+  });
+
+  it("does not hold settlement back for a branch it does not send: a chat line 'source_notes' with no unit to name", async () => {
+    // T = 1 + 9 + 12 = 22, limit 10. No option names a whole unit, so the request has no source_notes.
+    const m = desk([text("c0", "Ref: AB01"), node("pad", "AXButton", { label: "source_notes" })], ["Reference"]);
+    const seen: { purpose: string; refused?: string }[] = [];
+    const p = await proposeFill(m, sealingPicker("AB01", { seen }), FORM, key("Reference"), 3000, { scope: scoped("Reference"), whose: false });
+    expect(seen.filter((r) => r.purpose === "fill.values").length, "the base question and settlement").toBe(4);
+    expect(seen.filter((r) => r.refused !== undefined)).toEqual([]);
+    expect(p.fields.find((x) => x.key === key("Reference"))?.value).toBe("AB01");
+  });
+
+  it("does not offer a value for clarification whose settlement request cannot be sent: 'necessarily' in its task", async () => {
+    // T = 1 + 9 + 11 = 21, limit 10. The verifier calls AB01 exact under its cutoff; asking again would carry
+    // VALUE_TASK, which holds the chat's other line, past the limit.
+    const m = desk([text("c0", "Ref: AB01"), node("pad", "AXButton", { label: "necessarily" })], ["Reference"]);
+    const seen: { purpose: string; refused?: string }[] = [];
+    const ask = sealingPicker("AB01", { seen, verifyLow: true, agree: true });
+    setTestVerifier(ask);
+    const p = await proposeFill(m, ask, FORM, key("Reference"), 3000, { scope: scoped("Reference"), whose: false }).finally(() => setTestVerifier(STAND_IN));
+    expect(p.fields.find((x) => x.key === key("Reference"))?.withheld).toBe("notExact");
+    const vs = valueSettlementOf(p);
+    expect(vs?.unresolved.map((u) => u.options.map((o) => o.value)), "eligible, before admission").toEqual([["AB01"]]);
+    expect(vs?.unresolved.map((u) => vs.sendable(u)), "no pick is offered that could not be asked").toEqual([null]);
+    expect(seen.filter((r) => r.refused !== undefined)).toEqual([]);
   });
 });

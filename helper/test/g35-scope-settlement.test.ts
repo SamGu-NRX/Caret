@@ -4,7 +4,6 @@
 // Missing or invalid answers fail closed. Every entry point that settles scope reads a pair the same way: the heads
 // maker (readHeads), a settlement made before the Ask (helper.ts settleRequest, read back by the heads maker), the
 // writer's settlement in planAsk, and a goal's (settleFields). Names and values are the synthetic corpus's.
-import { isConversation } from "../src/conversation.ts";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,11 +95,9 @@ function askJev(by: ScopeBy, instruction = INSTRUCTION) {
   return { ask, seen, scopeRequests: () => seen.filter((r) => r.purpose === "ask.scope").length };
 }
 
-const plan = (j: ReturnType<typeof askJev>, o: { maker?: IntentMaker; resume?: Parameters<typeof planAsk>[4]["resume"]; instruction?: string; bystanders?: false } = {}) => {
+const plan = (j: ReturnType<typeof askJev>, o: { maker?: IntentMaker; resume?: Parameters<typeof planAsk>[4]["resume"]; instruction?: string; desk?: (d: Desk) => void } = {}) => {
   const d = deskOf(PIZZA);
-  // Without the desk's bystander conversation (the venue mail): read first by recency, its own facts take its room, and
-  // the phone it then leaves out cuts the phone kind, so Telephone is withheld whatever the scope answers say.
-  if (o.bystanders === false) for (const w of [...d.model.windows.values()]) if (w.window.windowId !== d.form.window.windowId && isConversation(w)) d.model.close(w.window.windowId, 0);
+  o.desk?.(d);
   return planAsk(o.instruction ?? INSTRUCTION, d.model, { values: () => d.memory }, d.about, { askJev: j.ask, maker: o.maker ?? headsIntentMaker(j.ask), writer: null, offerKey: "g35", windowId: d.form.window.windowId, now: 2000, ...(o.resume === undefined ? {} : { resume: o.resume }) });
 };
 const labels = (s: IntentSnapshot, refs: readonly string[] | undefined): string[] => (refs ?? []).map((r) => s.fields.find((f) => f.ref === r)?.name ?? r);
@@ -182,7 +179,7 @@ describe("the decision truth table, through every settlement entry point", () =>
     for (const c of CELLS) {
       const j = askJev(cell(c.a, c.b));
       const outcome = expected(c.a, c.b);
-      const r = await plan(j, { maker: writerMaker([ANCHOR, TARGET]), bystanders: false }).catch((e: unknown) => e);
+      const r = await plan(j, { maker: writerMaker([ANCHOR, TARGET]) }).catch((e: unknown) => e);
       if (outcome === "unresolved") {
         expect(r, show(c)).toBeInstanceOf(AskAsks);
         expect((r as AskAsks).question.options.map((o) => (o.option.kind === "field" ? o.option.label : "")), show(c)).toEqual([TARGET]);
@@ -555,5 +552,32 @@ describe("the fields question's rows", () => {
       { kind: "field", id: "o1", label: "City", section: "Delivery" },
       { kind: "field", id: "o2", label: "City", section: "Billing" },
     ]);
+  });
+});
+
+// The pizza desk's bystander conversation, the venue mail, holds a phone of its own, (415) 555-0162.
+describe("the desk's bystander conversations", () => {
+  const MAIL_PHONE = "(415) 555-0162";
+  const criteriaOf = (j: ReturnType<typeof askJev>): string[] => j.seen.filter((r) => r.purpose === "fill.values").flatMap((r) => Object.values(r.questions).flatMap((q) => Object.values(q.criteria).map(String)));
+
+  it("offers the venue mail's phone beside the note's, and the writer's settlement writes only the note's", async () => {
+    const j = askJev(cell(sure, sure));
+    const r = await plan(j, { maker: writerMaker([ANCHOR, TARGET]) });
+    expect(criteriaOf(j).some((c) => c.includes(MAIL_PHONE)), "the mail's phone was offered, not left out").toBe(true);
+    expect((r as AskDraft).checked.writes.map((w) => [nameOf(w.node.key), w.value])).toEqual([
+      [nameOf(pizza().snap.fields.find((f) => f.name.startsWith(ANCHOR))?.key ?? ""), NOTE[ANCHOR]],
+      [nameOf(pizza().snap.fields.find((f) => f.name.startsWith(TARGET))?.key ?? ""), NOTE[TARGET]],
+    ]);
+  });
+
+  it("withholds Telephone when a bystander chat's phones do not fit: one of the phones left out may be the one meant", async () => {
+    const j = askJev(cell(sure, sure));
+    // An older chat of 30 phones: together with their lines they are past half of it, so the phone kind is cut whole.
+    const lines = Array.from({ length: 30 }, (_, i) => `Call me at (512) 555-01${String(i + 10)}`);
+    const chat = (d: Desk): void =>
+      void d.model.apply(snap(lines.map((l, i) => node(`p${i}`, "AXStaticText", { label: l })), { at: 1, windowId: "chat-9", title: "Sam", app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" }, values: lines.map((l, i) => ({ kind: "phone" as const, text: l.slice(11), nodeKey: `p${i}` })) }));
+    const r = await plan(j, { maker: writerMaker([ANCHOR, TARGET]), desk: chat });
+    // Scope admits both fields; the cut phone kind withholds Telephone, and Delivery instructions is written.
+    expect((r as AskDraft).checked.writes.map((w) => w.value), "Telephone withheld").toEqual([NOTE[TARGET]]);
   });
 });

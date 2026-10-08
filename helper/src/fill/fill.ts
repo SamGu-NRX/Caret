@@ -1,4 +1,4 @@
-import { Disclosure, viewHolds, type ModelText } from "../privacy/disclosure.ts";
+import { Disclosure, LedgerRefused, viewHolds, type ModelText } from "../privacy/disclosure.ts";
 import { instructionForModel, redactWindow } from "./redact.ts";
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
 // the same candidate spans plus "none" (deep plan section 5, "Fill"). Jev picks a candidate id;
@@ -19,7 +19,7 @@ import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTer
 import type { Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
-import type { AskJev, JevRequest, JevResult } from "./jev.ts";
+import { checkSealable, type AskJev, type JevRequest, type JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, PART_SAYS, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, type CheckOptions, CONTRACT_UNSTATED, contractSays, ContractError, isChecked, makeFieldContract, mintDerivation, mintExempt, neverTypedRefusal, provenanceStale, requireChecked, shapeRefusal, textShapeRefusal, VerifierUnavailable, windowProvenance, withReads, readsCopied, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance, type Refused } from "./contract.ts";
@@ -325,46 +325,6 @@ const VALUE_WORDINGS = [
   (d: Disclosure, p: ValueParts): ModelText =>
     d.t`Field: ${p.descriptor} Section/group: ${p.path}. Required content and format: ${p.contract}. User request: "${p.request}". Explicit user selections: ${p.selections}. Which listed proposed value can fill this field without guessing, using the source evidence and respecting all restrictions in the request? Choose none if no listed value qualifies.`,
 ] as const;
-
-/**
- * The fixed texts value settlement's requests carry around their values (proposeFill's askValueRequest and the minters
- * its options use: statedOf, mintSource, mintSupport, pathOf, contractOf, selectionsSaid), with `gap` (a line break)
- * standing in for what a request inserts: its question wordings, task and none sentences, an option's sentence, and the
- * words its source, section path, contract and selections are said in. Reserved when settlement decides to ask, as the
- * fill's other late sentences are (reserveWording, strict): the seal charges a chat's short line this wording happens to
- * hold ("evidence" in VALUE_TASK), and one that does not fit leaves the base's answers standing. `boxes`: whether a
- * checkbox is asked, which says BOX_CONTRACT.
- */
-function settlementWording(d: Disclosure, boxes: boolean): string[] {
-  const gap = d.own("\n");
-  const parts: ValueParts = { request: gap, selections: gap, descriptor: gap, path: gap, contract: gap };
-  return [
-    ...VALUE_WORDINGS.map((f) => f(d, parts)),
-    VALUE_TASK,
-    VALUE_NONE,
-    d.t`Proposed value: "${gap}". Source: ${gap}. Observed label: ${gap}. Supporting text: ${gap}. Derivation: ${gap}.`,
-    PLACEMENT_UNKNOWN,
-    NO_SECTION,
-    UNNAMED_SECTION,
-    " > ",
-    CONTRACT_UNSTATED,
-    ...(boxes ? [BOX_CONTRACT] : []),
-    d.t`the fields ${gap}`,
-    "copy from what the user told Caret",
-    d.t`copy from the ${gap} window '${gap}'`,
-    "the user's own details",
-    d.t`the details of ${gap}`,
-    d.t`the value "${gap}" for '${gap}'`,
-    "the user's own details, which the user told Caret",
-    d.t`the user's own details, which the user told Caret, saved as '${gap}'`,
-    "the user's request",
-    d.t`${gap} window '${gap}'`,
-    d.t`${gap}; it is the user's own ${gap}, which the user told Caret`,
-    d.t`${gap}; the whole text is ${gap} in source_notes`,
-    "unavailable",
-    "literal copy",
-  ];
-}
 
 /** A value the user told Caret, under this ask's id for it (m1, m2... in the first ask, n1... in the second). */
 export interface AskAbout {
@@ -2682,6 +2642,22 @@ export async function proposeFill(
     const strings = requestStrings(req);
     return { ...req, snippets: req.snippets.filter((x) => strings.some((t) => t.includes(x.text))) };
   };
+  /**
+   * Value settlement's one admission path, for its pair and for the pair a clarification would send: built in full, the
+   * requests go only if their final bytes pass the seal now (jev.ts checkSealable), and what they say is then kept in the
+   * early check so later mints leave it room. A list of the wording kept beside the builders was a second source: it
+   * missed a derivation's "rewritten" and reserved source_notes wording no request sent (test/collection-admission.test.ts).
+   */
+  const admits = (pair: readonly [JevRequest, JevRequest]): boolean => {
+    try {
+      checkSealable(pair);
+    } catch (e) {
+      if (e instanceof LedgerRefused) return false;
+      throw e;
+    }
+    ledger.reserveWording(pair.flatMap(requestStrings));
+    return true;
+  };
   [r1, r2] =
     asked.length === 0 && answerAsked.length === 0
       ? [null, null]
@@ -2857,11 +2833,11 @@ export async function proposeFill(
   let s2: JevResult | null = null;
   /** Why value settlement's requests failed, if they did: its fields stay as the base left them, blank, and the rest go on. */
   let settlementDown: string | null = null;
-  // Settlement's wording is reserved before its options are minted (settlementWording); when it does not fit beside what
-  // the base admitted, settlement is not asked and the base's answers stand.
-  if (unsettled.length > 0 && instructionFits() && ledger.reserveWording(settlementWording(m, unsettled.some((f) => f.control === "checkbox")), true)) {
+  // Settlement is asked only when its pair, as built, can be sent (admits); otherwise the base's answers stand.
+  if (unsettled.length > 0 && instructionFits()) {
     const ready = unsettled.filter((f) => statedOf(f).size > 0);
-    const pair = ready.length === 0 ? null : ([askValueRequest(0, ready), askValueRequest(1, ready)] as const);
+    const built = ready.length === 0 ? null : ([askValueRequest(0, ready), askValueRequest(1, ready)] as const);
+    const pair = built !== null && admits(built) ? built : null;
     let got: readonly [JevResult, JevResult] | null = null;
     if (pair !== null) {
       try {
@@ -3043,9 +3019,23 @@ export async function proposeFill(
     const first = o.members[0] as Member;
     return relationalHold(f, first.pick) === null && (memoryOf(first.pick) === null || theUsers(f)) && !restsOnStale(first.pick);
   };
+  /** Whether a pick of option `id` for `f` could be asked about now (admits): checked once per field and option. */
+  const clarified = new Map<string, boolean>();
+  const clarifiable = (f: Field, id: string): boolean => {
+    const k = `${f.id}\u0000${id}`;
+    let ok = clarified.get(k);
+    if (ok === undefined) {
+      const output = statedOf(f).get(id)?.output;
+      const selection = output === undefined ? null : selectionsSaid({ f, output });
+      ok = selection !== null && admits([askValueRequest(0, [f], selection), askValueRequest(1, [f], selection)]);
+      clarified.set(k, ok);
+    }
+    return ok;
+  };
   /**
    * The fields a value question may settle: one value settlement left unsure, or whose value the verifier refused. A field
-   * the base's question settled, as a blank or a value, is the base's.
+   * the base's question settled, as a blank or a value, is the base's. Before the offer's bounds and its admission
+   * (sendableOf): building a pick's pair for every value of every field cost 2,200 seal checks on a 50-field form.
    */
   const unresolvedValues = (): UnresolvedValue[] =>
     asked.flatMap((f): UnresolvedValue[] => {
@@ -3069,6 +3059,12 @@ export async function proposeFill(
       if (why === null || offered.length === 0) return [];
       return [{ key: f.node.key, name: f.name, kind: kindOf(f), why, options: offered.map((x) => ({ id: x.id, value: x.output, display: (x.members[0] as Member).read.display, source: rowSource((x.members[0] as Member).pick) })) }];
     });
+  /** `u` with only the values a pick of which can be sent (clarifiable), or null when none can: what an Ask may offer. */
+  const sendableOf = (u: UnresolvedValue): UnresolvedValue | null => {
+    const f = fields.find((x) => x.node.key === u.key);
+    const options = f === undefined ? [] : u.options.filter((o) => clarifiable(f, o.id));
+    return options.length === 0 ? null : { ...u, options };
+  };
   /** Each field as it stands now: the proposal's, with the values picks have settled since. */
   const current = [...out];
   const settle = async (key: string, optionId: string, at: { model: ScreenModel; askJev: AskJev }): Promise<FillField> => {
@@ -3088,7 +3084,9 @@ export async function proposeFill(
       mine.add(req);
       return at.askJev(req);
     };
-    const [x1, x2] = await Promise.all([ask(askValueRequest(0, [f], selection)), ask(askValueRequest(1, [f], selection))]);
+    const pair = [askValueRequest(0, [f], selection), askValueRequest(1, [f], selection)] as const;
+    if (!admits(pair)) throw new Error(`the value question about ${f.name} no longer fits what Caret may send`);
+    const [x1, x2] = await Promise.all([ask(pair[0]), ask(pair[1])]);
     const a1 = readAsk(x1, f, (id) => id, true);
     const a2 = readAsk(x2, f, (id) => back.get(id), true);
     const confidence = a1.choice === a2.choice ? Math.min(a1.confidence, a2.confidence) : 0;
@@ -3152,7 +3150,7 @@ export async function proposeFill(
           },
     cutoff,
   };
-  if (askValues) settlements.set(proposal, { unresolved: unresolvedValues(), unreadLiterals, settle });
+  if (askValues) settlements.set(proposal, { unresolved: unresolvedValues(), unreadLiterals, sendable: sendableOf, settle });
   return proposal;
 }
 
@@ -3203,6 +3201,11 @@ export interface ValueSettlement {
   readonly unresolved: readonly UnresolvedValue[];
   /** Fields whose value the user spelled out, which Caret can't read as the field takes it ("8:15" with no am or pm). */
   readonly unreadLiterals: ReadonlySet<string>;
+  /**
+   * One of `unresolved` with only the values a pick of which can be sent now (value settlement's one admission path), or
+   * null when none can: an Ask offers only these. settle checks a pick again before it asks.
+   */
+  sendable(u: UnresolvedValue): UnresolvedValue | null;
   /** The user picked `option` for field `key`: one fresh pair of value questions, then every veto and check; the field as it now stands. */
   settle(key: string, option: string, at: { model: ScreenModel; askJev: AskJev }): Promise<FillField>;
 }

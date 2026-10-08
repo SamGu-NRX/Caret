@@ -62,9 +62,7 @@ describe("the four wrong agreements are never written", () => {
   // Ines's cell and office are someone else's for Theo's fields and Dana's email is not Kenji's: the owner exclusion keeps
   // all three out of the value questions. Wren's phone is offered to Jev but not to the user: a rule relating it to the
   // field (relationalHold) holds it, so no click can pick it.
-  // b31-09's Reference phone is no longer offered to Jev: settlement's wording does not fit beside what the base admitted
-  // in its mail (settlementWording, reserved strictly), so settlement is not asked and the field stays blank.
-  const OFFERED_TO_JEV: Record<string, boolean> = { "b31-08 Mobile phone": false, "b31-08 Home phone": false, "b31-09 Reference phone": false, "b31-14 Email address": false };
+  const OFFERED_TO_JEV: Record<string, boolean> = { "b31-08 Mobile phone": false, "b31-08 Home phone": false, "b31-09 Reference phone": true, "b31-14 Email address": false };
   it.each(WRONG.map((c) => [`${c.ask} ${c.field}`, c] as const))("%s: stopped where expected, and never written", async (name, c) => {
     const wrong = c.a.text as string;
     const r = await runB31(c.ask, { values: true, value: replayed(c) });
@@ -74,38 +72,77 @@ describe("the four wrong agreements are never written", () => {
     expect(q?.options.some((o) => o.option.kind === "value" && o.option.value === wrong) ?? false, "offered to the user").toBe(false);
   });
 
-  // Hostile continuations that do run: every value b31-09's Reference phone question offers is picked in turn, and both fresh
-  // wordings then choose Wren's phone, or the pick, at 0.99. Neither writes Wren's phone.
-  it("b31-09: a pick of any offered value, then fresh votes for Wren's phone or for the pick, never writes Wren's phone", async () => {
+  // b31-08's Mobile phone: Ines's cell reaches the owner question, which the oracle answers as hers, and nothing else
+  // keeps it out: no cut or other veto names it.
+  it("b31-08 Mobile phone: Ines's cell is kept out by the owner rule alone", async () => {
+    const c = WRONG.find((x) => x.ask === "b31-08" && x.field === "Mobile phone") as Recorded;
+    const wrong = c.a.text as string;
+    const run = (owner?: (text: string) => Answer | undefined) => runB31("b31-08", { values: true, value: replayed(c), ...(owner === undefined ? {} : { owner }) });
+    const r = await run();
+    const whose = r.requests.find((x) => x.purpose === "fill.whose");
+    const t = whose === undefined ? undefined : r.traces.find((x) => x.owns(whose));
+    const ids = [...(t?.options ?? new Map())].flatMap(([id, o]) => (o.text === wrong ? [id] : []));
+    expect(ids.some((id) => whose?.questions[`${id}_owner`] !== undefined), "an owner question was asked about it").toBe(true);
+    const vetoed = r.traces.flatMap((x) => [...(x.vetoed ?? new Map()).values()].flatMap((m) => [...m.keys()]));
+    expect(ids.filter((id) => vetoed.includes(id)), "no cut or other veto keeps it out").toEqual([]);
+    expect(valueQuestions(r, c.field).some((q) => q.options.some((o) => o.output === wrong))).toBe(false);
+    expect(Object.values(proposedOf(r, r.outcome))).not.toContain(wrong);
+    // Called the user's instead, it is still withheld by the owner rule and nothing else: a conversation's value is owner-
+    // judged only with its whole note shown, which a conversation never gets (ownerEvidence).
+    const mine = await run((text) => (text === wrong ? { choice: "user", confidence: 0.99 } : undefined));
+    const reasons = mine.traces.flatMap((x) => [...(x.vetoed ?? new Map()).values()].flatMap((m) => [...m].filter(([id]) => x.options.get(id)?.text === wrong).map(([, why]) => why)));
+    expect(reasons.length).toBeGreaterThan(0);
+    expect(new Set(reasons)).toEqual(new Set(["ownerEvidence"]));
+    expect(Object.values(proposedOf(mine, mine.outcome))).not.toContain(wrong);
+  });
+
+  // b31-09's Reference phone: whatever the fresh wordings would choose, the base question's two asks agree on Wren's
+  // phone, the rule relating the value to the field (relationalHold) withholds it as ambiguous, and the field is not left
+  // unresolved, so the user is asked nothing to pick and Wren's phone is written by no path.
+  it("b31-09: Reference phone is withheld at the base question, so no pick is offered and Wren's phone is never written", async () => {
     const c = WRONG.find((x) => x.ask === "b31-09") as Recorded;
     const wrong = c.a.text as string;
     for (const fresh of ["wrong", "pick"] as const) {
-      let picked = "";
       const r = await runB31("b31-09", {
         values: true,
         value: (label, w, options, req) => {
           if (label !== c.field) return undefined;
           if (!/Explicit user selections: (?!none)/u.test(String(Object.values(req.questions).find((q) => String(q.instructions).includes(c.field))?.instructions))) return replayed(c)(label, w, options);
-          return byOutput(options, fresh === "wrong" ? wrong : picked, 0.99);
+          return byOutput(options, fresh === "wrong" ? wrong : null, 0.99);
+        },
+      });
+      expect(await valueQuestionFor(r, c.field), "the user is asked nothing to pick").toBeNull();
+      expect(Object.values(proposedOf(r, r.outcome))).not.toContain(wrong);
+    }
+  });
+
+  // A field that does reach clarification, b31-09's Reference email (three emails, the key's and two other people's): each
+  // offered value is picked in turn, and both fresh wordings then vote for another value, or for the pick. A vote for
+  // another value admits nothing; a vote for the pick writes the pick, as the user chose it.
+  it("b31-09 Reference email: each pick, then fresh votes for another value or for the pick, writes only the pick", async () => {
+    const c = LOSSES.values.find((x) => x.ask === "b31-09" && x.field === "Reference email") as Recorded;
+    for (const fresh of ["other", "pick"] as const) {
+      let picked = "";
+      let other = "";
+      const r = await runB31("b31-09", {
+        values: true,
+        value: (label, w, options, req) => {
+          if (label !== c.field) return undefined;
+          if (!/Explicit user selections: (?!none)/u.test(String(Object.values(req.questions).find((q) => String(q.instructions).includes(c.field))?.instructions))) return replayed(c)(label, w, options);
+          return byOutput(options, fresh === "other" ? other : picked, 0.99);
         },
       });
       const q = await valueQuestionFor(r, c.field);
-      // With the output ledger's collection the base question offers fewer values, and both of its asks agree on Wren's
-      // phone: the field is not left unresolved, so value settlement never asks it, and the rule relating the value to the
-      // field (relationalHold) withholds it as ambiguous. No question is put to the user, and Wren's phone is written by
-      // no path.
-      expect(q, "Reference phone is held as ambiguous at the base question, so the user is asked nothing to pick").toBeNull();
-      expect(Object.values(proposedOf(r, r.outcome))).not.toContain(wrong);
-      if (q === null) continue;
-      const values = (q as NonNullable<typeof q>).options.filter((o) => o.option.kind === "value");
-      expect(values.length).toBeGreaterThan(0);
-      for (const o of values) {
-        picked = o.option.kind === "value" ? o.option.value : "";
-        const resume = answerQuestion(q as NonNullable<typeof q>, [o.option.id]);
+      expect(q, "Reference email reaches clarification").not.toBeNull();
+      const values = (q as NonNullable<typeof q>).options.flatMap((o) => (o.option.kind === "value" ? [{ id: o.option.id, value: o.option.value }] : []));
+      expect(values.map((v) => v.value)).toEqual(["simone.achebe@ridgeline.example.com", "dana.whitfield@lumenlabs.example.com", "jordan.reyes@example.org"]);
+      for (const v of values) {
+        picked = v.value;
+        other = (values.find((x) => x.value !== v.value) as { value: string }).value;
+        const resume = answerQuestion(q as NonNullable<typeof q>, [v.id]);
         if (typeof resume === "string") throw new Error(resume);
-        const after = proposedOf(r, await r.resume(resume));
-        expect(Object.values(after), `${fresh} after picking ${picked}`).not.toContain(wrong);
-        if (fresh === "wrong") expect(after[c.field], `a vote for another value admits nothing after picking ${picked}`).toBeUndefined();
+        const after = proposedOf(r, await r.resume(resume))[c.field];
+        expect(after, `${fresh} after picking ${picked}`).toBe(fresh === "pick" ? picked : undefined);
       }
     }
   });
@@ -143,9 +180,9 @@ describe("the recorded verifier pairs still fail", () => {
       const verify = (label: string, wording: 0 | 1): Answer | undefined => (label === c.field ? (wording === 0 ? c.a : c.b) : undefined);
       if ((await valueQuestionFor(await runB31(c.ask, { values: true, verify }), c.field)) !== null) offered.push(`${c.ask} ${c.field}`);
     }
-    // With settlement's wording reserved strictly (settlementWording), b31-04 and b31-09 are not asked again: the wording
-    // does not fit beside what their base questions admitted in the mails, and their fields stay blank.
-    expect(offered, "b31-04 and b31-09 are not settled: settlement's wording does not fit").toEqual(["b31-01 First name", "b31-01 Last name"]);
+    // b31-04's School also reaches a value question with the output ledger's collection: its value is admitted with its
+    // facts where it was read. Settlement is admitted by the requests it sends, so its wording no longer keeps these out.
+    expect(offered).toEqual(["b31-01 First name", "b31-01 Last name", "b31-04 School", "b31-09 Reference relationship"]);
   });
 });
 

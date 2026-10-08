@@ -9,7 +9,7 @@ import { OWNER_QUESTION_PURPOSES, SHAPES } from "../src/privacy/shapes.ts";
 import { OWNER_NOTE_CHARS } from "../src/privacy.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { candidateProvenance, proposeFill, type FillScope } from "../src/fill/fill.ts";
-import { fieldContract, setTestVerifier, verifyProposed, type Proposed, type Provenance } from "../src/fill/contract.ts";
+import { fieldContract, makeFieldContract, setTestVerifier, verifyProposed, type Proposed, type Provenance } from "../src/fill/contract.ts";
 import { sealRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, snap, text } from "./builders.ts";
@@ -223,5 +223,31 @@ describe("the owner-note allotment, only for owner questions", () => {
   it("names as owner-question requests exactly the shapes whose source_notes take the owner-note allotment", () => {
     const allotted = Object.entries(SHAPES).filter(([, slots]) => slots["state.source_notes.*"]?.max === OWNER_NOTE_CHARS).map(([k]) => k);
     expect(new Set(allotted)).toEqual(OWNER_QUESTION_PURPOSES);
+  });
+});
+
+describe("the verifier's source_notes, per batch", () => {
+  it("sends each batch only its own values' units: 21 values in two batches, 20 and 1 notes, none refused for its shape", async () => {
+    const m = new ScreenModel();
+    const d = new Disclosure(m);
+    const units = new Map<Proposed, { id: ReturnType<Disclosure["id"]>; text: NonNullable<ReturnType<Disclosure["candidate"]>> }>();
+    const proposed: Proposed[] = [];
+    for (let i = 0; i < 21; i++) {
+      m.apply(snap([text("t", `Value: X${i}`)], { at: i + 1, windowId: `n${i}`, title: `N${i}`, app: TEXTEDIT }));
+      const view = redactWindow(m.windows.get(`n${i}`) as WindowState);
+      const f = makeFieldContract({ windowId: FORM, node: field(`f${i}`, "", { label: "Reference" }), descriptor: "Text field. Label: Reference.", name: "Reference", labelWords: ["Reference"], control: "text", kinds: new Set(), part: null });
+      const p: Proposed = { field: f, text: `X${i}`, display: `X${i}`, provenance: { kind: "instruction", span: `X${i}` }, owner: null };
+      proposed.push(p);
+      units.set(p, { id: d.id(`note_${i}`), text: d.candidate(view, `Value: X${i}`)! });
+    }
+    const out: Sealed[] = [];
+    setTestVerifier(async (req) => {
+      sealed(req, out);
+      return STAND_IN(req);
+    });
+    const r = await verifyProposed(proposed, { askJev: STAND_IN, ledger: d, now: 3000, authority: TEST_AUTHORITY, unitOf: (p) => units.get(p) ?? null });
+    expect(r.asks.every((a) => a !== null)).toBe(true);
+    const notes = out.map((x) => (JSON.parse(x.bytes ?? "{}") as { state?: { source_notes?: Record<string, string> } }).state?.source_notes ?? {});
+    expect(notes.map((n) => Object.keys(n).length).sort((a, b) => a - b)).toEqual([1, 1, 20, 20]);
   });
 });
