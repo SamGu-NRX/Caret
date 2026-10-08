@@ -43,12 +43,12 @@ const RESTRICTS = /\b(?:only|just)\b[^.;]*\b(?:instruction|what i (?:typed|wrote
  * email" is PREP_SOURCE's.
  */
 const BARE_NOUN = ["note", "notes", "memo", "message", "messages", "text", "texts", "thread", "reply", "chat", "dm", ...NAMED_NOUNS].join("|");
-const POSSESSIVE_SOURCE = new RegExp(`(?<![\\p{L}])(${NAME})['’]s\\s+(?:latest\\s+|last\\s+|new\\s+|recent\\s+)?(${BARE_NOUN})\\b(?!\\s+(?:field|box|line|section|part)\\b)`, "gu");
+const possessiveSource = (name: string): RegExp => new RegExp(`(?<![\\p{L}])(${name})['’]s\\s+(?:latest\\s+|last\\s+|new\\s+|recent\\s+)?(${BARE_NOUN})\\b(?!\\s+(?:field|box|line|section|part)\\b)`, "gu");
 /** Verbs by which someone gave the values: a note's or a mail's. */
 const NOTE_VERBS = "jotted(?:\\s+down)?|wrote(?:\\s+down)?|noted(?:\\s+down)?|put\\s+down|typed(?:\\s+up)?|saved";
 const MAIL_VERBS = "mentioned|said|sent(?:\\s+me)?|offered|suggested|proposed|gave(?:\\s+me)?|told\\s+me|emailed(?:\\s+me)?|texted(?:\\s+me)?|wrote\\s+me|asked\\s+for|picked";
 /** "what I jotted down", "the Saturday Chris mentioned", "whatever Dana sent me". */
-const CLAUSE_SOURCE = new RegExp(`(?:\\b(?:from|off)\\s+)?(?:\\b(?:what|whatever|everything|anything|all)\\s+)?(?<![\\p{L}])(I|you|he|she|they|we|${NAME})\\s+(?:(${NOTE_VERBS})|(${MAIL_VERBS}))\\b`, "gu");
+const clauseSource = (name: string): RegExp => new RegExp(`(?:\\b(?:from|off)\\s+)?(?:\\b(?:what|whatever|everything|anything|all)\\s+)?(?<![\\p{L}])(I|you|he|she|they|we|${name})\\s+(?:(${NOTE_VERBS})|(${MAIL_VERBS}))\\b`, "gu");
 
 export interface SourcePhrase {
   start: number;
@@ -64,10 +64,20 @@ export interface SourcePhrase {
 }
 
 const PRONOUNS = new Set(["I", "you", "he", "she", "they", "we"]);
+const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 const kindOf = (noun: string): SourcePhrase["kind"] => (NOTE_NOUNS.includes(noun) ? "note" : MAIL_NOUNS.includes(noun) ? "mail" : "titled");
 
-/** The phrases of an instruction that name where to copy from, in order, overlapping ones merged. */
-export function sourcePhrases(instruction: string): SourcePhrase[] {
+/**
+ * The phrases of an instruction that name where to copy from, in order, overlapping ones merged. A name is one
+ * capitalized word; `people` are the person spans the instruction names (intent.ts personSpans, senderNames), so a
+ * full name among them ("Ines Quill sent") is read whole, and names typed in lower case ("the stuff ines quill sent")
+ * are read as one. A relation ("my wife") is not a name.
+ */
+export function sourcePhrases(instruction: string, people: readonly string[] = []): SourcePhrase[] {
+  const names = people.filter((p) => !/^(?:my|our)\s/iu.test(p));
+  const whole = names.filter((p) => /^\p{Lu}\S*\s/u.test(p)).sort((a, b) => b.length - a.length).map(escape);
+  const lower = names.filter((p) => /^\p{Ll}/u.test(p)).map(escape).join("|");
+  const name = [...whole, ...(lower === "" ? [] : [`(?:${lower})(?:\\s+(?:${lower}))*`]), NAME].join("|");
   const out: SourcePhrase[] = [];
   const negated = (start: number): boolean => NEGATION.test(instruction.slice(Math.max(0, start - 40), start));
   for (const m of instruction.matchAll(PREP_SOURCE)) {
@@ -76,14 +86,14 @@ export function sourcePhrases(instruction: string): SourcePhrase[] {
       if (PLACING.test(clause)) continue;
     }
     const noun = (m[1] as string).toLowerCase();
-    const owner = new RegExp(`(${NAME})['’]s\\s`, "u").exec(m[0])?.[1] ?? null;
+    const owner = new RegExp(`(${name})['’]s\\s`, "u").exec(m[0])?.[1] ?? null;
     out.push({ start: m.index, end: m.index + m[0].length, kind: kindOf(noun), noun: kindOf(noun) === "titled" ? noun : null, name: owner, negated: negated(m.index) });
   }
-  for (const m of instruction.matchAll(POSSESSIVE_SOURCE)) {
+  for (const m of instruction.matchAll(possessiveSource(name))) {
     const noun = (m[2] as string).toLowerCase();
     out.push({ start: m.index, end: m.index + m[0].length, kind: kindOf(noun), noun: kindOf(noun) === "titled" ? noun : null, name: m[1] as string, negated: negated(m.index) });
   }
-  for (const m of instruction.matchAll(CLAUSE_SOURCE)) {
+  for (const m of instruction.matchAll(clauseSource(name))) {
     const who = m[1] as string;
     // A sentence's capitalized first word is not a name ("Fill what I jotted down" has no person called Fill).
     if (!PRONOUNS.has(who) && /^(?:Fill|Use|Put|Add|Make|Set|Do|Go|Grab|Copy|Enter|Type|Get|Pick|Book|Choose|Please|Just|Ok|Okay|Can|Could)$/u.test(who)) continue;
@@ -121,40 +131,57 @@ export function fieldWords(instruction: string): string {
  */
 const COMMON_NAMES = new Set(["will", "may", "mark", "bill", "rose", "art", "grace", "hope", "joy", "june", "april", "august", "sue", "pat", "max", "ray", "rob", "jack", "frank", "drew", "chase", "dawn", "faith", "summer", "page", "lane", "dean", "guy", "don", "jean", "carol", "bob", "ben", "al", "an", "eve"]);
 
+/** Lower-case particles inside a name ("Ines de Quill", "Jan van der Berg"). */
+const PARTICLE = "de|van|von|der|bin|al|da|di|la|le|du";
+
 /**
  * The words of an instruction that name a mail's sender, however they are typed: a word of a conversation's sender
- * name ("ines", "chris"), or, capitalized, the start of the sender's first name when exactly one sender starts with it
- * ("Bea" for "Beatrice"). Each is an exact span of the instruction. B25 and B26's held-out sets type names in lower
- * case ("emergency contact is ines"), which the capitalized-name rule (intent.ts personSpans) does not see. A word in
- * lower case never matches by its start: "can" named Candace's mail in B26's second review.
+ * name ("ines", "chris"), a hyphenated word whose parts all are ("quill-sato"), or, capitalized, the start of the
+ * sender's first name when exactly one sender starts with it ("Bea" for "Beatrice"). Such words next to each other,
+ * or with only name particles between them, are one name ("ines de quill"). Each is an exact span of the instruction.
+ * B25 and B26's held-out sets type names in lower case ("emergency contact is ines"), which the capitalized-name rule
+ * (intent.ts personSpans) does not see. A word in lower case never matches by its start: "can" named Candace's mail in
+ * B26's second review.
  */
 export function senderNames(instruction: string, model: ScreenModel, form: WindowState): string[] {
   const senders = [...model.windows.values()].map(redactWindow).filter((w) => w.window.windowId !== form.window.windowId && isConversation(w)).map((w) => wordsOf(senderOf(w) ?? ""));
-  const out: string[] = [];
+  const hits: { start: number; end: number }[] = [];
   for (const m of instruction.matchAll(/(?<![\p{L}'’])\p{L}[\p{L}'’-]*/gu)) {
     const word = m[0].replace(/['’]s$/u, "");
     const n = word.toLowerCase();
-    if (n.length < 3 || COMMON_NAMES.has(n) || STOP.has(n) || out.includes(word)) continue;
-    const exact = senders.filter((ws) => ws.includes(n)).length;
+    if (n.length < 3 || COMMON_NAMES.has(n) || STOP.has(n)) continue;
+    const parts = n.split("-");
+    const exact = senders.filter((ws) => ws.includes(n) || (parts.length > 1 && parts.every((x) => ws.includes(x)))).length;
     const prefix = /^\p{Lu}/u.test(word) ? senders.filter((ws) => (ws[0] ?? "").startsWith(n)).length : 0;
-    if (exact > 0 || prefix === 1) out.push(word);
+    if (exact > 0 || prefix === 1) hits.push({ start: m.index, end: m.index + word.length });
   }
-  return out;
+  const joins = new RegExp(`^(?:\\s+(?:${PARTICLE}))*\\s+$`, "iu");
+  const spans: { start: number; end: number }[] = [];
+  for (const h of hits) {
+    const last = spans.at(-1);
+    if (last !== undefined && joins.test(instruction.slice(last.end, h.start))) last.end = h.end;
+    else spans.push({ ...h });
+  }
+  return [...new Set(spans.map((x) => instruction.slice(x.start, x.end)))];
 }
 
 /** Whether the instruction keeps Caret to its own words or rules out reading other windows. */
 export const restrictsSources = (instruction: string): boolean => RESTRICTS.test(instruction);
 
-/** Whether `span` (a person the instruction names) occurs only inside its source phrases. */
-export function onlyInSources(instruction: string, span: string): boolean {
-  const phrases = sourcePhrases(instruction);
+/** Whether every occurrence of `span` in the instruction sits inside one of `phrases`; false when it has none. */
+function inPhrases(instruction: string, phrases: readonly SourcePhrase[], span: string): boolean {
   let found = false;
-  const re = new RegExp(`(?<![\\p{L}])${span.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?![\\p{L}])`, "gu");
+  const re = new RegExp(`(?<![\\p{L}])${escape(span)}(?![\\p{L}])`, "gu");
   for (const m of instruction.matchAll(re)) {
     found = true;
     if (!phrases.some((p) => m.index >= p.start && m.index + m[0].length <= p.end)) return false;
   }
   return found;
+}
+
+/** Whether `span` (a person the instruction names) occurs only inside its source phrases; `people` are all it names. */
+export function onlyInSources(instruction: string, span: string, people: readonly string[] = [span]): boolean {
+  return inPhrases(instruction, sourcePhrases(instruction, [...new Set([span, ...people])]), span);
 }
 
 /** A mail's sender as its "From" line shows it ("Beatrice Sutherland <bea@…>" gives "Beatrice Sutherland"), or null. */
@@ -182,8 +209,11 @@ const STOP = new Set(["the", "my", "this", "that", "from", "for", "and", "with",
  */
 function byName(name: string, windows: readonly WindowState[], titles: boolean): WindowState[] {
   const n = name.toLowerCase();
-  const exact = windows.filter((w) => (isConversation(w) ? wordsOf(senderOf(w) ?? "").includes(n) : titles && wordsOf(w.window.title).includes(n)));
-  if (exact.length > 0 || n.length < 3) return exact;
+  // A full name ("ines quill") names a window that has each of its words.
+  const ns = wordsOf(n);
+  const holds = (ws: readonly string[]): boolean => ns.length > 0 && ns.every((x) => ws.includes(x));
+  const exact = windows.filter((w) => (isConversation(w) ? holds(wordsOf(senderOf(w) ?? "")) : titles && holds(wordsOf(w.window.title))));
+  if (exact.length > 0 || ns.length !== 1 || n.length < 3) return exact;
   const prefix = windows.filter((w) => isConversation(w) && (wordsOf(senderOf(w) ?? "")[0] ?? "").startsWith(n));
   return prefix.length === 1 ? prefix : [];
 }
@@ -206,7 +236,7 @@ function isNote(w: WindowState): boolean {
  */
 export function namedSources(instruction: string, model: ScreenModel, form: WindowState, people: readonly string[]): { named: NamedSource[]; excluded: string[]; missing: boolean } {
   const others = [...model.windows.values()].map(redactWindow).filter((w) => w.window.windowId !== form.window.windowId);
-  const phrases = sourcePhrases(instruction);
+  const phrases = sourcePhrases(instruction, people);
   const said = new Set(wordsOf(instruction).filter((x) => !STOP.has(x)));
   const just = model.windowBefore(form.window.windowId);
   const nouns = new Set([...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS]);
@@ -242,7 +272,7 @@ export function namedSources(instruction: string, model: ScreenModel, form: Wind
   const missing = phrases.some((p) => !p.negated && p.kind === "titled" && p.noun !== null && APP_NOUNS.includes(p.noun) && resolveFits(p).length === 0);
   const negatedNames = new Set(phrases.filter((p) => p.negated && p.name !== null).map((p) => p.name as string));
   for (const person of people) {
-    if (/^(?:my|our)\s/iu.test(person) || negatedNames.has(person) || phrases.some((p) => p.name === person)) continue;
+    if (/^(?:my|our)\s/iu.test(person) || negatedNames.has(person) || phrases.some((p) => p.name === person) || inPhrases(instruction, phrases, person)) continue;
     for (const w of byName(person, others, false)) add(w, [person]);
   }
   return { named: [...out.values()], excluded: [...excluded], missing };
