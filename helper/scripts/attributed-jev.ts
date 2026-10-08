@@ -17,24 +17,38 @@ export function httpStatus(e: unknown): number | null {
 /** The Ask an id names: a continuation's "<id>+pick" is its Ask's. */
 export const askOf = (id: string): string => id.replace(/\+pick$/u, "");
 
-export function attributedJev(send: (req: JevRequest, ask: string) => Promise<JevResult>, current: () => string, log: (line: DispatchLine) => void): { ask: AskJev; unavailable: ReadonlySet<string> } {
+/**
+ * `notRun(id)` answers whether any request the Ask sent got HTTP 503, only once every request it sent has answered: an
+ * Ask can end on one failure (planAsk's Promise.all rejects at the first) while a sibling is still out, and that
+ * sibling's 503 still makes the Ask not run.
+ */
+export function attributedJev(send: (req: JevRequest, ask: string) => Promise<JevResult>, current: () => string, log: (line: DispatchLine) => void): { ask: AskJev; notRun: (id: string) => Promise<boolean> } {
   const unavailable = new Set<string>();
+  const sent = new Map<string, Promise<unknown>[]>();
   let dispatched = 0;
-  const ask: AskJev = async (req) => {
+  const ask: AskJev = (req) => {
     const request = ++dispatched;
     const id = current();
     log({ request, ask: id, req, event: "dispatch" });
-    let result: JevResult;
-    try {
-      result = await send(req, id);
-    } catch (e) {
-      const status = httpStatus(e);
-      if (status === 503) unavailable.add(askOf(id));
-      log({ request, ask: id, req, event: "error", error: status === null ? (e instanceof Error ? e.name : "error") : `HTTP ${status}` });
-      throw e;
-    }
-    log({ request, ask: id, req, event: "answer", result });
-    return result;
+    const reply = (async () => {
+      let result: JevResult;
+      try {
+        result = await send(req, id);
+      } catch (e) {
+        const status = httpStatus(e);
+        if (status === 503) unavailable.add(askOf(id));
+        log({ request, ask: id, req, event: "error", error: status === null ? (e instanceof Error ? e.name : "error") : `HTTP ${status}` });
+        throw e;
+      }
+      log({ request, ask: id, req, event: "answer", result });
+      return result;
+    })();
+    sent.set(askOf(id), [...(sent.get(askOf(id)) ?? []), reply]);
+    return reply;
   };
-  return { ask, unavailable };
+  const notRun = async (id: string): Promise<boolean> => {
+    await Promise.allSettled(sent.get(id) ?? []);
+    return unavailable.has(id);
+  };
+  return { ask, notRun };
 }
