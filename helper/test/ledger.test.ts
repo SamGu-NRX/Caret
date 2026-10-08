@@ -356,8 +356,8 @@ describe("declared spans at mint and at seal", () => {
   });
 });
 
-// Astra's recheck of 0deb3e23, inside the promise's scope: a minted or derived unit is charged every source position of
-// what it reproduces, punctuation, ellipses and combining marks included.
+// Inside the promise's scope: a minted unit is charged every source position of its recorded range, punctuation,
+// ellipses and combining marks included, and a derivation its whole basis.
 describe("what a minted unit takes from its window", () => {
   const note = (lines: string[]): { m: ScreenModel; d: Disclosure; view: WindowState } => {
     const m = new ScreenModel();
@@ -381,7 +381,7 @@ describe("what a minted unit takes from its window", () => {
   });
 });
 
-// Astra's recheck of b5226a1f: a mint charges the exact source range its producer recorded, read by the one reader the
+// A mint charges the exact source range its producer recorded, read by the one reader the
 // inventory uses.
 describe("a recorded source range", () => {
   const desk = (lines: string[], o: { title?: string; chat?: boolean } = {}): { d: Disclosure; view: WindowState } => {
@@ -515,7 +515,7 @@ describe("text a chat shows that the request did not take from it", () => {
   });
 });
 
-// Sol review of 9d110306, P1: a declared nested JSON text is measured as the text it decodes to.
+// A declared nested JSON text is measured as the text it decodes to.
 describe("a JSON state at seal", () => {
   it("measures the strings a JSON state holds, not its escaped spelling", () => {
     // Quotes every few characters: escaped, they would cut every run under 12.
@@ -532,7 +532,7 @@ describe("a JSON state at seal", () => {
   });
 });
 
-// Sol review of 9d110306, P1: a window line the ledger cannot measure refuses, rather than leaving the measure.
+// A window line the ledger cannot measure refuses, rather than leaving the measure.
 describe("a window with an unpaired surrogate", () => {
   it("refuses a request that carries the line's valid prefix", () => {
     const prefix = "the deposit is due friday";

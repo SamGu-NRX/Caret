@@ -174,7 +174,7 @@ describe("every list in a request has an item count (privacy/shapes.ts ITEMS)", 
   });
 });
 
-// Sol review of 9d110306, P1: the shapes held strings and lists, not the keys and scalar types around them.
+// A shape holds a request's keys and scalar types, not only its strings and lists.
 describe("a request's keys and scalar types are its shape's too", () => {
   it("refuses a number where its shape has an object, and an object where it has none", () => {
     const d = new Disclosure(registryOf([]));

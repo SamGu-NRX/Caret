@@ -90,9 +90,7 @@ export function bareMap(raw: string): { line: string; from: number[] } {
   const { text, from } = collapsedMap(raw);
   const bullet = BULLET_PREFIX.exec(text);
   const cut = bullet === null ? 0 : bullet[0].length;
-  const line = text.slice(cut);
-  if (line !== bareLine(raw)) throw new Error("bareMap: the line does not read as bareLine reads it");
-  return { line, from: from.slice(cut) };
+  return { line: text.slice(cut), from: cut === 0 ? from : from.slice(cut) };
 }
 const BULLET_PREFIX = /^(?:[-*•·–—]|•) /u;
 

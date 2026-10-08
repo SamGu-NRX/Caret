@@ -22,6 +22,17 @@ export const sourceLine = (s: string): string => s.replace(/\s+/gu, " ").trim();
  * generator, describeField) read their source ranges through it.
  */
 export function collapsedMap(raw: string): { text: string; from: number[] } {
+  const hit = COLLAPSED.get(raw);
+  if (hit !== undefined) return hit;
+  const out = readCollapsed(raw);
+  // A producer reads the same few lines for many spans; the memo is bounded, as line-values.ts severalMemo is.
+  if (COLLAPSED.size >= 4096) COLLAPSED.clear();
+  COLLAPSED.set(raw, out);
+  return out;
+}
+const COLLAPSED = new Map<string, { text: string; from: number[] }>();
+
+function readCollapsed(raw: string): { text: string; from: number[] } {
   let text = "";
   const from: number[] = [];
   for (let i = 0; i < raw.length; ) {

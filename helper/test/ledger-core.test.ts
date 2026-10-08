@@ -205,8 +205,8 @@ describe("the fixed desks (OUTPUT-LEDGER-SPEC section 11), as units against a wi
   });
 });
 
-// The Astra second opinion's counterexamples to 9d110306 (run-level dedupe), each charged as the measure now charges it.
-describe("the Astra counterexamples", () => {
+// Counterexamples to counting repeated text once, each charged as the measure charges it.
+describe("counterexamples to counting repeated text once", () => {
   it("six short values minted from a chat are charged their declared spans: 25 of 35 characters, over its limit of 17", () => {
     const lines = ["Kofi", "Alice, Bob", "Cedar, Elm", "Paris, Rome"];
     const values = ["Alice", "Bob", "Cedar", "Elm", "Paris", "Rome"];
@@ -241,7 +241,7 @@ describe("the Astra counterexamples", () => {
   });
 });
 
-// Astra's rechecks of 0deb3e23 and b5226a1f: a recorded range charges every source character in it, as it is.
+// A recorded range charges every source character in it, as it is.
 describe("a declared span", () => {
   it("charges a recorded range every character in it, ellipses and punctuation included", () => {
     expect(charge(["a\u2026\u2026b"], ["a\u2026\u2026b."], [at(0, 0, 4)])).toBe(4);
@@ -263,7 +263,7 @@ describe("a declared span", () => {
   });
 });
 
-// Sol review of 9d110306: full coverage by separate runs is not whole-line containment.
+// Full coverage by separate runs is not whole-line containment.
 describe("whole-line containment is one match, not full coverage", () => {
   it("charges two runs that cover a line's scalars only their positions: a leading NEL, which normalizes to nothing, is not", () => {
     const line = "\u0085abcdefghijklmnopqrstuvwx";
