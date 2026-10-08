@@ -93,6 +93,7 @@ async function rig(during: ((h: Helper) => Promise<void>) | null = null): Promis
   await helper.handleReader(snap([field("te/note", NOTE, { role: "AXTextArea" })], { at: Date.now() - 5000, windowId: "note", title: "Robin.txt", app: TEXTEDIT, focused: true }));
   expect((await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
   cleanups.push(() => {
+    page.session.close();
     helper.shutdown();
     store.close();
     rmSync(dir, { recursive: true, force: true });

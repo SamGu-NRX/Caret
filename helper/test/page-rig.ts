@@ -143,6 +143,7 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
       expect((await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
     },
     close: () => {
+      page.session.close();
       helper.shutdown();
       store.close();
       rmSync(dir, { recursive: true, force: true });
