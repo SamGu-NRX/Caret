@@ -5,10 +5,9 @@
 //
 //   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker heads|jev|writer]
 //        [--spend-limit USD] [--gap S] [--writer-model provider:model] [--plan-writer provider:model]
-//        [--engine jev|llama|gemini] [--log-requests FILE] [--replay JEV_LOG] [--form-window page|reader]
-// J1: --engine names the decision engine in Jev's place (engines/decide/harness.ts; llama's server and calibration come
-// from CARET_LLAMA_* and CARET_ENGINE_CALIBRATION), behind the record-and-replay cache (CARET_JEV_CACHE, replay-or-record
-// by default), so a rerun of unchanged asks costs nothing. Every window and memory entry here comes from fixture files.
+//        [--engine jev|llama|gemini|decisions] [--log-requests FILE] [--replay JEV_LOG] [--form-window page|reader]
+// Decisions uses a script-only adapter without a cache. Other engines use harnessEngine's fixture-only cache.
+// Every window and memory entry here comes from fixture files.
 // L1: the maker is writer/config.ts ASK_MAKER (Jev) and the plan route has no writer unless a flag names a route
 // (writer/routes.ts devWriterRoute); --maker writer needs --writer-model.
 // P1: --maker heads is Jev in one request (planner/intent-heads.ts); the report counts each intent's Jev requests.
@@ -31,7 +30,8 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
+import { JEV_USD_PER_INPUT_TOKEN, sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
+import { decisionsAsk, DECISIONS_MODEL, RequestBudget } from "./decisions-eval.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { cannedReply } from "../src/engines/decide/canned.ts";
 import type { FillTrace } from "../src/fill/fill.ts";
@@ -97,6 +97,8 @@ const corpus = loadCorpus(resolve(a.corpus));
 const asks = loadAsks(resolve(a.corpus), corpus, a["asks-file"]).filter((x) => a.asks === undefined || a.asks.split(",").includes(x.id));
 const snaps = readFileSync(resolve(a.windows), "utf8").trim().split("\n").map((l) => Snapshot.parse(JSON.parse(l)));
 const SPEND_LIMIT = Number(a["spend-limit"]);
+const budget = new RequestBudget(SPEND_LIMIT);
+if (a.engine === "decisions" && (a.maker === "writer" || a["plan-writer"] !== undefined || a.replay !== undefined)) throw new Error("--engine decisions is a decision-only eval: no writer or Jev replay");
 const GAP_MS = Number(a.gap) * 1000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -235,7 +237,10 @@ const oracle: AskJev = async (req) => {
   });
   return { ...r, nouls: r.nouls ?? {} };
 };
-const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
+const fixture = { windows: (id: string) => fixtureIds.has(id), memory: true, plan: true };
+const decide = a.engine === "decisions"
+  ? { ask: decisionsAsk({ budget, fixture, logRequests: a["log-requests"] ?? join(OUT, "decisions-requests.ndjson") }), says: `engine decisions (${DECISIONS_MODEL}), cache off, raw confidence, no calibration evidence` }
+  : harnessEngine({ name: engineName(a.engine), canned: oracle, fixture, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
 /**
  * A2: answers an earlier live run recorded (its --log-jev file), for developing on its asks without paying for them again.
  * LV1's live runs had the decision cache off, so their log is the only record of what Jev answered. The log keeps each
@@ -266,18 +271,24 @@ let corpusLabel = new Map<string, string>();
 /** A1: decision requests by the ask (or "<id>+pick" for the simulated picks after a question) that made them. */
 const requestsBy = new Map<string, number>();
 const askJev: AskJev = async (req) => {
-  if (jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
+  if (a.engine !== "canned" && a.engine !== "decisions" && jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   requestsBy.set(current, (requestsBy.get(current) ?? 0) + 1);
   const qs = Object.fromEntries(Object.entries({ ...req.questions, ...req.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]));
   const hit = a.replay === undefined ? undefined : recorded.get(replayKey(current, qs))?.shift();
   // Sealed before it is sent: the engine is asked, and the log written, from this frozen copy (PV2).
   const sent = sealRequest(req);
   if (a.replay !== undefined) replay[hit === undefined ? "misses" : "hits"]++;
-  const r = hit === undefined ? await decide.ask(sent.asked) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
+  if (hit === undefined && a.engine === "jev") budget.reserve(sent.sealed.bytes, JEV_USD_PER_INPUT_TOKEN);
+  const r = hit === undefined ? await decide.ask(a.engine === "jev" ? { ...sent.asked, retry429: false } : sent.asked) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   jevSpent += r.costUsd;
   jevModels.add(r.model);
-  requestMs.push(r.latencyMs);
-  if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { ask: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers, nouls: r.nouls ?? {} });
+  if (r.costUsd > 0 && r.latencyMs > 0) requestMs.push(r.latencyMs);
+  if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], {
+    ask: current, purpose: sent.asked.purpose,
+    questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))),
+    offered: storedRecord(sent, (f) => ({ ...f.questions, ...f.nouls })),
+    answers: r.answers, nouls: r.nouls ?? {}, latencyMs: r.latencyMs, inputTokens: r.inputTokens, costUsd: r.costUsd,
+  });
   return r;
 };
 // Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.
@@ -531,7 +542,7 @@ const md = [
   `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker !== "writer" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
   ...(a.replay === undefined ? [] : [`Replayed from ${a.replay}: ${replay.hits} requests; ${replay.misses} asked of ${decide.says} instead.`]),
-  `Decisions: ${decide.says}; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
+  `Decisions: ${decide.says}; ${requestMs.length} successful live requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
   `Maker requests per intent: ${[...new Set(makerCalls)].sort((x, y) => x - y).join(", ") || "none"} (${makerCalls.length} intents made); maker latency p50 ${pct(makerMs, 0.5)} ms, p95 ${pct(makerMs, 0.95)} ms.`,
   "",
   `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, asked with choices ${n("asked")}, refused ${n("refused")}, **wrong ${n("wrong")}**.`,
@@ -540,7 +551,7 @@ const md = [
   `After the simulated right pick: right ${cont("right")}, partial ${cont("partial")}, asked again with no right option ${cont("asked")}, refused ${cont("refused")}, **wrong ${cont("wrong")}**; not continued (right answer not offered) ${asked.length - recalled.length}.`,
   `Of the ${refuseAsks.length} that should be refused: refused ${n("refused", refuseAsks)}, wrong ${n("wrong", refuseAsks)}; with the right sentence ${named.filter((r) => r.sentenceOk === true).length} of the ${named.length} that name their reason.`,
   `A1 asks back: ${back.length} (asked with choices ${back.filter((r) => r.verdict === "asked").length}, the right option offered in ${back.filter((r) => r.asked[0]?.recall === true).length}; refused as unsure ${back.filter((r) => r.verdict === "refused").length}). Asks whose right outcome is a question: ${rows.filter((r) => r.ask.ask !== undefined).length}, asked rightly ${rightAsks.length}.`,
-  `A1 decision requests per ask before any pick: mean ${(firstRequests.reduce((x, y) => x + y, 0) / Math.max(1, firstRequests.length)).toFixed(2)}, max ${Math.max(0, ...firstRequests)}; ${requestMs.length} requests in all, with the simulated picks.`,
+  `A1 decision requests per ask before any pick: mean ${(firstRequests.reduce((x, y) => x + y, 0) / Math.max(1, firstRequests.length)).toFixed(2)}, max ${Math.max(0, ...firstRequests)}; ${[...requestsBy.values()].reduce((sum, count) => sum + count, 0)} requests in all, with the simulated picks.`,
   ...(kinds.length === 0 ? [] : ["", "| kind | asks | right | partial | asked | refused | wrong | asked back |", "|---|---|---|---|---|---|---|---|", ...kinds.map((k) => { const xs = rows.filter((r) => r.ask.kind === k); return `| ${k} | ${xs.length} | ${n("right", xs)} | ${n("partial", xs)} | ${n("asked", xs)} | ${n("refused", xs)} | ${n("wrong", xs)} | ${xs.filter(askedBack).length} |`; })]),
   "",
   "| ask | form | instruction | verdict | route | proposed | missing | intent | says | detail | asked (options; right; recall) | after pick |",
