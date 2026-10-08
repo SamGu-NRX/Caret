@@ -2,7 +2,7 @@
 // A numeric date gives its month and day only when evidence settles their order; a date with a time gives each part
 // on its own; a select or radio option is offered when one word of the request or a source names it. Every ambiguous
 // case gives nothing. Jev is a fake that answers by rule; every name, date and place is invented.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
 import { makeFieldContract, mintExempt, provenanceStale, setTestVerifier, type Provenance } from "../src/fill/contract.ts";
@@ -18,6 +18,11 @@ import { EngineSession } from "../src/engines/session.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot } from "../src/protocol.ts";
 import { field, jevPickingText, snap, value } from "./builders.ts";
 import { TEST_AUTHORITY } from "./mint.ts";
+
+/** This suite tests the values code reads from words; its verifier refuses every source-supported choice to isolate them. */
+const REFUSES_SUPPORTED: AskJev = async (req) => ({ model: "verify-stand-in", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: String(q.instructions).includes("Derivation: not copied from the source;") ? "other" : "exact", confidence: 0.95 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 });
+beforeEach(() => setTestVerifier(REFUSES_SUPPORTED));
+afterEach(() => setTestVerifier(STAND_IN));
 
 const DENVER: ResolveContext = { locale: "en-US", timeZone: "America/Denver", referenceInstant: null };
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];

@@ -58,6 +58,42 @@ export function unitOf(model: ScreenModel, windowId: string, nodeKey: string): N
   return build(raw, textArea(node) ? nodeKey : null);
 }
 
+/** The unit by its identity (unitKey): a text area of the window, or (null) the whole window; null when either is gone. */
+export function unitAt(model: ScreenModel, windowId: string, nodeKey: string | null): NoteUnit | null {
+  const raw = model.windows.get(windowId);
+  if (raw === undefined) return null;
+  if (nodeKey === null) return build(raw, null);
+  const node = raw.nodes.get(nodeKey);
+  return node === undefined || !textArea(node) ? null : build(raw, nodeKey);
+}
+
+/** Every unit of a window's text (c), each once: each text area that holds text, and the whole window when another node does. */
+export function windowUnits(model: ScreenModel, windowId: string): NoteUnit[] {
+  const raw = model.windows.get(windowId);
+  if (raw === undefined) return [];
+  const out = new Map<string, NoteUnit>();
+  for (const n of raw.nodes.values()) {
+    if (unitText(n).trim() === "") continue;
+    const nodeKey = textArea(n) ? n.key : null;
+    const k = unitKey({ windowId, nodeKey });
+    if (!out.has(k)) out.set(k, build(raw, nodeKey));
+  }
+  return [...out.values()];
+}
+
+/**
+ * What a choice judged against a unit rests on (fill.ts), as one digest: the unit's own (its text as shown, and whether
+ * redaction cut it), the window's title, and the label of every node in it, which the text leaves out for an editable
+ * node. Any change refuses the choice at every recheck. Null when the unit is gone.
+ */
+export function unitEvidence(model: ScreenModel, windowId: string, nodeKey: string | null): string | null {
+  const raw = model.windows.get(windowId);
+  const u = unitAt(model, windowId, nodeKey);
+  if (raw === undefined || u === null) return null;
+  const keys = nodeKey === null ? [...raw.nodes.keys()] : [nodeKey];
+  return createHash("sha256").update([u.digest, raw.window.title, ...keys.map((k) => raw.nodes.get(k)?.label ?? "")].join("\u0000")).digest("hex").slice(0, 32);
+}
+
 function build(raw: WindowState, nodeKey: string | null): NoteUnit {
   const view = redactWindow(raw);
   const keys = nodeKey === null ? [...raw.nodes.keys()] : [nodeKey];

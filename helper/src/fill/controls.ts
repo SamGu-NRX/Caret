@@ -380,6 +380,34 @@ export function boxKind(label: string): "question" | "statement" | "other" {
   return "other";
 }
 
+/** First-person words: a box whose label holds one is the user speaking ("This is my first class"), whatever it opens with. */
+const FIRST_PERSON: ReadonlySet<string> = new Set(["i", "i'm", "i've", "i'd", "i'll", "me", "my", "mine", "we", "we're", "our", "us"]);
+/** A bare phrase that is no consent or sign-up and in which nobody speaks ("Tire rotation", but also "Over 18"). */
+const barePhrase = (label: string): boolean => boxKind(label) === "other" && !boxNeverTicked(label) && !tokens(label).some((w) => FIRST_PERSON.has(w));
+/** A box's group: its innermost page section, else its parent node. */
+const groupOf = (n: Node): string | null => n.sections?.at(-1) ?? n.parent;
+
+/**
+ * Whether a box is one item of a list to pick from ("Tire rotation" among "Services requested"): a bare phrase beside at
+ * least one other such box in the same group. Only such a box is offered a source-supported tick (fill.ts). A box that
+ * stands alone ("Over 18") or asks or states a fact about the user keeps statesFact's literal rule alone.
+ */
+export function serviceBox(w: WindowState, c: FormControl): boolean {
+  if (c.control !== "checkbox" || c.label === null || !barePhrase(c.label)) return false;
+  const group = groupOf(c.node);
+  return [...w.nodes.values()].some((n) => n.key !== c.node.key && n.role === "AXCheckBox" && groupOf(n) === group && barePhrase(label(n) ?? ""));
+}
+
+/**
+ * The options of a select or radio group the user can pick: listed, not a select's prompt ("Select..."), and not marked
+ * disabled. A page's native select does not carry its options' disabled state, so there this is no proof of it.
+ */
+export function pickableOptions(w: WindowState, c: FormControl): string[] {
+  if (c.options === null || (c.control !== "select" && c.control !== "radio")) return [];
+  const off = new Set([...w.nodes.values()].filter((m) => m.parent === c.node.key && m.states?.includes("disabled") === true).map((m) => (m.label ?? m.value ?? "").trim()));
+  return c.options.filter((o) => !(c.control === "select" && PROMPT.test(o.trim())) && !off.has(o));
+}
+
 /**
  * Whether a source states the fact a box asks (D2-04): the picked span is the user's own statement of the box's fact
  * ("I have a valid driving license" for "Do you have a valid driving license?"), or it is the yes of a "Label: answer"

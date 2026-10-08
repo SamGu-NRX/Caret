@@ -20,11 +20,11 @@ import type { Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, pickableOptions, serviceBox, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, PART_SAYS, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, type CheckOptions, CONTRACT_UNSTATED, contractSays, ContractError, isChecked, makeFieldContract, mintDerivation, mintExempt, neverTypedRefusal, provenanceStale, requireChecked, shapeRefusal, textShapeRefusal, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance, type Refused } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
-import { ownedOf, unitKey, unitOf, unitsHolding, type NoteUnit } from "./note-unit.ts";
+import { ownedOf, unitAt, unitEvidence, unitKey, unitOf, unitsHolding, windowUnits, type NoteUnit } from "./note-unit.ts";
 import { groupOptions, type OptionMember, type ValueOption } from "./value-options.ts";
 import { OwnerVerdicts, type CacheTicket, type OwnerAnswer } from "./owner-cache.ts";
 import { alternateVetoes, readableFields, setAlternateReason, type AlternateWrite, type PartPicks } from "./alternate.ts";
@@ -605,7 +605,7 @@ export interface FillTrace {
   /** Whether a request is one this proposal sent: planPage runs its parts' proposals at once, with one AskJev. */
   owns: (req: JevRequest) => boolean;
   fields: readonly { id: string; key: string; name: string }[];
-  options: ReadonlyMap<string, { text: string; from: "window" | "memory" | "derived"; label: string | null; app: string | null }>;
+  options: ReadonlyMap<string, { text: string; from: "window" | "memory" | "derived" | "choice"; label: string | null; app: string | null }>;
   /** An Ask's exact proposed output of each option a field's value questions list, by field id and option id. */
   outputs?: ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** An Ask's candidates a veto kept out of a field's value questions, by field id and candidate id, with the veto. */
@@ -769,12 +769,19 @@ function stated(r: Reading | null): Chosen | undefined {
   return r === null || r.assumptions.length === 0 ? undefined : { says: `Caret assumed: ${r.assumptions.join("; ")}`, also: null };
 }
 
-/** What a field's answer came from: a window's candidate, a value the user told Caret, or a part code derived from either. */
+/**
+ * What a field's answer came from: a window's candidate, a value the user told Caret, a part code derived from either, or
+ * (design/ask/MISSING-CANDIDATES.md) a source-supported choice: one listed option, or a service box's tick (`text`), that
+ * code proposes for judgment against one whole basis without having found the basis naming it.
+ */
 type Pick =
   | { from: "window"; c: Candidate }
   | { from: "memory"; a: AboutValue }
   | { from: "instruction"; text: string }
-  | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string }; also: Candidate | null; chose?: Chosen };
+  | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string }; also: Candidate | null; chose?: Chosen }
+  | { from: "choice"; text: string; basis: ChoiceBasis };
+/** A source-supported choice's whole evidence: one unit of a scoped source window, one memory entry, or the user's whole request. */
+type ChoiceBasis = { from: "unit"; unit: NoteUnit; app: string; title: string; evidence: string } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string };
 
 /** Words of a label that say its value is a person's: "Name:", "Traveler:", "To:", "Emergency contact:". Written for common labels, not measured. */
 const PERSON_LABEL = /\b(?:name|traveler|traveller|passenger|patient|guest|applicant|student|attendee|from|to|cc|reference|landlord|contact|recipient|sender|tenant|driver|member|employee|candidate|spouse|partner|roommate|manager|advisor)\b/i;
@@ -1053,6 +1060,20 @@ export async function proposeFill(
     }
     fields.push({ id, node: n, descriptor, name: name ?? "unnamed field", said: { id, descriptor: descriptorSaid, name: nameSaid }, kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
   }
+  /**
+   * The outputs a source-supported choice may propose for a field (design/ask/MISSING-CANDIDATES.md), for an Ask only: each
+   * pickable option of a select or radio group, or a service box's tick. A calendar month or day menu gets none: reading
+   * either from a numeric date needs its order, which only a format the source states settles (the derived parts below),
+   * never a judgment of a bare "04/12/1990" ("What it leaves out"). A year reads the same in any order.
+   */
+  const choiceOutputs = (f: Field): string[] => {
+    if (scope === undefined || f.form === null) return [];
+    if (f.control === "checkbox") return serviceBox(w, f.form) ? [PAGE_CHECKED] : [];
+    const options = pickableOptions(w, f.form);
+    const said = new Set(words(f.name));
+    const calendar = f.part === "month" || f.part === "day" || (said.has("month") && options.some((o) => monthIndex(o) !== null)) || (said.has("day") && options.length > 0 && options.every((o) => /^\d{1,2}$/u.test(o)));
+    return calendar ? [] : options;
+  };
   // S1: a page form's empty field that takes a written answer is asked which saved answer answers it, and nothing else:
   // no window span is the user's prose (prose fields hand off in v1, plans/fast-browser.md). Each field offers the
   // answers whose questions share the most words with its label, at most MAX_ANSWERS_ASKED.
@@ -1434,7 +1455,7 @@ export async function proposeFill(
       if (list.length > 0) derived.set(f.id, list);
     }
   }
-  if (candidates.length === 0 && cut.length === 0 && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
+  if (candidates.length === 0 && cut.length === 0 && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0 && choiceOutputs(f).length === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
 
   // A field whose label names no kind (kinds.ts) could want a value of any kind or plain text. It is not
   // asked when a cut took a value of any kind: a "When" field was asked after a cut took the dates, and
@@ -1519,7 +1540,7 @@ export async function proposeFill(
     else answersFor.set(id, kept);
   }
   const answerAsked = fields.filter((f) => answersFor.has(f.id));
-  const asked = uncut.filter((f) => candidates.length > 0 || f.about.length > 0 || (derived.get(f.id)?.length ?? 0) > 0);
+  const asked = uncut.filter((f) => candidates.length > 0 || f.about.length > 0 || (derived.get(f.id)?.length ?? 0) > 0 || choiceOutputs(f).length > 0);
   // Whose details a value is, asked for each candidate that is a person's (a typed email, phone or address,
   // or a name), when some asked field wants a person's details (the owner veto below).
   const personal = new Set(asked.filter((f) => f.personal).map((f) => f.id));
@@ -1701,6 +1722,31 @@ export async function proposeFill(
       const said = derivedSaid.get(d.key);
       return said === undefined ? [] : [{ id: ids.get(d.key) ?? "", describe: said }];
     }).sort((x, y) => x.id.localeCompare(y.id, "en", { numeric: true }))]));
+  // Source-supported choices (design/ask/MISSING-CANDIDATES.md), for an Ask only: each pickable option of an asked select
+  // or radio group, and the tick of each asked service box (controls.ts serviceBox), against each unit of the Ask's source
+  // windows that redaction left complete, each memory entry offered to the field, and the user's whole request. This
+  // enumerates; it claims no support. An option unrelated to its basis competes with none, and only both value questions
+  // and the verifier can admit it (choiceOutputs says which outputs). They are d... after the derived values in the first
+  // ask and e..., shuffled, in the second; the base's questions never offer them.
+  type Supported = { id: string; second: string; f: Field; pick: Extract<Pick, { from: "choice" }> };
+  const supported: Supported[] = [];
+  if (scope !== undefined) {
+    const unitBases = [...model.windows.keys()].filter((id) => id !== windowId && unread?.has(id) !== true).flatMap((id) => windowUnits(model, id)).filter((u) => u.complete).map((u): ChoiceBasis => {
+      const view = viewOf(model, u.windowId);
+      return { from: "unit", unit: u, app: view?.app.name ?? "", title: view?.window.title ?? "", evidence: unitEvidence(model, u.windowId, u.nodeKey) ?? "" };
+    });
+    const listed = asked.flatMap((f) => {
+      const outputs = choiceOutputs(f);
+      const bases: ChoiceBasis[] = [...unitBases, ...f.about.filter((a) => (aboutSaidNow.get(a.id) ?? null) !== null).map((a): ChoiceBasis => ({ from: "memory", a })), { from: "instruction", text: scope.instruction }];
+      return outputs.flatMap((text) => bases.map((basis) => ({ f, pick: { from: "choice" as const, text, basis } })));
+    });
+    const seconds = new Map(shuffled(listed, opts.rand).map((x, i) => [x, `e${allDerived.length + i + 1}`]));
+    for (const [i, x] of listed.entries()) {
+      const s = { ...x, id: `d${allDerived.length + i + 1}`, second: seconds.get(x) as string };
+      supported.push(s);
+      back.set(s.second, s.id);
+    }
+  }
   /** Whether fill has an answer to whose this candidate is: code's identity, or its owner questions were asked. */
   const ownerKnown = (c: Candidate): boolean => c.identity !== undefined || ownerCands.some((x) => x.id === c.id);
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
@@ -1715,7 +1761,7 @@ export async function proposeFill(
   /** An Ask's candidates a veto kept out of each field's options (FillTrace.vetoed), filled as they are built. */
   const traceVetoed = new Map<string, Map<string, OptionVeto>>();
   if (opts.trace !== undefined) {
-    const traced = new Map<string, { text: string; from: "window" | "memory" | "derived"; label: string | null; app: string | null }>();
+    const traced = new Map<string, { text: string; from: "window" | "memory" | "derived" | "choice"; label: string | null; app: string | null }>();
     for (const c of candidates) {
       const o = { text: c.text, from: "window" as const, label: c.labelled === true ? c.context : null, app: c.source.appName };
       traced.set(c.id, o);
@@ -1731,6 +1777,11 @@ export async function proposeFill(
       const o = { text: d.text, from: "derived" as const, label: base?.labelled === true ? base.context : null, app: base?.source.appName ?? null };
       traced.set(derivedIds.get(d.key) ?? "", o);
       traced.set(derivedSecond.get(d.key) ?? "", o);
+    }
+    for (const s of supported) {
+      const o = { text: s.pick.text, from: "choice" as const, label: null, app: s.pick.basis.from === "unit" ? s.pick.basis.app : null };
+      traced.set(s.id, o);
+      traced.set(s.second, o);
     }
     traced.delete("");
     opts.trace({ owns: (req) => mine.has(req), fields: asked.map((f) => ({ id: f.id, key: f.node.key, name: f.name })), options: traced, outputs: traceOutputs, vetoed: traceVetoed });
@@ -1873,6 +1924,7 @@ export async function proposeFill(
     ...candidates.map((c): [string, Pick] => [c.id, { from: "window", c }]),
     ...aboutSent.map((a): [string, Pick] => [aboutIds.get(a.id) ?? "", { from: "memory", a }]),
     ...allDerived.map((d): [string, Pick] => [derivedIds.get(d.key) ?? "", { from: "derived", text: d.text, base: d.base, also: d.also, ...(d.chose === undefined ? {} : { chose: d.chose }) }]),
+    ...supported.map((s): [string, Pick] => [s.id, s.pick]),
   ]);
   const pickText = (p: Pick): string => (p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text);
   /** One answer to a value question: the base's (a candidate) or, `settling`, value settlement's (an option). */
@@ -1900,9 +1952,12 @@ export async function proposeFill(
     return k !== undefined && isCut(new Set([k]));
   };
   // Picks of a kind a cut took are withheld (see above); a value from memory is of its own kind; a derived
-  // value meets its source's rules.
+  // value meets its source's rules. A whole unit's or the request's choice has no kind of its own: the field's own cut
+  // (fieldCut) still applies to it.
   const pickCut = (p: Pick): boolean =>
-    p.from === "instruction"
+    p.from === "choice"
+      ? p.basis.from === "memory" && pickCut({ from: "memory", a: p.basis.a })
+      : p.from === "instruction"
       ? false
       : p.from === "derived"
       ? pickCut(p.base) || (p.also !== null && pickCut({ from: "window", c: p.also }))
@@ -1913,17 +1968,22 @@ export async function proposeFill(
           : aboutCut(p.a);
   /** A pick of a kind a cut took, whatever window it came from. */
   const kindCut = (p: Pick): boolean =>
-    p.from === "instruction" ? false : p.from === "derived" ? kindCut(p.base) || (p.also !== null && kindCut({ from: "window", c: p.also })) : p.from === "window" ? isCut(candidateKinds(model, p.c)) : aboutCut(p.a);
+    p.from === "choice" ? p.basis.from === "memory" && aboutCut(p.basis.a) : p.from === "instruction" ? false : p.from === "derived" ? kindCut(p.base) || (p.also !== null && kindCut({ from: "window", c: p.also })) : p.from === "window" ? isCut(candidateKinds(model, p.c)) : aboutCut(p.a);
   /**
    * What still withholds a pick from the window the user just left: a cut of its own kind, and the name cut for
    * a name (review: a cut chat's "Name: Dana Whitfield" beside the note's "Name: Alex Raman"; nothing says the
    * kept name is the one the form wants). The anchor lifts only the cut of fields whose label names no kind.
    */
   const nameish = (p: Pick): boolean =>
-    p.from === "instruction" ? false : p.from === "window" ? isNameLike(p.c.text, p.c.context) : p.from === "memory" ? p.a.kind === "name" : nameish(p.base) || (p.also !== null && nameish({ from: "window", c: p.also }));
+    p.from === "instruction" || p.from === "choice" ? false : p.from === "window" ? isNameLike(p.c.text, p.c.context) : p.from === "memory" ? p.a.kind === "name" : nameish(p.base) || (p.also !== null && nameish({ from: "window", c: p.also }));
   const anchoredCut = (p: Pick): boolean => kindCut(p) || (nameCut && nameish(p));
   const memoryOf = (p: Pick): AboutValue | null => (p.from === "memory" ? p.a : p.from === "derived" && p.base.from === "memory" ? p.base.a : null);
   const windowOf = (p: Pick): Candidate | null => (p.from === "window" ? p.c : p.from === "derived" && p.base.from === "window" ? p.base.c : null);
+  /**
+   * Whether a pick rests on what the user told Caret, so it goes only in a field both whose answers say is the user's. A
+   * choice judged against a memory entry does too, though it is held to the screen cutoff, not memoryOf's lane.
+   */
+  const fromUsersMemory = (p: Pick): boolean => memoryOf(p) !== null || (p.from === "choice" && p.basis.from === "memory");
   /** Both asks' answer to a question with fixed options when they give the same one, at any confidence, or null. */
   const sameChoice = (q: string, q2: string = q): string | null => {
     const [x1, x2] = staged ? [w1, w2] : [r1, r2];
@@ -1964,6 +2024,9 @@ export async function proposeFill(
   const otherPerson = (f: Field, p: Pick): boolean => {
     // A value the instruction spells out is the user's own choice for the field.
     if (p.from === "instruction" || (p.from === "derived" && p.base.from === "instruction")) return false;
+    // A source-supported choice has no owner judgement of its own, as a window value whose owner was never asked: a field
+    // that takes a person's details takes it only from what the user told Caret, and only when no other person is named.
+    if (p.from === "choice") return owners && f.personal && (namedPerson !== null || p.basis.from !== "memory");
     // An Ask that names a person: a personal field takes only a window value both asks say is theirs. Lead decision (G2
     // review): this overrides a field's own "your" wording ("Your email" takes Marcus's email for "use Marcus's
     // details"), since the user said whose details to use and sees the preview before Tab. It holds only for the fields
@@ -2072,6 +2135,8 @@ export async function proposeFill(
   /** Whether a pick is tied to a field by more than Jev's choice (the untied rule above). */
   const tiedPick = (f: Field, p: Pick): boolean => {
     if (p.from === "instruction" || p.from === "memory") return true;
+    // Code ties a source-supported choice to nothing: only the judgments and the verifier do.
+    if (p.from === "choice") return false;
     if (p.from === "derived") return p.base.from !== "window" || f.part !== null || tiedPick(f, p.base);
     const c = p.c;
     return c.labelled === true || candidateKinds(model, c).size > 0 || (f.terms.has(NAME_TERM) && isNameLike(c.text, c.context));
@@ -2079,6 +2144,24 @@ export async function proposeFill(
   /** C2: the year a two-digit year is read around (derive.ts monthYear). */
   const refYear = new Date(now).getUTCFullYear();
 
+  /**
+   * A source-supported choice as its control takes it: the output only when it is still one of the control's pickable
+   * options, or a service box's tick, frozen as proposed. It never passes statesFact or leavesChoiceOpen, which read
+   * literal wording and cannot judge a paraphrase; its derivation says that code proposes it for judgment, so it reaches
+   * both value questions and the verifier and is never minted under optionLabel or boxFromLabelledLine (`chose`).
+   */
+  const supportedValue = (f: Field, p: Extract<Pick, { from: "choice" }>): Read | { why: FillWithheld } => {
+    const against = p.basis.from === "unit" ? "its whole source text" : p.basis.from === "memory" ? "the user's saved entry" : "the user's whole request";
+    const label = f.form?.label ?? null;
+    if (f.control === "checkbox") {
+      if (label === null || f.form === null || !serviceBox(w, f.form) || p.text !== PAGE_CHECKED) return { why: "ambiguous" };
+      const chose: Chosen = { says: `Caret proposes ticking the box '${label}' for judgment against ${against}; code did not check that it says to`, also: null, how: "sourceSupported" };
+      return { value: PAGE_CHECKED, display: "Ticked", writes: pageOwned && f.node.subrole !== PAGE_SUBROLE.switch, chose };
+    }
+    if ((f.control !== "select" && f.control !== "radio") || f.form === null || !pickableOptions(w, f.form).includes(p.text)) return { why: "ambiguous" };
+    const chose: Chosen = { says: `Caret proposes the listed option '${p.text}' for judgment against ${against}; code did not check that it names it`, also: null, how: "sourceSupported" };
+    return { value: p.text, display: p.text, writes: pageOwned && f.node.subrole !== PAGE_SUBROLE.pressGroup, chose };
+  };
   /**
    * The value a control takes from a pick (the option it names, PAGE_CHECKED, or the input's own date or time format),
    * whether a Fill all may write it there (D2-04), or why it cannot be read. Only a page window's controls are ever
@@ -2103,6 +2186,7 @@ export async function proposeFill(
     // The control's label, else its nearest label, and its section (Field.texts for a control).
     const around = [f.form?.label ?? null, f.texts[1] ?? null, f.texts[2] ?? null].filter((t): t is string => t !== null);
     if (f.control !== "text" && around.some((t) => (f.control === "checkbox" ? boxNeverTicked(t) : consentLike(t)))) return { why: "ambiguous" };
+    if (p.from === "choice") return supportedValue(f, p);
     switch (f.control) {
       case "radio":
       case "select": {
@@ -2208,7 +2292,9 @@ export async function proposeFill(
   };
   const sourceOf = (p: Pick): FillSource | null => windowOf(p)?.source ?? null;
   const memoryRef = (p: Pick, f: Field): FillMemory | null => {
-    const a = memoryOf(p);
+    // A choice judged against a memory entry names it, so the write is checked against the entry (memoryWrites), which
+    // holds only while the entry still is the option: a paraphrase in memory is handed off, never written.
+    const a = memoryOf(p) ?? (p.from === "choice" && p.basis.from === "memory" ? p.basis.a : null);
     if (a === null) return null;
     const part = p.from === "derived" && f.part !== null && MEMORY_PARTS.has(f.part) ? (f.part as FillMemoryPart) : null;
     return { id: a.id, label: a.label, says: ABOUT_SAYS, ...(part === null ? {} : { part }) };
@@ -2272,6 +2358,8 @@ export async function proposeFill(
     if (p.from === "instruction") return null;
     if (p.from === "memory") return "user";
     if (p.from === "window") return ofWindow(p.c);
+    // A unit and the request are no one's: whose the choice is stays the judgments' and the verifier's to establish.
+    if (p.from === "choice") return p.basis.from === "memory" ? "user" : null;
     const base = p.base.from === "memory" ? "user" : p.base.from === "window" ? ofWindow(p.base.c) : null;
     return p.also === null || ofWindow(p.also) === base ? base : null;
   };
@@ -2297,15 +2385,20 @@ export async function proposeFill(
   /** By field id, why a value it was not offered was withheld for its owner's evidence (noteUnshown), which a blank field still says. */
   const privacyHeld = new Map<string, string>();
   /** The source a pick was read from: its window value, memory entry or instruction span, and a derived value's extra source. */
-  const rootsOf = (p: Pick): Exclude<Pick, { from: "derived" }>[] => (p.from === "derived" ? [p.base, ...(p.also === null ? [] : [{ from: "window" as const, c: p.also }])] : [p]);
+  type Root = Exclude<Pick, { from: "derived" } | { from: "choice" }>;
+  const rootsOf = (p: Exclude<Pick, { from: "choice" }>): Root[] => (p.from === "derived" ? [p.base, ...(p.also === null ? [] : [{ from: "window" as const, c: p.also }])] : [p]);
   const unitKeyOf = (c: Candidate): string => {
     const u = unitOf(model, c.source.windowId, c.source.nodeKey);
     return u === null ? `${c.source.windowId}\u0000${c.source.nodeKey}` : unitKey(u);
   };
   const evidenceOf = (p: Pick): { evidence: string; origin: OptionMember["origin"]; label: string | null } => {
+    if (p.from === "choice") {
+      const b = p.basis;
+      return b.from === "unit" ? { evidence: unitKey(b.unit), origin: "window", label: null } : b.from === "memory" ? { evidence: `memory\u0000${b.a.id}`, origin: "memory", label: b.a.label } : { evidence: "instruction", origin: "instruction", label: null };
+    }
     const roots = rootsOf(p);
-    const first = roots[0] as Exclude<Pick, { from: "derived" }>;
-    const key = (r: Exclude<Pick, { from: "derived" }>): string => (r.from === "window" ? unitKeyOf(r.c) : r.from === "memory" ? `memory\u0000${r.a.id}` : "instruction");
+    const first = roots[0] as Root;
+    const key = (r: Root): string => (r.from === "window" ? unitKeyOf(r.c) : r.from === "memory" ? `memory\u0000${r.a.id}` : "instruction");
     return { evidence: roots.map(key).join("\u0001"), origin: first.from, label: first.from === "window" ? first.c.context : first.from === "memory" ? first.a.label : null };
   };
   const saysOf = (pr: Provenance): string[] => (pr.kind !== "derived" ? [] : [...(pr.says === undefined ? [] : [pr.says]), ...saysOf(pr.base), ...(pr.also === null ? [] : saysOf(pr.also))]);
@@ -2317,6 +2410,7 @@ export async function proposeFill(
         ...candidates.filter((c) => excluded.get(f.id)?.has(c.id) !== true).map((c) => ({ id: c.id, second: secondId.get(c.id) ?? "", pick: literalPick(f, { from: "window", c }) })),
         ...f.about.filter((a) => (aboutSaidNow.get(a.id) ?? null) !== null).map((a) => ({ id: aboutIds.get(a.id) ?? "", second: aboutSecond.get(a.id) ?? "", pick: { from: "memory" as const, a } })),
         ...(derived.get(f.id) ?? []).filter((d) => derivedSaid.has(d.key)).map((d) => ({ id: derivedIds.get(d.key) ?? "", second: derivedSecond.get(d.key) ?? "", pick: { from: "derived" as const, text: d.text, base: d.base, also: d.also, ...(d.chose === undefined ? {} : { chose: d.chose }) } })),
+        ...supported.filter((s) => s.f === f).map((s) => ({ id: s.id, second: s.second, pick: s.pick })),
       ];
       const vetoed = new Map<string, OptionVeto>();
       traceVetoed.set(f.id, vetoed);
@@ -2351,7 +2445,11 @@ export async function proposeFill(
   /** The note id (source_notes) of the whole unit a source node sits in, minted once; null when it is cut, unreadable or does not fit. */
   const unitNote = (source: { windowId: string; nodeKey: string }): ModelText | null => {
     const u = unitOf(model, source.windowId, source.nodeKey);
-    if (u === null || !u.complete || unread?.has(u.windowId) === true) return null;
+    return u === null ? null : noteOf(u);
+  };
+  /** A unit's note id (source_notes), minted once; null when redaction cut it, this fill may not read it, or it does not fit. */
+  const noteOf = (u: NoteUnit): ModelText | null => {
+    if (!u.complete || unread?.has(u.windowId) === true) return null;
     let id = noteIds.get(unitKey(u));
     if (id === undefined) {
       const view = viewOf(model, u.windowId);
@@ -2375,7 +2473,7 @@ export async function proposeFill(
   };
   const unavailable = m.own("unavailable");
   /** A pick's own text as its source shows it, minted. */
-  const mintPick = (p: Pick): ModelText | null => {
+  const mintPick = (p: Exclude<Pick, { from: "choice" }>): ModelText | null => {
     if (p.from === "window") {
       const view = viewOf(model, p.c.source.windowId);
       return view === undefined ? null : m.candidate(view, p.c.text);
@@ -2387,7 +2485,7 @@ export async function proposeFill(
     return minted.length < bases.length ? null : m.derived(minted, p.text, ["https"]);
   };
   /** The exact output, minted: the pick's own text, a menu's own option, a box's checked state, or a value derived from the pick. */
-  const mintOutput = (f: Field, p: Pick, output: string): ModelText | null => {
+  const mintOutput = (f: Field, p: Exclude<Pick, { from: "choice" }>, output: string): ModelText | null => {
     const own = mintPick(p);
     if (output === pickText(p) && own !== null) return own;
     if (f.control === "checkbox" && output === PAGE_CHECKED) return m.own(PAGE_CHECKED);
@@ -2406,8 +2504,8 @@ export async function proposeFill(
   // identity, whose.ts) is the user's by code's exact match: both are said, as the earlier value questions said them.
   // Neither is an earlier answer of Jev's. A unit that could not be sent is left unnamed rather than said to be missing:
   // under today's budgets no B31 unit fits, so every option would carry that sentence.
-  const mintSource = (p: Pick, units: Set<string>): ModelText => {
-    const one = (r: Exclude<Pick, { from: "derived" }>): ModelText => {
+  const mintSource = (p: Exclude<Pick, { from: "choice" }>, units: Set<string>): ModelText => {
+    const one = (r: Root): ModelText => {
       if (r.from === "memory") {
         const label = m.memoryText(null, r.a.label);
         return label === null ? m.own("the user's own details, which the user told Caret") : m.t`the user's own details, which the user told Caret, saved as '${label}'`;
@@ -2424,15 +2522,15 @@ export async function proposeFill(
     };
     return m.join(rootsOf(p).map(one), " and ");
   };
-  const mintLabel = (p: Pick): ModelText => {
-    const r = rootsOf(p)[0] as Exclude<Pick, { from: "derived" }>;
+  const mintLabel = (p: Exclude<Pick, { from: "choice" }>): ModelText => {
+    const r = rootsOf(p)[0] as Root;
     if (r.from === "memory") return m.memoryText(null, r.a.label) ?? unavailable;
     if (r.from !== "window" || r.c.context === null || r.c.context === r.c.text) return unavailable;
     const view = viewOf(model, r.c.source.windowId);
     return (view === undefined ? null : m.descriptor(view, r.c.context)) ?? unavailable;
   };
-  const mintSupport = (p: Pick): ModelText => {
-    const one = (r: Exclude<Pick, { from: "derived" }>): ModelText | null => {
+  const mintSupport = (p: Exclude<Pick, { from: "choice" }>): ModelText => {
+    const one = (r: Root): ModelText | null => {
       if (r.from === "memory") return m.memoryText(r.a.label, r.a.value);
       if (r.from === "instruction") return mintPick(r);
       const line = supportLine(r.c);
@@ -2442,6 +2540,45 @@ export async function proposeFill(
     const lines = rootsOf(p).map(one);
     const minted = lines.filter((l): l is ModelText => l !== null);
     return minted.length < lines.length ? unavailable : m.join(minted.map((l) => m.t`"${l}"`), "; ");
+  };
+  /**
+   * A source-supported choice's criterion (design/ask/MISSING-CANDIDATES.md): its basis whole, or nothing. A unit is named
+   * by its source_notes id as both its source and its supporting text, the request is quoted whole, a memory entry with
+   * its label. "unshown" when its unit can't be sent whole; null when anything else does not mint. No part of it is ever
+   * said to be unavailable.
+   */
+  const mintChoice = (f: Field, p: Extract<Pick, { from: "choice" }>, proposed: Proposed): Stated | "unshown" | null => {
+    const output = f.control === "checkbox" ? m.own(PAGE_CHECKED) : m.descriptor(w, p.text);
+    // mintDerivation leaves out a choice's sentence it cannot mint; here that sentence is mandatory.
+    const says = proposed.provenance.kind === "derived" && proposed.provenance.says !== undefined ? m.heldText(proposed.provenance.says) : null;
+    const derivation = says === null ? null : mintDerivation(m, proposed, () => says);
+    if (output === null || derivation === null) return null;
+    const b = p.basis;
+    const units = new Set<string>();
+    let source: ModelText;
+    let support: ModelText;
+    let label: ModelText = unavailable;
+    if (b.from === "unit") {
+      const note = noteOf(b.unit);
+      const view = viewOf(model, b.unit.windowId);
+      if (note === null || view === undefined) return "unshown";
+      units.add(note);
+      const title = b.title === "" ? null : m.descriptor(view, b.title);
+      if (b.title !== "" && title === null) return null;
+      source = title === null ? m.t`${m.app(view)} window; the whole text is ${note} in source_notes` : m.t`${m.app(view)} window '${title}'; the whole text is ${note} in source_notes`;
+      support = m.t`the whole text, ${note} in source_notes`;
+    } else if (b.from === "memory") {
+      const entry = m.memoryText(b.a.label, b.a.value);
+      const saved = m.memoryText(null, b.a.label);
+      if (entry === null || saved === null) return null;
+      source = m.t`the user's own details, which the user told Caret, saved as '${saved}'`;
+      support = m.t`"${entry}"`;
+      label = saved;
+    } else {
+      source = m.own("the user's request");
+      support = m.t`the whole request, "${m.instruction(b.text)}"`;
+    }
+    return { output, units, said: m.t`Proposed value: "${output}". Source: ${source}. Observed label: ${label}. Supporting text: ${support}. Derivation: ${derivation}.` };
   };
   /**
    * A field's options as value settlement states them (VALUE_WORDINGS' criteria): each one's minted output and the whole
@@ -2457,16 +2594,26 @@ export async function proposeFill(
     const fid = f.id;
     const options = optionsOf.get(fid) ?? [];
     const said = new Map<string, Stated>();
+    let broken = false;
     for (const o of options) {
       const first = o.members[0] as Member;
+      if (first.pick.from === "choice") {
+        const stated = mintChoice(f, first.pick, first.proposed);
+        if (stated === null) broken = true;
+        else if (stated !== "unshown") said.set(o.id, stated);
+        continue;
+      }
       const output = mintOutput(f, first.pick, o.output);
       if (output === null) continue;
       const units = new Set<string>();
       const source = mintSource(first.pick, units);
-      const supports = [...new Set(o.members.map((x) => mintSupport(x.pick)))];
+      const supports = [...new Set(o.members.flatMap((x) => (x.pick.from === "choice" ? [] : [mintSupport(x.pick)])))];
       const derivation = mintDerivation(m, first.proposed, (t) => m.heldText(t)) ?? m.own("literal copy");
       said.set(o.id, { output, units, said: m.t`Proposed value: "${output}". Source: ${source}. Observed label: ${mintLabel(first.pick)}. Supporting text: ${m.join(supports, "; ")}. Derivation: ${derivation}.` });
     }
+    // A choice whose unit can't be sent whole is withheld alone: its evidence is unavailable. Any other part that does not
+    // mint withholds every choice of the field, rather than list a shortlist that happened to fit the request.
+    if (broken) for (const o of options) if ((o.members[0] as Member).pick.from === "choice") said.delete(o.id);
     for (const o of options) if (!said.has(o.id)) for (const x of o.members) traceVetoed.get(fid)?.set(x.id, "notSendable");
     const stated = options.filter((o) => said.has(o.id));
     optionsOf.set(fid, stated);
@@ -2675,7 +2822,7 @@ export async function proposeFill(
     const first = option.members[0] as Member;
     const fromMemory = memoryOf(first.pick) !== null;
     const sure = fromMemory ? Math.min(a1.confidence, a2.confidence) >= memoryCutoff : Math.min(topProbability(f, a1), topProbability(f, a2)) >= cutoff;
-    if (!sure || (fromMemory && !theUsers(f))) return { kind: "held", why: "lowConfidence" };
+    if (!sure || (fromUsersMemory(first.pick) && !theUsers(f))) return { kind: "held", why: "lowConfidence" };
     const why = relationalHold(f, first.pick);
     return why === null ? { kind: "admitted", option } : { kind: "held", why };
   };
@@ -2729,9 +2876,13 @@ export async function proposeFill(
   // Asked first for every field, settlement lost fills the base's question made: on the 12 B31 asks, four live runs
   // each, automatic right was 24.75 against the base's 25.0. Replayed on the same runs, this order gives 30.25, with no
   // wrong value (evidence/screen/vs1/LOSSES.md, two-stage replay). A field with no writable option is not asked again.
+  // A field the base's question left blank goes on too when it has a source-supported choice: the base's question never
+  // offered one, so its none says nothing about them.
   const unsettled = !askValues || r1 === null ? [] : asked.filter((f) => {
-    const why = out[fields.indexOf(f)]?.withheld;
-    return (why === "disagree" || why === "lowConfidence") && (optionsOf.get(f.id)?.length ?? 0) > 0;
+    const o = out[fields.indexOf(f)];
+    const why = o?.withheld;
+    const choices = (optionsOf.get(f.id) ?? []).some((x) => (x.members[0] as Member).pick.from === "choice");
+    return ((why === "disagree" || why === "lowConfidence") && (optionsOf.get(f.id)?.length ?? 0) > 0) || (choices && o?.value === null && o.handoff === null);
   });
   /** The fields value settlement asked about: their answers are its, and a pick may settle them. */
   const askedAgain = new Set<Field>();
@@ -2790,7 +2941,9 @@ export async function proposeFill(
   const verifierUnit = (p: Proposed): { id: ModelText; text: ModelText } | null => {
     let pr = p.provenance;
     while (pr.kind === "derived") pr = pr.base;
-    const id = pr.kind === "window" ? unitNote(pr) : null;
+    // A whole unit is the one judged, by digest, or none.
+    const unit = pr.kind === "unit" && unitEvidence(model, pr.windowId, pr.nodeKey) === pr.digest ? unitAt(model, pr.windowId, pr.nodeKey) : null;
+    const id = pr.kind === "window" ? unitNote(pr) : unit !== null ? noteOf(unit) : null;
     const text = id === null ? undefined : notes.get(id);
     return id === null || text === undefined ? null : { id, text };
   };
@@ -2889,7 +3042,11 @@ export async function proposeFill(
   };
   /** Where a value was read, in the user's words, for the question's row: their saved entry, their request, or the window and line. */
   const rowSource = (p: Pick): string => {
-    const r = rootsOf(p)[0] as Exclude<Pick, { from: "derived" }>;
+    if (p.from === "choice") {
+      const b = p.basis;
+      return b.from === "memory" ? `Your saved ${b.a.label}` : b.from === "instruction" ? "Your request" : `${viewOf(model, b.unit.windowId)?.window.title || b.app}: the whole text`;
+    }
+    const r = rootsOf(p)[0] as Root;
     if (r.from === "memory") return `Your saved ${r.a.label}`;
     if (r.from === "instruction") return "Your request";
     const view = viewOf(model, r.c.source.windowId);
@@ -2898,7 +3055,7 @@ export async function proposeFill(
   };
   const eligible = (f: Field, o: ValueOption<Member>): boolean => {
     const first = o.members[0] as Member;
-    return relationalHold(f, first.pick) === null && (memoryOf(first.pick) === null || theUsers(f)) && !restsOnStale(first.pick);
+    return relationalHold(f, first.pick) === null && (!fromUsersMemory(first.pick) || theUsers(f)) && !restsOnStale(first.pick);
   };
   /**
    * The fields a value question may settle: one value settlement left unsure, or whose value the verifier refused. A field
@@ -3135,6 +3292,13 @@ export function candidateProvenance(model: ScreenModel, c: Candidate, text?: str
  * the digests the recheck takes again must be of what Jev judged.
  */
 function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, written: string, judged: (c: Candidate) => string | undefined, control: Control | null = null, chose?: Chosen): Provenance {
+  if (p.from === "choice") {
+    // Its stated derivation is what keeps it from every exemption (contract.ts statedChoice), so it never goes without one.
+    if (chose === undefined) throw new Error(`a source-supported choice '${p.text}' reached provenance without its derivation`);
+    const b = p.basis;
+    const base: Provenance = b.from === "unit" ? { kind: "unit", windowId: b.unit.windowId, nodeKey: b.unit.nodeKey, app: b.app, title: b.title, digest: b.evidence } : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
+    return { kind: "derived", how: "sourceSupported", base, also: null, says: chose.says };
+  }
   if (chose !== undefined) {
     // V3: the value as derived, with the choice code made said, and the extra source it read (a send line) as `also`.
     const own = provenanceOf(model, p, part, written, judged, control);
