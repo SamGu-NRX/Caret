@@ -12,7 +12,7 @@ import type { Node } from "../../protocol.ts";
 import { isConversation } from "../../conversation.ts";
 import { isRedacted, redactWindow } from "../../fill/redact.ts";
 import { LedgerEncodingError, ledgerNormalizeV1, type Normalized } from "./normalize.ts";
-import { CARD_LINE_CHARS, inventoryOf, limitsOf, overLimits, UnitProbe, type LineInventory, type Limits } from "./measure.ts";
+import { CARD_LINE_CHARS, inventoryOf, limitsOf, overLimits, UnitProbe, wordSetOn, type LineInventory, type Limits } from "./measure.ts";
 
 /**
  * SCP1: a page web area's heading list and section texts (Node.headings, Node.outline), which a section question sends:
@@ -132,6 +132,8 @@ export interface Measurement {
   readonly prose: Readonly<Record<string, number>>;
   /** The revealed positions themselves, by window key, for an operation's union (section 7); never sent. */
   readonly positions: ReadonlyMap<string, { readonly view: WindowState; readonly bits: Uint8Array }>;
+  /** MEASUREMENT ONLY (measure.ts LEDGER_WORDS_ENV): the single-word set's charge and prose, by window key. */
+  readonly words?: { readonly charged: Readonly<Record<string, number>>; readonly prose: Readonly<Record<string, number>> };
 }
 
 /** A bound a measurement breaks: the window, which bound, the charge and the limit. Never any text. */
@@ -140,6 +142,8 @@ export interface Breach {
   readonly bound: "chars" | "prose";
   readonly charged: number;
   readonly limit: number;
+  /** MEASUREMENT ONLY: the single-word set broke it, not the main charge. */
+  readonly words?: true;
 }
 
 /** Normalizes measured texts; null when one holds an unpaired surrogate (refused, never measured as zero). */
@@ -158,14 +162,20 @@ export function measure(units: readonly Normalized[], windows: readonly Measured
   const charged: Record<string, number> = {};
   const prose: Record<string, number> = {};
   const positions = new Map<string, { view: WindowState; bits: Uint8Array }>();
+  const wc: Record<string, number> = {};
+  const wp: Record<string, number> = {};
   for (const m of windows) {
     const r = probe.reveal(m.inv);
+    if (r.words !== undefined && r.words.charged > 0) {
+      wc[m.key] = r.words.charged;
+      if (r.words.prose > 0) wp[m.key] = r.words.prose;
+    }
     if (r.charged === 0) continue;
     charged[m.key] = r.charged;
     if (r.prose > 0) prose[m.key] = r.prose;
     positions.set(m.key, { view: m.view, bits: r.positions });
   }
-  return { charged, prose, positions };
+  return wordSetOn() ? { charged, prose, positions, words: { charged: wc, prose: wp } } : { charged, prose, positions };
 }
 
 /** The first bound a measurement breaks, in window order, or null. */
@@ -175,6 +185,12 @@ export function breach(m: Measurement, windows: readonly MeasuredWindow[]): Brea
     const over = overLimits(r, w.limits);
     if (over === "chars") return { key: w.key, bound: "chars", charged: r.charged, limit: w.limits.chars };
     if (over === "prose") return { key: w.key, bound: "prose", charged: r.prose, limit: w.limits.prose as number };
+    if (m.words !== undefined) {
+      const x = { charged: m.words.charged[w.key] ?? 0, prose: m.words.prose[w.key] ?? 0 };
+      const o = overLimits(x, w.limits);
+      if (o === "chars") return { key: w.key, bound: "chars", charged: x.charged, limit: w.limits.chars, words: true };
+      if (o === "prose") return { key: w.key, bound: "prose", charged: x.prose, limit: w.limits.prose as number, words: true };
+    }
   }
   return null;
 }
@@ -184,6 +200,10 @@ interface Running {
   readonly bits: Uint8Array;
   charged: number;
   prose: number;
+  /** MEASUREMENT ONLY: the single-word set's running union. */
+  readonly wbits: Uint8Array;
+  wcharged: number;
+  wprose: number;
 }
 
 /**
@@ -206,7 +226,7 @@ export class MintAccount {
 
   private runningOf(m: MeasuredWindow): Running {
     let r = this.running.get(m.view);
-    if (r === undefined) this.running.set(m.view, (r = { bits: new Uint8Array(m.inv.total), charged: 0, prose: 0 }));
+    if (r === undefined) this.running.set(m.view, (r = { bits: new Uint8Array(m.inv.total), charged: 0, prose: 0, wbits: new Uint8Array(m.inv.total), wcharged: 0, wprose: 0 }));
     return r;
   }
 
@@ -221,8 +241,24 @@ export class MintAccount {
     const probe = new UnitProbe(units);
     const ws = this.windows();
     const adds: { m: MeasuredWindow; r: Running; bits: Uint8Array; added: number; prose: number }[] = [];
+    const wadds: { r: Running; bits: Uint8Array; added: number; prose: number }[] = [];
     for (const m of ws) {
       const got = probe.reveal(m.inv);
+      if (got.words !== undefined && got.words.charged > 0) {
+        const r = this.runningOf(m);
+        let added = 0;
+        let prose = 0;
+        const bits = got.words.positions;
+        for (let p = 0; p < bits.length; p++) {
+          if (bits[p] !== 1 || r.wbits[p] === 1) continue;
+          added++;
+          if (lineAt(m.inv, p).length > CARD_LINE_CHARS) prose++;
+        }
+        if (added > 0) {
+          if (overLimits({ charged: r.wcharged + added, prose: r.wprose + prose }, m.limits) !== null) return null;
+          wadds.push({ r, bits, added, prose });
+        }
+      }
       if (got.charged === 0) continue;
       const r = this.runningOf(m);
       let added = 0;
@@ -236,6 +272,11 @@ export class MintAccount {
       if (added === 0) continue;
       if (overLimits({ charged: r.charged + added, prose: r.prose + prose }, m.limits) !== null) return null;
       adds.push({ m, r, bits, added, prose });
+    }
+    if (commit) for (const w of wadds) {
+      for (let p = 0; p < w.bits.length; p++) if (w.bits[p] === 1) w.r.wbits[p] = 1;
+      w.r.wcharged += w.added;
+      w.r.wprose += w.prose;
     }
     const out = new Map<string, { added: number; lines: string[] }>();
     for (const a of adds) {

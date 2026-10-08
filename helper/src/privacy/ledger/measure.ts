@@ -17,6 +17,63 @@ import { BOUNDARY, ledgerNormalizeV1, type Normalized } from "./normalize.ts";
 /** The coordinator's 2026-10-07 minimum run, a ruling, not a calibrated threshold (OUTPUT-LEDGER-SPEC section 4). */
 export const RUN_MIN = 4;
 
+/**
+ * MEASUREMENT ONLY (the match-rule comparison, ~/.caret-run/evidence/screen/pv2/match-rule): which rule marks a partial
+ * run. A is the spec's (RUN_MIN scalars, no word condition); B, C and D mark source spans aligned to source words (each
+ * starts at a word's first scalar and ends at a word's last) of at least 4 scalars, 2 words or 3 words; E is unaligned at
+ * 12 scalars. Whole-line containment is the same under every rule. Set by CARET_TEST_LEDGER_RULE; the helper refuses to
+ * start with it set (main.ts).
+ */
+export type MatchRule = "A" | "B" | "C" | "D" | "E";
+/**
+ * MEASUREMENT ONLY: with CARET_TEST_LEDGER_WORDS=1 under an aligned rule, every single source word whose text occurs in a
+ * unit also goes into a second position set per window, held to the same window limits as the main charge; a request
+ * needs both to fit (the coordinator's many-single-words option).
+ */
+export const LEDGER_WORDS_ENV = "CARET_TEST_LEDGER_WORDS";
+export const wordSetOn = (): boolean => process.env[LEDGER_WORDS_ENV] === "1";
+export const LEDGER_RULE_ENV = "CARET_TEST_LEDGER_RULE";
+export function matchRule(): MatchRule {
+  const r = process.env[LEDGER_RULE_ENV];
+  if (r === undefined || r === "") return "A";
+  if (r === "A" || r === "B" || r === "C" || r === "D" || r === "E") return r;
+  throw new Error(`${LEDGER_RULE_ENV} must be one of A, B, C, D, E`);
+}
+
+/**
+ * Words of a normalized source line for the aligned rules: maximal runs of scalars in Unicode categories L, M or N, except
+ * that each scalar of a script written without spaces (Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar) is a word of
+ * its own. Uses the runtime's Unicode properties (17.0 on the development Mac), not the pinned 16.0.0 tables: a
+ * measurement-only approximation, flagged in the results.
+ */
+const WORDISH = /^[\p{L}\p{M}\p{N}]$/u;
+const UNSPACED = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]$/u;
+const WORDS = new WeakMap<readonly number[], { start: Int32Array; end: Int32Array; wordAt: Int32Array }>();
+export function wordsOfLine(line: readonly number[]): { start: Int32Array; end: Int32Array; wordAt: Int32Array } {
+  let w = WORDS.get(line);
+  if (w !== undefined) return w;
+  const starts: number[] = [];
+  const ends: number[] = [];
+  const wordAt = new Int32Array(line.length).fill(-1);
+  let open = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = String.fromCodePoint(line[i]!);
+    const wordish = WORDISH.test(ch);
+    const alone = wordish && UNSPACED.test(ch);
+    if (!wordish || alone) {
+      if (open) (ends.push(i - 1), (open = false));
+      if (alone) (starts.push(i), ends.push(i), (wordAt[i] = starts.length - 1));
+      continue;
+    }
+    if (!open) (starts.push(i), (open = true));
+    wordAt[i] = starts.length - 1;
+  }
+  if (open) ends.push(line.length - 1);
+  w = { start: Int32Array.from(starts), end: Int32Array.from(ends), wordAt };
+  WORDS.set(line, w);
+  return w;
+}
+
 /** SC1 constants, as privacy.ts has them: a line over CARD_LINE_CHARS is prose; a card has at most CARD_LINES lines. */
 export const CARD_LINE_CHARS = 80;
 export const CARD_LINES = 24;
@@ -57,6 +114,46 @@ export interface Revealed {
   readonly positions: Uint8Array;
   readonly charged: number;
   readonly prose: number;
+  /** MEASUREMENT ONLY (LEDGER_WORDS_ENV): the single matched words' own position set. */
+  readonly words?: { readonly positions: Uint8Array; readonly charged: number; readonly prose: number };
+}
+
+/** Marks the lines `which` of `inv` by what `index` finds: the shared body of reveal() and UnitProbe.reveal(). */
+function revealLines(index: UnitIndex, inv: LineInventory, which: Iterable<number>): Revealed {
+  const positions = new Uint8Array(inv.total);
+  const wordsOn = wordSetOn();
+  const wpos = wordsOn ? new Uint8Array(inv.total) : null;
+  let charged = 0;
+  let prose = 0;
+  let wcharged = 0;
+  let wprose = 0;
+  for (const li of which) {
+    const norm = inv.normalized[li]!;
+    const line = inv.lines[li]!;
+    const start = inv.starts[li]!;
+    const { marks, whole, words } = index.scanLine(norm.cps);
+    const mark = (p: number): void => {
+      if (positions[start + p] === 1) return;
+      positions[start + p] = 1;
+      charged++;
+      if (line.length > CARD_LINE_CHARS) prose++;
+    };
+    // A whole-line match marks the whole line, positions trimming dropped included.
+    if (whole) for (let p = 0; p < line.length; p++) mark(p);
+    else marks.forEach((m, i) => {
+      if (m === 1) for (const p of norm.origins[i]!) mark(p);
+    });
+    if (wpos !== null && words !== null) words.forEach((m, i) => {
+      if (m !== 1) return;
+      for (const p of norm.origins[i]!) {
+        if (wpos[start + p] === 1) continue;
+        wpos[start + p] = 1;
+        wcharged++;
+        if (line.length > CARD_LINE_CHARS) wprose++;
+      }
+    });
+  }
+  return wpos === null ? { positions, charged, prose } : { positions, charged, prose, words: { positions: wpos, charged: wcharged, prose: wprose } };
 }
 
 /** A suffix automaton over normalized measured units, BOUNDARY between them. */
@@ -113,9 +210,13 @@ export class UnitIndex {
    * The revealed normalized positions of one line: for each position, whether a qualifying run covers it; all of them
    * when the whole line is contained in a unit.
    */
-  scanLine(line: readonly number[]): { readonly marks: Uint8Array; readonly whole: boolean } {
+  scanLine(line: readonly number[], rule: MatchRule = matchRule()): { readonly marks: Uint8Array; readonly whole: boolean; readonly words: Uint8Array | null } {
     const n = line.length;
     const diff = new Int32Array(n + 1);
+    const wdiff = wordSetOn() && (rule === "B" || rule === "C" || rule === "D") ? new Int32Array(n + 1) : null;
+    const aligned = rule === "B" || rule === "C" || rule === "D";
+    const words = aligned ? wordsOfLine(line) : null;
+    const runMin = rule === "E" ? 12 : RUN_MIN;
     let state = 0;
     let len = 0;
     for (let i = 0; i < n; i++) {
@@ -132,44 +233,60 @@ export class UnitIndex {
         state = to;
         len++;
       }
-      if (len >= RUN_MIN) {
+      if (words !== null) {
+        // An aligned span ending here: at the end of a word, from the earliest word start inside the match. Every shorter
+        // aligned span ending here lies inside it, and the length conditions grow with the span, so marking this one
+        // marks every qualifying span that ends here.
+        const w = words.wordAt[i]!;
+        if (w < 0 || words.end[w] !== i || len === 0) continue;
+        if (wdiff !== null && len >= i - words.start[w]! + 1) {
+          wdiff[words.start[w]!]!++;
+          wdiff[i + 1]!--;
+        }
+        const from = i - len + 1;
+        let lo = 0;
+        let hi = w;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (words.start[mid]! >= from) hi = mid;
+          else lo = mid + 1;
+        }
+        if (words.start[lo]! < from) continue;
+        const a = words.start[lo]!;
+        const count = w - lo + 1;
+        const ok = rule === "B" ? i - a + 1 >= 4 : rule === "C" ? count >= 2 : count >= 3;
+        if (ok) {
+          diff[a]!++;
+          diff[i + 1]!--;
+        }
+      } else if (len >= runMin) {
         diff[i - len + 1]!++;
         diff[i + 1]!--;
       }
     }
+    let wmarks: Uint8Array | null = null;
+    if (wdiff !== null) {
+      wmarks = new Uint8Array(n);
+      let r = 0;
+      for (let i = 0; i < n; i++) {
+        r += wdiff[i]!;
+        wmarks[i] = r > 0 ? 1 : 0;
+      }
+    }
     const marks = new Uint8Array(n);
-    if (n > 0 && len === n) return { marks: marks.fill(1), whole: true };
+    if (n > 0 && len === n) return { marks: marks.fill(1), whole: true, words: wmarks };
     let run = 0;
     for (let i = 0; i < n; i++) {
       run += diff[i]!;
       marks[i] = run > 0 ? 1 : 0;
     }
-    return { marks, whole: false };
+    return { marks, whole: false, words: wmarks };
   }
 }
 
 /** What the units of `index` reveal of a window. */
 export function reveal(index: UnitIndex, inv: LineInventory): Revealed {
-  const positions = new Uint8Array(inv.total);
-  let charged = 0;
-  let prose = 0;
-  inv.normalized.forEach((norm, li) => {
-    const line = inv.lines[li]!;
-    const start = inv.starts[li]!;
-    const { marks, whole } = index.scanLine(norm.cps);
-    const mark = (p: number): void => {
-      if (positions[start + p] === 1) return;
-      positions[start + p] = 1;
-      charged++;
-      if (line.length > CARD_LINE_CHARS) prose++;
-    };
-    // A whole-line match marks the whole line, positions trimming dropped included.
-    if (whole) for (let p = 0; p < line.length; p++) mark(p);
-    else marks.forEach((m, i) => {
-      if (m === 1) for (const p of norm.origins[i]!) mark(p);
-    });
-  });
-  return { positions, charged, prose };
+  return revealLines(index, inv, inv.lines.keys());
 }
 
 /** The kind of window, for its limits (section 5). */
@@ -288,6 +405,9 @@ export class UnitProbe {
 
   /** The lines of `inv` the units could mark, in line order. */
   candidates(inv: LineInventory): number[] {
+    const rule = matchRule();
+    // Rules C and D mark aligned spans of two or three words, which can be shorter than a RUN_MIN-gram: scan every line.
+    if (rule === "C" || rule === "D" || wordSetOn()) return inv.lines.map((_, i) => i);
     const ix = lineIndex(inv);
     const out = new Set<number>();
     const [small, large] = this.grams.size <= ix.grams.size ? [this.grams, ix.grams] : [new Set(ix.grams.keys()), null];
@@ -299,25 +419,7 @@ export class UnitProbe {
 
   /** What the units reveal of `inv`: reveal()'s answer, scanning only the candidate lines. */
   reveal(inv: LineInventory): Revealed {
-    const positions = new Uint8Array(inv.total);
-    let charged = 0;
-    let prose = 0;
-    for (const li of this.candidates(inv)) {
-      const norm = inv.normalized[li]!;
-      const line = inv.lines[li]!;
-      const start = inv.starts[li]!;
-      const { marks, whole } = this.index.scanLine(norm.cps);
-      const mark = (p: number): void => {
-        if (positions[start + p] === 1) return;
-        positions[start + p] = 1;
-        charged++;
-        if (line.length > CARD_LINE_CHARS) prose++;
-      };
-      if (whole) for (let p = 0; p < line.length; p++) mark(p);
-      else marks.forEach((m, i) => {
-        if (m === 1) for (const p of norm.origins[i]!) mark(p);
-      });
-    }
-    return { positions, charged, prose };
+    return revealLines(this.index, inv, this.candidates(inv));
   }
+
 }
