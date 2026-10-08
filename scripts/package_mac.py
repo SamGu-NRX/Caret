@@ -42,7 +42,9 @@ def verify_privacy_resource(app: Path, runner=subprocess.run) -> None:
         capture_output=True,
         text=True,
         # Without CARET_PRIVACY_RESOURCE too: a verification run must not write the file it checks.
-        env=distribution_env(CARET_VERIFY_PRIVACY_RESOURCE=str(app / "Contents" / "Resources" / "PrivacyPromise.txt")),
+        # The copied app's own Info.plist, so its LSEnvironment is checked too, not only the Xcode source plist.
+        env=distribution_env(CARET_VERIFY_PRIVACY_RESOURCE=str(app / "Contents" / "Resources" / "PrivacyPromise.txt"),
+                             CARET_BUILD_PLIST=str(app / "Contents" / "Info.plist"), CARET_REQUIRE_PROCESSED_PLIST="1"),
     )
     if result.returncode != 0:
         raise SystemExit((result.stderr or result.stdout or "privacy gate: refusing to package").strip())

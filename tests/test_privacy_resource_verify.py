@@ -7,10 +7,12 @@ checked. A call that let that variable through would regenerate a missing or cha
 
 import importlib.util
 import os
+import plistlib
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -56,6 +58,7 @@ class VerificationNeverWritesTests(unittest.TestCase):
                                   env={**self.clean_env(), "CARET_PRIVACY_RESOURCE": str(self.resource)})
         self.check_route(run)
 
+    @unittest.skipUnless(sys.platform == "darwin", "the Xcode phase needs macOS's PlistBuddy")
     def test_xcode_final_phase(self):
         text = (ROOT / "Caret.xcodeproj/project.pbxproj").read_text()
         phase = re.search(r'/\* Processed privacy gate \*/ = \{.*?shellScript = "((?:[^"\\]|\\.)*)";', text, re.S)
@@ -68,6 +71,16 @@ class VerificationNeverWritesTests(unittest.TestCase):
                 "CARET_PRIVACY_RESOURCE": str(self.resource),
             })
         self.check_route(run)
+
+    def test_package_mac_checks_the_apps_own_processed_plist(self):
+        spec = importlib.util.spec_from_file_location("package_plist", ROOT / "scripts/package_mac.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.root = self.root
+        (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps({"LSEnvironment": {"CARET_DEV_VERCEL_GEMINI": "1"}}))
+        with self.assertRaises(SystemExit) as refused:
+            module.verify_privacy_resource(self.app)
+        self.assertIn("LSEnvironment", str(refused.exception))
 
     def test_package_mac(self):
         spec = importlib.util.spec_from_file_location("package_verify", ROOT / "scripts/package_mac.py")

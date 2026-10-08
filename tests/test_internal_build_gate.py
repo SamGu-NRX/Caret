@@ -12,10 +12,14 @@ import re
 import runpy
 import shutil
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
 from tests.privacy_fixture import CHANGED, ROOT, app, clean_env, gate, tree
+
+# The Xcode phases call /usr/libexec/PlistBuddy, which exists only on macOS, where Xcode runs them.
+macos_only = unittest.skipUnless(sys.platform == "darwin", "the Xcode phases need macOS's PlistBuddy")
 
 
 def bundler_prelude(root: Path) -> Path:
@@ -98,6 +102,7 @@ class InternalBuildGateTests(unittest.TestCase):
             SRCROOT=str(root), TARGET_BUILD_DIR=str(root / "build"), INFOPLIST_PATH="Caret.app/Contents/Info.plist",
             UNLOCALIZED_RESOURCES_FOLDER_PATH="Caret.app/Contents/Resources", **env))
 
+    @macos_only
     def test_an_internal_xcode_debug_build_is_stamped_and_a_later_plain_one_is_not(self):
         root = self.tree(accepted=False)
         plist = root / "build/Caret.app/Contents/Info.plist"
@@ -115,6 +120,7 @@ class InternalBuildGateTests(unittest.TestCase):
         self.assertIn("pv2-sites-send", result.stderr)
         self.assertNotIn("CaretInternalBuild", plistlib.loads(plist.read_bytes()))
 
+    @macos_only
     def test_packaging_and_xcode_ignore_an_inherited_internal_flag(self):
         root = self.tree(accepted=False)
         with patch.dict(os.environ, {"CARET_INTERNAL_BUILD": "1"}), self.assertRaises(SystemExit) as refused:
@@ -154,12 +160,54 @@ class InternalBuildGateTests(unittest.TestCase):
         stamped = app(root, internal=True)
         resource = stamped / "Contents/Resources/PrivacyPromise.txt"
         verify = lambda: gate(root, CARET_VERIFY_PRIVACY_RESOURCE=str(resource), CARET_INTERNAL_BUILD="1")
-        self.assertEqual(verify().returncode, 0, verify().stderr)
-        resource.write_text(CHANGED)
-        self.assertIn("differs from PRIVACY_PROMISE", verify().stderr)
-        resource.unlink()
-        self.assertIn("is missing", verify().stderr)
-        self.assertEqual(verify().returncode, 1)
+        result = verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for damage, why in ((lambda: resource.write_text(CHANGED), "differs from PRIVACY_PROMISE"), (resource.unlink, "is missing")):
+            damage()
+            result = verify()
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(why, result.stderr)
+
+    def test_distribution_refuses_an_app_whose_info_plist_is_missing_or_unreadable(self):
+        root = self.tree(accepted=True)
+        bundle = app(root, internal=False)
+        resource = str(bundle / "Contents/Resources/PrivacyPromise.txt")
+        for damage, plist in (("missing", None), ("malformed", b"<plist><dict><key>CaretInternalBuild"), ("not a dictionary", plistlib.dumps([True]))):
+            with self.subTest(damage):
+                info = bundle / "Contents/Info.plist"
+                info.unlink(missing_ok=True)
+                if plist is not None:
+                    info.write_bytes(plist)
+                result = gate(root, CARET_VERIFY_PRIVACY_RESOURCE=resource)
+                self.assertEqual(result.returncode, 1, damage)
+                self.assertIn("Info.plist", result.stderr)
+
+    def test_the_stamp_is_read_from_the_app_that_holds_the_resource(self):
+        root = self.tree(accepted=True)
+        stamped = app(root, internal=True)
+        nested = stamped / "Contents/Resources/Contents/Resources/PrivacyPromise.txt"
+        nested.parent.mkdir(parents=True)
+        nested.write_text((stamped / "Contents/Resources/PrivacyPromise.txt").read_text())
+        result = gate(root, CARET_VERIFY_PRIVACY_RESOURCE=str(nested))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Contents/Resources/PrivacyPromise.txt", result.stderr)
+
+    @macos_only
+    def test_the_xcode_phase_stamps_only_for_the_exact_flag_the_gate_honors(self):
+        root = self.tree(accepted=False)
+        plist = root / "build/Caret.app/Contents/Info.plist"
+        plist.parent.mkdir(parents=True)
+        plist.write_bytes(plistlib.dumps({}))
+        self.xcode_phase(root, "Privacy gate", CONFIGURATION="Debug", CARET_INTERNAL_BUILD="1")
+        result = self.xcode_phase(root, "Processed privacy gate", CONFIGURATION="Debug", CARET_INTERNAL_BUILD="yes")
+        self.assertNotIn("CaretInternalBuild", plistlib.loads(plist.read_bytes()))
+        self.assertIn("pv2-sites-send", result.stderr)
+
+    def test_the_gate_reads_plists_without_macos_tools(self):
+        # Linux core runs use this gate too (make test plus check_sources.py).
+        source = (ROOT / "helper/scripts/privacy-gate.ts").read_text()
+        self.assertNotIn("plutil", source)
+        self.assertNotIn("PlistBuddy", source)
 
     def test_internal_builds_are_stamped_before_signing(self):
         text = (ROOT / "apps/caret/scripts/build-app.sh").read_text()

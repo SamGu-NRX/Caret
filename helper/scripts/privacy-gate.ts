@@ -1,7 +1,7 @@
 // One refusal policy for packaging, make app, and the Caret target's always-run Xcode phase.
 import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { writeStore } from "../src/privacy/send.ts";
-import { dirname, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { PRIVACY_PROMISE, ownerNoteGate } from "../src/privacy.ts";
 import { PRIVACY_ACCEPTANCES } from "../src/privacy/accepted.ts";
 import { spawnSync } from "node:child_process";
@@ -53,35 +53,49 @@ if (resource) {
 // handed on. Onboarding has no text of its own to show in its place (OnboardingView.swift, PermissionsScreen).
 const shipped = process.env.CARET_VERIFY_PRIVACY_RESOURCE;
 if (shipped) {
-  const why = shippedProblem(shipped);
-  if (why !== null) {
-    console.error(`privacy gate: refusing to package: the app's privacy promise ${shipped} ${why}; onboarding would have nothing approved to show`);
+  const checked = shippedApp(shipped);
+  if ("problem" in checked) {
+    console.error(`privacy gate: refusing to package: the app's privacy promise ${shipped} ${checked.problem}; onboarding would have nothing approved to show`);
     process.exit(1);
   }
-  const app = shipped.slice(0, shipped.lastIndexOf(`${sep}Contents${sep}`));
-  const stamped = spawnSync("/usr/bin/plutil", ["-extract", "CaretInternalBuild", "raw", "-o", "-", `${app}/Contents/Info.plist`], { encoding: "utf8" }).stdout.trim() === "true";
-  if (stamped !== internal) {
-    console.error(stamped
-      ? `privacy gate: refusing to package: ${app} is stamped CaretInternalBuild; internal builds are never distributed`
-      : `privacy gate: refusing to package: ${app} is an internal build without the CaretInternalBuild stamp`);
+  const stamp = internalStamp(checked.app);
+  const why = typeof stamp === "string" ? stamp
+    : stamp && !internal ? `${checked.app} is stamped CaretInternalBuild; internal builds are never distributed`
+    : !stamp && internal ? `${checked.app} is an internal build without the CaretInternalBuild stamp`
+    : null;
+  if (why !== null) {
+    console.error(`privacy gate: refusing to package: ${why}`);
     process.exit(1);
   }
 }
 
-/** Why the app's copy cannot be shown as the promise, or null: it must be a regular file, inside its .app, with exactly PRIVACY_PROMISE. */
-function shippedProblem(path: string): string | null {
-  const parts = path.split(sep);
-  const app = parts.findLastIndex((part, i) => part.endsWith(".app") && parts[i + 1] === "Contents");
-  if (app < 0) return "is not inside an .app bundle";
-  const appPath = parts.slice(0, app + 1).join(sep);
+/** The .app holding the promise, or why its copy cannot be shown: <name>.app/Contents/Resources/PrivacyPromise.txt, a regular file inside that app, with exactly PRIVACY_PROMISE. */
+function shippedApp(path: string): { app: string } | { problem: string } {
+  const file = resolve(path);
+  const app = dirname(dirname(dirname(file)));
+  if (!app.endsWith(".app") || file !== join(app, "Contents", "Resources", "PrivacyPromise.txt")) return { problem: "is not at <name>.app/Contents/Resources/PrivacyPromise.txt" };
   let stat;
-  try { stat = lstatSync(path); } catch { return "is missing"; }
-  if (stat.isSymbolicLink()) return "is a symbolic link; the app must hold the file itself";
-  if (!stat.isFile()) return "is not a regular file";
-  if (!realpathSync(path).startsWith(realpathSync(appPath) + sep)) return `is outside ${appPath}`;
-  const text = readFileSync(path, "utf8");
-  if (text.trim() === "") return "is empty";
-  if (text !== PRIVACY_PROMISE) return "differs from PRIVACY_PROMISE in helper/src/privacy.ts";
-  return null;
+  try { stat = lstatSync(file); } catch { return { problem: "is missing" }; }
+  if (stat.isSymbolicLink()) return { problem: "is a symbolic link; the app must hold the file itself" };
+  if (!stat.isFile()) return { problem: "is not a regular file" };
+  if (!realpathSync(file).startsWith(realpathSync(app) + sep)) return { problem: `is outside ${app}` };
+  const text = readFileSync(file, "utf8");
+  if (text.trim() === "") return { problem: "is empty" };
+  if (text !== PRIVACY_PROMISE) return { problem: "differs from PRIVACY_PROMISE in helper/src/privacy.ts" };
+  return { app };
+}
+
+/** Whether the app's Info.plist carries CaretInternalBuild, or why it cannot be read. Python's plistlib reads XML and binary plists on any platform. */
+function internalStamp(app: string): boolean | string {
+  const plist = join(app, "Contents", "Info.plist");
+  const read = spawnSync("python3", ["-c", [
+    "import json, plistlib, sys",
+    "with open(sys.argv[1], 'rb') as f: info = plistlib.load(f)",
+    "if not isinstance(info, dict): sys.exit('not a dictionary')",
+    "print(json.dumps(info.get('CaretInternalBuild', False)))",
+  ].join("\n"), plist], { encoding: "utf8" });
+  if (read.error || read.status !== 0) return `cannot read ${plist}: ${(read.error?.message ?? read.stderr.trim().split("\n").at(-1)) || "unknown error"}`;
+  const value: unknown = JSON.parse(read.stdout);
+  return typeof value === "boolean" ? value : `${plist}: CaretInternalBuild must be a boolean`;
 }
 console.log("privacy gate: disclosure, required acceptances and dev-only gateway configuration checked");
