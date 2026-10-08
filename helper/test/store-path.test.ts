@@ -1,11 +1,12 @@
 // A store writes only under a local root that does not sync (privacy/store-path.ts): a file a sync client uploads
 // leaves the Mac with no request made, so it would be a provider disclosure without the per-window budget.
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { assertLocalStorePath, storePathRefusal, SyncedStorePath } from "../src/privacy/store-path.ts";
+import { assertLocalStorePath, storePathRefusal, SyncedStorePath, writeLocalFile } from "../src/privacy/store-path.ts";
 import { appendStore, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "store-path-"));
@@ -31,16 +32,17 @@ describe("the store path check", () => {
     ]) expect(storePathRefusal(p), p).toMatch(/syncs to a provider/u);
   });
 
-  it("refuses any other folder, such as Documents or Desktop, which macOS can sync to iCloud", () => {
-    expect(storePathRefusal(join(h, "Documents", "rows.json"))).toMatch(/outside the local store roots/u);
-    expect(storePathRefusal(join(h, "Desktop", "rows.json"))).toMatch(/outside the local store roots/u);
+  // Independent of where HOME is (it may be inside the temporary directory): a folder at the filesystem's root is under
+  // no store root.
+  const outside = join(sep, `caret-store-path-outside-${process.pid}`);
+
+  it("refuses any folder outside the roots", () => {
+    expect(storePathRefusal(join(outside, "rows.json"))).toMatch(/outside the local store roots/u);
   });
 
   it("follows symlinks: a link inside the temporary directory to a folder outside the roots refuses", () => {
-    const target = join(h, "Desktop");
-    if (!existsSync(target)) return;
-    const link = join(dir, "to-desktop");
-    symlinkSync(target, link);
+    const link = join(dir, "to-outside");
+    symlinkSync(outside, link);
     expect(storePathRefusal(join(link, "rows.json"))).toMatch(/outside the local store roots/u);
     expect(() => assertLocalStorePath(join(link, "rows.json"))).toThrow(SyncedStorePath);
   });
@@ -84,4 +86,59 @@ describe("INT1 review 2 P1: symlinks and .. cannot route a store into a synced f
     symlinkSync(real, link);
     expect(() => writeStoreJson(link, { n: 2 })).toThrow(SyncedStorePath);
   });
+});
+
+describe("INT1 review 3: relative paths, races and hard links", () => {
+  const synced = join(h, "Library", "CloudStorage", "Dropbox-caret-store-path-test");
+
+  it("resolves a relative path's links before its '..', from the working folder as given", () => {
+    const work = join(dir, "w", "sub");
+    mkdirSync(work, { recursive: true });
+    symlinkSync(join(synced, "inner"), join(work, "to-sync"));
+    expect(storePathRefusal("rows.json", work)).toBeNull();
+    expect(storePathRefusal("to-sync/../rows.json", work)).toMatch(/syncs to a provider/u);
+  });
+
+  it("refuses a file with another hard link, without truncating it", () => {
+    const other = join(dir, "other-name.json");
+    writeFileSync(other, "keep me");
+    const p = join(dir, "hard.json");
+    linkSync(other, p);
+    expect(() => writeLocalFile(p, "x")).toThrow(SyncedStorePath);
+    expect(readFileSync(other, "utf8")).toBe("keep me");
+  });
+
+  it("writes nothing outside the roots while an ancestor is swapped for a link (O_NOFOLLOW_ANY)", async () => {
+    if (process.platform !== "darwin") return;
+    const base = join(dir, "race");
+    const inside = join(base, "in");
+    const out = join(base, "out");
+    mkdirSync(inside, { recursive: true });
+    mkdirSync(out, { recursive: true });
+    // `out` stands for a synced folder (CARET_TEST_SYNCED_ROOT): a write that lands there escaped the policy.
+    process.env.CARET_TEST_SYNCED_ROOT = out;
+    // A child swaps the folder for a link to `out` and back, as fast as it can, for the length of the test.
+    const swapper = spawn(process.execPath, ["-e", `
+      const fs = require("node:fs");
+      const end = Date.now() + 3000;
+      while (Date.now() < end) {
+        try { fs.renameSync(${JSON.stringify(inside)}, ${JSON.stringify(inside)} + ".real"); fs.symlinkSync(${JSON.stringify(out)}, ${JSON.stringify(inside)}); fs.unlinkSync(${JSON.stringify(inside)}); fs.renameSync(${JSON.stringify(inside)} + ".real", ${JSON.stringify(inside)}); } catch {}
+      }`], { stdio: "ignore" });
+    const done = new Promise<void>((r) => swapper.on("exit", () => r()));
+    let wrote = 0;
+    const end = Date.now() + 2500;
+    for (let i = 0; Date.now() < end; i++) {
+      try {
+        writeLocalFile(join(inside, `f${i}.json`), "x");
+        wrote++;
+      } catch {
+        // a refusal is the point when the swap is in place
+      }
+      if (i % 50 === 0) await new Promise((r) => setTimeout(r, 0));
+    }
+    await done;
+    delete process.env.CARET_TEST_SYNCED_ROOT;
+    expect(wrote).toBeGreaterThan(0);
+    expect(readdirSync(out)).toEqual([]);
+  }, 15_000);
 });
