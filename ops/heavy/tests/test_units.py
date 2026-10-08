@@ -1492,3 +1492,44 @@ class WatchTest(Temp):
         stop = self.watch(sup, self.leader(exited=True))
         self.assertIsNotNone(stop)
         self.assertEqual(stop[:2], ("window", supervise.EXIT_WINDOW), stop)
+
+
+class LeaseKindTest(Temp):
+    """P2.3 (347f8ea review): the supervisor's own lease, taken when the queue holds none (the fallback acquire) or
+    after the queue released its lease before cleanup was confirmed (the takeover), is of the plan's lane's kind."""
+
+    def supervisor(self, lane):
+        import supervise
+        args = os.path.join(self.root, "lease-args-" + lane)
+        lr = self.write("bin-{}/lr-lease".format(lane), "#!/bin/sh\necho \"$@\" >> {}\necho refused-by-stub\nexit 1\n".format(args), 0o755)
+        reap = self.write("bin-{}/lr-reap".format(lane), "#!/bin/sh\nexit 0\n", 0o755)
+        sup = supervise.Supervisor.__new__(supervise.Supervisor)
+        sup.lane, sup.attempt, sup.token, sup.pid = lane, "a" * 32, "t" * 64, os.getpid()
+        sup.paths = {"hold": os.path.join(self.root, "HOLD"), "lr_lease": lr, "lr_reap": reap}
+        sup.plan = {"lease": {"run": "caret", "ttl_min": 30, "renew_s": 60}, "test": {}}
+        sup.profile = {"lease": True, "est_mem_gib": 1.0, "est_disk_gib": 1.0}
+        sup.lease_cleanup, sup.lease_id, sup.concluded, sup.record = False, None, False, {}
+        sup.log = lambda *a, **k: None
+        return sup, args
+
+    def kinds(self, args):
+        with open(args) as fh:
+            return [line.split()[line.split().index("--kind") + 1] for line in fh if line.startswith("acquire")]
+
+    def test_the_fallback_acquire_uses_the_lane(self):
+        for lane in ("browser", "heavy"):
+            with self.subTest(lane):
+                sup, args = self.supervisor(lane)
+                sup._queue_lease = lambda: None
+                self.assertIn("refused-by-stub", sup._try_admit())
+                self.assertEqual(self.kinds(args), [lane])
+
+    def test_the_cleanup_takeover_uses_the_lane(self):
+        import procs
+        for lane in ("browser", "heavy"):
+            with self.subTest(lane):
+                sup, args = self.supervisor(lane)
+                sup.queue_lease = "11111111-2222-4333-8444-555555555555"
+                with mock.patch.object(procs, "lease_state", return_value=(procs.ABSENT, "")):
+                    sup._hold_reservation()
+                self.assertEqual(self.kinds(args), [lane])

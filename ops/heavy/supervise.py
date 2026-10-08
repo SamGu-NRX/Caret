@@ -607,14 +607,9 @@ class Supervisor:
         if self.profile["lease"] and self.queue_lease is None:
             subprocess.run([self.paths["lr_reap"], "--run", self.plan["lease"]["run"]], stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            cleanup = ["--cleanup-attempt", self.attempt, "--cleanup-token-sha256",
-                       recovery.token_sha256(self.token)] if self.lease_cleanup else []
-            got = self._lease_cmd("acquire", "--run", self.plan["lease"]["run"], "--kind", "heavy",
-                                  "--est-mem", str(self.profile["est_mem_gib"]),
-                                  "--est-disk", str(self.profile["est_disk_gib"]),
-                                  "--ttl", str(self.plan["lease"]["ttl_min"]), "--owner-pid", str(self.pid), *cleanup)
+            got = self._acquire_lease()
             if got.returncode != 0:
-                return "heavy lease: {}".format(got.stdout.strip() or got.returncode)
+                return "{} lease: {}".format(self.lane, got.stdout.strip() or got.returncode)
             self.lease_id = got.stdout.strip()
             self.lease_renewed = time.monotonic()
             recovery.test_point(self.plan, "supervisor:after-lease-acquire")
@@ -717,6 +712,15 @@ class Supervisor:
             raise procs.Refusal("the queue recorded lease {} for this job, but it is {}: {}".format(lease_id, state, detail))
         return lease_id
 
+    def _acquire_lease(self):
+        """lr-lease acquire for this job, owned by this supervisor, of its lane's kind (heavy, or browser for a
+        browser-lane job: lr-lease's browser kind, the one the queue's browser runners take)."""
+        cleanup = ["--cleanup-attempt", self.attempt, "--cleanup-token-sha256",
+                   recovery.token_sha256(self.token)] if self.lease_cleanup else []
+        return self._lease_cmd("acquire", "--run", self.plan["lease"]["run"], "--kind", self.lane,
+                               "--est-mem", str(self.profile["est_mem_gib"]), "--est-disk", str(self.profile["est_disk_gib"]),
+                               "--ttl", str(self.plan["lease"]["ttl_min"]), "--owner-pid", str(self.pid), *cleanup)
+
     def _lease_cmd(self, *args):
         return subprocess.run([self.paths["lr_lease"], *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True)
@@ -733,11 +737,7 @@ class Supervisor:
         self.queue_lease_checked = time.monotonic()
         if procs.lease_state(self.paths["lr_lease"], self.queue_lease)[0] != procs.ABSENT:
             return
-        cleanup = ["--cleanup-attempt", self.attempt, "--cleanup-token-sha256",
-                   recovery.token_sha256(self.token)] if self.lease_cleanup else []
-        got = self._lease_cmd("acquire", "--run", self.plan["lease"]["run"], "--kind", "heavy",
-                              "--est-mem", str(self.profile["est_mem_gib"]), "--est-disk", str(self.profile["est_disk_gib"]),
-                              "--ttl", str(self.plan["lease"]["ttl_min"]), "--owner-pid", str(self.pid), *cleanup)
+        got = self._acquire_lease()
         if got.returncode != 0:
             if not getattr(self, "takeover_refused", False):
                 self.takeover_refused = True
