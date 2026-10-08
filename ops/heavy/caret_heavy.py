@@ -367,7 +367,7 @@ def _r2_prepare_plan(args, worktree, rev, paths):
 
 
 def _r2_vm_options(parser):
-    parser.add_argument("--harness", choices=("h11", "h14"), required=True)
+    parser.add_argument("--harness", choices=("h11", "h14", "rae"), required=True)
     parser.add_argument("--job-dir", required=True, metavar="DIR", help="the staged rig job: job.sh, payload/")
     parser.add_argument("--config", choices=("off", "on"), help="H11 only, required there")
     parser.add_argument("--rig-wait", type=int, default=3600, help="rig-run --wait for its leases (seconds)")
@@ -392,13 +392,15 @@ def _r2_vm_plan(args, worktree, rev, paths):
     if os.path.exists(os.path.join(job, "display")):
         inputs.append(spec("display", "file", os.path.join(job, "display"), "vm-job/display"))
     recorded = {}
-    if args.harness == "h11":
-        # The stage options the payload was built with, recorded in the plan; the payload digest pins the file.
+    # The stage options the payload was built with, recorded in the plan; the payload digest pins the file.
+    options = {"h11": ("H11_OPTIONS", "h11-options.json"), "rae": ("RAE_OPTIONS", "rae-options.json")}.get(args.harness)
+    if options is not None:
+        name, filename = options
         try:
-            with open(os.path.join(job, "payload", "h11-options.json"), encoding="utf-8") as fh:
-                recorded["H11_OPTIONS"] = json.dumps(json.load(fh), sort_keys=True, separators=(",", ":"))
+            with open(os.path.join(job, "payload", filename), encoding="utf-8") as fh:
+                recorded[name] = json.dumps(json.load(fh), sort_keys=True, separators=(",", ":"))
         except (OSError, ValueError) as ex:
-            raise manifest.ManifestError("payload has no readable h11-options.json: {}".format(ex)) from None
+            raise manifest.ManifestError("payload has no readable {}: {}".format(filename, ex)) from None
     argv = [args.harness, str(args.rig_wait), "{:.4f}".format(args.allowance), "{:.4f}".format(args.prior_spend),
             args.config or "-"]
     return argv, inputs, recorded

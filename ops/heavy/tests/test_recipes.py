@@ -278,6 +278,22 @@ else:
                 done, result, _ = self.r2(**env)
                 self.assertEqual(done.returncode, code, done.stdout + done.stderr)
 
+    def test_r2_vm_runs_rae_and_publishes_its_scoreboard(self):
+        job = self.vm_inputs()
+        subprocess.run(["chmod", "u+w", os.path.join(job, "payload")], check=True)
+        os.unlink(os.path.join(job, "payload/h11-options.json"))
+        rae = {"mode": "probe", "targets": ["contacts-me", "mail-compose"]}
+        write(os.path.join(job, "payload/rae-options.json"), json.dumps(rae))
+        os.chmod(os.path.join(job, "payload"), 0o555)
+        env = dict(self.vm_env(), RAE_OPTIONS=json.dumps(rae, sort_keys=True, separators=(",", ":")))
+        del env["H11_OPTIONS"]
+        done, result = self.run_recipe("r2/vm.sh", "rae", "30", "0.2000", "0.0000", "-", env=env)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.steps(result), [("prepare", "spend-control", 0), ("r2", "rae", 0)])
+        for name in ("results.json", "scoreboard.md", "rows.json", "leak-check.txt"):
+            self.assertTrue(os.path.exists(os.path.join(self.out, "rig-run/out", name)), name)
+        self.assertFalse(os.path.exists(os.path.join(job, "payload/CONFIG")))
+
     def assert_key_nowhere(self):
         hits = []
         for root, _, names in os.walk(self.root):

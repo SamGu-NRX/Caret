@@ -7,7 +7,7 @@
 # leak scan of it is recorded in $CARET_HEAVY_OUT/rig-run-scanned, and vm.sh publishes nothing without that. A TERM stops
 # rig-run, waits for it, and still runs the leak scan before exiting.
 #
-#   run.sh --job DIR --harness h11|h14 [--config off|on] [--wait SECONDS]   (--config is required for h11)
+#   run.sh --job DIR --harness h11|h14|rae [--config off|on] [--wait SECONDS]   (--config is required for h11)
 #
 # Why a feeder: rig-run starts job.sh as a LaunchAgent from a fixed plist and has no channel for a secret, and the rig's
 # rule is that no key goes into a payload file. So this shell reads the key from CARET_ENV_FILE into an unexported
@@ -32,12 +32,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --job) JOB=${2:?}; shift 2 ;; --harness) HARNESS=${2:?}; shift 2 ;;
     --wait) WAIT=${2:?}; shift 2 ;; --config) CONFIG=${2:?}; shift 2 ;;
-    *) echo "usage: run.sh --job DIR --harness h11|h14 [--config off|on] [--wait SECONDS]" >&2; exit 64 ;;
+    *) echo "usage: run.sh --job DIR --harness h11|h14|rae [--config off|on] [--wait SECONDS]" >&2; exit 64 ;;
   esac
 done
 case "$HARNESS" in h11) case "$CONFIG" in off|on) ;; *) echo "run.sh: h11 needs --config off|on" >&2; exit 64 ;; esac ;;
-  h14) [ -z "$CONFIG" ] || { echo "run.sh: --config is H11's only" >&2; exit 64; } ;;
-  *) echo "run.sh: --harness h11|h14 is required" >&2; exit 64 ;; esac
+  h14|rae) [ -z "$CONFIG" ] || { echo "run.sh: --config is H11's only" >&2; exit 64; } ;;
+  *) echo "run.sh: --harness h11|h14|rae is required" >&2; exit 64 ;; esac
 [ -f "$JOB/job.sh" ] && [ -d "$JOB/payload/tools" ] || { echo "run.sh: $JOB is not staged; run stage.sh" >&2; exit 64; }
 ENVF=${CARET_ENV_FILE:-}
 [ -n "$ENVF" ] && [ -f "$ENVF" ] || { echo "run.sh: CARET_ENV_FILE must name the .env holding TYPESAFE_API_KEY" >&2; exit 64; }

@@ -441,6 +441,37 @@ class CheckTest(Temp):
         self.assertEqual(self.h14(fail="switches"), check.FAILED)
         self.assertEqual(self.h14(check_fail="caret-up"), check.FAILED)
 
+    RAE_OPTS = {"mode": "run", "targets": ["contacts-me", "mail-compose"]}
+
+    def rae(self, opts=None, rows=None, leak="CLEAN SCANNED 40\n", plan_opts=None):
+        opts = opts or self.RAE_OPTS
+        if rows is None:
+            rows = [{"id": t, "status": "ran" if opts["mode"] == "run" else "probed", "verdict": "complete",
+                     "clipboard": "restored", "wrong": "no", "note": ""} for t in opts["targets"]]
+        run = os.path.join(self.out, "rig-run")
+        shutil.rmtree(run, ignore_errors=True)
+        self.write("out/rig-run/out/results.json", json.dumps({"harness": "rae", "rev": "c" * 40, "mode": opts["mode"],
+                                                              "options": opts, "rows": rows, "notes": []}))
+        self.write("out/rig-run/out/leak-check.txt", leak)
+        return self.run_check("r2", "--harness", "rae", "--run", run, "--rev", "c" * 40, "--exit", "0",
+                              "--spend-limit", "0.2", "--options", json.dumps(plan_opts or opts))
+
+    def test_rae_runs_are_checked_against_the_plans_options(self):
+        self.assertEqual(self.rae(), 0)
+        self.assertEqual(self.rae(plan_opts={"mode": "run", "targets": ["contacts-me"]}), check.EVIDENCE)
+        crashed = [{"id": "contacts-me", "status": "crashed", "note": "x"},
+                   {"id": "mail-compose", "status": "ran", "verdict": "complete", "clipboard": "restored", "wrong": "no"}]
+        self.assertEqual(self.rae(rows=crashed), check.FAILED)
+        wrong = [{"id": "contacts-me", "status": "ran", "verdict": "complete", "clipboard": "restored", "wrong": "yes"},
+                 {"id": "mail-compose", "status": "blocked", "wrong": "no"}]
+        self.assertEqual(self.rae(rows=wrong), check.WRONG)
+
+    def test_a_probe_guest_holds_no_key_so_no_keys_is_its_leak_check(self):
+        probe = {"mode": "probe", "targets": ["contacts-me", "mail-compose"]}
+        self.assertEqual(self.rae(opts=probe, leak="NO KEYS (nothing to scan for)\n"), 0)
+        self.assertEqual(self.rae(leak="NO KEYS (nothing to scan for)\n"), check.EVIDENCE)  # a run guest had the key
+        self.assertEqual(self.rae(opts=probe, leak="LEAK\n"), check.EVIDENCE)
+
     def test_finish_precedence_and_result(self):
         self.assertEqual(self.run_check("finish"), check.EVIDENCE)  # no steps recorded
         os.unlink(os.path.join(self.out, "result.json"))
@@ -657,6 +688,21 @@ class ProfileAndEnqueueTest(Temp):
             with self.subTest(bad):
                 with self.assertRaises(manifest.ManifestError):
                     caret_heavy._r2_vm_plan(argparse.Namespace(**dict(vars(args), **bad)), "/w", pin, {})
+
+    def test_r2_vm_rae_records_its_options(self):
+        self.write("vm/job.sh", "#!/bin/bash\n")
+        self.write("vm/tcc.txt", "")
+        args = argparse.Namespace(harness="rae", job_dir=os.path.join(self.root, "vm"), config=None, rig_wait=3600,
+                                  allowance=0.2, prior_spend=0.0)
+        with self.assertRaisesRegex(manifest.ManifestError, "rae-options.json"):
+            caret_heavy._r2_vm_plan(args, "/w", "a" * 40, {})
+        self.write("vm/payload/rae-options.json", '{"targets": ["contacts-me"], "mode": "probe"}')
+        argv, specs, recorded = caret_heavy._r2_vm_plan(args, "/w", "a" * 40, {})
+        self.assertEqual(argv, ["rae", "3600", "0.2000", "0.0000", "-"])
+        self.assertEqual(recorded, {"RAE_OPTIONS": '{"mode":"probe","targets":["contacts-me"]}'})
+        parser = argparse.ArgumentParser()
+        caret_heavy._r2_vm_options(parser)
+        self.assertEqual(parser.parse_args(["--harness", "rae", "--job-dir", "j"]).harness, "rae")
 
     def test_laya_seals_its_interpreter_packages_model_config_and_data(self):
         argv, specs, recorded = caret_heavy._laya_plan(None, "/w", "a" * 40, {})

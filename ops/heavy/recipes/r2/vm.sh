@@ -3,14 +3,14 @@
 # leases and heavy.lock. The job runs the sealed copy of the staged job ($CARET_HEAVY_INPUTS/vm-job). Writes the run's
 # configuration and spend control into the sealed payload (the two files the manifest leaves out), the spend control
 # from the host's Jev ledger now, as R2's coordinate.py did. Copies the run's evidence into OUT only after the feeder's
-# leak scan passed, then checks it: zero wrong rows, the pinned revision, the plan's H11 options and rows, a CLEAN guest
-# leak check, guest spend within the allowance left. Profile caret-vm.
-#   vm.sh h11|h14 WAIT ALLOWANCE PRIOR-SPEND CONFIG|-
+# leak scan passed, then checks it: zero wrong rows, the pinned revision, the plan's H11 or RAE options and rows, a CLEAN
+# guest leak check (NO KEYS for a RAE probe), guest spend within the allowance left. Profile caret-vm.
+#   vm.sh h11|h14|rae WAIT ALLOWANCE PRIOR-SPEND CONFIG|-
 set -u
 . "$CARET_HEAVY_RECIPES/lib.sh"
-H=${1:?usage: vm.sh h11|h14 WAIT ALLOWANCE PRIOR-SPEND CONFIG|-}
+H=${1:?usage: vm.sh h11|h14|rae WAIT ALLOWANCE PRIOR-SPEND CONFIG|-}
 WAIT=${2:?wait}; ALLOW=${3:?allowance}; PRIOR=${4:?prior spend}; CONFIG=${5:?config or -}
-case "$H" in h11|h14) ;; *) echo "vm: harness must be h11 or h14" >&2; exit 64 ;; esac
+case "$H" in h11|h14|rae) ;; *) echo "vm: harness must be h11, h14 or rae" >&2; exit 64 ;; esac
 REQUIRED=(spend-control "$H")
 JOB="$IN/vm-job"
 CONTROL="$JOB/payload/spend-control.json"
@@ -46,12 +46,13 @@ RUN=$(cat "$OUT/rig-run-dir" 2>/dev/null)
 mkdir -p "$OUT/rig-run/out"
 # Published only when the feeder recorded a clean host leak scan of this exact run directory.
 if [ -n "$RUN" ] && [ -d "$RUN" ] && [ "$(cat "$OUT/rig-run-scanned" 2>/dev/null)" = "$RUN" ]; then
-  for f in rig.json rig.log out/results.json out/result.json out/leak-check.txt out/job.log; do
+  for f in rig.json rig.log out/results.json out/result.json out/leak-check.txt out/job.log out/scoreboard.md \
+           out/rows.json; do
     [ -f "$RUN/$f" ] && cp "$RUN/$f" "$OUT/rig-run/$f"
   done
   [ -d "$RUN/out/jev-spend" ] && cp -R "$RUN/out/jev-spend" "$OUT/rig-run/out/"
 fi
 LIMIT=$(py -c 'import sys; print("%.6f" % (float(sys.argv[1]) - float(sys.argv[2])))' "$ALLOW" "$PRIOR")
 check r2 --harness "$H" --run "$OUT/rig-run" --rev "$CARET_HEAVY_REV" --exit "$rc" --spend-limit "$LIMIT" \
-  ${H11_OPTIONS:+--options "$H11_OPTIONS"}
+  ${H11_OPTIONS:+--options "$H11_OPTIONS"} ${RAE_OPTIONS:+--options "$RAE_OPTIONS"}
 finish

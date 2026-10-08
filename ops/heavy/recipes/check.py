@@ -334,6 +334,59 @@ def h14_acceptance(data):
     return problems, failures
 
 
+# RAE (the real-app eval) as its harness defines acceptance: rae_acceptance and leak_ok are copied unchanged from
+# ~/.caret-run/evidence/host/rae/harness/queue_rae.py, with its two sets renamed RAE_*, and tests/test_queue_rae.py
+# runs that harness's own cases on them.
+RAE_STATUSES = {"ran", "probed", "absent", "blocked", "unreachable", "setup-failed", "budget", "not-run", "crashed"}
+# The guest app or site was not there to test: recorded, not a failure of the run.
+RAE_ENVIRONMENT = {"absent", "blocked", "unreachable", "setup-failed"}
+
+
+def rae_acceptance(data, options):
+    """(problems, failures) for one RAE results.json against the plan's rae-options.json."""
+    problems, failures = [], []
+    if data.get("harness") != "rae":
+        problems.append("results are not RAE's (harness={!r})".format(data.get("harness")))
+        return problems, failures
+    if data.get("options") != options:
+        problems.append("results ran with options {}, not the plan's {}".format(data.get("options"), options))
+        return problems, failures
+    mode = options.get("mode")
+    rows = {r.get("id"): r for r in data["rows"]}
+    for tid in options.get("targets", []):
+        r = rows.get(tid)
+        if r is None:
+            problems.append("row {} is missing".format(tid))
+            continue
+        status = r.get("status")
+        if status not in RAE_STATUSES:
+            problems.append("row {} has unknown status {!r}".format(tid, status))
+        elif mode == "probe" and status not in {"probed"} | RAE_ENVIRONMENT:
+            problems.append("probe row {} says {}".format(tid, status))
+        elif mode == "run" and status == "probed":
+            problems.append("run row {} says probed".format(tid))
+        elif status in ("crashed", "not-run", "budget"):
+            failures.append("{} {}: {}".format(tid, status, str(r.get("note"))[:160]))
+        if status == "ran":
+            if r.get("verdict") == "evidence-incomplete":
+                problems.append("{}: read-back could not score every field ({})".format(tid, str(r.get("note"))[:160]))
+            if r.get("clipboard") == "changed":
+                failures.append("{}: the clipboard was not put back".format(tid))
+    for note in data.get("notes") or []:
+        if isinstance(note, str) and note.startswith("harness: ") and " crashed" in note:
+            failures.append(note[:200])
+    if mode == "run" and not any(r.get("status") == "ran" for r in data["rows"]):
+        failures.append("no target ran")
+    return sorted(set(problems)), failures
+
+
+def leak_ok(leak_text, mode):
+    """The guest's leak-check.txt: CLEAN after a scan; in probe mode the guest never had a key, so NO KEYS is right (the
+    host feeder's scan of the copied-back run still covers it)."""
+    text = (leak_text or "").strip()
+    return text.startswith("CLEAN") or (mode == "probe" and text.startswith("NO KEYS"))
+
+
 def r2(harness, run, rev, exit_code, options, spend_limit):
     """A rig run's copied-back evidence: rig.json, the guest's results, its leak check and its spend, then the
     harness's acceptance rows."""
@@ -342,7 +395,7 @@ def r2(harness, run, rev, exit_code, options, spend_limit):
         step.update(code=exit_code, why="host leak check {}".format("found a key" if exit_code == LEAK_FOUND
                                                                      else "could not finish"))
         return record(step)
-    results = os.path.join(run, "out", "results.json" if harness == "h11" else "result.json")
+    results = os.path.join(run, "out", "result.json" if harness == "h14" else "results.json")
     leak = os.path.join(run, "out", "leak-check.txt")
     step["evidence"] = existing(os.path.join(run, "rig.json"), os.path.join(run, "rig.log"), results, leak)
     problems, failures = [], []
@@ -355,22 +408,22 @@ def r2(harness, run, rev, exit_code, options, spend_limit):
     except (OSError, ValueError) as ex:
         data = None
         problems.append("no readable guest results: {}".format(ex))
+    want_options = json.loads(options) if options else None
     try:
         with open(leak, encoding="utf-8") as fh:
-            clean = fh.read().strip().startswith("CLEAN")
+            clean = leak_ok(fh.read(), (want_options or {}).get("mode"))
     except OSError:
         clean = False
     if not clean:
-        problems.append("the guest's leak check did not say CLEAN")
-    want_options = json.loads(options) if options else None
+        problems.append("the guest's leak check did not say CLEAN (or NO KEYS in a RAE probe)")
     if data is not None:
         if data.get("rev") != rev:
             problems.append("results are for {}, not the pinned {}".format(data.get("rev"), rev))
-        if harness == "h11":
+        if harness in ("h11", "rae"):
             if want_options is None or data.get("options") != want_options:
                 problems.append("results ran with options {}, not the plan's {}".format(data.get("options"), options))
             else:
-                p, f = h11_acceptance(data, want_options)
+                p, f = (h11_acceptance if harness == "h11" else rae_acceptance)(data, want_options)
                 problems += p
                 failures += f
         else:
@@ -520,7 +573,7 @@ def main(argv=None):
     sp.add_argument("--limit", type=float, required=True)
     sp.add_argument("--ledger-dir", default=LEDGER_DIR)
     r = sub.add_parser("r2")
-    r.add_argument("--harness", choices=("h11", "h14"), required=True)
+    r.add_argument("--harness", choices=("h11", "h14", "rae"), required=True)
     r.add_argument("--run", required=True)
     r.add_argument("--rev", required=True)
     r.add_argument("--exit", type=int, required=True)
