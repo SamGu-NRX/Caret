@@ -285,11 +285,11 @@ export type SectionAnswer = { readonly kind: "section"; readonly name: string } 
  */
 export function sectionVerdict(snap: IntentSnapshot, scope: readonly [JevResult, JevResult], cutoff: number = SCOPE_CUTOFF): SectionAnswer | null {
   if (!asksSection(snap)) return null;
-  // Only what both wordings offered: a heading the bounded list left out of either question was no choice of Jev's, so
-  // an answer naming it is outside the options and fails closed (INT1 review 2).
-  const both = [offeredSections(snap, 0), offeredSections(snap, 1)];
-  const options = new Set([...Object.keys(SECTION_OPTIONS), ...snap.headings.map((h) => h.ref).filter((r) => both[0]!.has(r) && both[1]!.has(r))]);
-  const answers = scope.map((r) => {
+  // Each wording's answer is read against what that wording's own question offered (INT1 review 3): the bounded list may
+  // offer a heading in one and not the other. An answer outside its own question's options is invalid and throws; two
+  // valid answers that differ are a disagreement (null), never a failure.
+  const answers = scope.map((r, i) => {
+    const options = new Set([...Object.keys(SECTION_OPTIONS), ...offeredSections(snap, i as 0 | 1)]);
     const a = r.answers[SECTION_QUESTION];
     if (a === undefined) throw new PlannerError("jevFailed", "Jev gave no answer to the section question");
     if (!options.has(a.choice)) throw new PlannerError("jevFailed", `Jev answered '${a.choice}' to the section question, which is not one of its options`);

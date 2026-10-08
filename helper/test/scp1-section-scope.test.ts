@@ -1204,3 +1204,28 @@ describe("INT1 review 2 P2: a section answer counts only when both wordings offe
     expect(sectionVerdict(s, [answer(both!.ref), answer(both!.ref)])).toEqual({ kind: "section", name: both!.name });
   });
 });
+
+describe("INT1 review 3: a split section answer is a disagreement", () => {
+  it("returns null, never throws, when each wording's answer fits its own question but they differ", () => {
+    const many = Array.from({ length: 40 }, (_, i) => `Section ${i + 1} about the equipment`);
+    const long = `Fill in the service request for the Kestrel 9 using my notes, ${"and keep everything exactly as the notes say it ".repeat(12)}`;
+    // An Ask length at which the two wordings, whose own words differ in length, fit different numbers of names.
+    let s = snapFor(desk({ page: pageSnapshot(many) }), long.slice(0, 400));
+    let offered: Set<string>[] = [];
+    for (let n = 400; n <= 640; n++) {
+      s = snapFor(desk({ page: pageSnapshot(many) }), long.slice(0, n));
+      offered = ([0, 1] as const).map((w) => new Set(Object.keys(scopeRequest(s, w).questions[SECTION_QUESTION]?.criteria ?? {})));
+      if (offered[0]!.size !== offered[1]!.size) break;
+    }
+    const answer = (choice: string): JevResult => ({ model: "m", answers: { [SECTION_QUESTION]: { choice, confidence: 0.99 } }, inputTokens: 0, latencyMs: 0, costUsd: 0 });
+    const onlyFirst = s.headings.find((h) => offered[0]!.has(h.ref) && !offered[1]!.has(h.ref));
+    const onlySecond = s.headings.find((h) => !offered[0]!.has(h.ref) && offered[1]!.has(h.ref));
+    const one = onlyFirst ?? onlySecond;
+    // The two wordings list sections in different orders, so with a bounded list one offers a heading the other does not.
+    expect(one).toBeDefined();
+    const pair: [JevResult, JevResult] = onlyFirst !== undefined ? [answer(onlyFirst.ref), answer("unlisted")] : [answer("unlisted"), answer(onlySecond!.ref)];
+    expect(sectionVerdict(s, pair)).toBeNull();
+    // Both choosing a heading only one of them offered: the other's answer is outside its own options, which throws.
+    expect(() => sectionVerdict(s, [answer(one!.ref), answer(one!.ref)])).toThrow(PlannerError);
+  });
+});
