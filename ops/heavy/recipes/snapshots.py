@@ -14,6 +14,7 @@ copy beside them is large. Exits 1, saying why, when a path cannot be read or co
 import hashlib
 import json
 import os
+import shutil
 import stat
 import sys
 
@@ -36,15 +37,13 @@ def open_file(path):
     return fd
 
 
-def digest_fd(fd, copy_to=None):
+def digest_fd(fd):
     h = hashlib.sha256()
     while True:
         block = os.read(fd, 1 << 20)
         if not block:
             return h.hexdigest()
         h.update(block)
-        if copy_to is not None:
-            os.write(copy_to, block)
 
 
 def raise_error(error):
@@ -113,17 +112,17 @@ def collect(src, baseline, dest, rev, packages):
             continue
         source = os.path.join(root, rel)
         inside(root, os.path.dirname(source))
-        fd = open_file(source)
+        target = os.path.join(make_dirs(dest, os.path.dirname(rel)), os.path.basename(rel))
+        with os.fdopen(open_file(source), "rb") as src, os.fdopen(create(target), "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        # The copy is what the manifest vouches for, so its hash is read back from DEST.
+        fd = open_file(target)
         try:
-            out = create(os.path.join(make_dirs(dest, os.path.dirname(rel)), os.path.basename(rel)))
-            try:
-                copied = digest_fd(fd, copy_to=out)
-            finally:
-                os.close(out)
+            copied = digest_fd(fd)
         finally:
             os.close(fd)
         if copied != new:
-            raise OSError("{} changed while it was copied".format(rel))
+            raise OSError("the copy of {} does not match the hash scanned after the tests".format(rel))
         images.append({"path": rel, "sha256": new, "change": change})
     out = create(os.path.join(dest, "manifest.json"))
     with os.fdopen(out, "w", encoding="utf-8") as fh:

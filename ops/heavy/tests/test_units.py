@@ -1671,6 +1671,29 @@ class SnapshotsTest(Temp):
         with open(target) as fh:
             self.assertEqual(fh.read(), "keep\n")
 
+    def test_a_short_write_never_yields_a_truncated_copy(self):
+        # os.write may write fewer bytes than it is given; this one always does.
+        self.baseline_now()
+        body = os.urandom(3 << 20)
+        with open(os.path.join(self.src, "pkg/Tests/__Snapshots__/T/old.png"), "wb") as fh:
+            fh.write(body)
+        real_write = os.write
+        with mock.patch.object(self.snapshots.os, "write", side_effect=lambda fd, data: real_write(fd, data[:1000])):
+            code, err = self.collect()
+        self.assertEqual(code, 0, err)
+        with open(os.path.join(self.dest, "pkg/Tests/__Snapshots__/T/old.png"), "rb") as fh:
+            self.assertEqual(fh.read(), body)
+
+    def test_a_copy_that_does_not_match_gets_no_manifest(self):
+        import shutil
+        self.baseline_now()
+        self.write("src/pkg/Tests/__Snapshots__/T/old.png", "recorded\n")
+        with mock.patch.object(shutil, "copyfileobj", side_effect=lambda src, dst, *a: dst.write(src.read()[:3])):
+            code, err = self.collect()
+        self.assertEqual(code, 1)
+        self.assertIn("does not match", err)
+        self.assertFalse(os.path.exists(os.path.join(self.dest, "manifest.json")))
+
     def test_a_recorded_image_is_copied_with_its_sha256(self):
         import hashlib
         self.baseline_now()
