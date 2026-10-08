@@ -36,6 +36,7 @@
 // sites); a task or W4 page whose walk is missing is reported as skipped, never as 0, and a corpus form with no walk is
 // read from the reader's committed recording instead (set "corpus-reader"), which test/w1-wrongs.test.ts runs in the
 // suite. Exit 1 when class (a) is above 0.
+import { writeStore } from "../src/privacy/send.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -695,7 +696,7 @@ for (const [name, gen] of generators) {
 if (SETS.has("routine")) routine = await routineSet();
 
 mkdirSync(OUT, { recursive: true });
-if (a.values["dump-proposed"] !== undefined) writeFileSync(resolve(a.values["dump-proposed"]), dumped.length === 0 ? "" : `${dumped.join("\n")}\n`);
+if (a.values["dump-proposed"] !== undefined) writeStore(resolve(a.values["dump-proposed"]), dumped.length === 0 ? "" : `${dumped.join("\n")}\n`);
 const CLASSES: Cls[] = ["a", "b", "c"];
 const HOWS = ["fill", "goal", "ask"] as const;
 const exempt = (x: { via: string | null }): boolean => x.via?.startsWith("exempt:") === true;
@@ -767,8 +768,8 @@ const md = [
   "",
   ...(skipped.length > 0 ? skipped.map((s) => `- ${s}`) : ["None."]),
 ];
-writeFileSync(join(OUT, "guard-adversary.md"), `${md.join("\n")}\n`);
+writeStore(join(OUT, "guard-adversary.md"), `${md.join("\n")}\n`);
 const summary = (cls: Cls) => ({ written: count(cls, "written"), handedOff: count(cls, "handedOff"), rightValue: count(cls, "rightValue"), withheld: count(cls, "withheld"), unexempt: unexempt(cls).length });
-writeFileSync(join(OUT, "guard-adversary.json"), `${JSON.stringify({ verifier: VERIFIER, desks, fills, a: summary("a"), b: summary("b"), c: summary("c"), unexempt: unexempt().length, routine, attempts, canned, unattacked, refusals: Object.fromEntries(refusals), failures, goalRuns, skipped }, null, 1)}\n`);
+writeStore(join(OUT, "guard-adversary.json"), `${JSON.stringify({ verifier: VERIFIER, desks, fills, a: summary("a"), b: summary("b"), c: summary("c"), unexempt: unexempt().length, routine, attempts, canned, unattacked, refusals: Object.fromEntries(refusals), failures, goalRuns, skipped }, null, 1)}\n`);
 process.stderr.write(`guard adversary (verifier ${VERIFIER}): written outside an exemption ${unexempt().length}; ${CLASSES.map((c) => `(${c}) written ${count(c, "written")} of ${attempts.filter((x) => x.cls === c).length}`).join("; ")}; canned right ${cannedRight.length}, refused ${canned.filter((x) => x.outcome === "refused").length}${routine === null ? "" : `; routine cells ${routine.cells} in ${routine.offers} offers, errors ${routine.errors.length}`}; ${join(OUT, "guard-adversary.md")}\n`);
 process.exitCode = VERIFIER === "refuse" && (unexempt().length > 0 || (routine?.errors.length ?? 0) > 0 || failures.length > 0) ? 1 : 0;

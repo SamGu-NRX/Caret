@@ -11,6 +11,7 @@
 // provider's Retry-After and retries once. Retries are counted in the report; WriterPort never retries.
 // The run stops before a call that could take total spend past --budget (USD), estimated from the
 // largest cost seen so far.
+import { writeStore } from "../src/privacy/send.ts";
 import { minted } from "../test/minted.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -164,6 +165,6 @@ ${table}
 Total spend: $${spent.toFixed(4)} (budget $${budget}). Rate-limit retries: ${retries}.${stopped === null ? "" : ` ${stopped}`}
 Latency is the client's wall time for one HTTP request, sequential, from this Mac. p95 of 10 samples is the slowest one.
 `;
-writeFileSync(join(outDir, "writer-eval.md"), report);
-writeFileSync(join(outDir, "writer-eval.json"), JSON.stringify({ gatewayStatus, gatewayModelCount: gatewayModels.length, groqModels, rows, calls, spent, retries }, null, 1));
+writeStore(join(outDir, "writer-eval.md"), report);
+writeStore(join(outDir, "writer-eval.json"), JSON.stringify({ gatewayStatus, gatewayModelCount: gatewayModels.length, groqModels, rows, calls, spent, retries }, null, 1));
 log(`\n${report}`);

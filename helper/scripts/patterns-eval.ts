@@ -3,6 +3,7 @@
 // edit-to-memory scenario. Writes results.json and a short summary.md to --out.
 //
 //   node scripts/patterns-eval.ts --out DIR [--pace-ms 20]
+import { writeStore } from "../src/privacy/send.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -147,7 +148,7 @@ async function editScenario(): Promise<Record<string, unknown>> {
 const editResult = await editScenario();
 
 const results = { pacingMs: PACE, planted: plantedResult, distractor: distractorResult, forgetRerun: forgetResult, editChangesNextFill: editResult };
-writeFileSync(join(OUT, "results.json"), JSON.stringify(results, null, 2));
+writeStore(join(OUT, "results.json"), JSON.stringify(results, null, 2));
 
 const f = (x: number): string => x.toFixed(3);
 const row = (r: Record<string, unknown>): string => {
@@ -161,7 +162,7 @@ const ev = (r: Record<string, unknown>): string => {
   return `| ${r.name} | whole event (model, text, transfers, patterns) | ${v.wall.n} | ${f(v.wall.p50)} | ${f(v.wall.p99)} | ${f(v.wall.max)} | ${f(v.cpu.p99)} | ${f(v.cpu.max)} |`;
 };
 const load = (r: Record<string, unknown>): string => (r.loadAverageAtStart as number[]).map((x) => x.toFixed(1)).join(" / ");
-writeFileSync(
+writeStore(
   join(OUT, "summary.md"),
   `# Pattern stream evaluation
 

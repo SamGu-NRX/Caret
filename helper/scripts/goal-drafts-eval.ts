@@ -11,6 +11,7 @@
 // (writer/routes.ts devWriterRoute). Drafts' words from the local model by default (G1's caret-local-model reading the
 // GGUF by path; take a heavy lease, loading maps 3.4 GB); --drafts program keeps a live writer's own text. Jev live.
 // Each call's model is recorded. No GUI, no input, no app.
+import { writeStore } from "../src/privacy/send.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -310,7 +311,7 @@ for (const c of cases) {
   for (const d of drafts) console.log(`   draft ${d.field}: ${d.text}`);
   for (const w of sc.warnings.filter((x) => x.startsWith("goal "))) console.log(`   note: ${w.slice(0, 300)}`);
   for (const d of draftCalls.filter((x) => x.case === c.id)) console.log(`   local ${d.model} ${Math.round(d.ms)} ms (${d.stop ?? "error"}): ${d.text ?? d.error}`);
-  writeFileSync(join(OUT, `${c.id}.goals.ndjson`), sc.goals.map((g) => JSON.stringify(g)).join("\n") + "\n");
+  writeStore(join(OUT, `${c.id}.goals.ndjson`), sc.goals.map((g) => JSON.stringify(g)).join("\n") + "\n");
   await sc.close();
 }
 
@@ -355,7 +356,7 @@ const summary = {
     cutOff: draftCalls.filter((x) => x.stop === "maxTokens").length,
   },
 };
-writeFileSync(join(OUT, "goal-drafts.json"), JSON.stringify({ summary, rows, calls, draftCalls }, null, 2) + "\n");
+writeStore(join(OUT, "goal-drafts.json"), JSON.stringify({ summary, rows, calls, draftCalls }, null, 2) + "\n");
 const md = [
   "# B30 goal and draft cases",
   "",
@@ -366,7 +367,7 @@ const md = [
   `Summary: ${JSON.stringify(summary)}`,
   "",
 ].join("\n");
-writeFileSync(join(OUT, "goal-drafts.md"), md);
+writeStore(join(OUT, "goal-drafts.md"), md);
 console.log(`summary ${JSON.stringify(summary)}`);
 await tool?.close();
 process.exitCode = summary.wrong === 0 && summary.falseDone === 0 ? 0 : 1;

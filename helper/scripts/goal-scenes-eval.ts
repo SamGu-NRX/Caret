@@ -10,6 +10,7 @@
 // says "I'm in". The other scenes ask for no words and run as they are.
 // Reports, per scene and writer: plan offered (valid), refused for an unsupported route, segments and acceptances,
 // steps verified, fresh previews, the end, the oracle, false done, replayed mutations and sends; and the cost.
+import { writeStore } from "../src/privacy/send.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -266,9 +267,9 @@ for (let run = 1; run <= runs; run++) {
     spent += meter.cost;
     for (const note of rows.at(-1)?.notes ?? []) console.log(`  note: ${note}`);
     console.log(`${s.name} [${meter.model}]: ${end}; valid ${first.event === "segment"}${refused === null ? "" : ` (${refused})`}; oracle ${bad.length === 0 ? "ok" : bad.join("; ")}; verified ${rows.at(-1)?.verified}; replayed ${replayed}; sends ${sends}; $${meter.cost.toFixed(4)}`);
-    writeFileSync(join(OUT, `${s.name.replace(/[^a-z0-9]+/gi, "-")}-${run}.goals.ndjson`), sc.goals.map((g) => JSON.stringify(g)).join("\n") + "\n");
+    writeStore(join(OUT, `${s.name.replace(/[^a-z0-9]+/gi, "-")}-${run}.goals.ndjson`), sc.goals.map((g) => JSON.stringify(g)).join("\n") + "\n");
     // The writer's programs, to count the ones the sandbox refused and why (G2, the writer's contract).
-    if (live) writeFileSync(join(OUT, `${s.name.replace(/[^a-z0-9]+/gi, "-")}-${run}.programs.ts`), meter.programs.map((p, i) => `// program ${i + 1} (${meter.model})\n${p}\n`).join("\n"));
+    if (live) writeStore(join(OUT, `${s.name.replace(/[^a-z0-9]+/gi, "-")}-${run}.programs.ts`), meter.programs.map((p, i) => `// program ${i + 1} (${meter.model})\n${p}\n`).join("\n"));
     await sc.close();
   }
 }
@@ -292,7 +293,7 @@ const summary = {
   localDrafts: tool === null ? null : { model: tool.model, calls: draftCalls },
 };
 await tool?.close();
-writeFileSync(join(OUT, "goal-scenes.json"), JSON.stringify({ summary, rows }, null, 2) + "\n");
+writeStore(join(OUT, "goal-scenes.json"), JSON.stringify({ summary, rows }, null, 2) + "\n");
 const md = [
   `# Goal scenes (${summary.writer})`,
   "",
@@ -303,6 +304,6 @@ const md = [
   `Summary: ${JSON.stringify(summary)}`,
   "",
 ].join("\n");
-writeFileSync(join(OUT, "goal-scenes.md"), md);
+writeStore(join(OUT, "goal-scenes.md"), md);
 console.log(`summary ${JSON.stringify(summary)}`);
 process.exitCode = summary.falseDone === 0 && summary.replayedMutations === 0 && summary.sends === 0 && (live || summary.oraclePassed === summary.scenes) ? 0 : 1;

@@ -8,6 +8,7 @@
 //
 //   /usr/bin/lockf -k ~/.long-run/locks/gui.lock env CARET_GUI_LOCK=held \
 //     node scripts/patterns-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR
+import { writeStore } from "../src/privacy/send.ts";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -220,6 +221,6 @@ result.fixtureOrReaderWasFront = foreign.length > 0;
 result.deferred = foreground === null ? null : `deferred: foreground (${JSON.stringify(foreground)})`;
 result.fixtureStderr = fixtureErr.split("\n").filter((l) => l.length > 0).slice(-5);
 result.ok = ok && frontAfter.pid === frontBefore.pid && foreign.length === 0;
-writeFileSync(join(OUT, "fixture-loop.json"), JSON.stringify(result, null, 2));
+writeStore(join(OUT, "fixture-loop.json"), JSON.stringify(result, null, 2));
 console.log(JSON.stringify({ ok: result.ok, error: result.error ?? null, verifiedCells: result.verifiedCells, prediction: result.prediction, frontBefore, frontAfter, frontChanged: result.frontChanged }, null, 1));
 process.exit(result.ok ? 0 : 1);

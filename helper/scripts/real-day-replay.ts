@@ -28,6 +28,7 @@
 // ROUTINE_MIN_PRECISION (gate.ts), and a skill is promoted after PROMOTE_AFTER clean runs (skills.ts). A
 // prediction cannot be scored from hashes (it reads the live window), so crossing times assume every repeat was
 // predicted right: an upper bound on how soon.
+import { writeStore } from "../src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -287,8 +288,8 @@ try {
     `Runs of 2+ like transfers into new fields of one destination: all ${loopsAll.length} (lengths ${JSON.stringify(loopsAll.map((l) => l.length))}); human-active ${loopsActive === null ? "n/a" : `${loopsActive.length} (lengths ${JSON.stringify(loopsActive.map((l) => l.length))})`}. A real loop offers its next round after round 2 matches round 1, so a run of 3 or more is where Caret would first have spoken, if the rows stepped evenly.`,
     "",
   ];
-  writeFileSync(a.out, md.join("\n") + "\n");
-  if (a.json !== undefined) writeFileSync(a.json, JSON.stringify({ copiedAt, transfers: transfers.length, liveRoutines, decisions, replays, loopsAll, loopsActive, thresholds: { BALANCED, EAGER, PROMOTE_AFTER, ROUTINE_MIN_PRECISION, BUNDLE_IDLE_MS, MIN_ROUTINE_STEPS, LOOP_GAP_MS } }, null, 2) + "\n");
+  writeStore(a.out, md.join("\n") + "\n");
+  if (a.json !== undefined) writeStore(a.json, JSON.stringify({ copiedAt, transfers: transfers.length, liveRoutines, decisions, replays, loopsAll, loopsActive, thresholds: { BALANCED, EAGER, PROMOTE_AFTER, ROUTINE_MIN_PRECISION, BUNDLE_IDLE_MS, MIN_ROUTINE_STEPS, LOOP_GAP_MS } }, null, 2) + "\n");
   process.stdout.write(md.join("\n") + "\n");
 } finally {
   rmSync(tmp, { recursive: true, force: true });

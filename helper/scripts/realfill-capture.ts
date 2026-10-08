@@ -10,6 +10,7 @@
 // It posts no input. It stops, closes everything it started and exits 3 as soon as HID idle drops under
 // 5 s, since then someone is using the Mac. Only processes it started are signalled; its temporary
 // directories are deleted at the end.
+import { writeStore } from "../src/privacy/send.ts";
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -263,13 +264,13 @@ const out = [...helper.model.windows.values()]
   // The served port changes from run to run; the replay names pages by path.
   .map((s) => JSON.parse(JSON.stringify(s).replaceAll(base, "http://127.0.0.1:8765")) as Snapshot);
 mkdirSync(dirname(OUT), { recursive: true });
-writeFileSync(OUT, out.map((s) => JSON.stringify(s)).join("\n") + "\n");
+writeStore(OUT, out.map((s) => JSON.stringify(s)).join("\n") + "\n");
 process.stderr.write(`wrote ${out.length} windows to ${OUT}: ${JSON.stringify(out.map((s) => `${s.window.title} (${s.nodes.length} nodes)`))}\n`);
-if (readerLog.trim() !== "") writeFileSync(`${OUT}.reader.log`, readerLog);
+if (readerLog.trim() !== "") writeStore(`${OUT}.reader.log`, readerLog);
 if (a.probe !== undefined) {
   for (const [pid, title, name] of [[chromePid, "Caret control probe", "probe-chrome"], [tePid, noteTitle(notes[0]?.file ?? ""), "probe-textedit"]] as const) {
     const r = spawnSync(resolve(a.probe), ["tree", String(pid), title], { encoding: "utf8", timeout: 30_000 });
-    writeFileSync(`${OUT}.${name}.json`, r.stdout || r.stderr);
+    writeStore(`${OUT}.${name}.json`, r.stdout || r.stderr);
   }
 }
 clearInterval(idleWatch);

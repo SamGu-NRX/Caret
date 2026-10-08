@@ -11,6 +11,7 @@
 // page control as the model shows it (a radio or Yes/No question by its question). Wrong fills must be 0. The Jev key
 // is TYPESAFE_API_KEY from the environment or CARET_ENV_FILE and is never printed. The snapshots hold public form
 // labels only; the note and every value are invented.
+import { writeStore, appendStore } from "../src/privacy/send.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -54,7 +55,7 @@ const askJev: AskJev = async (req) => {
   const r = await live(req);
   spent += r.costUsd;
   calls++;
-  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], `${JSON.stringify({ site: current, questions: storableRequest(req, Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers })}\n`);
+  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], `${JSON.stringify({ site: current, questions: storableRequest(req, Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers })}\n`);
   return r;
 };
 
@@ -161,6 +162,6 @@ const md = [
   "",
   ...results.flatMap((r) => [`### ${r.site}`, "", "| field | expected | proposed | verdict | why |", "|---|---|---|---|---|", ...r.scored.map((s) => `| ${s.label.slice(0, 90)} | ${s.expected} | ${s.proposed ?? ""} | ${s.verdict} | ${s.why ?? ""} |`), ""]),
 ];
-writeFileSync(join(OUT, "page-replay.md"), `${md.join("\n")}\n`);
-writeFileSync(join(OUT, "page-replay.json"), `${JSON.stringify({ calls, spent, results }, null, 1)}\n`);
+writeStore(join(OUT, "page-replay.md"), `${md.join("\n")}\n`);
+writeStore(join(OUT, "page-replay.json"), `${JSON.stringify({ calls, spent, results }, null, 1)}\n`);
 process.stderr.write(`wrote ${join(OUT, "page-replay.md")}; all: right ${count(all, "right")}/${fillable(all)}, wrong ${count(all, "wrong")}; $${spent.toFixed(4)}\n`);

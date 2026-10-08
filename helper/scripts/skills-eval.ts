@@ -10,6 +10,7 @@
 // --jev live sends only the naming question to Jev (CARET_ENV_FILE names the .env with the key); every other
 // question the helper asks (fill on focus) is answered "none" here, for free. It stops before spending more
 // than --max-usd.
+import { writeStore } from "../src/privacy/send.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -141,7 +142,7 @@ async function run(label: string, s: SkillStream, takeOffers: boolean): Promise<
     out.namingRequests = recorded.length;
     out.valuesInRequests = recorded.filter((r) => values.some((v) => JSON.stringify([r.state, r.questions]).includes(v))).length;
     out.skills = helper.memory.list("skill").flatMap((e) => (e.kind === "skill" ? [{ name: e.fields.name, runs: e.fields.runs, cleanRuns: e.fields.cleanRuns }] : []));
-    writeFileSync(join(OUT, `naming-requests-${label}.json`), JSON.stringify(recorded.map((r) => storableRequest(r, { state: r.state, questions: r.questions, snippets: r.snippets, charged: r.charged })), null, 2) + "\n");
+    writeStore(join(OUT, `naming-requests-${label}.json`), JSON.stringify(recorded.map((r) => storableRequest(r, { state: r.state, questions: r.questions, snippets: r.snippets, charged: r.charged })), null, 2) + "\n");
   } finally {
     out.wallSeconds = (Date.now() - t0) / 1000;
     helper.shutdown();
@@ -155,7 +156,7 @@ async function run(label: string, s: SkillStream, takeOffers: boolean): Promise<
 const planted = await run("planted", skillStream({ caretFrom: 4 }), true);
 const distractor = await run("distractor", skillStream({ seed: 23, distractor: true }), true);
 const results = { jev: a.jev, liveCalls, liveUsd: spent, planted, distractor };
-writeFileSync(join(OUT, "results.json"), JSON.stringify(results, null, 2) + "\n");
+writeStore(join(OUT, "results.json"), JSON.stringify(results, null, 2) + "\n");
 
 const lines = [
   `# B19 skills eval (Jev ${a.jev})`,
@@ -169,5 +170,5 @@ const lines = [
   "",
   a.jev === "live" ? `Live Jev: ${liveCalls} calls, $${spent.toFixed(5)} (cap $${MAX_USD}).` : "Jev: fake (first candidate).",
 ];
-writeFileSync(join(OUT, "summary.md"), lines.join("\n") + "\n");
+writeStore(join(OUT, "summary.md"), lines.join("\n") + "\n");
 console.log(lines.join("\n"));

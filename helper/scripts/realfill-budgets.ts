@@ -6,6 +6,7 @@
 //   node scripts/realfill-budgets.ts --out FILE.md [--consent]
 //
 // --consent gives the source the budget an Ask that names it gets (privacy.ts SnippetLedger consented).
+import { writeStore } from "../src/privacy/send.ts";
 import { Disclosure } from "../src/privacy/disclosure.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -78,5 +79,5 @@ const md = [
   "|---|---|---|---|---|---|---|---|---|",
   ...rows,
 ];
-writeFileSync(resolve(a.out), md.join("\n") + "\n");
+writeStore(resolve(a.out), md.join("\n") + "\n");
 process.stdout.write(md.join("\n") + "\n");

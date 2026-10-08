@@ -16,6 +16,7 @@
 //   withheld  an answer matched and the guards withheld it for the reason the corpus gives;
 //   missed    the corpus expects an answer and none was offered (withheld for another reason, or not matched);
 //   wrong     an answer offered that the corpus does not accept. The bar is 0.
+import { writeStore } from "../src/privacy/send.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -190,7 +191,7 @@ const lines = [
   "| --- | --- | --- | --- | --- | --- |",
   ...rows.map((r) => `| ${r.pass} | ${r.field} | ${r.expect} | ${r.got} | ${r.outcome} | ${r.says ?? ""} |`),
 ];
-writeFileSync(resolve(out, "report.md"), `${lines.join("\n")}\n`);
-writeFileSync(resolve(out, "rows.json"), JSON.stringify({ rows, requests, spentUsd: spent, inputTokens: tokens }, null, 2));
+writeStore(resolve(out, "report.md"), `${lines.join("\n")}\n`);
+writeStore(resolve(out, "rows.json"), JSON.stringify({ rows, requests, spentUsd: spent, inputTokens: tokens }, null, 2));
 console.log(lines.slice(0, 6 + PASSES + 2).join("\n"));
 if (count("wrong") > 0) process.exitCode = 1;

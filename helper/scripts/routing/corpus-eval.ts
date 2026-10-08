@@ -13,6 +13,7 @@
 //
 // --host-writes on is the design: a host that takes write decisions. off is today's main.ts, where write is not legal.
 // The output holds the corpus's synthetic text and the routers' answers; no key is ever printed.
+import { writeStore, appendStore } from "../../src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -118,7 +119,7 @@ const askJev: AskJev = async (req: JevRequest) => {
   const router = req.retry429 === false;
   const which = router && ("outcome" in req.questions || "task" in req.questions) ? "router1" : router && "route" in req.questions ? "router2" : "producer";
   const r = await jevClient(req);
-  if (a.dump && which !== "producer") appendFileSync(join(OUT, "router-requests.ndjson"), `${JSON.stringify({ moment: current, which, ...storableRequest(req, { state: req.state, questions: req.questions }), answers: r.answers })}\n`);
+  if (a.dump && which !== "producer") appendStore(join(OUT, "router-requests.ndjson"), `${JSON.stringify({ moment: current, which, ...storableRequest(req, { state: req.state, questions: req.questions }), answers: r.answers })}\n`);
   spend.usd += r.costUsd;
   spend.calls[which]++;
   if (which === "producer") spend.producerTokens.push(r.inputTokens);
@@ -443,6 +444,6 @@ const md = [
   "",
 ];
 const stem = `corpus-${hostWrites ? "on" : "off"}${a["ask-maker"] === "jev" ? "-askjev" : ""}${a["real-clock"] ? "-clock" : ""}`;
-writeFileSync(join(OUT, `${stem}.md`), md.join("\n"));
-writeFileSync(join(OUT, `${stem}.json`), `${JSON.stringify({ hostWrites, spend, per, rows }, null, 2)}\n`);
+writeStore(join(OUT, `${stem}.md`), md.join("\n"));
+writeStore(join(OUT, `${stem}.json`), `${JSON.stringify({ hostWrites, spend, per, rows }, null, 2)}\n`);
 process.stdout.write(`${md.slice(0, 4).join("\n")}\n`);

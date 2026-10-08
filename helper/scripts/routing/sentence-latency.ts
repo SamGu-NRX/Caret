@@ -15,6 +15,7 @@
 //   node scripts/routing/sentence-latency.ts --out DIR [--mode on|off] [--key-ms 60] [--spend-cap 0.005] [--label x] [--dump]
 //
 // --dump writes every router request and its answer to router-requests[-label].ndjson in --out (the script's own text).
+import { writeStore, appendStore } from "../../src/privacy/send.ts";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,7 +77,7 @@ const askJev: AskJev = async (req) => {
     routerCalls++;
     const r = await live(req);
     spend += r.costUsd;
-    if (a.dump) appendFileSync(join(a.out as string, `router-requests${a.label === "" ? "" : `-${a.label}`}.ndjson`), `${JSON.stringify({ at: performance.now(), ...storableRequest(req, { state: req.state, questions: req.questions }), answers: r.answers })}\n`);
+    if (a.dump) appendStore(join(a.out as string, `router-requests${a.label === "" ? "" : `-${a.label}`}.ndjson`), `${JSON.stringify({ at: performance.now(), ...storableRequest(req, { state: req.state, questions: req.questions }), answers: r.answers })}\n`);
     return r;
   }
   // The event card's own questions: attend yes. Anything else: the first option.
@@ -200,7 +201,7 @@ const summary = {
   calendarOffers: calendar.size,
   eventCards: rows.filter((r) => r.event).map((r) => ({ sentence: r.sentence, calendarMs: r.calendarMs })),
 };
-writeFileSync(join(a.out, `latency-${a.mode}${a.label === "" ? "" : `-${a.label}`}.json`), JSON.stringify({ ...summary, rows, decisions }, null, 2) + "\n");
+writeStore(join(a.out, `latency-${a.mode}${a.label === "" ? "" : `-${a.label}`}.json`), JSON.stringify({ ...summary, rows, decisions }, null, 2) + "\n");
 console.log(JSON.stringify(summary));
 helper.shutdown();
 host.close();

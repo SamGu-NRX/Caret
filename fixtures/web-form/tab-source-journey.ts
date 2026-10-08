@@ -17,6 +17,7 @@
 // DevTools pipe, so the worker's listeners see the same activation events a click on a tab gives. The bridge and its
 // test host must already be built (accept.ts builds them). Canned Jev answers each fill question with F1's expected
 // value when a candidate quotes it exactly; live Jev is TypeSafe's, under --spend-limit. Exit 0 only when every check holds.
+import { writeStore } from "../../helper/src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -195,7 +196,7 @@ async function main(): Promise<number> {
   const cftApp = exe.slice(0, exe.indexOf(".app/") + 4);
   const service = `dev.caret.w3test.${randomBytes(4).toString("hex")}`;
   const secretFile = join(sockDir, "launch-secret");
-  writeFileSync(secretFile, secret.toString("hex"), { mode: 0o600 });
+  writeStore(secretFile, secret.toString("hex"), { mode: 0o600 });
   await launchdJob(tmp, service, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], join(tmp, "testhost.log"));
   const profile = join(tmp, "profile");
   writeManifest(join(profile, "NativeMessagingHosts"), extensionId, bridge);
@@ -316,8 +317,8 @@ async function main(): Promise<number> {
   check("rule 2: never after the tab left closed", (await direct(mailTab.id)).outcome === "notAllowed");
 
   const report = { at: new Date().toISOString(), jev: args.jev, engine: decide.says, spentUsd: spent, calls, page: PAGE, checks, oracle: { right: scored.right, wrong: scored.wrong, missed: scored.missed, submits: oracle.submits.length, strayPresses: oracle.strayPresses().length, offsite: oracle.offsite().length } };
-  writeFileSync(join(OUT, "journey.json"), `${JSON.stringify(report, null, 2)}\n`);
-  writeFileSync(join(OUT, "journey.log"), `${lines.join("\n")}\n`);
+  writeStore(join(OUT, "journey.json"), `${JSON.stringify(report, null, 2)}\n`);
+  writeStore(join(OUT, "journey.log"), `${lines.join("\n")}\n`);
   const failed = checks.filter((c) => !c.ok);
   say(`${checks.length - failed.length}/${checks.length} checks passed; ${decide.says}, $${spent.toFixed(4)}`);
   return failed.length === 0 ? 0 : 1;
@@ -332,6 +333,6 @@ main()
   .catch(async (e: unknown) => {
     say(`run failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
     await cleanup();
-    if (args.out !== undefined) writeFileSync(join(args.out, "journey.log"), `${lines.join("\n")}\n`);
+    if (args.out !== undefined) writeStore(join(args.out, "journey.log"), `${lines.join("\n")}\n`);
     process.exit(1);
   });

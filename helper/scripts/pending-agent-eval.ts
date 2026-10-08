@@ -10,6 +10,7 @@
 //
 // Writes results.json and summary.md. The key is read when a request is made and never printed. Live Jev stops
 // before spending more than --max-usd (scripts/spend.ts); the questions past it are rows with got "error".
+import { writeStore } from "../src/privacy/send.ts";
 import { minted } from "../test/minted.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -188,7 +189,7 @@ for (const c of JOB_CASES) {
   }
 }
 
-writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), reps: REPS, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, rows }, null, 2)}\n`);
+writeStore(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), reps: REPS, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, rows }, null, 2)}\n`);
 const right = (form: "b10" | "b6", id?: string): string => {
   const rs = rows.filter((r) => r.form === form && (id === undefined || r.case === id || (id === "agent" && r.app !== "Fixture job window")));
   return `${rs.filter((r) => r.got === r.expect).length} of ${rs.length}`;
@@ -221,4 +222,4 @@ const md = [
   ...rows.map((r) => `| ${r.app} | ${r.case} | ${r.form} | ${r.chars} | ${r.expect} | ${r.got} | ${r.finished} | ${r.waiting} | ${r.confidence.toFixed(2)} |`),
   "",
 ];
-writeFileSync(join(OUT, "summary.md"), md.join("\n"));
+writeStore(join(OUT, "summary.md"), md.join("\n"));

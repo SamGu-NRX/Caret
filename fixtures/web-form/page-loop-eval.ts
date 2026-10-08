@@ -37,6 +37,7 @@
 // POST count is 0 (tasks: no oracle wrong, submit, stray press, off-site request or probe error, every undo restored,
 // every page previewed). The bridge and its test host must already be built (accept.ts builds them); the extension is
 // rebuilt here. Keys come from CARET_ENV_FILE and are never printed.
+import { writeStore, appendStore } from "../../helper/src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -533,7 +534,7 @@ const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   const r = await decide.ask(req);
   spent += r.costUsd;
-  if (args["log-jev"] !== undefined) appendFileSync(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: storableRequest(req, Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
+  if (args["log-jev"] !== undefined) appendStore(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: storableRequest(req, Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
   calls.push({ page: page?.id ?? "", stage, inputTokens: r.inputTokens, latencyMs: r.latencyMs, costUsd: r.costUsd });
   return r;
 };
@@ -677,7 +678,7 @@ async function main(): Promise<number> {
   // the bridge looks up is unchanged.
   const label = LAUNCHD_PREFIX === undefined ? service : `${LAUNCHD_PREFIX}w3test.${suffix}`;
   const secretFile = join(sockDir, "launch-secret");
-  writeFileSync(secretFile, secret.toString("hex"), { mode: 0o600 });
+  writeStore(secretFile, secret.toString("hex"), { mode: 0o600 });
   await launchdJob(tmp, label, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], join(tmp, "testhost.log"));
   const profile = join(tmp, "profile");
   writeManifest(join(profile, "NativeMessagingHosts"), extensionId, bridge);
@@ -1115,7 +1116,7 @@ async function main(): Promise<number> {
     }
     // The resume the user chooses in page 3's attach row: the one the recruiter's email names (tasks/expect/wizard-3.json).
     const resume = join(tmp, "ines-vandermeer-resume-2026.pdf");
-    writeFileSync(resume, "%PDF-1.4\n% synthetic resume for the P3 wizard journey\n");
+    writeStore(resume, "%PDF-1.4\n% synthetic resume for the P3 wizard journey\n");
     const out: { page: string; arrived: string; previewMs: number | null; steps: number; attach: string | null; outcome: string; right: number; eligible: number; wrong: string[]; missed: string[]; note: string }[] = [];
     desk(wiz[0] as Page);
     let goalId: string | null = null;
@@ -1216,9 +1217,9 @@ async function main(): Promise<number> {
       "",
       ...warnings.filter((l) => /^goal |^fill/u.test(l)).slice(-30).map((l) => `- ${cell(l, 300)}`),
     ];
-    writeFileSync(join(OUT, drop ? "wizard-drop.md" : "wizard.md"), lines.join("\n") + "\n");
+    writeStore(join(OUT, drop ? "wizard-drop.md" : "wizard.md"), lines.join("\n") + "\n");
     // R1: the same rows as data, with each decision request's latency, for the slow runner's scoring.
-    writeFileSync(join(OUT, drop ? "wizard-drop.json" : "wizard.json"), `${JSON.stringify({ engine: decide.says, drop, labelled: LABELLED, attached: attached ?? null, submits: sum.submits, presses, replayed: replayed.length, rows: out, calls }, null, 1)}\n`);
+    writeStore(join(OUT, drop ? "wizard-drop.json" : "wizard.json"), `${JSON.stringify({ engine: decide.says, drop, labelled: LABELLED, attached: attached ?? null, submits: sum.submits, presses, replayed: replayed.length, rows: out, calls }, null, 1)}\n`);
     const wrong = out.reduce((n, r) => n + r.wrong.length, 0);
     const failed = [
       ...out.filter((r) => r.previewMs === null || r.previewMs > 2000).map((r) => `${r.page}: preview ${r.previewMs === null ? "none" : `${Math.round(r.previewMs)} ms`}`),
@@ -1293,7 +1294,7 @@ async function main(): Promise<number> {
       `- F1 task pages: ${group((id) => TASK_PAGES.some((t) => t.name === id))}`,
       `- search-only and login: ${group((id) => id.startsWith("p3-"))}`,
     ];
-    writeFileSync(join(OUT, "ready-on-load.md"), lines.join("\n") + "\n");
+    writeStore(join(OUT, "ready-on-load.md"), lines.join("\n") + "\n");
     const bad = out.filter((o) => o.id.startsWith("p3-") && o.requests > 0);
     say(`ready on load: ${lines.slice(-4).join("; ")}${bad.length > 0 ? `; FAIL: ${bad.map((o) => o.id).join(", ")} sent Jev requests` : ""}`);
     return bad.length === 0 ? 0 : 1;
@@ -1478,8 +1479,8 @@ function writeReport(rows: readonly Row[], presses: number): void {
       ...rows.map((r) => `| ${r.id} | ${r.controls} | ${fmt(r.goal?.previewMs ?? null)} | ${r.goal?.steps ?? "-"} | ${r.goal?.left ?? "-"} | ${r.goal?.tabs ?? "-"} | ${r.goal === null ? "-" : `${r.goal.eligibleWritten} / ${r.goal.eligible}`} | ${fmt(r.goal?.revealMs ?? null)} | ${r.goal?.outcome ?? "-"} | ${r.goal === null ? "-" : r.goal.restored ? "restored" : r.goal.notRestored.join("; ").replace(/\|/g, "/").slice(0, 120)} | ${fmt(r.pageMs)} | ${r.wrong.length === 0 ? 0 : r.wrong.join("; ").replace(/\|/g, "/")} | ${(r.error ?? "").replace(/\|/g, "/").slice(0, 160)} |`),
     );
   }
-  writeFileSync(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
-  writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, null, 1)}\n`);
+  writeStore(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
+  writeStore(join(OUT, "page-loop.json"), `${JSON.stringify({ jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, null, 1)}\n`);
   say(`wrote ${join(OUT, "page-loop.md")}`);
 }
 
@@ -1542,8 +1543,8 @@ function writeTaskReport(rows: readonly Row[], presses: number, sum: ReturnType<
     "|---|---|---|---|---|",
     ...dis.map((d) => `| ${d.page} | ${cell(d.field)} | ${cell(d.value, 60)} | ${d.verify} | ${d.key} |`),
   ];
-  writeFileSync(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
-  writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ suite: "tasks", jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, presses, oracle: sum, cannedPicks: Object.fromEntries([...taskAsks].map(([k, a]) => [k, Object.fromEntries(a.picked)])), rows, timings, calls }, null, 1)}\n`);
+  writeStore(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
+  writeStore(join(OUT, "page-loop.json"), `${JSON.stringify({ suite: "tasks", jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, presses, oracle: sum, cannedPicks: Object.fromEntries([...taskAsks].map(([k, a]) => [k, Object.fromEntries(a.picked)])), rows, timings, calls }, null, 1)}\n`);
   say(`wrote ${join(OUT, "page-loop.md")}`);
 }
 

@@ -7,6 +7,7 @@
 // to go on if access is already granted: then the adapter would create a calendar here, and that run
 // belongs in the VM (evidence/screen/b16/vm-job). Without access the adapter answers every verb blocked
 // before it creates an EventKit store, and nothing ever asks for access.
+import { writeStore } from "../src/privacy/send.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,7 +79,7 @@ const md = [
   `- Activity: ${JSON.stringify({ state: helper.tasks.get("event-1")?.state, cause: helper.tasks.get("event-1")?.cause })}`,
   `- Passed: ${ok}`,
 ];
-writeFileSync(join(OUT, "calendar-refusal-host.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "reader.log"), readerLog);
+writeStore(join(OUT, "calendar-refusal-host.md"), md.join("\n") + "\n");
+writeStore(join(OUT, "reader.log"), readerLog);
 console.log(md.join("\n"));
 process.exit(ok ? 0 : 1);

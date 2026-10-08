@@ -14,6 +14,7 @@
 // the fixture presses Send itself (B20 experiment, press-explore-results.log).
 //
 //   gui.sh 20 env CARET_GUI_LOCK=held node scripts/press-learn-eval.ts --bin ../apps/screen-reader/.build/debug --clicker PATH --out DIR [--foreground]
+import { writeStore } from "../src/privacy/send.ts";
 import { execFile, spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -259,6 +260,6 @@ result.presses = presses;
 result.verbs = Object.fromEntries([...new Set(verbs)].map((v) => [v, verbs.filter((x) => x === v).length]));
 result.log = log.slice(-20);
 result.ok = ok;
-writeFileSync(join(OUT, "press-learn.json"), JSON.stringify(result, null, 2) + "\n");
+writeStore(join(OUT, "press-learn.json"), JSON.stringify(result, null, 2) + "\n");
 console.log(JSON.stringify({ ok, error: result.error ?? null, checks, clicks }, null, 1));
 process.exit(ok ? 0 : 1);

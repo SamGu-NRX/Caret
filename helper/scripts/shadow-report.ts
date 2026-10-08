@@ -6,6 +6,7 @@
 // The live store is never opened: `sqlite3` makes a read-only backup into a private temp directory,
 // which is read and then deleted. TIME is anything Date.parse accepts, or milliseconds. Active hours
 // come from `pmset -g log` unless a saved log is given, or --no-activity.
+import { writeStore } from "../src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,8 +71,8 @@ try {
     activeSpans = humanActiveSpans(log);
   }
   const report = opportunityReport({ episodes, transfers, counts, coverage, activeSpans });
-  writeFileSync(need("out"), renderOpportunity(report));
-  if (a.json !== undefined) writeFileSync(a.json, `${JSON.stringify(report, null, 2)}\n`);
+  writeStore(need("out"), renderOpportunity(report));
+  if (a.json !== undefined) writeStore(a.json, `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(
     `entries ${report.all.entries}, findable ${report.all.findable}; active hours ${report.coverage.activeHours?.toFixed(2) ?? "unknown"}; per active hour ${report.perActiveHour?.toFixed(2) ?? "unknown"}\n`,
   );

@@ -15,6 +15,7 @@
 //   3. undo restores the first field (the verified prefix) through the element its write recorded, and the journal
 //      row is gone;
 //   4. the next trigger is offered with Tab, not run on its own, and the restarted helper is still running.
+import { writeStore } from "../src/privacy/send.ts";
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -292,8 +293,8 @@ try {
   say(`ERROR ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
 } finally {
   if (child !== null && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-  writeFileSync(join(OUT, "crash-summary.json"), `${JSON.stringify({ checks, failure: failure === null ? null : String(failure), at: new Date().toISOString() }, null, 2)}\n`);
-  writeFileSync(join(OUT, "crash-log.txt"), `${[...log, "--- child stderr ---", ...childLog].join("\n")}\n`);
+  writeStore(join(OUT, "crash-summary.json"), `${JSON.stringify({ checks, failure: failure === null ? null : String(failure), at: new Date().toISOString() }, null, 2)}\n`);
+  writeStore(join(OUT, "crash-log.txt"), `${[...log, "--- child stderr ---", ...childLog].join("\n")}\n`);
   rmSync(work, { recursive: true, force: true });
 }
 const ok = failure === null && checks.length === 8 && checks.every((c) => c.pass);

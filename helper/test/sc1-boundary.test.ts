@@ -87,6 +87,15 @@ describe("the I/O boundary: every POST body and every request store is checked a
   };
   const all = (): Map<string, string> => new Map([...read(["src", "scripts"]), ...fixtureScripts()]);
 
+  /** A text write in an evaluation script (helper/scripts, the fixture harness's eval scripts) that is not writeStore or appendStore. */
+  const rawScriptWrites = (sources: Map<string, string>): string[] =>
+    [...sources].filter(([file]) => file.startsWith("scripts/") || /fixtures\/web-form\/(?:page-loop-eval|tab-source-journey)\.ts$/u.test(file)).flatMap(([file, src]) => (/\b(?:writeFileSync|appendFileSync|createWriteStream)\(/u.test(src) ? [`${file}: a store that is not writeStore or appendStore`] : []));
+
+  it("finds every script's text store going through send.ts, so a response is kept with its formats withheld", () => {
+    expect(rawScriptWrites(all())).toEqual([]);
+    expect(rawScriptWrites(new Map([...all(), ["scripts/new-eval.ts", "writeFileSync(join(OUT, 'drafts.json'), JSON.stringify(drafts));"]]))).toEqual(["scripts/new-eval.ts: a store that is not writeStore or appendStore"]);
+  });
+
   it("finds every POST body sealed and every request store checked", () => {
     expect(breaks(all())).toEqual([]);
   });

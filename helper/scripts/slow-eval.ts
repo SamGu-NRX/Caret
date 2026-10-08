@@ -16,6 +16,7 @@
 //   STOPPED              written on a stop a person must clear (cost, auth, billing, the cap, a refused answer);
 //                        slow-eval.sh will not start while it exists
 // Fixture text only: every set runs on fixture pages, notes and memory, and GW1's guard refuses anything else.
+import { writeStore, appendStore } from "../src/privacy/send.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -140,7 +141,7 @@ const eventsFile = (s: EvalSet, pass: number): string => join(setDir(s), `pass-$
 const STATUS = join(DIR, "status.json");
 const writeAtomic = (file: string, body: string): void => {
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, body);
+  writeStore(tmp, body);
   renameSync(tmp, file);
 };
 const log = (line: string): void => void process.stdout.write(`${new Date().toISOString()} ${line}\n`);
@@ -335,7 +336,7 @@ const runner = new Runner(SETS, {
   say: log,
   finished: (set, st) => {
     const line = summaryLine(set, st);
-    appendFileSync(join(DIR, "summary.log"), `${new Date().toISOString()} ${line}\n`);
+    appendStore(join(DIR, "summary.log"), `${new Date().toISOString()} ${line}\n`);
     log(line);
     log(`cache entries by engine | model | answered by: ${cacheEngines()}`);
     writeResults(status);

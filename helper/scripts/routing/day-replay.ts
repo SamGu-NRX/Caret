@@ -25,6 +25,7 @@
 //     so cooldown and coalescing are counted, not assumed.
 // Cost per call is Jev's price ($0.042 per million input tokens) times the mean input tokens the corpus run measured
 // for router and fill requests.
+import { writeStore } from "../../src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -262,8 +263,8 @@ try {
     `| Jev cost, at most | $${(usd(before.fillCalls.high, fillTokens) / hours).toFixed(4)} | ${cols.map((c) => `$${((usd(c.a.routerCalls, routerTokens) + usd(c.a.fillCalls.high, fillTokens)) / hours).toFixed(4)}`).join(" | ")} |`,
     "",
   ];
-  writeFileSync(a.out as string, md.join("\n"));
-  if (a.json !== undefined) writeFileSync(a.json, `${JSON.stringify({ hours, focuses, focusByDay, entries: activeEpisodes.length, findable, transfers: activeTransfers.length, groups: groups.length, coordinator: coord.stats, before, after: cols, routerTokens, fillTokens, latency }, null, 2)}\n`);
+  writeStore(a.out as string, md.join("\n"));
+  if (a.json !== undefined) writeStore(a.json, `${JSON.stringify({ hours, focuses, focusByDay, entries: activeEpisodes.length, findable, transfers: activeTransfers.length, groups: groups.length, coordinator: coord.stats, before, after: cols, routerTokens, fillTokens, latency }, null, 2)}\n`);
   process.stdout.write(md.join("\n"));
 } finally {
   rmSync(tmp, { recursive: true, force: true });

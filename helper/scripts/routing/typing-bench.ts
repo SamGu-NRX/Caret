@@ -5,6 +5,7 @@
 // the helper's own time is measured.
 //
 //   node scripts/routing/typing-bench.ts [--keys N] [--out FILE.json]
+import { writeStore } from "../../src/privacy/send.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -107,4 +108,4 @@ const summary = {
   routedSession: routedInfo,
 };
 process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
-if (a.out !== undefined) writeFileSync(a.out, `${JSON.stringify(summary, null, 2)}\n`);
+if (a.out !== undefined) writeStore(a.out, `${JSON.stringify(summary, null, 2)}\n`);

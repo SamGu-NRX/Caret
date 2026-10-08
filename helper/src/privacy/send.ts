@@ -3,7 +3,9 @@
 // dequeued). Each checks the request as it leaves: every string minted for it, in its shape, and no app or site
 // switched off since it was built (Disclosure.verify). So a request built before a switch-off never reaches a model or a
 // disk, however long it waited. test/sc1-boundary.test.ts holds every POST body and every request store in src to them.
+import { appendFileSync, writeFileSync, type WriteFileOptions } from "node:fs";
 import { verifySent, verifyWriterInput, withheldDeep } from "./disclosure.ts";
+import { withholdValues } from "./exclude.ts";
 
 /** A request on its way out: the request (its Disclosure travels with it) and the body it verifies as. */
 export type Outbound =
@@ -32,4 +34,19 @@ export function sealedBody(o: Outbound, payload?: unknown): string {
 export function storedLine(o: Outbound, kept: unknown): string {
   check(o);
   return `${JSON.stringify(withheldDeep(kept))}\n`;
+}
+
+/**
+ * PV2 (the lead's ruling on local and provider responses): the only way an evaluation script writes a text file. What a
+ * model answered, a local model drafted or a run reported is kept with every value in a format Caret never carries
+ * withheld (privacy/exclude.ts withholdValues), whatever the file. A request in it goes through storedLine or
+ * storableRequest first. test/sc1-boundary.test.ts holds every script's text write to these.
+ */
+export function writeStore(path: string, text: string, o?: WriteFileOptions): void {
+  writeFileSync(path, withholdValues(text), o);
+}
+
+/** writeStore's append. */
+export function appendStore(path: string, text: string, o?: WriteFileOptions): void {
+  appendFileSync(path, withholdValues(text), o);
 }

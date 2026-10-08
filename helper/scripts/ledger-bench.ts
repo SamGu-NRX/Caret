@@ -18,6 +18,7 @@
 // as they do off the reader's socket, so their strings are flat as in the helper. Writes results.json
 // and summary.md.
 // Every text is invented.
+import { writeStore } from "../src/privacy/send.ts";
 import { Disclosure } from "../src/privacy/disclosure.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { loadavg } from "node:os";
@@ -197,7 +198,7 @@ for (const mode of chosen) {
   process.stdout.write(`${mode}: first take p50 ${row.firstWallMs.p50} p95 ${row.firstWallMs.p95} max ${row.firstWallMs.max} ms; 40 takes p95 ${row.allWallMs.p95} ms; arrival p95 ${row.arrivalMs?.p95 ?? "-"} max ${row.arrivalMs?.max ?? "-"} ms\n`);
 }
 const loadAfter = loadavg();
-writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), rounds: ROUNDS, windows: WINDOWS, lines: LINES, loadavg: { before: load, after: loadAfter }, rows }, null, 2)}\n`);
+writeStore(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), rounds: ROUNDS, windows: WINDOWS, lines: LINES, loadavg: { before: load, after: loadAfter }, rows }, null, 2)}\n`);
 const md = [
   "# Disclosure on eight windows of 5,000 lines",
   "",
@@ -211,4 +212,4 @@ const md = [
   ),
   "",
 ];
-writeFileSync(join(OUT, "summary.md"), md.join("\n"));
+writeStore(join(OUT, "summary.md"), md.join("\n"));

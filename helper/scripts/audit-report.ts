@@ -6,6 +6,7 @@
 // half an active minute. --pmset reads `pmset -g log` for powerd's hardware-input spans in the run.
 // The CPU file holds `ps` samples, one per line: "<epoch s> <pid> <%cpu> <rss KB> <cpu time>", with
 // cpu time as [[h:]m]m:ss.cc. Mean CPU per process is the change in cpu time over the change in wall time.
+import { writeStore } from "../src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -65,6 +66,6 @@ if (a.pmset) {
   activity.powerdMinutes = spans.reduce((n, x) => n + (x.to - x.from), 0) / 60_000;
 }
 
-writeFileSync(join(a["out-dir"], "marker-audit.md"), renderMarkerAudit(summary, cpu, activity));
-writeFileSync(join(a["out-dir"], "fill-readiness.md"), renderFillReadiness(summary));
-writeFileSync(join(a["out-dir"], "census.md"), renderCensus(summary));
+writeStore(join(a["out-dir"], "marker-audit.md"), renderMarkerAudit(summary, cpu, activity));
+writeStore(join(a["out-dir"], "fill-readiness.md"), renderFillReadiness(summary));
+writeStore(join(a["out-dir"], "census.md"), renderCensus(summary));
