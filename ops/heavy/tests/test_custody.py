@@ -728,6 +728,23 @@ class AnOwnerThatExitedIsStartedAgain(unittest.TestCase):
         self.assertEqual(self.launchctl_calls(procs.ABSENT, None), ["bootstrap"])
 
 
+class TheSigtermHandlerOnlySetsAFlag(unittest.TestCase):
+    """The owner's SIGTERM handler does no I/O: a handler that logged could run while the main loop was writing to
+    stderr, and a real run hit "reentrant call inside <_io.BufferedWriter name='<stderr>'>". The loop logs it, once."""
+
+    def test_the_handler_sets_the_flag_and_the_loop_logs_it(self):
+        owner = recovery.Owner.__new__(recovery.Owner)
+        owner.terminating = owner.termination_logged = False
+        owner.log = mock.Mock()
+        owner._on_term(signal.SIGTERM, None)
+        self.assertTrue(owner.terminating)
+        owner.log.assert_not_called()
+        owner._log_termination()
+        owner._log_termination()
+        self.assertEqual(owner.log.call_count, 1)
+        self.assertIn("SIGTERM", owner.log.call_args[0][0])
+
+
 class SupervisorErrorWithoutAnOwner(Custody):
     def test_an_error_with_no_confirmed_owner_keeps_the_locks_until_one_holds_them(self):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3),

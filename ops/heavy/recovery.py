@@ -510,6 +510,9 @@ class Owner:
         self.resources, self.watches = {}, {}
         self.state = "waiting"
         self.term_at = self.next_kill = self.next_retry = None
+        # Only the journal's CLEAN ends custody, so a TERM does not stop the owner. But launchd's bootout sends one before
+        # its SIGKILL: from then on the owner says it is terminating, so nobody hands custody to it.
+        self.terminating = self.termination_logged = False
         self.lease_renewed = time.monotonic()
         self.clients = {}
 
@@ -596,14 +599,7 @@ class Owner:
         listener.bind(self.sock_path)
         os.chmod(self.sock_path, 0o600)
         listener.listen(8)
-        # Only the journal's CLEAN ends custody, so a TERM does not stop the owner. But launchd's bootout sends one before
-        # its SIGKILL: from then on the owner says it is terminating, so nobody hands custody to it.
-        self.terminating = False
-
-        def on_term(_signum, _frame):
-            self.terminating = True
-            self.log("received SIGTERM; reporting terminating until launchd stops this process")
-        signal.signal(signal.SIGTERM, on_term)
+        signal.signal(signal.SIGTERM, self._on_term)
         self.log("listening on {} (state {})".format(self.sock_path, self.state))
         while not self.finished:
             # Custody ends only with CLEAN: any other failure is logged and the loop carries on, holding the locks.
@@ -615,6 +611,7 @@ class Owner:
                         self.clients[conn] = Conn(conn)
                     else:
                         self._serve(sock)
+                self._log_termination()
                 self._tick()
             except Exception as ex:  # noqa: BLE001
                 self.log("loop error, retrying: {!r}".format(ex))
@@ -627,6 +624,15 @@ class Owner:
         if self.supervisor is None or same_process(self.probes, self.supervisor) is not True:
             self._bootout_self()
         return 0
+
+    def _on_term(self, _signum, _frame):
+        # No I/O here: the handler can run while the loop is writing to stderr, and a second write there raises.
+        self.terminating = True
+
+    def _log_termination(self):
+        if self.terminating and not self.termination_logged:
+            self.termination_logged = True
+            self.log("received SIGTERM; reporting terminating until launchd stops this process")
 
     def _bootout_self(self):
         subprocess.Popen(["/bin/launchctl", "bootout", "gui/{}/{}".format(os.getuid(), self.label)],
@@ -831,7 +837,7 @@ class Owner:
             return {"ok": False, "results": results, "lease": lease}
         if op == "status":
             return {"ok": True, "state": self.state, "locks": sorted(self.fds), "token": self.token is not None,
-                    "terminating": getattr(self, "terminating", False)}
+                    "terminating": self.terminating}
         raise ValueError("unknown op {!r}".format(op))
 
     def _replay(self, sock, msg):
