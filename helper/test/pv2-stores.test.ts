@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cachedAsk } from "../src/engines/decide/cache.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
-import { storableRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
+import { sealRequest, storedRecord, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import { Disclosure, OutOfShape, storable, UnmintedText } from "../src/privacy/disclosure.ts";
 
 let dir = "";
@@ -68,9 +68,20 @@ describe("PV2 Q2: what a store keeps of a request", () => {
 
   it("an evaluation's excerpt is kept only for a request in shape, with its formats withheld", () => {
     const r = withCard();
-    expect(storableRequest(r, (f) => ({ state: f.state }))).toEqual({ state: { task: "Order note: card [withheld]" } });
-    expect(() => storableRequest(unminted(), () => ({}))).toThrow(UnmintedText);
+    expect(storedRecord(sealRequest(r), (f) => ({ state: f.state }))).toEqual({ state: { task: "Order note: card [withheld]" } });
+    expect(() => sealRequest(unminted())).toThrow(UnmintedText);
     const d = new Disclosure([]);
     expect(() => storable({ purpose: "route.judge", disclosure: d }, { state: { notes: d.own("x") } }, {})).toThrow(OutOfShape);
+  });
+});
+
+describe("PV2: a store records the copy that was sent, never the live request", () => {
+  it("records 'before' when the live state became 'after' while the request was pending", () => {
+    const d = new Disclosure([]);
+    const req: JevRequest = d.seal({ purpose: "route.judge" as const, state: { task: d.own("before") }, questions: {}, snippets: [], charged: {} });
+    const sent = sealRequest(req);
+    (req as { state: unknown }).state = { task: d.own("after") };
+    expect(storedRecord(sent, (f) => f.state)).toEqual({ task: "before" });
+    expect(JSON.stringify(sent.asked.state)).toBe(JSON.stringify({ task: "before" }));
   });
 });

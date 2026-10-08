@@ -31,7 +31,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { storableRequest, type AskJev } from "../src/fill/jev.ts";
+import { sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { cannedReply } from "../src/engines/decide/canned.ts";
 import type { FillTrace } from "../src/fill/fill.ts";
@@ -260,12 +260,14 @@ const askJev: AskJev = async (req) => {
   requestsBy.set(current, (requestsBy.get(current) ?? 0) + 1);
   const qs = Object.fromEntries(Object.entries({ ...req.questions, ...req.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]));
   const hit = a.replay === undefined ? undefined : recorded.get(replayKey(current, qs))?.shift();
+  // Sealed before it is sent: the engine is asked, and the log written, from this frozen copy (PV2).
+  const sent = sealRequest(req);
   if (a.replay !== undefined) replay[hit === undefined ? "misses" : "hits"]++;
-  const r = hit === undefined ? await decide.ask(req) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
+  const r = hit === undefined ? await decide.ask(sent.asked) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   jevSpent += r.costUsd;
   jevModels.add(r.model);
   requestMs.push(r.latencyMs);
-  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ ask: current, questions: storableRequest(req, (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
+  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ ask: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
   return r;
 };
 // Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.

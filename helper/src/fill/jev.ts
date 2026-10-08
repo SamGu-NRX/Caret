@@ -291,9 +291,28 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
  */
 export { frozenRequest };
 
-export function storableRequest<T>(req: JevRequest, build: (frozen: JevRequest) => T): T {
+export interface SealedRequest {
+  readonly sealed: Sealed;
+  /** The request as the sealed copy says it (frozenRequest): what is sent, and what a store records. */
+  readonly asked: JevRequest;
+}
+
+/**
+ * PV2: seals a request before it is sent (privacy/send.ts seal): what an evaluation sends is `asked`, the frozen copy, and
+ * what it stores of the request comes from that same copy (storedRecord), never from the live request.
+ */
+export function sealRequest(req: JevRequest): SealedRequest {
   const sealed = seal({ req, wire: wireBody(req) });
-  return storable(req, sealed.wire, build(frozenRequest(req, sealed.wire)));
+  return { sealed, asked: frozenRequest(req, sealed.wire) };
+}
+
+/**
+ * What an evaluation's request log or dump keeps of a request it sent: `build`'s record of the frozen copy that was sent,
+ * checked again as it is written, with every value in a format Caret never carries withheld. There is no path that seals
+ * the live request again at storage time.
+ */
+export function storedRecord<T>(s: SealedRequest, build: (frozen: JevRequest) => T): T {
+  return storable(s.asked, s.sealed.wire, build(s.asked));
 }
 
 

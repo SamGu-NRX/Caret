@@ -56,7 +56,7 @@ import { pageWindowId } from "../../helper/src/engines/windows.ts";
 import type { VerbTiming } from "../../helper/src/engines/page-link.ts";
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
-import { storableRequest, type AskJev, type JevRequest, type JevResult } from "../../helper/src/fill/jev.ts";
+import { sealRequest, storedRecord, type AskJev, type JevRequest, type JevResult } from "../../helper/src/fill/jev.ts";
 import { harnessEngine } from "../../helper/src/engines/decide/harness.ts";
 import type { CannedAnswer } from "../../helper/src/engines/decide/canned.ts";
 import { pageLoopCanned, type PageLoopOwnership } from "./canned-jev.ts";
@@ -532,9 +532,11 @@ const fixtureIds = new Set<string>();
 const decide = harnessEngine({ name: ENGINE, canned, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(args["log-requests"] === undefined ? {} : { logRequests: args["log-requests"] }) });
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const r = await decide.ask(req);
+  // Sealed before it is sent: sent and logged from this frozen copy (PV2).
+  const sent = sealRequest(req);
+  const r = await decide.ask(sent.asked);
   spent += r.costUsd;
-  if (args["log-jev"] !== undefined) appendStore(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: storableRequest(req, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
+  if (args["log-jev"] !== undefined) appendStore(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
   calls.push({ page: page?.id ?? "", stage, inputTokens: r.inputTokens, latencyMs: r.latencyMs, costUsd: r.costUsd });
   return r;
 };

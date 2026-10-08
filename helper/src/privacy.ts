@@ -796,22 +796,31 @@ export class SnippetLedger {
    */
   private priceUnits(units: readonly Unit[], fresh: string[]): Priced | null {
     const adds = new Map<string, Add>();
-    const used = new Set<string>();
     const chosen: Span[] = [];
-    const done = new Set<string>();
+    /**
+     * The spans chosen so far for each stretch (its window and folded text), by repeat. Units are never skipped: a
+     * character marked twice costs nothing the second time, so only span identity decides what is charged. A unit takes
+     * the span another unit of the same repeat took (two rules locating one occurrence), and avoids the spans other
+     * repeats took (a text that says a stretch twice reveals two occurrences, as many as there are).
+     */
+    const taken = new Map<string, Map<number, Set<string>>>();
+    const id = (o: Place): string => `${o.line}\u0000${o.at}\u0000${o.len}`;
     for (const u of units) {
       const w = this.known.get(u.windowId);
       if (w === undefined || u.alts.length === 0) continue;
-      // The same stretch, the same repeat, located by two rules: charged once.
       const first = u.alts[0] as Place;
-      const same = `${u.windowId}\u0000${fold(first.line.slice(first.at, first.at + first.len))}\u0000${u.repeat ?? 0}`;
-      if (done.has(same)) continue;
-      done.add(same);
+      const cls = `${u.windowId}\u0000${fold(first.line.slice(first.at, first.at + first.len))}`;
+      const repeat = u.repeat ?? 0;
+      let byRepeat = taken.get(cls);
+      if (byRepeat === undefined) taken.set(cls, (byRepeat = new Map()));
+      const mine = byRepeat.get(repeat) ?? new Set<string>();
+      const others = new Set([...byRepeat].filter(([r]) => r !== repeat).flatMap(([, ids]) => [...ids]));
       const e = this.entry(w);
       let a = adds.get(u.windowId);
       if (a === undefined) adds.set(u.windowId, (a = { cost: 0, prose: 0, covered: new Set(), marks: new Map() }));
-      const free = u.alts.filter((o) => !used.has(`${u.windowId}\u0000${o.line}\u0000${o.at}`));
-      const alts = free.length > 0 ? free : u.alts;
+      const same = u.alts.filter((o) => mine.has(id(o)));
+      const free = u.alts.filter((o) => !others.has(id(o)));
+      const alts = same.length > 0 ? same : free.length > 0 ? free : u.alts;
       let best: Place | null = null;
       let bestMarked = -1;
       for (const o of alts) {
@@ -827,7 +836,8 @@ export class SnippetLedger {
         if (best === null || (short && !bestShort) || (short === bestShort && marked > bestMarked)) (best = o, (bestMarked = marked));
       }
       if (best === null) continue;
-      used.add(`${u.windowId}\u0000${best.line}\u0000${best.at}`);
+      mine.add(id(best));
+      byRepeat.set(repeat, mine);
       chosen.push({ windowId: u.windowId, ...best });
       let m = a.marks.get(best.line);
       if (m === undefined) {
@@ -852,9 +862,13 @@ export class SnippetLedger {
     return { fresh, adds, chosen };
   }
 
-  private commit(p: Priced, windowId: string, kind: Snippet["kind"], own: Entry | null): void {
+  /**
+   * `remember`: the texts are cuts of the window, located where they stand, so taking them again costs nothing; false for a
+   * derivation, whose text was not located (the same words cut later may stand elsewhere and are located then).
+   */
+  private commit(p: Priced, windowId: string, kind: Snippet["kind"], own: Entry | null, remember = true): void {
     for (const t of p.fresh) {
-      own?.texts.add(t);
+      if (remember) own?.texts.add(t);
       this.snippets.push({ windowId, kind, text: t });
     }
     for (const [wid, a] of p.adds) {
@@ -871,17 +885,33 @@ export class SnippetLedger {
   }
 
   /**
-   * Charges stretches already located (a derivation's, privacy/disclosure.ts Disclosure.derived, read off its basis's
-   * located stretches) by the one charging rule, and declares `text` under window `w`. False, charging nothing, when a
-   * window would go over its budget or prose share.
+   * Charges stretches already located (a derivation's, privacy/disclosure.ts Disclosure.derived, read off its bases'
+   * located stretches, from the windows `ws`) by the one charging rule, all at once, and declares `text` under the first
+   * of them. The stretches charged, or null, charging nothing, when a window would go over its budget or prose share.
    */
-  protected takeSpans(w: WindowState, spans: readonly Span[], text: string): boolean {
-    this.know(w);
-    // Each stretch is its own: two stretches with the same words at two places are both charged.
-    const p = this.priceUnits(spans.map((x, i) => ({ windowId: x.windowId, alts: [{ line: x.line, at: x.at, len: x.len }], repeat: i })), [text]);
-    if (p === null) return false;
-    this.commit(p, w.window.windowId, "candidate", this.entry(w));
-    return true;
+  protected takeSpans(ws: readonly WindowState[], spans: readonly Span[], text: string): Span[] | null {
+    const w = ws[0];
+    if (w === undefined) return [];
+    for (const x of ws) this.know(x);
+    // Each stretch is its own (two stretches with the same words at two places are both charged), and it reveals what
+    // any located text reveals (locate): every line of any window it holds whole, and where it stands in every other
+    // window, each window charged its own occurrences against its own budget and share.
+    const units: Unit[] = [];
+    spans.forEach((x, i) => {
+      const t = x.line.slice(x.at, x.at + x.len);
+      for (const [wid, win] of this.known) for (const l of windowText(win).linesInFolded(t)) units.push({ windowId: wid, alts: [{ line: l, at: 0, len: l.length }], repeat: i });
+      units.push({ windowId: x.windowId, alts: [{ line: x.line, at: x.at, len: x.len }], repeat: i });
+      if (t.length < CONTAINED_MIN) return;
+      for (const [wid, win] of this.known) {
+        if (wid === x.windowId) continue;
+        const there = windowText(win).find(t);
+        if (there.length > 0) units.push({ windowId: wid, alts: there.map((o) => ({ line: o.line, at: o.at, len: t.length })), repeat: i });
+      }
+    });
+    const p = this.priceUnits(units, [text]);
+    if (p === null) return null;
+    this.commit(p, w.window.windowId, "candidate", this.entry(w), false);
+    return p.chosen;
   }
 
   /**
@@ -899,6 +929,17 @@ export class SnippetLedger {
     if (p === null) return null;
     this.commit(p, "plan", "candidate", null);
     return p.chosen;
+  }
+
+  /**
+   * Where a piece of text stands in window `w`, located as a cut is (locate's own placement: as written before case
+   * aside, whole words before inside a word, a whole line before inside a longer one), charging nothing: a basis's pieces.
+   */
+  protected placesIn(w: WindowState, piece: string): Place[] {
+    this.know(w);
+    const here = windowText(w).find(piece);
+    const lines = here.filter((o) => o.at === 0 && o.line.length === piece.length);
+    return (lines.length > 0 ? lines : here).map((o) => ({ line: o.line, at: o.at, len: piece.length }));
   }
 
   /** Takes these texts from `w` (located, charged); the stretches they were charged at, or null when they cannot be taken. */

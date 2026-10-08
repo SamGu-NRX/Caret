@@ -21,7 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { proposeFill } from "../src/fill/fill.ts";
-import { loadJevKey, makeJevClient, storableRequest, type AskJev } from "../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
 import { heldAsConversation, heldToHalf, windowBudget } from "../src/privacy.ts";
 import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
 import { formInputs } from "../src/fill/fill.ts";
@@ -60,10 +60,12 @@ let calls = 0;
 const live = makeJevClient(loadJevKey);
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const r = await live(req);
+  // Sealed before it is sent: sent and logged from this frozen copy (PV2).
+  const sent = sealRequest(req);
+  const r = await live(sent.asked);
   spent += r.costUsd;
   calls++;
-  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ form: current, questions: storableRequest(req, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers }) + "\n");
+  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ form: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers }) + "\n");
   return r;
 };
 let current = "";

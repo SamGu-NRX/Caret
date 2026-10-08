@@ -23,7 +23,7 @@ import { parseArgs } from "node:util";
 import { Helper } from "../../src/helper.ts";
 import { Store } from "../../src/store.ts";
 import { MemoryStore } from "../../src/patterns/memory.ts";
-import { loadJevKey, makeJevClient, storableRequest, type AskJev, type JevRequest } from "../../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev, type JevRequest } from "../../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type AppRef, type Node, type Snapshot, type TypedValue, type ValueKind } from "../../src/protocol.ts";
 import type { Decision } from "../../src/routing/coordinator.ts";
 import { makeWriterPort } from "../../src/writer/port.ts";
@@ -118,8 +118,10 @@ const askJev: AskJev = async (req: JevRequest) => {
   // The routers send without retry (judge.ts); B25's Jev intent maker also names a question "route", so the flag tells them apart.
   const router = req.retry429 === false;
   const which = router && ("outcome" in req.questions || "task" in req.questions) ? "router1" : router && "route" in req.questions ? "router2" : "producer";
-  const r = await jevClient(req);
-  if (a.dump && which !== "producer") appendStore(join(OUT, "router-requests.ndjson"), `${JSON.stringify({ moment: current, which, ...storableRequest(req, (f) => ({ state: f.state, questions: f.questions })), answers: r.answers })}\n`);
+  // Sealed before it is sent: sent and dumped from this frozen copy (PV2).
+  const sent = sealRequest(req);
+  const r = await jevClient(sent.asked);
+  if (a.dump && which !== "producer") appendStore(join(OUT, "router-requests.ndjson"), `${JSON.stringify({ moment: current, which, ...storedRecord(sent, (f) => ({ state: f.state, questions: f.questions })), answers: r.answers })}\n`);
   spend.usd += r.costUsd;
   spend.calls[which]++;
   if (which === "producer") spend.producerTokens.push(r.inputTokens);

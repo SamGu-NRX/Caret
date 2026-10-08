@@ -19,7 +19,7 @@ import * as z from "zod";
 import { ScreenModel } from "../src/model.ts";
 import { forgetWindows } from "../src/privacy.ts";
 import { proposeFill } from "../src/fill/fill.ts";
-import { loadJevKey, makeJevClient, storableRequest, type AskJev } from "../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { PageSnapshot, PROTOCOL_VERSION, type FillField, type Node, type Snapshot } from "../src/protocol.ts";
@@ -52,10 +52,12 @@ let current = "";
 const live = makeJevClient(loadJevKey);
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const r = await live(req);
+  // Sealed before it is sent: sent and logged from this frozen copy (PV2).
+  const sent = sealRequest(req);
+  const r = await live(sent.asked);
   spent += r.costUsd;
   calls++;
-  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], `${JSON.stringify({ site: current, questions: storableRequest(req, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers })}\n`);
+  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], `${JSON.stringify({ site: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers })}\n`);
   return r;
 };
 

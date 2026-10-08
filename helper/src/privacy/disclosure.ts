@@ -628,13 +628,12 @@ export class Disclosure extends SnippetLedger {
         i += best.k;
       }
     }
-    const byWindow = new Map<string, Span[]>();
-    for (const x of spans) byWindow.set(x.windowId, [...(byWindow.get(x.windowId) ?? []), x]);
-    for (const [wid, xs] of byWindow) {
-      const w = bases.find((b): b is Basis => b instanceof Basis && b.view?.window.windowId === wid)?.view;
-      if (w === undefined || w === null || !this.takeSpans(w, xs, text)) return null;
-    }
-    this.addSpans(text, [...spans, ...minted.flatMap((m) => this.spansOf.get(m) ?? [])]);
+    // All of it charged at once, every basis's window and every window that shows it, or none of it.
+    const views = bases.flatMap((b) => (b instanceof Basis && b.view !== null ? [b.view] : []));
+    const revealed = spans.length === 0 ? [] : this.takeSpans(views, spans, text);
+    if (revealed === null) return null;
+    // What it reveals: every stretch charged for it, in every window, and what its minted bases reveal.
+    this.addSpans(text, [...revealed, ...minted.flatMap((m) => this.spansOf.get(m) ?? [])]);
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }
 
@@ -649,11 +648,15 @@ export class Disclosure extends SnippetLedger {
     // Located once, here: each piece (a line of it, or a stretch between a cut's ellipses) as one stretch of one line of
     // its window. A piece that is not one stretch of one line is no basis: null, never a guess (PV2).
     const pieces: { text: string; line: string; at: number }[] = [];
+    // A piece the basis says again stands at another occurrence each time ("Echo\nEcho" cut from "Echo Echo").
+    const used = new Set<string>();
     for (const raw of text.split("\n")) {
       for (const seg of raw.split("…")) {
         const piece = flat(seg);
         if (piece === "") continue;
-        const where = this.locate(view, piece)?.find((u) => u.windowId === view.window.windowId)?.alts.find((a) => a.len === piece.length);
+        const alts = this.placesIn(view, piece);
+        const where = alts.find((a) => a.len === piece.length && !used.has(`${a.line}\u0000${a.at}`)) ?? alts.find((a) => a.len === piece.length);
+        if (where !== undefined) used.add(`${where.line}\u0000${where.at}`);
         if (where === undefined) return null;
         pieces.push({ text: where.line.slice(where.at, where.at + where.len), line: where.line, at: where.at });
       }

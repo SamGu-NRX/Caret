@@ -21,7 +21,7 @@ import { Helper } from "../../src/helper.ts";
 import { HelperServer } from "../../src/server.ts";
 import { Store } from "../../src/store.ts";
 import { MemoryStore } from "../../src/patterns/memory.ts";
-import { loadJevKey, makeJevClient, storableRequest, type AskJev, type JevRequest } from "../../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev, type JevRequest, type SealedRequest } from "../../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type HelperMessage } from "../../src/protocol.ts";
 import { DEFAULT_SETTINGS } from "../../src/offers/settings.ts";
 import { jevPickingText } from "../../test/builders.ts";
@@ -73,7 +73,7 @@ const isRouter = (r: JevRequest): boolean => "outcome" in r.questions || "task" 
 let routerCalls = 0;
 let spendUsd = 0;
 let overCap = 0;
-const captured: { recording: string; run: number; request: JevRequest }[] = [];
+const captured: { recording: string; run: number; request: SealedRequest }[] = [];
 let current = { recording: "", run: 0 };
 process.env.CARET_ENV_FILE = a["env-file"];
 const live = MODE === "live" ? makeJevClient(loadJevKey) : null;
@@ -81,7 +81,8 @@ const askJev: AskJev = async (req) => {
   if (!isRouter(req)) return fake(req);
   routerCalls++;
   if (MODE === "capture") {
-    captured.push({ ...current, request: req });
+    // Sealed when captured: the file records this frozen copy (PV2).
+    captured.push({ ...current, request: sealRequest(req) });
     const answers = Object.fromEntries(Object.keys(req.questions).map((q) => [q, { choice: q === "route" ? "handoff" : "abstain", confidence: 0.9 }]));
     return { model: "capture", answers, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   }
@@ -186,6 +187,6 @@ const unwanted = replays.reduce((n, r) => n + (r.unwanted as number), 0);
 const summary = { at: new Date().toISOString(), mode: MODE, runs: RUNS, settleMs: SETTLE_MS, shown, wanted: `${wanted}/${replays.length}`, unwanted, routerCalls, spendUsd: Number(spendUsd.toFixed(6)), overCap };
 writeStore(join(OUT, `a5-${MODE}.json`), JSON.stringify({ ...summary, replays }, null, 2) + "\n");
 // PV2 Q2: each captured request is checked as it is written, values in formats Caret never carries withheld (storableRequest).
-if (MODE === "capture") writeStore(join(OUT, "a5-router-requests.json"), JSON.stringify(captured.map(({ request: r, ...at }) => ({ ...at, request: storableRequest(r, (f) => ({ purpose: f.purpose, state: f.state, questions: f.questions, nouls: f.nouls, snippets: f.snippets, charged: f.charged })) })), null, 2) + "\n");
+if (MODE === "capture") writeStore(join(OUT, "a5-router-requests.json"), JSON.stringify(captured.map(({ request: r, ...at }) => ({ ...at, request: storedRecord(r, (f) => ({ purpose: f.purpose, state: f.state, questions: f.questions, nouls: f.nouls, snippets: f.snippets, charged: f.charged })) })), null, 2) + "\n");
 console.log(JSON.stringify(summary));
 process.exit(0);

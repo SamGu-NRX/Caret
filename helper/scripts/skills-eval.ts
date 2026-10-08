@@ -18,7 +18,7 @@ import { parseArgs } from "node:util";
 import { positiveNumber } from "./flags.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { loadJevKey, makeJevClient, storableRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev, type JevRequest, type SealedRequest } from "../src/fill/jev.ts";
 import { checkName, type RoutineFacts } from "../src/patterns/naming.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type PatternOffer, type SkillOffer } from "../src/protocol.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
@@ -36,19 +36,21 @@ let spent = 0;
 let liveCalls = 0;
 
 /** Answers the naming question (live or the first name) and every other question with none. */
-function jev(recorded: JevRequest[]): AskJev {
+function jev(recorded: SealedRequest[]): AskJev {
   return async (req) => {
     const name = req.questions.name;
     if (name === undefined) {
       return { model: "local-none", answers: Object.fromEntries(Object.keys(req.questions).map((k) => [k, { choice: "none", confidence: 1 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
     }
-    recorded.push(req);
+    // Sealed when recorded: the file records this frozen copy, and the copy is what is sent (PV2).
+    const sent = sealRequest(req);
+    recorded.push(sent);
     if (live === null) {
       const first = Object.keys(name.criteria).find((k) => k !== "none") ?? "none";
       return { model: "fake", answers: { name: { choice: first, confidence: 0.9 } }, inputTokens: 0, latencyMs: 0, costUsd: 0 };
     }
     if (spent >= MAX_USD) throw new Error(`budget: $${spent.toFixed(5)} spent, cap $${MAX_USD}`);
-    const r = await live(req);
+    const r = await live(sent.asked);
     spent += r.costUsd;
     liveCalls++;
     return r;
@@ -73,7 +75,7 @@ async function run(label: string, s: SkillStream, takeOffers: boolean): Promise<
   const dir = mkdtempSync(join(tmpdir(), "caret-skills-eval-"));
   const store = new Store(dir);
   const sent: HelperMessage[] = [];
-  const recorded: JevRequest[] = [];
+  const recorded: SealedRequest[] = [];
   const reader = new StreamReader();
   const helper = new Helper({
     store,
@@ -140,9 +142,9 @@ async function run(label: string, s: SkillStream, takeOffers: boolean): Promise<
     }
     out.namings = helper.patterns.skills.named.map((n) => ({ routineId: n.routineId, name: n.result.name, by: n.result.by, asks: n.result.asks, costUsd: n.result.costUsd, failures: n.result.failures }));
     out.namingRequests = recorded.length;
-    out.valuesInRequests = recorded.filter((r) => values.some((v) => JSON.stringify([r.state, r.questions]).includes(v))).length;
+    out.valuesInRequests = recorded.filter((r) => values.some((v) => JSON.stringify([r.asked.state, r.asked.questions]).includes(v))).length;
     out.skills = helper.memory.list("skill").flatMap((e) => (e.kind === "skill" ? [{ name: e.fields.name, runs: e.fields.runs, cleanRuns: e.fields.cleanRuns }] : []));
-    writeStore(join(OUT, `naming-requests-${label}.json`), JSON.stringify(recorded.map((r) => storableRequest(r, (f) => ({ state: f.state, questions: f.questions, snippets: f.snippets, charged: f.charged }))), null, 2) + "\n");
+    writeStore(join(OUT, `naming-requests-${label}.json`), JSON.stringify(recorded.map((r) => storedRecord(r, (f) => ({ state: f.state, questions: f.questions, snippets: f.snippets, charged: f.charged }))), null, 2) + "\n");
   } finally {
     out.wallSeconds = (Date.now() - t0) / 1000;
     helper.shutdown();
