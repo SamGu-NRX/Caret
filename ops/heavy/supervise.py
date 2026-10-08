@@ -815,6 +815,11 @@ class Supervisor:
                 env.update(RIG_HEAVY_LEASE_ID=self.lease_id, RIG_RUN_MANAGED="1", CARET_HEAVY_ATTEMPT=self.attempt,
                            CARET_HEAVY_TOKEN_SHA256=recovery.token_sha256(self.token))
         env.update(self.plan["env"])
+        if self.plan["env"].get("CARET_AX_ONSCREEN") == "1":
+            # swift-tests' on-screen guard (recipes/onscreen.py) takes gui.lock and a gui lease of the job's run that
+            # must outlast its execution limit.
+            env.update(CARET_HEAVY_GUI_LOCK=self.paths["gui_lock"], CARET_HEAVY_LR_LEASE=self.paths["lr_lease"],
+                       CARET_HEAVY_LEASE_RUN=self.plan["lease"]["run"], CARET_HEAVY_EXEC_S=str(self.profile["exec_s"]))
         if self.plan["recipe"]["live"]:
             env["CARET_ENV_FILE"] = self.plan["env_file"]
         return env

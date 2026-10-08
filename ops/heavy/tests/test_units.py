@@ -1585,3 +1585,70 @@ class LeaseKindTest(Temp):
                 with mock.patch.object(procs, "lease_state", return_value=(procs.ABSENT, "")):
                     sup._hold_reservation()
                 self.assertEqual(self.kinds(args), [lane])
+
+
+class SwiftEnvTest(Temp):
+    """swift-tests --env KEY=VALUE, repeatable, from an allowlist of exact pairs: CARET_RECORD_SNAPSHOTS=1 (record
+    reference images) and CARET_AX_ONSCREEN=1 (run the on-screen accessibility tests). They go to the plan's recorded
+    environment, which the supervisor gives the recipe; anything else is refused at enqueue."""
+
+    def plan_env(self, *env):
+        repo = os.path.join(self.root, "repo")
+        if not os.path.exists(repo):
+            self.write("repo/bridge/Package.swift", "// bridge\n")
+            git(repo, "init", "-q")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "pin")
+        rev = git(repo, "rev-parse", "HEAD").stdout.strip()
+        parser = argparse.ArgumentParser()
+        caret_heavy._swift_tests_options(parser)
+        args = parser.parse_args(["--tag", "t", "--packages", "bridge", *[a for e in env for a in ("--env", e)]])
+        return caret_heavy._swift_tests_plan(args, repo, rev, {})
+
+    def test_the_allowed_pairs_are_recorded(self):
+        argv, inputs, env = self.plan_env("CARET_RECORD_SNAPSHOTS=1", "CARET_AX_ONSCREEN=1")
+        self.assertEqual(env, {"CARET_RECORD_SNAPSHOTS": "1", "CARET_AX_ONSCREEN": "1"})
+        self.assertEqual(argv, ["t", "bridge"])
+        self.assertEqual(self.plan_env()[2], {})
+
+    def test_anything_else_is_refused(self):
+        for bad in ("CARET_RECORD_SNAPSHOTS=0", "CARET_AX_ONSCREEN", "CARET_AX_ONSCREEN=yes", "PATH=/tmp",
+                    "DYLD_INSERT_LIBRARIES=/x.dylib", "=1"):
+            with self.subTest(bad):
+                with self.assertRaisesRegex(manifest.ManifestError, "--env"):
+                    self.plan_env(bad)
+        with self.assertRaisesRegex(manifest.ManifestError, "twice"):
+            self.plan_env("CARET_AX_ONSCREEN=1", "CARET_AX_ONSCREEN=1")
+
+
+class OnScreenEnvTest(Temp):
+    """A plan with CARET_AX_ONSCREEN=1 gives its recipe what the on-screen guard (recipes/onscreen.py) needs: gui.lock's
+    path, lr-lease, the lease run and the execution limit its gui lease must outlast. Other plans get none of them."""
+
+    def recipe_env(self, plan_env):
+        import supervise
+        sup = supervise.Supervisor.__new__(supervise.Supervisor)
+        sup.plan = {"job_id": "caret-x", "recipe": {"name": "swift-tests", "live": False}, "python": "/py", "rev": "r",
+                    "ops": {"snapshot": "/snap"}, "inputs_dir": "/in", "env": dict(plan_env), "lease": {"run": "caret"}}
+        sup.paths = {"lr_lease": "/lr/lr-lease", "gui_lock": "/locks/gui.lock"}
+        sup.profile = {"lease": True, "exec_s": 7200}
+        sup.mark, sup.launchd_prefix, sup.plan_digest, sup.out = "m", "p.", "d" * 64, "/out"
+        sup.custody = mock.Mock(sock_path="/tmp/chr.x/s")
+        sup.heavy_fd = sup.lock_fd = None
+        return sup._recipe_env()
+
+    def test_an_on_screen_plan_gets_the_guards_inputs(self):
+        env = self.recipe_env({"CARET_AX_ONSCREEN": "1"})
+        self.assertEqual({k: env[k] for k in ("CARET_AX_ONSCREEN", "CARET_HEAVY_GUI_LOCK", "CARET_HEAVY_LR_LEASE",
+                                              "CARET_HEAVY_LEASE_RUN", "CARET_HEAVY_EXEC_S")},
+                         {"CARET_AX_ONSCREEN": "1", "CARET_HEAVY_GUI_LOCK": "/locks/gui.lock",
+                          "CARET_HEAVY_LR_LEASE": "/lr/lr-lease", "CARET_HEAVY_LEASE_RUN": "caret",
+                          "CARET_HEAVY_EXEC_S": "7200"})
+
+    def test_other_plans_get_none(self):
+        env = self.recipe_env({"CARET_RECORD_SNAPSHOTS": "1"})
+        self.assertFalse(any(k in env for k in ("CARET_HEAVY_GUI_LOCK", "CARET_HEAVY_LR_LEASE", "CARET_HEAVY_EXEC_S")))
+
+    def test_default_paths_name_the_gui_lock(self):
+        self.assertEqual(caret_heavy.default_paths("/tmp/state-x")["gui_lock"],
+                         os.path.join(caret_heavy.HOME, ".long-run/locks/gui.lock"))

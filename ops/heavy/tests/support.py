@@ -124,6 +124,7 @@ class World(unittest.TestCase):
             "lr_lease": os.path.join(bin_dir, "lr-lease"),
             "lr_reap": os.path.join(bin_dir, "lr-reap"),
             "heavy_lock": os.path.join(self.home, ".long-run/locks/heavy.lock"),
+            "gui_lock": os.path.join(self.home, ".long-run/locks/gui.lock"),
             "rig_stop": os.path.join(REAL_LONG_RUN, "rig/bin/rig-stop"),
             "rig_run": os.path.join(self.root, "fake-rig", "rig-run"),
             "lume_clones": os.path.join(self.home, ".lume"),

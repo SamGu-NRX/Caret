@@ -67,6 +67,8 @@ def default_paths(state_dir=None):
         "lr_lease": os.path.join(HOME, ".long-run/bin/lr-lease"),
         "lr_reap": os.path.join(HOME, ".long-run/bin/lr-reap"),
         "heavy_lock": os.path.join(HOME, ".long-run/locks/heavy.lock"),
+        # Held by any batch that can open a window or take keystrokes (swift-tests with CARET_AX_ONSCREEN=1).
+        "gui_lock": os.path.join(HOME, ".long-run/locks/gui.lock"),
         "rig_stop": os.path.join(HOME, ".long-run/rig/bin/rig-stop"),
         "rig_run": os.path.join(HOME, ".long-run/rig/bin/rig-run"),
         "lume_clones": os.path.join(HOME, ".lume"),
@@ -437,6 +439,10 @@ def keytype_inputs(worktree, rev, source):
 
 
 SWIFT_PACKAGES = ("apps/caret", "apps/screen-reader", "bridge")
+# The only --env pairs swift-tests takes. CARET_RECORD_SNAPSHOTS=1: the snapshot tests record their reference images,
+# which the recipe copies out (recipes/swift-tests.sh). CARET_AX_ONSCREEN=1: the accessibility tests that put windows
+# on screen run, so the recipe also takes a gui lease and gui.lock and keeps the on-screen rules (recipes/onscreen.py).
+SWIFT_ENV_ALLOWED = ("CARET_RECORD_SNAPSHOTS=1", "CARET_AX_ONSCREEN=1")
 
 
 def _swift_tests_options(parser):
@@ -446,6 +452,8 @@ def _swift_tests_options(parser):
     parser.add_argument("--inputs-from", metavar="WORKTREE",
                         help="seal keytype (at the pinned gitlink) and llama.xcframework from this worktree's keytype "
                              "checkout instead of the pinned one's; apps/caret needs them")
+    parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                        help="set in the tests' environment; repeatable; only {}".format(", ".join(SWIFT_ENV_ALLOWED)))
 
 
 def _swift_tests_plan(args, worktree, rev, paths):
@@ -457,8 +465,16 @@ def _swift_tests_plan(args, worktree, rev, paths):
             raise manifest.ManifestError("--packages: {} is not a plain path inside the worktree".format(pkg))
         if _git(worktree, "cat-file", "-e", "{}:{}/Package.swift".format(rev, pkg)).returncode != 0:
             raise manifest.ManifestError("{} has no Package.swift at {}".format(pkg, rev))
+    env = {}
+    for pair in args.env:
+        if pair not in SWIFT_ENV_ALLOWED:
+            raise manifest.ManifestError("--env {!r} is not allowed; only {}".format(pair, ", ".join(SWIFT_ENV_ALLOWED)))
+        key, _, value = pair.partition("=")
+        if key in env:
+            raise manifest.ManifestError("--env {} given twice".format(key))
+        env[key] = value
     inputs = keytype_inputs(worktree, rev, args.inputs_from or worktree) if "apps/caret" in packages else []
-    return [args.tag, *packages], inputs, {}
+    return [args.tag, *packages], inputs, env
 
 
 RIG_SMOKE_JOB = os.path.join(HOME, ".long-run/rig/jobs/smoke")

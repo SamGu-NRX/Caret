@@ -1,0 +1,10 @@
+#!/bin/bash
+# Stub ioreg for tests/test_recipes.py: prints IOHIDSystem's HIDIdleTime from $STUB_IOREG_IDLE, a file of idle times in
+# seconds, one per line. Each call takes the next line; the last one repeats.
+[ -n "${STUB_IOREG_IDLE:-}" ] || { echo "stub ioreg: STUB_IOREG_IDLE unset" >&2; exit 2; }
+n=$(cat "$STUB_IOREG_IDLE.n" 2>/dev/null || echo 0)
+total=$(grep -c '' "$STUB_IOREG_IDLE")
+line=$(( n < total ? n + 1 : total ))
+echo $(( n + 1 )) > "$STUB_IOREG_IDLE.n"
+secs=$(sed -n "${line}p" "$STUB_IOREG_IDLE")
+printf '  |   "HIDIdleTime" = %s000000000\n' "$secs"
