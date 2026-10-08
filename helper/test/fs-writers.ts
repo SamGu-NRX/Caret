@@ -11,6 +11,8 @@ import { parse, type AnyNode } from "acorn";
 const FS = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises"]);
 const SQLITE = new Set(["sqlite", "node:sqlite"]);
 const MODULE = new Set(["module", "node:module"]);
+/** Modules that a re-export, a dynamic import or a require may not name at all. */
+const guarded = (m: string): boolean => FS.has(m) || SQLITE.has(m) || MODULE.has(m);
 /** What a module may import from node:module: nothing that loads a module. */
 const MODULE_PERMITTED: ReadonlySet<string> = new Set(["stripTypeScriptTypes", "isBuiltin", "builtinModules"]);
 
@@ -65,13 +67,13 @@ export function fsImportViolations(source: string): string[] {
       }
     } else if ((n.type === "ExportNamedDeclaration" || n.type === "ExportAllDeclaration") && n.source !== null && n.source !== undefined) {
       const from = moduleName(n.source) ?? "";
-      if (FS.has(from) || SQLITE.has(from)) out.push(`re-exports ${from} (line ${line})`);
+      if (guarded(from)) out.push(`re-exports ${from} (line ${line})`);
     } else if (n.type === "ImportExpression") {
       const from = moduleName(n.source);
-      if (from === null || FS.has(from) || SQLITE.has(from)) out.push(`imports ${from ?? "a module named at run time"} dynamically (line ${line})`);
+      if (from === null || guarded(from)) out.push(`imports ${from ?? "a module named at run time"} dynamically (line ${line})`);
     } else if (n.type === "CallExpression" && n.callee.type === "Identifier" && n.callee.name === "require") {
       const from = n.arguments[0]?.type === "Literal" ? moduleName(n.arguments[0]) : null;
-      if (from === null || FS.has(from) || SQLITE.has(from)) out.push(`requires ${from ?? "a module named at run time"} (line ${line})`);
+      if (from === null || guarded(from)) out.push(`requires ${from ?? "a module named at run time"} (line ${line})`);
     }
   }
   return out;
