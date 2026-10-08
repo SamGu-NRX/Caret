@@ -642,7 +642,7 @@ class ProfileAndEnqueueTest(Temp):
     def test_profiles_floors_estimates_and_evidence(self):
         expected = {"caret-browser-eval": (11, 2.5, 0.5, True), "caret-helper-suite": (12, 3, 0.5, True),
                     "caret-laya": (12, 3.5, 0.1, True),
-                    "caret-swift": (8, 6, 2, True), "caret-vm": (0, 6, 2, False)}
+                    "caret-swift": (8, 4, 2, True), "caret-vm": (0, 6, 2, False)}
         self.assertEqual({k: (p.floor_gib, p.est_mem_gib, p.est_disk_gib, p.lease)
                           for k, p in caret_heavy.PROFILES.items()}, expected)
         for name, p in caret_heavy.PROFILES.items():
@@ -679,7 +679,7 @@ class ProfileAndEnqueueTest(Temp):
                 self.assertEqual(head[head.index("--min-free-gib") + 1], want)
                 if name == "caret-swift":
                     self.assertEqual((head[head.index("--est-mem-gib") + 1], head[head.index("--est-disk-gib") + 1]),
-                                     ("6", "2"))
+                                     ("4", "2"))
                 self.assertEqual((head[head.index("--repo") + 1], head[head.index("--expect-rev") + 1]), ("/w", "a" * 40))
                 self.assertEqual(float(head[head.index("--timeout") + 1]), prof.queue_timeout_s)
                 self.assertEqual("--wait-flock" in head, name == "caret-vm")

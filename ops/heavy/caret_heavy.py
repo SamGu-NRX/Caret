@@ -125,19 +125,21 @@ PROFILES = {
         "caret-helper-suite", 12, 3, 0.5, True, 1800, 3600, 30,
         "Unmeasured. Estimates 3 + 0.5 are I1's own; the lead set the floor to 12 GiB, the higher of 8 + 3.5 and "
         "Q1's 11 (STATE 11:18Z). W2's window step took 52 s; 3600 s is a default."),
-    # Coordinator, 2026-10-07: no 20 GiB gate; lr-lease's heavy floor (8 GiB, lease-policy.json) and estimates charged
-    # by the lease, as for the other profiles. No Swift build or test run has a measured memory or disk peak:
-    # - memory 6 GiB: H11's own estimate for its build (evidence/host/h11/harness/go.sh, `heavy.sh 6 6`); D1 used 3,
-    #   then 2 only to get admitted at 12 GiB free (dogfood/CHECKLIST.md 18:1xZ). Unmeasured.
+    # lr-lease's heavy floor (8 GiB, lease-policy.json); the lease charges the estimates against it (coordinator,
+    # 2026-10-07).
+    # - memory 4 GiB: swift-tests is measured once. caret-swift-s2-70a6845-n2 built and tested apps/caret,
+    #   apps/screen-reader and bridge in 364 s at a summed physical-footprint peak of 2.35 GiB (its outcome.json
+    #   "memory"). r2-prepare's release app build is unmeasured. The cap equals the charge, so a job that needs more
+    #   stops with exit 76 and records its real peak instead of using memory it was never charged for. H11's unmeasured
+    #   6 GiB kept every Swift job waiting at 14-15 GiB free beside the browser lanes.
     # - disk 2 GiB: the one figure on record, 1.5 GB of apps/caret/.build plus Caret.app pruned from caret-v2-host
-    #   (STATE.md, line 264). D1's free-disk readings (dogfood/logs/build-run-*.out, at most 0.3 GiB less at the end)
-    #   are taken after its scratch export is deleted, so they say nothing of the peak.
-    # Every job records its peak footprint now (outcome.json "memory"); a swift-tests run replaces the guess.
+    #   (STATE.md, line 264); the peak is unmeasured.
     "caret-swift": Profile(
-        "caret-swift", 8, 6, 2, True, 1800, 7200, 60,
-        "Floor: lr-lease's heavy floor. Memory 6 GiB is H11's build estimate, unmeasured; disk 2 GiB from the 1.5 GB "
-        "build output pruned on record (STATE.md), peak unmeasured. Compiler time alone summed 124 s "
-        "(dogfood build-2eea5cf.log); 7200 s is a default."),
+        "caret-swift", 8, 4, 2, True, 1800, 7200, 60,
+        "Floor: lr-lease's heavy floor. Memory 4 GiB over swift-tests' one measured peak of 2.35 GiB "
+        "(caret-swift-s2-70a6845-n2, 364 s); r2-prepare's app build is unmeasured, and the 4 GiB cap stops it rather "
+        "than let it exceed its charge. Disk 2 GiB from the 1.5 GB build output on record, peak unmeasured. 7200 s is "
+        "a default.", mem_cap_gib=4.0),
     "caret-laya": Profile(
         "caret-laya", 12, 3.5, 0.1, True, 1800, 7200, 30,
         "Unmeasured. Estimates 3.5 + 0.1 are LY1's own (queue.sh); the lead's Q1 amendment set 8 + 3.6, rounded up to "
