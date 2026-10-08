@@ -612,7 +612,7 @@ export interface FillTrace {
   vetoed?: ReadonlyMap<string, ReadonlyMap<string, OptionVeto>>;
 }
 /** The veto that keeps a candidate out of an Ask's value question (FillTrace.vetoed). */
-export type OptionVeto = "conversion" | "sourceCut" | "ownerEvidence" | "neverTyped" | "shape" | "notSendable";
+export type OptionVeto = "conversion" | "sourceCut" | "ownerEvidence" | "otherPerson" | "neverTyped" | "shape" | "notSendable";
 
 export interface FillOptions {
   /** W1: called once per proposal, before its first ask, with what it asks (FillTrace). Harnesses only. */
@@ -2007,6 +2007,11 @@ export async function proposeFill(
     return wants === "user";
   };
   /**
+   * Why the owner rule withholds a value from a field (otherPerson), or null. One function for admission (relationalHold)
+   * and for what value settlement lists at all (optionsOf), so no answer or pick can bring back a value it withholds.
+   */
+  const ownerHold = (f: Field, p: Pick): "otherPerson" | null => (otherPerson(f, p) ? "otherPerson" : null);
+  /**
    * HA2 rule 2: a window's value for a field both asks say wants the user's details, admitted on an owner judgement that
    * did not see the whole text the value was read from (noteShown), the window bases and extra sources of a derived
    * value included. Exceptions, as before: a value that is exactly the user's identity from memory (Candidate.identity),
@@ -2328,6 +2333,10 @@ export async function proposeFill(
         const unshown = noteUnshown(f, pick);
         if (unshown !== null && !privacyHeld.has(f.id)) privacyHeld.set(f.id, unshown);
         if (unshown !== null) return veto("ownerEvidence");
+        // After the G36 merge, b31-08's settlement listed Ines's office line for Theo's Home phone, which this rule
+        // withholds at admission. A listed value can come back through a pick, and her cell, offered so, was written
+        // after a fresh agreement (scripted oracle, before its owner rule was corrected).
+        if (ownerHold(f, pick) !== null) return veto("otherPerson");
         const chose = read.chose ?? (pick.from === "derived" ? pick.chose : undefined);
         const proposed: Proposed = { field: contracts[i] as FieldContract, text: read.value, display: read.display, provenance: bindOwned(provenanceOf(model, pick, f.part, read.value, judgedText, f.control, chose)), owner: ownerOf(pick) };
         // As the write contract will judge it: the verifier's values meet every shape check, an exemption's the never-typed one.
@@ -2580,7 +2589,7 @@ export async function proposeFill(
     const untied = scope !== undefined && (f.control === "text" || f.control === "combobox") && f.kinds.size === 0 && !tiedPick(f, p);
     const whichOfTheirs = namedPerson !== null && f.personal && personHasSeveral(f, p);
     if (untied || whichOfTheirs || oneOfSeveral(f, p)) return "ambiguous";
-    return otherPerson(f, p) ? "otherPerson" : null;
+    return ownerHold(f, p);
   };
   /**
    * An Ask option's value as the write contract checks it: its first member's, frozen when the options were built. An

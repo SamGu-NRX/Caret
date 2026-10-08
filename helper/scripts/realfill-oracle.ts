@@ -32,6 +32,9 @@ export interface OracleContext {
   corpusLabel: () => ReadonlyMap<string, string>;
 }
 
+/** Labels of fields that take another person's details. */
+const SOMEONE_ELSES = /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu;
+
 const PROPOSED = /^Proposed value: "([\s\S]*?)"\. Source: /u;
 
 /** Whether a criterion is value settlement's (it states an exact proposed output), not the base question's candidate. */
@@ -79,6 +82,9 @@ export function realfillOracle(ctx: OracleContext): AskJev {
       return form?.fields.find((f) => normLabel(f.label) === n)?.expected ?? null;
     };
     const wholeForm = new Set((form?.fields ?? []).map((f) => f.expected));
+    // Every value the key expects in another person's field on any Ask of this form (b31-16's Emergency contact phone is
+    // Ines's cell): a correct Jev calls it theirs on the form's other Asks too. Without this, b31-08 called her cell Theo's.
+    const elsewhere = [...(form?.fields ?? []).map((f) => [f.label, f.expected] as const), ...ctx.asks.filter((a) => a.form === ask?.form).flatMap((a) => (a.expected === "refuse" ? [] : Object.entries(a.expected)))].filter(([l]) => SOMEONE_ELSES.test(l)).map(([, v]) => v);
     const theirs = new Set(Object.entries(want).filter(([l, v]) => form?.fields.find((f) => normLabel(f.label) === normLabel(l))?.expected !== v).map(([, v]) => v));
     const wanted = (label: string): boolean => Object.keys(want).some((l) => normLabel(l) === normLabel(label) && want[l] !== "none");
     // A question fill sent names its field and its options in fill's own record (FillTrace), never parsed from its text
@@ -124,12 +130,15 @@ export function realfillOracle(ctx: OracleContext): AskJev {
         // A field the ask fills with someone else's value (not the whole-form one) wants that person's details.
         const label = labelOf(id, ins);
         const v = label === null ? null : valueOf(label);
-        pick((v !== null && theirs.has(v)) || /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu.test(label ?? "") ? "other" : "user");
+        pick((v !== null && theirs.has(v)) || SOMEONE_ELSES.test(label ?? "") ? "other" : "user");
       } else if (id.endsWith("_owner")) {
         const text = trace?.options.get(id.replace(/_owner$/u, ""))?.text ?? /"([^"]*)"/u.exec(ins)?.[1] ?? "";
         // A value the ask expects for someone else's field is that person's; any other whole-form value is the user's.
-        const forOther = Object.entries(want).some(([l, v]) => sameValue(text, v) && (theirs.has(v) || /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu.test(l)));
-        const mine = forOther ? (keys.includes("person") ? "person" : "other") : [...wholeForm].some((v) => sameValue(text, v)) ? "user" : "unclear";
+        const forOther = Object.entries(want).some(([l, v]) => sameValue(text, v) && (theirs.has(v) || SOMEONE_ELSES.test(l)));
+        // Someone else's on another Ask, unless this Ask expects it in one of the user's own fields.
+        const usersHere = Object.entries(want).some(([l, v]) => sameValue(text, v) && !theirs.has(v) && !SOMEONE_ELSES.test(l));
+        const theirsElsewhere = !usersHere && elsewhere.some((v) => sameValue(text, v));
+        const mine = forOther ? (keys.includes("person") ? "person" : "other") : theirsElsewhere ? "other" : [...wholeForm].some((v) => sameValue(text, v)) ? "user" : "unclear";
         pick(mine);
       } else if ("yes" in q.criteria) pick(id === "all" ? "no" : wanted(labelIn(ins) ?? "") ? "yes" : "no");
       else {
