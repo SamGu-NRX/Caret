@@ -300,6 +300,7 @@ export class Disclosure extends SnippetLedger {
   private declareSpans(text: string, spans: Iterable<ViewSpan>): void {
     let l = this.spans.get(text);
     for (const sp of spans) {
+      this.heldStates.add(sp.view);
       if (l === undefined) this.spans.set(text, (l = []));
       if (!l.some((x) => x.view === sp.view && spanKey(x) === spanKey(sp))) l.push(sp);
     }
@@ -509,23 +510,13 @@ export class Disclosure extends SnippetLedger {
   }
 
   /**
-   * The lines plan text reveals, as fallback spans: each line it holds whole, and each line that holds a line of it (the
-   * fallback's rule: every line containing the text). A line that only shares a run with it holds no line of it; a run of
-   * 12 or more is rule E's.
+   * Plan text's fallback spans: the text itself, under every window state it is measured against, so each line of any of
+   * them that holds a line of it (whatever its length) is charged whole (ledger/measure.ts spanPositions).
    */
   private planSpans(text: string): ViewSpan[] {
-    const out: ViewSpan[] = [];
-    const add = (id: string, t: string): void => {
-      const w = this.known.get(id);
-      if (w !== undefined) out.push({ view: redactWindow(w), text: t });
-    };
-    for (const piece of sourceLines(text).map((l) => l.replace(/^\u2026|\u2026$/gu, "")).filter((x) => x !== "")) {
-      const r = this.revealed(piece);
-      for (const [line, ids] of r.lines) for (const id of ids) add(id, line);
-      for (const id of r.shownBy) add(id, piece);
-    }
-    return out;
+    return this.measuredWindows().map((w) => ({ view: w.view, text }));
   }
+
 
   /**
    * A text code wrote from what it read on screen (a reading's assumptions, the choice it made), held (MintReason held):

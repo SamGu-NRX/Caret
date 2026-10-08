@@ -497,6 +497,8 @@ export class SnippetLedger {
     const fresh = [...new Set(texts.filter((t) => t !== "" && set?.has(t) !== true))];
     if (fresh.some((t) => excludedValue(t) !== null)) return false;
     // A text taken before (by take, with no span) may be minted now with its span: the span is charged all the same.
+    // A span's window state is measured until the operation ends, refreshed or not (measuredWindows' retained states).
+    for (const sp of as.spans ?? []) this.heldStates.add(sp.view);
     const spans = (as.spans ?? []).filter((sp) => !this.spanned.get(sp.view)?.has(spanKey(sp)));
     if (fresh.length === 0 && spans.length === 0) return true;
     const noteOf = as.noteOf;
@@ -583,9 +585,13 @@ export class SnippetLedger {
     this.account.reserve(texts);
   }
 
-  /** Keeps a committed seal's positions in the early check (MintAccount.absorb). */
+  /**
+   * Keeps a committed seal's positions in the early check (MintAccount.absorb), and every window state it charged among
+   * the states measured until the operation ends, so a snapshot refresh cannot drop what was charged there.
+   */
   protected absorbSeal(m: Measurement): void {
     this.account.absorb(m);
+    for (const { view } of m.positions.values()) this.heldStates.add(view);
   }
 
   /** Characters charged to each window so far by the early check, by window key. The seal's charge replaces it. */

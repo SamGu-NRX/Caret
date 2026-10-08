@@ -9,6 +9,8 @@ import type { AppRef } from "../src/protocol.ts";
 import { CONVERSATION_CHARS, WINDOW_CHARS, windowBudget } from "../src/privacy.ts";
 import { snap, text } from "./builders.ts";
 import { nodePart, type SourceAt } from "../src/privacy/ledger/source.ts";
+import { collectCandidates, mintCandidate, sourceOf } from "../src/fill/candidates.ts";
+import { seal, sendable } from "../src/privacy/send.ts";
 
 const MESSAGES: AppRef = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
 const NOTES: AppRef = { pid: 6161, bundleId: "dev.caret.notes", name: "Notes" };
@@ -468,6 +470,74 @@ describe("plan text", () => {
     expect(said).not.toBeNull();
     // Rule E alone: 10 scalars and not a whole line, 0.
     expect(d.measureSent("test", [said!]).charged["note-1"], "the line the plan quotes, whole").toBe(25);
+  });
+});
+
+// Astra's recheck of 1d7b7bf2, through the production paths: no search for where a value was read, no length floor on
+// the fallback, and an operation's union that a snapshot refresh or a send-time measure cannot reset.
+describe("where a value was read, and what an operation keeps", () => {
+  const LINES = ["the deposit is due on the sixteenth of the month", "and the venue holds the date for us until then", "bring the signed contract to the front desk"];
+
+  it("records a labelled value where its reader found it, not the first place its text stands: 'Bob' at [11, 14)", () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("c0", "Alice Bob: Bob"), text("c1", "zxqvjkprt")], { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    m.apply(snap([text("f0", "Form")], { at: 2, windowId: "form-1", title: "Form", app: NOTES }));
+    const d = new Disclosure(m);
+    const c = collectCandidates(m, "form-1", { now: 3 }).candidates.find((x) => x.text === "Bob");
+    expect(c).toBeDefined();
+    expect(sourceOf(c!).text).toEqual({ part: nodePart("c0", "label"), start: 11, end: 14 });
+    // The value, its label and the title take 16 of the chat's 27, over its limit of 13.
+    expect(mintCandidate(d, m, c!), "16 of a limit of 13").toBeNull();
+  });
+
+  it("charges plan and held text's lines whatever the length of the pieces: 'ab', 'cd' and 'ef' take the line 'abcdef'", () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("c0", "abcdef")], { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    const d = new Disclosure(m);
+    // T = 10, limit 4: the whole line is 6.
+    expect(d.heldText("ab\ncd\nef"), "6 of a limit of 4").toBeNull();
+    expect(d.planText("ab\ncd\nef"), "6 of a limit of 4").toBeNull();
+    const note = new ScreenModel();
+    note.apply(snap([text("n0", "abcdef")], { at: 1, windowId: "note-1", title: "Note", app: NOTES }));
+    const n = new Disclosure(note);
+    expect(n.measureSent("test", [n.heldText("ab\ncd\nef")!]).charged["note-1"]).toBe(6);
+  });
+
+  it("keeps held text's source lines after an identical snapshot refresh: 31, as before it", () => {
+    const m = new ScreenModel();
+    const lines = ["Alice, Bob", "Cedar, Elm", "Paris, Rome"];
+    m.apply(snap(lines.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Note", app: NOTES }));
+    const d = new Disclosure(m);
+    const said = d.heldText("Alice\nCedar\nParis")!;
+    m.apply(snap(lines.map((l, i) => text(`n${i}`, l)), { at: 2, windowId: "note-1", title: "Note", app: NOTES }));
+    // The state it was read from is still measured, as a retained one (note-1@1) beside the refreshed note-1.
+    const charged = d.measureSent("test", [said]).charged;
+    expect(Math.max(0, ...Object.entries(charged).filter(([k]) => k.startsWith("note-1")).map(([, v]) => v))).toBe(31);
+  });
+
+  it("holds the operation's union across an identical snapshot refresh: 48 and then 46 of a limit of 70 refuses", () => {
+    const m = new ScreenModel();
+    m.apply(snap(LINES.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Notes", app: NOTES }));
+    const d = new Disclosure(m);
+    const said = LINES.map((l) => d.heldText(l)!);
+    const chat = (at: number): void => void m.apply(snap(LINES.map((l, i) => text(`c${i}`, l)), { at, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    chat(2);
+    expect(d.measureSent("test", [said[0]!]).charged["chat-1"]).toBe(48);
+    chat(3);
+    expect(() => d.measureSent("test", [said[1]!])).toThrow(/with the requests sent before it, it reveals 94 characters of window chat-1, over its limit of 70/u);
+  });
+
+  it("commits what a send measures: a chat opened after the seal is charged at send, and the next request is held to it", () => {
+    const m = new ScreenModel();
+    m.apply(snap(LINES.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Notes", app: NOTES }));
+    const d = new Disclosure(m);
+    const said = LINES.map((l) => d.heldText(l)!);
+    const ask = (i: number) => ({ req: { purpose: "route.task", disclosure: d }, wire: { state: { offer: { found: said[i]! } }, questions: {} } });
+    const first = seal(ask(0));
+    expect(first.charged["chat-1"]).toBeUndefined();
+    m.apply(snap(LINES.map((l, i) => text(`c${i}`, l)), { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    sendable(first);
+    expect(() => seal(ask(1))).toThrow(/with the requests sent before it, it reveals 94 characters of window chat-1, over its limit of 70/u);
   });
 });
 

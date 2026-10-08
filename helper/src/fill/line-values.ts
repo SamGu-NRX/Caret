@@ -187,6 +187,10 @@ export interface LineText {
    * (`with`), and only a field that takes one value may take it (fill.ts): it is no complete answer for a prose field.
    */
   partOf?: string;
+  /** Where the span starts in the line, when the reading that found it knows; absent, its source is the whole line. */
+  at?: number;
+  /** Where `with` starts in the line: it is the line's labelled value. */
+  withAt?: number;
 }
 
 /**
@@ -413,36 +417,42 @@ export function lineTexts(line: string): LineText[] {
   // Desk" bare, and the parts reading gives it again with the whole value to quote and as a part of it (partOf). Keeping
   // only the first reading lost both, so a part could be written whole into a prose field and lose its qualifier ("Lumen
   // Labs, lab technician (for my sister)"; W1 round-2 review). The longer quote holds the shorter one's words.
-  const add = (text: string, label: string | null, quote?: string, partOf?: string): void => {
+  /** `text` read at `from` in the line, if the reading knows where. */
+  const add = (text: string, label: string | null, quote?: string, partOf?: string, from?: number): void => {
     // A closing period goes, unless it ends an abbreviation the value needs ("Ridgeline Outdoor Co, Inc."; SENTENCE_STOP).
     const t = text.trim().replace(/[,;:!?]+$/u, "").replace(SENTENCE_STOP, "");
     if (t.length < 2 || !line.includes(t)) return;
+    const lead = from === undefined ? undefined : from + text.length - text.trimStart().length;
+    const at = lead !== undefined && line.slice(lead, lead + t.length) === t ? lead : undefined;
     const i = out.findIndex((o) => o.text === t);
     const prior = out[i];
     if (prior === undefined) {
-      out.push({ text: t, label, ...(quote === undefined ? {} : { with: quote }), ...(partOf === undefined ? {} : { partOf }) });
+      out.push({ text: t, label, ...(quote === undefined ? {} : { with: quote, ...(quote === value ? { withAt: valueAt } : {}) }), ...(partOf === undefined ? {} : { partOf }), ...(at === undefined ? {} : { at }) });
       return;
     }
     const withText = [prior.with, quote].filter((q): q is string => q !== undefined).sort((x, y) => y.length - x.length)[0];
     const whole = [prior.partOf, partOf].filter((q): q is string => q !== undefined).sort((x, y) => y.length - x.length)[0];
-    out[i] = { text: t, label: prior.label ?? label, ...(withText === undefined ? {} : { with: withText }), ...(whole === undefined ? {} : { partOf: whole }) };
+    const at2 = prior.at ?? at;
+    out[i] = { text: t, label: prior.label ?? label, ...(withText === undefined ? {} : { with: withText, ...(withText === value ? { withAt: valueAt } : {}) }), ...(whole === undefined ? {} : { partOf: whole }), ...(at2 === undefined ? {} : { at: at2 }) };
   };
   const m = LABELLED.exec(line);
   const label = m?.[1]?.trim() ?? null;
   const value = m?.[2]?.trim() ?? null;
+  // Where the value starts in the line: LABELLED's second group runs to the line's end, after the colon's spaces.
+  const valueAt = m?.[2] === undefined ? 0 : line.length - m[2].length;
   // A labelled value its line warns about ("Legal name: Alex Smith (do not use this old name ...)") gives no piece of
   // itself: only the whole value, whose words Jev reads (C1 review).
   if (label !== null && value !== null && !WARNS.test(value)) {
     const r = REMARK.exec(value);
-    if (r?.[1] !== undefined && !r[1].includes("(")) add(r[1], label, value);
+    if (r?.[1] !== undefined && !r[1].includes("(")) add(r[1], label, value, undefined, valueAt);
     const parts = value.split(/\s*[,;]\s*/u);
     const first = (parts[0] ?? "").replace(/\s*\(.*$/u, "").replace(/[.!?]+$/u, "").trim();
     const next = (parts[1] ?? "").replace(/\s*\(.*$/u, "").replace(/[.!?]+$/u, "").trim();
     if (first !== "" && !/\d/u.test(first) && !CONTINUES.test(next)) {
-      if (isNameLike(first, null)) add(first, label);
+      if (isNameLike(first, null)) add(first, label, undefined, undefined, valueAt);
       else if (PERSON_LABEL.test(label)) {
         const names = namesIn(first);
-        if (names.length === 1 && first.endsWith(names[0] as string)) add(names[0] as string, label);
+        if (names.length === 1 && first.endsWith(names[0] as string)) add(names[0] as string, label, undefined, undefined, valueAt + first.length - (names[0] as string).length);
       }
     }
     // Under a label that says a person, only the name above: a later part is another fact about them (their employer).
@@ -468,6 +478,12 @@ export const CLAUSE_MAX = 90;
  * about ("Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline."). Null when the clause is the value.
  */
 export function clauseAround(line: string, at: number, text: string): string | null {
+  const r = clauseSpan(line, at, text);
+  return r === null ? null : line.slice(r[0], r[1]);
+}
+
+/** clauseAround's clause as its start and end in the line, or null. */
+export function clauseSpan(line: string, at: number, text: string): [number, number] | null {
   const end = at + text.length;
   let start = 0;
   for (const m of line.slice(0, at).matchAll(/[.!?;]\s+|[()]/gu)) start = (m.index ?? 0) + m[0].length;
@@ -486,8 +502,18 @@ export function clauseAround(line: string, at: number, text: string): string | n
     start = from > start && /\s/u.test(head) ? from + head.search(/\s/u) + 1 : from;
     stop = to < stop && /\s/u.test(tail) ? end + tail.lastIndexOf(" ") : to;
   }
-  const clause = line.slice(start, stop).trim();
-  return clause === text || clause === "" ? null : clause;
+  const [a, b] = trimmed(line, start, stop);
+  const clause = line.slice(a, b);
+  return clause === text || clause === "" ? null : [a, b];
+}
+
+/** [start, end) of `line` with white space taken off both ends, as String.trim would. */
+function trimmed(line: string, start: number, end: number): [number, number] {
+  let a = start;
+  let b = end;
+  while (a < b && /\s/u.test(line[a]!)) a++;
+  while (b > a && /\s/u.test(line[b - 1]!)) b--;
+  return [a, b];
 }
 
 /**
@@ -499,10 +525,18 @@ export function clauseAround(line: string, at: number, text: string): string | n
  * that part is the value alone.
  */
 export function partAround(line: string, at: number, text: string): string | null {
-  const clause = clauseAround(line, at, text);
-  if (clause === null) return null;
-  const from = clause.indexOf(text);
-  if (from < 0) return clause;
+  const r = partSpan(line, at, text);
+  return r === null ? null : line.slice(r[0], r[1]);
+}
+
+/** partAround's part as its start and end in the line, or null. */
+export function partSpan(line: string, at: number, text: string): [number, number] | null {
+  const span = clauseSpan(line, at, text);
+  if (span === null) return null;
+  const clause = line.slice(span[0], span[1]);
+  // The value where it was read, in the clause.
+  const from = at - span[0];
+  if (from < 0 || clause.slice(from, from + text.length) !== text) return span;
   // Typed values and the value itself are masked, so their own commas ("October 18, 2026") split nothing.
   let masked = clause;
   const mask = (i: number, n: number): void => void (masked = masked.slice(0, i) + "\u0001".repeat(n) + masked.slice(i + n));
@@ -516,12 +550,13 @@ export function partAround(line: string, at: number, text: string): string | nul
   }
   cuts.push([start, masked.length]);
   const k = cuts.findIndex(([s, e]) => s <= from && from < e);
-  if (k < 0) return clause;
+  if (k < 0) return span;
   const word = (i: number): boolean => /\p{L}{2,}/u.test(masked.slice(cuts[i]?.[0] ?? 0, cuts[i]?.[1] ?? 0));
   let [a, b] = [k, k];
   if (!word(k)) [a, b] = [Math.max(0, k - 1), Math.min(cuts.length - 1, k + 1)];
-  const part = clause.slice(cuts[a]?.[0] ?? 0, cuts[b]?.[1] ?? clause.length).trim().replace(/[.!?;,]+$/u, "");
-  return part === text || part === "" ? null : part;
+  const [p0, p1] = trimmed(clause, cuts[a]?.[0] ?? 0, cuts[b]?.[1] ?? clause.length);
+  const part = clause.slice(p0, p1).replace(/[.!?;,]+$/u, "");
+  return part === text || part === "" ? null : [span[0] + p0, span[0] + p0 + part.length];
 }
 
 /**
@@ -588,6 +623,12 @@ const SENTENCE_END = /(?<=(?:\b\p{Ll}[\p{Ll}'’-]+|\d|["'”’)\]]))(?<!\b(?:v
  * sends it whole with the value, or not the value (candidates.ts lineFact).
  */
 export function sentenceAround(line: string, at: number, text: string): string {
+  const [a, b] = sentenceSpan(line, at, text);
+  return line.slice(a, b);
+}
+
+/** sentenceAround's sentence as its start and end in the line. */
+export function sentenceSpan(line: string, at: number, text: string): [number, number] {
   let start = 0;
   for (const m of line.slice(0, at).matchAll(SENTENCE_END)) start = (m.index ?? 0) + m[0].length;
   const end = at + text.length;
@@ -597,5 +638,5 @@ export function sentenceAround(line: string, at: number, text: string): string {
   const ends = new RegExp(SENTENCE_END.source, "gu");
   ends.lastIndex = from;
   const stop = ends.exec(line);
-  return line.slice(start, stop === null ? line.length : stop.index + 1).trim();
+  return trimmed(line, start, stop === null ? line.length : stop.index + 1);
 }

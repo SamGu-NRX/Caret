@@ -258,12 +258,13 @@ function fromBytes(s: Sealed): unknown {
 /**
  * The bytes a transport posts, on every attempt: the sealed final bytes, unchanged, after the wire is checked again (a
  * switch-off since the seal refuses) and the bytes are measured against the registry as it is now (a window opened
- * since the seal can refuse them); this measure commits nothing more. Throws UnmintedText (LedgerRefused for the ledger)
+ * since the seal can refuse them). What they reveal is committed to the operation's union, so a later request counts it. Throws UnmintedText (LedgerRefused for the ledger)
  * when they may not leave.
  */
 export function sendable(s: Sealed): string {
   const wire = fromBytes(s);
-  measureBytes(owner(s.out), s.bytes, stringsOf(wire).strings, false);
+  // Committed: a window opened since the seal is charged what the bytes reveal of it, in the operation's union.
+  measureBytes(owner(s.out), s.bytes, stringsOf(wire).strings);
   return s.bytes;
 }
 

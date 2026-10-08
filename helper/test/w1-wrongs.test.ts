@@ -177,7 +177,7 @@ describe("LV1 wrong 3: the Ashby task's incident question took a note-to-self in
 describe("W1 review: parts keep what their line says about them", () => {
   it("quotes the whole value beside a part, so a qualifier goes with it (review 1)", async () => {
     const value = "Junior Analyst at Ridgeline Outdoor Co (for my sister)";
-    expect(lineTexts(`Work: ${value}`).filter((t) => t.text === "Junior Analyst")).toEqual([{ text: "Junior Analyst", label: "Work", with: value, partOf: value }]);
+    expect(lineTexts(`Work: ${value}`).filter((t) => t.text === "Junior Analyst")).toEqual([{ text: "Junior Analyst", label: "Work", with: value, withAt: 6, partOf: value }]);
     const m = noteDesk(`Work: ${value}\n`, [field("form/job", "", { label: "Job title" })]);
     const seen: JevRequest[] = [];
     await proposeFill(m, picking("Job title", "none", seen), "form", "form/job", T0, { rand: () => 0 });
@@ -210,7 +210,7 @@ describe("W1 review: parts keep what their line says about them", () => {
 describe("W1 round-2 review: one span found twice keeps what both readings say", () => {
   it("keeps 'Reception Desk' a part, quoting its whole value, though the first-part reading found it bare", async () => {
     const value = "Reception Desk, ring twice";
-    expect(lineTexts(`Delivery instructions: ${value}`).find((t) => t.text === "Reception Desk")).toEqual({ text: "Reception Desk", label: "Delivery instructions", with: value, partOf: value });
+    expect(lineTexts(`Delivery instructions: ${value}`).find((t) => t.text === "Reception Desk")).toEqual({ text: "Reception Desk", label: "Delivery instructions", with: value, withAt: 23, partOf: value, at: 23 });
     const m = noteDesk(`Delivery instructions: ${value}\n`, [field("form/notes", "", { role: "AXTextArea", label: "Delivery instructions" })]);
     const p = await proposeFill(m, picking("Delivery instructions", "Reception Desk"), "form", "form/notes", T0, { rand: () => 0 });
     expect(fieldOf(p, "form/notes")).toMatchObject({ value: null, withheld: "notExact" });
@@ -219,7 +219,9 @@ describe("W1 round-2 review: one span found twice keeps what both readings say",
   it("keeps the qualifier beside 'Lumen Labs' from 'Lumen Labs, lab technician (for my sister)'", async () => {
     const value = "Lumen Labs, lab technician (for my sister)";
     const texts = lineTexts(`work: ${value}`);
-    for (const part of ["Lumen Labs", "lab technician"]) expect(texts.find((t) => t.text === part)).toEqual({ text: part, label: "work", with: value, partOf: value });
+    // "Lumen Labs" is also the first part, found at the value's start (6); a later part has no reading of its place.
+    expect(texts.find((t) => t.text === "Lumen Labs")).toEqual({ text: "Lumen Labs", label: "work", with: value, withAt: 6, partOf: value, at: 6 });
+    expect(texts.find((t) => t.text === "lab technician")).toEqual({ text: "lab technician", label: "work", with: value, withAt: 6, partOf: value });
     const m = noteDesk(`work: ${value}\n`, [field("form/company", "", { label: "Current employer" })]);
     const seen: JevRequest[] = [];
     await proposeFill(m, picking("Current employer", "none", seen), "form", "form/company", T0, { rand: () => 0 });

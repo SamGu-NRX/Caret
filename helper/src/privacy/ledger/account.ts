@@ -212,44 +212,59 @@ export function breachWithNotes(m: Measurement, windows: readonly MeasuredWindow
 }
 
 /** `had` with `bits` added, and how many positions the union holds. */
-function unionOf(had: Uint8Array | undefined, bits: Uint8Array): { u: Uint8Array; count: number } {
-  const u = had === undefined ? bits : had.map((b, p) => b | bits[p]!);
-  let count = 0;
-  for (const b of u) count += b;
-  return { u, count };
+/**
+ * A window's source positions as the operation counts them: by the line's text and the offset in it, so an identical
+ * snapshot refresh (a new view object, the same lines) names the same positions. Lines are distinct in an inventory
+ * (section 1), so a line's text is its occurrence.
+ */
+function sourceKeys(inv: LineInventory, bits: Uint8Array): string[] {
+  const out: string[] = [];
+  for (let li = 0; li < inv.lines.length; li++) {
+    const start = inv.starts[li]!;
+    const line = inv.lines[li]!;
+    for (let k = 0; k < line.length; k++) if (bits[start + k] === 1) out.push(`${line}\u0000${k}`);
+  }
+  return out;
 }
 
 /**
  * Sections 7 and 8: one operation's ledger. The positions every request it sent revealed of each conversation, unioned
- * by window state, are held to that conversation's limit: two requests of one fill cannot each take just under half. A
- * window's owner notes, unioned over the operation's requests, are held to the allotment: every wording and retry
- * shares one. A retried or repeated request adds no positions. Other windows are held per request only.
+ * by window id and source line (sourceKeys), are held to that conversation's limit: two requests of one fill cannot each
+ * take just under half, and a snapshot refresh between them changes nothing. A window's owner notes, unioned over the
+ * operation's requests, are held to the allotment: every wording and retry shares one. A retried or repeated request
+ * adds no positions. Other windows are held per request only.
  */
 export class OperationLedger {
-  private readonly union = new Map<WindowState, Uint8Array>();
-  private readonly notes = new Map<WindowState, Uint8Array>();
+  private readonly union = new Map<string, Set<string>>();
+  private readonly notes = new Map<string, Set<string>>();
 
   /**
    * Keeps a sent request's positions (only checks them, without `commit`), or returns the conversation they would take
-   * past its limit, or the window whose owner notes would pass `allotment`, and keeps nothing.
+   * past its limit, or the window whose owner notes would pass `allotment`, and keeps nothing. A window measured in two
+   * states (a retained snapshot and the live one) is one window: their positions are unioned by source line, and each
+   * state's limit holds the union.
    */
   admit(m: Measurement, windows: readonly MeasuredWindow[], split: readonly NoteSplit[] = [], allotment = 0, commit = true): (Breach & { notes: boolean }) | null {
-    const next: [Map<WindowState, Uint8Array>, WindowState, Uint8Array][] = [];
+    const next = { union: new Map<string, Set<string>>(), notes: new Map<string, Set<string>>() };
+    const grown = (which: "union" | "notes", id: string, keys: readonly string[]): Set<string> => {
+      let set = next[which].get(id);
+      if (set === undefined) next[which].set(id, (set = new Set(this[which].get(id) ?? [])));
+      for (const k of keys) set.add(k);
+      return set;
+    };
     for (const w of windows) {
       const bits = w.conversation ? m.positions.get(w.key)?.bits : undefined;
-      if (bits !== undefined) {
-        const { u, count } = unionOf(this.union.get(w.view), bits);
-        if (count > w.limit) return { key: w.key, charged: count, limit: w.limit, notes: false };
-        next.push([this.union, w.view, u]);
-      }
+      if (bits !== undefined) grown("union", w.windowId, sourceKeys(w.inv, bits));
       const s = split.find((x) => x.key === w.key);
-      if (s !== undefined) {
-        const { u, count } = unionOf(this.notes.get(w.view), s.notes);
-        if (count > allotment) return { key: w.key, charged: count, limit: allotment, notes: true };
-        next.push([this.notes, w.view, u]);
-      }
+      if (s !== undefined) grown("notes", w.windowId, sourceKeys(w.inv, s.notes));
     }
-    if (commit) for (const [map, view, u] of next) map.set(view, u);
+    for (const w of windows) {
+      const u = next.union.get(w.windowId);
+      if (u !== undefined && u.size > w.limit) return { key: w.key, charged: u.size, limit: w.limit, notes: false };
+      const n = next.notes.get(w.windowId);
+      if (n !== undefined && split.some((x) => x.key === w.key) && n.size > allotment) return { key: w.key, charged: n.size, limit: allotment, notes: true };
+    }
+    if (commit) for (const which of ["union", "notes"] as const) for (const [id, set] of next[which]) this[which].set(id, set);
     return null;
   }
 }
