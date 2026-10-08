@@ -18,11 +18,11 @@
 // would miss every second ask; the recorded answer is mapped back to this run's ids. When two options share a
 // description, or two questions their content, no renaming can tell them apart and the key uses the exact ids.
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { MEMORY_SNIPPETS } from "../../privacy.ts";
 import { frozenRequest, wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
-import { seal, storedLine } from "../../privacy/send.ts";
+import { seal, writeStoredLine } from "../../privacy/send.ts";
 
 export type CacheMode = "record" | "replay" | "replay-or-record";
 const MODES: readonly CacheMode[] = ["record", "replay", "replay-or-record"];
@@ -251,7 +251,7 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
     mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
     const tmp = `${path}.${process.pid}.tmp`;
     // Checked as it is written, after the answer came back (privacy/send.ts storedLine).
-    writeFileSync(tmp, storedLine(sealed, entry), { mode: 0o600 });
+    writeStoredLine(tmp, sealed, entry, { mode: 0o600 });
     renameSync(tmp, path);
     return r;
   };

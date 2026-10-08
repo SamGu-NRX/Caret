@@ -77,6 +77,9 @@ describe("the I/O boundary: every POST body and every request store is checked a
         if (!/\b(?:append|write)FileSync\(/u.test(line) || !/\breq\b|\.questions\b|\.state\b|\bwire\b/u.test(line)) continue;
         if (!/\b(?:storedLine|storableRequest)\(/u.test(line)) out.push(`${file}: a store of request text that is not storedLine or storableRequest`);
       }
+      // A request store's path is checked (privacy/store-path.ts) by writeStoredLine and appendStoredLine, not by a bare
+      // write of storedLine's text.
+      if (file !== "src/privacy/send.ts") for (const line of src.split("\n")) if (/\b(?:append|write)FileSync\([^\n]*\bstoredLine\(/u.test(line)) out.push(`${file}: a request store whose path is not checked`);
       return out;
     });
   // The fixture harness's own scripts (fixtures/web-form/*.ts) send and store requests; its tests and pages post to the
@@ -162,6 +165,7 @@ describe("the I/O boundary: every POST body and every request store is checked a
     const s = all();
     expect(breaks(new Map([...s, ["src/new-transport.ts", 'await f(url, { method: "POST", headers: {}, body: JSON.stringify(wire) });']]))).toEqual(["src/new-transport.ts: a POST body that is not sealedBody"]);
     expect(breaks(new Map([...s, ["src/new-store.ts", "appendFileSync(log, JSON.stringify({ state: req.state }));"]]))).toEqual(["src/new-store.ts: a store of request text that is not storedLine or storableRequest"]);
+    expect(breaks(new Map([...s, ["src/new-store.ts", "appendFileSync(log, storedLine(sealed, (w) => ({ body: w })));"]]))).toEqual(["src/new-store.ts: a request store whose path is not checked"]);
   });
 });
 

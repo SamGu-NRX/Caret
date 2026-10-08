@@ -8,9 +8,8 @@
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
 import { assertNoExcludedValue } from "../../privacy.ts";
 import { verifySent } from "../../privacy/disclosure.ts";
-import { seal, storedLine } from "../../privacy/send.ts";
+import { appendStoredLine, seal } from "../../privacy/send.ts";
 import { withholdValues } from "../../privacy/exclude.ts";
-import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { frozenRequest, HOIST_SHARED_OPTIONS, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
@@ -167,10 +166,10 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
         r = await inner(asked);
       } catch (e) {
         // A failed request is logged with its error, which the eval's report shows only as the user's sentence.
-        appendFileSync(log, storedLine(sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 })), { mode: 0o600 });
+        appendStoredLine(log, sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 }), { mode: 0o600 });
         throw e;
       }
-      appendFileSync(log, storedLine(sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })), { mode: 0o600 });
+      appendStoredLine(log, sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens }), { mode: 0o600 });
       return r;
     };
   }

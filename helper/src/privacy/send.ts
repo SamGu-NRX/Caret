@@ -6,6 +6,7 @@
 import { appendFileSync, writeFileSync, type WriteFileOptions } from "node:fs";
 import { verifySent, verifyWriterInput, withheldDeep } from "./disclosure.ts";
 import { withholdValues } from "./exclude.ts";
+import { assertLocalStorePath } from "./store-path.ts";
 import type { ModelValue } from "./disclosure.ts";
 import type { ChoiceQuestion, JevRequest, NoulQuestion } from "../fill/jev.ts";
 
@@ -66,11 +67,29 @@ export function sealedBody(s: Sealed, render?: (wire: unknown) => unknown): stri
 }
 
 /**
+ * A store's check (OUTPUT-LEDGER-SPEC section 6, the coordinator's 2026-10-07 ruling): membership, shape, the
+ * switch-off policy and the never-carried formats, but not the per-window budget. The budget governs bytes sent to a
+ * provider; a local file is not a provider disclosure, and the request bytes a record holds were measured when they were
+ * sealed for sending. A store that could leave the Mac on its own would be a provider, so every store path is held to
+ * local, non-synced roots (privacy/store-path.ts).
+ *
  * The line a store writes, checked as it is written: what `build` makes of the frozen wire (the store's record of the
  * request, beside what came back), as JSON with every value in a format Caret never carries withheld, and a newline.
  */
 export function storedLine(s: Sealed, build: (wire: unknown) => unknown): string {
   return `${JSON.stringify(withheldDeep(build(fromBytes(s))))}\n`;
+}
+
+/** storedLine written to `path` (a request store's whole file), after the store-path check (privacy/store-path.ts). */
+export function writeStoredLine(path: string, s: Sealed, build: (wire: unknown) => unknown, o?: WriteFileOptions): void {
+  assertLocalStorePath(path);
+  writeFileSync(path, storedLine(s, build), o);
+}
+
+/** storedLine appended to `path` (a request log), after the store-path check (privacy/store-path.ts). */
+export function appendStoredLine(path: string, s: Sealed, build: (wire: unknown) => unknown, o?: WriteFileOptions): void {
+  assertLocalStorePath(path);
+  appendFileSync(path, storedLine(s, build), o);
 }
 
 /**
@@ -90,11 +109,13 @@ export function storedRequest<T>(s: Sealed, req: JevRequest, build: (frozen: Jev
  * or NDJSON store goes through writeStoreJson, appendStoreJson or writeStoreNdjson, which withhold inside its strings.
  */
 export function writeStore(path: string, text: string, o?: WriteFileOptions): void {
+  assertLocalStorePath(path);
   writeFileSync(path, withholdValues(text), o);
 }
 
 /** writeStore's append. */
 export function appendStore(path: string, text: string, o?: WriteFileOptions): void {
+  assertLocalStorePath(path);
   appendFileSync(path, withholdValues(text), o);
 }
 
@@ -135,16 +156,19 @@ export function storeJson(value: unknown, space?: number): string {
 
 /** A .json store: storeJson's text and a newline. */
 export function writeStoreJson(path: string, value: unknown, space?: number, o?: WriteFileOptions): void {
+  assertLocalStorePath(path);
   writeFileSync(path, `${storeJson(value, space)}\n`, o);
 }
 
 /** One record appended to an .ndjson store, on one line. */
 export function appendStoreJson(path: string, value: unknown, o?: WriteFileOptions): void {
+  assertLocalStorePath(path);
   appendFileSync(path, `${storeJson(value)}\n`, o);
 }
 
 /** An .ndjson store of these records, one line each. */
 export function writeStoreNdjson(path: string, values: readonly unknown[], o?: WriteFileOptions): void {
+  assertLocalStorePath(path);
   writeFileSync(path, values.map((v) => `${storeJson(v)}\n`).join(""), o);
 }
 
