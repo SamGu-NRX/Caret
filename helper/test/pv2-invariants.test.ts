@@ -59,7 +59,12 @@ describe("invariant: what a request's final bytes reveal of a window is exactly 
     return out;
   };
 
-  /** A desk of windows that share sentences, copy lines in another case or spacing, and repeat words and lines. */
+  const MESSAGES = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
+
+  /**
+   * A desk of windows near their limits: a note, a short chat (its limit is under half of a few lines) and a chat that
+   * repeats a sentence and quotes a line. Sentences are shared between windows, and copied in another case or spacing.
+   */
   function desk(r: () => number): { m: ScreenModel; lines: Map<string, string[]> } {
     let next = 0;
     const word = (): string => `${pick(r, ["Ka", "lo", "Mi", "ne", "su", "Ta"])}${pick(r, ["ber", "dan", "fel", "gor"])}${next++}`;
@@ -68,57 +73,78 @@ describe("invariant: what a request's final bytes reveal of a window is exactly 
       if (r() < 0.4 && ws.length > 2) ws.push(ws[Math.floor(r() * ws.length)] as string);
       return ws.join(" ");
     };
-    const shared = Array.from({ length: 2 }, () => sentence(r() < 0.5 ? 3 : 15));
+    const shared = Array.from({ length: 2 }, () => sentence(3 + Math.floor(r() * 10)));
     const m = new ScreenModel();
     const lines = new Map<string, string[]>();
-    for (const id of ["a", "b", "c"]) {
-      const own = Array.from({ length: 2 + Math.floor(r() * 3) }, () => sentence(r() < 0.5 ? 2 + Math.floor(r() * 3) : 14 + Math.floor(r() * 6)));
-      const mine = [...own, ...shared.filter(() => r() < 0.7)];
-      if (r() < 0.5) mine.push((mine[0] as string).toUpperCase());
-      if (r() < 0.5) mine.push((mine[1] ?? (mine[0] as string)).split(" ").join("  "));
-      // One of the three is a conversation (Messages), held under half of its text.
-      const app = id === "c" ? { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" } : undefined;
-      m.apply(snap(mine.map((l, i) => text(`${id}${i}`, l)), { at: 1000, windowId: id, title: `Title ${id}`, ...(app === undefined ? {} : { app }) }));
-      lines.set(id, mine);
-    }
+    const put = (id: string, mine: string[], chat: boolean): void => {
+      m.apply(snap(mine.map((l, i) => text(`${id}${i}`, l)), { at: 1000, windowId: id, title: `Title ${id}`, ...(chat ? { app: MESSAGES } : {}) }));
+      lines.set(id, [...new Set(mine)]);
+    };
+    const note = [...Array.from({ length: 2 + Math.floor(r() * 3) }, () => sentence(2 + Math.floor(r() * 16))), ...shared.filter(() => r() < 0.7)];
+    if (r() < 0.5) note.push((note[0] as string).toUpperCase());
+    put("a", note, false);
+    put("b", [...Array.from({ length: 1 + Math.floor(r() * 3) }, () => sentence(3 + Math.floor(r() * 8))), ...shared.filter(() => r() < 0.5)], true);
+    const said = sentence(4 + Math.floor(r() * 6));
+    const chat = [said, sentence(3 + Math.floor(r() * 6)), `> ${said}`, ...shared.filter(() => r() < 0.5)];
+    if (r() < 0.5) chat.push(said.split(" ").join("  "));
+    put("c", chat, true);
     return { m, lines };
   }
 
-  it.each(Array.from({ length: 80 }, (_, i) => i + 1))("seed %i: cuts, derivations and compositions across shared, copied and repeated text", (seed) => {
+  /**
+   * One seed: pieces of 1 to 8 words cut, held or derived from a window's line, many of them under 12 scalars and so
+   * uncharged when minted, and compositions that join a line's consecutive pieces back into a longer run; then the
+   * seal's measure of a body that holds them, against the reference's.
+   */
+  function runSeed(seed: number): { fits: boolean; want: { id: string; charged: number; limit: number }[]; got: Record<string, number> | null } {
     const r = rng(seed * 7);
     const { m, lines } = desk(r);
     const d = new Disclosure(m);
     const views = new Map([...m.windows.values()].map((w) => [w.window.windowId, redactWindow(w)]));
-    const minted: ModelText[] = [];
-    for (let step = 0; step < 30; step++) {
+    const said: ModelText[] = [];
+    for (let step = 0; step < 12; step++) {
       const id = pick(r, [...lines.keys()]);
       const view = views.get(id) as WindowState;
       const ws = pick(r, linesOfWindow(view).slice(1)).split(" ");
       const a = Math.floor(r() * ws.length);
-      const piece = ws.slice(a, Math.min(ws.length, a + 1 + Math.floor(r() * 5))).join(" ");
-      const path = pick(r, ["candidate", "held", "derived", "compose"] as const);
+      const run = ws.slice(a, Math.min(ws.length, a + 1 + Math.floor(r() * 8)));
+      const path = pick(r, ["candidate", "held", "derived", "joined"] as const);
       let got: ModelText | null = null;
-      if (path === "candidate") got = d.candidate(view, piece);
-      else if (path === "held") got = d.held(view, piece);
+      if (path === "candidate") got = d.candidate(view, run.join(" "));
+      else if (path === "held") got = d.held(view, run.join(" "));
       else if (path === "derived") {
-        const b = d.basis(view, piece);
-        if (b !== null) got = d.derived(b, piece.split(" ").map((w) => (r() < 0.3 ? w.toUpperCase() : w)).join(r() < 0.3 ? "  " : " "));
-      } else if (minted.length >= 2) got = d.t`${pick(r, minted)} and ${pick(r, minted)}`;
-      if (got !== null) minted.push(got);
+        const b = d.basis(view, run.join(" "));
+        if (b !== null) got = d.derived(b, run.map((w) => (r() < 0.3 ? w.toUpperCase() : w)).join(r() < 0.3 ? "  " : " "));
+      } else {
+        // Each word minted on its own, then joined in order: the join is measured only at seal.
+        const parts = run.map((w) => d.candidate(view, w));
+        if (parts.every((x): x is ModelText => x !== null)) got = parts.slice(1).reduce((acc, x) => d.t`${acc} ${x}`, parts[0] as ModelText);
+      }
+      if (got !== null) said.push(got);
     }
-    expect(minted.length, `seed ${seed}: mints`).toBeGreaterThan(0);
-    const bytes = JSON.stringify({ state: { said: minted.slice(0, 8) } });
+    const bytes = JSON.stringify({ state: { said } });
     const units = refUnits(bytes);
     const want = [...m.windows.values()].map((w) => ({ id: w.window.windowId, charged: refReveal(units, linesOfWindow(redactWindow(w))).charged, limit: windowBudget(w) }));
-    const fits = want.every((w) => w.charged <= w.limit);
     let got: Record<string, number> | null = null;
     try {
       got = { ...d.measureSent("test", decodeUnits(bytes).units.map((u) => u.text)).charged };
     } catch (e) {
       if (!(e instanceof LedgerRefused)) throw e;
     }
+    return { fits: want.every((w) => w.charged <= w.limit), want, got };
+  }
+
+  it.each(Array.from({ length: 80 }, (_, i) => i + 1))("seed %i: cuts, derivations and compositions across shared, copied and repeated text", (seed) => {
+    const { fits, want, got } = runSeed(seed);
     expect(got !== null, `seed ${seed}: the seal admits exactly when the reference fits`).toBe(fits);
     if (got !== null) for (const w of want) expect(got[w.id] ?? 0, `seed ${seed}: ${w.id}`).toBe(w.charged);
+  });
+
+  // 34 of the 80 refuse, every one for a chat, mostly where joined words rebuild a run their pieces were too short to count.
+  it("refuses a fair share of those seeds, so both sides of the invariant are exercised", () => {
+    const refused = Array.from({ length: 80 }, (_, i) => runSeed(i + 1)).filter((x) => !x.fits).length;
+    expect(refused).toBeGreaterThanOrEqual(20);
+    expect(refused).toBeLessThanOrEqual(60);
   });
 
   it("a basis cut twice from 'Echo Echo', said as 'Echo Echo', reveals the whole line", () => {
