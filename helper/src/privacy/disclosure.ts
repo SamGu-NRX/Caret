@@ -6,7 +6,7 @@
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
 import { assertNoExcludedValue, cut, flat, fold, OWNER_NOTE_CHARS, sectionTexts, SnippetLedger, spansOf, type Snippet, type ViewSpan } from "../privacy.ts";
 import { breachWithNotes, measure, normalizedUnits, OperationLedger, splitNotes, viewInventory, type Breach, type Measurement, type OwnerNotes } from "./ledger/account.ts";
-import { nodePart, sourceLines, wholePart, type SourceAt } from "./ledger/source.ts";
+import { nodePart, sourceLines, sourcePieces, wholePart, type SourceAt } from "./ledger/source.ts";
 import { spanKey } from "./ledger/measure.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits, type DecodedUnit } from "./ledger/units.ts";
@@ -43,7 +43,7 @@ function viewText(view: WindowState): string {
  * a cut's ellipsis taken off either end, stands inside one line of the view's inventory.
  */
 export function viewHolds(view: WindowState, text: string): boolean {
-  const pieces = sourceLines(text).map((l) => l.replace(/^\u2026|\u2026$/gu, "")).filter((x) => x !== "");
+  const pieces = sourcePieces(text);
   if (pieces.length === 0) return false;
   const all = viewText(view);
   return pieces.every((p) => !p.includes("\u0000") && all.includes(p));
@@ -69,8 +69,8 @@ function textSpans(view: WindowState, text: string, at?: SourceAt | null): ViewS
   if (at !== undefined && at !== null) return [{ view, at }];
   const spans: ViewSpan[] = [{ view, text }];
   const lines = viewInventory(view).lines;
-  const pieces = sourceLines(text).map((l) => l.replace(/^\u2026|\u2026$/gu, "")).filter((l) => l !== "");
-  if (!pieces.every((p) => lines.some((l) => l.includes(p)))) for (const v of view.values) if (pieces.some((p) => v.text.includes(p))) spans.push(...nodeSpans(view, v.nodeKey));
+  const pieces = sourcePieces(text);
+  if (!pieces.every((p) => lines.some((l) => l.includes(p)))) for (const v of view.values) if (sourceLines(v.text).some((l) => pieces.some((p) => l.includes(p)))) spans.push(...nodeSpans(view, v.nodeKey));
   return spans;
 }
 
@@ -686,6 +686,20 @@ export class Disclosure extends SnippetLedger {
     if (!this.admitTexts([text], { under: view === null ? null : view.window.windowId, kind: "candidate", spans })) return null;
     this.declareSpans(text, spans);
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
+  }
+
+  /**
+   * A text code chose on the strength of minted bases rather than spelled from their words: a menu option a source value
+   * names, a place with its country added. Minted as plan text is (planned) and declaring every base's spans as well, so
+   * it charges what the choice was read from. Re-minted as plan text alone, a choice from a base the ledger had refused
+   * charged none of it. Null when a base was not minted by this Disclosure, or when the text does not fit.
+   */
+  chosen(bases: readonly ModelText[], text: string): ModelText | null {
+    if (bases.length === 0 || bases.some((b) => !this.mints.has(b)) || !this.keptByViews(text)) return null;
+    const spans = [...this.planSpans(text), ...bases.flatMap((b) => this.spans.get(b) ?? [])];
+    if (!this.admitTexts([text], { under: "plan", kind: "candidate", lines: true, spans })) return null;
+    this.declareSpans(text, spans);
+    return this.recordWays(text, this.composedWays(bases, "derived", false).map((w) => [...w, "held" as const]));
   }
 
   /**

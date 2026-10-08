@@ -648,23 +648,36 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
 const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format", amountNumber: "the number of the amount", boxTicked: "the ticked state stated" } as const satisfies Record<DeriveHow, string>;
 
 /**
- * A derived value's text, minted as derived from its base where the base was read (its window provenance's span at its
- * recorded range), so it charges the base's range and not every line holding the value. Null when the base recorded no
- * range or the value's words are not its base's (Disclosure.derived).
+ * The proposed value as the verifier quotes it, minted from where it was read (READS): a window value at its recorded
+ * range, else in the view it was read from; a derived value from its window bases, each minted where it was read and
+ * refusing it with them, as a derivation (Disclosure.derived) or else as a choice made from them (chosen); a value from
+ * memory, the instruction or an answer, and a window value with no recorded view, as plan text. Null when the ledger
+ * refuses it, and the value is not asked about. Re-minted as plan text when its base was refused, "2026-10-16" from a
+ * chat's "16/10/2026" charged the chat 4 where 14 was owed.
  */
-function derivedAtBase(d: Disclosure, pr: Provenance, text: string): ModelText | null {
-  if (pr.kind !== "derived" || pr.base.kind !== "window") return null;
-  const read = READS.get(pr.base);
-  if (read?.span === undefined) return null;
-  const base = d.candidate(read.view, pr.base.span, read.span);
-  return base === null ? null : d.derived(base, text);
+function mintValue(d: Disclosure, p: Proposed, admit: (t: string) => ModelText | null): ModelText | null {
+  const pr = p.provenance;
+  if (pr.kind === "window") {
+    const read = READS.get(pr);
+    return read === undefined ? admit(p.text) : d.candidate(read.view, p.text, p.text === pr.span ? read.span : undefined);
+  }
+  if (pr.kind !== "derived") return admit(p.text);
+  const roots = windowRoots(pr);
+  if (roots.length === 0) return admit(p.text);
+  const bases = roots.map((r) => {
+    const read = READS.get(r);
+    return read === undefined ? admit(r.span) : d.candidate(read.view, r.span, read.span);
+  });
+  const minted = bases.filter((b): b is ModelText => b !== null);
+  if (minted.length < bases.length) return null;
+  return d.derived(minted, p.text) ?? d.chosen(minted, p.text);
 }
 
-/** Where a proposed value was read, when it is its window provenance's span and that span's range was recorded. */
-function valueRead(p: Proposed): { view: WindowState; at: SourceAt } | null {
-  const pr = p.provenance;
-  const read = pr.kind === "window" && p.text === pr.span ? READS.get(pr) : undefined;
-  return read?.span === undefined ? null : { view: read.view, at: read.span };
+/** The window provenances a derived value was read from: its base's, and its second source's (`also`). */
+function windowRoots(pr: Provenance): Extract<Provenance, { kind: "window" }>[] {
+  if (pr.kind === "window") return [pr];
+  if (pr.kind !== "derived") return [];
+  return [...windowRoots(pr.base), ...(pr.also === null ? [] : windowRoots(pr.also))];
 }
 
 /**
@@ -899,9 +912,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
   const questions = proposed.map((p) => {
     // The field's descriptor and the text itself must go; a value whose own text the ledger refuses is not verified.
     const descriptor = admit(p.field.descriptor);
-    // The value is quoted where it was read when its provenance recorded that, else as plan text.
-    const read = valueRead(p);
-    const text = read !== null ? d.candidate(read.view, p.text, read.at) : (derivedAtBase(d, p.provenance, p.text) ?? admit(p.text));
+    const text = mintValue(d, p, admit);
     if (descriptor === null || text === null) return null;
     // Each text a provenance quotes is admitted as it is minted (mintProvenanceSays): at its range when it has one.
     for (const t of unreadTexts(p.provenance)) admit(t);

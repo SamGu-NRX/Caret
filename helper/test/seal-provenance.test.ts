@@ -251,3 +251,76 @@ describe("the verifier's source_notes, per batch", () => {
     expect(notes.map((n) => Object.keys(n).length).sort((a, b) => a - b)).toEqual([1, 1, 20, 20]);
   });
 });
+
+describe("no text is minted or sent without its provenance", () => {
+  it("refuses a derived value whose basis the ledger refuses: '2026-10-16' from a chat's '16/10/2026' is not asked about", async () => {
+    // T = 4 + 10 = 14, limit 6. The basis is 10; re-minted as plan text, the ISO date stood in no line and charged 4.
+    const m = desk([text("c0", "16/10/2026")], { title: "Kofi" });
+    const c = collectCandidates(m, FORM, { now: 3000 }).candidates.find((x) => x.text === "16/10/2026");
+    expect(c).toBeDefined();
+    const pr: Provenance = { kind: "derived", how: "resolved", base: candidateProvenance(m, c!), also: null };
+    const out = await verified(m, "2026-10-16", pr);
+    expect(out.asked, "the derived value is not asked about").toBe(false);
+    expect(out.length).toBe(0);
+  });
+
+  /** Kofi's chat saying "the following Friday", which the reader typed with runs of spaces, and `pad` more characters. */
+  const spacedDesk = (pad: number): { m: ScreenModel; d: Disclosure; view: WindowState } => {
+    const m = desk([text("c0", "the following Friday"), { key: "c1", parent: null, role: "AXButton", label: "Z".repeat(pad) }], { title: "Kofi", values: [{ kind: "date", text: "Oct   16, 2026", nodeKey: "c0" }] });
+    return { m, d: new Disclosure(m), view: redactWindow(m.windows.get("src-1") as WindowState) };
+  };
+
+  it("charges a typed value read with runs of spaces its node: 'Oct   16, 2026' from 'the following Friday' takes 20", () => {
+    // T = 4 + 20 + 26 = 50, limit 24. Compared with the typed value as the reader spelled it, the collapsed text matched
+    // no value, and the node was charged nothing.
+    const { d, view } = spacedDesk(26);
+    const said = d.candidate(view, "Oct   16, 2026");
+    expect(said).not.toBeNull();
+    expect(measureBytes({ purpose: "test", disclosure: d }, JSON.stringify({ said })).charged["src-1"]).toBe(20);
+    const e = spacedDesk(26);
+    const b = e.d.basis(e.view, "Oct   16, 2026");
+    const year = e.d.derived(b!, "2026");
+    expect(measureBytes({ purpose: "test", disclosure: e.d }, JSON.stringify({ year })).charged["src-1"]).toBe(20);
+  });
+
+  it("refuses the spaced typed value and a derivation from it at a limit of 11", () => {
+    // T = 4 + 20 = 24, limit 11.
+    const { d, view } = spacedDesk(0);
+    expect(d.candidate(view, "Oct   16, 2026")).toBeNull();
+    const b = d.basis(view, "Oct   16, 2026");
+    expect(b === null ? null : d.derived(b, "2026")).toBeNull();
+  });
+
+  it("keeps a mail a conversation from the moment its view is read: a basis from a mail closed before any measurement is held to 41", () => {
+    // A mail in Chrome: "From:" and a "Subject:" line redaction removes (it names a password) make it a conversation.
+    // T = 14 + 10 + 24 + 35 = 83, limit 41. Classified from the kept view alone after it closed, it was a page at 1200.
+    const m = new ScreenModel();
+    const body = ["see you at five tomorrow", "and the venue holds the date for us"];
+    const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+    m.apply(snap([text("h0", "From: Dana"), text("h1", "Subject: my password is violet-orchard-seven"), ...body.map((l, i) => text(`b${i}`, l))], { at: 2, windowId: "mail-1", title: "Inbox - Chrome", app: chrome }));
+    const view = redactWindow(m.windows.get("mail-1") as WindowState);
+    // The Disclosure is built and the bases read before anything is measured; the mail then closes.
+    const d = new Disclosure(m);
+    const bases = body.map((l) => d.basis(view, l)!);
+    m.close("mail-1", 3);
+    const said = d.derived(bases, body.join(" "));
+    expect(said, "refused at mint: 59 of a limit of 41").toBeNull();
+  });
+});
+
+describe("a choice made from minted bases", () => {
+  it("charges its bases' spans: 'Texas', the option a note's 'TX' names, takes the note's 2 for TX besides any line holding it", () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("n0", "State: TX"), text("n1", "Z".repeat(40))], { at: 1, windowId: "note-1", title: "N", app: TEXTEDIT }));
+    const d = new Disclosure(m);
+    const view = redactWindow(m.windows.get("note-1") as WindowState);
+    const tx = d.candidate(view, "TX", { part: "node\u0000n0\u0000label", start: 7, end: 9 })!;
+    expect(d.derived(tx, "Texas"), "no word of 'Texas' is the base's").toBeNull();
+    const texas = d.chosen([tx], "Texas");
+    expect(texas).toBe("Texas");
+    // Only the choice is sent: it is charged TX's range, which plan text alone would not charge.
+    expect(measureBytes({ purpose: "test", disclosure: d }, JSON.stringify({ texas })).charged["note-1"]).toBe(2);
+    const plain = new Disclosure(m);
+    expect(measureBytes({ purpose: "test", disclosure: plain }, JSON.stringify({ texas: plain.planText("Texas") })).charged["note-1"] ?? 0, "as plan text").toBe(0);
+  });
+});

@@ -14,7 +14,7 @@
 // never contain BOUNDARY, so no run crosses a unit. O(B + S) for B measured scalars and S source scalars, up to the
 // transition map's lookups.
 import { BOUNDARY, ledgerNormalizeV1, type Normalized } from "./normalize.ts";
-import { sourceLines, type PartId, type PartMap, type SourceAt } from "./source.ts";
+import { sourceLines, sourcePieces, type PartId, type PartMap, type SourceAt } from "./source.ts";
 
 /**
  * The shortest run that counts, in normalized scalars: the lead's 2026-10-08 ruling, chosen on the scripted corpus
@@ -228,8 +228,9 @@ function placeSpan(inv: LineInventory, span: DeclaredSpan): Uint8Array {
     for (let i = start; i < end; i++) if (map.pos[i]! >= 0) bits[map.pos[i]!] = 1;
     return bits;
   }
-  // Each line of the text, as written and with a cut's ellipsis taken off either end (viewHolds reads it both ways).
-  const pieces = new Set(sourceLines(span.text).flatMap((l) => [l, l.replace(/^\u2026|\u2026$/gu, "").trim()]).filter((l) => l !== ""));
+  // Each line of the text as the inventory reads it, and as membership reads it with a cut's ellipsis off (source.ts):
+  // a line holding either is charged whole.
+  const pieces = new Set([...sourceLines(span.text), ...sourcePieces(span.text)]);
   inv.lines.forEach((line, li) => {
     for (const piece of pieces) {
       if (!line.includes(piece)) continue;

@@ -71,6 +71,16 @@ export function sourceLines(text: string): string[] {
 }
 
 /**
+ * The pieces a text is looked for by, in the inventory and in a view's typed values: its lines as sourceLines reads them,
+ * each with a cut's ellipsis taken off either end, empty ones dropped. The one normalization for membership
+ * (disclosure.ts viewHolds), attribution (textSpans) and the fallback's placement (measure.ts spanPositions): a typed
+ * value compared as the reader spelled it ("Oct   16, 2026") matched no collapsed piece, and its node was charged nothing.
+ */
+export function sourcePieces(text: string): string[] {
+  return sourceLines(text).map((l) => sourceLine(l.replace(/^\u2026|\u2026$/gu, ""))).filter((l) => l !== "");
+}
+
+/**
  * SCP1: a page web area's heading list and section texts (Node.headings, Node.outline), which a section question sends:
  * lines of the window like its labels, so they count toward its limit and the ledger charges them.
  */

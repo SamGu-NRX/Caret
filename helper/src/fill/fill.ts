@@ -1191,7 +1191,8 @@ export async function proposeFill(
   /** A candidate's text alone, the base a derivation reads: minted again where it was read (sourceOf), at no new charge. */
   const textSaid = (c: Candidate): (() => ModelText | null) => () => {
     const src = readOf(c);
-    return src.view !== undefined ? m.candidate(src.view, c.text, src.text) : m.candidate(viewOf(model, c.source.windowId) ?? w, c.text);
+    const view = src.view ?? viewOf(model, c.source.windowId);
+    return view === undefined ? null : m.candidate(view, c.text, src.text);
   };
   /** "<value>" (the <part> of|in <whole>), the value a derivation of the whole's text. */
   const partSaid = (value: string, part: ModelText, rel: "of" | "in", whole: () => ModelText | null, base: () => ModelText | null): (() => ModelText | null) => () => {
@@ -2459,7 +2460,7 @@ export async function proposeFill(
     if (p.from === "instruction") return scope === undefined ? null : m.instructionSpan(scope.instruction, p.text);
     const bases = rootsOf(p).map(mintPick);
     const minted = bases.filter((b): b is ModelText => b !== null);
-    return minted.length < bases.length ? null : m.derived(minted, p.text, ["https"]);
+    return minted.length < bases.length ? null : (m.derived(minted, p.text, ["https"]) ?? m.chosen(minted, p.text));
   };
   /** The exact output, minted: the pick's own text, a menu's own option, a box's checked state, or a value derived from the pick. */
   const mintOutput = (f: Field, p: Pick, output: string): ModelText | null => {
@@ -2474,7 +2475,9 @@ export async function proposeFill(
     }
     // A place a dropdown takes with its country (placeWithCountry) adds the country's name, the only words code writes there.
     const added = f.control === "combobox" ? (["united", "states", "canada"] as const) : [];
-    return (own === null ? null : m.derived(own, output, added)) ?? m.descriptor(w, output);
+    // Spelled from the pick, or chosen on its strength (a menu option it names): either way charged the pick's spans. A
+    // pick that does not mint gives no output, rather than the output read off the form alone.
+    return own === null ? null : (m.derived(own, output, added) ?? m.chosen([own], output));
   };
   /** Where a pick was read, minted; each whole unit it names goes in `units` by its source_notes id. */
   // What the user told Caret is their own details by what it is, and a window value that is exactly one of them (its
@@ -2488,7 +2491,8 @@ export async function proposeFill(
         return label === null ? m.own("the user's own details, which the user told Caret") : m.t`the user's own details, which the user told Caret, saved as '${label}'`;
       }
       if (r.from === "instruction") return m.own("the user's request");
-      const view = readOf(r.c).view ?? viewOf(model, r.c.source.windowId) ?? w;
+      const view = readOf(r.c).view ?? viewOf(model, r.c.source.windowId);
+      if (view === undefined) return m.own("another window");
       const title = r.c.source.windowTitle === "" ? null : m.descriptor(view, r.c.source.windowTitle, r.c.source.windowTitle === view.window.title ? wholePart(TITLE, view.window.title) : undefined);
       const at = title === null ? m.t`${m.app(view)} window` : m.t`${m.app(view)} window '${title}'`;
       const identity = r.c.identity === undefined ? null : m.memoryText(null, r.c.identity.label);

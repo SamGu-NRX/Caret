@@ -9,7 +9,7 @@
 // less than the seal will. It never authorizes anything.
 import type { WindowState } from "../../model.ts";
 import { isConversation } from "../../conversation.ts";
-import { isRedacted, redactWindow } from "../../fill/redact.ts";
+import { builtFromConversation, isRedacted, redactWindow } from "../../fill/redact.ts";
 import { LedgerEncodingError, ledgerNormalizeV1, type Normalized } from "./normalize.ts";
 import { partsOf, readParts } from "./source.ts";
 import { inventoryOf, limitOf, spanPositions, UnitProbe, withPositions, type DeclaredSpan, type LineInventory, type Revealed } from "./measure.ts";
@@ -28,7 +28,7 @@ export function setConversationCap(on: boolean): void {
 
 /** Whether the conversation rule holds this window: it is a conversation, and the rule is on. */
 export function heldAsConversation(w: WindowState): boolean {
-  return conversationCap && isConversation(w);
+  return conversationCap && (isConversation(w) || builtFromConversation(w));
 }
 
 const INVENTORY = new WeakMap<WindowState, LineInventory>();
@@ -278,15 +278,17 @@ export class OperationLedger {
       for (const k of keys) set.add(k);
       return set;
     };
+    // Every window's positions are kept, a page's too, and only a conversation's union is held to its limit: a tab that
+    // sent 29 as a page and then showed a mail took 29 more against a limit of 30 when only its conversation states counted.
     for (const w of windows) {
-      const bits = w.conversation ? m.positions.get(w.key)?.bits : undefined;
+      const bits = m.positions.get(w.key)?.bits;
       if (bits !== undefined) grown("union", w.windowId, sourceKeys(w.inv, bits));
       const s = split.find((x) => x.key === w.key);
       if (s !== undefined) grown("notes", w.windowId, sourceKeys(w.inv, s.notes));
     }
     for (const w of windows) {
       const u = next.union.get(w.windowId);
-      if (u !== undefined && u.size > w.limit) return { key: w.key, charged: u.size, limit: w.limit, notes: false };
+      if (u !== undefined && w.conversation && u.size > w.limit) return { key: w.key, charged: u.size, limit: w.limit, notes: false };
       const n = next.notes.get(w.windowId);
       if (n !== undefined && split.some((x) => x.key === w.key) && n.size > allotment) return { key: w.key, charged: n.size, limit: allotment, notes: true };
     }

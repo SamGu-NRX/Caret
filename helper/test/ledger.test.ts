@@ -574,6 +574,26 @@ describe("a unique place, and a window's strictest limit", () => {
     expect(() => d.measureSent("test", [said[0]!])).toThrow(/with the requests sent before it, it reveals 59 characters of window mail-1, over its limit of 41/u);
   });
 
+  it("counts what a tab sent as a page once it becomes a mail: 29 then 29 more is 58 of a limit of 30, refused", () => {
+    const m = new ScreenModel();
+    const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+    const a = "abcdefghijklmnopqrstuvwxyzABC";
+    const b = "0123456789zyxwvutsrqponmlkjih";
+    m.apply(snap([text("a", a), text("b", b)], { at: 1, windowId: "tab", title: "Tab", app: chrome }));
+    const d = new Disclosure(m);
+    const view = redactWindow(m.windows.get("tab") as WindowState);
+    const said = [a, b].map((t, i) => d.candidate(view, t, { part: nodePart(i === 0 ? "a" : "b", "label"), start: 0, end: t.length })!);
+    const send = (t: string): Readonly<Record<string, number>> => {
+      const s = seal({ req: { purpose: "route.task", disclosure: d }, wire: { state: { offer: { found: t } }, questions: {} } });
+      sendable(s);
+      return s.charged;
+    };
+    expect(send(said[0]!)["tab"], "a page: no conversation limit").toBe(29);
+    // The tab now shows a mail, so it is a conversation, at the lowest limit of its states: the page's 61 give 30.
+    m.apply(snap([text("h", "From: Dana"), text("s", "Subject: booking"), text("a", a), text("b", b)], { at: 2, windowId: "tab", title: "Tab", app: chrome }));
+    expect(() => send(said[1]!), "the page's 29 count toward the mail's limit").toThrow(/with the requests sent before it, it reveals 58 characters of window tab\S*, over its limit of 30/u);
+  });
+
   it("keeps a tab that became a mail a conversation after it closes: 59 is refused at send against 41, not taken against 1200", () => {
     const m = new ScreenModel();
     const body = ["see you at five tomorrow", "and the venue holds the date for us"];

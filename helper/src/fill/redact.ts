@@ -21,6 +21,7 @@
 // "Incident question: use the token-leak story, write it fresh.", whose key is none: 0 right values lost.
 import { ENV, processEnv } from "../host-env.ts";
 import type { WindowState } from "../model.ts";
+import { isConversation } from "../conversation.ts";
 import type { Node, TypedValue } from "../protocol.ts";
 import { markerAcross, markerEnds, PEM_BEGIN, PEM_END, secretText } from "../memory/sensitive.ts";
 import { nodesLabelledBy } from "./descriptor.ts";
@@ -211,7 +212,18 @@ export function redactWindow(w: WindowState): WindowState {
   const view = build(w);
   views.set(w, { at: w.updatedAt, view });
   REDACTED.add(view);
+  RAW_CONVERSATION.set(view, isConversation(w));
   return view;
+}
+
+/**
+ * Whether the raw window a view was built from is a conversation (conversation.ts), decided when the view is built and
+ * carried by the view wherever it is kept: a basis, a recorded source, a held state. Redaction can remove the evidence
+ * (a mail's Subject line naming a password), and a view kept after its window closed was read as a page at 1,200.
+ */
+const RAW_CONVERSATION = new WeakMap<WindowState, boolean>();
+export function builtFromConversation(view: WindowState): boolean {
+  return RAW_CONVERSATION.get(view) === true;
 }
 
 /** Marker halves can be separate AX text nodes. Join only consecutive document text with adjacent positions. */
