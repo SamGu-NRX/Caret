@@ -77,7 +77,8 @@ function shownText(n: Node): string {
 
 /**
  * The nodes of a window's own content: in a browser, its page (the AXWebArea and everything under it, as controls.ts
- * formControls reads a page's controls), not the browser's toolbar and tabs; any other window's every node.
+ * formControls reads a page's controls), not the browser's toolbar and tabs; any other window's every node. The toolbar and
+ * tab strip are the browser's, not part of anyone's message.
  */
 function contentNodes(raw: WindowState): Map<string, Node> {
   const web = [...raw.nodes.values()].find((n) => n.role === "AXWebArea");
