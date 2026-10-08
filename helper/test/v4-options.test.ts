@@ -21,7 +21,7 @@ import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { saysOptionsUnseen } from "../src/planner/says.ts";
 import { buildDesk, loadCorpus, normLabel, pageForm, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { STAND_IN } from "./setup/verifier.ts";
-import { field, jevPickingText, scopeLabel, snap } from "./builders.ts";
+import { field, jevPickingText, scopeLabel, snap, optionIs } from "./builders.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));
@@ -301,7 +301,7 @@ describe("an Ask about a menu whose options the window does not show", () => {
         if (id.startsWith("s_")) return [id, { choice: /^(?:Phone|Degree)/u.test(scopeLabel(ins)) ? "asks" : "not", confidence: 0.99 }];
         if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
         const want = Object.entries(values).find(([label]) => ins.includes(`'${label}'`))?.[1];
-        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
+        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
         return [id, { choice: hit?.[0] ?? "none", confidence: 0.9 }];
       }),
     );

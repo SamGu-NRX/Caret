@@ -1,8 +1,7 @@
 // B24: Ask with natural phrasing through the code-mode writer (planner/codeplan.ts). A fake writer returns a
 // fixed program; the sandbox runs it for real; a stand-in Jev answers the checks. The plan must be the planner's
 // own shape, checked by validatePlan, and every write the writer chose must pass code's and Jev's checks.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { planWithCode } from "../src/planner/codeplan.ts";
 import { PlannerError } from "../src/planner/validate.ts";
@@ -29,10 +28,6 @@ vi.mock("../src/codemode/sandbox.ts", async (importOriginal) => {
       original.runCodePlan(source, snapshots, choose, { ...opts, limits: { ...opts.limits, guestCpuMs: 10_000, watchdogMs: 10_000 } }),
   };
 });
-
-// Candidate completeness is part of these semantic checks too, not a 15 ms performance assertion.
-beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
 
 const NOTE_APP = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
 const FORM_APP = { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" };

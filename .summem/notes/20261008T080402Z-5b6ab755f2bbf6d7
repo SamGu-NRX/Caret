@@ -1,1 +1,0 @@
-Scope-ask stand-ins read the field label with test/builders.ts scopeLabel (wording: Field: "<label>". Control: ...); never regex the wording in a test. An askAnswer with no picks is valid only beside a question's filling labels.

@@ -5,13 +5,13 @@ import { Disclosure } from "../src/privacy/disclosure.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { ScreenModel } from "../src/model.ts";
-import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
+import { collectCandidates } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
 import { WINDOW_CHARS, windowBudget } from "../src/privacy.ts";
@@ -19,14 +19,9 @@ import { targetSnippets } from "../src/executor/target.ts";
 import { conversationSign } from "../src/conversation.ts";
 import { PROTOCOL_VERSION, type AppRef, type FillProposal, type HelperMessage, type ReaderMessage, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
-import { field, snap, text, value } from "./builders.ts";
+import { field, snap, text, value, optionIs } from "./builders.ts";
 import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, chatWindow, notesWindow, scheduleForm } from "./desks.ts";
 import { minted } from "./mint.ts";
-
-// The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
-// change an answer these tests check (candidates.ts setGeneratorClock).
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
 
 const CALENDAR: AppRef = { pid: 6363, bundleId: "dev.caret.calendar", name: "Calendar" };
 const NOTES: AppRef = { pid: 6464, bundleId: "dev.caret.notes", name: "Notes" };
@@ -44,7 +39,7 @@ function fallthrough(want: Record<string, readonly string[]>): AskJev {
     const answers: Record<string, { choice: string; confidence: number }> = {};
     for (const [id, q] of Object.entries(req.questions)) {
       const label = Object.keys(want).find((l) => String(q.instructions).includes(`'${l}'`));
-      const hit = (want[label ?? ""] ?? []).map((t) => Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${t}"`))?.[0]).find((c) => c !== undefined);
+      const hit = (want[label ?? ""] ?? []).map((t) => Object.entries(q.criteria).find(([, d]) => optionIs(d, t))?.[0]).find((c) => c !== undefined);
       answers[id] = { choice: hit ?? "none", confidence: 0.9 };
     }
     return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
@@ -123,8 +118,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
     const labels = ["Start time", "Meeting date"];
     m.apply(scheduleForm(2000, labels));
     const ledger = new Disclosure(m.windows.values());
-    // No time budget, so only the cap stops it: under a loaded test run the 15 ms clock can stop it first.
-    const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])), budgetMs: Number.POSITIVE_INFINITY });
+    const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])) });
     expect(candidates).toHaveLength(80);
     expect(candidates.map((c) => c.text)).toContain(DECOY);
     expect(candidates.map((c) => c.text)).not.toContain(MEETING);

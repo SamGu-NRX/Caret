@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EngineSession } from "../src/engines/session.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
-import { wirePageEngines } from "../src/engines/wire.ts";
+import { wirePageEngines, type WiredPages } from "../src/engines/wire.ts";
 import { TabSource, pageTabReader, type TabReader } from "../src/engines/tab-source.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { Helper } from "../src/helper.ts";
@@ -299,6 +299,7 @@ describe("one fill from the tab the user just left (rules 1 to 7, through the he
   let store: Store;
   let tabs: TwoTabs;
   let host: PageHost;
+  let pages: WiredPages;
   let helper: Helper;
   let published: HelperMessage[];
   let warnings: string[];
@@ -317,12 +318,13 @@ describe("one fill from the tab the user just left (rules 1 to 7, through the he
       store, askJev: jevPickingText((_, ins) => PICK[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null, 0.95), shadow: false, allowBackgroundFocus: true, readerLink: host.link, calendar: null, now: () => Date.now() + ahead,
       tabReader: pageTabReader(host.registry), publish: (m) => void published.push(m), warn: (l) => void warnings.push(l),
     });
-    wirePageEngines({ host, helper, publish: () => {}, warn: (l) => void warnings.push(l), allowBackground: true });
+    pages = wirePageEngines({ host, helper, publish: () => {}, warn: (l) => void warnings.push(l), allowBackground: true });
     host.registry.add(tabs.session);
     tabs.session.receive(hello);
     await new Promise((r) => setTimeout(r, 0));
   });
   afterEach(() => {
+    tabs.session.close();
     helper.shutdown();
     store.close();
     rmSync(dir, { recursive: true, force: true });
@@ -330,10 +332,10 @@ describe("one fill from the tab the user just left (rules 1 to 7, through the he
 
   /** The user reads the mail tab, switches to the form tab, and focus lands in First name (the worker's two pageFocus reports). */
   const switchToForm = async (): Promise<void> => {
-    tabs.session.onFocus?.({ type: "pageFocus", v: 1, at: Date.now(), tabId: 3, frameId: 0 }, tabs.session);
-    await vi.waitFor(() => expect(helper.model.windows.get(MAIL)?.focused).toBe(true));
+    await pages.focus.moved({ type: "pageFocus", v: 1, at: Date.now(), tabId: 3, frameId: 0 }, tabs.session);
+    expect(helper.model.windows.get(MAIL)?.focused).toBe(true);
     tabs.left = 3;
-    tabs.session.onFocus?.({ type: "pageFocus", v: 1, at: Date.now(), tabId: 7, frameId: 0 }, tabs.session);
+    await pages.focus.moved({ type: "pageFocus", v: 1, at: Date.now(), tabId: 7, frameId: 0 }, tabs.session);
   };
   const popup = async (): Promise<OfferPopup> => {
     await vi.waitFor(() => expect(published.some((m) => m.type === "popup")).toBe(true), { timeout: 2000 });
@@ -429,6 +431,7 @@ describe("a fill whose tab text expires while Jev answers (rule 6, P4 review)", 
       // At most the one question already on its way when the text expired.
       expect(calls).toBe(1);
     } finally {
+      session.close();
       helper.shutdown();
       store.close();
       rmSync(dir, { recursive: true, force: true });

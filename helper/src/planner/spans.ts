@@ -22,6 +22,11 @@ const CLAUSE = /\s*(?:;|\.(?=\s|$)|,\s*(?:and\s+)?|\s+and\s+(?=(?:the|set|put|wr
 const AND_NEXT = /\s+and\s+(?=(?:\S+\s+){0,4}(?:to|as|is)\s)/i;
 const TO_TAIL = /\b(?:to|as|is)\s+(.+)$/i;
 const PUT_HEAD = /^(?:put|write|enter|type|add|paste|insert)\s+(.+?)\s+(?:in|into)\s+\S/i;
+/**
+ * "company, it's Acme Corp" (or "its", as people type it): the value the clause before names. Only a value that opens
+ * with a capital, a digit or a quote, so "its address" and "it's in my note" stay descriptions.
+ */
+const IT_IS = /^[Ii]t['’]?s\s+([\p{Lu}\p{N}"“'].*)$/u;
 const DESCRIBES = /^(?:the|my|his|her|their|our|your|its|a|an|this|that|these|those)\b/i;
 const QUOTED = /(?:^|[\s(])(?:"([^"]+)"|“([^”]+)”|'([^']+)')(?=$|[\s.,;:!?)])/g;
 const EDGE = /^[\s"'“”‘’.,;:!?()]+|[\s"'“”‘’.,;:!?()]+$/g;
@@ -45,6 +50,7 @@ export function instructionValues(instruction: string): string[] {
   for (const clause of unquoted.split(CLAUSE).flatMap((c) => c.split(AND_NEXT))) {
     add(TO_TAIL.exec(clause)?.[1]);
     add(PUT_HEAD.exec(clause)?.[1]);
+    add(IT_IS.exec(clause)?.[1]);
   }
   return out;
 }

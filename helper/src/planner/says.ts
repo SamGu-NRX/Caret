@@ -4,6 +4,7 @@
 //
 // Before B26 the user read what the failing check wrote for a developer: "Caret stops before payment" for an SSN,
 // nothing for "hit submit", and "no candidate values in any window other than 92930-…" (B25's held-out run).
+import type { ValueAsked } from "../fill/fill.ts";
 import type { PlanErrorCode } from "../protocol.ts";
 import { SENSITIVE_SAYS, type SensitiveKind } from "../memory/sensitive.ts";
 import { PlannerError, type HandoffWhy } from "./validate.ts";
@@ -26,6 +27,8 @@ export class SaidError extends PlannerError {
  * otherwise the user reads its sentence, as before.
  */
 export type AskPart = "fields" | "source" | "person";
+/** The part an Ask's question with choices settles: an intent's part, or (value settlement) which value goes in one field. */
+export type QuestionPart = AskPart | "value";
 
 export class Unclear extends SaidError {
   readonly part: AskPart;
@@ -41,6 +44,14 @@ export const ASKS: Record<AskPart, string> = {
   source: "Where should Caret copy from?",
   person: "Whose details go in?",
 };
+
+/** What a value question calls the value it asks for, by the field's kind (fill.ts ValueAsked); a box is asked whether to tick it. */
+const VALUE_NOUNS = { email: "email", phone: "phone number", url: "link", date: "date", time: "time", amount: "amount", name: "name", option: "option", value: "value" } as const satisfies Record<Exclude<ValueAsked, "box">, string>;
+
+/** A value question (value settlement): "Which email should go in Work email?", or "Should Caret tick Onion?" for a box. */
+export function asksValue(kind: ValueAsked, field: string): string {
+  return kind === "box" ? `Should Caret tick ${field}?` : `Which ${VALUE_NOUNS[kind]} should go in ${field}?`;
+}
 
 export const SAYS = {
   payment: "Paying is yours to do. Caret stops before payment.",

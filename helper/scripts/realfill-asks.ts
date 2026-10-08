@@ -37,10 +37,10 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
-import { cannedReply } from "../src/engines/decide/canned.ts";
-import type { FillTrace } from "../src/fill/fill.ts";
+import { realfillOracle } from "./realfill-oracle.ts";
+import { mintOf, type FillTrace } from "../src/fill/fill.ts";
 import { engineName } from "../src/engines/decide/port.ts";
-import { AskAsks, AskRefused, planAsk, type AskDraft, type AskQuestionDraft } from "../src/planner/ask.ts";
+import { answerQuestion, AskAsks, AskRefused, planAsk, type AskDraft, type AskQuestionDraft } from "../src/planner/ask.ts";
 import { jevIntentMaker, writerIntentMaker, type IntentMaker, type MakerUse } from "../src/planner/intent-makers.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import type { AskIntent } from "../src/planner/intent.ts";
@@ -51,10 +51,10 @@ import { ASK_MAKER } from "../src/writer/config.ts";
 import { devWriterRoute } from "../src/writer/routes.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
 import { attributedJev } from "./attributed-jev.ts";
-import { Snapshot } from "../src/protocol.ts";
+import { MAX_ASK_OPTIONS, Snapshot } from "../src/protocol.ts";
+import { MAX_GENERATOR_VISITS } from "../src/fill/candidates.ts";
 import { rng } from "../test/large-scene.ts";
-import { buildDesk, generatorClock, loadAsks, loadCorpus, nodesFor, normLabel, pageForm, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, pageForm, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: a } = parseArgs({
@@ -92,15 +92,11 @@ const { values: a } = parseArgs({
      * browser Ask uses. Pass "reader" to compare with runs before V4, which all used the reader's window.
      */
     "form-window": { type: "string", default: "page" },
-    /** The candidate generator's clock: "fixed" (the oracle's default) or "wall" (a live engine's), realfill-corpus.ts generatorClock. */
-    "generator-clock": { type: "string" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
 if (a["form-window"] !== "reader" && a["form-window"] !== "page") throw new Error("--form-window is reader or page");
 if (a.maker !== "writer" && a.maker !== "jev" && a.maker !== "heads") throw new Error("--maker is heads, jev or writer");
-const clock = generatorClock(a.engine, a["generator-clock"]);
-setGeneratorClock(clock);
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
 const corpus = loadCorpus(resolve(a.corpus));
@@ -117,134 +113,11 @@ let writerSpent = 0;
 /** Windows put on a desk, all from fixture files (buildDesk); the cache and the request log take only their text. */
 const fixtureIds = new Set<string>();
 /**
- * A1: `--engine canned` is an oracle, for when no model can run the Ask path (Laya's free tier takes at most 512 input
- * tokens, and Jev had no credits). A3: its route head fills (a must-refuse ask's head refuses or plans by the ask's
- * reason), its scope ask answers "asks" for exactly the expected fields and "not" for the rest, it confirms exactly the
- * expected fields, and it answers each value question with the ask's expected value for that field, else the value
- * corpus.json expects for a whole-form fill. So any field outside the ask's expected fields that the Ask still puts in
- * scope gets a value and scores wrong: it measures what code does with a perfect scope answer, not how a real model
- * scores.
+ * A1: `--engine canned` is an oracle (realfill-oracle.ts), for when no model can run the Ask path (Laya's free tier takes at
+ * most 512 input tokens, and Jev had no credits): it measures what code does with a perfect scope answer, not how a real
+ * model scores.
  */
-/** SCP1: the section each ask's instruction names, hand-labelled (ask-section-labels.json), for the oracle's section question. */
-const SECTION_LABELS = (JSON.parse(readFileSync(join(here, "ask-section-labels.json"), "utf8")) as { labels: Record<string, string> }).labels;
-const oracle: AskJev = async (req) => {
-  const ask = asks.find((x) => x.id === current.replace(/\+pick$/u, ""));
-  const form = corpus.forms.find((f) => f.id === ask?.form);
-  const want = ask === undefined || ask.expected === "refuse" ? {} : ask.expected;
-  const valueOf = (label: string): string | null => {
-    const n = normLabel(label);
-    const own = Object.entries(want).find(([l]) => normLabel(l) === n)?.[1];
-    if (own !== undefined) return own;
-    return form?.fields.find((f) => normLabel(f.label) === n)?.expected ?? null;
-  };
-  /** Whether a candidate's quoted text is the value: the same words, the same day, or the same clock time. */
-  const same = (text: string, v: string): boolean => {
-    const flat = (x: string): string => x.toLowerCase().replace(/[^a-z0-9]/gu, "");
-    if (flat(text) === flat(v) && flat(v) !== "") return true;
-    // A day as written in a source, its weekday and clock time dropped, in the value's year when it gives none.
-    const day = (x: string, year: string | null): string | null => {
-      const bare = x.replace(/^(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s*/iu, "").replace(/\s+at\s+.*$|,?\s+\d{1,2}:\d{2}.*$/iu, "");
-      const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/u.test(bare) ? `${bare}T00:00:00` : /\d{4}/u.test(bare) || year === null ? bare : `${bare}, ${year}`);
-      return Number.isNaN(t) ? null : new Date(t).toDateString();
-    };
-    const clock = (x: string): string | null => {
-      const m = /\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b\.?|^(\d{1,2}):(\d{2})$/iu.exec(x.trim());
-      if (m === null) return null;
-      if (m[4] !== undefined) return `${Number(m[4])}:${m[5]}`;
-      return `${(Number(m[1]) % 12) + (m[3]?.toLowerCase() === "p" ? 12 : 0)}:${m[2] ?? "00"}`;
-    };
-    const year = /^(\d{4})-/u.exec(v)?.[1] ?? null;
-    return (year !== null && day(text, year) !== null && day(text, year) === day(v, null)) || (/^\d{1,2}:\d{2}$/u.test(v) && clock(text) !== null && (clock(text) === clock(v) || (!/[ap]\.?m/iu.test(text) && clock(`${text} pm`) === clock(v))));
-  };
-  const quoted = (d: string): string => /^"([^"]*)"/u.exec(d)?.[1] ?? d;
-  const wholeForm = new Set((form?.fields ?? []).map((f) => f.expected));
-  const theirs = new Set(Object.entries(want).filter(([l, v]) => form?.fields.find((f) => normLabel(f.label) === normLabel(l))?.expected !== v).map(([, v]) => v));
-  const wanted = (label: string): boolean => Object.keys(want).some((l) => normLabel(l) === normLabel(label) && want[l] !== "none");
-  // A question fill sent names its field and its options in fill's own record (FillTrace), never parsed from its text
-  // (I2: "Guest's full name" was cut at its apostrophe, so held-12's value question answered none). Other questions (the
-  // planner's, Ask's confirmations) name a field as 'label' followed by punctuation, a space or the end, so a label may
-  // hold an apostrophe.
-  const trace = traces.find((t) => t.owns(req));
-  const labelIn = (ins: string): string | null => /(?:Label|field): '(.+?)'(?=[.,;:?)]|\s|$)|[Tt]he field '(.+?)'(?=[.,;:?)]|\s|$)|fill or change '(.+?)'(?=[.,;:?)]|\s|$)/u.exec(ins)?.slice(1).find((x) => x !== undefined) ?? null;
-  /** The corpus label of the field a fill question (`f3`, `f3_whose`, `f3_answer`) is about, from the trace; else from the text. */
-  const labelOf = (id: string, ins: string): string | null => {
-    // A saved-answer question (fill.values `f3_answer`) is only ever fill's: one with no trace is a request the oracle
-    // cannot map, said loudly rather than answered none.
-    if (trace === undefined && id.endsWith("_answer")) throw new Error(`the oracle got saved-answer question ${id} in a request fill's trace does not own`);
-    if (trace === undefined) return labelIn(ins);
-    const f = trace.fields.find((x) => x.id === id.replace(/_(?:whose|answer)$/u, ""));
-    if (f === undefined) throw new Error(`the oracle got fill question ${id}, which fill's trace does not list`);
-    return corpusLabel.get(f.key) ?? f.name;
-  };
-  /** An option's text: fill's record for a traced question; else the quoted text that opens its description. */
-  const optionText = (k: string, d: string): string => (trace === undefined ? quoted(d) : (trace.options.get(k)?.text ?? quoted(d)));
-  const answers: Record<string, { choice: string; confidence: number }> = {};
-  const answer = (id: string, q: (typeof req.questions)[string]): { choice: string; confidence: number } => {
-    const keys = Object.keys(q.criteria);
-    const ins = String(q.instructions);
-    const pick = (k: string): void => {
-      answers[id] = { choice: keys.includes(k) ? k : (keys.at(-1) ?? "none"), confidence: 0.99 };
-    };
-    // A must-refuse ask's head refuses with its reason, or plans a press, as a model that recognises refusals would.
-    // A fill route is the whole form when the ask expects a value for every field of it.
-    if (id === "route") pick(ask?.reason === "submit" || ask?.reason === "send" ? "plan" : ask?.expected === "refuse" && ask.reason !== undefined ? "refuse" : form !== undefined && form.fields.every((f) => wanted(f.label)) ? "all" : "some");
-    // SCP1: the section question, by the hand label of the section the instruction names (ask-section-labels.json): that
-    // heading's option, else the whole form when the ask expects every field of it, else particular fields.
-    else if (id === "section") {
-      const label = SECTION_LABELS[ask?.id ?? ""];
-      // The reader shows some headings in capitals ("EMERGENCY CONTACT"), so the label is matched without case.
-      const named = label === undefined ? undefined : Object.entries(q.criteria).find(([k, d]) => k.startsWith("sec") && d?.toLowerCase().includes(`'${label.toLowerCase()}'`) === true)?.[0];
-      pick(named ?? (form !== undefined && form.fields.every((f) => wanted(f.label)) ? "whole" : "fields"));
-    }
-    // The scope ask's label, which may hold an apostrophe ("Guest's full name"), ends where the wording goes on.
-    else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(/Field: "(.*?)"\. Control: "/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
-    else if (id === "why") pick(ask?.reason === "payment" ? "payment" : ask?.reason === "neverTyped" ? "neverTyped" : ask?.reason === "noSuchField" ? "noSuchField" : "nothingToFill");
-    else if (id === "source") pick("any");
-    else if (id === "whose") pick("user");
-    else if (id.endsWith("_whose")) {
-      // A field the ask fills with someone else's value (not the whole-form one) wants that person's details.
-      const label = labelOf(id, ins);
-      const v = label === null ? null : valueOf(label);
-      pick((v !== null && theirs.has(v)) || /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu.test(label ?? "") ? "other" : "user");
-    }
-    else if (id.endsWith("_owner")) {
-      const text = trace?.options.get(id.replace(/_owner$/u, ""))?.text ?? /"([^"]*)"/u.exec(ins)?.[1] ?? "";
-      // A value the ask expects for someone else's field is that person's; any other whole-form value is the user's.
-      const forOther = Object.entries(want).some(([l, v]) => same(text, v) && (theirs.has(v) || /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu.test(l)));
-      const mine = forOther ? (keys.includes("person") ? "person" : "other") : [...wholeForm].some((v) => same(text, v)) ? "user" : "unclear";
-      pick(mine);
-    }
-    else if ("yes" in q.criteria) pick(id === "all" ? "no" : wanted(labelIn(ins) ?? "") ? "yes" : "no");
-    else {
-      const label = labelOf(id, ins);
-      const v = label === null ? null : valueOf(label);
-      const hit = v === null || v === "none" ? undefined : Object.entries(q.criteria).find(([k, d]) => typeof d === "string" && (same(optionText(k, d), v) || d === v));
-      // The planner's target questions (an Ask that asks for a press): the press the must-refuse ask names.
-      const press = ask?.reason === "submit" || ask?.reason === "send" ? Object.entries(q.criteria).find(([, d]) => typeof d === "string" && new RegExp(`\\b${ask.reason}\\b`, "iu").test(d)) : undefined;
-      pick(hit?.[0] ?? press?.[0] ?? "none");
-    }
-    return answers[id] as { choice: string; confidence: number };
-  };
-  // W1: every kind of question the oracle answers, each by the rule above for its id; any other kind throws
-  // (engines/decide/canned.ts), so a question a later batch adds is never answered by silence. A3: the heads ask route,
-  // why, source and whose, and the scope ask (ask.scope) settles fields; the writer maker's field yes/no heads say no.
-  const kinds = [
-    ...["route", "why", "source", "whose"].map((h) => `ask.heads:${h}`),
-    "ask.scope:field", "ask.scope:section",
-    ...["route", "why", "scope", "source", "whose", "literal"].map((h) => `intent.route:${h}`),
-    "ask.confirm:all", "ask.confirm:field", "codeplan.asksAbout:field",
-    "fill.whose:whose", "fill.whose:owner", "fill.values:whose", "fill.values:owner", "fill.values:value", "fill.values:answer",
-    "plan.verify:value", "plan.verify:whose", "plan.verify:owner", "planner.window:window", "planner.fields:field", "planner.fields:press",
-  ];
-  const r = await cannedReply(req, {
-    model: "oracle",
-    confidence: 0.99,
-    // W2: the write contract's verifier calls every oracle pick, the key's value, exact.
-    choice: { ...Object.fromEntries(kinds.map((k) => [k, (q: (typeof req.questions)[string], id: string) => answer(id, q)])), "fill.verify:verdict": () => "exact" },
-    noul: Object.fromEntries(["intent.fields:field", "intent.fields:tie"].map((k) => [k, () => 0.01])),
-  });
-  return { ...r, nouls: r.nouls ?? {} };
-};
+const oracle = realfillOracle({ asks, corpus, current: () => current, traces: () => traces, corpusLabel: () => corpusLabel });
 const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
 /**
  * A2: answers an earlier live run recorded (its --log-jev file), for developing on its asks without paying for them again.
@@ -388,8 +261,9 @@ for (const [i, ask] of asks.entries()) {
   let intent: AskIntent | null = null;
   let use: MakerUse | null = null;
   let question: AskQuestionDraft | null = null;
+  let asked0: AskAsks | null = null;
   const run = (resume?: AskQuestionDraft["resume"]) =>
-    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), fillTrace: (t) => traces.push(t), ...(resume === undefined ? {} : { resume }) });
+    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), fillTrace: (t) => traces.push(t), values: true, ...(resume === undefined ? {} : { resume }) });
   try {
     draft = await run();
     intent = draft.intent;
@@ -402,7 +276,10 @@ for (const [i, ask] of asks.entries()) {
     says = e.message;
     detail = e instanceof SaidError ? e.detail : e.message;
     if (e instanceof AskRefused) ((intent = e.intent), (use = e.maker));
-    if (e instanceof AskAsks) question = e.question;
+    if (e instanceof AskAsks) {
+      question = e.question;
+      asked0 = e;
+    }
   }
   const labelOf = new Map<string, string>();
   for (const f of form.fields) for (const n of nodesFor(desk.form, f)) labelOf.set(n.key, f.label);
@@ -414,14 +291,21 @@ for (const [i, ask] of asks.entries()) {
     return p.value === p.expected || (f?.accept ?? []).includes(p.value);
   };
   const wanted = Object.entries(expected).filter(([, v]) => v !== "none" && v !== "handoff" && v !== "unchecked").map(([l]) => l);
-  const scoreDraft = (d: AskDraft | null, asked: boolean): { verdict: Verdict; proposed: Proposed[]; missing: string[] } => {
+  /**
+   * What an Ask proposes: a draft's checked writes and controls; while a value question is open, the fill it is about, by
+   * its checked writes (a field with a mint) and its controls, which is what settled before the user answers.
+   */
+  const scoreDraft = (d: AskDraft | AskAsks | null, asked: boolean): { verdict: Verdict; proposed: Proposed[]; missing: string[] } => {
+    const fill = d instanceof AskAsks ? (d.question.resume.values?.proposal.fields ?? []) : [];
+    const writes = d instanceof AskAsks ? fill.flatMap((f) => (f.control === "text" && f.value !== null && mintOf(f) !== undefined ? [{ key: f.key, value: f.value }] : [])) : (d?.checked.writes ?? []).map((wr) => ({ key: wr.node.key, value: wr.value }));
+    const controls = d instanceof AskAsks ? fill.flatMap((f) => (f.handoff === null ? [] : [{ key: f.key, value: f.handoff.value }])) : (d?.controls ?? []);
     const proposed: Proposed[] = [
-      ...(d?.checked.writes ?? []).map((wr) => {
-        const field = labelOf.get(wr.node.key) ?? `(${wr.node.label ?? wr.node.key})`;
+      ...writes.map((wr) => {
+        const field = labelOf.get(wr.key) ?? `(${wr.key})`;
         return { field, value: wr.value, expected: exp(field), control: false };
       }),
-      ...(d?.controls ?? []).map((c) => {
-        const field = labelOf.get(c.key) ?? `(${c.name})`;
+      ...controls.map((c) => {
+        const field = labelOf.get(c.key) ?? `(${c.key})`;
         return { field, value: c.value, expected: exp(field), control: true };
       }),
     ];
@@ -429,7 +313,8 @@ for (const [i, ask] of asks.entries()) {
     const verdict: Verdict = proposed.length === 0 ? (asked ? "asked" : "refused") : ask.expected === "refuse" || proposed.some((p) => !ok(p)) ? "wrong" : missing.length === 0 ? "right" : "partial";
     return { verdict, proposed, missing };
   };
-  const scored = scoreDraft(draft, question !== null);
+  // A value question's Ask is scored by the fill it is about: what settled before the user answers.
+  const scored = scoreDraft(draft ?? (question?.part === "value" ? asked0 : null), question !== null);
   const { proposed, missing } = scored;
   // B29: option recall, then the simulated pick of the right options, continued up to three questions deep.
   const expectedValues = Object.values(expected).filter((v) => v !== "none" && v !== "handoff" && v !== "unchecked" && v !== "checked");
@@ -447,30 +332,36 @@ for (const [i, ask] of asks.entries()) {
       const hit = q.options.find((c) => (id === null ? c.fixes.source?.kind === "memory" : c.fixes.source?.kind === "window" && c.fixes.source.windowId === id));
       return { ids: hit === undefined ? null : [hit.option.id], right: [desk.source === null ? "memory" : desk.source.window.title] };
     }
+    if (q.part === "value") {
+      // The right value as the field takes it (corpus `expected` or `accept`), by the exact output the option stands for; else Leave blank.
+      const u = q.resume.values?.queue[0];
+      const label = labelOf.get(u?.key ?? "") ?? "";
+      const accepts = [exp(label), ...(form.fields.find((f) => f.label === label)?.accept ?? [])];
+      const exact = (c: AskQuestionDraft["options"][number]): string | undefined => u?.options.find((o) => o.id === c.fixes.values?.[0]?.option)?.value;
+      const hit = q.options.find((c) => c.option.kind === "value" && accepts.includes(exact(c) ?? null));
+      const blank = q.options.find((c) => c.option.kind === "blank");
+      return { ids: [(hit ?? blank)?.option.id ?? ""], right: [hit === undefined ? "(leave blank)" : (exact(hit) ?? "")] };
+    }
     const named = q.options.find((c) => c.option.kind === "person" && expectedValues.some((v) => v.toLowerCase().includes(c.option.kind === "person" ? (c.option.name.toLowerCase().split(/\s+/u)[0] ?? "\u0000") : "\u0000")));
     const pick = named ?? q.options.find((c) => c.option.kind === "you");
     return { ids: pick === undefined ? null : [pick.option.id], right: [pick === undefined ? "(none)" : pick.option.kind === "you" ? "you" : (pick.option as { name: string }).name] };
   };
   const optionText = (c: AskQuestionDraft["options"][number]): string => {
     const o = c.option;
-    return o.kind === "field" ? (labelOf.get(c.fixes.fields?.[0] ?? "") ?? o.label) : o.kind === "window" ? o.title : o.kind === "memory" ? "memory" : o.kind === "you" ? "you" : o.name;
+    return o.kind === "field" ? (labelOf.get(c.fixes.fields?.[0] ?? "") ?? o.label) : o.kind === "window" ? o.title : o.kind === "memory" ? "memory" : o.kind === "you" ? "you" : o.kind === "value" ? o.value : o.kind === "blank" ? "(leave blank)" : o.name;
   };
   const askedRows: Row["asked"] = [];
   let continued: Row["continued"] = null;
   current = `${ask.id}+pick`;
   let q = question;
-  for (let depth = 0; q !== null && depth < 3; depth++) {
+  // Up to three questions about the Ask's parts, then each value question (at most MAX_ASK_OPTIONS of them).
+  for (let depth = 0; q !== null && depth < 3 + MAX_ASK_OPTIONS; depth++) {
     const { ids, right } = rightOf(q);
     askedRows.push({ part: q.part, options: q.options.map(optionText), recall: ids !== null, right, picked: (ids ?? []).map((id) => optionText(q?.options.find((c) => c.option.id === id) as AskQuestionDraft["options"][number])) });
     if (ids === null) break;
     // No pick answers a question beside settled fields: those alone are filled (helper.ts handleAskAnswer).
-    const fixed = { ...q.resume.fixed, ...(ids.length === 0 ? { fields: [] } : {}) };
-    for (const c of q.options.filter((x) => ids.includes(x.option.id))) {
-      if (c.fixes.fields !== undefined) fixed.fields = [...(fixed.fields ?? []), ...c.fixes.fields];
-      if (c.fixes.source !== undefined) fixed.source = c.fixes.source;
-      if (c.fixes.person !== undefined) fixed.person = c.fixes.person;
-    }
-    const resume = { ...q.resume, fixed };
+    const resume = answerQuestion(q, ids);
+    if (typeof resume === "string") throw new Error(`the simulated pick does not fit ${ask.id}'s question: ${resume}`);
     q = null;
     try {
       const d = await run(resume);
@@ -478,7 +369,7 @@ for (const [i, ask] of asks.entries()) {
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;
       if (e instanceof AskAsks) q = e.question;
-      continued = { ...scoreDraft(null, q !== null), says: e.message };
+      continued = { ...scoreDraft(e instanceof AskAsks && e.question.part === "value" ? e : null, q !== null), says: e.message };
     }
   }
   // A must-refuse ask that was asked: pick every option of a fields question, or each option of any other in turn, and
@@ -489,14 +380,10 @@ for (const [i, ask] of asks.entries()) {
     const picks = q0.part === "fields" ? [q0.options] : q0.options.map((c) => [c]);
     refusePicks = { tried: picks.length, proposed: [] };
     for (const set of picks) {
-      const fixed = { ...q0.resume.fixed };
-      for (const c of set) {
-        if (c.fixes.fields !== undefined) fixed.fields = [...(fixed.fields ?? []), ...c.fixes.fields];
-        if (c.fixes.source !== undefined) fixed.source = c.fixes.source;
-        if (c.fixes.person !== undefined) fixed.person = c.fixes.person;
-      }
+      const resume = answerQuestion(q0, set.map((c) => c.option.id));
+      if (typeof resume === "string") throw new Error(`the hostile pick does not fit ${ask.id}'s question: ${resume}`);
       try {
-        const d = await run({ ...q0.resume, fixed });
+        const d = await run(resume);
         for (const p of scoreDraft(d, false).proposed) refusePicks.proposed.push(`${p.field} = ${p.value}`);
       } catch (e) {
         if (!(e instanceof PlannerError)) throw e;
@@ -537,6 +424,7 @@ const refuseAsks = rows.filter((r) => r.ask.expected === "refuse");
 const asked = rows.filter((r) => r.verdict === "asked");
 const recalled = asked.filter((r) => r.asked[0]?.recall === true);
 const cont = (v: Verdict) => asked.filter((r) => r.continued?.verdict === v).length;
+const valued = rows.filter((r) => r.asked.some((q) => q.part === "value"));
 const named = refuseAsks.filter((r) => r.ask.reason !== undefined);
 const tokens = rows.flatMap((r) => (r.maker === null ? [] : [r.maker.inputTokens + r.maker.outputTokens]));
 const makerCalls = rows.flatMap((r) => (r.maker === null ? [] : [r.maker.calls]));
@@ -560,13 +448,14 @@ const md = [
   `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker !== "writer" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
   ...(a.replay === undefined ? [] : [`Replayed from ${a.replay}: ${replay.hits} requests; ${replay.misses} asked of ${decide.says} instead.`]),
-  `Decisions: ${decide.says}; generator clock ${clock === null ? "wall (15 ms budget)" : "fixed"}; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
+  `Decisions: ${decide.says}; generator cap ${MAX_GENERATOR_VISITS} visits; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
   `Maker requests per intent: ${[...new Set(makerCalls)].sort((x, y) => x - y).join(", ") || "none"} (${makerCalls.length} intents made); maker latency p50 ${pct(makerMs, 0.5)} ms, p95 ${pct(makerMs, 0.95)} ms.`,
   "",
   `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, asked with choices ${n("asked")}, refused ${n("refused")}, **wrong ${n("wrong")}**; not run (HTTP 503) ${n("notRun")}${n("notRun") === 0 ? "" : `, rerun ${rows.filter((r) => r.verdict === "notRun").map((r) => r.ask.id).join(",")}`}.`,
   `Asked ${asked.length}: the right answer among the first question's options in ${recalled.length} (fields ${asked.filter((r) => r.asked[0]?.part === "fields").length}, source ${asked.filter((r) => r.asked[0]?.part === "source").length}, person ${asked.filter((r) => r.asked[0]?.part === "person").length}).`,
   `Must-refuse asks that were asked: ${rows.filter((r) => r.refusePicks !== null).length}; every pick tried (${rows.reduce((s2, r) => s2 + (r.refusePicks?.tried ?? 0), 0)} picks) proposed **${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)} values (all wrong)**${rows.flatMap((r) => (r.refusePicks?.proposed ?? []).map((x) => `${r.ask.id}: ${x}`)).map((x) => `; ${x}`).join("")}.`,
   `After the simulated right pick: right ${cont("right")}, partial ${cont("partial")}, asked again with no right option ${cont("asked")}, refused ${cont("refused")}, **wrong ${cont("wrong")}**; not continued (right answer not offered) ${asked.length - recalled.length}.`,
+  `Value questions (scripted right pick, else Leave blank): ${valued.length} Asks asked ${valued.reduce((x, r) => x + r.asked.filter((q) => q.part === "value").length, 0)}, picking a value in ${valued.reduce((x, r) => x + r.asked.filter((q) => q.part === "value" && q.picked[0] !== "(leave blank)").length, 0)}; after them right ${valued.filter((r) => r.continued?.verdict === "right").length}, partial ${valued.filter((r) => r.continued?.verdict === "partial").length}, **wrong ${valued.filter((r) => r.continued?.verdict === "wrong").length}**. The verdicts above are automatic: before any value question.`,
   `Of the ${refuseAsks.length} that should be refused: refused ${n("refused", refuseAsks)}, wrong ${n("wrong", refuseAsks)}; with the right sentence ${named.filter((r) => r.sentenceOk === true).length} of the ${named.length} that name their reason.`,
   `A1 asks back: ${back.length} (asked with choices ${back.filter((r) => r.verdict === "asked").length}, the right option offered in ${back.filter((r) => r.asked[0]?.recall === true).length}; refused as unsure ${back.filter((r) => r.verdict === "refused").length}). Asks whose right outcome is a question: ${rows.filter((r) => r.ask.ask !== undefined).length}, asked rightly ${rightAsks.length}.`,
   `A1 decision requests per ask before any pick: mean ${(firstRequests.reduce((x, y) => x + y, 0) / Math.max(1, firstRequests.length)).toFixed(2)}, max ${Math.max(0, ...firstRequests)}; ${requestMs.length} requests in all, with the simulated picks.`,

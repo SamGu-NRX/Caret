@@ -220,11 +220,13 @@ describe("the page field the host hears (H13)", () => {
   const area = { id: "e1", key: "form[apply]/textarea:cover letter~0", strongKey: null, kind: "textarea" as const, role: "textbox", name: "Cover letter", value: "I am writing", form: "form#apply", rect: [16, 40, 400, 120] as [number, number, number, number] };
   let dir: string;
   let store: Store;
+  const sessions: EngineSession[] = [];
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "caret-inline-focus-"));
     store = new Store(join(dir, "data"));
   });
   afterEach(() => {
+    for (const session of sessions.splice(0)) session.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -250,6 +252,7 @@ describe("the page field the host hears (H13)", () => {
       return true;
     }, 500);
     host.registry.add(session);
+    sessions.push(session);
     session.receive(pageHello);
     return { published, session, helper };
   }

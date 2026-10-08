@@ -6,7 +6,7 @@
 // write contract's verifier says exact. G2: whose and owner questions take what `ownership` says (page-loop-eval: each
 // page's ground truth, owners.json), and unclear at 0.5 without it: before G2 they all said the user's at 0.95, so
 // canned runs could not see fill's ownership stage (evidence/screen/g1).
-import { cannedReply, type CannedAnswer, type CannedRules } from "../../helper/src/engines/decide/canned.ts";
+import { CannedGap, cannedReply, type CannedAnswer, type CannedRules } from "../../helper/src/engines/decide/canned.ts";
 import type { AskJev, JevRequest } from "../../helper/src/fill/jev.ts";
 
 export const PAGE_LOOP_HEADS: Readonly<Record<string, string>> = { route: "all", source: "any", whose: "user", why: "nothingToFill" };
@@ -26,6 +26,8 @@ export function pageLoopRules(value: (q: JevRequest["questions"][string]) => Pro
     choice: {
       ...Object.fromEntries(Object.entries(PAGE_LOOP_HEADS).map(([k, v]) => [`ask.heads:${k}`, () => v])),
       "ask.scope:field": () => ({ choice: "asks", confidence: 0.95 }),
+      // The canned heads request the whole form, not one named section.
+      "ask.scope:section": () => ({ choice: "whole", confidence: 0.95 }),
       "ask.confirm:all": no,
       "ask.confirm:field": no,
       "fill.whose:whose": ownership.whose,
@@ -44,4 +46,11 @@ export function pageLoopRules(value: (q: JevRequest["questions"][string]) => Pro
   };
 }
 
-export const pageLoopCanned = (value: (q: JevRequest["questions"][string]) => Promise<CannedAnswer>, ownership?: PageLoopOwnership): AskJev => (req) => cannedReply(req, pageLoopRules(value, ownership));
+export const pageLoopCanned = (value: (q: JevRequest["questions"][string]) => Promise<CannedAnswer>, ownership?: PageLoopOwnership, reportGap?: (gap: CannedGap) => void): AskJev => async (req) => {
+  try {
+    return await cannedReply(req, pageLoopRules(value, ownership));
+  } catch (e) {
+    if (e instanceof CannedGap) reportGap?.(e);
+    throw e;
+  }
+};

@@ -93,11 +93,13 @@ describe("page controls in screen points", () => {
 describe("the page field the user is in, for the host", () => {
   let dir: string;
   let store: Store;
+  const sessions: EngineSession[] = [];
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "caret-h10-"));
     store = new Store(join(dir, "data"));
   });
   afterEach(() => {
+    for (const session of sessions.splice(0)) session.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -116,6 +118,7 @@ describe("the page field the user is in, for the host", () => {
     wirePageEngines({ host, helper, publish: (m) => published.push(m), warn: () => {} });
     const { session, sent } = rig((id) => snapshot(id, { focused: page.focused, scroll: page.scroll }), () => (page.off === true ? "siteOff" : null));
     host.registry.add(session);
+    sessions.push(session);
     session.receive(hello);
     return { helper, published, session, sent, focus };
   }
@@ -163,11 +166,13 @@ describe("the page field the user is in, for the host", () => {
 describe("Ask in a browser a page engine covers (H10)", () => {
   let dir: string;
   let store: Store;
+  const sessions: EngineSession[] = [];
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "caret-h10-ask-"));
     store = new Store(join(dir, "data"));
   });
   afterEach(() => {
+    for (const session of sessions.splice(0)) session.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -185,6 +190,7 @@ describe("Ask in a browser a page engine covers (H10)", () => {
     wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
     const { session, sent } = rig((id) => snapshot(id));
     host.registry.add(session);
+    sessions.push(session);
     session.receive(hello);
     await settle();
     helper.handleReader({ type: "appSwitch", v: 1, at: 2, from: null, to: chrome });

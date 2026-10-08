@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ASK_SCOPE_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, VALUE_CHECKS_CAPABILITY, type AnswerSaveReply, type FillProposal, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ASK_SCOPE_CAPABILITY, ASK_VALUES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, VALUE_CHECKS_CAPABILITY, type AnswerSaveReply, type FillProposal, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
 import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
@@ -31,6 +31,8 @@ export class HelperServer {
   private readonly fillAll = new Set<Socket>();
   /** Consumer connections whose hello listed ASK_CHOICES_CAPABILITY: they get Ask questions and may answer them (B29). */
   private readonly askChoices = new Set<Socket>();
+  /** Consumers that declared ASK_VALUES_CAPABILITY beside ASK_CHOICES_CAPABILITY: they may get value questions. */
+  private readonly askValues = new Set<Socket>();
   /** Host connections whose hello listed GOAL_PLANS_CAPABILITY: only they may plan and accept goals, and only they get goalProgress (D2-06). */
   private readonly goalPlans = new Set<Socket>();
   /** Consumers whose hello listed SPEND_CAPABILITY: only they get `spend` (H8). */
@@ -221,6 +223,7 @@ export class HelperServer {
             if (hello.data.host === true) this.hosts.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
+            if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true && hello.data.capabilities.includes(ASK_VALUES_CAPABILITY)) this.askValues.add(s);
             if (hello.data.capabilities?.includes(VALUE_CHECKS_CAPABILITY) === true) this.valueChecks.add(s);
             if (hello.data.capabilities?.includes(ASK_SCOPE_CAPABILITY) === true) this.askScope.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
@@ -403,7 +406,8 @@ export class HelperServer {
             const canAsk = this.askChoices.has(s);
             // B30: an Ask from a host that runs goal plans is answered with a goal's preview when its route is plan.
             const canGoal = this.goalPlans.has(s);
-            void (msg.type === "planRequest" ? this.helper().handlePlanRequest(msg, from, canAsk, canGoal) : this.helper().handleAskAnswer(msg, from, canGoal))
+            const canAskValues = this.askValues.has(s);
+            void (msg.type === "planRequest" ? this.helper().handlePlanRequest(msg, from, canAsk, canGoal, canAskValues) : this.helper().handleAskAnswer(msg, from, canGoal, canAskValues))
               .catch((e: unknown) => {
                 this.warn(`plan ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
                 return planError(requestId, "internal", "the planner failed; the helper logged why", Date.now());
@@ -469,6 +473,7 @@ export class HelperServer {
       this.hosts.delete(s);
       this.fillAll.delete(s);
       this.askChoices.delete(s);
+      this.askValues.delete(s);
       this.goalPlans.delete(s);
       this.spend.delete(s);
       this.goalFiles.delete(s);

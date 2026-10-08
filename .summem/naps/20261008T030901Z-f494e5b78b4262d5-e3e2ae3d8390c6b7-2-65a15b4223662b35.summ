@@ -1,0 +1,1 @@
+OWNER_NOTE_CHARS is 0 behind TODO(INT1) (grep it to restore 2,000). Onboarding's privacyLine reads bundled PrivacyPromise.txt (nil under swift run/xctest; tests inject one); CARET_VERIFY_PRIVACY_RESOURCE refuses an app whose copy is missing or differs.

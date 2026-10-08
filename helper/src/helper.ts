@@ -122,8 +122,8 @@ import type { FileConfirm, FileConfirmReply, PageInsert, PageInsertReply, PlanEr
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
-import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
-import { intentSnapshot, type AskFixed } from "./planner/intent.ts";
+import { answerQuestion, AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
+import { intentSnapshot } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
 import { ASK_ROUTES, type MintedSay, type RouteCandidate, type TaskEvidence } from "./routing/routes.ts";
 import { ConsentLedger, type Consent } from "./routing/consent.ts";
@@ -1665,8 +1665,8 @@ export class Helper {
    */
   async handlePlanRequest(m: PlanRequest): Promise<PlanProposal>;
   async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean): Promise<PlanProposal | AskQuestion>;
-  async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean, canGoal: boolean): Promise<PlanProposal | AskQuestion | GoalProgress>;
-  async handlePlanRequest(m: PlanRequest, from?: string, canAsk = false, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
+  async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean, canGoal: boolean, canAskValues?: boolean): Promise<PlanProposal | AskQuestion | GoalProgress>;
+  async handlePlanRequest(m: PlanRequest, from?: string, canAsk = false, canGoal = false, canAskValues = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     this.opts.store.count("plan.request", 1);
     let windowId: string | null = null;
     try {
@@ -1690,7 +1690,7 @@ export class Helper {
       this.opts.store.count("plan.pageWindow", 1);
       windowId = page;
     }
-    return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk, canGoal);
+    return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk, canGoal, canAskValues);
   }
 
   /**
@@ -1698,27 +1698,14 @@ export class Helper {
    * yet answered or lapsed, and every pick one of its options (one for a single-choice question). The picks fix that
    * part, and the same Ask goes on from there: its reply is a proposal, a refusal, or the next question.
    */
-  async handleAskAnswer(m: AskAnswer, from?: string, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
+  async handleAskAnswer(m: AskAnswer, from?: string, canGoal = false, canAskValues = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     this.opts.store.count("plan.askAnswer", 1);
     const q = this.askQuestions.get(m.questionId);
     if (q === undefined || q.session !== from || q.expires <= this.now()) return this.planFailed(m.requestId, "questionGone", `no open question ${m.questionId} for this connection`);
     this.askQuestions.delete(m.questionId);
-    const ids = new Set(m.picks);
-    const picked = q.draft.options.filter((c) => ids.has(c.option.id));
-    if (picked.length !== m.picks.length || ids.size !== m.picks.length || (q.draft.pick === "one" && picked.length !== 1)) {
-      return this.planFailed(m.requestId, "schema", `the answer picks ${m.picks.join(", ")}, which question ${m.questionId} did not list as ${q.draft.pick === "one" ? "one choice" : "choices"}`);
-    }
-    // No pick declines every offered field: only a question beside fields it fills anyway takes that as an answer.
-    if (m.picks.length === 0 && q.draft.filling.length === 0) return this.planFailed(m.requestId, "schema", `the answer picks nothing, and question ${m.questionId} fills nothing without a pick`);
-    // Each pick fixes only the part it names: the fields picked, else the one window or person.
-    const fixed: AskFixed = { ...q.draft.resume.fixed, ...(m.picks.length === 0 ? { fields: [] } : {}) };
-    for (const c of picked) {
-      if (c.fixes.fields !== undefined) fixed.fields = [...(fixed.fields ?? []), ...c.fixes.fields];
-      if (c.fixes.source !== undefined) fixed.source = c.fixes.source;
-      if (c.fixes.person !== undefined) fixed.person = c.fixes.person;
-    }
-    const resume = { ...q.draft.resume, fixed };
-    return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true, canGoal);
+    const resume = answerQuestion(q.draft, m.picks);
+    if (typeof resume === "string") return this.planFailed(m.requestId, "schema", `question ${m.questionId}: ${resume}`);
+    return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true, canGoal, canAskValues);
   }
 
   private planFailed(requestId: string, code: Parameters<typeof planError>[1], detail: string, says: string = saysFor(code)): PlanProposal {
@@ -1730,18 +1717,18 @@ export class Helper {
    * Plans an Ask or a planner task and offers it; an Ask that asks a question returns it to a consumer that can answer,
    * and an Ask whose route is plan, asked by a host that runs goal plans (`canGoal`), is offered as a goal (B30).
    */
-  private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
+  private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal = false, canAskValues = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     let offerKey = `plan-${++this.planSeq}-${requestId}`;
     while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${requestId}`;
     try {
-      return await this.planAndOffer(offerKey, requestId, instruction, windowId, resume, from, canAsk, canGoal);
+      return await this.planAndOffer(offerKey, requestId, instruction, windowId, resume, from, canAsk, canGoal, canAskValues);
     } finally {
       // I6: only a recorded offer keeps what its Ask read of the tab the user left.
       if (!this.planOffers.has(offerKey)) this.tabSource?.release(offerKey);
     }
   }
 
-  private async planAndOffer(offerKey: string, requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal: boolean): Promise<PlanProposal | AskQuestion | GoalProgress> {
+  private async planAndOffer(offerKey: string, requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal: boolean, canAskValues: boolean): Promise<PlanProposal | AskQuestion | GoalProgress> {
     const store = this.opts.store;
     // Every refusal carries the user's sentence (H5): a SaidError's own, or the one for its code.
     const fail = (code: Parameters<typeof planError>[1], detail: string, says?: string): PlanProposal => this.planFailed(requestId, code, detail, says);
@@ -1782,7 +1769,7 @@ export class Helper {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
         const maker = askConfig.maker === "writer" ? writerIntentMaker(askConfig.writer, () => offerKey) : askConfig.maker === "heads" ? headsIntentMaker(ask) : jevIntentMaker(ask);
-        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...(requestSettled === undefined ? {} : { settled: requestSettled }), ...(this.opts.pageDocument === undefined ? {} : { documentOf: this.opts.pageDocument }), ...this.opts.plannerHooks });
+        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, values: canAskValues, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...(requestSettled === undefined ? {} : { settled: requestSettled }), ...(this.opts.pageDocument === undefined ? {} : { documentOf: this.opts.pageDocument }), ...this.opts.plannerHooks });
         // Rule 6: text that was dropped while Jev answered offers nothing made from it.
         if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired, SAYS.tabExpired);
         store.count(`plan.ask_${d.route}`, 1);

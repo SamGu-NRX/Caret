@@ -11,7 +11,9 @@ import type { AskJev } from "../src/fill/jev.ts";
 import { byLabel, c, chrome, FakePage, mixedControls, NOTE, PICKS, TEXTEDIT, WIN } from "./fake-page.ts";
 import { closeRigs, goalMessages, presses, rig, type Finished, type Rig, type Segment } from "./page-rig.ts";
 
-afterEach(closeRigs);
+afterEach(() => {
+  closeRigs();
+});
 
 /** The question a goal's value gate asks (planner/codeplan.ts verifyWrites): a page plan's fill picks must not be asked it. */
 const VERIFY_TASK = "Caret checks each value a drafted plan would write before offering the plan.";
@@ -34,8 +36,8 @@ describe("an Ask about a page is planned by the page planner (P2)", () => {
       // I6: the form's one forward button, by its own label; never pressed.
       "You press Submit Application",
     ]);
-    // The box whose value fill would not write ("34" for "Are you over 18?") is named as the user's before Tab.
-    expect(preview.warnings.some((w) => /Are you over 18\?/.test(w))).toBe(true);
+    // "34" ticks no box, so value settlement never offers it for "Are you over 18?" (fill.ts optionsOf), and no step ticks it.
+    expect(preview.steps.some((st) => /Are you over 18\?/.test(st.says))).toBe(false);
     // Fill's own two wordings chose every value: the goal value gate's question was never asked.
     expect(r.asked.some((q) => typeof q.state !== "string" && (q.state as { task?: unknown }).task === VERIFY_TASK)).toBe(false);
   });
@@ -166,8 +168,6 @@ describe("the size hand-off (P2), in parts since C2", () => {
   });
 
   it("names the fields past four parts as the user's before Tab", async () => {
-    // A value for the first field of each part only: a short note, read fast enough under load (the candidate
-    // generator's wall-clock budget, candidates.ts).
     const many = (): PageControl[] => Array.from({ length: 85 }, (_, i) => c(`t${i + 1}`, "text", `Q${i + 1}`, { value: "" }));
     const firsts = [1, 21, 41, 61, 81];
     const r = await rig({ controls: many, note: firsts.map((i) => `Q${i}: a${i}`).join("\n"), picks: Object.fromEntries(firsts.map((i) => [`Q${i}`, `a${i}`])) });

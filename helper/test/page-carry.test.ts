@@ -2,6 +2,7 @@
 // contract"): for CARRY_MS the goal waits, and a new document in its tab gets a fresh preview of that page, segment
 // reason nextPage, under the same instruction and scope. Values never carry: each is chosen again from the sources as
 // they read now and goes through every gate again. A list of fields does not carry. Every name and value is invented.
+import type { AskJev } from "../src/fill/jev.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, type PageControl } from "../src/protocol.ts";
 import { CARRY_MS } from "../src/goals/runs.ts";
@@ -137,17 +138,23 @@ describe("a whole-form goal carries across the user's Next (P3)", () => {
   });
 
   it("carries what page one left to the user, so the last page's end is not done", async () => {
-    const r = await rig();
+    // Jev's two value wordings disagree about Country, so page one leaves it to the user.
+    const splitCountry = (inner: AskJev): AskJev => async (req) => {
+      const a = await inner(req);
+      if (req.purpose !== "fill.values") return a;
+      for (const [id, q] of Object.entries(req.questions)) if (String(q.instructions).includes("Label: 'Country'") && Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k))) a.answers[id] = { choice: "none", confidence: 0.95 };
+      return a;
+    };
+    const r = await rig({ jev: splitCountry });
     await fillFirst(r);
-    // Page one left "Are you over 18?" to the user (fill would not tick it from "Age: 34").
-    expect(finished(r)[0]?.left.some((l) => /Are you over 18\?/.test(l))).toBe(true);
+    expect(finished(r)[0]?.left.some((l) => /\bCountry\b(?! of)/.test(l))).toBe(true);
     await r.next(page2, "Apply: step 2", "/two");
     await settle(r);
     await r.accept(segments(r).at(-1) as Segment);
     await settle(r);
     const end = finished(r).at(-1) as Finished;
     expect(end.outcome).toBe("partial");
-    expect(end.left.some((l) => /^On an earlier page, .*Are you over 18\?/.test(l))).toBe(true);
+    expect(end.left.some((l) => /^On an earlier page, .*\bCountry\b(?! of)/.test(l))).toBe(true);
   });
 
   it("stops a preview of the old page still waiting for its Tab when the next page loads", async () => {

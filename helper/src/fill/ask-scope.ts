@@ -173,6 +173,12 @@ const AX_CONTAINERS = SECTION_BOUNDARY_ROLES;
 
 const outlines = new WeakMap<WindowState, WindowOutline>();
 
+/** A field's section path in Caret's own words when the window shows none, or can't say (the scope and value questions). */
+export const NO_SECTION = "(no section or group)";
+export const PLACEMENT_UNKNOWN = "(placement unknown)";
+/** A section a request may not quote, in Caret's own words (SC1). */
+export const UNNAMED_SECTION = "a section";
+
 /**
  * SCP1: the window's outline, once per window state. A page walk's (Node.outline on its web areas, Node.sections on its
  * controls) as the walk found it (extension content/sections.ts); otherwise read from the Accessibility tree in

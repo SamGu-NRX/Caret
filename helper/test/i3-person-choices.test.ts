@@ -5,8 +5,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { describe, expect, it } from "vitest";
 import { Snapshot } from "../src/protocol.ts";
 import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
 import { choicesFor } from "../src/planner/choices.ts";
@@ -14,9 +13,6 @@ import { pointsAtOther } from "../src/planner/people.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { ScreenModel } from "../src/model.ts";
 import { field, snap } from "./builders.ts";
-
-beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));

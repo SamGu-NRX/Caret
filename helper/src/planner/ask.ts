@@ -22,7 +22,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import { MAX_ASK_OPTIONS, type AskOption, type FillField, type FillProposal, type Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
-import { conversionOf, FillError, identityRefOf, memoryRefOf, mintOf, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FillError, identityRefOf, memoryRefOf, mintOf, PAGE_WINDOW_KIND, proposeFill, valueSettlementOf, ValueSourceChanged, type FillOptions, type FillScope, type UnresolvedValue, type ValueSettlement } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
@@ -31,8 +31,8 @@ import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf,
 import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, snapMint, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
-import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNeverTyped, saysNoValue, saysOptionsUnseen, saysPress, saysSectionUnknown, saysSectionUnknownField, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
-import { choicesFor, type Choice } from "./choices.ts";
+import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNeverTyped, saysNoValue, saysOptionsUnseen, saysPress, saysSectionUnknown, saysSectionUnknownField, saysUnsure, saysUnsureFields, type AskPart, type QuestionPart } from "./says.ts";
+import { choicesFor, valueChoices, valueQueue, type Choice } from "./choices.ts";
 import { fieldWords } from "./sources.ts";
 import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
@@ -78,6 +78,11 @@ export interface AskOptions {
    * offer's acceptance does (helper.ts acceptPlan).
    */
   fillModel?: (formWindowId: string) => Promise<ScreenModel>;
+  /**
+   * The caller can answer value questions (protocol ASK_VALUES_CAPABILITY): a fill whose values did not all settle asks
+   * the user about them (AskAsks, part "value") instead of proposing without them. Absent, they are left to the user.
+   */
+  values?: boolean;
 }
 
 /** The snapshot refs an intent names, by what they stand for, so it can be read against a later snapshot. */
@@ -116,11 +121,30 @@ export interface AskResume {
    * is these, narrowed by the user's picks.
    */
   scopeKeys?: string[];
+  /** Value clarification: the fill a value question was asked about, which its answer continues (ValueStep). */
+  values?: ValueStep;
+}
+
+/**
+ * Value clarification's place in an Ask: the fill as it stands (each picked value settled into it), the fields still to
+ * ask about with the one being answered first, and how to finish the plan. Helper-local, kept with the question.
+ */
+export interface ValueStep {
+  settlement: ValueSettlement;
+  proposal: FillProposal;
+  queue: readonly UnresolvedValue[];
+  /** Field names by key, for the values already checked beside a question. */
+  names: ReadonlyMap<string, string>;
+  /** The fields the form must still show as the first question saw them (checkSeen). */
+  seenKeys: readonly string[];
+  finish: (p: FillProposal, at: { model: ScreenModel; offerKey: string; jev: { calls: number; costUsd: number } }) => Promise<AskDraft>;
+  intent: AskIntent;
+  maker: MakerUse;
 }
 
 /** One question an Ask asks (B29): its part, text and options, the form it is about, and what continues it. */
 export interface AskQuestionDraft {
-  part: AskPart;
+  part: QuestionPart;
   text: string;
   pick: "one" | "many";
   options: Choice[];
@@ -188,10 +212,39 @@ export class AskRefused extends SaidError {
  */
 export class AskAsks extends AskRefused {
   readonly question: AskQuestionDraft;
-  constructor(e: Unclear, intent: AskIntent | null, maker: MakerUse | null, question: AskQuestionDraft) {
+  constructor(e: PlannerError, intent: AskIntent | null, maker: MakerUse | null, question: AskQuestionDraft) {
     super(e, intent, maker);
     this.question = question;
   }
+}
+
+/**
+ * The user's picks for `q`, as the Ask continues with them: each pick fixes only the part it names (fields picked, the one
+ * window or person, a field's value). No picks answers only a fields question beside fields it fills anyway. A string
+ * says why the answer does not fit the question.
+ */
+export function answerQuestion(q: AskQuestionDraft, picks: readonly string[]): AskResume | string {
+  const ids = new Set(picks);
+  const picked = q.options.filter((c) => ids.has(c.option.id));
+  if (picked.length !== picks.length || ids.size !== picks.length || (q.pick === "one" && picked.length !== 1)) return `the answer picks ${picks.join(", ")}, which the question did not list as ${q.pick === "one" ? "one choice" : "choices"}`;
+  if (picks.length === 0 && q.filling.length === 0) return "the answer picks nothing, and the question fills nothing without a pick";
+  const fixed: AskFixed = { ...q.resume.fixed, ...(picks.length === 0 ? { fields: [] } : {}) };
+  for (const c of picked) {
+    if (c.fixes.fields !== undefined) fixed.fields = [...(fixed.fields ?? []), ...c.fixes.fields];
+    if (c.fixes.source !== undefined) fixed.source = c.fixes.source;
+    if (c.fixes.person !== undefined) fixed.person = c.fixes.person;
+    if (c.fixes.values !== undefined) fixed.values = [...(fixed.values ?? []), ...c.fixes.values];
+  }
+  return { ...q.resume, fixed };
+}
+
+/** Asks about the first field of `step.queue`: its eligible values and Leave blank, beside the values already checked. */
+function valueQuestion(step: ValueStep, resume: AskResume, window: AskQuestionDraft["window"]): never {
+  const u = step.queue[0] as UnresolvedValue;
+  const c = valueChoices(u);
+  const filling = step.proposal.fields.flatMap((f) => (f.value !== null ? [`${step.names.get(f.key) ?? f.descriptor}: ${f.value}`] : f.handoff !== null ? [`${step.names.get(f.key) ?? f.descriptor}: ${f.handoff.display}`] : []));
+  const why = u.why === "selection" ? "Jev's two value questions did not settle it" : "the check called it exact under its cutoff";
+  throw new AskAsks(new SaidError("unsure", c.text, `${u.name}: ${why}; asked by its ${u.options.length} eligible values`), step.intent, step.maker, { ...c, filling, window, resume: { ...resume, values: step } });
 }
 
 const refsOf = (snap: IntentSnapshot): SnapRefs => ({
@@ -411,6 +464,9 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
   }
 
+  // A value question's answer continues the fill it was asked about, and nothing before it: no intent, scope or value
+  // question is asked again (design/ask/VALUE-SETTLEMENT.md, "Replans do not re-ask unchanged questions").
+  if (o.resume?.values !== undefined) return continueValues(o.resume, o.resume.values, w, model, memory, askJev, o, jev);
   let snap: IntentSnapshot;
   let made: Awaited<ReturnType<IntentMaker["make"]>>;
   const resume = o.resume;
@@ -508,21 +564,23 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       ...(sure.length === 0 ? {} : { text: asksFieldsBeside(sure) }),
       filling: sure,
       window: { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title },
-      resume: {
-        instruction,
-        windowId: w.window.windowId,
-        intent: made.intent,
-        refs: refsOf(snap),
-        maker: use,
-        makerName,
-        fixed,
-        seen: seenOf(snap, resume?.seen ?? (presettled === undefined ? undefined : { title: w.window.title, fields: { ...presettled.seen } })),
-        document,
-        askId,
-        scopeKeys: settled,
-      },
+      resume: resumeFor(settled),
     };
   };
+  /** What continues this Ask after a question: its intent and picks, the form as it reads now, and the scope it settled. */
+  const resumeFor = (scopeKeys: string[]): AskResume => ({
+    instruction,
+    windowId: w.window.windowId,
+    intent: made.intent,
+    refs: refsOf(snap),
+    maker: use,
+    makerName,
+    fixed,
+    seen: seenOf(snap, resume?.seen ?? (presettled === undefined ? undefined : { title: w.window.title, fields: { ...presettled.seen } })),
+    document,
+    askId,
+    scopeKeys,
+  });
   const refused = (e: unknown): never => {
     if (e instanceof PlannerError) {
       e.windowId ??= w.window.windowId;
@@ -799,79 +857,129 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   const name = (f: FillField): string => nameOf.get(f.key)?.name ?? f.descriptor;
   // A value the user spelled out that the value resolver cannot read alone ("8:15" with no am or pm) is asked
   // about rather than guessed, and nothing else is proposed until it is answered.
+  const settlement = valueSettlementOf(p);
   for (const f of p.fields) {
     const said = checked.scope.literals.get(f.key);
-    if (said !== undefined && f.withheld === "ambiguous" && f.asks.some((a) => a.value === said)) return refused(new SaidError("unsure", saysAmbiguous(said, nameOf.get(f.key)?.control, nameOf.get(f.key)?.name), `"${said}" for ${name(f)} reads more than one way`));
+    const unread = settlement?.unreadLiterals.has(f.key) === true || (f.withheld === "ambiguous" && f.asks.some((a) => a.value === said));
+    if (said !== undefined && unread) return refused(new SaidError("unsure", saysAmbiguous(said, nameOf.get(f.key)?.control, nameOf.get(f.key)?.name), `"${said}" for ${name(f)} reads more than one way`));
   }
-  const writes = p.fields.filter((f) => f.control === "text" && f.value !== null);
-  const controls = p.fields.filter((f) => f.handoff !== null);
-  if (writes.length === 0 && controls.length === 0) {
-    const unsure = p.fields.filter((f) => f.withheld === "disagree" || f.withheld === "lowConfidence");
-    if (unsure.length > 0) return refused(new SaidError("unsure", saysUnsure(unsure.map(name)), `Jev was not sure enough about ${unsure.map((f) => `${name(f)} (${f.withheld === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`));
-    const left = withUnseen(withUnnamed(leftToYouSays(checked.leftToYou), w), w, checked.fields);
-    // V4: a menu whose options Caret cannot see is named once, as the user's, not also as one with nothing found.
-    const unseen = new Set(unseenOptions(w, checked.fields).map((f) => f.key));
-    // PV1: the names a sentence and its record carry are the redacted view's (modelName), never a local raw name.
-    const empty = checked.fields.filter((f) => !unseen.has(f.key)).map((f) => f.modelName ?? f.name);
-    const said = [empty.length === 0 ? null : saysNoValue(empty), left].filter((x): x is string => x !== null).join(" ");
-    return refused(new SaidError("nothingToDo", said, `no value for ${checked.fields.map((f) => f.modelName ?? f.name).join(", ")} on screen, in memory or in the instruction${unseen.size === 0 ? "" : `; ${unseen.size} of them menus whose options the window does not show`}`));
-  }
+  /**
+   * The fill's plan: its written values as steps, checked by validatePlan against `at.model`, or the Ask's refusal when it
+   * writes nothing. A value question's continuation finishes the same proposal later, its picked values settled in it.
+   */
+  const finish = async (fp: FillProposal, at: { model: ScreenModel; offerKey: string; jev: { calls: number; costUsd: number } }): Promise<AskDraft> => {
+    const writes = fp.fields.filter((f) => f.control === "text" && f.value !== null);
+    const controls = fp.fields.filter((f) => f.handoff !== null);
+    if (writes.length === 0 && controls.length === 0) {
+      const unsure = fp.fields.filter((f) => f.withheld === "disagree" || f.withheld === "lowConfidence");
+      if (unsure.length > 0) return refused(new SaidError("unsure", saysUnsure(unsure.map(name)), `Jev was not sure enough about ${unsure.map((f) => `${name(f)} (${f.withheld === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`));
+      const left = withUnseen(withUnnamed(leftToYouSays(checked.leftToYou), w), w, checked.fields);
+      // V4: a menu whose options Caret cannot see is named once, as the user's, not also as one with nothing found.
+      const unseen = new Set(unseenOptions(w, checked.fields).map((f) => f.key));
+      // PV1: the names a sentence and its record carry are the redacted view's (modelName), never a local raw name.
+      const empty = checked.fields.filter((f) => !unseen.has(f.key)).map((f) => f.modelName ?? f.name);
+      const said = [empty.length === 0 ? null : saysNoValue(empty), left].filter((x): x is string => x !== null).join(" ");
+      return refused(new SaidError("nothingToDo", said, `no value for ${checked.fields.map((f) => f.modelName ?? f.name).join(", ")} on screen, in memory or in the instruction${unseen.size === 0 ? "" : `; ${unseen.size} of them menus whose options the window does not show`}`));
+    }
 
-  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
-  const slots: Record<string, string> = {};
-  const slotNames: Record<string, string> = {};
-  const steps: Step[] = writes.map((f, i) => {
-    const slot = `v${i + 1}`;
-    slots[slot] = f.value as string;
-    slotNames[slot] = `the value for ${name(f)}`;
+    const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
+    const slots: Record<string, string> = {};
+    const slotNames: Record<string, string> = {};
+    const steps: Step[] = writes.map((f, i) => {
+      const slot = `v${i + 1}`;
+      slots[slot] = f.value as string;
+      slotNames[slot] = `the value for ${name(f)}`;
+      return {
+        says: `${name(f)} holds {{${slot}}}`,
+        end: { kind: "valueEquals", window: sel, target: { key: f.key, describe: `the ${name(f)} field` }, value: `{{${slot}}}` },
+        // A value copied from memory names its entry, so the executor checks it is still there before writing (B17).
+        ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
+        // G2: a window's value that is exactly the user's identity is checked against its entry right before it is written.
+        ...(identityRefOf(f, f.value as string) === null ? {} : { memory: identityRefOf(f, f.value as string) as string }),
+      };
+    });
+    // A plan needs a step; with only controls to set, it is one hand-off that names the first of them.
+    if (steps.length === 0) {
+      const first = controls[0] as FillField;
+      const label = (w.nodes.get(first.key)?.label ?? "").trim();
+      steps.push({ says: `You set ${name(first)}`, end: { kind: "handoff", window: sel, target: { key: first.key, describe: `the ${name(first)} control` }, why: handoffWhy(label) } });
+    }
+    const plan: Plan = { id: at.offerKey, title: instruction.replace(/\s+/g, " ").trim().slice(0, 100), slots: slotNames, steps };
+    await o.beforeCheck?.();
+    const ctx: PlanContext = { model: at.model, memory: memory.values(), instruction, origin: authority, documentOf };
+    let checkedPlan: ReturnType<typeof validatePlan>;
+    try {
+      // W2: the write contract's mint fill made for each written field (fill.ts mintOf), by the step's slot.
+      const mints = new Map(writes.flatMap((f, i) => {
+        const m = mintOf(f);
+        return m === undefined ? [] : [[`v${i + 1}`, m] as const];
+      }));
+      checkedPlan = validatePlan(plan, slots, ctx, mints);
+    } catch (e) {
+      return refused(e);
+    }
+    if (checkedPlan.window.window.windowId !== w.window.windowId) return refused(new SaidError("unknownWindow", SAYS.windowChanged, `'${w.window.title}' closed while Caret planned, and another window took its title`));
+    // A value copied from a window charges that window when a target question quotes it (Plan.sources).
+    const sources: Record<string, string> = {};
+    for (const wr of checkedPlan.writes) if (wr.trace.from === "window") sources[`v${wr.step + 1}`] = wr.trace.windowId;
     return {
-      says: `${name(f)} holds {{${slot}}}`,
-      end: { kind: "valueEquals", window: sel, target: { key: f.key, describe: `the ${name(f)} field` }, value: `{{${slot}}}` },
-      // A value copied from memory names its entry, so the executor checks it is still there before writing (B17).
-      ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
-      // G2: a window's value that is exactly the user's identity is checked against its entry right before it is written.
-      ...(identityRefOf(f, f.value as string) === null ? {} : { memory: identityRefOf(f, f.value as string) as string }),
+      plan: { ...plan, ...(Object.keys(sources).length === 0 ? {} : { sources }) },
+      slots,
+      checked: checkedPlan,
+      answers: {},
+      withheld: fp.fields.flatMap((f) => (f.withheld === "disagree" || f.withheld === "lowConfidence" ? [{ name: name(f), why: f.withheld }] : [])),
+      jev: { calls: at.jev.calls, costUsd: at.jev.costUsd, latencyMs: fp.jev.latencyMs + use.latencyMs },
+      controls: controls.map((f) => ({ key: f.key, name: name(f), value: f.handoff?.value ?? "", display: f.handoff?.display ?? "" })),
+      leftToYou: withUnseen(withUnnamed(leftToYouSays(checked.leftToYou), w), w, checked.fields),
+      ...withUnsure(checked.fields.map((f) => f.key)),
+      route: "fill",
+      intent,
+      maker: use,
+      fill: fp,
     };
-  });
-  // A plan needs a step; with only controls to set, it is one hand-off that names the first of them.
-  if (steps.length === 0) {
-    const first = controls[0] as FillField;
-    const label = (w.nodes.get(first.key)?.label ?? "").trim();
-    steps.push({ says: `You set ${name(first)}`, end: { kind: "handoff", window: sel, target: { key: first.key, describe: `the ${name(first)} control` }, why: handoffWhy(label) } });
-  }
-  const plan: Plan = { id: o.offerKey, title: instruction.replace(/\s+/g, " ").trim().slice(0, 100), slots: slotNames, steps };
-  await o.beforeCheck?.();
-  const ctx: PlanContext = { model: sourceModel, memory: memory.values(), instruction, origin: authority, documentOf };
-  let checkedPlan: ReturnType<typeof validatePlan>;
-  try {
-    // W2: the write contract's mint fill made for each written field (fill.ts mintOf), by the step's slot.
-    const mints = new Map(writes.flatMap((f, i) => {
-      const m = mintOf(f);
-      return m === undefined ? [] : [[`v${i + 1}`, m] as const];
-    }));
-    checkedPlan = validatePlan(plan, slots, ctx, mints);
-  } catch (e) {
-    return refused(e);
-  }
-  if (checkedPlan.window.window.windowId !== w.window.windowId) return refused(new SaidError("unknownWindow", SAYS.windowChanged, `'${w.window.title}' closed while Caret planned, and another window took its title`));
-  // A value copied from a window charges that window when a target question quotes it (Plan.sources).
-  const sources: Record<string, string> = {};
-  for (const wr of checkedPlan.writes) if (wr.trace.from === "window") sources[`v${wr.step + 1}`] = wr.trace.windowId;
-  return {
-    plan: { ...plan, ...(Object.keys(sources).length === 0 ? {} : { sources }) },
-    slots,
-    checked: checkedPlan,
-    answers: {},
-    withheld: p.fields.flatMap((f) => (f.withheld === "disagree" || f.withheld === "lowConfidence" ? [{ name: name(f), why: f.withheld }] : [])),
-    jev: { calls: jev.calls, costUsd: jev.costUsd, latencyMs: p.jev.latencyMs + use.latencyMs },
-    controls: controls.map((f) => ({ key: f.key, name: name(f), value: f.handoff?.value ?? "", display: f.handoff?.display ?? "" })),
-    leftToYou: withUnseen(withUnnamed(leftToYouSays(checked.leftToYou), w), w, checked.fields),
-    ...withUnsure(checked.fields.map((f) => f.key)),
-    route: "fill",
-    intent,
-    maker: use,
-    fill: p,
   };
+  // Value clarification (design/ask/VALUE-SETTLEMENT.md), for a caller that can ask: the fields whose values did not
+  // settle, within its bounds (choices.ts valueQueue), one question at a time in form order.
+  const queue = o.values === true && settlement !== undefined ? valueQueue(settlement.unresolved) : [];
+  if (settlement !== undefined && queue.length > 0) {
+    const step: ValueStep = { settlement, proposal: p, queue, names: new Map(checked.fields.map((f) => [f.key, f.name])), seenKeys: [...checked.fields, ...checked.leftToYou].map((f) => f.key), finish, intent, maker: use };
+    return valueQuestion(step, resumeFor(scopeKeys), { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title });
+  }
+  return finish(p, { model: sourceModel, offerKey: o.offerKey, jev });
+}
+
+/**
+ * The answer to a value question: on the form and document the question saw, and only on a source that still says what
+ * it said, a picked value gets one fresh pair of value questions with the pick among the selections (ValueSettlement
+ * settle); Leave blank asks nothing. Then the next field's question, or the plan.
+ */
+async function continueValues(r: AskResume, step: ValueStep, w: WindowState, model: ScreenModel, memory: PlannerMemory, askJev: AskJev, o: AskOptions, jev: { calls: number; costUsd: number }): Promise<AskDraft> {
+  const u = step.queue[0] as UnresolvedValue;
+  const fail = (e: PlannerError): AskRefused => new AskRefused(e, step.intent, step.maker);
+  const pick = (r.fixed.values ?? []).findLast((v) => v.key === u.key);
+  if (pick === undefined) throw fail(new SaidError("questionGone", SAYS.questionGone, `the answer picked no value for ${u.name}`));
+  if ((o.documentOf?.(w.window.windowId) ?? null) !== r.document) throw fail(new SaidError("unknownWindow", SAYS.windowChanged, "the page is another document than the one the question was asked on"));
+  try {
+    checkSeen(r, intentSnapshot(r.instruction, model, w, memory.values()), step.seenKeys);
+  } catch (e) {
+    if (e instanceof PlannerError) throw fail(e);
+    throw e;
+  }
+  let proposal = step.proposal;
+  if (pick.option !== null) {
+    try {
+      const field = await step.settlement.settle(u.key, pick.option, { model, askJev });
+      proposal = { ...proposal, fields: proposal.fields.map((f) => (f.key === u.key ? field : f)) };
+    } catch (e) {
+      if (e instanceof ValueSourceChanged) throw fail(new SaidError("unknownWindow", SAYS.windowChanged, e.message));
+      if (e instanceof FillError) throw fail(new SaidError("nothingToDo", SAYS.nothingOnScreen, `the value questions after the pick failed: ${e.message}`));
+      if (e instanceof PlannerError) throw fail(e);
+      throw e;
+    }
+  }
+  const next: ValueStep = { ...step, proposal, queue: step.queue.slice(1) };
+  if (next.queue.length > 0) return valueQuestion(next, r, { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title });
+  return next.finish(proposal, { model, offerKey: o.offerKey, jev });
 }
 
 const CONFIRM = { yes: "Yes: the instruction asks for this.", no: "No: the instruction does not ask for this." } as const;

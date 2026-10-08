@@ -4,19 +4,14 @@
 // none with "Name". The Jev here picks the right name when it is offered and any other name when it is
 // not, as live Jev picked another window's name for Name in B13's review. All text is synthetic.
 import { Disclosure } from "../src/privacy/disclosure.ts";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
+import { collectCandidates } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { fieldTerms, isNameLike, namesIn } from "../src/fill/kinds.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { field, snap, text, value } from "./builders.ts";
+import { field, snap, text, value, optionIs } from "./builders.ts";
 import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, scheduleForm } from "./desks.ts";
-
-// The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
-// change an answer these tests check (candidates.ts setGeneratorClock).
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
 
 const CHAT = "8181-9";
 const NOTES = "6161-9";
@@ -29,7 +24,7 @@ const nameProneJev = (asked: JevRequest[] = []): AskJev => async (req) => {
   const answers: Record<string, { choice: string; confidence: number }> = {};
   for (const [id, q] of Object.entries(req.questions)) {
     const offered = Object.entries(q.criteria).filter(([, d]) => d !== null);
-    const hit = offered.find(([, d]) => d?.startsWith(`"${RIGHT}"`)) ?? offered.find(([, d]) => /^"\p{Lu}\p{Ll}+ \p{Lu}\p{Ll}+"/u.test(String(d)));
+    const hit = offered.find(([, d]) => optionIs(d, RIGHT)) ?? offered.find(([, d]) => /^"\p{Lu}\p{Ll}+ \p{Lu}\p{Ll}+"/u.test(String(d)));
     answers[id] = { choice: hit?.[0] ?? "none", confidence: 0.9 };
   }
   return { model: "jev-test", answers, inputTokens: 1000, latencyMs: 5, costUsd: 0.000042 };
@@ -102,7 +97,7 @@ describe("a name the shape test misses is still a name when it is cut (B14 revie
       const answers: Record<string, { choice: string; confidence: number }> = {};
       for (const [id, q] of Object.entries(req.questions)) {
         const offered = Object.entries(q.criteria);
-        const hit = offered.find(([, d]) => d?.startsWith('"dana w."')) ?? offered.find(([, d]) => d?.startsWith(`"${DECOY}"`));
+        const hit = offered.find(([, d]) => d?.startsWith('"dana w."')) ?? offered.find(([, d]) => optionIs(d, DECOY));
         answers[id] = { choice: hit?.[0] ?? "none", confidence: 0.9 };
       }
       return { model: "jev-test", answers, inputTokens: 1000, latencyMs: 5, costUsd: 0 };

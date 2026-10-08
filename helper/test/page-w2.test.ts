@@ -345,11 +345,13 @@ describe("presence: Caret can't see this page yet", () => {
 describe("page focus into the fill path", () => {
   let dir: string;
   let store: Store;
+  const sessions: EngineSession[] = [];
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "caret-w2-"));
     store = new Store(join(dir, "data"));
   });
   afterEach(() => {
+    for (const session of sessions.splice(0)) session.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -379,6 +381,7 @@ describe("page focus into the fill path", () => {
     wirePageEngines({ host, helper, publish: (m) => published.push(m), warn: () => {} });
     const { session, sent } = rig();
     host.registry.add(session);
+    sessions.push(session);
     session.receive(hello);
     helper.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "a", op: "add", kind: "about", fields: { label: "Email", value: "robin@example.test", source: "typed" } });
     return { helper, published, session, sent, readerSent, readerSocket };

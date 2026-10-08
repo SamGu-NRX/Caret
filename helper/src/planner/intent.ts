@@ -16,7 +16,7 @@ import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { chainHeading, headingsBefore, shownSections, windowOutline } from "../fill/ask-scope.ts";
+import { chainHeading, headingsBefore, shownSections, UNNAMED_SECTION, windowOutline } from "../fill/ask-scope.ts";
 import { inWebArea, type Control } from "../fill/controls.ts";
 import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
@@ -118,6 +118,8 @@ export interface AskFixed {
   /** A window by id, or what the user told Caret. */
   source?: { kind: "window"; windowId: string } | { kind: "memory" };
   person?: { kind: "user" } | { kind: "person"; name: string };
+  /** Value clarification: the user's pick for a field by its key, an option of its value question, or null to leave it blank. */
+  values?: readonly { key: string; option: string | null }[];
 }
 
 export interface IntentField {
@@ -347,7 +349,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
 
 /** How a request names a field it may not quote, and a section or window it may not quote (SC1: Caret's own words). */
 export const UNNAMED_FIELD = "a field Caret leaves to the user";
-export const UNNAMED_SECTION = "a section";
+export { UNNAMED_SECTION };
 export const UNNAMED_WINDOW = "a window";
 
 /**
@@ -562,7 +564,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
     // A person the instruction names only as where to copy from ("from Morgan's email", "the Saturday Chris mentioned")
     // is not whose details go in: the source's words never set the scope. Unless the instruction asks for someone's
     // details by a pronoun ("from Dana's message, with her contact details"): then the source is whose they are.
-    if (person !== null && onlyInSources(snap.instruction, person) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
+    if (person !== null && onlyInSources(snap.instruction, person, snap.persons.map((p) => p.span)) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
   }
 
   const scope: FillScope = {

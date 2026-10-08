@@ -85,8 +85,8 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
   const page = new FakePage(o.controls ?? mixedControls, o.title ?? "Apply: Mixed controls");
   const published: HelperMessage[] = [];
   const asked: JevRequest[] = [];
-  const picks = o.picks ?? PICKS;
-  const pick = jevPickingText((_, ins) => picks[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? (o.picks === undefined ? byLabel(_, ins) : null), 0.95);
+  const picks = o.picks;
+  const pick = jevPickingText((_, ins) => (picks === undefined ? byLabel(_, ins) : (picks[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null)), 0.95);
   // Confirmation questions (planner/ask.ts confirmScope) answer yes, the scope ask asks; everything else is fill's.
   const canned: AskJev = async (req) => {
     asked.push(req);
@@ -143,6 +143,7 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
       expect((await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
     },
     close: () => {
+      page.session.close();
       helper.shutdown();
       store.close();
       rmSync(dir, { recursive: true, force: true });

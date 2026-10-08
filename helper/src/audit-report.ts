@@ -3,7 +3,7 @@
 import type { AuditSummary, DescriptorSource, FillAppCounts, MarkerAppCounts, MarkerSummary, RuleSet } from "./audit.ts";
 import { MAX_WATCHES } from "./tasks/pending.ts";
 import type { CensusApp } from "./audit-census.ts";
-import { GENERATOR_BUDGET_MS } from "./fill/candidates.ts";
+import { MAX_GENERATOR_VISITS } from "./fill/candidates.ts";
 
 export interface ProcessCpu {
   name: string;
@@ -197,7 +197,7 @@ export function renderFillReadiness(s: AuditSummary): string {
     `- Candidate spans per focus: ${quant(list.map((x) => x.candidates))}. Over the generator's cap of ${f.candidateCap}: ${list.filter((x) => x.candidates > f.candidateCap).length} of ${list.length}.`,
     `- Typed-value candidates per focus: ${quant(list.map((x) => x.typedCandidates))}.`,
     `- Empty fields in the focused field's form: ${quant(list.map((x) => x.formFields))}.`,
-    `- Capped generator time per focus (ms): ${quant(list.map((x) => x.generatorMs))}; stopped on its ${GENERATOR_BUDGET_MS} ms budget ${list.filter((x) => x.overBudget === true).length} of ${list.length}.`,
+    `- Capped generator time per focus (ms): ${quant(list.map((x) => x.generatorMs))}; stopped on its ${MAX_GENERATOR_VISITS}-visit cap ${list.filter((x) => x.overBudget === true).length} of ${list.length}.`,
     ...(list.some((x) => x.generatorCpuMs !== undefined)
       ? [`- CPU time of the same calls (ms): ${quant(list.flatMap((x) => (x.generatorCpuMs === undefined ? [] : [x.generatorCpuMs])))}.`]
       : []),

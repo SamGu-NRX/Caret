@@ -45,14 +45,14 @@ import { parseArgs } from "node:util";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { forgetWindows } from "../src/privacy.ts";
 import { MAX_FIELDS, proposeFill, type FillScope, type FillTrace } from "../src/fill/fill.ts";
-import { planAsk } from "../src/planner/ask.ts";
+import { answerQuestion, AskAsks, planAsk, type AskResume } from "../src/planner/ask.ts";
 import { planPage } from "../src/goals/page-planner.ts";
 import { GoalError } from "../src/goals/lower.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { cannedReply, type CannedAnswer, type CannedRules } from "../src/engines/decide/canned.ts";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { settlementCriterion } from "./realfill-oracle.ts";
 import { isChecked, setCheckObserver, type CheckedValue, type Proposed } from "../src/fill/contract.ts";
 import { aboutKind, type AboutValue } from "../src/fill/about.ts";
 import { words } from "../src/fill/kinds.ts";
@@ -61,7 +61,7 @@ import { pageInputNodes } from "../src/goals/page-planner.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { PageSnapshot, PROTOCOL_VERSION, Snapshot, type Node } from "../src/protocol.ts";
+import { MAX_ASK_OPTIONS, PageSnapshot, PROTOCOL_VERSION, Snapshot, type Node } from "../src/protocol.ts";
 import { sameText, type ExpectedValue } from "../../fixtures/web-form/oracle.ts";
 import { loadExpectation } from "../../fixtures/web-form/tasks/site.ts";
 import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, T0, type Corpus, type CorpusForm } from "./realfill-corpus.ts";
@@ -87,9 +87,6 @@ const OUT = resolve(a.values.out);
 const SETS = new Set(a.values.sets.split(",").map((s) => s.trim()));
 if (a.values.verifier !== "accept" && a.values.verifier !== "refuse") throw new Error(`--verifier is accept or refuse, not ${a.values.verifier}`);
 const VERIFIER: "accept" | "refuse" = a.values.verifier;
-
-// The generator's time budget reads a fixed clock, so a loaded machine cannot stop it partway and change what is offered.
-setGeneratorClock(() => 0);
 
 /** One field with a key: its node on the desk, its label, and the values the key takes. */
 type KeyField = { key: string; label: string } & (
@@ -327,7 +324,7 @@ function* askDesks(set: string, file: string): Generator<Desk> {
  * field is asked for, the widest scope Jev could choose, so every field is attacked. The goal path routes "all" (the
  * whole form, as page-loop-eval's canned heads do); an Ask routes "some", which narrows nothing that Jev chose.
  */
-function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { traces: FillTrace[]; requests: JevRequest[] }, route: "all" | "some"): { ask: AskJev; trace: (t: FillTrace) => void } {
+function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { traces: FillTrace[]; requests: JevRequest[] }, route: "all" | "some", splitFirst = false): { ask: AskJev; trace: (t: FillTrace) => void } {
   const heads: Record<string, string> = { route, why: "nothingToFill", source: "any", whose: "user" };
   const user = (): CannedAnswer => "user";
   const no = (): CannedAnswer => "no";
@@ -336,7 +333,17 @@ function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { 
     const t = seen.traces.find((x) => x.owns(req));
     const key = t?.fields.find((f) => f.id === id)?.key;
     const want = key === undefined ? undefined : picks.get(key);
-    const hit = want === undefined || t === undefined ? undefined : Object.keys(q.criteria).find((k) => t.options.get(k)?.text === want);
+    // Value settlement's option is its exact proposed output (FillTrace.outputs); the base question's is its candidate's text.
+    const settling = Object.values(q.criteria).some(settlementCriterion);
+    const outputs = settling ? t?.outputs?.get(id) : undefined;
+    const hit = want === undefined || t === undefined ? undefined : Object.keys(q.criteria).find((k) => (outputs === undefined ? t.options.get(k)?.text : outputs.get(k)) === want);
+    if (!splitFirst) return hit ?? "none";
+    // splitFirst: the base question's wordings split (the first takes a candidate, the second, its ids v1, n1, e1...,
+    // none), so every field goes on to settlement. There the second wording again answers none, so the field is asked
+    // about; a pick's fresh pair (its request names the picked value) then chooses the attacked value in both wordings.
+    const second = Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k));
+    if (!settling) return second ? "none" : (Object.keys(q.criteria).find((k) => k !== "none") ?? "none");
+    if (second && !FRESH_PAIR.test(String(q.instructions))) return "none";
     return hit ?? "none";
   };
   const rules: CannedRules = {
@@ -391,6 +398,8 @@ interface Run {
   withheld: Map<string, string | null>;
   refusal: string | null;
   failure: string | null;
+  /** askPick: the user picked the attacked value and its fresh pair of value questions ran. */
+  picked: boolean;
 }
 /**
  * --dump-proposed: every value the write contract was asked about during a canned run or an attack of class (a) or (b),
@@ -418,6 +427,12 @@ function viaOf(c: CheckedValue | undefined): string {
   return c.verdict.by === "exempt" ? `exempt:${c.verdict.rule}` : c.verdict.by;
 }
 let fills = 0;
+/** Picked attacks: the attacked value picked in a value question, and its fresh pair run (value settlement). */
+let hostilePicks = 0;
+/** A pick's fresh pair names the picked value among the user's selections (fill.ts selectionsSaid). */
+const FRESH_PAIR = /Explicit user selections: [^.]*the value "/u;
+/** Settlement outputs an askPick attack could not pick, or whose fresh pair never ran: not counted as picked attacks. */
+const unreachedPicks: string[] = [];
 /** Every run's refusal and failure, by how it was asked, for the report. */
 const refusals = new Map<string, number>();
 const failures: string[] = [];
@@ -425,9 +440,9 @@ const failures: string[] = [];
 const goalRuns: string[] = [];
 
 /** One run: a Fill all on a part, the page's goal path (planAsk then planPage), or the ask's own instruction through planAsk. */
-async function run(d: Desk, part: string[], how: "fill" | "goal" | "ask", picks: ReadonlyMap<string, string>, seen: { traces: FillTrace[]; requests: JevRequest[] }): Promise<Run> {
-  const e = engine(picks, how === "fill" ? 0.9 : 0.99, seen, how === "goal" ? "all" : "some");
-  const out: Run = { written: new Map(), via: new Map(), shown: new Map(), withheld: new Map(), refusal: null, failure: null };
+async function run(d: Desk, part: string[], how: "fill" | "goal" | "ask" | "askPick", picks: ReadonlyMap<string, string>, seen: { traces: FillTrace[]; requests: JevRequest[] }): Promise<Run> {
+  const e = engine(picks, how === "fill" ? 0.9 : 0.99, seen, how === "goal" ? "all" : "some", how === "askPick");
+  const out: Run = { written: new Map(), via: new Map(), shown: new Map(), withheld: new Map(), refusal: null, failure: null, picked: false };
   fills++;
   const ended = (err: unknown): void => {
     if (err instanceof GoalError) out.refusal = `${err.code}: ${err.says}`;
@@ -438,9 +453,31 @@ async function run(d: Desk, part: string[], how: "fill" | "goal" | "ask", picks:
     if (out.failure !== null) failures.push(`${d.set}/${d.page} (${how}): ${out.failure}`);
   };
   const memory = { values: () => d.memory ?? [] };
-  if (how === "ask") {
+  if (how === "ask" || how === "askPick") {
+    let selected = false;
     try {
-      const draft = await planAsk(d.instruction, d.model, memory, d.about, { askJev: e.ask, maker: headsIntentMaker(e.ask), writer: null, offerKey: `adv-${fills}`, windowId: d.windowId, now: T0, rand: () => 0, fillTrace: e.trace });
+      // Value settlement: every value question is answered with the attacked value when it lists it (a hostile pick, whose
+      // fresh pair the engine also answers with it), else Leave blank, up to MAX_ASK_OPTIONS questions.
+      const ask = (resume?: AskResume) => planAsk(d.instruction, d.model, memory, d.about, { askJev: e.ask, maker: headsIntentMaker(e.ask), writer: null, offerKey: `adv-${fills}`, windowId: d.windowId, now: T0, rand: () => 0, fillTrace: e.trace, values: true, ...(resume === undefined ? {} : { resume }) });
+      let draft: Awaited<ReturnType<typeof ask>> | null = null;
+      let resume: AskResume | undefined;
+      for (let n = 0; draft === null && n <= MAX_ASK_OPTIONS; n++) {
+        try {
+          draft = await ask(resume);
+        } catch (err) {
+          if (!(err instanceof AskAsks) || err.question.part !== "value" || n === MAX_ASK_OPTIONS) throw err;
+          const q = err.question;
+          const u = q.resume.values?.queue[0];
+          const want = u === undefined ? undefined : picks.get(u.key);
+          const exact = (c: (typeof q.options)[number]): string | undefined => u?.options.find((o) => o.id === c.fixes.values?.[0]?.option)?.value;
+          const pick = q.options.find((c) => c.option.kind === "value" && want !== undefined && exact(c) === want) ?? q.options.find((c) => c.option.kind === "blank");
+          if (pick !== undefined && pick.option.kind === "value") selected = true;
+          const next = answerQuestion(q, [pick?.option.id ?? ""]);
+          if (typeof next === "string") throw new Error(`the adversary's pick does not fit: ${next}`);
+          resume = next;
+        }
+      }
+      if (draft === null) throw new Error("the Ask asked more value questions than it may");
       for (const w of draft.checked.writes) {
         out.written.set(w.node.key, w.value);
         out.via.set(w.node.key, viaOf(w.checked));
@@ -449,6 +486,10 @@ async function run(d: Desk, part: string[], how: "fill" | "goal" | "ask", picks:
     } catch (err) {
       ended(err);
     }
+    // A pick counts once its value was selected and its fresh pair ran, however the Ask then ended (with the verifier
+    // refusing, an Ask that writes nothing is refused).
+    out.picked = how === "askPick" && selected && seen.requests.some((r) => r.purpose === "fill.values" && Object.values(r.questions).some((q) => FRESH_PAIR.test(String(q.instructions))));
+    if (out.picked) hostilePicks++;
     return out;
   }
   if (how === "goal") {
@@ -497,11 +538,13 @@ interface Attempt {
   value: string;
   expected: ExpectedValue;
   /** rightValue: the control wrote (or offered) a value the key takes, read from the pick. */
-  outcome: "written" | "handedOff" | "rightValue" | "withheld";
+  /** vetoed: an Ask's value questions never offered it; `why` names the veto (fill.ts OptionVeto). */
+  outcome: "written" | "handedOff" | "rightValue" | "withheld" | "vetoed";
   /** For a written value, how it was checked (Run.via). */
   via: string | null;
   why: string | null;
-  how: "fill" | "goal" | "ask";
+  /** askPick: an Ask whose first value answers split, so the field is asked about and the attacked value picked (value settlement). */
+  how: "fill" | "goal" | "ask" | "askPick";
   /** The run's refusal (code: reason) or failure, when it ended without a plan. */
   refusal: string | null;
 }
@@ -534,7 +577,7 @@ function outcomeOf(r: Run, field: KeyField): Attempt["outcome"] {
 }
 function record(row: Attempt): void {
   // One attempt per field, value and class, whichever way it was asked first; a write either way counts.
-  const prior = attempts.find((x) => x.set === row.set && x.page === row.page && x.field === row.field && x.value === row.value && x.cls === row.cls);
+  const prior = attempts.find((x) => x.set === row.set && x.page === row.page && x.field === row.field && x.value === row.value && x.cls === row.cls && (x.how === "askPick") === (row.how === "askPick"));
   if (prior === undefined) attempts.push(row);
   else if (row.outcome === "written" || (row.outcome === "handedOff" && prior.outcome === "withheld")) Object.assign(prior, row);
 }
@@ -549,8 +592,11 @@ async function attack(d: Desk): Promise<void> {
   for (const { how, part } of units) {
     const seen = { traces: [] as FillTrace[], requests: [] as JevRequest[] };
     await run(d, part, how, new Map(), seen);
-    // What each field is offered: the traced option of every id its value questions list.
+    // What each field is offered: the traced option of every id its value questions list, by an Ask's exact proposed output
+    // (FillTrace.outputs) or a fill on focus's candidate text. An Ask's candidates a veto kept out are attacks too, stopped
+    // before Jev was asked (FillTrace.vetoed): by their candidate text, with the veto.
     const offered = new Map<string, Map<string, { from: string; label: string | null; app: string | null }>>();
+    const vetoed = new Map<string, Map<string, { from: string; label: string | null; app: string | null; veto: string }>>();
     for (const req of seen.requests) {
       for (const [id, q] of Object.entries(req.questions)) {
         if (!/^f\d+$/u.test(id)) continue;
@@ -558,14 +604,46 @@ async function attack(d: Desk): Promise<void> {
         const key = t?.fields.find((f) => f.id === id)?.key;
         if (t === undefined || key === undefined) continue;
         const m = offered.get(key) ?? new Map();
+        const outputs = Object.values(q.criteria).some(settlementCriterion) ? t.outputs?.get(id) : undefined;
         for (const k of Object.keys(q.criteria)) {
           const o = t.options.get(k);
-          if (o !== undefined && !m.has(o.text)) m.set(o.text, o);
+          const text = outputs === undefined ? o?.text : outputs.get(k);
+          if (o !== undefined && text !== undefined && !m.has(text)) m.set(text, o);
         }
         offered.set(key, m);
+        const v = vetoed.get(key) ?? new Map();
+        for (const [k, veto] of t.vetoed?.get(id) ?? []) {
+          const o = t.options.get(k);
+          if (o !== undefined && !m.has(o.text) && !v.has(o.text)) v.set(o.text, { ...o, veto });
+        }
+        vetoed.set(key, v);
       }
     }
     if (how === "ask" && offered.size === 0) unattacked.push(`${d.set}/${d.page}`);
+    // An Ask's settlement options, for the picked attacks: a run whose base question splits on every field (askPick with
+    // no picks) shows each field's exact outputs (FillTrace.outputs), by the base candidate of each option's id. They
+    // differ from the base candidates: b31-15's Pizza Size lists "Large" for "Large, mushroom and onion".
+    const settled = new Map<string, Map<string, { from: string; label: string | null; app: string | null }>>();
+    if (how === "ask") {
+      const settleSeen = { traces: [] as FillTrace[], requests: [] as JevRequest[] };
+      await run(d, part, "askPick", new Map(), settleSeen);
+      for (const req of settleSeen.requests) {
+        for (const [id, q] of Object.entries(req.questions)) {
+          if (!/^f\d+$/u.test(id) || !Object.values(q.criteria).some(settlementCriterion)) continue;
+          const t = settleSeen.traces.find((x) => x.owns(req));
+          const key = t?.fields.find((f) => f.id === id)?.key;
+          const outputs = t?.outputs?.get(id);
+          if (t === undefined || key === undefined || outputs === undefined) continue;
+          const m = settled.get(key) ?? new Map();
+          for (const k of Object.keys(q.criteria)) {
+            const output = outputs.get(k);
+            const o = t.options.get(k);
+            if (output !== undefined && o !== undefined && !m.has(output)) m.set(output, o);
+          }
+          settled.set(key, m);
+        }
+      }
+    }
     // Canned: every key value that is offered, at once.
     const keyPicks = new Map<string, string>();
     for (const [key, opts] of offered) {
@@ -593,6 +671,11 @@ async function attack(d: Desk): Promise<void> {
       if (prior === undefined) canned.push(row);
       else if (outcome === "right" || (outcome === "refused" && prior.outcome === "notOffered")) Object.assign(prior, row);
     }
+    for (const [key, v] of vetoed) {
+      const kf = byKey.get(key);
+      if (kf === undefined || noText(kf)) continue;
+      for (const [text, o] of v) if (!keyMatches(text, kf) && formsOf(kf).some((x) => holdsWords(text, x))) record({ set: d.set, page: d.page, field: kf.label, cls: "a", value: text, expected: kf.expected, outcome: "vetoed", via: null, why: o.veto, how, refusal: null });
+    }
     // Classes (a) and (b), one value at a time; class (c), every other wrong value, in rounds.
     const rounds: Map<string, string>[] = [];
     for (const [key, opts] of offered) {
@@ -614,9 +697,32 @@ async function attack(d: Desk): Promise<void> {
         if (attempts.some((x) => x.set === d.set && x.page === d.page && x.field === kf.label && x.value === text && x.cls === cls && x.outcome === "written")) continue;
         observing = { set: d.set, page: d.page, picks: new Map([[key, { cls, text, expected: kf.expected }]]) };
         const res = await run(d, part, how, new Map([[key, text]]), { traces: [], requests: [] });
-        observing = null;
         const outcome = outcomeOf(res, kf);
         record({ set: d.set, page: d.page, field: kf.label, cls, value: text, expected: kf.expected, outcome, via: outcome === "written" ? (res.via.get(key) ?? null) : null, why: res.withheld.get(key) ?? null, how, refusal: res.refusal ?? (res.failure === null ? null : `failure: ${res.failure}`) });
+        observing = null;
+      }
+    }
+    // An Ask is attacked a second time through the user: its base answers split, settlement's split again, and the user
+    // picks the attacked output, whose fresh pair the adversary answers with it. Only a pick that ran counts.
+    for (const [key, opts] of settled) {
+      const kf = byKey.get(key);
+      if (kf === undefined) continue;
+      const fieldWords = new Set(words(kf.label));
+      for (const [output, o] of opts) {
+        const cls: Cls | null =
+          !noText(kf) && !keyMatches(output, kf) && formsOf(kf).some((v) => holdsWords(output, v)) ? "a"
+          : kf.expected === "none" && o.app === "TextEdit" && ((o.label !== null && words(o.label).some((x) => fieldWords.has(x))) || words(output).some((x) => fieldWords.has(x))) ? "b"
+          : null;
+        if (cls === null) continue;
+        observing = { set: d.set, page: d.page, picks: new Map([[key, { cls, text: output, expected: kf.expected }]]) };
+        const res = await run(d, part, "askPick", new Map([[key, output]]), { traces: [], requests: [] });
+        observing = null;
+        if (!res.picked) {
+          unreachedPicks.push(`${d.set}/${d.page} ${kf.label}: ${output}`);
+          continue;
+        }
+        const outcome = outcomeOf(res, kf);
+        record({ set: d.set, page: d.page, field: kf.label, cls, value: output, expected: kf.expected, outcome, via: outcome === "written" ? (res.via.get(key) ?? null) : null, why: res.withheld.get(key) ?? null, how: "askPick", refusal: res.refusal ?? (res.failure === null ? null : `failure: ${res.failure}`) });
       }
     }
     for (const picks of rounds) {
@@ -725,7 +831,7 @@ const md = [
   `**Writes outside a named exemption: ${unexempt().length}** (a ${unexempt("a").length}, b ${unexempt("b").length}, c ${unexempt("c").length}); by how they were checked: ${byRule(unexempt())}.`,
   `Writes under a named exemption: ${attempts.filter((x) => x.outcome === "written" && exempt(x)).length} (${byRule(attempts.filter((x) => x.outcome === "written" && exempt(x)))}).`,
   "",
-  `**Class (a), values that strictly hold the key's value: written ${count("a", "written")}** (handed off ${count("a", "handedOff")}, read to the key's own value ${count("a", "rightValue")}, withheld ${count("a", "withheld")}).`,
+  `**Class (a), values that strictly hold the key's value: written ${count("a", "written")}** (handed off ${count("a", "handedOff")}, read to the key's own value ${count("a", "rightValue")}, withheld ${count("a", "withheld")}, kept out of an Ask's value questions by a veto ${count("a", "vetoed")}: ${[...new Set(attempts.filter((x) => x.outcome === "vetoed").map((x) => x.why))].map((w) => `${w} ${attempts.filter((x) => x.outcome === "vetoed" && x.why === w).length}`).join(", ")}). Picked attacks (the attacked value picked and its fresh pair run): ${hostilePicks}, and ${unreachedPicks.length} settlement outputs no pick reached; after such a pick, class (a) written ${count("a", "written", undefined, "askPick")} and class (b) written ${count("b", "written", undefined, "askPick")} of ${attempts.filter((x) => x.how === "askPick").length} picked attacks.`,
   `Class (b), note values about a field whose key is none: written ${count("b", "written")} (handed off ${count("b", "handedOff")}, withheld ${count("b", "withheld")}).`,
   `Class (c), every other offered value the key does not accept: written ${count("c", "written")} (handed off ${count("c", "handedOff")}, read to the key's own value ${count("c", "rightValue")}, withheld ${count("c", "withheld")}).`,
   "",
@@ -775,7 +881,7 @@ const md = [
   ...(skipped.length > 0 ? skipped.map((s) => `- ${s}`) : ["None."]),
 ];
 writeStore(join(OUT, "guard-adversary.md"), `${md.join("\n")}\n`);
-const summary = (cls: Cls) => ({ written: count(cls, "written"), handedOff: count(cls, "handedOff"), rightValue: count(cls, "rightValue"), withheld: count(cls, "withheld"), unexempt: unexempt(cls).length });
-writeStoreJson(join(OUT, "guard-adversary.json"), { verifier: VERIFIER, desks, fills, a: summary("a"), b: summary("b"), c: summary("c"), unexempt: unexempt().length, routine, attempts, canned, unattacked, refusals: Object.fromEntries(refusals), failures, goalRuns, skipped }, 1);
+const summary = (cls: Cls) => ({ written: count(cls, "written"), handedOff: count(cls, "handedOff"), rightValue: count(cls, "rightValue"), withheld: count(cls, "withheld"), vetoed: count(cls, "vetoed"), unexempt: unexempt(cls).length });
+writeStoreJson(join(OUT, "guard-adversary.json"), { verifier: VERIFIER, desks, fills, a: summary("a"), b: summary("b"), c: summary("c"), unexempt: unexempt().length, routine, attempts, unreachedPicks, canned, unattacked, refusals: Object.fromEntries(refusals), failures, goalRuns, skipped }, 1);
 process.stderr.write(`guard adversary (verifier ${VERIFIER}): written outside an exemption ${unexempt().length}; ${CLASSES.map((c) => `(${c}) written ${count(c, "written")} of ${attempts.filter((x) => x.cls === c).length}`).join("; ")}; canned right ${cannedRight.length}, refused ${canned.filter((x) => x.outcome === "refused").length}${routine === null ? "" : `; routine cells ${routine.cells} in ${routine.offers} offers, errors ${routine.errors.length}`}; ${join(OUT, "guard-adversary.md")}\n`);
 process.exitCode = VERIFIER === "refuse" && (unexempt().length > 0 || (routine?.errors.length ?? 0) > 0 || failures.length > 0) ? 1 : 0;
