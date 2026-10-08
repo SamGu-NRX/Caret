@@ -14,6 +14,7 @@ import type { ValueKind } from "../protocol.ts";
 import { dateShaped, isNameLike, NAME_JOINERS, namesIn, ORG_SUFFIX, textKind, timeShaped } from "./kinds.ts";
 import { splitName, splitPlace } from "./derive.ts";
 import { labelKind, valueKind } from "../memory/sensitive.ts";
+import { splitLines } from "../privacy/ledger/source.ts";
 
 /** A typed value found in a line: its text as written and where it starts. */
 export interface LineValue {
@@ -573,11 +574,11 @@ export function lineDigests(text: string, span: string): string[] {
   // the line before and after. Each of its lines is read as the generator reads a line (bareLine).
   // Blank lines at either end of the span are no part of it; one inside it is (G2 round 6: "4410 Speedway\n\napt 2"
   // found no lines, so its unchanged offer failed the recheck).
-  const want = span.split(/\r?\n/u).map(bareLine);
+  const want = splitLines(span).map(bareLine);
   while (want.length > 0 && want[0] === "") want.shift();
   while (want.length > 0 && want[want.length - 1] === "") want.pop();
   if (want.length === 0) return [];
-  const lines = text.split(/\r?\n/u).map((l) => l.replace(/\s+$/u, ""));
+  const lines = splitLines(text).map((l) => l.replace(/\s+$/u, ""));
   const bare = lines.map(bareLine);
   const out: string[] = [];
   for (let i = 0; i + want.length <= lines.length; i++) {
@@ -598,7 +599,7 @@ export function lineDigests(text: string, span: string): string[] {
  */
 export function logicalLines(text: string): string[] {
   const out: string[] = [];
-  for (const raw of text.split(/\r?\n/u)) {
+  for (const raw of splitLines(text)) {
     const l = bareLine(raw);
     if (l === "") continue;
     const prev = out[out.length - 1];

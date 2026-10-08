@@ -10,6 +10,7 @@ import { frozenRequest, seal, sendable, storedRequest, type Sealed } from "../pr
 import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
+import { splitLines } from "../privacy/ledger/source.ts";
 
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -27,7 +28,7 @@ function setting(name: keyof HostEnv, env: HostEnv): string | undefined {
   if (direct !== undefined && direct !== "") return direct;
   const file = env[ENV.caret_env_file];
   if (file === undefined || file === "") return undefined;
-  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+  for (const line of splitLines(readFileSync(file, "utf8"))) {
     const m = /^\s*(?:export\s+)?([A-Z_]+)\s*=\s*(.*?)\s*$/.exec(line);
     if (m?.[1] === name && m[2] !== undefined) {
       const value = m[2].replace(/^(['"])(.*)\1$/, "$2").trim();

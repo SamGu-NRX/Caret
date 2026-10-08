@@ -21,7 +21,7 @@ import { createHash } from "node:crypto";
 import { bareLine, LABELLED, lineDigests, logicalLines, sentenceAround } from "./line-values.ts";
 import { spanContexts } from "./candidates.ts";
 import { redactWindow } from "./redact.ts";
-import { TITLE, type SourceAt } from "../privacy/ledger/source.ts";
+import { type SourceAt, splitLines, TITLE } from "../privacy/ledger/source.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, PART_SAYS, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
@@ -1132,7 +1132,7 @@ export function sentenceDigests(text: string, span: string): string[] {
   const flat = (t: string): string => t.replace(/\s+/gu, " ").trim();
   const want = flat(span);
   if (want === "") return [];
-  const lines = text.split(/\r?\n/u).map(bareLine).filter((l) => l !== "");
+  const lines = splitLines(text).map(bareLine).filter((l) => l !== "");
   const records: string[] = [];
   for (const l of lines) {
     if (records.length === 0 || LABELLED.test(l)) records.push(l);

@@ -6,7 +6,7 @@
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
 import { assertNoExcludedValue, cut, flat, fold, OWNER_NOTE_CHARS, sectionTexts, SnippetLedger, spansOf, type Snippet, type ViewSpan } from "../privacy.ts";
 import { breachWithNotes, measure, normalizedUnits, OperationLedger, splitNotes, viewInventory, type Breach, type Measurement, type OwnerNotes } from "./ledger/account.ts";
-import { nodePart, sourceLines, sourcePieces, wholePart, type SourceAt } from "./ledger/source.ts";
+import { nodePart, sourceLines, sourcePieces, splitLines, wholePart, type SourceAt } from "./ledger/source.ts";
 import { spanKey } from "./ledger/measure.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits, type DecodedUnit } from "./ledger/units.ts";
@@ -127,7 +127,7 @@ function removedValueWords(raw: WindowState): ReadonlySet<string> {
   const words = new Set<string>();
   // Every text the view is built from, SCP1's section texts (Node.headings, Node.outline) included: redaction removes a
   // secret section line as it removes a label's (INT1 review P1: an outline "API key: Zq7x" let "Open Zq7x" through).
-  const lines = [raw.window.title, ...[...raw.nodes.values()].flatMap((n) => [n.label, n.value, n.placeholder, ...sectionTexts(n)])].flatMap((t) => (t === undefined || t === "" ? [] : t.split(/\r?\n/u)));
+  const lines = [raw.window.title, ...[...raw.nodes.values()].flatMap((n) => [n.label, n.value, n.placeholder, ...sectionTexts(n)])].flatMap((t) => (t === undefined || t === "" ? [] : splitLines(t)));
   for (const line of lines) {
     if (flat(line) === "" || viewHolds(view, line)) continue;
     for (const w of valueWords(line)) if (w.length >= 4 && /\p{N}|[._@#$%&*!+/-]|\p{Ll}\p{Lu}/u.test(w) && !shown.includes(w.toLowerCase())) words.add(w.toLowerCase());
@@ -551,7 +551,7 @@ export class Disclosure extends SnippetLedger {
    * text, but a value can be anything code chose; one that shows a line redaction removed never mints.
    */
   private keptByViews(text: string): boolean {
-    const pieces = text.split("\n").map((raw) => flat(raw).replace(/^…|…$/gu, "")).filter((x) => x !== "");
+    const pieces = sourcePieces(text);
     for (const piece of pieces) {
       const r = this.revealed(piece);
       for (const [line, ids] of r.lines) for (const id of ids) {

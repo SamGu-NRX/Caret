@@ -13,7 +13,7 @@ import { bareLine, clauseSpan, LABELLED, lineTexts, lineValues, partSpan, senten
 import { redactWindow } from "./redact.ts";
 import { WITHHELD } from "../privacy/exclude.ts";
 import { splitDate } from "./derive.ts";
-import { collapsedMap, collapsedRange, nodePart, sourceLine, TITLE, wholePart, type SourceAt } from "../privacy/ledger/source.ts";
+import { collapsedMap, collapsedRange, lineEndAt, lineStartAt, linesWithStarts, nextLineStart, nodePart, sourceLine, splitLines, TITLE, wholePart, type SourceAt } from "../privacy/ledger/source.ts";
 
 /**
  * A field whose typed value is a candidate, as a line of text is: editable, holding text, not secure, not a kind memory
@@ -194,9 +194,8 @@ function foundAt(node: Node, found: Found | undefined): { lineStart: number; raw
   if (!("offset" in found)) return found.at === undefined ? undefined : { lineStart: found.lineStart, raw: found.raw, at: found.at };
   // An offset in nodeText: its line, and the place in that line's bareLine reading that maps back to it (bareMap).
   const t = nodeText(node);
-  const lineStart = t.lastIndexOf("\n", found.offset - 1) + 1;
-  const nl = t.indexOf("\n", found.offset);
-  const raw = t.slice(lineStart, nl < 0 ? t.length : nl).replace(/\r$/u, "");
+  const lineStart = lineStartAt(t, found.offset);
+  const raw = t.slice(lineStart, lineEndAt(t, found.offset));
   const at = bareMap(raw).from.indexOf(found.offset - lineStart);
   return at < 0 ? undefined : { lineStart, raw, at };
 }
@@ -208,17 +207,9 @@ function foundRange(node: Node, text: string, found: Found | undefined): SourceA
   return lineRange(node, found.lineStart, found.raw, text, found.at);
 }
 
-/** Each raw line of nodeText(node) with its start there, split as the generator splits it (at LF, a CR before it kept off). */
+/** Each raw line of nodeText(node) with its start there, split as the inventory splits it (source.ts linesWithStarts). */
 function nodeLines(node: Node): { raw: string; start: number }[] {
-  const t = nodeText(node);
-  const out: { raw: string; start: number }[] = [];
-  let start = 0;
-  for (const piece of t.split("\n")) {
-    const raw = piece.endsWith("\r") ? piece.slice(0, -1) : piece;
-    out.push({ raw, start });
-    start += piece.length + 1;
-  }
-  return out;
+  return linesWithStarts(nodeText(node));
 }
 
 /** Whether `text` occurs in `raw` exactly once, overlapping occurrences counted. */
@@ -695,7 +686,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     for (const node of w.nodes.values()) {
       const isSourceField = sourceField(node);
-      for (const raw of nodeText(node).split(/\r\n|\r|\n/u)) {
+      for (const raw of splitLines(nodeText(node))) {
         if (++n > UNREAD_MAX) return void (cutAll = true);
         const line = bareLine(raw);
         if (line === "") continue;
@@ -748,7 +739,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const node of w.nodes.values()) {
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
-      for (const raw of nodeText(node).split(/\r?\n/)) {
+      for (const raw of splitLines(nodeText(node))) {
         for (const sp of lineSpans(raw)) {
           const kinds = (valuesOf.get(node.key) ?? []).filter((v) => sp.line.includes(v.text)).flatMap(valueKinds);
           if (!note(node, sp.text, sp.line, kinds, sp.label ?? (isSourceField ? (node.label ?? null) : null))) return;
@@ -1165,7 +1156,7 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   const t = nodeText(node);
   const read = where ?? (() => {
     const at = t.indexOf(text);
-    return at < 0 ? null : { lineStart: t.lastIndexOf("\n", at) + 1, raw: lineHolding(t, text).replace(/\r$/u, ""), at: undefined };
+    return at < 0 ? null : { lineStart: lineStartAt(t, at), raw: lineHolding(t, text), at: undefined };
   })();
   if (read === null) return null;
   const fact = readLineFact(t, read.lineStart, read.raw, read.at ?? bareLine(read.raw).indexOf(text), text, labelled);
@@ -1182,10 +1173,11 @@ function readLineFact(t: string, lineStart: number, raw: string, pos: number, te
   // is read on to its end for a warning (C1 review).
   // At most WRAPPED_LINES more lines, read one at a time: a node can be a whole log.
   let joined = line;
-  let end = t.indexOf("\n", at);
-  for (let k = 0; end >= 0 && k < WRAPPED_LINES && !/[.!?;:]$/u.test(joined); k++) {
-    const nl = t.indexOf("\n", end + 1);
-    const next = t.slice(end + 1, nl < 0 ? t.length : nl);
+  let end = lineEndAt(t, at);
+  for (let k = 0; end < t.length && k < WRAPPED_LINES && !/[.!?;:]$/u.test(joined); k++) {
+    const from = nextLineStart(t, end);
+    const nl = lineEndAt(t, from);
+    const next = t.slice(from, nl);
     if (!/^\s*\p{Ll}/u.test(next)) break;
     joined = `${joined} ${bareLine(next)}`;
     end = nl;
@@ -1236,7 +1228,7 @@ export function labelledLines(w: WindowState): { label: string; value: string; n
   for (const node of w.nodes.values()) {
     const isSourceField = sourceField(node);
     if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
-    for (const raw of nodeText(node).split(/\r?\n/)) {
+    for (const raw of splitLines(nodeText(node))) {
       // C1: a labelled line of any length, so a value read from a long one ("School: …, September 2016 to May 2020.")
       // is checked by its label as one from a short one is (fill/contract.ts provenanceStale, spanContexts).
       const line = bareLine(raw);
@@ -1297,9 +1289,7 @@ export function labelledSpan(node: Node, text: string, context: string | null): 
   if (context === null || text === "") return false;
   const t = nodeText(node);
   for (let at = t.indexOf(text); at >= 0; at = t.indexOf(text, at + 1)) {
-    const start = t.lastIndexOf("\n", at) + 1;
-    const nl = t.indexOf("\n", at);
-    const m = LABELLED.exec(bareLine(t.slice(start, nl < 0 ? t.length : nl)));
+    const m = LABELLED.exec(bareLine(t.slice(lineStartAt(t, at), lineEndAt(t, at))));
     if (m?.[1]?.trim() === context && m[2]?.includes(text) === true) return true;
   }
   return false;
@@ -1323,7 +1313,7 @@ function lineContextRead(w: WindowState, node: Node, lines: number, isSourceFiel
  * provenanceStale) requires a value's recorded context among them.
  */
 export function spanContexts(w: WindowState, node: Node, span: string): string[] {
-  const lines = nodeText(node).split(/\r?\n/).length;
+  const lines = splitLines(nodeText(node)).length;
   // I1: G2's lines read white space as one space ("Name: Robin  Vale" gives "Robin Vale"), so the span is found and
   // compared that way too; and every line that holds it is read, not the first: a short span ("M", "4") is in many
   // ("Emergency contact name: …" before "T-shirt size: M"), and reading only the first refused unchanged sources
@@ -1337,15 +1327,14 @@ export function spanContexts(w: WindowState, node: Node, span: string): string[]
 function lineHolding(text: string, span: string): string {
   const at = text.indexOf(span);
   if (at < 0) return span;
-  const nl = text.indexOf("\n", at);
-  return text.slice(text.lastIndexOf("\n", at) + 1, nl < 0 ? text.length : nl);
+  return text.slice(lineStartAt(text, at), lineEndAt(text, at));
 }
 
 /** The lines of a node's text that hold a span, white space in the span matching any run of spaces or tabs; the span itself when none does. */
 function linesHolding(text: string, span: string): string[] {
   const words = span.trim().split(/\s+/u).map((x) => x.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"));
   const re = new RegExp(words.join("[ \\t]+"), "u");
-  const held = text.split(/\r?\n/u).filter((l) => l.includes(span) || re.test(l));
+  const held = splitLines(text).filter((l) => l.includes(span) || re.test(l));
   return held.length === 0 ? [span] : held;
 }
 
@@ -1451,7 +1440,7 @@ export function countSpans(model: ScreenModel, targetWindowId: string): { spans:
     for (const node of w.nodes.values()) {
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
-      for (const raw of nodeText(node).split(/\r?\n/)) for (const s of lineSpans(raw)) seen.add(s.text);
+      for (const raw of splitLines(nodeText(node))) for (const s of lineSpans(raw)) seen.add(s.text);
     }
   }
   return { spans: seen.size, typed };
@@ -1483,11 +1472,10 @@ function contextRead(w: WindowState, node: Node, span: string, where?: { lineSta
     if (label !== null) return { text: label, at: labelRange(node, where.lineStart, where.raw, label) };
   } else {
     for (let at = text.indexOf(span); at >= 0; ) {
-      const start = text.lastIndexOf("\n", at) + 1;
-      const nl = text.indexOf("\n", at);
-      const label = labelOf(text.slice(start, nl < 0 ? text.length : nl));
+      const nl = lineEndAt(text, at);
+      const label = labelOf(text.slice(lineStartAt(text, at), nl));
       if (label !== null) return { text: label, at: null };
-      if (nl < 0) break;
+      if (nl >= text.length) break;
       at = text.indexOf(span, nl + 1);
     }
   }
@@ -1495,7 +1483,7 @@ function contextRead(w: WindowState, node: Node, span: string, where?: { lineSta
   // A document's text area has no label, and the text above it is its window's title ("Job notes.txt"), which
   // described every value in a note as "labelled 'Job notes.txt'" (B24 capture). A value inside a document has
   // no label but its line's.
-  if (node.editable === true && text.includes("\n")) return null;
+  if (node.editable === true && splitLines(text).length > 1) return null;
   return nearestRead(w, node);
 }
 
@@ -1586,17 +1574,17 @@ function blockHeadRead(w: WindowState, node: Node, span: string): Read | null {
   let from: { node: Node; start: number; raw: string } | null = null;
   if (own.more) {
     head = own.first;
-    from = own.at === undefined ? null : { node, start: own.at, raw: text.slice(own.at, text.indexOf("\n", own.at) < 0 ? text.length : text.indexOf("\n", own.at)) };
+    from = own.at === undefined ? null : { node, start: own.at, raw: text.slice(own.at, lineEndAt(text, own.at)) };
   } else if (node.parent !== null) {
     const section = w.nodes.get(node.parent)?.label;
     for (const n of childrenOf(w, node.parent)) {
       if (!LINE_ROLES.has(n.role)) continue;
       const t = nodeText(n);
-      const nl = t.indexOf("\n");
-      const first = (nl < 0 ? t : t.slice(0, nl)).trim();
+      const nl = lineEndAt(t, 0);
+      const first = t.slice(0, nl).trim();
       if (first.length === 0 || first === section) continue;
       head = first;
-      from = { node: n, start: 0, raw: nl < 0 ? t : t.slice(0, nl) };
+      from = { node: n, start: 0, raw: t.slice(0, nl) };
       break;
     }
   }
@@ -1615,16 +1603,16 @@ function firstLines(text: string): { first: string | undefined; more: boolean; a
   let first: string | undefined;
   let at: number | undefined;
   for (let start = 0; start <= text.length; ) {
-    const nl = text.indexOf("\n", start);
-    const end = nl < 0 ? text.length : nl;
+    const end = lineEndAt(text, start);
     const line = text.slice(start, end).trim();
     if (line.length > 0) {
       if (first !== undefined) return { first, more: true, ...(at === undefined ? {} : { at }) };
       first = line;
       at = start;
     }
-    if (nl < 0) break;
-    start = nl + 1;
+    const next = nextLineStart(text, end);
+    if (next < 0) break;
+    start = next;
   }
   return { first, more: false };
 }

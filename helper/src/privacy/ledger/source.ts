@@ -65,9 +65,52 @@ export function collapsedRange(part: PartId, raw: string, text: string, at = 0):
   return { part, start: from[at]!, end: from[at + t.length - 1]! + 1 };
 }
 
+/**
+ * The one line splitter for screen text (LINE_BREAK: CRLF, a bare CR or LF): the inventory, membership, conversation
+ * detection, redaction and the candidate generator all read lines through these, so no reader sees one line where
+ * another sees two. A mail whose headers a bare CR separated was read as one line by conversation detection and classed
+ * as a page.
+ */
+export function splitLines(text: string): string[] {
+  return text.split(LINE_BREAK);
+}
+
+/** Whether `c` is a line break character (CR or LF). */
+const isBreak = (c: string | undefined): boolean => c === "\n" || c === "\r";
+
+/** Where the line holding offset `at` of `text` starts: just after the line break before it, or 0. */
+export function lineStartAt(text: string, at: number): number {
+  for (let i = Math.min(at, text.length) - 1; i >= 0; i--) if (isBreak(text[i])) return i + 1;
+  return 0;
+}
+
+/** Where the line holding offset `at` of `text` ends: at the next line break from `at`, or the text's end. */
+export function lineEndAt(text: string, at: number): number {
+  for (let i = Math.max(at, 0); i < text.length; i++) if (isBreak(text[i])) return i;
+  return text.length;
+}
+
+/** Where the line after the break at `end` starts (a CRLF is one break), or -1 when `end` is the text's end. */
+export function nextLineStart(text: string, end: number): number {
+  if (end >= text.length) return -1;
+  return text[end] === "\r" && text[end + 1] === "\n" ? end + 2 : end + 1;
+}
+
+/** Each line of `text` (splitLines) with where it starts in the text. */
+export function linesWithStarts(text: string): { raw: string; start: number }[] {
+  const out: { raw: string; start: number }[] = [];
+  for (let start = 0; ; ) {
+    const end = lineEndAt(text, start);
+    out.push({ raw: text.slice(start, end), start });
+    const next = nextLineStart(text, end);
+    if (next < 0) return out;
+    start = next;
+  }
+}
+
 /** A text's lines as the inventory reads them: split at line breaks, collapsed, trimmed, empty ones dropped. */
 export function sourceLines(text: string): string[] {
-  return text.split(LINE_BREAK).map(sourceLine).filter((l) => l !== "");
+  return splitLines(text).map(sourceLine).filter((l) => l !== "");
 }
 
 /**

@@ -23,7 +23,7 @@ import { checkSealable, type AskJev, type JevRequest, type JevResult } from "./j
 import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, PART_SAYS, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, type CheckOptions, CONTRACT_UNSTATED, contractSays, ContractError, isChecked, makeFieldContract, mintDerivation, mintExempt, neverTypedRefusal, provenanceStale, requireChecked, shapeRefusal, textShapeRefusal, VerifierUnavailable, windowProvenance, withReads, readsCopied, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance, type Refused } from "./contract.ts";
-import { TITLE, wholePart, type SourceAt } from "../privacy/ledger/source.ts";
+import { type SourceAt, splitLines, TITLE, wholePart } from "../privacy/ledger/source.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { ownedOf, unitKey, unitOf, unitsHolding, type NoteUnit } from "./note-unit.ts";
 import { groupOptions, type OptionMember, type ValueOption } from "./value-options.ts";
@@ -1598,7 +1598,7 @@ export async function proposeFill(
       const sw = viewOf(model, c.source.windowId);
       const node = sw?.nodes.get(c.source.nodeKey);
       if (sw === undefined || node === undefined) continue;
-      const line = nodeText(node).split(/\r?\n/u).map(bareLine).find((l) => l.includes(c.text));
+      const line = splitLines(nodeText(node)).map(bareLine).find((l) => l.includes(c.text));
       if (line === undefined || line === c.text || line === c.line) continue;
       if (ledger.take(sw, "candidate", [line], [{ view: sw, text: line }])) ownerLines.set(c.id, line);
     }
@@ -2115,7 +2115,7 @@ export async function proposeFill(
     const theirs = ownerCands.filter((x) => ownerAgreed(x) === "person" && [...candidateKinds(model, x)].some((k) => kinds.includes(k)));
     if (theirs.length < 2) return false;
     const node = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
-    const line = node === undefined ? "" : (nodeText(node).split(/\r?\n/).find((l) => l.includes(c.text)) ?? "");
+    const line = node === undefined ? "" : (splitLines(nodeText(node)).find((l) => l.includes(c.text)) ?? "");
     const said = new Set(fieldTerms([line, c.context]));
     const named = [...fieldTerms(f.labelWords)].filter((t) => !isKindTerm(t) && t !== NAME_TERM && !KIND_ONLY_WORDS.has(t));
     return !named.some((t) => said.has(t));
@@ -2443,7 +2443,7 @@ export async function proposeFill(
    */
   const supportLine = (c: Candidate): string | null => {
     const node = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
-    const line = node === undefined ? undefined : nodeText(node).split(/\r?\n/u).map(bareLine).find((l) => l.includes(c.text));
+    const line = node === undefined ? undefined : splitLines(nodeText(node)).map(bareLine).find((l) => l.includes(c.text));
     return line !== undefined && line.length <= MAX_LINE ? line : (c.line ?? null);
   };
   const unavailable = m.own("unavailable");
@@ -3374,7 +3374,7 @@ export function conversionOf(control: string): MemoryConversion {
 function adjacentLines(model: ScreenModel, a: Candidate, b: Candidate): boolean {
   const node = viewOf(model, a.source.windowId)?.nodes.get(a.source.nodeKey);
   if (node === undefined || a.context === null || b.context === null) return false;
-  const lines = nodeText(node).split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim());
+  const lines = splitLines(nodeText(node)).map((l) => l.replace(/\s+/g, " ").trim());
   const at = (c: Candidate): number => lines.findIndex((l) => l.startsWith(`${c.context}:`) && l.includes(c.text));
   const i = at(a);
   const j = at(b);

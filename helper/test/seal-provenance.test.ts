@@ -384,3 +384,19 @@ describe("round 7", () => {
     expect(() => sendable(s)).not.toThrow();
   });
 });
+
+describe("one line splitter", () => {
+  const chrome = { pid: 8080, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  const mail = (eol: string): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap([text("b0", `From: Tomas Castell <tomas.castell@example.net>${eol}Subject: Re: forms for Saturday`)], { at: 100, windowId: "mail-1", title: "Re: forms for Saturday - Inbox", app: chrome }));
+    return m;
+  };
+  it("reads a mail whose headers a bare CR separates as a conversation, as it reads one with LF: limit 53 of 108", () => {
+    for (const eol of ["\n", "\r", "\r\n"]) {
+      const m = mail(eol);
+      const w = new Disclosure(m).measuredWindows().find((x) => x.windowId === "mail-1");
+      expect([eol, w?.conversation, w?.limit]).toEqual([eol, true, 53]);
+    }
+  });
+});
