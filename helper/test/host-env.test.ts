@@ -102,12 +102,13 @@ describe("native/helper environment contract", () => {
     for (const source of [caret, legacy]) {
       expect(source).toContain(`let release = ${source === caret ? "host" : "input"}["${ENV.caret_release_host}"] == "1"`);
       expect(source).toContain(`#else\n        let release = true`);
-      for (const prefix of ["CARET_DEV_", "AI_GATEWAY_", "VERCEL_"]) expect(source).toContain(`!key.hasPrefix("${prefix}")`);
-      for (const entry of HOST_ENV.filter((e) => /^(CARET_DEV_|AI_GATEWAY_|VERCEL_)/.test(e.name))) {
-        expect(allow).not.toContain(entry.name);
-        expect(["CARET_DEV_", "AI_GATEWAY_", "VERCEL_"].some((p) => entry.name.startsWith(p) && source.includes(`!key.hasPrefix("${p}")`))).toBe(true);
-      }
     }
+    // The legacy transport passes the host's environment through, so it strips the dev and gateway prefixes. The Caret
+    // host passes only HOME, USER, LOGNAME, TMPDIR, LANG and the allow-list to a release child, so no such key reaches
+    // it (tests/test_release_host_environment.py runs that launch).
+    for (const prefix of ["CARET_DEV_", "AI_GATEWAY_", "VERCEL_"]) expect(legacy).toContain(`!key.hasPrefix("${prefix}")`);
+    for (const entry of HOST_ENV.filter((e) => /^(CARET_DEV_|AI_GATEWAY_|VERCEL_)/.test(e.name))) expect(allow).not.toContain(entry.name);
+    expect(caret).toContain('for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] + (passesJevKey ? typeSafeEnvironmentKeys + ["CARET_ENV_FILE"] + devKeys : [])');
     expect(allow.some((n) => /^(CARET_DEV_|AI_GATEWAY_|VERCEL_)/.test(n))).toBe(false);
     expect(caret).toContain("guard typeSafeEnvironmentKeys.contains(key)");
     expect(caret).toContain('env.removeValue(forKey: "CARET_ENV_FILE")');
