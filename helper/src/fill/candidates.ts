@@ -348,6 +348,14 @@ const LEFT_OUT_MAX = 2000;
  * a synthetic realistic desk, so the cap is above that one desk and nothing more.
  */
 const UNREAD_MAX = 2000;
+/**
+ * Visits a conversation's listing may spend (rankWindow), newest message first; its older messages past the share are
+ * read for what they hold instead (unreadRest). Half of MAX_GENERATOR_VISITS, chosen so a long conversation leaves the
+ * other windows half the budget. It binds on no fixture desk the cap-binding measurement covered (at most 192 visits for
+ * a whole desk, ~/.caret-run/evidence/screen/pv2/simplify/cap-binding.md); what it does on long chats is measured on the
+ * long-conversation set (fixtures/longchat), not tuned there.
+ */
+const CONVERSATION_LIST_SHARE = 300;
 /** Nodes and lines a window's own reading for typed values reads (windowValues), counted as read: UNREAD_MAX's size, chosen. */
 const EXTRACT_MAX = UNREAD_MAX;
 const INCOMPLETE = new WeakSet<WindowState>();
@@ -648,6 +656,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const lw = viewOf(model, id);
       if (lw !== undefined) unreadRest(lw);
     }
+    for (const [id, nodes] of unlistedOf) {
+      const lw = viewOf(model, id);
+      if (lw !== undefined && !unreadOf.has(id)) unreadRest(lw, nodes);
+    }
+    unlistedOf.clear();
     for (const id of leftOutOf) {
       const lw = viewOf(model, id);
       if (lw !== undefined && !unreadOf.has(id)) leftOut(lw);
@@ -690,6 +703,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const leftOutOf = new Set<string>();
   /** Windows a cap stopped the generator in, or kept it from reaching; their unread text is read when it finishes. */
   const unreadOf = new Set<string>();
+  /** By conversation, the older nodes its listing left unlisted (rankWindow); read when the generator finishes. */
+  const unlistedOf = new Map<string, ReadonlySet<string>>();
   /**
    * What a window a cap stopped in, or never reached, may hold: every line of every node not offered whole, a line with
    * no candidate in it as much as one with (a note's closing "Do not use L01 ..."), since candidate extraction does not
@@ -697,7 +712,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * cutNames, its labels' associations in omitted. Every line and value read counts, a repeated one too, against
    * UNREAD_MAX; past it what the rest may hold is not known, and cutAll is set.
    */
-  const unreadRest = (w: WindowState): void => {
+  const unreadRest = (w: WindowState, only?: ReadonlySet<string>): void => {
     // The work is counted as it is done, a node, a line and a typed value at a time, and nothing is read ahead of the
     // count: a window of a million lines costs this pass UNREAD_MAX of them, not the extraction of all of them.
     let n = 0;
@@ -708,15 +723,19 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     };
     const readerValues = new Map<string, TypedValue[]>();
     for (const v of w.values) {
+      if (only !== undefined && !only.has(v.nodeKey)) continue;
       if (over()) return;
       readerValues.set(v.nodeKey, [...(readerValues.get(v.nodeKey) ?? []), v]);
       if (secretValue(w, v) || seen.has(v.text)) continue;
       for (const k of valueKinds(v)) cutTerms.add(kindTerm(k));
     }
     for (const node of w.nodes.values()) {
-      if (over()) return;
+      if (only !== undefined && !only.has(node.key)) continue;
+      const texts = nodeTexts(node);
+      // A node with no text costs one; one with text, its lines.
+      if (texts.length === 0 && over()) return;
       const isSourceField = sourceField(node);
-      for (const raw of nodeTexts(node).flatMap((t) => [...linesUpTo(t, UNREAD_MAX - n + 1)])) {
+      for (const raw of texts.flatMap((t) => [...linesUpTo(t, UNREAD_MAX - n + 1)])) {
         if (over()) return;
         const line = bareLine(raw);
         if (line === "") continue;
@@ -831,7 +850,32 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       for (const k of kinds) t.add(kindTerm(k));
       return t;
     };
+    // Which nodes are listed: newest first (the end of the window's order), within the conversation's share of the
+    // generator's visits (CONVERSATION_LIST_SHARE) and what is left of them, each listed node's own visits counted (the
+    // node, each of its lines, each typed value on it). An older node left unlisted is read for what it may hold
+    // (unreadRest, unlistedOf), as any unread text is, so the window counts as cut, not as unknown. The listed nodes are
+    // then ranked in the window's own order, as a conversation listed whole always was.
+    const listed = new Set<string>();
+    const linesOf = new Map<string, { raw: string; start: number }[]>();
+    {
+      let spent = 0;
+      const nodes = [...w.nodes.values()];
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const node = nodes[i] as Node;
+        const lines = LINE_ROLES.has(node.role) || sourceField(node) ? timed("split", () => nodeLines(node)) : [];
+        const cost = 1 + lines.length + (valuesOf.get(node.key)?.length ?? 0);
+        if (spent + cost > CONVERSATION_LIST_SHARE || visits + spent + cost > MAX_GENERATOR_VISITS) {
+          unlistedOf.set(w.window.windowId, new Set(nodes.slice(0, i + 1).map((n) => n.key)));
+          missed.add(w.window.windowId);
+          break;
+        }
+        spent += cost;
+        listed.add(node.key);
+        linesOf.set(node.key, lines);
+      }
+    }
     for (const v of windowValues(w)) {
+      if (!listed.has(v.nodeKey)) continue;
       if (outOfWork()) return false;
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
@@ -843,11 +887,12 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       spans.push({ node, text: v.text, kind: v.kind, group: kindTerm(v.kind), context: () => contextRead(w, node, v.text, foundAt(node, valueFound(node, v))), terms, names, sourceOffset: sourceOffsets.get(v), found: valueFound(node, v) });
     }
     for (const node of w.nodes.values()) {
+      if (!listed.has(node.key)) continue;
       if (outOfWork()) return false;
       stats.nodes++;
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
-      const lines = timed("split", () => nodeLines(node));
+      const lines = linesOf.get(node.key) ?? [];
       for (const { raw, start } of lines) {
         if (outOfWork()) return false;
         const line: Found = { lineStart: start, raw };

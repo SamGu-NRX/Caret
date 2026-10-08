@@ -107,79 +107,65 @@ const chat = (id: string, title: string, n: number, answerAt: "recent" | "old" |
 };
 const val = (kind: Value["kind"], text: string): Value => ({ kind, text });
 
-desks.push({
-  id: "lc-01", form: "httpbin-pizza", kind: "chat150-recent", instruction: "fill this in from what I just texted Sam",
-  expected: { "Customer name": "Jordan Reyes", Telephone: ME.phone, "E-mail address": ME.email, "Delivery instructions": "side door, ring twice" },
-  source: { file: "sources/lc-01.window.json", snapshot: chat("01", "Sam Ortiz", 150, "recent", [{ text: "ok ordering the pizza now, here's my info for the form" }, { text: "Name: Jordan Reyes" }, { text: `Phone: ${ME.phone}`, values: [val("phone", ME.phone)] }, { text: `Email: ${ME.email}`, values: [val("email", ME.email)] }, { text: "Delivery instructions: side door, ring twice" }], 101) },
-});
-desks.push({
-  id: "lc-02", form: "greenhouse-apply", kind: "chat300-recent", instruction: "fill in my contact details from my chat with Priya",
-  expected: { "First Name": ME.first, "Last Name": ME.last, Email: ME.email, Phone: ME.phone, "LinkedIn Profile": "https://www.linkedin.com/in/jordan-reyes-dev" },
-  source: { file: "sources/lc-02.window.json", snapshot: chat("02", "Priya Raman", 300, "recent", [{ text: "here's what I'm putting on the application, can you double check" }, { text: "First Name: Jordan" }, { text: "Last Name: Reyes" }, { text: `Email: ${ME.email}`, values: [val("email", ME.email)] }, { text: `Phone: ${ME.phone}`, values: [val("phone", ME.phone)] }, { text: "LinkedIn: https://www.linkedin.com/in/jordan-reyes-dev", values: [val("url", "https://www.linkedin.com/in/jordan-reyes-dev")] }], 202) },
-});
-desks.push({
-  id: "lc-03", form: "event-rsvp", kind: "chat1000-recent", instruction: "RSVP using the details I sent Bea",
-  expected: { "Your full name": "Jordan Reyes", Email: ME.email, Phone: ME.phone },
-  source: { file: "sources/lc-03.window.json", snapshot: chat("03", "Bea Sutherland", 1000, "recent", [{ text: "for the RSVP form, use these" }, { text: "Full name: Jordan Reyes" }, { text: `Email: ${ME.email}`, values: [val("email", ME.email)] }, { text: `Phone: ${ME.phone}`, values: [val("phone", ME.phone)] }], 303) },
-});
-desks.push({
-  id: "lc-04", form: "checkout-shipping", kind: "chat300-old", instruction: "ship it to the address I gave Marcus a while back",
-  expected: { "First name": ME.first, "Last name": ME.last, Address: ME.street, City: ME.city, "ZIP code": ME.zip },
-  source: { file: "sources/lc-04.window.json", snapshot: chat("04", "Marcus Bell", 300, "old", [{ text: "my shipping info for the order:" }, { text: "First name: Jordan" }, { text: "Last name: Reyes" }, { text: `Address: ${ME.street}`, values: [val("address", `${ME.street}, ${ME.city}, TX ${ME.zip}`)] }, { text: `City: ${ME.city}` }, { text: `ZIP code: ${ME.zip}` }], 404) },
-});
-desks.push({
-  id: "lc-05", form: "job-application", kind: "chat1000-old", instruction: "fill in my details from my old chat with Kofi",
-  expected: { "Full name": "Jordan Reyes", Email: ME.email, Phone: ME.phone, "GitHub URL": "https://github.com/jordan-reyes-dev" },
-  source: { file: "sources/lc-05.window.json", snapshot: chat("05", "Kofi Mensah", 1000, "old", [{ text: "for the referral form you need:" }, { text: "Full name: Jordan Reyes" }, { text: `Email: ${ME.email}`, values: [val("email", ME.email)] }, { text: `Phone: ${ME.phone}`, values: [val("phone", ME.phone)] }, { text: "GitHub: https://github.com/jordan-reyes-dev", values: [val("url", "https://github.com/jordan-reyes-dev")] }], 505) },
-});
-desks.push({
-  id: "lc-06", form: "car-service-booking", kind: "chat150-old", instruction: "book the service with the car details I texted Dana",
-  expected: { "Full name": "Jordan Reyes", Email: ME.email, "Mobile phone": ME.phone, VIN: "1HGCM82633A004352", "Current mileage": "59,870" },
-  source: { file: "sources/lc-06.window.json", snapshot: chat("06", "Dana Whitfield", 150, "old", [{ text: "car stuff for the booking:" }, { text: "Full name: Jordan Reyes" }, { text: `Email: ${ME.email}`, values: [val("email", ME.email)] }, { text: `Mobile phone: ${ME.phone}`, values: [val("phone", ME.phone)] }, { text: "VIN: 1HGCM82633A004352" }, { text: "Current mileage: 59,870" }], 606) },
-});
-desks.push({
-  id: "lc-07", form: "rental-application", kind: "note-beside-long-chats", instruction: "fill out this application from my note",
-  expected: { "First name": ME.first, "Last name": ME.last, "Email address": ME.email, "Mobile phone": ME.phone, "Street address": ME.street, City: ME.city, "ZIP code": ME.zip },
-  source: { file: "sources/lc-07.window.json", snapshot: noteSnapshot("lc-07", "Rental details.txt", [{ text: "First name: Jordan" }, { text: "Last name: Reyes" }, { text: `Email address: ${ME.email}`, values: [val("email", ME.email)] }, { text: `Mobile phone: ${ME.phone}`, values: [val("phone", ME.phone)] }, { text: `Street address: ${ME.street}` }, { text: `City: ${ME.city}` }, { text: `ZIP code: ${ME.zip}` }]) },
-});
-desks.push({
-  id: "lc-08", form: "clinic-intake", kind: "note-beside-long-chats", instruction: "fill in my contact info from my note",
-  expected: { "Patient full name (legal)": "Jordan Reyes", Email: ME.email, "Mobile phone": ME.phone, "Street address": ME.street, City: ME.city, "ZIP code": ME.zip },
-  source: { file: "sources/lc-08.window.json", snapshot: noteSnapshot("lc-08", "Clinic intake.txt", [{ text: "Patient full name (legal): Jordan Reyes" }, { text: `Email: ${ME.email}`, values: [val("email", ME.email)] }, { text: `Mobile phone: ${ME.phone}`, values: [val("phone", ME.phone)] }, { text: `Street address: ${ME.street}` }, { text: `City: ${ME.city}` }, { text: `ZIP code: ${ME.zip}` }]) },
-});
-desks.push({
-  id: "lc-09", form: "course-enrollment", kind: "mail-thread-recent", instruction: "enroll me with the details from the registrar thread",
-  expected: { "First name": ME.first, "Last name": ME.last, Email: ME.email, Phone: ME.phone },
-  source: { file: "sources/lc-09.window.json", snapshot: snapshot("lc-09", "Re: Lakeside enrollment - Mail - Google Chrome", CHROME, mailThread(mulberry32(909), "Re: Lakeside enrollment", 40, 6, { at: 39, from: `Jordan Reyes <${ME.email}>`, lines: [{ text: "First name: Jordan" }, { text: "Last name: Reyes" }, { text: `Email: ${ME.email}`, values: [val("email", ME.email)] }, { text: `Phone: ${ME.phone}`, values: [val("phone", ME.phone)] }] })) },
-});
-desks.push({
-  id: "lc-10", form: "b2b-demo-request", kind: "mail-thread-old", instruction: "request the demo with my details from the vendor thread",
-  expected: { "First name": ME.first, "Last name": ME.last, "Work email": ME.email, "Phone number": ME.phone },
-  source: { file: "sources/lc-10.window.json", snapshot: snapshot("lc-10", "Re: Demo for Lumen Labs - Mail - Google Chrome", CHROME, mailThread(mulberry32(1010), "Re: Demo for Lumen Labs", 120, 4, { at: 0, from: `Jordan Reyes <${ME.email}>`, lines: [{ text: "First name: Jordan" }, { text: "Last name: Reyes" }, { text: `Work email: ${ME.email}`, values: [val("email", ME.email)] }, { text: `Phone number: ${ME.phone}`, values: [val("phone", ME.phone)] }] })) },
-});
-desks.push({
-  id: "lc-11", form: "support-ticket", kind: "chat300-superseded", instruction: "file the ticket with my current email from my chat with Ines",
-  expected: { "Your name": "Jordan Reyes", "Email address": "jordan.reyes@example.net" },
-  source: { file: "sources/lc-11.window.json", snapshot: (() => {
+/** "Label: value" lines for `pairs`, each with its typed value when the reader would type one. */
+const labelled = (pairs: [string, string, Value["kind"]?][]): Line[] => pairs.map(([l, v, k]) => ({ text: `${l}: ${v}`, ...(k === undefined ? {} : { values: [val(k, v)] }) }));
+/** A desk whose answer is `pairs` in the source, and whose expected values are `expected` (the field's value, by label). */
+const desk = (id: string, form: string, kind: string, instruction: string, expected: Record<string, string>, snapshotOf: unknown): void => {
+  desks.push({ id, form, kind, instruction, expected, source: { file: `sources/${id}.window.json`, snapshot: snapshotOf } });
+};
+
+// The user's own details (name, email, phone, address) go to fields the owner rule judges (HA2: a conversation's value is
+// never owner-judged, so those are withheld from a chat); each desk also holds values no owner rule touches (a time, a
+// code, a link, a note), which only the conversation's reading decides.
+desk("lc-01", "httpbin-pizza", "chat150-recent", "fill this in from what I just texted Sam",
+  { "Customer name": "Jordan Reyes", Telephone: ME.phone, "E-mail address": ME.email, "Preferred delivery time": "19:30", "Delivery instructions": "side door, ring twice" },
+  chat("01", "Sam Ortiz", 150, "recent", [{ text: "ok ordering the pizza now, here's my info for the form" }, ...labelled([["Name", "Jordan Reyes"], ["Phone", ME.phone, "phone"], ["Email", ME.email, "email"], ["Delivery time", "7:30 pm", "time"], ["Delivery instructions", "side door, ring twice"]])], 101));
+desk("lc-02", "greenhouse-apply", "chat300-recent", "fill in my details from my chat with Priya",
+  { "First Name": ME.first, "Last Name": ME.last, Email: ME.email, Phone: ME.phone, "Graduation Date (MM/YYYY)": "05/2027", "LinkedIn Profile": "https://www.linkedin.com/in/jordan-reyes-dev" },
+  chat("02", "Priya Raman", 300, "recent", [{ text: "here's what I'm putting on the application, can you double check" }, ...labelled([["First Name", ME.first], ["Last Name", ME.last], ["Email", ME.email, "email"], ["Phone", ME.phone, "phone"], ["Graduation Date", "05/2027"], ["LinkedIn", "https://www.linkedin.com/in/jordan-reyes-dev", "url"]])], 202));
+desk("lc-03", "event-rsvp", "chat1000-recent", "RSVP using the details I sent Bea",
+  { "Your full name": "Jordan Reyes", Email: ME.email, Phone: ME.phone, "Approximate arrival time": "19:45", "Dietary restrictions or allergies": "no shellfish" },
+  chat("03", "Bea Sutherland", 1000, "recent", [{ text: "for the RSVP form, use these" }, ...labelled([["Full name", "Jordan Reyes"], ["Email", ME.email, "email"], ["Phone", ME.phone, "phone"], ["Arrival time", "7:45 pm", "time"], ["Dietary restrictions", "no shellfish"]])], 303));
+desk("lc-04", "checkout-shipping", "chat300-old", "ship it to the address I gave Marcus a while back",
+  { "First name": ME.first, "Last name": ME.last, Address: ME.street, City: ME.city, "ZIP code": ME.zip, "Add a gift note": "Happy housewarming, Sam!" },
+  chat("04", "Marcus Bell", 300, "old", [{ text: "my shipping info for the order:" }, ...labelled([["First name", ME.first], ["Last name", ME.last], ["Address", ME.street], ["City", ME.city], ["ZIP code", ME.zip], ["Gift note", "Happy housewarming, Sam!"]])], 404));
+desk("lc-05", "job-application", "chat1000-old", "fill in my details from my old chat with Kofi",
+  { "Full name": "Jordan Reyes", Email: ME.email, Phone: ME.phone, "GitHub URL": "https://github.com/jordan-reyes-dev", "Earliest start date": "2027-01-04", "Desired salary": "$145,000" },
+  chat("05", "Kofi Mensah", 1000, "old", [{ text: "for the referral form you need:" }, ...labelled([["Full name", "Jordan Reyes"], ["Email", ME.email, "email"], ["Phone", ME.phone, "phone"], ["GitHub", "https://github.com/jordan-reyes-dev", "url"], ["Earliest start date", "Jan 4, 2027", "date"], ["Desired salary", "$145,000"]])], 505));
+desk("lc-06", "car-service-booking", "chat150-old", "book the service with the car details I texted Dana",
+  { "Full name": "Jordan Reyes", Email: ME.email, "Mobile phone": ME.phone, VIN: "1HGCM82633A004352", "Current mileage": "59,870", "Comments for your service advisor": "the brakes squeal when cold" },
+  chat("06", "Dana Whitfield", 150, "old", [{ text: "car stuff for the booking:" }, ...labelled([["Full name", "Jordan Reyes"], ["Email", ME.email, "email"], ["Mobile phone", ME.phone, "phone"], ["VIN", "1HGCM82633A004352"], ["Current mileage", "59,870"], ["Comments", "the brakes squeal when cold"]])], 606));
+desk("lc-07", "rental-application", "note-beside-long-chats", "fill out this application from my note",
+  { "First name": ME.first, "Last name": ME.last, "Email address": ME.email, "Mobile phone": ME.phone, "Street address": ME.street, City: ME.city, "ZIP code": ME.zip },
+  noteSnapshot("lc-07", "Rental details.txt", labelled([["First name", ME.first], ["Last name", ME.last], ["Email address", ME.email, "email"], ["Mobile phone", ME.phone, "phone"], ["Street address", ME.street], ["City", ME.city], ["ZIP code", ME.zip]])));
+desk("lc-08", "clinic-intake", "note-beside-long-chats", "fill in my contact info from my note",
+  { "Patient full name (legal)": "Jordan Reyes", Email: ME.email, "Mobile phone": ME.phone, "Street address": ME.street, City: ME.city, "ZIP code": ME.zip },
+  noteSnapshot("lc-08", "Clinic intake.txt", labelled([["Patient full name (legal)", "Jordan Reyes"], ["Email", ME.email, "email"], ["Mobile phone", ME.phone, "phone"], ["Street address", ME.street], ["City", ME.city], ["ZIP code", ME.zip]])));
+desk("lc-09", "course-enrollment", "mail-thread-recent", "enroll me with the details from the registrar thread",
+  { "First name": ME.first, "Last name": ME.last, Email: ME.email, Phone: ME.phone, "Student ID (returning students)": "LC-204417" },
+  snapshot("lc-09", "Re: Lakeside enrollment - Mail - Google Chrome", CHROME, mailThread(mulberry32(909), "Re: Lakeside enrollment", 40, 6, { at: 39, from: `Jordan Reyes <${ME.email}>`, lines: labelled([["First name", ME.first], ["Last name", ME.last], ["Email", ME.email, "email"], ["Phone", ME.phone, "phone"], ["Student ID", "LC-204417"]]) })));
+desk("lc-10", "b2b-demo-request", "mail-thread-old", "request the demo with my details from the vendor thread",
+  { "First name": ME.first, "Last name": ME.last, "Work email": ME.email, "Phone number": ME.phone, "Company website": "https://lumenlabs.example.com", "Anything else we should know?": "we run 40 entities across 3 currencies" },
+  snapshot("lc-10", "Re: Demo for Lumen Labs - Mail - Google Chrome", CHROME, mailThread(mulberry32(1010), "Re: Demo for Lumen Labs", 120, 4, { at: 0, from: `Jordan Reyes <${ME.email}>`, lines: labelled([["First name", ME.first], ["Last name", ME.last], ["Work email", ME.email, "email"], ["Phone number", ME.phone, "phone"], ["Company website", "https://lumenlabs.example.com", "url"], ["Anything else", "we run 40 entities across 3 currencies"]]) })));
+desk("lc-11", "support-ticket", "chat300-superseded", "file the ticket with my current email from my chat with Ines",
+  { "Your name": "Jordan Reyes", "Email address": "jordan.reyes@example.net", "Workspace URL": "https://lumen.example.com", Subject: "CSV export fails over 10k rows" },
+  (() => {
     const rand = mulberry32(1111);
-    const lines = chatter(rand, 290, 9);
-    lines.splice(4, 0, { text: "Name: Jordan Reyes" }, { text: `Email address: ${ME.email}`, values: [val("email", ME.email)] });
-    lines.splice(lines.length - 5, 0, { text: "heads up, I switched emails, the old one is gone" }, { text: "Email address: jordan.reyes@example.net", values: [val("email", "jordan.reyes@example.net")] });
+    const lines = chatter(rand, 288, 9);
+    lines.splice(4, 0, ...labelled([["Name", "Jordan Reyes"], ["Email address", ME.email, "email"]]));
+    lines.splice(lines.length - 5, 0, { text: "heads up, I switched emails, the old one is gone" }, ...labelled([["Email address", "jordan.reyes@example.net", "email"], ["Workspace URL", "https://lumen.example.com", "url"], ["Subject", "CSV export fails over 10k rows"]]));
     return snapshot("lc-11", "Ines Lindqvist", MESSAGES, lines);
-  })() },
-});
-desks.push({
-  id: "lc-12", form: "conference-registration", kind: "chat1000-recent-other-person-old", instruction: "register me with the details I sent Marcus",
-  expected: { "First name": ME.first, "Last name": ME.last, "Email address": ME.email, "Job title": "Senior Product Designer", "Company or organization": "Lumen Labs" },
-  source: { file: "sources/lc-12.window.json", snapshot: (() => {
+  })());
+desk("lc-12", "conference-registration", "chat1000-recent-other-person-old", "register me with the details I sent Marcus",
+  { "First name": ME.first, "Last name": ME.last, "Email address": ME.email, "Job title": "Senior Product Designer", "Company or organization": "Lumen Labs" },
+  (() => {
     const rand = mulberry32(1212);
     const lines = chatter(rand, 985, 9);
     // Another person's registration, long before.
-    lines.splice(8, 0, { text: "Marcus registered with:" }, { text: "First name: Marcus" }, { text: "Last name: Bell" }, { text: "Email address: marcus.bell@example.com", values: [val("email", "marcus.bell@example.com")] }, { text: "Job title: Staff Engineer" }, { text: "Company or organization: Harbor Analytics" });
-    lines.splice(lines.length - 6, 0, { text: "ok here's mine for the conference form" }, { text: "First name: Jordan" }, { text: "Last name: Reyes" }, { text: `Email address: ${ME.email}`, values: [val("email", ME.email)] }, { text: "Job title: Senior Product Designer" }, { text: "Company or organization: Lumen Labs" });
+    lines.splice(8, 0, { text: "Marcus registered with:" }, ...labelled([["First name", "Marcus"], ["Last name", "Bell"], ["Email address", "marcus.bell@example.com", "email"], ["Job title", "Staff Engineer"], ["Company or organization", "Harbor Analytics"]]));
+    lines.splice(lines.length - 6, 0, { text: "ok here's mine for the conference form" }, ...labelled([["First name", ME.first], ["Last name", ME.last], ["Email address", ME.email, "email"], ["Job title", "Senior Product Designer"], ["Company or organization", "Lumen Labs"]]));
     return snapshot("lc-12", "Marcus Bell", MESSAGES, lines);
-  })() },
-});
+  })());
 
 // The two long bystanders on every desk: a 1,000-message group chat and a 600-line mail thread, other people's details only.
 const decoys = [
@@ -204,4 +190,10 @@ const forms = desks.map((d) => {
 if (new Set(forms.map((f) => f.id)).size !== forms.length) throw new Error("two desks on one form: each form's page walk is keyed by its id");
 writeFileSync(join(OUT, "corpus.json"), `${JSON.stringify({ about: "Long-conversation dev set (scripts/longchat-fixtures.ts): the B24 forms with long chats and mail threads as sources and bystanders. Synthetic only.", decoys: decoys.map((d) => ({ kind: "window", file: d.file })), forms }, null, 1)}\n`);
 writeFileSync(join(OUT, "asks.json"), `${JSON.stringify({ asks: desks.map((d) => ({ id: d.id, form: d.form, instruction: d.instruction, expected: d.expected, kind: d.kind })) }, null, 1)}\n`);
+// The same desks with no bystanders (fixtures/longchat-solo): what a long source alone costs, apart from what two long
+// bystanders full of other people's details cut.
+const SOLO = join(here, "../../fixtures/longchat-solo");
+mkdirSync(SOLO, { recursive: true });
+writeFileSync(join(SOLO, "corpus.json"), `${JSON.stringify({ about: "The long-conversation dev set's desks with no bystanders (scripts/longchat-fixtures.ts). Synthetic only.", decoys: [], forms: forms.map((f) => ({ ...f, file: `../realfill/${f.file.replace(/^\.\.\/realfill\//u, "")}`, source: { kind: "window", file: `../longchat/${f.source.file}` } })) }, null, 1)}\n`);
+writeFileSync(join(SOLO, "asks.json"), `${JSON.stringify({ asks: desks.map((d) => ({ id: d.id, form: d.form, instruction: d.instruction, expected: d.expected, kind: d.kind })) }, null, 1)}\n`);
 console.log(`wrote ${desks.length} desks and ${decoys.length} bystanders to ${OUT}`);

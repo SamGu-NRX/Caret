@@ -1,15 +1,6 @@
 {
- "about": "Long-conversation dev set (scripts/longchat-fixtures.ts): the B24 forms with long chats and mail threads as sources and bystanders. Synthetic only.",
- "decoys": [
-  {
-   "kind": "window",
-   "file": "sources/weekend-crew.window.json"
-  },
-  {
-   "kind": "window",
-   "file": "sources/offsite-thread.window.json"
-  }
- ],
+ "about": "The long-conversation dev set's desks with no bystanders (scripts/longchat-fixtures.ts). Synthetic only.",
+ "decoys": [],
  "forms": [
   {
    "id": "httpbin-pizza",
@@ -17,7 +8,7 @@
    "origin": "the B24 dev corpus's httpbin-pizza, with lc-01's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-01.window.json"
+    "file": "../longchat/sources/lc-01.window.json"
    },
    "fields": [
     {
@@ -87,7 +78,7 @@
    "origin": "the B24 dev corpus's greenhouse-apply, with lc-02's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-02.window.json"
+    "file": "../longchat/sources/lc-02.window.json"
    },
    "fields": [
     {
@@ -156,7 +147,7 @@
    "origin": "the B24 dev corpus's event-rsvp, with lc-03's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-03.window.json"
+    "file": "../longchat/sources/lc-03.window.json"
    },
    "fields": [
     {
@@ -248,7 +239,7 @@
    "origin": "the B24 dev corpus's checkout-shipping, with lc-04's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-04.window.json"
+    "file": "../longchat/sources/lc-04.window.json"
    },
    "fields": [
     {
@@ -401,7 +392,7 @@
    "origin": "the B24 dev corpus's job-application, with lc-05's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-05.window.json"
+    "file": "../longchat/sources/lc-05.window.json"
    },
    "fields": [
     {
@@ -534,7 +525,7 @@
    "origin": "the B24 dev corpus's car-service-booking, with lc-06's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-06.window.json"
+    "file": "../longchat/sources/lc-06.window.json"
    },
    "fields": [
     {
@@ -673,7 +664,7 @@
    "origin": "the B24 dev corpus's rental-application, with lc-07's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-07.window.json"
+    "file": "../longchat/sources/lc-07.window.json"
    },
    "fields": [
     {
@@ -899,7 +890,7 @@
    "origin": "the B24 dev corpus's clinic-intake, with lc-08's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-08.window.json"
+    "file": "../longchat/sources/lc-08.window.json"
    },
    "fields": [
     {
@@ -1081,7 +1072,7 @@
    "origin": "the B24 dev corpus's course-enrollment, with lc-09's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-09.window.json"
+    "file": "../longchat/sources/lc-09.window.json"
    },
    "fields": [
     {
@@ -1192,7 +1183,7 @@
    "origin": "the B24 dev corpus's b2b-demo-request, with lc-10's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-10.window.json"
+    "file": "../longchat/sources/lc-10.window.json"
    },
    "fields": [
     {
@@ -1298,7 +1289,7 @@
    "origin": "the B24 dev corpus's support-ticket, with lc-11's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-11.window.json"
+    "file": "../longchat/sources/lc-11.window.json"
    },
    "fields": [
     {
@@ -1367,7 +1358,7 @@
    "origin": "the B24 dev corpus's conference-registration, with lc-12's long-conversation source",
    "source": {
     "kind": "window",
-    "file": "sources/lc-12.window.json"
+    "file": "../longchat/sources/lc-12.window.json"
    },
    "fields": [
     {

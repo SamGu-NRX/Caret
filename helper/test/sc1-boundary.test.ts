@@ -98,8 +98,9 @@ describe("the I/O boundary: every POST body and every request store is checked a
   // Also a file handed to a child as its output (openSync, a file descriptor in stdio), a reader's --record, and a shell
   // script's redirect to a file (anything but /dev/null).
   // A code generator writes source files from pinned public data, never model or screen text, so it writes them as they
-  // are: withholding could corrupt a generated table.
-  const CODEGEN: ReadonlySet<string> = new Set(["scripts/gen-ledger-unicode.ts"]);
+  // are: withholding could corrupt a generated table. A fixture generator writes invented text from its own tables
+  // (scripts/longchat-fixtures.ts), likewise.
+  const CODEGEN: ReadonlySet<string> = new Set(["scripts/gen-ledger-unicode.ts", "scripts/longchat-fixtures.ts"]);
   const rawScriptWrites = (sources: Map<string, string>): string[] =>
     [...sources].filter(([file]) => !CODEGEN.has(file)).filter(([file]) => file.startsWith("scripts/") || /fixtures\/web-form\/(?:page-loop-eval|tab-source-journey)\.ts$/u.test(file)).flatMap(([file, src]) => {
       // A redirect may stand only with a "# store: <why>" note on its line saying it keeps no model text.
