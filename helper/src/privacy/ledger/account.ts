@@ -98,6 +98,7 @@ export interface MeasuredWindow {
   readonly limits: Limits;
   /** The registry's current state of the window; false for an older snapshot a Disclosure holds (a task's kept source). */
   readonly live: boolean;
+  readonly conversation: boolean;
 }
 
 const viewOf = (w: WindowState): WindowState => (isRedacted(w) ? w : redactWindow(w));
@@ -117,9 +118,10 @@ export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowS
     seen.add(view);
     const id = raw.window.windowId;
     const inv = viewInventory(view);
-    const limits = limitsOf(inv, { conversation: heldAsConversation(raw), consented: consented.has(id) });
+    const conversation = heldAsConversation(raw);
+    const limits = limitsOf(inv, { conversation, consented: consented.has(id) });
     const older = out.filter((m) => m.windowId === id).length;
-    out.push({ key: live && older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limits, live });
+    out.push({ key: live && older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limits, live, conversation });
   };
   for (const w of registry.windows.values()) add(w, true);
   for (const w of held) add(w, false);
@@ -236,6 +238,29 @@ export class MintAccount {
    * be measured. `commit` keeps the positions. The lines each window newly showed are returned for declarations.
    */
   admit(texts: readonly string[], commit: boolean): Map<string, { added: number; lines: string[] }> | null {
+    const got = this.admitInner(texts, commit);
+    // MEASUREMENT ONLY (step 0 of the lead's ledger decision): every committed admit, with the conversation windows of
+    // the registry (their inventories written once to a side file) and the window that refused it, for an offline replay.
+    const trace = process.env.CARET_TEST_MINT_TRACE;
+    if (trace !== undefined && commit) {
+      const conv = this.windows().filter((m) => m.conversation);
+      for (const m of conv) {
+        const id = `${m.key}#${m.inv.lines.length}#${m.inv.total}`;
+        if (!TRACED.has(id)) {
+          TRACED.add(id);
+          writeLocalFile(`${trace}.windows`, `${JSON.stringify({ id, key: m.key, lines: m.inv.lines })}\n`, { append: true });
+        }
+      }
+      writeLocalFile(trace, `${JSON.stringify({ test: (globalThis as { __caretTest?: string }).__caretTest, ledger: this.traceId, texts, conv: conv.map((m) => `${m.key}#${m.inv.lines.length}#${m.inv.total}`), refused: got === null ? (this.lastRefusal ?? "?") : null })}\n`, { append: true });
+    }
+    return got;
+  }
+
+  private lastRefusal: string | null = null;
+  private readonly traceId = ++TRACE_IDS;
+
+  private admitInner(texts: readonly string[], commit: boolean): Map<string, { added: number; lines: string[] }> | null {
+    this.lastRefusal = null;
     const units = normalizedUnits(texts.filter((t) => t !== ""));
     if (units === null) return null;
     if (units.length === 0) return new Map();
@@ -256,7 +281,7 @@ export class MintAccount {
           if (lineAt(m.inv, p).length > CARD_LINE_CHARS) prose++;
         }
         if (added > 0) {
-          if (overLimits({ charged: r.wcharged + added, prose: r.wprose + prose }, m.limits) !== null) return null;
+          if (overLimits({ charged: r.wcharged + added, prose: r.wprose + prose }, m.limits) !== null) return ((this.lastRefusal = m.key), null);
           wadds.push({ r, bits, added, prose });
         }
       }
@@ -272,6 +297,7 @@ export class MintAccount {
       }
       if (added === 0) continue;
       if (overLimits({ charged: r.charged + added, prose: r.prose + prose }, m.limits) !== null) {
+        this.lastRefusal = m.key;
         // MEASUREMENT ONLY: which window and bound refused a mint, and what of it was already charged and newly marked.
         const log = process.env.CARET_TEST_MINT_LOG;
         if (log !== undefined) {
@@ -330,6 +356,9 @@ export class MintAccount {
     return out;
   }
 }
+
+const TRACED = new Set<string>();
+let TRACE_IDS = 0;
 
 /** The line of an inventory a position falls in. */
 function lineAt(inv: LineInventory, p: number): string {
