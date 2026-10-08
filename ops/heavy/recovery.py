@@ -711,12 +711,12 @@ class Owner:
         """The slot lock path for this attempt: the one journalled, else the one the supervisor names, which must be
         one of the plan's lane's slot locks in the queue's state directory (procs.slot_lock_problem). Only a heavy plan
         may name none or the plan's own slot.lock unchecked: that is the legacy queue's, which has no lanes."""
-        lane = (getattr(self, "plan", None) or {}).get("lane", "heavy")
+        lane = self.plan.get("lane", "heavy")
         if requested is None:
             if lane != "heavy":
                 raise ValueError("a {}-lane attempt must name its slot lock".format(lane))
             requested = self.paths["slot_lock"]
-        if getattr(self, "slot_path", None) is not None and requested != self.slot_path:
+        if self.slot_path is not None and requested != self.slot_path:
             raise ValueError("this attempt's slot lock is {}, not {}".format(self.slot_path, requested))
         if lane != "heavy" or requested != self.paths["slot_lock"]:
             problem = procs.slot_lock_problem(requested, self.paths["queue_state"], lane)
@@ -731,9 +731,9 @@ class Owner:
             raise ValueError("{} lock names for {} descriptors".format(len(names), len(fds)))
         identities = {}
         for name, fd in zip(names, fds):
-            path = (slot_path or getattr(self, "slot_path", None) or self.paths["slot_lock"]) if name == "slot" \
+            path = (slot_path or self.slot_path or self.paths["slot_lock"]) if name == "slot" \
                 else self.paths[LOCK_PATHS[name]]
-            expected = getattr(self, "slot_identity", None) if name == "slot" else None
+            expected = self.slot_identity if name == "slot" else None
             procs.inherited_lock_fd(path, fd, expected)  # the lock file itself, this open file holds it
             st = os.fstat(fd)
             identities[name] = (st.st_dev, st.st_ino)
@@ -767,7 +767,7 @@ class Owner:
                 raise ValueError("this attempt already has supervisor {}".format(self.supervisor))
             slot_path = self._slot_path_for(msg.get("slot_path"))
             checked = self._check_locks(msg["locks"], fds, slot_path)
-            slot_identity = checked.get("slot", getattr(self, "slot_identity", None))
+            slot_identity = checked.get("slot", self.slot_identity)
             since = self.adopted_ms or int(time.time() * 1000)
             self.journal.append({"event": "adopted", "supervisor": sup, "locks": sorted(set(self.fds) | set(msg["locks"])),
                                  "since_ms": since, "slot_path": slot_path,

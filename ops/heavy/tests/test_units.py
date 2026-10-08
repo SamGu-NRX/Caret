@@ -975,7 +975,7 @@ class VmAdmissionTest(Temp):
         self.assertEqual(self.check(100, admission=admission), "lease-policy.json changed since enqueue; re-enqueue")
 
     def test_a_dead_owners_cleanup_required_lease_counts_as_quarantined(self):
-        # maxCount 2 (the review's case): counted as one active lease it would leave room, but reap quarantines it,
+        # maxCount 2: counted as one active lease it would leave room, but reap quarantines it,
         # and a quarantined lease blocks its kind.
         recorded = self.policy_copy(lambda d: d["kinds"]["vm"].__setitem__("maxCount", 2))
         admission = self.admission(recorded)
@@ -1188,8 +1188,8 @@ class LaneTest(Temp):
                                              "HEAVY_JOB_QUEUE_LEASE_KIND": "heavy"})
 
     def test_a_slot_lock_must_be_the_regular_file_itself(self):
-        # P1 (347f8ea review): the basename and the resolved parent were checked, so a symlink named like a slot lock
-        # in the state directory passed, pointing anywhere.
+        # Checking only the basename and the resolved parent would pass a symlink named like a slot lock in the
+        # state directory, pointing anywhere.
         import procs
         import supervise
         plan = self.plan("browser")
@@ -1231,7 +1231,7 @@ class LaneTest(Temp):
         self.assertEqual(procs.slot_lock_identity(slot, state, "heavy"), (st.st_dev, st.st_ino))
 
     def test_the_lane_variables_come_as_a_pair(self):
-        # P2.1 (347f8ea review): a lanes queue sets both; only a legacy heavy job, from a queue without lanes, has neither.
+        # A lanes queue sets both; only a legacy heavy job, from a queue without lanes, has neither.
         import procs
         import supervise
         plan = self.plan("heavy")
@@ -1246,15 +1246,15 @@ class LaneTest(Temp):
 
     def test_recovery_takes_the_default_slot_lock_only_for_a_heavy_plan(self):
         import recovery
-        owner = recovery.Owner.__new__(recovery.Owner)
         plan = self.plan("browser")
-        owner.paths, owner.plan, owner.slot_path = plan["paths"], plan, None
+        owner = recovery.Owner(dict(plan, profile={}, run_root=self.root, job_id="caret-x"), "a" * 32,
+                               os.path.join(self.root, "s"))
         self.write("state/slot.lock", "")
         for requested in (None, plan["paths"]["slot_lock"]):
             with self.subTest(requested):
                 with self.assertRaisesRegex(ValueError, "browser"):
                     owner._slot_path_for(requested)
-        owner.plan = self.plan("heavy")
+        owner.plan = dict(owner.plan, lane="heavy")
         self.assertEqual(owner._slot_path_for(None), plan["paths"]["slot_lock"])
 
     def test_unset_falls_back_to_the_plans_slot_lock(self):
@@ -1445,7 +1445,7 @@ class QueueStatusTest(Temp):
 
 
 class WatchTest(Temp):
-    """The supervisor's watch loop on a browser-lane job (347f8ea review), with a scripted tracker and probes. The
+    """The supervisor's watch loop on a browser-lane job, with a scripted tracker and probes. The
     leader is a real child of this test, so waitid answers for real; _stop_all is recorded, not run."""
 
     class Tracker:
@@ -1504,7 +1504,7 @@ class WatchTest(Temp):
             return sup._watch(proc)
 
     def test_unknown_ownership_stops_a_browser_job_77(self):
-        # P2.2: a failed process probe is unknown ownership, never "nothing owned, so no window".
+        # A failed process probe is unknown ownership, never "nothing owned, so no window".
         import supervise
         sup = self.supervisor(self.Tracker([OSError("ps failed")], {}))
         stop = self.watch(sup, self.leader(exited=False))
@@ -1512,7 +1512,7 @@ class WatchTest(Temp):
         self.assertIn("unknown", stop[2])
 
     def test_the_completion_return_checks_windows_first(self):
-        # P2.2: the final full scan finds nothing left, but the window check still runs: an unreadable list is 77.
+        # The final full scan finds nothing left, but the window check still runs: an unreadable list is 77.
         import supervise
         unreadable = os.path.join(self.root, "owners-dir")
         os.mkdir(unreadable)  # reading it raises IsADirectoryError, an OSError
@@ -1526,7 +1526,7 @@ class WatchTest(Temp):
         return self.write("owners", "".join("{}\n".format(p) for p in pids))
 
     def test_memory_is_sampled_before_a_window_stop(self):
-        # P2.4: the scan that stops for a window still adds its memory sample.
+        # The scan that stops for a window still adds its memory sample.
         import supervise
         sup = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}), probes=self.Probes(usage={4242: (1, 7)}, footprint=1 << 20),
                               owners=self.owners_file(4242))
@@ -1536,7 +1536,7 @@ class WatchTest(Temp):
         self.assertEqual(sup.record["memory"]["peak_total_bytes"], 1 << 20)
 
     def test_window_and_memory_cap_together_take_the_short_grace_and_both_reasons(self):
-        # P2.4: a window stop alone has the profile's grace; with the memory cap also exceeded, the cap's short one.
+        # A window stop alone has the profile's grace; with the memory cap also exceeded, the cap's short one.
         import supervise
         sup = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}), probes=self.Probes(usage={4242: (1, 7)}, footprint=2 << 30),
                               owners=self.owners_file(4242), mem_cap_gib=1)
@@ -1586,7 +1586,7 @@ class WatchTest(Temp):
 
 
 class LeaseKindTest(Temp):
-    """P2.3 (347f8ea review): the supervisor's own lease, taken when the queue holds none (the fallback acquire) or
+    """The supervisor's own lease, taken when the queue holds none (the fallback acquire) or
     after the queue released its lease before cleanup was confirmed (the takeover), is of the plan's lane's kind."""
 
     def supervisor(self, lane):

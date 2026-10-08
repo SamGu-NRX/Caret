@@ -29,7 +29,7 @@ class TeardownLeavesNothing(unittest.TestCase):
 
 class AFailingTestKeepsItsWorld(unittest.TestCase):
     """A failing test's world (queue logs, journals, outcomes, run directories) is kept and its path printed, so an
-    exception inside a relay or supervisor can be read afterwards (347f8ea review, P3). A passing test's is removed."""
+    exception inside a relay or supervisor can be read afterwards. A passing test's is removed."""
 
     def run_world(self, fail):
         import io

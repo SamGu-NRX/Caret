@@ -29,7 +29,7 @@ class Lanes(World):
 
     def test_a_browser_job_runs_in_its_browser_slot_without_heavy_lock(self):
         # The job holds at its barrier until the lock assertions are done: with a fixed sleep it could finish, and
-        # free its slot, before they ran (347f8ea review, P3).
+        # free its slot, before they ran.
         job_id, _ = self.enqueue(["spawn-held"], profile=profile(grace=3, lease_kind="browser"))
         self.assertEqual(self.job(job_id).get("lease_kind"), "browser")
         self.run_queue("--lane", "browser", "--once", "--max-wait", "120")

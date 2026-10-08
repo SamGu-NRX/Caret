@@ -305,6 +305,13 @@ class Test6And9QuarantineHoldsEverything(Custody):
         self.assert_all_released(first)
 
 
+def make_owner(run_root, paths, lane="heavy", probes=None):
+    """A real recovery.Owner for unit tests, with a minimal plan: its journal is <run_root>/recovery/journal.ndjson."""
+    os.makedirs(os.path.join(run_root, "recovery"), exist_ok=True)
+    plan = {"paths": paths, "profile": {}, "run_root": run_root, "job_id": "caret-x", "test": {}, "lane": lane}
+    return recovery.Owner(plan, "a" * 32, os.path.join(run_root, "s"), probes or procs.DarwinProbes())
+
+
 class JournalReplay(unittest.TestCase):
     def setUp(self):
         import tempfile
@@ -573,8 +580,7 @@ class AdoptionIsAllOrNothing(unittest.TestCase):
         fcntl.flock(good, fcntl.LOCK_EX)
         unlocked = os.open(heavy, os.O_RDWR | os.O_CREAT)  # holds no lock: refused
         self.addCleanup(os.close, unlocked)
-        owner = recovery.Owner.__new__(recovery.Owner)
-        owner.paths, owner.fds = {"slot_lock": slot, "heavy_lock": heavy}, {}
+        owner = make_owner(d, {"slot_lock": slot, "heavy_lock": heavy})
         with self.assertRaises(procs.Refusal):
             owner._adopt_locks(["slot", "heavy"], [good, unlocked])
         self.assertEqual(owner.fds, {})
@@ -582,7 +588,7 @@ class AdoptionIsAllOrNothing(unittest.TestCase):
 
 
 class SlotLockIdentity(unittest.TestCase):
-    """P1 (347f8ea review): the owner takes the slot lock the supervisor names only when the path is the regular file
+    """The owner takes the slot lock the supervisor names only when the path is the regular file
     itself, not a symlink, and journals its (st_dev, st_ino). A later descriptor for the slot must be that same file."""
 
     def setUp(self):
@@ -595,14 +601,8 @@ class SlotLockIdentity(unittest.TestCase):
         os.makedirs(self.state)
         self.slot = os.path.join(self.state, "slot-browser-1.lock")
         self.lock = self.locked(self.slot)
-        owner = recovery.Owner.__new__(recovery.Owner)
-        owner.journal = recovery.Journal(os.path.join(d, "journal.ndjson"))
-        owner.probes = procs.DarwinProbes()
-        owner.paths = {"slot_lock": os.path.join(self.state, "slot.lock"), "queue_state": self.state}
-        owner.plan = {"job_id": "caret-x", "test": {}, "lane": "browser"}
-        owner.attempt, owner.state, owner.supervisor, owner.token, owner.lease = "a" * 32, "waiting", None, None, None
-        owner.fds, owner.clients, owner.watches, owner.resources = {}, {}, {}, {}
-        owner.adopted_ms = owner.dead_ms = owner.slot_path = None
+        owner = make_owner(d, {"slot_lock": os.path.join(self.state, "slot.lock"), "queue_state": self.state},
+                           lane="browser")
         self.owner = owner
         self.me = recovery.identity(owner.probes, os.getpid())
 
@@ -733,8 +733,10 @@ class TheSigtermHandlerOnlySetsAFlag(unittest.TestCase):
     stderr, and a real run hit "reentrant call inside <_io.BufferedWriter name='<stderr>'>". The loop logs it, once."""
 
     def test_the_handler_sets_the_flag_and_the_loop_logs_it(self):
-        owner = recovery.Owner.__new__(recovery.Owner)
-        owner.terminating = owner.termination_logged = False
+        import tempfile
+        d = tempfile.mkdtemp(prefix="caret-term-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", d])
+        owner = make_owner(d, {})
         owner.log = mock.Mock()
         owner._on_term(signal.SIGTERM, None)
         self.assertTrue(owner.terminating)
@@ -783,13 +785,7 @@ class StateOnlyAfterTheJournal(unittest.TestCase):
         self.lock = os.open(self.slot, os.O_RDWR | os.O_CREAT)
         self.addCleanup(os.close, self.lock)
         fcntl.flock(self.lock, fcntl.LOCK_EX)
-        owner = recovery.Owner.__new__(recovery.Owner)
-        owner.journal = recovery.Journal(os.path.join(d, "journal.ndjson"))
-        owner.probes = procs.DarwinProbes()
-        owner.paths, owner.plan = {"slot_lock": self.slot}, {"job_id": "caret-x", "test": {}}
-        owner.attempt, owner.state, owner.supervisor, owner.token, owner.lease = "a" * 32, "waiting", None, None, None
-        owner.fds, owner.clients, owner.watches, owner.resources = {}, {}, {}, {}
-        owner.adopted_ms = owner.dead_ms = None
+        owner = make_owner(d, {"slot_lock": self.slot})
         self.owner = owner
         self.me = recovery.identity(owner.probes, os.getpid())
 

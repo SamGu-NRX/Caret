@@ -1017,7 +1017,7 @@ class Supervisor:
         for pid in sorted(owners & set(owned)):
             try:
                 usage = self.probes.usage(pid)
-            except (PermissionError, OSError):
+            except OSError:
                 unknown.append(pid)
                 continue
             if usage is not None and usage[1] == self.tracker.tracked.get(pid):

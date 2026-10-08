@@ -65,7 +65,7 @@ SLOT_LOCK_NAMES = {"heavy": ("slot.lock",), "browser": ("slot-browser-1.lock", "
 def slot_lock_problem(path, queue_state, lane):
     """Why *path* is not a slot lock of *lane* in the queue's state directory, or None. The path must be the lock file
     itself: a regular file, not a symlink, whose real path is its name directly in the real state directory. Checking
-    only the name and the resolved parent let a symlink named like a slot lock point anywhere (347f8ea review, P1)."""
+    only the name and the resolved parent would let a symlink named like a slot lock point anywhere."""
     names = SLOT_LOCK_NAMES.get(lane)
     if names is None:
         return "lane {!r} has no slot locks".format(lane)
