@@ -13,7 +13,7 @@
 // the executor's reading, says what was written and whether anything was sent, deleted or paid.
 // --jev fake answers from each case's expected plan; --jev live asks Jev, needs CARET_ENV_FILE, stops
 // before spending more than --max-usd, and with --compare reports agreement with a fake run.
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -282,7 +282,7 @@ const walkExecutor = async (): Promise<void> => {
 
 // The executor window as the reader reports it (synthetic fixture text), so a missing control can be seen.
 const ew = executorWindow();
-writeStore(join(OUT, "executor-window.json"), JSON.stringify([...(ew?.nodes.values() ?? [])].map((n) => ({ key: n.key, role: n.role, label: n.label ?? null, editable: n.editable === true, states: n.states ?? [] })), null, 2) + "\n");
+writeStoreJson(join(OUT, "executor-window.json"), [...(ew?.nodes.values() ?? [])].map((n) => ({ key: n.key, role: n.role, label: n.label ?? null, editable: n.editable === true, states: n.states ?? [] })), 2);
 
 const workId = memory.upsert("about", "about:work email", { label: "Work email", value: WORK_EMAIL, source: "typed" }, Date.now(), null);
 let homeId = "";
@@ -425,7 +425,7 @@ if (a.compare !== undefined) {
   }
 }
 writeStore(join(OUT, "planner-eval.md"), md.join("\n") + "\n");
-writeStore(join(OUT, "planner-eval.json"), JSON.stringify({ jev: a.jev, rows, jevCalls, jevCost, errors, progress: grants }, null, 2) + "\n");
+writeStoreJson(join(OUT, "planner-eval.json"), { jev: a.jev, rows, jevCalls, jevCost, errors, progress: grants }, 2);
 writeStore(join(OUT, "reader.log"), readerLog);
 writeStore(join(OUT, "fixture.log"), fixtureErr);
 console.log(md.join("\n"));

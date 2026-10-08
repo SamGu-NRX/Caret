@@ -28,7 +28,7 @@
 // ROUTINE_MIN_PRECISION (gate.ts), and a skill is promoted after PROMOTE_AFTER clean runs (skills.ts). A
 // prediction cannot be scored from hashes (it reads the live window), so crossing times assume every repeat was
 // predicted right: an upper bound on how soon.
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -289,7 +289,7 @@ try {
     "",
   ];
   writeStore(a.out, md.join("\n") + "\n");
-  if (a.json !== undefined) writeStore(a.json, JSON.stringify({ copiedAt, transfers: transfers.length, liveRoutines, decisions, replays, loopsAll, loopsActive, thresholds: { BALANCED, EAGER, PROMOTE_AFTER, ROUTINE_MIN_PRECISION, BUNDLE_IDLE_MS, MIN_ROUTINE_STEPS, LOOP_GAP_MS } }, null, 2) + "\n");
+  if (a.json !== undefined) writeStoreJson(a.json, { copiedAt, transfers: transfers.length, liveRoutines, decisions, replays, loopsAll, loopsActive, thresholds: { BALANCED, EAGER, PROMOTE_AFTER, ROUTINE_MIN_PRECISION, BUNDLE_IDLE_MS, MIN_ROUTINE_STEPS, LOOP_GAP_MS } }, 2);
   process.stdout.write(md.join("\n") + "\n");
 } finally {
   rmSync(tmp, { recursive: true, force: true });

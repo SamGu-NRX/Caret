@@ -11,7 +11,7 @@
 // request through the Helper with a Jev that answers at once, which is how long the request holds the
 // event loop. An event-loop delay monitor (1 ms resolution) runs during the requests as a cross-check.
 // Writes results.json and summary.md, and the day scene as NDJSON reader messages (scene-day.ndjson).
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson, writeStoreNdjson } from "../src/privacy/send.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -180,7 +180,7 @@ const noTyped: LargeScene = (() => {
 })();
 const big = largeScene(7, 4);
 
-writeStore(join(OUT, "scene-day.ndjson"), `${day.snapshots.map((s) => JSON.stringify(s)).join("\n")}\n`);
+writeStoreNdjson(join(OUT, "scene-day.ndjson"), day.snapshots);
 const load = loadavg();
 const rows: Row[] = [];
 for (const [name, scene] of [["day", day], ["day, lines only", noTyped], ["4x day", big]] as const) {
@@ -192,7 +192,7 @@ for (const [name, scene] of [["day", day], ["day, lines only", noTyped], ["4x da
 }
 const floor = await baseline();
 const loadAfter = loadavg();
-writeStore(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), focuses: FOCUSES, loadavg: { before: load, after: loadAfter }, monitorFloorMs: floor, rows }, null, 2)}\n`);
+writeStoreJson(join(OUT, "results.json"), { at: new Date().toISOString(), focuses: FOCUSES, loadavg: { before: load, after: loadAfter }, monitorFloorMs: floor, rows }, 2);
 
 const md = [
   "# Candidate generator per focus",

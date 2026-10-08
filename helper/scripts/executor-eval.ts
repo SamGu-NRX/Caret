@@ -8,7 +8,7 @@
 // rerun the plan and count acts, and undo. Then it injects faults mid-plan. EventKit is never
 // touched: the calendar is FakeCalendar. Needs CARET_ENV_FILE for the Jev key (ambiguous targets); live Jev
 // stops before spending more than --max-usd (scripts/spend.ts).
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -408,7 +408,7 @@ md.push(
 md.push("", `The fixture became the active app ${(fixtureErr.match(/became active/g) ?? []).length} times and gave activation back each time.`);
 md.push("", `Jev: ${jev.calls()} calls, $${jev.usd().toFixed(5)} (budget $${MAX_USD}). Fake calendar calls: ${JSON.stringify(count(calendar.calls))}. Helper errors: ${errors.length}.`);
 writeStore(join(OUT, "executor-eval.md"), md.join("\n") + "\n");
-writeStore(join(OUT, "executor-eval.json"), JSON.stringify({ rows, riskRows, faultRows, progress, errors, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, calendarCalls: calendar.calls, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
+writeStoreJson(join(OUT, "executor-eval.json"), { rows, riskRows, faultRows, progress, errors, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, calendarCalls: calendar.calls, targetChoices: helper.executor.targetChoices }, 2);
 writeStore(join(OUT, "reader.log"), readerLog);
 writeStore(join(OUT, "fixture.log"), fixtureErr);
 console.log(md.join("\n"));

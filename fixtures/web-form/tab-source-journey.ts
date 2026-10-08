@@ -17,7 +17,7 @@
 // DevTools pipe, so the worker's listeners see the same activation events a click on a tab gives. The bridge and its
 // test host must already be built (accept.ts builds them). Canned Jev answers each fill question with F1's expected
 // value when a candidate quotes it exactly; live Jev is TypeSafe's, under --spend-limit. Exit 0 only when every check holds.
-import { writeStore } from "../../helper/src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../../helper/src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -317,7 +317,7 @@ async function main(): Promise<number> {
   check("rule 2: never after the tab left closed", (await direct(mailTab.id)).outcome === "notAllowed");
 
   const report = { at: new Date().toISOString(), jev: args.jev, engine: decide.says, spentUsd: spent, calls, page: PAGE, checks, oracle: { right: scored.right, wrong: scored.wrong, missed: scored.missed, submits: oracle.submits.length, strayPresses: oracle.strayPresses().length, offsite: oracle.offsite().length } };
-  writeStore(join(OUT, "journey.json"), `${JSON.stringify(report, null, 2)}\n`);
+  writeStoreJson(join(OUT, "journey.json"), report, 2);
   writeStore(join(OUT, "journey.log"), `${lines.join("\n")}\n`);
   const failed = checks.filter((c) => !c.ok);
   say(`${checks.length - failed.length}/${checks.length} checks passed; ${decide.says}, $${spent.toFixed(4)}`);

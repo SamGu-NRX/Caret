@@ -7,7 +7,7 @@
 // questions for every sentence where code found a person and a time ahead, and reports how its answers
 // compare with the fixture's: 20 sentences should get two yeses, and the distractors that reach Jev
 // should not. The sentence goes out as one window's line, held to that window's budget as in the helper.
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,6 +101,6 @@ const md = [
   ...rows.map((r) => `| ${r.id} | ${r.sentence} | ${r.want ?? "not asked"} | ${r.codePasses ? "yes" : "no"} | ${r.asks?.join(", ") ?? "-"} | ${r.yes === null ? "-" : r.yes ? "yes" : "no"} |`),
 ];
 writeStore(join(OUT, "event-eval.md"), md.join("\n") + "\n");
-writeStore(join(OUT, "event-eval.json"), JSON.stringify({ rows, errors, stopped, calls, cost }, null, 2) + "\n");
+writeStoreJson(join(OUT, "event-eval.json"), { rows, errors, stopped, calls, cost }, 2);
 console.log(md.slice(0, 10).join("\n"));
 process.exitCode = errors.length > 0 ? 1 : 0;

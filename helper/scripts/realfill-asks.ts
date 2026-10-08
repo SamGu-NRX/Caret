@@ -26,7 +26,7 @@
 // for a source question (none when the source is memory); for a person question, the person whose name an expected
 // value holds, else the user. Then the user's pick is simulated (the right options), the Ask continues from it, up to
 // three questions deep, and the continued Ask is scored as any other.
-import { writeStore, appendStore } from "../src/privacy/send.ts";
+import { appendStore, appendStoreJson, writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -267,7 +267,7 @@ const askJev: AskJev = async (req) => {
   jevSpent += r.costUsd;
   jevModels.add(r.model);
   requestMs.push(r.latencyMs);
-  if (a["log-jev"] !== undefined) appendStore(a["log-jev"], JSON.stringify({ ask: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
+  if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { ask: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers, nouls: r.nouls ?? {} });
   return r;
 };
 // Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.
@@ -548,5 +548,5 @@ function ok2(p: Proposed): boolean {
   return p.expected === p.value;
 }
 writeStore(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
-writeStore(join(OUT, "realfill-asks.json"), JSON.stringify({ engine: decide.says, formWindow: a["form-window"], requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
+writeStoreJson(join(OUT, "realfill-asks.json"), { engine: decide.says, formWindow: a["form-window"], requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, 1);
 process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; asked back ${back.length}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}${a.replay === undefined ? "" : `; replayed ${replay.hits}, missed ${replay.misses}`}\n`);

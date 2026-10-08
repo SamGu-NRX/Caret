@@ -19,7 +19,7 @@
 // deferred: foreground, and at the end the fixture hands activation back to the app that had it.
 //
 //   gui.sh 10 env CARET_GUI_LOCK=held node scripts/key-press-eval.ts --bin ../apps/screen-reader/.build/debug --poster PATH --out DIR [--runs 5] [--foreground | --front]
-import { writeStore } from "../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
 import { execFile, spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -264,6 +264,6 @@ result.rows = rows;
 result.log = log.slice(-20);
 result.readerLogTail = readerErr.split("\n").slice(-12);
 result.ok = ok;
-writeStore(join(OUT, "key-press-eval.json"), JSON.stringify(result, null, 2) + "\n");
+writeStoreJson(join(OUT, "key-press-eval.json"), result, 2);
 console.log(md.join("\n"));
 process.exit(ok ? 0 : 1);

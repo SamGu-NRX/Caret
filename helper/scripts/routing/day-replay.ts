@@ -25,7 +25,7 @@
 //     so cooldown and coalescing are counted, not assumed.
 // Cost per call is Jev's price ($0.042 per million input tokens) times the mean input tokens the corpus run measured
 // for router and fill requests.
-import { writeStore } from "../../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../../src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -264,7 +264,7 @@ try {
     "",
   ];
   writeStore(a.out as string, md.join("\n"));
-  if (a.json !== undefined) writeStore(a.json, `${JSON.stringify({ hours, focuses, focusByDay, entries: activeEpisodes.length, findable, transfers: activeTransfers.length, groups: groups.length, coordinator: coord.stats, before, after: cols, routerTokens, fillTokens, latency }, null, 2)}\n`);
+  if (a.json !== undefined) writeStoreJson(a.json, { hours, focuses, focusByDay, entries: activeEpisodes.length, findable, transfers: activeTransfers.length, groups: groups.length, coordinator: coord.stats, before, after: cols, routerTokens, fillTokens, latency }, 2);
   process.stdout.write(md.join("\n"));
 } finally {
   rmSync(tmp, { recursive: true, force: true });

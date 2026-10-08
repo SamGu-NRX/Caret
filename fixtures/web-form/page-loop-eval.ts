@@ -37,7 +37,7 @@
 // POST count is 0 (tasks: no oracle wrong, submit, stray press, off-site request or probe error, every undo restored,
 // every page previewed). The bridge and its test host must already be built (accept.ts builds them); the extension is
 // rebuilt here. Keys come from CARET_ENV_FILE and are never printed.
-import { writeStore, appendStore } from "../../helper/src/privacy/send.ts";
+import { appendStore, appendStoreJson, writeStore, writeStoreJson } from "../../helper/src/privacy/send.ts";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -536,7 +536,7 @@ const askJev: AskJev = async (req) => {
   const sent = sealRequest(req);
   const r = await decide.ask(sent.asked);
   spent += r.costUsd;
-  if (args["log-jev"] !== undefined) appendStore(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
+  if (args["log-jev"] !== undefined) appendStoreJson(args["log-jev"], { page: page?.id ?? "", stage, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} });
   calls.push({ page: page?.id ?? "", stage, inputTokens: r.inputTokens, latencyMs: r.latencyMs, costUsd: r.costUsd });
   return r;
 };
@@ -1221,7 +1221,7 @@ async function main(): Promise<number> {
     ];
     writeStore(join(OUT, drop ? "wizard-drop.md" : "wizard.md"), lines.join("\n") + "\n");
     // R1: the same rows as data, with each decision request's latency, for the slow runner's scoring.
-    writeStore(join(OUT, drop ? "wizard-drop.json" : "wizard.json"), `${JSON.stringify({ engine: decide.says, drop, labelled: LABELLED, attached: attached ?? null, submits: sum.submits, presses, replayed: replayed.length, rows: out, calls }, null, 1)}\n`);
+    writeStoreJson(join(OUT, drop ? "wizard-drop.json" : "wizard.json"), { engine: decide.says, drop, labelled: LABELLED, attached: attached ?? null, submits: sum.submits, presses, replayed: replayed.length, rows: out, calls }, 1);
     const wrong = out.reduce((n, r) => n + r.wrong.length, 0);
     const failed = [
       ...out.filter((r) => r.previewMs === null || r.previewMs > 2000).map((r) => `${r.page}: preview ${r.previewMs === null ? "none" : `${Math.round(r.previewMs)} ms`}`),
@@ -1482,7 +1482,7 @@ function writeReport(rows: readonly Row[], presses: number): void {
     );
   }
   writeStore(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
-  writeStore(join(OUT, "page-loop.json"), `${JSON.stringify({ jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, null, 1)}\n`);
+  writeStoreJson(join(OUT, "page-loop.json"), { jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, 1);
   say(`wrote ${join(OUT, "page-loop.md")}`);
 }
 
@@ -1546,7 +1546,7 @@ function writeTaskReport(rows: readonly Row[], presses: number, sum: ReturnType<
     ...dis.map((d) => `| ${d.page} | ${cell(d.field)} | ${cell(d.value, 60)} | ${d.verify} | ${d.key} |`),
   ];
   writeStore(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
-  writeStore(join(OUT, "page-loop.json"), `${JSON.stringify({ suite: "tasks", jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, presses, oracle: sum, cannedPicks: Object.fromEntries([...taskAsks].map(([k, a]) => [k, Object.fromEntries(a.picked)])), rows, timings, calls }, null, 1)}\n`);
+  writeStoreJson(join(OUT, "page-loop.json"), { suite: "tasks", jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, presses, oracle: sum, cannedPicks: Object.fromEntries([...taskAsks].map(([k, a]) => [k, Object.fromEntries(a.picked)])), rows, timings, calls }, 1);
   say(`wrote ${join(OUT, "page-loop.md")}`);
 }
 

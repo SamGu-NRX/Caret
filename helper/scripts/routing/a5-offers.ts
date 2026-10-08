@@ -12,7 +12,7 @@
 //
 // A host is played in process: it connects with routing (so write is legal) and sends the default settings from its
 // own session, which is where the helper records the watch role (routing/consent.ts).
-import { writeStore } from "../../src/privacy/send.ts";
+import { writeStore, writeStoreJson } from "../../src/privacy/send.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -185,8 +185,8 @@ const wanted = replays.filter((r) => r.wantedShown === true).length;
 const shown = replays.reduce((n, r) => n + (r.shown as number), 0);
 const unwanted = replays.reduce((n, r) => n + (r.unwanted as number), 0);
 const summary = { at: new Date().toISOString(), mode: MODE, runs: RUNS, settleMs: SETTLE_MS, shown, wanted: `${wanted}/${replays.length}`, unwanted, routerCalls, spendUsd: Number(spendUsd.toFixed(6)), overCap };
-writeStore(join(OUT, `a5-${MODE}.json`), JSON.stringify({ ...summary, replays }, null, 2) + "\n");
+writeStoreJson(join(OUT, `a5-${MODE}.json`), { ...summary, replays }, 2);
 // PV2 Q2: each captured request is checked as it is written, values in formats Caret never carries withheld (storableRequest).
-if (MODE === "capture") writeStore(join(OUT, "a5-router-requests.json"), JSON.stringify(captured.map(({ request: r, ...at }) => ({ ...at, request: storedRecord(r, (f) => ({ purpose: f.purpose, state: f.state, questions: f.questions, nouls: f.nouls, snippets: f.snippets, charged: f.charged })) })), null, 2) + "\n");
+if (MODE === "capture") writeStoreJson(join(OUT, "a5-router-requests.json"), captured.map(({ request: r, ...at }) => ({ ...at, request: storedRecord(r, (f) => ({ purpose: f.purpose, state: f.state, questions: f.questions, nouls: f.nouls, snippets: f.snippets, charged: f.charged })) })), 2);
 console.log(JSON.stringify(summary));
 process.exit(0);
