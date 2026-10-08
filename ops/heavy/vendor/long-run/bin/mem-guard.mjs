@@ -39,8 +39,8 @@ current reading and the high end of the earlier one.
 Every runaway action and every "no live leased job to stop" alert also posts a
 macOS notification through osascript, at most one per reason per minute.
 
-Leased jobs: only the owner of a live lease of kind vm, heavy, gui or
-container, plus that owner's descendants. The owner counts only if it started no
+Leased jobs: only the owner of a live lease of kind vm, heavy, gui,
+container or browser, plus that owner's descendants. The owner counts only if it started no
 later than the lease's createdAt (2-second tolerance); a later start means its pid
 was reused. Protected processes (Claude, Codex, T3, /Applications apps other than
 Xcode and Simulator, system paths, golden VMs) and their subtrees are never
@@ -143,7 +143,7 @@ export const CONFIG = Object.freeze({
   runawayKillAppHelpers: true,
 });
 const root = path.join(os.homedir(), '.long-run');
-const kinds = ['vm', 'heavy', 'gui', 'container'];
+const kinds = ['vm', 'heavy', 'gui', 'container', 'browser'];
 const maxGapMs = CONFIG.sampleMs * CONFIG.gapFactor;
 const nonnegative = value => Number.isFinite(value) && value >= 0;
 const command = (file, args, env) => execFileSync(file, args, {

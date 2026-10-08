@@ -4,7 +4,10 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 
 export const GB = 1024 ** 3;
-export const KINDS = ['heavy', 'gui', 'vm', 'container'];
+export const KINDS = ['heavy', 'gui', 'vm', 'container', 'browser'];
+// Quiet windows protect the screen while Sam presents or is in a call. Kinds that by definition never show a window
+// or take focus are admitted; gui, vm and container are not.
+const QUIET_ADMITTED = new Set(['heavy', 'browser']);
 const command = (file, args) => execFileSync(file, args, { encoding: 'utf8', timeout: 10000 }).trim();
 const nonnegative = value => Number.isFinite(value) && value >= 0;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -128,7 +131,7 @@ export function decision(kind, estMemGB, estDiskGB, leases, policy, readings) {
   const quarantined = leases.find(lease => lease.state === 'quarantined' && lease.kind === kind);
   if (quarantined) return `quarantined lease ${quarantined.id} (run ${quarantined.run}) blocks ${kind}: cleanup not confirmed`;
   if (leases.filter(lease => lease.kind === kind).length >= rule.maxCount) return `count limit ${rule.maxCount} reached`;
-  if (kind !== 'heavy' && readings.quietUntil > readings.now) return `quiet window until ${new Date(readings.quietUntil).toISOString()}`;
+  if (!QUIET_ADMITTED.has(kind) && readings.quietUntil > readings.now) return `quiet window until ${new Date(readings.quietUntil).toISOString()}`;
   if (readings.pressure === 'critical') return 'critical memory pressure';
   // Outstanding estimates stay reserved until release/reap. This may double-count resources already consumed,
   // but prevents concurrent kinds from promising the same remaining disk or swap.

@@ -14,6 +14,7 @@ const bin = path.dirname(fileURLToPath(import.meta.url));
 const policy = structuredClone(readPolicy(path.join(bin, '..', 'lease-policy.json')));
 policy.kinds.vm.maxCount = 0;
 policy.kinds.heavy.maxCount = 1;
+policy.kinds.browser.maxCount = 2;
 const readings = { now: 1000000, diskGB: 100, swapGB: 100, pressure: 'normal', quietUntil: 0 };
 const request = { run: 'lease-unit-test', kind: 'heavy', estMemGB: 2, estDiskGB: 3, ownerPid: process.pid };
 function readers(overrides = {}) {
@@ -55,6 +56,106 @@ test('grant records owner, estimates and default TTL; release deletes exactly th
   assert.deepEqual(readLeases(directory), [lease]);
   release(directory, lease.id);
   assert.deepEqual(readLeases(directory), []);
+});
+
+test('browser grant records its kind and estimates and can be released', t => {
+  const directory = fixture(t);
+  const { lease } = acquire(directory, policy, readers(), { ...request, kind: 'browser' });
+  assert.equal(lease.kind, 'browser');
+  assert.equal(lease.estMemGB, request.estMemGB);
+  assert.equal(lease.estDiskGB, request.estDiskGB);
+  assert.deepEqual(readLeases(directory), [lease]);
+  release(directory, lease.id);
+  assert.deepEqual(readLeases(directory), []);
+});
+
+test('two browser leases fill only their own slots; gui keeps its single slot', t => {
+  const directory = fixture(t);
+  for (let i = 0; i < 2; i++) assert.ok(acquire(directory, policy, readers(), { ...request, kind: 'browser' }).lease);
+  assert.equal(acquire(directory, policy, readers(), { ...request, kind: 'browser' }).reason, 'count limit 2 reached');
+  assert.equal(policy.kinds.gui.maxCount, 1);
+  assert.ok(acquire(directory, policy, readers(), { ...request, kind: 'gui' }).lease);
+  assert.equal(acquire(directory, policy, readers(), { ...request, kind: 'gui' }).reason, 'count limit 1 reached');
+  assert.deepEqual(readLeases(directory).map(lease => lease.kind).sort(), ['browser', 'browser', 'gui']);
+});
+
+test('quiet admits browser but still refuses gui, enabled vm and container', t => {
+  const directory = fixture(t);
+  const enabled = structuredClone(policy);
+  enabled.kinds.vm.maxCount = 1;
+  const quiet = readers({ quietUntil: readings.now + 500 });
+  assert.ok(acquire(directory, enabled, quiet, { ...request, kind: 'browser' }).lease);
+  for (const kind of ['gui', 'vm', 'container']) {
+    assert.match(acquire(directory, enabled, quiet, { ...request, kind }).reason, /^quiet window until /, kind);
+  }
+  assert.equal(readLeases(directory).length, 1);
+});
+
+for (const [reservedKind, requestedKind] of [['browser', 'heavy'], ['heavy', 'browser']]) {
+  test(`${reservedKind} disk and memory reservations count in ${requestedKind} admission`, t => {
+    const directory = fixture(t);
+    const { lease } = acquire(directory, policy, readers(), { ...request, kind: reservedKind, estDiskGB: 5, estMemGB: 4 });
+    const floor = policy.kinds[requestedKind].diskFloorGB;
+    const next = { ...request, kind: requestedKind, estDiskGB: 0, estMemGB: 0 };
+    assert.match(acquire(directory, policy, readers({ diskGB: floor + 4 }), next).reason, /^low disk:/);
+    assert.match(acquire(directory, policy, readers({ diskGB: floor + 8 }), next).reason, /^low disk for swap growth:/);
+    assert.deepEqual(readLeases(directory), [lease]);
+    assert.ok(acquire(directory, policy, readers({ diskGB: floor + 9 }), next).lease);
+  });
+}
+
+for (const [name, changes, reason] of [
+  ['critical pressure', { pressure: 'critical' }, /^critical memory pressure$/],
+  ['warning swap shortage', { pressure: 'warning', swapGB: 1 }, /^low swap under warning pressure:/],
+  ['memory charged to disk under normal pressure', { diskGB: policy.kinds.browser.diskFloorGB + 4 }, /^low disk for swap growth:/],
+]) {
+  test(`browser refuses ${name} without writing a lease`, t => {
+    const directory = fixture(t);
+    assert.match(acquire(directory, policy, readers(changes), { ...request, kind: 'browser' }).reason, reason);
+    assert.deepEqual(readLeases(directory), []);
+  });
+}
+
+test('readPolicy loudly refuses a policy without browser', t => {
+  const directory = fixture(t);
+  const missing = structuredClone(policy);
+  delete missing.kinds.browser;
+  const file = path.join(directory, 'policy.json');
+  fs.writeFileSync(file, JSON.stringify(missing));
+  assert.throws(() => readPolicy(file), { message: 'invalid policy for browser' });
+});
+
+test('existing-kind lease records still read unchanged', t => {
+  const directory = fixture(t);
+  const records = ['heavy', 'gui', 'vm', 'container'].map((kind, index) => ({ ...request,
+    id: `00000000-0000-4000-8000-00000000000${index}`, kind, createdAt: readings.now, expiresAt: readings.now + 60000 }));
+  for (const record of records) fs.writeFileSync(path.join(directory, `${record.id}.json`), JSON.stringify(record));
+  assert.deepEqual(readLeases(directory).sort((a, b) => a.id.localeCompare(b.id)), records);
+});
+
+test('isolated CLI acquires and releases browser end to end', t => {
+  const home = fixture(t);
+  const root = path.join(home, '.long-run');
+  fs.mkdirSync(root);
+  // Zero floors isolate CLI plumbing from this Mac's available disk, as in the existing CLI tests.
+  const cliPolicy = structuredClone(policy);
+  for (const rule of Object.values(cliPolicy.kinds)) rule.diskFloorGB = 0;
+  fs.writeFileSync(path.join(root, 'lease-policy.json'), JSON.stringify(cliPolicy));
+  const env = { ...process.env, HOME: home };
+  const lr = args => spawnSync(path.join(bin, 'lr-lease'), args, { env, encoding: 'utf8' });
+  const granted = lr(['acquire', '--run', 'cli-browser', '--kind', 'browser', '--est-mem', '0', '--est-disk', '0',
+    '--owner-pid', String(process.pid)]);
+  assert.equal(granted.status, 0, granted.stdout + granted.stderr);
+  const [record] = readLeases(path.join(root, 'leases'));
+  assert.equal(record.id, granted.stdout.trim());
+  assert.equal(record.kind, 'browser');
+  assert.equal(record.ownerPid, process.pid);
+  const status = lr(['status']);
+  assert.equal(status.status, 0, status.stdout);
+  assert.match(status.stdout, /^browser: GRANT:/m);
+  const released = lr(['release', record.id]);
+  assert.equal(released.status, 0, released.stdout);
+  assert.deepEqual(readLeases(path.join(root, 'leases')), []);
 });
 
 test('count limit blocks a second grant', t => {

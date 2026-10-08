@@ -280,6 +280,61 @@ test('new victims are spaced by 90 monotonic seconds, including the exact bounda
   assert.equal(run(nightDanger(), [lease], table0, { lastStepAt: mono0 - 90000 }).type, 'term');
 });
 
+for (const kind of ['heavy', 'gui', 'vm', 'container', 'browser']) {
+  test(`${kind} lease uses the owner ladder and is released only after owner exit`, async () => {
+    const theLease = { ...lease, kind };
+    const h = harness({ inventory: { leases: [theLease], table: table0 } });
+    for (let i = 0; i < 3; i++) await h.step();
+    assert.equal(h.guard.state.pending.lease.kind, kind);
+    assert.deepEqual(h.calls, [['signal', 101, 'SIGTERM']]);
+    for (let i = 0; i < 8; i++) assert.equal((await h.step()).type, 'wait');
+    assert.equal((await h.step()).type, 'escalate');
+    assert.deepEqual(h.calls.slice(1), [['signal', 101, 'SIGTERM'], ['signal', 103, 'SIGTERM']]);
+    for (let i = 0; i < 8; i++) assert.equal((await h.step()).type, 'wait');
+    assert.equal((await h.step()).type, 'kill');
+    assert.deepEqual(h.calls.slice(3), [['signal', 101, 'SIGKILL'], ['signal', 103, 'SIGKILL']]);
+    h.clock.inventory = { leases: [theLease], table: [shellRow] };
+    assert.equal((await h.step({ pressure: 1 })).type, 'finished');
+    assert.deepEqual(h.calls.at(-1), ['release', theLease.id]);
+    assert.equal(h.guard.state.pending, null);
+    assertOnlyPositivePids(h.calls);
+  });
+}
+
+test('browser victim selection keeps heavy owner verification and TTL rules', async () => {
+  const browser = { ...lease, kind: 'browser' };
+  assert.equal(run(nightDanger(), [{ ...browser, expiresAt: now }]).type, 'alert');
+  assert.equal(run(nightDanger(), [{ ...browser, expiresAt: now + 1 }]).type, 'term');
+  const dead = run(nightDanger(), [browser], [shellRow]);
+  assert.equal(dead.type, 'alert');
+  assert.match(dead.skipped[0].reason, /owner not running/);
+  const reused = { ...ownerRow, startMs: createdAt + CONFIG.ownerStartToleranceMs + 1 };
+  const skipped = run(nightDanger(), [browser], [shellRow, reused]);
+  assert.equal(skipped.type, 'alert');
+  assert.match(skipped.skipped[0].reason, /owner pid reused/);
+  const effects = fakeEffects({ rows: [shellRow, reused], leases: () => [browser] });
+  assert.equal((await perform(run(nightDanger(), [browser]), false, effects)).type, 'ineligible');
+  assert.deepEqual(effects.calls, []);
+});
+
+test('browser owner tree stops cached Playwright but protects Applications Chrome and its subtree', async () => {
+  const browser = { ...lease, kind: 'browser' };
+  const cached = child(104, ownerRow, {
+    command: '/Users/test/Library/Caches/ms-playwright/chromium-1/chrome-mac/Chromium.app/Contents/MacOS/Chromium --headless' });
+  const chrome = child(105, ownerRow, {
+    command: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless' });
+  const chromeChild = child(106, chrome);
+  const rows = [...table0, cached, chrome, chromeChild];
+  const term = run(nightDanger(), [browser], rows);
+  assert.deepEqual(term.members.map(p => p.pid), [101, 103, 104]);
+  const effects = fakeEffects({ rows, leases: () => [browser] });
+  await perform(term, false, effects);
+  const escalate = run(nightDanger(), [browser], rows, pendingState('owner', { lease: term.lease, members: term.members }));
+  await perform(escalate, false, effects);
+  assert.deepEqual(effects.calls, [['signal', 101, 'SIGTERM'], ['signal', 101, 'SIGTERM'],
+    ['signal', 103, 'SIGTERM'], ['signal', 104, 'SIGTERM']]);
+});
+
 // Ladder and timing.
 
 test('the ladder: SIGTERM owner, then its tracked tree, then SIGKILL of that same set', async () => {
@@ -1329,6 +1384,28 @@ const runnerRow = { ...ownerRow, pgid: 101 };
 const jobTable = [shellRow, runnerRow, jobLeader, jobMember, jobEscapee];
 const targetLease = { ...lease, run: 'heavy-job-queue', stopTarget: { pgid: 201, leaderStartMs, setAt: createdAt + 3000 } };
 const pids = list => list.map(t => t.pid);
+
+test('browser stop target stops its group through SIGKILL without signalling or releasing its owner', async () => {
+  const browser = { ...targetLease, kind: 'browser', run: 'headless-browser-batch' };
+  const h = harness({ inventory: { leases: [browser], table: jobTable } });
+  for (let i = 0; i < 3; i++) await h.step();
+  assert.equal(h.guard.state.pending.lease.kind, 'browser');
+  assert.deepEqual(h.guard.state.pending.stopTarget, { pgid: 201, leaderStartMs });
+  assert.deepEqual(h.calls, [['signal', 201, 'SIGTERM'], ['signal', 202, 'SIGTERM'], ['signal', 203, 'SIGTERM']]);
+  for (let i = 0; i < 8; i++) assert.equal((await h.step()).type, 'wait');
+  assert.equal((await h.step()).type, 'escalate');
+  for (let i = 0; i < 8; i++) assert.equal((await h.step()).type, 'wait');
+  assert.equal((await h.step()).type, 'kill');
+  assert.deepEqual(h.calls.slice(6), [['signal', 201, 'SIGKILL'], ['signal', 202, 'SIGKILL'], ['signal', 203, 'SIGKILL']]);
+  h.clock.inventory = { leases: [browser], table: [shellRow, runnerRow] };
+  const finished = await h.step({ pressure: 1 });
+  assert.equal(finished.type, 'finished');
+  assert.equal(finished.released, false);
+  assert.equal(h.guard.state.pending, null);
+  assert.equal(h.calls.length, 9);
+  assert.ok(h.calls.every(c => c[0] === 'signal' && c[1] !== runnerRow.pid));
+  assertOnlyPositivePids(h.calls);
+});
 
 test('stop target: the job group and its escapee are stopped; the runner never is', async () => {
   const term = run(nightDanger(), [targetLease], jobTable);

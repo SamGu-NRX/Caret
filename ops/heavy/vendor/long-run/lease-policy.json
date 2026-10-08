@@ -34,6 +34,14 @@
       "diskFloorGBComment": "2026-10-05 14:45Z: Sam said run the VM at ~14.9 GiB free; lowered 7 -> 4 (earlier the same day 15 -> 7). Admission needs this floor plus rig-run's est-mem 6 and est-disk 2, both measured (R2: VM peak RSS 5.65 GiB, charged to disk as possible swap growth under normal pressure; clone adds at most 0.51 GiB). The floor is margin after that worst case and is not measured; mem-guard stops a VM under critical pressure.",
       "swapFloorGB": 0,
       "swapFloorGBComment": "Applies only under warning pressure. Under normal pressure, memory estimates are charged against free disk instead, because macOS grows swap files on demand (total swap grew 14 to 16 GB on 2026-10-02 with 38 GB disk free)."
+    },
+    "browser": {
+      "maxCount": 2,
+      "maxCountComment": "Assumed, unmeasured; two headless browser batches at once, added 2026-10-07 because headless batches held the single gui slot for an hour.",
+      "diskFloorGB": 8,
+      "diskFloorGBComment": "Existing shared-Mac floor, interpreted as GiB; unmeasured.",
+      "swapFloorGB": 0,
+      "swapFloorGBComment": "Applies only under warning pressure. Under normal pressure, memory estimates are charged against free disk instead, because macOS grows swap files on demand (total swap grew 14 to 16 GB on 2026-10-02 with 38 GB disk free)."
     }
   },
   "swapRuleChange": "2026-10-02: free swap alone refused a 1 GB build at 0.9 GB free swap while pressure was normal with 61% free memory; rule now uses pressure plus disk."

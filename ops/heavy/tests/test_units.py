@@ -1001,8 +1001,14 @@ class VmAdmissionTest(Temp):
         os.makedirs(work)
         for name in ("lr-lease-core.mjs", "lr-lease-cli.mjs", "lr-lease.test.mjs"):
             shutil.copy2(os.path.join(os.path.dirname(self.CORE), name), work)
-        done = subprocess.run(["patch", "-p1", "-s", "-d", work], stdin=open(patch), capture_output=True, text=True)
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        with open(os.path.join(work, "lr-lease-core.mjs")) as fh:
+            # Installed since 2026-10-07 22:17Z: the live core already carries the patch (its setStopTarget), and later
+            # installs moved its context, so it is applied only to a core that does not have it yet.
+            applied = "export function setStopTarget(directory, readers, id, ownerPid, pgid) {" in fh.read()
+        if not applied:
+            with open(patch) as fh:
+                done = subprocess.run(["patch", "-p1", "-s", "-N", "-d", work], stdin=fh, capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         with open(os.path.join(work, "lr-lease-core.mjs")) as fh:
             core = fh.read().replace("export function machineReaders(root) {", "function realMachineReaders(root) {")
         with open(os.path.join(self.bin, "lr-lease-core.mjs")) as fh:

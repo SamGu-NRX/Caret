@@ -111,7 +111,7 @@ try {
       const reason = decision(kind, 0, 0, leases, policy, readings);
       console.log(`${kind}: ${reason ? `REFUSE: ${reason}` : 'GRANT: disk, pressure, swap, count and quiet checks pass'}`);
     }
-  } else throw new Error('usage: lr-lease acquire --run NAME --kind heavy|gui|vm|container --est-mem GiB --est-disk GiB [--ttl MIN] [--owner-pid PID] | release ID | renew ID --owner-pid PID --ttl MIN | renew ID --attempt A --ttl MIN (token on stdin) | ack ID --attempt A (token on stdin) | oblige ID --run RUN --attempt A --cleanup-token-sha256 HEX | clear ID --reason TEXT (only after checking the attempt resources are gone) | target ID --owner-pid PID --pgid PGID | status; lr-reap [--run NAME]');
+  } else throw new Error('usage: lr-lease acquire --run NAME --kind heavy|gui|vm|container|browser --est-mem GiB --est-disk GiB [--ttl MIN] [--owner-pid PID] | release ID | renew ID --owner-pid PID --ttl MIN | renew ID --attempt A --ttl MIN (token on stdin) | ack ID --attempt A (token on stdin) | oblige ID --run RUN --attempt A --cleanup-token-sha256 HEX | clear ID --reason TEXT (only after checking the attempt resources are gone) | target ID --owner-pid PID --pgid PGID | status; lr-reap [--run NAME]');
 } catch (error) {
   console.log(`refused: ${error.message.replace(/[\r\n]+/g, ' ')}`);
   process.exitCode = 75;
