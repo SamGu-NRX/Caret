@@ -18,12 +18,18 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+# Packaging is distribution: an inherited internal-build flag must not waive the release acceptance records.
+def distribution_env(**extra: str) -> dict:
+    return {**{k: v for k, v in os.environ.items() if k not in {"CARET_INTERNAL_BUILD", "CARET_PRIVACY_RESOURCE"}}, **extra}
+
+
 def privacy_gate(runner=subprocess.run) -> None:
     """Run the same gate as the Xcode target before any packaging side effects."""
     result = runner(
         ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")],
         capture_output=True,
         text=True,
+        env=distribution_env(),
     )
     if result.returncode != 0:
         raise SystemExit((result.stderr or result.stdout or "privacy gate: refusing to package").strip())
@@ -35,9 +41,8 @@ def verify_privacy_resource(app: Path, runner=subprocess.run) -> None:
         ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")],
         capture_output=True,
         text=True,
-        # Without CARET_PRIVACY_RESOURCE: a verification run must not write the file it checks.
-        env={**{k: v for k, v in os.environ.items() if k != "CARET_PRIVACY_RESOURCE"},
-             "CARET_VERIFY_PRIVACY_RESOURCE": str(app / "Contents" / "Resources" / "PrivacyPromise.txt")},
+        # Without CARET_PRIVACY_RESOURCE too: a verification run must not write the file it checks.
+        env=distribution_env(CARET_VERIFY_PRIVACY_RESOURCE=str(app / "Contents" / "Resources" / "PrivacyPromise.txt")),
     )
     if result.returncode != 0:
         raise SystemExit((result.stderr or result.stdout or "privacy gate: refusing to package").strip())

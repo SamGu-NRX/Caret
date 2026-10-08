@@ -8,49 +8,26 @@ checked. A call that let that variable through would regenerate a missing or cha
 import importlib.util
 import os
 from pathlib import Path
-import plistlib
 import re
 import shutil
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-FILES = [
-    "helper/scripts/privacy-gate.ts", "scripts/privacy_gate.sh", "scripts/check_vercel_gemini.py", "scripts/check_onboarding_privacy.py",
-    "apps/mac/Sources/Caret/PermissionView.swift", "apps/mac/Sources/Caret/Info.plist", "apps/caret/Bundle/Info.plist", "caret/completions.py",
-    "apps/caret/Sources/CaretHost/Onboarding/OnboardingView.swift",
-]
-ACCEPTED = ('export const PRIVACY_ACCEPTANCES = { "pv2-sites-send": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture", '
-            'at: "2026-10-07T00:00:00Z" }, "ha2-copied-conversation": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture", '
-            'at: "2026-10-07T00:00:00Z" } };\n')
-CHANGED = "What Caret sends\n\nA sentence nobody approved.\n"
+from tests.privacy_fixture import CHANGED, ROOT, app, clean_env, tree
 
 
 class VerificationNeverWritesTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="caret-verify-"))
+        self.root = tree(accepted=True)
         self.addCleanup(shutil.rmtree, self.root)
-        shutil.copytree(ROOT / "helper/src", self.root / "helper/src")
-        for file in FILES:
-            (self.root / file).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(ROOT / file, self.root / file)
-        (self.root / "helper/src/privacy/accepted.ts").write_text(ACCEPTED)
         self.build = self.root / "build"
-        self.app = self.build / "Caret.app"
+        self.app = app(self.root, internal=False)
         self.resource = self.app / "Contents/Resources/PrivacyPromise.txt"
-        (self.app / "Contents").mkdir(parents=True)
-        (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps({}))
-        generated = subprocess.run(["/bin/sh", str(self.root / "scripts/privacy_gate.sh")], capture_output=True, text=True,
-                                   env={**self.clean_env(), "CARET_PRIVACY_RESOURCE": str(self.resource)})
-        self.assertEqual(generated.returncode, 0, generated.stderr)
         self.approved = self.resource.read_text()
 
     def clean_env(self) -> dict:
-        drop = {"CARET_PRIVACY_RESOURCE", "CARET_VERIFY_PRIVACY_RESOURCE", "CARET_BUILD_PLIST", "CARET_REQUIRE_PROCESSED_PLIST",
-                "CARET_SOURCE_PLIST", "INFOPLIST_FILE", "TARGET_BUILD_DIR", "INFOPLIST_PATH", "CARET_DEV_VERCEL_GEMINI"}
-        return {k: v for k, v in os.environ.items() if k not in drop}
+        return clean_env()
 
     def damages(self):
         yield "missing", lambda: self.resource.unlink(), "is missing"

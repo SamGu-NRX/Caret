@@ -14,7 +14,10 @@ const required = [
   ["pv2-sites-send", "PV2's Sites and send-boundary fixes aren't accepted yet; the promise's switched-off sentence isn't backed", "It sends nothing from an app or website you've switched off."],
   ["ha2-copied-conversation", "HA2's copied-conversation fix isn't accepted yet", "No request carries more than half of a conversation."],
 ] as const;
-for (const [id, missing, sentence] of required) {
+// Internal VM and test builds use synthetic data and are never distributed, so the release acceptance records don't
+// apply to them. build-app.sh sets this for debug and acceptance only and stamps their bundles CaretInternalBuild.
+const internal = process.env.CARET_INTERNAL_BUILD === "1";
+for (const [id, missing, sentence] of internal ? [] : required) {
   const acceptance = PRIVACY_ACCEPTANCES[id];
   if (acceptance == null) reasons.push(`${missing} [${id} backs "${sentence}"]`);
   else if (!acceptance.commit?.trim() || !acceptance.by?.trim() || !acceptance.at?.trim() || Number.isNaN(Date.parse(acceptance.at))) {
@@ -53,6 +56,14 @@ if (shipped) {
   const why = shippedProblem(shipped);
   if (why !== null) {
     console.error(`privacy gate: refusing to package: the app's privacy promise ${shipped} ${why}; onboarding would have nothing approved to show`);
+    process.exit(1);
+  }
+  const app = shipped.slice(0, shipped.lastIndexOf(`${sep}Contents${sep}`));
+  const stamped = spawnSync("/usr/bin/plutil", ["-extract", "CaretInternalBuild", "raw", "-o", "-", `${app}/Contents/Info.plist`], { encoding: "utf8" }).stdout.trim() === "true";
+  if (stamped !== internal) {
+    console.error(stamped
+      ? `privacy gate: refusing to package: ${app} is stamped CaretInternalBuild; internal builds are never distributed`
+      : `privacy gate: refusing to package: ${app} is an internal build without the CaretInternalBuild stamp`);
     process.exit(1);
   }
 }

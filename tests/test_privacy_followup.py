@@ -15,12 +15,14 @@ spec.loader.exec_module(checker)
 
 
 class PrivacyFollowupTests(unittest.TestCase):
-    def test_real_bundler_gates_before_any_side_effect_in_every_mode(self):
+    def test_real_bundler_gates_before_any_side_effect(self):
         text = (ROOT / "apps/caret/scripts/build-app.sh").read_text()
         self.assertIn("privacy_gate.sh", text)
         self.assertLess(text.index("privacy_gate.sh"), text.index('mode="'))
         self.assertLess(text.index("privacy_gate.sh"), text.index("mkdir -p"))
-        for mode in ("debug", "release", "acceptance"):
+        # Release only: debug and acceptance skip the acceptance records and would go on to build
+        # (tests/test_internal_build_gate.py runs their gate without the build).
+        for mode in ("release",):
             result = subprocess.run(["/bin/bash", str(ROOT / "apps/caret/scripts/build-app.sh"), mode], capture_output=True, text=True, env={**os.environ, "IDENTITY": ""})
             self.assertEqual(result.returncode, 1)
             self.assertIn("privacy gate: refusing", result.stderr)
