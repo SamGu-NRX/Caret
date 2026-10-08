@@ -29,8 +29,9 @@
 		<key>CARET_OPENED_BY_LAUNCHSERVICES</key>
 		<string>1</string>
 	</dict>
-	<!-- H12: the commands this build's Caret binary takes, for scripts outside it. D1's uninstall.sh runs
-	     `Caret --unregister` only when this lists it: an older build would ignore the flag and start Caret. -->
+	<!-- H12: the commands this build's Caret binary takes, for scripts outside it. D1's uninstall.sh passes
+	     the unregister flag only when this lists it: an older build would ignore the flag and start Caret.
+	     No double hyphen in this comment: XML forbids it there, and the privacy gate parses this file. -->
 	<key>CaretCommands</key>
 	<array>
 		<string>--unregister</string>

@@ -408,7 +408,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "unset CARET_BUILD_PLIST CARET_REQUIRE_PROCESSED_PLIST\nexport CARET_PRIVACY_RESOURCE=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyPromise.txt\"\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
+			shellScript = "unset CARET_BUILD_PLIST CARET_REQUIRE_PROCESSED_PLIST\n[ \"$CONFIGURATION\" = Debug ] || unset CARET_INTERNAL_BUILD\nexport CARET_PRIVACY_RESOURCE=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyPromise.txt\"\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
 		};
 		E90000000000000000000F02 /* Processed privacy gate */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -425,7 +425,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export CARET_BUILD_PLIST=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nexport CARET_REQUIRE_PROCESSED_PLIST=1\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
+			shellScript = "unset CARET_PRIVACY_RESOURCE\n[ \"$CONFIGURATION\" = Debug ] || unset CARET_INTERNAL_BUILD\nplist=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\n/usr/libexec/PlistBuddy -c \"Delete :CaretInternalBuild\" \"$plist\" 2>/dev/null\n[ \"$CARET_INTERNAL_BUILD\" != 1 ] || /usr/libexec/PlistBuddy -c \"Add :CaretInternalBuild bool true\" \"$plist\"\nexport CARET_BUILD_PLIST=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nexport CARET_REQUIRE_PROCESSED_PLIST=1\nexport CARET_VERIFY_PRIVACY_RESOURCE=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyPromise.txt\"\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

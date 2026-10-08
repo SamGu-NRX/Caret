@@ -30,7 +30,7 @@ extension Gallery {
             ("permissions-alone", flow(only: .permissions, ax: false, [])),
         ]
         return screens.map { name, state in
-            Item(name: "onboarding-\(name)", view: AnyView(OnboardingView(state: state, character: character, animated: false)))
+            Item(name: "onboarding-\(name)", view: AnyView(OnboardingView(state: state, character: character, animated: false, promise: samplePrivacyPromise)))
         }
     }
 }

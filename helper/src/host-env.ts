@@ -33,6 +33,9 @@ export const HELPER_ONLY_ENV = [
   { key: "caret_slow_eval_hold", name: "CARET_SLOW_EVAL_HOLD", reason: "Harness hold-file path; not a host setting." },
   { key: "caret_slow_eval_disk_gib", name: "CARET_SLOW_EVAL_DISK_GIB", reason: "Harness disk floor; not a host setting." },
   { key: "caret_slow_eval_pace_file", name: "CARET_SLOW_EVAL_PACE_FILE", reason: "Harness pace-file path; not a host setting." },
+  { key: "caret_internal_build", name: "CARET_INTERNAL_BUILD", reason: "Privacy gate: build-app.sh and Xcode Debug mark an internal build; not a host setting." },
+  { key: "caret_privacy_resource", name: "CARET_PRIVACY_RESOURCE", reason: "Privacy gate: where a build writes PrivacyPromise.txt; not a host setting." },
+  { key: "caret_verify_privacy_resource", name: "CARET_VERIFY_PRIVACY_RESOURCE", reason: "Privacy gate: the assembled app's PrivacyPromise.txt to check; not a host setting." },
 ] as const;
 
 const entries = [...HOST_ENV, ...HELPER_ONLY_ENV];
