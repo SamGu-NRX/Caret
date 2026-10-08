@@ -277,7 +277,7 @@ export class Basis {
  */
 const IS_DISCLOSURE = Symbol.for("caret.privacy.disclosure");
 
-function asDisclosure(x: unknown): Disclosure | null {
+export function asDisclosure(x: unknown): Disclosure | null {
   return typeof x === "object" && x !== null && (x as { [IS_DISCLOSURE]?: unknown })[IS_DISCLOSURE] === true ? (x as Disclosure) : null;
 }
 
@@ -291,6 +291,8 @@ export class Disclosure extends SnippetLedger {
   private readonly mints = new Map<string, Set<MintReason>>();
   /** Section 7: the requests sent through this Disclosure are one operation, held together to each conversation's limit. */
   private readonly operation = new OperationLedger();
+  /** While trialSends runs, the copy of `operation` its seals commit to; nothing they measure reaches the early check. */
+  private trial: OperationLedger | null = null;
   /** Section 8: each whole owner note this Disclosure minted, with the redacted view it was read from. */
   private readonly ownerNotes = new Map<string, WindowState>();
   /** privacy/read-policy.ts switchedOffCount when this Disclosure was made: verify refuses once it moves. */
@@ -963,10 +965,26 @@ export class Disclosure extends SnippetLedger {
       new LedgerRefused(`${purpose}: ${before ? "with the requests sent before it, " : ""}it reveals ${b.charged} characters of ${b.notes ? `window ${b.key}'s owner notes, over the owner-note allotment` : `window ${b.key}, over its limit`} of ${b.limit}; it was not sent`);
     const b = breachWithNotes(m, ws, split, OWNER_NOTE_CHARS);
     if (b !== null) throw refuse(b, false);
-    const ob = this.operation.admit(m, ws, split, OWNER_NOTE_CHARS, commit);
+    const ob = (this.trial ?? this.operation).admit(m, ws, split, OWNER_NOTE_CHARS, commit);
     if (ob !== null) throw refuse(ob, true);
-    if (commit) this.absorbSeal(m);
+    if (commit && this.trial === null) this.absorbSeal(m);
     return m;
+  }
+
+  /**
+   * Runs `send`, whose seals commit to a copy of this operation's ledger, and keeps nothing: requests built ahead of
+   * sending are checked as their seals will check them, in order, each held to every window's limit alone and every
+   * conversation's union across them (jev.ts checkSealable). Measured as one body instead, two URLs that each fit a page's
+   * limit were refused together.
+   */
+  trialSends<T>(send: () => T): T {
+    if (this.trial !== null) throw new Error("trialSends does not nest");
+    this.trial = this.operation.copy();
+    try {
+      return send();
+    } finally {
+      this.trial = null;
+    }
   }
 
   /** Never serialized with a request: JSON of a request names its Disclosure, nothing it holds. */

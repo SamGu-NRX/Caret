@@ -62,7 +62,9 @@ describe("the four wrong agreements are never written", () => {
   // Ines's cell and office are someone else's for Theo's fields and Dana's email is not Kenji's: the owner exclusion keeps
   // all three out of the value questions. Wren's phone is offered to Jev but not to the user: a rule relating it to the
   // field (relationalHold) holds it, so no click can pick it.
-  const OFFERED_TO_JEV: Record<string, boolean> = { "b31-08 Mobile phone": false, "b31-08 Home phone": false, "b31-09 Reference phone": true, "b31-14 Email address": false };
+  // b31-09's Reference phone is not offered to Jev either: every request goes through the production boundary (the kit
+  // seals and sends each), the seals' charges are kept, and settlement's pair no longer passes its check in the mail.
+  const OFFERED_TO_JEV: Record<string, boolean> = { "b31-08 Mobile phone": false, "b31-08 Home phone": false, "b31-09 Reference phone": false, "b31-14 Email address": false };
   it.each(WRONG.map((c) => [`${c.ask} ${c.field}`, c] as const))("%s: stopped where expected, and never written", async (name, c) => {
     const wrong = c.a.text as string;
     const r = await runB31(c.ask, { values: true, value: replayed(c) });
@@ -116,33 +118,38 @@ describe("the four wrong agreements are never written", () => {
     }
   });
 
-  // A field that does reach clarification, b31-09's Reference email (three emails, the key's and two other people's): each
-  // offered value is picked in turn, and both fresh wordings then vote for another value, or for the pick. A vote for
-  // another value admits nothing; a vote for the pick writes the pick, as the user chose it.
-  it("b31-09 Reference email: each pick, then fresh votes for another value or for the pick, writes only the pick", async () => {
-    const c = LOSSES.values.find((x) => x.ask === "b31-09" && x.field === "Reference email") as Recorded;
+  // A field that reaches clarification through the production boundary, b31-13's Preferred date (Thursday's and the
+  // key's Saturday): each offered value is picked in turn, and both fresh wordings then vote for the other value, or for
+  // the pick. A vote for the other admits nothing; a vote for the pick writes the pick, as the user chose it.
+  it("b31-13 Preferred date: each pick, then fresh votes for the other value or for the pick, writes only the pick", async () => {
+    const c = LOSSES.values.find((x) => x.ask === "b31-13" && x.field === "Preferred date") as Recorded;
+    /** A value as the question shows it ("Sat, Oct 17, 2026") as the date input takes it. */
+    const iso = (shown: string): string => {
+      const d = new Date(shown);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
     for (const fresh of ["other", "pick"] as const) {
       let picked = "";
       let other = "";
-      const r = await runB31("b31-09", {
+      const r = await runB31("b31-13", {
         values: true,
         value: (label, w, options, req) => {
           if (label !== c.field) return undefined;
           if (!/Explicit user selections: (?!none)/u.test(String(Object.values(req.questions).find((q) => String(q.instructions).includes(c.field))?.instructions))) return replayed(c)(label, w, options);
-          return byOutput(options, fresh === "other" ? other : picked, 0.99);
+          return byOutput(options, iso(fresh === "other" ? other : picked), 0.99);
         },
       });
       const q = await valueQuestionFor(r, c.field);
-      expect(q, "Reference email reaches clarification").not.toBeNull();
+      expect(q, "Preferred date reaches clarification").not.toBeNull();
       const values = (q as NonNullable<typeof q>).options.flatMap((o) => (o.option.kind === "value" ? [{ id: o.option.id, value: o.option.value }] : []));
-      expect(values.map((v) => v.value)).toEqual(["simone.achebe@ridgeline.example.com", "dana.whitfield@lumenlabs.example.com", "jordan.reyes@example.org"]);
+      expect(values.map((v) => v.value)).toEqual(["Thu, Oct 15, 2026", "Sat, Oct 17, 2026"]);
       for (const v of values) {
         picked = v.value;
         other = (values.find((x) => x.value !== v.value) as { value: string }).value;
         const resume = answerQuestion(q as NonNullable<typeof q>, [v.id]);
         if (typeof resume === "string") throw new Error(resume);
         const after = proposedOf(r, await r.resume(resume))[c.field];
-        expect(after, `${fresh} after picking ${picked}`).toBe(fresh === "pick" ? picked : undefined);
+        expect(after, `${fresh} after picking ${picked}`).toBe(fresh === "pick" ? iso(picked) : undefined);
       }
     }
   });
@@ -180,9 +187,10 @@ describe("the recorded verifier pairs still fail", () => {
       const verify = (label: string, wording: 0 | 1): Answer | undefined => (label === c.field ? (wording === 0 ? c.a : c.b) : undefined);
       if ((await valueQuestionFor(await runB31(c.ask, { values: true, verify }), c.field)) !== null) offered.push(`${c.ask} ${c.field}`);
     }
-    // b31-04's School also reaches a value question with the output ledger's collection: its value is admitted with its
-    // facts where it was read. Settlement is admitted by the requests it sends, so its wording no longer keeps these out.
-    expect(offered).toEqual(["b31-01 First name", "b31-01 Last name", "b31-04 School", "b31-09 Reference relationship"]);
+    // Through the production boundary, the base's seals' charges kept, value settlement's pair for b31-04's School and
+    // b31-09's Reference relationship no longer passes its check: settlement is not asked, the verifier never sees their
+    // values, and neither is offered.
+    expect(offered).toEqual(["b31-01 First name", "b31-01 Last name"]);
   });
 });
 

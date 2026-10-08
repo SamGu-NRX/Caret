@@ -264,6 +264,13 @@ export class OperationLedger {
   private readonly union = new Map<string, Set<string>>();
   private readonly notes = new Map<string, Set<string>>();
 
+  /** A copy to try sends against (Disclosure.trialSends): what it keeps never reaches this ledger. */
+  copy(): OperationLedger {
+    const out = new OperationLedger();
+    for (const which of ["union", "notes"] as const) for (const [id, set] of this[which]) out[which].set(id, new Set(set));
+    return out;
+  }
+
   /**
    * Keeps a sent request's positions (only checks them, without `commit`), or returns the conversation they would take
    * past its limit, or the window whose owner notes would pass `allotment`, and keeps nothing. A window measured in two

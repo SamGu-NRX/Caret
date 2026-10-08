@@ -1,3 +1,5 @@
+// Builder-only: these tests' Jev answers the requests as built; none goes through the production transport (jev.ts
+// sealRequest, then send.ts sendable), as every request of the B31 kit (test/vs1-kit.ts) does.
 // Value settlement's two requests, captured as sent (each sealed by the fill's Disclosure). The value questions carry the
 // complete redacted Ask with its exclusions, the field's contract and observed section path, each option's exact output
 // with its source, label, line and derivation, and the source units once in state; no recency instruction and no

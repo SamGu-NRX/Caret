@@ -7,6 +7,7 @@ import type { WindowState } from "./model.ts";
 import type { Node } from "./protocol.ts";
 import { excludedValue } from "./privacy/exclude.ts";
 import { isRedacted, redactWindow } from "./fill/redact.ts";
+import { sourceLine, sourceLines } from "./privacy/ledger/source.ts";
 import { heldAsConversation, measuredWindows, MintAccount, sectionTexts, viewInventory, type DeclaredSpans, type FixedClass, type Measurement, type MeasuredWindow, type ScreenRegistry } from "./privacy/ledger/account.ts";
 import { CONVERSATION_CHARS, limitOf, spanKey, WINDOW_CHARS, type DeclaredSpan } from "./privacy/ledger/measure.ts";
 
@@ -237,16 +238,16 @@ class LineTable {
     for (const t of sectionTexts(n)) this.removeField(t);
   }
 
+  // A field's lines as the ledger's inventory reads them (ledger/source.ts sourceLines): one normalization for every
+  // membership test, so a bare CR splits a line here as it does there.
   private addField(raw: string | undefined): void {
     if (raw === undefined || raw === "") return;
-    if (!raw.includes("\n")) return this.addLine(flat(raw));
-    for (const line of raw.split("\n")) this.addLine(flat(line));
+    for (const line of sourceLines(raw)) this.addLine(line);
   }
 
   private removeField(raw: string | undefined): void {
     if (raw === undefined || raw === "") return;
-    if (!raw.includes("\n")) return this.removeLine(flat(raw));
-    for (const line of raw.split("\n")) this.removeLine(flat(line));
+    for (const line of sourceLines(raw)) this.removeLine(line);
   }
 
   private addLine(t: string): void {
@@ -468,9 +469,9 @@ export class SnippetLedger {
    */
   protected locatable(from: WindowState, text: string): boolean {
     const table = windowText(from);
-    for (const raw of text.split("\n")) {
+    for (const raw of sourceLines(text)) {
       for (const seg of raw.split("…")) {
-        const piece = flat(seg);
+        const piece = sourceLine(seg);
         if (piece === "" || table.find(piece)) continue;
         const words = [...piece.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ at: m.index, end: m.index + m[0].length }));
         for (let i = 0; i < words.length; ) {

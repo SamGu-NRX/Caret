@@ -1,4 +1,4 @@
-import { Disclosure, LedgerRefused, viewHolds, type ModelText } from "../privacy/disclosure.ts";
+import { Disclosure, LedgerRefused, OutOfShape, viewHolds, type ModelText } from "../privacy/disclosure.ts";
 import { instructionForModel, redactWindow } from "./redact.ts";
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
 // the same candidate spans plus "none" (deep plan section 5, "Fill"). Jev picks a candidate id;
@@ -2648,19 +2648,22 @@ export async function proposeFill(
   };
   /**
    * Value settlement's one admission path, for its pair and for the pair a clarification would send: built in full, the
-   * requests go only if their final bytes pass the seal now (jev.ts checkSealable), and what they say is then kept in the
-   * early check so later mints leave it room. A list of the wording kept beside the builders was a second source: it
-   * missed a derivation's "rewritten" and reserved source_notes wording no request sent (test/collection-admission.test.ts).
+   * requests go only if they pass their seals now, in order (jev.ts checkSealable), and what they say is then kept in the
+   * early check so later mints leave it room. The builders are the only source of their wording.
    */
-  const admits = (pair: readonly [JevRequest, JevRequest]): boolean => {
+  const admitted = (build: () => readonly [JevRequest, JevRequest]): readonly [JevRequest, JevRequest] | null => {
+    // Built and checked inside the boundary: a request a slot's length or the ledger refuses (OutOfShape, LedgerRefused)
+    // leaves settlement unasked and the base's answers standing. Any other error is a bug, and goes on.
+    let pair: readonly [JevRequest, JevRequest];
     try {
+      pair = build();
       checkSealable(pair);
     } catch (e) {
-      if (e instanceof LedgerRefused) return false;
+      if (e instanceof LedgerRefused || e instanceof OutOfShape) return null;
       throw e;
     }
     ledger.reserveWording(pair.flatMap(requestStrings));
-    return true;
+    return pair;
   };
   [r1, r2] =
     asked.length === 0 && answerAsked.length === 0
@@ -2837,11 +2840,10 @@ export async function proposeFill(
   let s2: JevResult | null = null;
   /** Why value settlement's requests failed, if they did: its fields stay as the base left them, blank, and the rest go on. */
   let settlementDown: string | null = null;
-  // Settlement is asked only when its pair, as built, can be sent (admits); otherwise the base's answers stand.
+  // Settlement is asked only when its pair, as built, can be sent (admitted); otherwise the base's answers stand.
   if (unsettled.length > 0 && instructionFits()) {
     const ready = unsettled.filter((f) => statedOf(f).size > 0);
-    const built = ready.length === 0 ? null : ([askValueRequest(0, ready), askValueRequest(1, ready)] as const);
-    const pair = built !== null && admits(built) ? built : null;
+    const pair = ready.length === 0 ? null : admitted(() => [askValueRequest(0, ready), askValueRequest(1, ready)] as const);
     let got: readonly [JevResult, JevResult] | null = null;
     if (pair !== null) {
       try {
@@ -3023,7 +3025,7 @@ export async function proposeFill(
     const first = o.members[0] as Member;
     return relationalHold(f, first.pick) === null && (memoryOf(first.pick) === null || theUsers(f)) && !restsOnStale(first.pick);
   };
-  /** Whether a pick of option `id` for `f` could be asked about now (admits): checked once per field and option. */
+  /** Whether a pick of option `id` for `f` could be asked about now (admitted): checked once per field and option. */
   const clarified = new Map<string, boolean>();
   const clarifiable = (f: Field, id: string): boolean => {
     const k = `${f.id}\u0000${id}`;
@@ -3031,7 +3033,7 @@ export async function proposeFill(
     if (ok === undefined) {
       const output = statedOf(f).get(id)?.output;
       const selection = output === undefined ? null : selectionsSaid({ f, output });
-      ok = selection !== null && admits([askValueRequest(0, [f], selection), askValueRequest(1, [f], selection)]);
+      ok = selection !== null && admitted(() => [askValueRequest(0, [f], selection), askValueRequest(1, [f], selection)] as const) !== null;
       clarified.set(k, ok);
     }
     return ok;
@@ -3088,8 +3090,8 @@ export async function proposeFill(
       mine.add(req);
       return at.askJev(req);
     };
-    const pair = [askValueRequest(0, [f], selection), askValueRequest(1, [f], selection)] as const;
-    if (!admits(pair)) throw new Error(`the value question about ${f.name} no longer fits what Caret may send`);
+    const pair = admitted(() => [askValueRequest(0, [f], selection), askValueRequest(1, [f], selection)] as const);
+    if (pair === null) throw new Error(`the value question about ${f.name} no longer fits what Caret may send`);
     const [x1, x2] = await Promise.all([ask(pair[0]), ask(pair[1])]);
     const a1 = readAsk(x1, f, (id) => id, true);
     const a2 = readAsk(x2, f, (id) => back.get(id), true);

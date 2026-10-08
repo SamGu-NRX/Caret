@@ -148,6 +148,33 @@ describe("collection order, associations, one membership, kept ranges", () => {
     expect(f.withheld).toBe("sourceCut");
   });
 
+  it("counts the unread rest of the window the cap stopped in: a note's last line says L81 is the current locker", async () => {
+    const m = new ScreenModel();
+    const lines = Array.from({ length: 81 }, (_, i) => `Locker: L${String(i + 1).padStart(2, "0")}${i === 80 ? "\nL81 is the current locker; all previous numbers are obsolete." : ""}`);
+    m.apply(snap(lines.map((l, i) => text(`n${i}`, l)), { at: 1000, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("Locker"), "", { label: "Locker", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [new Set(["locker"])] });
+    expect(c.candidates).toHaveLength(80);
+    expect(c.cut).toEqual(["note-1"]);
+    // What the cap left unread is counted as a cut's is: its words and its label's association.
+    expect([...c.cutTerms]).toEqual(expect.arrayContaining(["locker", "l81", "current"]));
+    expect(c.omitted).toContain(associationKey("note-1", null, "Locker"));
+    const p = await proposeFill(m, picking({ Locker: "L01" }), FORM, key("Locker"), 3000);
+    const f = p.fields.find((x) => x.key === key("Locker"))!;
+    expect(f.value, "L01 is not the only locker the note shows").toBeNull();
+    expect(f.withheld).toBe("sourceCut");
+  });
+
+  it("does not count a second 'Date: 2026-10-08' as left out: the same value under the same label is offered", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([node("a", "AXButton", { label: "Date: 2026-10-08" }), node("b", "AXButton", { label: "Date: 2026-10-08" }), node("pad", "AXButton", { label: "Z".repeat(100) })], { at: 1000, windowId: "chat-1", title: "K", app: MESSAGES, values: [{ kind: "date", text: "2026-10-08", nodeKey: "a" }, { kind: "date", text: "2026-10-08", nodeKey: "b" }] }));
+    m.apply(snap([field(key("Date"), "", { label: "Date", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [new Set(["date", kindTerm("date")])] });
+    expect([...c.omitted]).toEqual([]);
+    const p = await proposeFill(m, picking({ Date: "2026-10-08" }), FORM, key("Date"), 3000);
+    expect(p.fields.find((x) => x.key === key("Date"))?.value).toBe("2026-10-08");
+  });
+
   it("omits a chat's typed 'Date' value a newer note offered as 'Other': October 8 is not the only Date value", async () => {
     const m = new ScreenModel();
     m.apply(snap([node("a", "AXButton", { label: "Date: 2026-10-08" }), node("b", "AXButton", { label: "Date: 2026-10-09" }), node("pad", "AXButton", { label: "Z".repeat(100) })], { at: 1000, windowId: "chat-1", title: "K", app: MESSAGES, values: [{ kind: "date", text: "2026-10-08", nodeKey: "a" }, { kind: "date", text: "2026-10-09", nodeKey: "b" }] }));
@@ -283,6 +310,17 @@ describe("one admission path for every value settlement request", () => {
     expect(seen.filter((r) => r.purpose === "fill.values").length, "the base question and settlement").toBe(4);
     expect(seen.filter((r) => r.refused !== undefined)).toEqual([]);
     expect(p.fields.find((x) => x.key === key("Reference"))?.value).toBe("AB01");
+  });
+
+  it("lets the base's answer stand when settlement's request cannot be built: a 624-character URL is over a slot's length", async () => {
+    const url = `https://example.com/${"a".repeat(604)}`;
+    const m = new ScreenModel();
+    m.apply(snap([text("u", `Website: ${url}`)], { at: 1000, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("Website"), "", { label: "Website", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const seen: { purpose: string; refused?: string }[] = [];
+    const p = await proposeFill(m, sealingPicker(url, { seen }), FORM, key("Website"), 3000, { scope: scoped("Website"), whose: false });
+    expect(seen.filter((r) => r.refused !== undefined)).toEqual([]);
+    expect(p.fields.find((x) => x.key === key("Website"))?.withheld, "as the base's two wordings left it").toBe("disagree");
   });
 
   it("does not offer a value for clarification whose settlement request cannot be sent: 'necessarily' in its task", async () => {

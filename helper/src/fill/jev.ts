@@ -5,7 +5,7 @@ import { requireVercelDevelopment } from "../privacy/vercel.ts";
 import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
-import { measureBytes, UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
+import { asDisclosure, UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
 import { frozenRequest, seal, sendable, storedRequest, type Sealed } from "../privacy/send.ts";
 import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
@@ -290,22 +290,25 @@ export interface SealedRequest {
 }
 
 /**
+ * Whether `reqs`, requests of one Disclosure, would pass their seals if sent now in order, committing nothing: each sealed
+ * as sealRequest seals it, against a copy of the operation's ledger (Disclosure.trialSends), so each is held to every
+ * window's limit alone and the conversations' unions across them, as the real seals hold them. The admission check for
+ * requests built ahead of sending (value settlement's pair, and the pair a clarification would send). Throws
+ * LedgerRefused when the ledger refuses one, and any other error a seal would throw.
+ */
+export function checkSealable(reqs: readonly JevRequest[]): void {
+  const d = asDisclosure(reqs[0]?.disclosure);
+  if (d === null) throw new UnmintedText("checkSealable: a request has no Disclosure");
+  if (reqs.some((r) => r.disclosure !== d)) throw new Error("checkSealable: the requests are of different Disclosures");
+  d.trialSends(() => {
+    for (const req of reqs) seal({ req, wire: wireBody(req) });
+  });
+}
+
+/**
  * PV2: seals a request before it is sent (privacy/send.ts seal): what an evaluation sends is `asked`, the frozen copy, and
  * what it stores of the request comes from that same copy (storedRecord), never from the live request.
  */
-/**
- * Whether `reqs`, requests of one Disclosure sent together, would pass their seals now, committing nothing: each sealed
- * as sealRequest seals it, and their final bytes measured together, since the operation's union is held to each window's
- * limit and two requests can each fit alone and not together. The admission check for requests built ahead of sending
- * (value settlement's pair, and the pair a clarification would send). Throws LedgerRefused when the ledger refuses them,
- * and any other error a seal would throw.
- */
-export function checkSealable(reqs: readonly JevRequest[]): void {
-  const wires = reqs.map((req) => seal({ req, wire: wireBody(req) }, undefined, false).wire);
-  const first = reqs[0];
-  if (reqs.length > 1 && first !== undefined) measureBytes(first, JSON.stringify(wires), undefined, false);
-}
-
 export function sealRequest(req: JevRequest): SealedRequest {
   const sealed = seal({ req, wire: wireBody(req) });
   return Object.freeze({ sealed, asked: frozenRequest(req, sealed.wire, sealed.charged) });

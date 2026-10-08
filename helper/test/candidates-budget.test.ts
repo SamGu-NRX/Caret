@@ -128,7 +128,10 @@ describe("candidate generator", () => {
     model.apply(snap([], { at: 2000, windowId: "form", focused: true }));
     const capped = collectCandidates(model, "form", { now: 3000 });
     expect(capped.candidates).toHaveLength(MAX_CANDIDATES);
-    expect(capped.stats.overBudget).toBe(false);
+    // The candidate cap stops it in the log, whose unread rest is then read as a cut's would be (candidates.ts stop):
+    // 20,000 lines run past the visit cap, so what the rest may hold is unknown and everything it could touch is withheld.
+    expect(capped.stats.overBudget, "reading the unread rest ran out of visits").toBe(true);
+    expect(capped.cutAll).toBe(true);
     const visited = collectCandidates(model, "form", { max: 20_000, now: 3000 });
     expect(visited.stats.overBudget).toBe(true);
     expect(visited.candidates).toHaveLength(MAX_GENERATOR_VISITS - 1);

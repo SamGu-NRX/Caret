@@ -652,6 +652,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       // The rest of the window was not read, so whether it held a name is not known (B14 review: the
       // cap stopped a notes window between another window's name and the right one).
       partway = true;
+      // And its unread rest is read for what it may hold, as an unreached window's is (leftOut; cutAll if that cannot
+      // finish): a note's last line naming L81 the current locker left no cut word or association, and L01 was written.
+      leftOutOf.add(reading);
     }
     for (const w of unread) {
       missed.add(w.window.windowId);
@@ -846,6 +849,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       return g !== null && g !== undefined && kinds.has(g);
     };
     const kindOrder = [...new Set(order.filter(takesKind).map((i) => spans[i]?.group as string))];
+    const skipped: Span[] = [];
     const groups = new Map<string, Candidate[]>();
     for (const k of kindOrder) {
       if (outOfWork()) return false;
@@ -854,9 +858,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       for (const i of order) {
         const sp = spans[i] as (typeof spans)[number];
         if (sp.group !== k) continue;
-        // Not offered again under this window's label: its association is an omission, as add() records one.
+        // Not offered again: its association is weighed once the kinds are in (skipped), against the association its text
+        // was offered under then, as add() weighs one. Weighed now, a second "Date: 2026-10-08" counted as left out before
+        // the first was offered.
         if (seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) {
-          omit(w, sp.node, sp.text, sp.context()?.text ?? null);
+          skipped.push(sp);
           continue;
         }
         texts.add(sp.text);
@@ -889,6 +895,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         offer(c);
       }
     }
+    for (const sp of skipped) omit(w, sp.node, sp.text, sp.context()?.text ?? null);
     /** Kinds left out whole, since none of them fits what is left; a line holding a value of one stays out too. */
     const leftOut = new Set(groups.keys());
     for (const g of groups.values()) for (const c of g) if (quoted.has(c)) unwarned.add(c.text);
@@ -935,9 +942,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     return true;
   };
 
-  // One pass, each window whole in recency order: typed values and lines together. Two passes (every window's typed
-  // values, then every window's lines) let an older chat's 80 "Ref" lines fill the cap before a newer note's "Ref: AB01"
-  // was read, with nothing reported cut, and AB02 was written (test/collection-admission.test.ts).
+  // One pass, each window whole in recency order, typed values and lines together, so a cap stops in the least recent
+  // windows and every window it does not finish is counted cut (stop).
   for (const [i, w] of windows.entries()) {
     if (full()) return stop(windows.slice(i));
     touched.add(w.window.windowId);

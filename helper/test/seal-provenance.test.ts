@@ -10,7 +10,8 @@ import { OWNER_NOTE_CHARS } from "../src/privacy.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { candidateProvenance, proposeFill, type FillScope } from "../src/fill/fill.ts";
 import { fieldContract, makeFieldContract, setTestVerifier, verifyProposed, type Proposed, type Provenance } from "../src/fill/contract.ts";
-import { sealRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
+import { checkSealable, sealRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
+import { sendable } from "../src/privacy/send.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, snap, text } from "./builders.ts";
 import { TEST_AUTHORITY } from "./mint.ts";
@@ -322,5 +323,36 @@ describe("a choice made from minted bases", () => {
     expect(measureBytes({ purpose: "test", disclosure: d }, JSON.stringify({ texas })).charged["note-1"]).toBe(2);
     const plain = new Disclosure(m);
     expect(measureBytes({ purpose: "test", disclosure: plain }, JSON.stringify({ texas: plain.planText("Texas") })).charged["note-1"] ?? 0, "as plan text").toBe(0);
+  });
+});
+
+describe("checking requests sent together, as their seals will", () => {
+  it("holds each request to a page's limit alone, as the seals do: two long URLs that each fit pass, though both together would not", () => {
+    // A note, not a conversation: each request is held to its limit alone; only a conversation's union is held across them.
+    const a = `https://example.com/${"a".repeat(630)}`;
+    const b = `https://other.example/${"b".repeat(628)}`;
+    const m = new ScreenModel();
+    m.apply(snap([text("a", a), text("b", b)], { at: 1, windowId: "note", title: "N", app: TEXTEDIT }));
+    const d = new Disclosure(m);
+    // The text as Caret's own wording, so only the seal charges it (rule E: it holds the line whole), not the early check.
+    const req = (t: string): JevRequest => d.seal({ purpose: "route.task", state: { offer: { found: d.own(t as "x") } }, questions: {}, snippets: [], charged: {} });
+    const pair = [req(a), req(b)];
+    expect(() => checkSealable(pair), "each fits its seal").not.toThrow();
+    for (const r of pair) sendable(sealRequest(r).sealed);
+  });
+
+  it("holds a conversation's union across the requests, in order: two halves of a chat that each fit are refused together", () => {
+    const a = "abcdefghijklmnopqrstuvwxyzABC";
+    const b = "0123456789zyxwvutsrqponmlkjih";
+    const m = new ScreenModel();
+    m.apply(snap([text("a", a), text("b", b), { key: "p", parent: null, role: "AXButton", label: "q".repeat(10) }], { at: 1, windowId: "chat", title: "K", app: MESSAGES }));
+    const d = new Disclosure(m);
+    // The text as Caret's own wording, so only the seal charges it (rule E: it holds the line whole), not the early check.
+    const req = (t: string): JevRequest => d.seal({ purpose: "route.task", state: { offer: { found: d.own(t as "x") } }, questions: {}, snippets: [], charged: {} });
+    // T = 1 + 29 + 29 + 10 = 69, limit 34: 29 each and the title "K" (a unit holds its line whole), 59 together.
+    expect(() => checkSealable([req(a)])).not.toThrow();
+    expect(() => checkSealable([req(a), req(b)])).toThrow(/with the requests sent before it, it reveals 59 characters of window chat, over its limit of 34/u);
+    // The check committed nothing: the first still goes alone.
+    expect(() => sendable(sealRequest(req(a)).sealed)).not.toThrow();
   });
 });
