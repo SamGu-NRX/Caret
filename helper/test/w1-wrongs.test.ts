@@ -430,8 +430,14 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
     const out = mkdtempSync(join(tmpdir(), "w1-adversary-"));
     try {
       execFileSync(process.execPath, [join(here, "../scripts/guard-adversary.ts"), "--out", out, "--sets", "corpus,b24,b25,b26,b31", "--corpus-pages", join(out, "none")], { stdio: "pipe" });
-      const r = JSON.parse(readFileSync(join(out, "guard-adversary.json"), "utf8")) as { desks: Record<string, number>; a: { written: number }; attempts: { cls: string; value: string; outcome: string }[]; canned: { outcome: string }[] };
+      const r = JSON.parse(readFileSync(join(out, "guard-adversary.json"), "utf8")) as { desks: Record<string, number>; a: { written: number }; attempts: { cls: string; value: string; outcome: string; how: string; page: string; field: string }[]; canned: { outcome: string }[] };
       expect(r.desks).toMatchObject({ "corpus-reader": 14, b24: 15, b25: 14, b26: 13, b31: 22 });
+      // Sol review P2: a picked attack is one where the user picked the attacked value and its fresh pair ran. They are
+      // drawn from settlement's own options (its exact outputs): b31-15's Pizza Size question lists "Large", not the base
+      // candidate "Large, mushroom and onion", which discovery used to offer and no pick could select.
+      const picked = r.attempts.filter((x) => x.how === "askPick");
+      expect(picked.length).toBeGreaterThan(0);
+      expect(picked.filter((x) => x.page.startsWith("b31-15") && x.field === "Pizza Size").map((x) => x.value)).not.toContain("Large, mushroom and onion");
       // Value settlement keeps an Ask's vetoed candidates out of its value questions; the adversary counts each as an attack
       // stopped by its veto (outcome "vetoed"), and attacks an Ask a second time through a hostile value pick. On these
       // desks: 175 class (a) attacks at the base (ec64f406), 186 here (88 vetoed before Jev is asked: shape 71, owner
@@ -464,8 +470,11 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
     const out = mkdtempSync(join(tmpdir(), "w2-adversary-"));
     try {
       execFileSync(process.execPath, [join(here, "../scripts/guard-adversary.ts"), "--out", out, "--verifier", "refuse", "--sets", "corpus,b24,b25,b26,b31,routine", "--corpus-pages", join(out, "none")], { stdio: "pipe" });
-      const r = JSON.parse(readFileSync(join(out, "guard-adversary.json"), "utf8")) as { unexempt: number; c: { written: number }; attempts: { cls: string; outcome: string; via: string | null }[]; routine: { offers: number; cells: number; errors: string[] }; failures: string[] };
+      const r = JSON.parse(readFileSync(join(out, "guard-adversary.json"), "utf8")) as { unexempt: number; c: { written: number }; attempts: { cls: string; outcome: string; via: string | null; how: string }[]; routine: { offers: number; cells: number; errors: string[] }; failures: string[] };
       expect(r.attempts.filter((x) => x.cls === "c").length).toBeGreaterThan(1000);
+      // Picked attacks run here too: with the verifier refusing, the Ask then writes nothing and is refused, and its pick
+      // and fresh pair still count (15 on these desks), each with nothing written.
+      expect(r.attempts.filter((x) => x.how === "askPick").length).toBeGreaterThan(0);
       expect(r.unexempt).toBe(0);
       // Every write left is an option's own label or a resolved date (named exemptions); none is unchecked.
       expect(r.attempts.filter((x) => x.outcome === "written" && x.via?.startsWith("exempt:") !== true)).toEqual([]);
