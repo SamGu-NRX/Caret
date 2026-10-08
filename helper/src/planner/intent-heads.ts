@@ -288,13 +288,15 @@ export function sectionVerdict(snap: IntentSnapshot, scope: readonly [JevResult,
   // Each wording's answer is read against the options its own question offered (the bounded list may offer a heading
   // in one wording and not the other). An answer outside them is no answer: the Ask fails as for a missing one, since a
   // null verdict would mean "no section named" and lift the veto. Two valid answers that differ settle nothing (null).
-  const [x, y] = scope.map((r, i) => {
+  const answerOf = (r: JevResult, wording: 0 | 1): { choice: string; confidence: number } => {
     const a = r.answers[SECTION_QUESTION];
     if (a === undefined) throw new PlannerError("jevFailed", "Jev gave no answer to the section question");
-    const options = new Set([...Object.keys(SECTION_OPTIONS), ...offeredSections(snap, i as 0 | 1)]);
+    const options = new Set([...Object.keys(SECTION_OPTIONS), ...offeredSections(snap, wording)]);
     if (!options.has(a.choice)) throw new PlannerError("jevFailed", `Jev answered '${a.choice}' to the section question, which is not one of its options`);
     return a;
-  }) as [{ choice: string; confidence: number }, { choice: string; confidence: number }];
+  };
+  const x = answerOf(scope[0], 0);
+  const y = answerOf(scope[1], 1);
   if (x.choice !== y.choice || x.confidence < cutoff || y.confidence < cutoff) return null;
   if (x.choice === "unlisted") return { kind: "unlisted" };
   const name = snap.headings.find((h) => h.ref === x.choice)?.name;

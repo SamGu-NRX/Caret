@@ -11,7 +11,7 @@ import { homedir, tmpdir } from "node:os";
 import { loadKey } from "../src/sealed.ts";
 import { Store } from "../src/store.ts";
 import { join } from "node:path";
-import { DailySpend, localDay } from "../src/engines/decide/daily-cap.ts";
+import { DailySpend, JevCapError, localDay } from "../src/engines/decide/daily-cap.ts";
 import { storePathRefusal, SyncedStorePath } from "../src/privacy/store-path.ts";
 
 const SECRET = "API key: Zq7x";
@@ -210,6 +210,23 @@ describe("INT1 review 5: a store folder is checked and made as one resolved path
       expect(existsSync(join(s.outside, "spend"))).toBe(false);
     } finally {
       s.done();
+    }
+  });
+});
+
+describe("INT1 review 6: the spend log reads the folder it writes", () => {
+  it("counts a spend written through `link/..` against the cap", () => {
+    // `<base>/link/../spend` lands beside the link's target, `<base>/elsewhere/spend`; path.join would read `<base>/spend`.
+    const base = mkdtempSync(join(tmpdir(), "int1-review6-"));
+    try {
+      mkdirSync(join(base, "elsewhere", "deep"), { recursive: true });
+      symlinkSync(join(base, "elsewhere", "deep"), join(base, "link"));
+      const spend = new DailySpend({ dir: `${base}/link/../spend`, capUsd: 0.03 });
+      spend.reserve(0.02).settle(0.02, 1);
+      expect(existsSync(join(base, "elsewhere", "spend"))).toBe(true);
+      expect(() => spend.reserve(0.02)).toThrow(JevCapError);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
     }
   });
 });
