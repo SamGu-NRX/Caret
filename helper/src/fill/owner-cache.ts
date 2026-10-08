@@ -31,6 +31,14 @@ export class OwnerVerdicts {
     return { cleared: this.cleared, forgotten: new Map(this.forgotten) };
   }
 
+  /**
+   * Whether nothing invalidated these windows since `t` was taken. A fill holding an answer it read from the cache asks
+   * this after every await and right before it consumes the answer (fill.ts cachedOwners).
+   */
+  still(t: CacheTicket, windows: Iterable<string>): boolean {
+    return this.current(t, windows);
+  }
+
   /** Whether nothing invalidated these windows since `t` was taken. */
   private current(t: CacheTicket, windows: Iterable<string>): boolean {
     return t.cleared === this.cleared && [...windows].every((w) => (t.forgotten.get(w) ?? 0) === (this.forgotten.get(w) ?? 0));

@@ -13,6 +13,8 @@ import type { WriterPort } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { field, node, snap, text } from "./builders.ts";
+import { closeRigs, rig } from "./page-rig.ts";
+import { PROTOCOL_VERSION } from "../src/protocol.ts";
 
 vi.mock("../src/codemode/sandbox.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("../src/codemode/sandbox.ts")>();
@@ -88,7 +90,10 @@ const scopeOf = (instruction: string, extra: Partial<FillScope> = {}): FillScope
 const written = (run: Promise<{ checked: { writes: readonly { value: string }[] } }>): Promise<string[]> => run.then((d) => d.checked.writes.map((w) => w.value), () => []);
 
 beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
+afterEach(() => {
+  setGeneratorClock(null);
+  closeRigs();
+});
 beforeAll(() => setTestVerifier(null));
 afterAll(() => setTestVerifier(STAND_IN));
 
@@ -224,5 +229,36 @@ describe("item 8: the field's instruction literal survives a duplicate screen va
     const pr = JSON.stringify(f === undefined ? null : mintOf(f)?.provenance);
     expect(pr).toContain(`"kind":"instruction","span":"${PHONE}"`);
     expect(pr).not.toContain('"kind":"window"');
+  });
+});
+
+describe("item 3 again: a cache hit invalidated while the field-ownership requests are out is never consumed", () => {
+  const filledTwice = async (invalidate: (cache: OwnerVerdicts) => void, cache = new OwnerVerdicts()) => {
+    const m = desk([{ windowId: "note", nodes: [noteArea("note/body", MINE)] }]);
+    expect((await phone(m, jev(), { cache }))?.value).toBe(PHONE);
+    expect(cache.size).toBeGreaterThan(0);
+    const j = jev({ during: (req) => (req.purpose === "fill.whose" ? invalidate(cache) : undefined) });
+    const f = await phone(m, j, { cache });
+    return { f, ownerQuestions: j.reqs.flatMap((r) => Object.keys(r.questions).filter((k) => k.endsWith("_owner"))).length };
+  };
+  it.each([
+    ["clear()", (c: OwnerVerdicts) => c.clear()],
+    ["forget() of the note's window", (c: OwnerVerdicts) => c.forget(new Set(["note"]))],
+  ] as const)("gives no write from the stale hit after %s", async (_, invalidate) => {
+    const { f } = await filledTwice(invalidate);
+    expect(f?.value ?? null).toBeNull();
+    expect(f === undefined ? undefined : mintOf(f)).toBeUndefined();
+  });
+
+  it.each(["a Sites change", "sessionLocked"] as const)("gives no write from the stale hit after %s reaches the helper", async (what) => {
+    const r = await rig();
+    const cache = (r.helper as unknown as { ownerVerdicts: OwnerVerdicts }).ownerVerdicts;
+    r.helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: Date.now(), roles: ["fill"], level: "balanced", paused: false, sitesOff: [] });
+    const { f } = await filledTwice(() => {
+      if (what === "sessionLocked") r.helper.handleSessionLocked({ type: "sessionLocked", v: PROTOCOL_VERSION, at: Date.now(), why: "lock" });
+      else r.helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: Date.now(), roles: ["fill"], level: "balanced", paused: false, sitesOff: ["https://blocked.example"] });
+    }, cache);
+    expect(f?.value ?? null).toBeNull();
+    expect(f === undefined ? undefined : mintOf(f)).toBeUndefined();
   });
 });

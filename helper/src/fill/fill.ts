@@ -25,7 +25,7 @@ import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, dateP
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { ownedOf, unitKey, unitsHolding, type NoteUnit } from "./note-unit.ts";
-import { OwnerVerdicts, type OwnerAnswer } from "./owner-cache.ts";
+import { OwnerVerdicts, type CacheTicket, type OwnerAnswer } from "./owner-cache.ts";
 import { alternateVetoes, readableFields, setAlternateReason, type AlternateWrite, type PartPicks } from "./alternate.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
@@ -820,6 +820,9 @@ export function notesSay(ids: readonly string[]): string {
   return `Every text on screen that holds it, whole: ${ids.join(" and ")} in source_notes; whose it is depends on all of that text.`;
 }
 
+/** HA2 review 3, item 3: why a value is withheld when its cached owner verdict was invalidated while Caret worked. */
+export const OWNER_STALE = "what Caret knew about whose this value is was cleared while it worked";
+
 /** HA2 review item 7: why a value is withheld when a window Caret may not read for this fill also holds it. */
 export const OWNER_UNREADABLE = "a window Caret may not read here also holds it, so Caret can't show Jev whose it is";
 
@@ -1388,14 +1391,32 @@ export async function proposeFill(
   // a redaction cut, (c) a text area or its whole window), each taken through the ledger once and sent once.
   const notes = new Map<string, string>();
   const noteIds = new Map<string, string>();
-  const ownerNotes = new Map<string, { units: NoteUnit[]; ids: string[] | null; why: "private" | "unshown" | "unreadable" | null }>();
+  const ownerNotes = new Map<string, { units: NoteUnit[]; ids: string[] | null; why: "private" | "unshown" | "unreadable" | "stale" | null }>();
   /** Lever 2: the cache's invalidations as they stand now, before any owner question is read from it or sent (item 3). */
   const cacheTicket = opts.ownerCache?.ticket();
   /** Lever 2: what shapes how an owner question is read beyond its own words: the Ask's instruction and person (item 4). */
   const cacheContext = JSON.stringify({ instruction: scope?.instruction ?? null, person: scope?.person ?? null, plainAsk });
   /** Lever 2: by candidate id, its owner question's cache key, and the session's earlier answers when it has them. */
   const ownerKeys = new Map<string, string>();
-  const cachedOwners = new Map<string, readonly [OwnerAnswer, OwnerAnswer]>();
+  /**
+   * Lever 2, by candidate id: an answer read from the session's cache, with the invalidations as they stood when it was
+   * read and the windows its notes came from. HA2 review 3, item 3: it is checked again after every await and right
+   * before it is consumed (hitLive); one invalidated meanwhile is dropped, and its value is withheld, never written.
+   */
+  const cachedOwners = new Map<string, { answers: readonly [OwnerAnswer, OwnerAnswer]; ticket: CacheTicket; windows: readonly string[] }>();
+  const hitLive = (cid: string): boolean => {
+    const h = cachedOwners.get(cid);
+    return h !== undefined && opts.ownerCache !== undefined && opts.ownerCache.still(h.ticket, h.windows);
+  };
+  /** Drops every cached answer invalidated since it was read: its value is withheld (OWNER_STALE). */
+  const dropStaleHits = (): void => {
+    for (const cid of [...cachedOwners.keys()]) {
+      if (hitLive(cid)) continue;
+      cachedOwners.delete(cid);
+      const ev = ownerNotes.get(cid);
+      ownerNotes.set(cid, { units: ev?.units ?? [], ids: null, why: "stale" });
+    }
+  };
   const criteriaNow = scope?.person === null || scope?.person === undefined ? { ...OWNER_CRITERIA } : personOwnerCriteria(scope.person);
   for (const c of ownerCands) {
     const units = unitsHolding(model, c.text, windowId, { windowId: c.source.windowId, nodeKey: c.source.nodeKey });
@@ -1416,10 +1437,11 @@ export async function proposeFill(
     if (opts.ownerCache !== undefined) {
       const key = OwnerVerdicts.key(OWNER_WORDINGS[0](describeOwned(c, ownerLines.get(c.id))), c.text, units.map((u) => u.digest), criteriaNow, cacheContext);
       ownerKeys.set(c.id, key);
+      const readAt = opts.ownerCache.ticket();
       const hit = opts.ownerCache.get(key);
       if (hit !== undefined) {
         // Asked before in this session over the same notes, by digest: nothing is sent again.
-        cachedOwners.set(c.id, hit);
+        cachedOwners.set(c.id, { answers: hit, ticket: readAt, windows: units.map((u) => u.windowId) });
         ownerNotes.set(c.id, { units, ids: [], why: null });
         continue;
       }
@@ -1538,8 +1560,9 @@ export async function proposeFill(
   const [w1, w2] = whoseAsks === null ? [null, null] : await Promise.all([asking(whoseAsks[0]), asking(whoseAsks[1])]);
   // Lever 2: the session's earlier answers stand in for the questions not asked again; each new answer to a question that
   // showed its notes whole is kept for the rest of the session.
+  dropStaleHits();
   if (w1 !== null && w2 !== null) {
-    for (const [cid, [a, b]] of cachedOwners) {
+    for (const [cid, { answers: [a, b] }] of cachedOwners) {
       w1.answers[ownerId(cid)] = { ...a };
       w2.answers[ownerId(secondId.get(cid) ?? "")] = { ...b };
     }
@@ -1550,7 +1573,7 @@ export async function proposeFill(
    */
   const noteShown = (c: Candidate): boolean => {
     // Lever 2: a cached verdict was given by questions that showed these very notes, by digest (ownerKeys).
-    if (cachedOwners.has(c.id)) return true;
+    if (cachedOwners.has(c.id)) return hitLive(c.id);
     const ids = ownerNotes.get(c.id)?.ids ?? null;
     if (whoseAsks === null || ids === null || ids.length === 0) return false;
     return ([[whoseAsks[0], c.id], [whoseAsks[1], secondId.get(c.id) ?? ""]] as const).every(([req, cid]) => {
@@ -1757,6 +1780,7 @@ export async function proposeFill(
     const address = f.part !== null && PERSON_PLACE_PARTS.has(f.part);
     const open = sources.filter((c) => c.identity === undefined);
     if (open.some((c) => asked1(c) && ownerNotes.get(c.id)?.why === "unreadable")) return OWNER_UNREADABLE;
+    if (open.some((c) => asked1(c) && (ownerNotes.get(c.id)?.why === "stale" || (cachedOwners.has(c.id) && !hitLive(c.id))))) return OWNER_STALE;
     if (open.some((c) => asked1(c) && ownerNotes.get(c.id)?.why === "private")) return NOTE_PRIVATE;
     if (open.some((c) => asked1(c) && !noteShown(c))) return NOTE_UNSHOWN;
     return address && open.some((c) => !asked1(c)) ? OWNER_UNASKED : null;
@@ -2165,6 +2189,23 @@ export async function proposeFill(
       if (isChecked(c)) fieldMints.set(out[(proposed[k] as { i: number }).i] as FillField, c);
     });
   }
+  // HA2 review 3, item 3: after the verifier's await, before a value resting on a cached owner verdict is handed back to be
+  // written: a verdict invalidated meanwhile withholds it, mint and all.
+  const restsOnStale = (p: Pick): boolean => {
+    const cs = p.from === "window" ? [p.c] : p.from === "derived" ? [...(p.base.from === "window" ? [p.base.c] : []), ...(p.also === null ? [] : [p.also])] : [];
+    return cs.some((c) => cachedOwners.has(c.id) && !hitLive(c.id));
+  };
+  const withholdStale = (): void => {
+    for (const [i, x] of picksOf) {
+      const o = out[i] as FillField;
+      if (!restsOnStale(x.p) || (o.value === null && o.handoff === null)) continue;
+      fieldMints.delete(o);
+      const held: FillField = { ...o, choice: NONE, value: null, source: null, memory: null, handoff: null, withheld: "ambiguous" };
+      setHeldReason(held, `Caret left ${(fields[i] as Field).name}: ${OWNER_STALE}.`);
+      out[i] = held;
+    }
+  };
+  withholdStale();
   for (const [i, o] of out.entries()) {
     const f = fields[i] as Field;
     const exempt: ExemptRule | null = o.answer !== undefined && o.value !== null ? "savedAnswerShown" : o.handoff?.writes === true ? EXEMPT_BY_CONTROL[f.control] : null;
