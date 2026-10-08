@@ -477,7 +477,6 @@ describe("what the veto leaves as it was (preservation)", () => {
 
   it("an answer outside the offered sections never authorizes a field outside the named section", async () => {
     const d = desk({ page: pageSnapshot(HEADINGS, WALKED) });
-    // Refused as Jev failing: nothing is authorized, the contact fields least of all.
     await expect(plan(d, jev({ section: { choice: "sec99", confidence: 0.99 } }), "fill the equipment details section")).rejects.toThrow(/jevFailed|couldn't reach|not one of its options/u);
   });
 
