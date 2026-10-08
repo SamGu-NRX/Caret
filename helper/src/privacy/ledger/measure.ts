@@ -3,8 +3,9 @@
 //
 // A position is revealed when it lies in a common run of at least RUN_MIN normalized scalars between a measured unit and
 // a source line, or when its whole line, normalized, is contained in a measured unit (any length; no word-boundary
-// test, so "Back" inside "Outback" counts). Every occurrence counts and the charge is the union of positions: there is
-// no allocation, cap or cheapest placement.
+// test, so "Back" inside "Outback" counts), or when it lies in an occurrence of a minted unit's declared span (the
+// source text the unit was minted from, at any length: spanPositions). Every occurrence counts and the charge is the
+// union of positions: there is no allocation, cap or cheapest placement.
 //
 // How: one suffix automaton over every measured unit, BOUNDARY between them. Each source line is scanned from the root;
 // at each line position the scan holds the longest suffix ending there that occurs in some unit. Every shorter match
@@ -177,6 +178,118 @@ function revealLines(index: UnitIndex, inv: LineInventory, which: Iterable<numbe
 /** What the units of `index` reveal of a window, every line scanned. */
 export function reveal(index: UnitIndex, inv: LineInventory): Revealed {
   return revealLines(index, inv, inv.lines.keys());
+}
+
+/**
+ * A minted unit's declared span: the source text it was read from (OUTPUT-LEDGER-SPEC section 4). A derivation's span
+ * is its own words where they stand `within` its basis text.
+ */
+export interface DeclaredSpan {
+  readonly text: string;
+  readonly within?: string;
+}
+
+/** A text's pieces as a span reads them: split at line breaks and at an ellipsis, whitespace collapsed and trimmed. */
+function pieces(text: string): number[][] {
+  return text
+    .split("\n")
+    .flatMap((l) => l.split("\u2026"))
+    .map((x) => x.replace(/\s+/gu, " ").trim())
+    .filter((x) => x !== "" && x.isWellFormed())
+    .map((x) => [...ledgerNormalizeV1(x).cps])
+    .filter((x) => x.length > 0);
+}
+
+/** Each start in `hay` from `from` to `to` (exclusive of a match past `to`) where `needle` stands. */
+function* occurrences(hay: readonly number[], needle: readonly number[], from = 0, to = hay.length): Generator<number> {
+  outer: for (let a = from; a + needle.length <= to; a++) {
+    for (let k = 0; k < needle.length; k++) if (hay[a + k] !== needle[k]) continue outer;
+    yield a;
+  }
+}
+
+const WORD = /[\p{L}\p{N}]/u;
+const isWord = (cp: number | undefined): boolean => cp !== undefined && WORD.test(String.fromCodePoint(cp));
+
+/**
+ * Where a piece is taken to stand in a window: one occurrence, chosen by a rule that does not depend on line order. A
+ * whole line first, then an occurrence with no letter or digit either side, then any; among those, the one covering the
+ * most source positions; then the line that sorts first, then the leftmost. Null when the piece stands nowhere.
+ */
+function chosen(inv: LineInventory, piece: readonly number[]): { li: number; a: number } | null {
+  let best: { li: number; a: number; cls: number; size: number } | null = null;
+  const texts = lineTexts(inv);
+  const needle = String.fromCodePoint(...piece);
+  inv.normalized.forEach((line, li) => {
+    // A native substring test first: most lines of a large window do not hold the piece at all.
+    if (!texts[li]!.includes(needle)) return;
+    for (const a of occurrences(line.cps, piece)) {
+      const cls = a === 0 && piece.length === line.cps.length ? 0 : !isWord(line.cps[a - 1]) && !isWord(line.cps[a + piece.length]) ? 1 : 2;
+      const size = new Set(line.origins.slice(a, a + piece.length).flat()).size;
+      const better =
+        best === null ||
+        cls < best.cls ||
+        (cls === best.cls && (size > best.size || (size === best.size && (inv.lines[li]! < inv.lines[best.li]! || (li === best.li && a < best.a)))));
+      if (better) best = { li, a, cls, size };
+    }
+  });
+  return best === null ? null : { li: (best as { li: number }).li, a: (best as { a: number }).a };
+}
+
+/**
+ * The positions of `inv` a declared span reveals, at any length, compared after ledgerNormalizeV1: for each piece of
+ * its text, the one place it is taken to stand (chosen); or, for a derivation, each of its words (runs of letters and
+ * digits) where it first stands inside the place each piece of its basis is taken to stand. A span is what a builder
+ * read the unit from, so it is charged in full, however short; one place per piece, since the unit shows the text once.
+ */
+export function spanPositions(inv: LineInventory, span: DeclaredSpan): Uint8Array {
+  let cache = SPANS.get(inv);
+  if (cache === undefined) SPANS.set(inv, (cache = new Map()));
+  const key = `${span.within ?? ""}\u0000${span.text}`;
+  let bits = cache.get(key);
+  if (bits === undefined) cache.set(key, (bits = placeSpan(inv, span)));
+  return bits;
+}
+
+/** Each inventory's normalized lines as strings, for a fast substring test. */
+const TEXTS = new WeakMap<LineInventory, readonly string[]>();
+function lineTexts(inv: LineInventory): readonly string[] {
+  let t = TEXTS.get(inv);
+  if (t === undefined) TEXTS.set(inv, (t = inv.normalized.map((n) => String.fromCodePoint(...n.cps))));
+  return t;
+}
+
+/** Each inventory's span positions, by span: an inventory is immutable, and a request mints many texts over one window. */
+const SPANS = new WeakMap<LineInventory, Map<string, Uint8Array>>();
+
+function placeSpan(inv: LineInventory, span: DeclaredSpan): Uint8Array {
+  const bits = new Uint8Array(inv.total);
+  const mark = (li: number, a: number, len: number): void => {
+    for (let k = a; k < a + len; k++) for (const p of inv.normalized[li]!.origins[k]!) bits[inv.starts[li]! + p] = 1;
+  };
+  const words = span.within === undefined ? null : String.fromCodePoint(...ledgerNormalizeV1(span.text).cps).split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "").map((w) => Array.from(w, (c) => c.codePointAt(0)!));
+  for (const piece of pieces(span.within ?? span.text)) {
+    const at = chosen(inv, piece);
+    if (at === null) continue;
+    if (words === null) {
+      mark(at.li, at.a, piece.length);
+      continue;
+    }
+    const cps = inv.normalized[at.li]!.cps;
+    for (const w of words) {
+      const b = occurrences(cps, w, at.a, at.a + piece.length).next();
+      if (!b.done) mark(at.li, b.value, w.length);
+    }
+  }
+  return bits;
+}
+
+/** `r` with the positions `extra` marks added. */
+export function withPositions(r: Revealed, extra: Uint8Array): Revealed {
+  const positions = r.positions.map((b, p) => b | extra[p]!);
+  let charged = 0;
+  for (const b of positions) charged += b;
+  return { positions, charged };
 }
 
 // Finding the lines a measurement must scan. A line can be marked only by a common run of RUN_MIN or more scalars, which

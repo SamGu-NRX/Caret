@@ -88,9 +88,12 @@ describe("a cut conversation never leaves a decoy", () => {
     expect(byLabel.get("Meeting date")?.value).not.toBe("September 28, 2026");
   });
 
-  it("the B11 case gives B11's wrong fill with both of B12's changes off, so the test above can fail", async () => {
+  // With declared spans charged (OUTPUT-LEDGER-SPEC section 4), screen order spends the chat's limit on the order block's
+  // short values before its Placed date, so B11's wrong fill no longer happens even with both of B12's changes off: this
+  // fixture no longer shows that the test above can fail. Kept as the measure's control.
+  it("the B11 case with both of B12's changes off: the chat's limit runs out before the decoy date", async () => {
     const p = await proposeFill(model(), decoyProneJev(), FORM, FORM_KEY("Meeting date"), 3000, { cutRule: false, relevance: false });
-    expect(p.fields.find((f) => f.key === FORM_KEY("Meeting date"))?.value).toBe("September 28, 2026");
+    expect(p.fields.find((f) => f.key === FORM_KEY("Meeting date"))?.value).toBeNull();
   });
 
   it("does not ask a field whose kind lost a value to the cut, and marks it sourceCut", async () => {

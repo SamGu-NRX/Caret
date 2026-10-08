@@ -323,3 +323,32 @@ describe("owner notes at seal", () => {
     expect(d.ownerNote(view, note)).toBeNull();
   });
 });
+
+// OUTPUT-LEDGER-SPEC section 4: a minted unit is charged its declared span, wherever it stands in the output.
+describe("declared spans at mint and at seal", () => {
+  const LINES = ["Alice, Bob", "Cedar, Elm", "Paris, Rome"];
+  const VALUES = ["Alice", "Bob", "Cedar", "Elm", "Paris", "Rome"];
+  const chat = (): { m: ScreenModel; view: WindowState } => {
+    const m = new ScreenModel();
+    m.apply(snap(LINES.map((l, i) => text(`c${i}`, l)), { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    return { m, view: redactWindow(m.windows.get("chat-1") as WindowState) };
+  };
+
+  it("refuses the fifth of six short values a chat shows: 16 of its limit of 17 are taken, and Paris is 5 more", () => {
+    const { m, view } = chat();
+    const d = new Disclosure(m);
+    const minted = VALUES.map((v) => d.candidate(view, v));
+    expect(minted.map((x) => x !== null)).toEqual([true, true, true, true, false, false]);
+    // The seal charges the four it holds, 16, by their declared spans.
+    const sent = minted.filter((x): x is NonNullable<typeof x> => x !== null);
+    expect(d.measureSent("test", sent).charged["chat-1"]).toBe(16);
+  });
+
+  it("charges a composition its parts' spans: the values joined in one sentence cost what they cost apart", () => {
+    const { m, view } = chat();
+    const d = new Disclosure(m);
+    const [a, b] = [d.candidate(view, "Alice"), d.candidate(view, "Bob")];
+    const said = d.t`Meet ${a!} and ${b!}.`;
+    expect(d.measureSent("test", [said]).charged["chat-1"]).toBe(8);
+  });
+});

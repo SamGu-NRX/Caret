@@ -55,8 +55,17 @@ const control = (id: string, name: string, kind: PageControl["kind"] = "text"): 
 const keyOf = (c: PageControl): string => `f0/${c.key}`;
 
 /** page-loop-eval.ts's mailWindow: the header lines, then the body as one static text. */
+/**
+ * A mail is a conversation, so a request may carry under half of it; the footer, which no request here needs, keeps the
+ * header and body lines the owner questions describe under that half, as in a real mail.
+ */
 function mailWindow(m: Mail, extra: string[] = []): Snapshot {
-  const lines = [`From: ${m.from}`, `To: ${m.to}`, ...extra, `Subject: ${m.subject}`, m.body];
+  const footer = [
+    "You are receiving this message because you volunteered with the Riverside Food Bank this season.",
+    "To change how often we write to you, reply with the word settings and a coordinator will help.",
+    "Riverside Food Bank, 214 Mill Street, open Tuesday to Saturday from nine in the morning until four.",
+  ];
+  const lines = [`From: ${m.from}`, `To: ${m.to}`, ...extra, `Subject: ${m.subject}`, m.body, ...footer];
   return {
     type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7002, bundleId: "com.apple.mail", name: "Mail" },
     window: { windowId: "task-mail", kind: "standard", title: m.subject, frame: [0, 520, 900, 640] }, focused: false, root: null,

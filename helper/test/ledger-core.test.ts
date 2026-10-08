@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { LEDGER_NORMALIZATION, LedgerEncodingError, ledgerNormalizeV1 } from "../src/privacy/ledger/normalize.ts";
 import { decodeUnits } from "../src/privacy/ledger/units.ts";
-import { inventoryOf, limitOf, reveal, UnitIndex, UnitProbe, type LineInventory } from "../src/privacy/ledger/measure.ts";
+import { inventoryOf, limitOf, reveal, spanPositions, UnitIndex, UnitProbe, withPositions, type DeclaredSpan, type LineInventory } from "../src/privacy/ledger/measure.ts";
 import { refReveal, refUnits } from "./ledger-reference.ts";
 import { rng } from "./large-scene.ts";
 
@@ -133,20 +133,24 @@ function positionsOf(inv: LineInventory, bits: Uint8Array): string[] {
 }
 
 /** Production's charge of one window, by the full scan and by the indexed scan, which must agree position by position. */
-function production(units: readonly string[], lines: readonly string[]): { positions: string[]; charged: number } {
+type Span = string | DeclaredSpan;
+
+function production(units: readonly string[], lines: readonly string[], spans: readonly Span[] = []): { positions: string[]; charged: number } {
   const inv = inventoryOf(lines);
   const normalized = units.map((u) => ledgerNormalizeV1(u));
-  const r = reveal(new UnitIndex(normalized), inv);
+  const declared = new Uint8Array(inv.total);
+  for (const t of spans) spanPositions(inv, typeof t === "string" ? { text: t } : t).forEach((b, p) => (declared[p] = declared[p]! | b));
+  const r = withPositions(reveal(new UnitIndex(normalized), inv), declared);
   const out = { positions: positionsOf(inv, r.positions), charged: r.charged };
-  const probed = new UnitProbe(normalized).reveal(inv);
+  const probed = withPositions(new UnitProbe(normalized).reveal(inv), declared);
   expect({ positions: positionsOf(inv, probed.positions), charged: probed.charged }).toEqual(out);
   return out;
 }
 
 /** The charge of one window, both ways; the test fails when they differ in any position. */
-function charge(units: readonly string[], lines: readonly string[]): number {
-  const ref = refReveal(units, lines);
-  const prod = production(units, lines);
+function charge(units: readonly string[], lines: readonly string[], spans: readonly Span[] = []): number {
+  const ref = refReveal(units, lines, spans);
+  const prod = production(units, lines, spans);
   expect(prod).toEqual(ref);
   return prod.charged;
 }
@@ -198,6 +202,40 @@ describe("the fixed desks (OUTPUT-LEDGER-SPEC section 11), as units against a wi
   });
 });
 
+// The Astra second opinion's counterexamples to 9d110306 (run-level dedupe), each charged as the measure now charges it.
+describe("the Astra counterexamples", () => {
+  it("six short values minted from a chat are charged their declared spans: 25 of 35 characters, over its limit of 17", () => {
+    const lines = ["Kofi", "Alice, Bob", "Cedar, Elm", "Paris, Rome"];
+    const values = ["Alice", "Bob", "Cedar", "Elm", "Paris", "Rome"];
+    // Lexically nothing: each value is under 12 scalars and no whole line.
+    expect(charge(values, lines)).toBe(0);
+    // Declared, each is charged where it was read from.
+    expect(charge(values, lines, values)).toBe(25);
+    expect(limitOf(inventoryOf(lines), true)).toBe(17);
+  });
+
+  it("a 22-character run that a later copy of the alphabet holds is charged 22", () => {
+    const L = "mnopqrstuvwxabcdefghijklabcdefghijklmnopqrstuvwx";
+    expect(charge(["bcdefghijklmnopqrstuvw"], [L])).toBe(22);
+  });
+
+  it("a short line that another line holds is charged whole when it is sent", () => {
+    const L = "mnopqrstuvwxabcdefghijklabcdefghijklmnopqrstuvwx";
+    expect(charge(["klmn"], [L, "klmn"])).toBe(4);
+  });
+
+  it("a line of a folding character repeated is charged whole", () => {
+    expect(charge(["ßßßßßßß"], ["ßßßßßßß"])).toBe(7);
+  });
+
+  it("line order cannot change a charge or a refusal: 'ss' takes 3 of a 6-character chat's limit of 2 either way", () => {
+    for (const lines of [["ß", "ss", "xy", "z"], ["ss", "ß", "xy", "z"]]) {
+      expect(charge(["ss"], lines), lines.join(",")).toBe(3);
+      expect(limitOf(inventoryOf(lines), true), lines.join(",")).toBe(2);
+    }
+  });
+});
+
 describe("section 5's limits", () => {
   const lines = (n: number): string[] => Array.from({ length: Math.ceil(n / 10) }, (_, i) => `${String(i).padStart(4, "0")}${"x".repeat(6)}`.slice(0, 10)).map((l, i, a) => (i === a.length - 1 ? l.slice(0, n - 10 * (a.length - 1)) : l));
   it("a conversation gives under half its text: 632 gives 315, 993 gives 496, never more than 600", () => {
@@ -215,7 +253,7 @@ describe("section 5's limits", () => {
 describe("production equals the brute-force reference (section 9)", () => {
   const ALPHA = ["a", "b", "A", " ", "ß", "s", "ﬁ", "f", "i", "…", ".", " ", "é", "é", "𝐀", "\n", ","];
   const gen = (r: () => number, max: number): string => Array.from({ length: Math.floor(r() * (max + 1)) }, () => ALPHA[Math.floor(r() * ALPHA.length)]).join("");
-  const caseOf = (seed: number): { units: string[]; lines: string[] } => {
+  const caseOf = (seed: number): { units: string[]; lines: string[]; spans: Span[] } => {
     const r = rng(seed);
     const lines = linesOf(Array.from({ length: 1 + Math.floor(r() * 3) }, () => gen(r, 30)));
     const units = Array.from({ length: Math.floor(r() * 4) }, () => gen(r, 24));
@@ -226,17 +264,26 @@ describe("production equals the brute-force reference (section 9)", () => {
       const a = Math.floor(r() * l.length);
       units.push(`${gen(r, 2)}${l.slice(a, a + 1 + Math.floor(r() * l.length)).join("")}${gen(r, 2)}`);
     }
-    return { units, lines };
+    // Declared spans: short cuts of a line (what a builder minted), and now and then text no line shows.
+    // A derivation's span is its words within its basis: here a cut of a line, said with some of its letters.
+    const spans = Array.from({ length: Math.floor(r() * 3) }, (): Span => {
+      if (lines.length === 0 || r() < 0.2) return gen(r, 6);
+      const l = [...lines[Math.floor(r() * lines.length)]!];
+      const a = Math.floor(r() * l.length);
+      const cut = l.slice(a, a + 1 + Math.floor(r() * 6)).join("");
+      return r() < 0.3 ? { text: [...cut].filter(() => r() < 0.7).join(""), within: cut } : cut;
+    });
+    return { units, lines, spans };
   };
 
   it("in every position over 10,000 reproducible tiny cases", () => {
     let partial = 0;
     for (let seed = 1; seed <= 10_000; seed++) {
-      const { units, lines } = caseOf(seed);
+      const { units, lines, spans } = caseOf(seed);
       if (lines.length === 0) continue;
-      const ref = refReveal(units, lines);
-      const prod = production(units, lines);
-      if (JSON.stringify(prod) !== JSON.stringify(ref)) expect({ seed, units, lines, prod }).toEqual({ seed, units, lines, prod: ref });
+      const ref = refReveal(units, lines, spans);
+      const prod = production(units, lines, spans);
+      if (JSON.stringify(prod) !== JSON.stringify(ref)) expect({ seed, units, lines, spans, prod }).toEqual({ seed, units, lines, spans, prod: ref });
       if (ref.charged > 0 && ref.charged < lines.reduce((n, l) => n + l.length, 0)) partial++;
     }
     // Not vacuous: many cases charge part of a window.
@@ -245,10 +292,10 @@ describe("production equals the brute-force reference (section 9)", () => {
 
   it("superstring monotonicity: prefix + O + suffix, concatenations, repetition and added units never charge less", () => {
     for (let seed = 1; seed <= 2_000; seed++) {
-      const { units, lines } = caseOf(seed);
+      const { units, lines, spans } = caseOf(seed);
       if (lines.length === 0 || units.length === 0) continue;
       const r = rng(seed + 99_999);
-      const base = refReveal(units, lines);
+      const base = refReveal(units, lines, spans);
       const k = Math.floor(r() * units.length);
       const o = units[k]!;
       const grown: string[][] = [
@@ -258,20 +305,24 @@ describe("production equals the brute-force reference (section 9)", () => {
         [...units, gen(r, 24)],
       ];
       for (const g of grown) {
-        const ref = refReveal(g, lines);
+        const ref = refReveal(g, lines, spans);
         for (const p of base.positions) expect(ref.positions).toContain(p);
-        expect(production(g, lines)).toEqual(ref);
+        expect(production(g, lines, spans)).toEqual(ref);
       }
+      // A unit added with its declared span never charges less either.
+      const more = refReveal([...units, gen(r, 6)], lines, [...spans, gen(r, 4)]);
+      expect(production([...units, gen(rng(seed), 6)], lines, spans).charged).toBeGreaterThanOrEqual(production(units, lines, spans).charged);
+      for (const p of base.positions) expect(more.positions).toContain(p);
     }
   });
 
   it("unit order and line order change nothing", () => {
     for (let seed = 1; seed <= 1_000; seed++) {
-      const { units, lines } = caseOf(seed);
+      const { units, lines, spans } = caseOf(seed);
       if (lines.length === 0) continue;
       const byText = (ls: readonly string[], ps: readonly string[]): string[] => ps.map((p) => `${ls[Number(p.split(":")[0])]}@${p.split(":")[1]}`).sort();
-      const a = production(units, lines);
-      const b = production([...units].reverse(), [...lines].reverse());
+      const a = production(units, lines, spans);
+      const b = production([...units].reverse(), [...lines].reverse(), [...spans].reverse());
       expect(byText([...lines].reverse(), b.positions)).toEqual(byText(lines, a.positions));
     }
   });

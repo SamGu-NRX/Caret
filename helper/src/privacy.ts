@@ -7,8 +7,8 @@ import type { WindowState } from "./model.ts";
 import type { Node } from "./protocol.ts";
 import { excludedValue } from "./privacy/exclude.ts";
 import { isRedacted, redactWindow } from "./fill/redact.ts";
-import { heldAsConversation, measuredWindows, MintAccount, sectionTexts, viewInventory, type MeasuredWindow, type ScreenRegistry } from "./privacy/ledger/account.ts";
-import { CONVERSATION_CHARS, limitOf, WINDOW_CHARS } from "./privacy/ledger/measure.ts";
+import { heldAsConversation, measuredWindows, MintAccount, sectionTexts, viewInventory, type DeclaredSpans, type MeasuredWindow, type ScreenRegistry } from "./privacy/ledger/account.ts";
+import { CONVERSATION_CHARS, limitOf, WINDOW_CHARS, type DeclaredSpan } from "./privacy/ledger/measure.ts";
 
 export { CONVERSATION_CHARS, WINDOW_CHARS };
 /** The longest screen line the pending and first-look questions quote, cut with an ellipsis past it. */
@@ -344,6 +344,22 @@ export function windowBudget(w: WindowState): number {
 
 const EMPTY_REGISTRY: ScreenRegistry = { windows: new Map() };
 
+/** Declared spans grouped by the view they were read from (privacy/ledger/account.ts DeclaredSpans). */
+export function spansOf(spans: Iterable<ViewSpan>): DeclaredSpans {
+  const out = new Map<WindowState, DeclaredSpan[]>();
+  for (const { view, ...span } of spans) {
+    const l = out.get(view);
+    if (l === undefined) out.set(view, [span]);
+    else if (!l.some((x) => x.text === span.text && x.within === span.within)) l.push(span);
+  }
+  return out;
+}
+
+const spanKey = (sp: DeclaredSpan): string => `${sp.within ?? ""}\u0000${sp.text}`;
+
+/** A declared span with the redacted view it was read from. */
+export type ViewSpan = DeclaredSpan & { readonly view: WindowState };
+
 /**
  * The screen text one request takes, window by window, and what taking it would charge (OUTPUT-LEDGER-SPEC, the output
  * ledger). Two jobs, kept apart:
@@ -370,6 +386,8 @@ export class SnippetLedger {
   /** Texts each window already took, so a take declares a text once. */
   private readonly taken = new Map<string, Set<string>>();
   private readonly account: MintAccount;
+  /** Declared spans the early check has charged, by view: charging one again adds nothing. */
+  private readonly spanned = new WeakMap<WindowState, Set<string>>();
   readonly snippets: Snippet[] = [];
 
   /**
@@ -476,14 +494,21 @@ export class SnippetLedger {
    * null), and with `as.lines` each window line they newly show under its own window (text no window gave: a plan's, an
    * app's name, the user's, which names every window whose line it carries).
    */
-  protected admitTexts(texts: readonly string[], as: { under: string | null; kind: Snippet["kind"]; lines?: boolean; noteOf?: WindowState }): boolean {
+  protected admitTexts(texts: readonly string[], as: { under: string | null; kind: Snippet["kind"]; lines?: boolean; noteOf?: WindowState; spans?: readonly ViewSpan[] }): boolean {
     const set = as.under === null ? undefined : this.taken.get(as.under);
     const fresh = [...new Set(texts.filter((t) => t !== "" && set?.has(t) !== true))];
     if (fresh.some((t) => excludedValue(t) !== null)) return false;
-    if (fresh.length === 0) return true;
+    // A text taken before (by take, with no span) may be minted now with its span: the span is charged all the same.
+    const spans = (as.spans ?? []).filter((sp) => !this.spanned.get(sp.view)?.has(spanKey(sp)));
+    if (fresh.length === 0 && spans.length === 0) return true;
     const noteOf = as.noteOf;
-    const adds = this.account.admit(fresh, true, noteOf === undefined ? undefined : new Map(fresh.map((t) => [t, noteOf])));
+    const adds = this.account.admit(fresh, true, noteOf === undefined ? undefined : new Map(fresh.map((t) => [t, noteOf])), spansOf(spans));
     if (adds === null) return false;
+    for (const sp of spans) {
+      let set = this.spanned.get(sp.view);
+      if (set === undefined) this.spanned.set(sp.view, (set = new Set()));
+      set.add(spanKey(sp));
+    }
     if (as.under !== null) {
       let s = this.taken.get(as.under);
       if (s === undefined) this.taken.set(as.under, (s = new Set()));

@@ -102,6 +102,13 @@ describe("invariant: what a request's final bytes reveal of a window is exactly 
     const d = new Disclosure(m);
     const views = new Map([...m.windows.values()].map((w) => [w.window.windowId, redactWindow(w)]));
     const said: ModelText[] = [];
+    /** Each minted text's declared spans, as the test reads them: the window and the text it was read from (section 4). */
+    const declared = new Map<string, { id: string; text: string; within?: string }[]>();
+    const declare = (t: string, spans: readonly { id: string; text: string; within?: string }[]): void => {
+      const l = declared.get(t) ?? [];
+      for (const sp of spans) if (!l.some((x) => x.id === sp.id && x.text === sp.text && x.within === sp.within)) l.push(sp);
+      declared.set(t, l);
+    };
     for (let step = 0; step < 12; step++) {
       const id = pick(r, [...lines.keys()]);
       const view = views.get(id) as WindowState;
@@ -110,21 +117,34 @@ describe("invariant: what a request's final bytes reveal of a window is exactly 
       const run = ws.slice(a, Math.min(ws.length, a + 1 + Math.floor(r() * 8)));
       const path = pick(r, ["candidate", "held", "derived", "joined"] as const);
       let got: ModelText | null = null;
-      if (path === "candidate") got = d.candidate(view, run.join(" "));
-      else if (path === "held") got = d.held(view, run.join(" "));
-      else if (path === "derived") {
-        const b = d.basis(view, run.join(" "));
+      const text = run.join(" ");
+      if (path === "candidate" || path === "held") {
+        got = path === "candidate" ? d.candidate(view, text) : d.held(view, text);
+        if (got !== null) declare(got, [{ id, text }]);
+      } else if (path === "derived") {
+        // A derivation's span is its words within its basis.
+        const b = d.basis(view, text);
         if (b !== null) got = d.derived(b, run.map((w) => (r() < 0.3 ? w.toUpperCase() : w)).join(r() < 0.3 ? "  " : " "));
+        if (got !== null) declare(got, [{ id, text: got, within: text }]);
       } else {
-        // Each word minted on its own, then joined in order: the join is measured only at seal.
+        // Each word minted on its own, then joined in order: the join carries the words' spans, and its lexical runs are
+        // measured only at seal.
         const parts = run.map((w) => d.candidate(view, w));
-        if (parts.every((x): x is ModelText => x !== null)) got = parts.slice(1).reduce((acc, x) => d.t`${acc} ${x}`, parts[0] as ModelText);
+        parts.forEach((x, i) => x !== null && declare(x, [{ id, text: run[i]! }]));
+        if (parts.every((x): x is ModelText => x !== null)) {
+          got = parts.slice(1).reduce((acc, x) => {
+            const joined = d.t`${acc} ${x}`;
+            declare(joined, [...(declared.get(acc) ?? []), ...(declared.get(x) ?? [])]);
+            return joined;
+          }, parts[0] as ModelText);
+        }
       }
       if (got !== null) said.push(got);
     }
     const bytes = JSON.stringify({ state: { said } });
     const units = refUnits(bytes);
-    const want = [...m.windows.values()].map((w) => ({ id: w.window.windowId, charged: refReveal(units, linesOfWindow(redactWindow(w))).charged, limit: windowBudget(w) }));
+    const spansIn = (id: string): { text: string; within?: string }[] => units.flatMap((u) => (declared.get(u) ?? []).filter((x) => x.id === id).map(({ text, within }) => (within === undefined ? { text } : { text, within })));
+    const want = [...m.windows.values()].map((w) => ({ id: w.window.windowId, charged: refReveal(units, linesOfWindow(redactWindow(w)), spansIn(w.window.windowId)).charged, limit: windowBudget(w) }));
     let got: Record<string, number> | null = null;
     try {
       got = { ...d.measureSent("test", decodeUnits(bytes).units.map((u) => u.text)).charged };
@@ -140,10 +160,11 @@ describe("invariant: what a request's final bytes reveal of a window is exactly 
     if (got !== null) for (const w of want) expect(got[w.id] ?? 0, `seed ${seed}: ${w.id}`).toBe(w.charged);
   });
 
-  // 34 of the 80 refuse, every one for a chat, mostly where joined words rebuild a run their pieces were too short to count.
+  // 10 of the 80 refuse. Declared spans are charged at mint as well, so most text over a limit is refused there; the seal
+  // refuses where joined words reveal more than their parts (the spaces of a whole line, a run across two of them).
   it("refuses a fair share of those seeds, so both sides of the invariant are exercised", () => {
     const refused = Array.from({ length: 80 }, (_, i) => runSeed(i + 1)).filter((x) => !x.fits).length;
-    expect(refused).toBeGreaterThanOrEqual(20);
+    expect(refused).toBeGreaterThanOrEqual(5);
     expect(refused).toBeLessThanOrEqual(60);
   });
 

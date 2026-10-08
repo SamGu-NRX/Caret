@@ -4,7 +4,7 @@
 // disappears at runtime, so the check that holds is `verify`, run on the body where each request is sent (the Jev
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
-import { assertNoExcludedValue, cut, flat, fold, OWNER_NOTE_CHARS, sectionTexts, SnippetLedger, type Snippet } from "../privacy.ts";
+import { assertNoExcludedValue, cut, flat, fold, OWNER_NOTE_CHARS, sectionTexts, SnippetLedger, spansOf, type Snippet, type ViewSpan } from "../privacy.ts";
 import { breachWithNotes, measure, normalizedUnits, OperationLedger, splitNotes, type Breach, type Measurement, type OwnerNotes } from "./ledger/account.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits, type DecodedUnit } from "./ledger/units.ts";
@@ -159,7 +159,6 @@ export class LedgerRefused extends UnmintedText {
   }
 }
 
-/** A request a shape refused for its length: what a live run needs to measure the limits by, and no text. */
 /** A request a shape's chosen limit refused: a text over its slot's length, or a list over its item count. */
 export type ShapeLengthRefusal = { purpose: string; slot: string; max: number } & ({ length: number } | { items: number });
 
@@ -271,6 +270,26 @@ export class Disclosure extends SnippetLedger {
   private readonly ways = new Map<string, MintReason[][]>();
   /** Texts jsonText wrote: verify parses each and checks the strings it holds against the shape. */
   private readonly asJson = new Set<string>();
+  /**
+   * Section 4: each minted text's declared spans, the source texts it was read from with the redacted view each is in.
+   * A composition carries its parts' spans. The seal charges every occurrence of them, at any length.
+   */
+  private readonly spans = new Map<string, ViewSpan[]>();
+
+  /** Adds declared spans to a minted text. */
+  private declareSpans(text: string, spans: Iterable<ViewSpan>): void {
+    let l = this.spans.get(text);
+    for (const sp of spans) {
+      if (l === undefined) this.spans.set(text, (l = []));
+      if (!l.some((x) => x.view === sp.view && x.text === sp.text && x.within === sp.within)) l.push(sp);
+    }
+  }
+
+  /** A composed text, recorded with its ways, carrying the declared spans of `parts`. */
+  private composed(text: string, ways: readonly (readonly MintReason[])[], parts: readonly string[]): ModelText {
+    this.declareSpans(text, parts.flatMap((p) => this.spans.get(p) ?? []));
+    return this.recordWays(text, ways);
+  }
 
   /** Records `text` as minted under `reasons`, as one way of minting it, and brands it. */
   private record(text: string, reasons: Iterable<MintReason>): ModelText {
@@ -333,7 +352,9 @@ export class Disclosure extends SnippetLedger {
     if (!isRedacted(view)) throw new UnmintedText(`a ${reason} was read from a window that is not a redacted view`);
     if (text === "" || !viewHolds(view, text)) return null;
     this.know(view);
-    if (!this.admitTexts([text], { under: view.window.windowId, kind: reason === "descriptor" ? "descriptor" : "candidate" })) return null;
+    const spans = [{ view, text }];
+    if (!this.admitTexts([text], { under: view.window.windowId, kind: reason === "descriptor" ? "descriptor" : "candidate", spans })) return null;
+    this.declareSpans(text, spans);
     return this.record(text, [reason]);
   }
 
@@ -352,7 +373,9 @@ export class Disclosure extends SnippetLedger {
     // Its window texts are declared one by one; the whole descriptor, Caret's words included, is what the early check
     // measures, as the seal will.
     this.know(view);
-    if (!this.admitTexts(parts, { under: view.window.windowId, kind: "descriptor" }) || !this.admitTexts([fd.text], { under: null, kind: "descriptor" })) return null;
+    const spans = parts.map((t) => ({ view, text: t }));
+    if (!this.admitTexts(parts, { under: view.window.windowId, kind: "descriptor", spans }) || !this.admitTexts([fd.text], { under: null, kind: "descriptor", spans })) return null;
+    this.declareSpans(fd.text, spans);
     return this.record(fd.text, ["descriptor"]);
   }
 
@@ -582,7 +605,10 @@ export class Disclosure extends SnippetLedger {
     // measure it, and declared under the first basis's window (OUTPUT-LEDGER-SPEC: charge the final text, not its bases).
     const view = bases.find((b): b is Basis => b instanceof Basis && b.view !== null)?.view ?? null;
     if (view !== null) this.know(view);
-    if (!this.admitTexts([text], { under: view === null ? null : view.window.windowId, kind: "candidate" })) return null;
+    // Its declared spans: its words where they stand in a basis read from a view, and a minted base's own spans.
+    const spans: ViewSpan[] = bases.flatMap((b) => (b instanceof Basis ? (b.view === null ? [] : [{ view: b.view, text, within: b.text }]) : (this.spans.get(b) ?? [])));
+    if (!this.admitTexts([text], { under: view === null ? null : view.window.windowId, kind: "candidate", spans })) return null;
+    this.declareSpans(text, spans);
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }
 
@@ -629,23 +655,23 @@ export class Disclosure extends SnippetLedger {
       if (typeof h !== "string") throw new UnmintedText("t: a hole is not text");
       out += h + (strings[i + 1] ?? "");
     });
-    return this.recordWays(out, this.composedWays(holes, "t", strings.some((s) => s !== "")));
+    return this.composed(out, this.composedWays(holes, "t", strings.some((s) => s !== "")), holes);
   }
 
 
   /** A minted text cut to `max` characters with an ellipsis (privacy.ts cut); it keeps its reasons. */
   cut(s: ModelText, max?: number): ModelText {
-    return this.recordWays(cut(s, max), this.composedWays([s], "cut", false));
+    return this.composed(cut(s, max), this.composedWays([s], "cut", false), [s]);
   }
 
   /** A minted text's first `max` characters, with no ellipsis (String.slice); it keeps its reasons. */
   slice(s: ModelText, max: number): ModelText {
-    return this.recordWays(s.slice(0, max), this.composedWays([s], "slice", false));
+    return this.composed(s.slice(0, max), this.composedWays([s], "slice", false), [s]);
   }
 
   /** A minted text with its whitespace collapsed (privacy.ts flat); it keeps its reasons. */
   flat(s: ModelText): ModelText {
-    return this.recordWays(flat(s), this.composedWays([s], "flat", false));
+    return this.composed(flat(s), this.composedWays([s], "flat", false), [s]);
   }
 
   /**
@@ -657,9 +683,9 @@ export class Disclosure extends SnippetLedger {
   join(parts: readonly ModelText[], sep: ModelText): ModelText;
   join(parts: readonly ModelText[], sep: string): ModelText {
     const text = parts.join(sep);
-    if (parts.length < 2 || sep === "") return this.recordWays(text, this.composedWays(parts, "join", false));
-    if (SEPARATORS.has(sep)) return this.recordWays(text, this.composedWays(parts, "join", true));
-    if (this.mints.has(sep)) return this.recordWays(text, this.composedWays([...parts, sep], "join", false));
+    if (parts.length < 2 || sep === "") return this.composed(text, this.composedWays(parts, "join", false), parts);
+    if (SEPARATORS.has(sep)) return this.composed(text, this.composedWays(parts, "join", true), parts);
+    if (this.mints.has(sep)) return this.composed(text, this.composedWays([...parts, sep], "join", false), [...parts, sep]);
     throw new UnmintedText("join: the separator is neither Caret's own nor minted for this request");
   }
 
@@ -763,13 +789,18 @@ export class Disclosure extends SnippetLedger {
     const written = JSON.parse(text) as unknown;
     this.walk("jsonText", written, "", null);
     const reasons = new Set<MintReason>(["ownWording"]);
+    const parts: string[] = [];
     const walk = (x: unknown): void => {
-      if (typeof x === "string") for (const r of this.reasons(x, "jsonText")) reasons.add(r);
+      if (typeof x === "string") {
+        parts.push(x);
+        for (const r of this.reasons(x, "jsonText")) reasons.add(r);
+      }
       else if (Array.isArray(x)) x.forEach(walk);
       else if (typeof x === "object" && x !== null) Object.values(x).forEach(walk);
     };
     walk(written);
     this.asJson.add(text);
+    this.declareSpans(text, parts.flatMap((p) => this.spans.get(p) ?? []));
     return this.record(text, reasons);
   }
 
@@ -784,8 +815,10 @@ export class Disclosure extends SnippetLedger {
     const norm = normalizedUnits(units);
     if (norm === null) throw new LedgerRefused(`${purpose}: a text in it holds an unpaired surrogate and cannot be measured; it was not sent`);
     const ws = this.measuredWindows();
-    const m = measure(norm, ws);
-    const split = splitNotes(norm, ws, notes);
+    // Every declared span of every minted unit the bytes hold (section 4): a unit is a minted text, so its spans are known.
+    const spans = spansOf(units.flatMap((u) => this.spans.get(u) ?? []));
+    const m = measure(norm, ws, spans);
+    const split = splitNotes(norm, ws, notes, spans);
     const refuse = (b: Breach & { notes: boolean }, before: boolean): LedgerRefused =>
       new LedgerRefused(`${purpose}: ${before ? "with the requests sent before it, " : ""}it reveals ${b.charged} characters of ${b.notes ? `window ${b.key}'s owner notes, over the owner-note allotment` : `window ${b.key}, over its limit`} of ${b.limit}; it was not sent`);
     const b = breachWithNotes(m, ws, split, OWNER_NOTE_CHARS);

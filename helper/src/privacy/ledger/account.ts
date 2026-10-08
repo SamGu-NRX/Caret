@@ -12,7 +12,7 @@ import type { Node } from "../../protocol.ts";
 import { isConversation } from "../../conversation.ts";
 import { isRedacted, redactWindow } from "../../fill/redact.ts";
 import { LedgerEncodingError, ledgerNormalizeV1, type Normalized } from "./normalize.ts";
-import { inventoryOf, limitOf, UnitProbe, type LineInventory } from "./measure.ts";
+import { inventoryOf, limitOf, spanPositions, UnitProbe, withPositions, type DeclaredSpan, type LineInventory, type Revealed } from "./measure.ts";
 
 /**
  * SCP1: a page web area's heading list and section texts (Node.headings, Node.outline), which a section question sends:
@@ -150,13 +150,29 @@ export function normalizedUnits(texts: readonly string[]): Normalized[] | null {
   }
 }
 
-/** Measures normalized units against every window. */
-export function measure(units: readonly Normalized[], windows: readonly MeasuredWindow[]): Measurement {
+/**
+ * Section 4's declared spans: by the redacted view a minted unit was read from, the source texts it was minted from.
+ * Only units present in the request's final bytes contribute.
+ */
+export type DeclaredSpans = ReadonlyMap<WindowState, readonly DeclaredSpan[]>;
+
+/** What `units` reveal of `m` lexically, with the declared spans of `spans` read from `m`'s view added. */
+function revealIn(probe: UnitProbe, m: MeasuredWindow, spans: DeclaredSpans): Revealed {
+  const r = probe.reveal(m.inv);
+  const mine = spans.get(m.view);
+  if (mine === undefined || mine.length === 0) return r;
+  const extra = new Uint8Array(m.inv.total);
+  for (const sp of mine) spanPositions(m.inv, sp).forEach((b, p) => (extra[p] = extra[p]! | b));
+  return withPositions(r, extra);
+}
+
+/** Measures normalized units, and the declared spans of the minted units among them, against every window. */
+export function measure(units: readonly Normalized[], windows: readonly MeasuredWindow[], spans: DeclaredSpans = new Map()): Measurement {
   const probe = new UnitProbe(units);
   const charged: Record<string, number> = {};
   const positions = new Map<string, { view: WindowState; bits: Uint8Array }>();
   for (const m of windows) {
-    const r = probe.reveal(m.inv);
+    const r = revealIn(probe, m, spans);
     if (r.charged === 0) continue;
     charged[m.key] = r.charged;
     positions.set(m.key, { view: m.view, bits: r.positions });
@@ -188,12 +204,13 @@ export interface NoteSplit {
 }
 
 /** For every window with owner notes among `units`, what the rest and the notes each reveal of it. */
-export function splitNotes(units: readonly Normalized[], windows: readonly MeasuredWindow[], notes: OwnerNotes): NoteSplit[] {
+export function splitNotes(units: readonly Normalized[], windows: readonly MeasuredWindow[], notes: OwnerNotes, spans: DeclaredSpans = new Map()): NoteSplit[] {
   const out: NoteSplit[] = [];
   for (const w of windows) {
     const mine = notes.get(w.view);
     if (mine === undefined || mine.size === 0) continue;
-    const ordinary = new UnitProbe(units.filter((_, i) => !mine.has(i))).reveal(w.inv);
+    // Owner notes declare no span (a note is whole lines, which the lexical measure charges whole): spans are ordinary.
+    const ordinary = revealIn(new UnitProbe(units.filter((_, i) => !mine.has(i))), w, spans);
     const noted = new UnitProbe(units.filter((_, i) => mine.has(i))).reveal(w.inv);
     out.push({ key: w.key, ordinary: ordinary.charged, notes: noted.positions, noted: noted.charged });
   }
@@ -287,16 +304,16 @@ export class MintAccount {
    * state each was read from. `commit` keeps the positions. Each window's newly shown stretches, as its lines spell them,
    * are returned for declarations.
    */
-  admit(texts: readonly string[], commit: boolean, notes: ReadonlyMap<string, WindowState> = new Map()): Map<string, { added: number; lines: string[] }> | null {
+  admit(texts: readonly string[], commit: boolean, notes: ReadonlyMap<string, WindowState> = new Map(), spans: DeclaredSpans = new Map()): Map<string, { added: number; lines: string[] }> | null {
     const kept = texts.filter((t) => t !== "");
     const units = normalizedUnits(kept);
     if (units === null) return null;
-    if (units.length === 0) return new Map();
+    if (units.length === 0 && spans.size === 0) return new Map();
     const probe = new UnitProbe(units);
     const adds: { m: MeasuredWindow; r: { bits: Uint8Array; charged: number; notes: Uint8Array; noted: number }; bits: Uint8Array; notes: Uint8Array | null; added: number; addedNotes: number }[] = [];
     for (const m of this.windows()) {
       const mine = new Set(kept.flatMap((t, i) => (notes.get(t) === m.view ? [i] : [])));
-      const got = mine.size === 0 ? probe.reveal(m.inv) : new UnitProbe(units.filter((_, i) => !mine.has(i))).reveal(m.inv);
+      const got = revealIn(mine.size === 0 ? probe : new UnitProbe(units.filter((_, i) => !mine.has(i))), m, spans);
       const noted = mine.size === 0 ? null : new UnitProbe(units.filter((_, i) => mine.has(i))).reveal(m.inv);
       if (got.charged === 0 && (noted === null || noted.charged === 0)) continue;
       let r = this.running.get(m.view);
