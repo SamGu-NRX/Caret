@@ -1,0 +1,23 @@
+{
+  "type": "pageCommand",
+  "v": 1,
+  "id": "fixture-pageAttachFile",
+  "expires": 1000,
+  "verb": {
+    "kind": "pageAttachFile",
+    "tabId": 3,
+    "frameId": 0,
+    "documentId": "fixture-document",
+    "id": "field-1",
+    "control": "text",
+    "name": "First name",
+    "taskId": "fixture-task",
+    "file": {
+      "name": "fixture.txt",
+      "type": "text/plain",
+      "size": 1,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "data": "QQ=="
+    }
+  }
+}

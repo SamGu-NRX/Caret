@@ -1,0 +1,12 @@
+{
+  "type": "pageHello",
+  "v": 1,
+  "extensionId": "fixture-extension",
+  "version": "0.1.0",
+  "profile": "fixture-profile",
+  "instance": "fixture-instance",
+  "startedAt": 10,
+  "capabilities": [
+    "pageWalk"
+  ]
+}

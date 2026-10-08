@@ -1,0 +1,89 @@
+{
+  "type": "pageSnapshot",
+  "v": 1,
+  "id": "fixture-command",
+  "at": 20,
+  "tabId": 3,
+  "browserWindowId": 1,
+  "active": true,
+  "inFocusedWindow": true,
+  "title": "Fixture",
+  "frames": [
+    {
+      "frameId": 0,
+      "parentFrameId": -1,
+      "documentId": "fixture-document",
+      "origin": "https://fixture.invalid",
+      "path": "/",
+      "navGen": 1,
+      "title": "Fixture",
+      "headings": [
+        "Synthetic form"
+      ],
+      "controls": [
+        {
+          "id": "field-1",
+          "key": "fixture-key",
+          "strongKey": null,
+          "kind": "text",
+          "role": "textbox",
+          "name": "First name",
+          "value": "Ada",
+          "checked": false,
+          "options": [
+            {
+              "value": "Ada",
+              "label": "Ada",
+              "selected": true
+            }
+          ],
+          "form": null,
+          "rect": [
+            0,
+            0,
+            100,
+            20
+          ],
+          "required": true,
+          "disabled": true,
+          "invalid": true,
+          "shadow": "open",
+          "group": {
+            "id": "fixture-group",
+            "name": "Name"
+          },
+          "pressed": false
+        }
+      ],
+      "iframes": [
+        {
+          "src": "https://fixture.invalid/frame",
+          "rect": [
+            0,
+            20,
+            100,
+            100
+          ]
+        }
+      ],
+      "excluded": {
+        "password": 1
+      },
+      "truncated": false
+    }
+  ],
+  "missing": [
+    {
+      "frameId": 4,
+      "reason": "fixture missing frame"
+    }
+  ],
+  "focused": {
+    "frameId": 0,
+    "id": "field-1",
+    "selection": [
+      0,
+      3
+    ]
+  }
+}

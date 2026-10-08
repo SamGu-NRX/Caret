@@ -275,3 +275,15 @@ export interface UserActed {
   op: "userInput";
   kind: "key" | "mouse";
 }
+
+/** Messages the worker sends through the native bridge. Content-script messages above stay in Chrome. */
+export type ToHelper =
+  | { type: "pageHello"; v: 1; extensionId: string; version: string; profile: string; instance: string; startedAt: number; capabilities: string[] }
+  | { type: "pagePong"; v: 1; id: string; at: number; instance: string; startedAt: number }
+  | { type: "pageFocus"; v: 1; at: number; tabId: number; frameId: number }
+  | { type: "pageInput"; v: 1; at: number; tabId: number; frameId: number; kind: "key" | "mouse" }
+  | ({ type: "pageResult"; v: 1; id: string; at: number } & ActAnswer)
+  | { type: "pageSnapshot"; v: 1; id: string; at: number; tabId: number; browserWindowId: number; active: boolean; inFocusedWindow: boolean; title: string;
+      frames: { frameId: number; parentFrameId: number; documentId: string; origin: string; path: string; navGen: number; title: string; headings: string[];
+        controls: PageControl[]; iframes: { src: string; rect: Rect }[]; excluded: Partial<Record<PageExclusion, number>>; truncated: boolean }[];
+      missing: { frameId: number; reason: string }[]; focused: { frameId: number; id: string; selection: [number, number] | null } | null };
