@@ -201,6 +201,24 @@ final class AnswerSaveTests: XCTestCase {
         XCTAssertEqual(ask.phase, .failed("Caret's model account is out of credits. Add credits at console.typesafe.ai, then try again."))
     }
 
+    /// A goal's stop may run to 600 characters (protocol.ts GoalProgress): page-planner.ts joins one reason per field.
+    func testALongStopFromTheDeskIsStillTheHelpersWords() throws {
+        let ask = AskCaret(clock: ManualClock())
+        var sent: [AskCaret.Send] = []
+        ask.send = { sent.append($0); return true }
+        ask.linkChanged(true)
+        ask.edit("fill out this form from my note")
+        ask.submit()
+        guard case .plan(let request)? = sent.last else { return XCTFail("nothing sent") }
+        let says = ["Full name", "Email address", "Phone number", "Home address", "Emergency contact"]
+            .map { "'\($0)' is yours: the note is too long for Caret to show Jev whose this value is" }
+            .joined(separator: "; ")
+        XCTAssertTrue((401...GoalProgress.maxSays).contains(says.count), "\(says.count)")
+        let stop = GoalProgress.Stop(segment: nil, step: nil, reason: .refused, says: says, freshPlan: nil)
+        XCTAssertTrue(ask.receive(GoalProgress(at: 1, goalId: "goal-4-a3", requestId: request.requestId, event: .stopped(stop)), toForm: { _ in true }))
+        XCTAssertEqual(ask.phase, .failed(says))
+    }
+
     func testAGoalThatAnswersAnotherRequestIsNotTheDesks() throws {
         let ask = AskCaret(clock: ManualClock())
         ask.send = { _ in true }

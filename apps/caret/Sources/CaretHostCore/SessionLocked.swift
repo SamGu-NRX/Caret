@@ -2,7 +2,7 @@ import CaretScreenCore
 import Foundation
 
 /// Host to helper (protocol.ts SessionLocked): the user locked the screen or is signing out. The helper clears the
-/// owner verdicts it keeps for the session (fill/owner-cache.ts), which must not outlive either (HA2, Sam's rule 3 iii).
+/// owner verdicts it keeps for the session (fill/owner-cache.ts), which must not outlive either.
 public struct SessionLocked: Encodable, Equatable, Sendable {
     public enum Why: String, Encodable, Sendable { case lock, signOut }
 

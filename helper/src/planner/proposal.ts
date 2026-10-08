@@ -32,9 +32,8 @@ export function runLabel(d: PlanDraft): string {
 }
 
 /**
- * H1: the labels of the facts blocks that name fields the plan leaves to the user: those Caret never types (B25), and
- * those Jev wasn't sure the request asks for (I3). The host's Ask card lists a block whose first row carries one of
- * these as the user's steps (AskCaret.swift AskCopy.leftLabels), so they are part of the wire.
+ * The labels of the facts blocks naming fields the plan leaves to the user. The host's Ask card lists a block whose
+ * first row carries one as the user's steps (AskCaret.swift AskCopy.leftLabels), so they are part of the wire.
  */
 export const YOU_TYPE_LABEL = "You type";
 export const LEFT_TO_YOU_LABEL = "Left to you";
@@ -102,10 +101,9 @@ export function planSpec(d: PlanDraft): PopupSpecT {
 }
 
 /**
- * The facts blocks naming the fields a plan leaves to the user, as planSpec places them after the writes and controls:
- * the fields Caret never types (B25, `leftToYou` is their sentence), then the fields Jev wasn't sure the request asks for
- * (I3), each the user's with its sentence, as fill's "You set" rows are, and past MAX_FILL_ROWS one row that counts the
- * rest. H1: exported so the golden line the host's Ask card reads (fixtures/golden/ask-left.ndjson) is held to it.
+ * The facts blocks naming the fields a plan leaves to the user: the fields Caret never types, then the ones Jev wasn't
+ * sure the request asks for, past MAX_FILL_ROWS counted in one row. The host's Ask card finds these blocks by their first
+ * row's label, YOU_TYPE_LABEL or LEFT_TO_YOU_LABEL.
  */
 export function leftToYouBlocks(windowId: string, leftToYou: string | null, unsure: readonly { key: string; name: string; says?: string }[]): PopupBlock[] {
   const blocks: PopupBlock[] = [];

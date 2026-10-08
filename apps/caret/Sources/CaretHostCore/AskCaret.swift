@@ -528,7 +528,7 @@ public final class AskCaret {
                 settle(.failed(AskCopy.pageBusy))
             }
         case .stopped(let stop):
-            settle(.failed(AskCopy.showable(stop.says) ? stop.says : AskCopy.planError(nil)))
+            settle(.failed(AskCopy.showable(stop.says, limit: GoalProgress.maxSays) ? stop.says : AskCopy.planError(nil)))
         case .step, .finished:
             settle(.failed(AskCopy.planError(nil)))
         }
@@ -1046,12 +1046,13 @@ public enum AskCopy {
         }
     }
 
-    /// Whether the helper's sentence may be shown as it is: one line of at most 400 characters with
-    /// no window id ("5150-1", "page:e1:7") and no element key ("standard/textfield:email~0").
-    /// helper/src/planner/says.ts writes none; this keeps a changed helper from putting one on screen.
-    public static func showable(_ says: String) -> Bool {
+    /// Whether the helper's sentence may be shown as it is: one line within the wire's cap (400 characters for a
+    /// plan refusal, `GoalProgress.maxSays` for a goal's stop) with no window id ("5150-1", "page:e1:7") and no
+    /// element key ("standard/textfield:email~0"). helper/src/planner/says.ts writes none; this keeps a changed
+    /// helper from putting one on screen.
+    public static func showable(_ says: String, limit: Int = 400) -> Bool {
         let trimmed = says.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= 400, !trimmed.contains(where: \.isNewline) else { return false }
+        guard !trimmed.isEmpty, trimmed.count <= limit, !trimmed.contains(where: \.isNewline) else { return false }
         let ids = [#"\b\d+-\d+\b"#, #"\bpage:"#, #"~\d+\b"#, #"/standard/"#, #"\b[a-z]+:[a-z]"#]
         return !ids.contains { trimmed.range(of: $0, options: .regularExpression) != nil }
     }

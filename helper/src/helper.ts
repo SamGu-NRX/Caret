@@ -1225,7 +1225,9 @@ export class Helper {
    * already queued in the reader is refused; a run stops at its next step boundary, a paused one at once.
    */
   hostDisconnected(session: string): void {
-    this.hosts.delete(session);
+    // Rule 3 (iii): a lock or sign-out while no host is connected can't reach the helper (sessionLocked), so the owner
+    // verdicts end with the host's connection.
+    if (this.hosts.delete(session)) this.ownerVerdicts.clear();
     this.goalFileHosts.delete(session);
     if (this.routingHosts.delete(session)) {
       // What that host said about the field (selection, composing) no longer holds, and write is not legal without it.

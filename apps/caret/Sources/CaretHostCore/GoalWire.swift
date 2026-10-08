@@ -175,6 +175,8 @@ public struct GoalEdit: Codable, Equatable, Sendable {
 /// Helper to a goal-planning host: a goal's preview, each step's receipt, its stop, or its end.
 public struct GoalProgress: Codable, Equatable, Sendable {
     public static let type = "goalProgress"
+    /// protocol.ts caps a stop's and an end's sentence at 600 characters.
+    public static let maxSays = 600
 
     public var at: Int64
     public var goalId: String

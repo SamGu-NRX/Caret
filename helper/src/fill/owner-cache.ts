@@ -2,8 +2,9 @@
 // An entry is both wordings' answers to one owner question that showed its notes whole (fill.ts noteShown). Its key is
 // the question as asked, wording 0, over the candidate's description, its notes' digests (note-unit.ts, P1's digest of
 // the redacted note as disclosed), the value's span and the criteria: any change in what would be asked, a changed note
-// above all, misses. Held in memory only, never written to disk; the helper clears it when the session ends and when
-// Sites change, and drops a window's entries when Caret forgets that window's text (a tab the user left).
+// above all, misses. Held in memory only, never written to disk; the helper clears it on a lock or sign-out, when the
+// host's connection closes (a lock then can't reach it) and when Sites change, and drops a window's entries when Caret
+// forgets that window's text (a tab the user left).
 import { createHash } from "node:crypto";
 
 export interface OwnerAnswer {

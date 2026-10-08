@@ -1,5 +1,6 @@
 // HA2 lever 2, Sam's rules: the session's owner verdicts (fill/owner-cache.ts) stay in memory, and are dropped when a
-// site is switched off, before anything else reacts, and when the session locks or signs out.
+// site is switched off, before anything else reacts, when the session locks or signs out, and when the host's
+// connection closes.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConsumerMessage, PROTOCOL_VERSION, type Settings } from "../src/protocol.ts";
@@ -66,6 +67,20 @@ describe("rule 3: when it is cleared", () => {
       r.helper.handleSessionLocked(m);
       expect(cache.size, why).toBe(0);
     }
+  });
+
+  it("(iii) a lock while the host is reconnecting is never heard, so the host's closed connection clears the cache", async () => {
+    const r = await rig();
+    const cache = verdictsOf(r.helper);
+    r.helper.hostConnected("host-1");
+    r.helper.consumerConnected("eval-1");
+    seed(cache);
+    r.helper.hostDisconnected("eval-1");
+    expect(cache.size, "a consumer that is not the host leaving keeps the entries").toBe(2);
+    r.helper.hostDisconnected("host-1");
+    // The screen locks now: the host's sessionLocked has no connection to go through.
+    r.helper.hostConnected("host-2");
+    expect(cache.size).toBe(0);
   });
 
   it("(iii) the protocol refuses a sessionLocked without its reason", () => {
