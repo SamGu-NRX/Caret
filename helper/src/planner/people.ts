@@ -85,8 +85,11 @@ export function peopleOnScreen(model: ScreenModel, form: WindowState, memory: re
 function personShaped(name: string): boolean {
   const ws = name.replace(/^(?:Dr|Mr|Mrs|Ms|Mx|Prof)\.?\s+/u, "").split(/\s+/u);
   if (ws.length < 2 || ws.length > 4) return false;
-  return !ws.some((w) => /^(?:Inc|LLC|Ltd|Co|Corp|Company|Labs?|Group|Partners|Bank|Bakery|Clinic|Health|Analytics|Outdoor|Dental|Apartments?|Court|Street|St|Ave|Avenue|Rd|Road|Lane|Blvd|Drive|Way|Park|Center|Centre|School|College|University|Hospital|Studio|Design|Systems|Services|Summit|Subaru|Notes?|Application|Form|Team)\.?$/u.test(w));
+  return !ws.some((w) => COMPANY_WORD.test(w) || /^(?:Co|Bank|Apartments?|Court|Street|St|Ave|Avenue|Rd|Road|Lane|Blvd|Drive|Way|Park|Center|Centre|School|College|University|Hospital|Summit|Notes?|Application|Form|Team)\.?$/u.test(w));
 }
+
+/** A word that ends a company's name and is no common surname ("Co" and "Bank" are). Written for common names, not measured. */
+export const COMPANY_WORD = /^(?:Inc|LLC|Ltd|Corp|Company|Labs?|Group|Partners|Bakery|Clinic|Health|Analytics|Outdoor|Dental|Studio|Design|Systems|Services|Subaru)\.?$/u;
 
 /** Whose details code reads the instruction as asking for, or none when it cannot tell without the maker. */
 export type WhoseReading =

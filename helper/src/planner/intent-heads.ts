@@ -436,7 +436,9 @@ export function tieLiterals(snap: IntentSnapshot, scoped: readonly IntentField[]
     const at = words.indexOf(span);
     // A value inside a source phrase ("from Dana's note") is not a value for a field.
     if (at < 0) continue;
-    const said = `${words.slice(0, at).split(CLAUSE).at(-1) ?? ""} ${words.slice(at + span.length).split(CLAUSE)[0] ?? ""}`;
+    // A value right after ", it's" (spans.ts IT_IS) is the value of the clause before it: "company, it's Acme Corp".
+    const before = words.slice(0, at).replace(/,\s*[Ii]t['’]?s\s+["“']?$/u, " ");
+    const said = `${before.split(CLAUSE).at(-1) ?? ""} ${words.slice(at + span.length).split(CLAUSE)[0] ?? ""}`;
     const named = snap.fields.map((f) => ({ f, n: relevance(said, f.name) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n);
     let field: IntentField | undefined;
     if (named.length > 0) {

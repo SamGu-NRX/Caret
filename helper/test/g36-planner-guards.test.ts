@@ -4,7 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { PAGE_WINDOW_KIND } from "../src/fill/fill.ts";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
-import { checkIntent, intentSnapshot, type AskIntent } from "../src/planner/intent.ts";
+import { checkIntent, intentSnapshot, personSpans, type AskIntent } from "../src/planner/intent.ts";
+import { tieLiterals } from "../src/planner/intent-heads.ts";
 import { pointsAtOther, readWhose } from "../src/planner/people.ts";
 import { onlyInSources } from "../src/planner/sources.ts";
 import { field, node, snap, text } from "./builders.ts";
@@ -62,5 +63,45 @@ describe("a person named only as who sent the source is not whose details go in 
 
   it("reads no relation as a sender's name", () => {
     expect(onlyInSources("my wife sent it, put her down as the contact", "my wife")).toBe(false);
+  });
+});
+
+describe("a company the instruction gives as a value is not a person (b31-21 shape)", () => {
+  it.each([
+    ["my name + company, its Ferrant Pottery Studio", []],
+    ["my name and employer, it's Vale Copper Labs", []],
+    // People stay people: a surname that is a street word, or a company word the instruction gives as no value.
+    ["put Jimin Park down as my guest", ["Jimin Park", "my guest"]],
+    ["put Ken Co down as the contact", ["Ken Co"]],
+    ["put Ken Co in contact name and fill contact phone", ["Ken Co"]],
+    ["my name + company, its Acme LLC", []],
+    ["use Gary's info for the landlord part", ["Gary"]],
+  ])("finds the people in %s", (instruction, people) => {
+    expect(personSpans(instruction)).toEqual(people);
+  });
+
+  const snapOf = (instruction: string, labels: readonly string[]) => {
+    const m = new ScreenModel();
+    return intentSnapshot(instruction, m, pageForm(m, labels), []);
+  };
+  const refOf = (s: ReturnType<typeof snapOf>, name: string): string | undefined => s.fields.find((f) => f.name === name)?.ref;
+
+  it("ties the company the instruction spells out to the company field", () => {
+    const s = snapOf("my name + company, its Ferrant Pottery Studio", ["First Name", "Last Name", "Company name"]);
+    expect(s.literals).toEqual(["Ferrant Pottery Studio"]);
+    expect(tieLiterals(s, s.fields)).toEqual([{ field: refOf(s, "Company name"), text: "Ferrant Pottery Studio" }]);
+  });
+
+  it("ties a quoted company after \"It's\"", () => {
+    const s = snapOf('my name and company, It\'s "Acme Studio"', ["First Name", "Company name"]);
+    expect(tieLiterals(s, s.fields)).toEqual([{ field: refOf(s, "Company name"), text: "Acme Studio" }]);
+  });
+
+  it("keeps a possessive 'its' a clause of its own", () => {
+    const s = snapOf("set work email to primary@example.org, its backup email is secondary@example.org", ["Work email", "Backup email"]);
+    expect(tieLiterals(s, s.fields)).toEqual([
+      { field: refOf(s, "Work email"), text: "primary@example.org" },
+      { field: refOf(s, "Backup email"), text: "secondary@example.org" },
+    ]);
   });
 });
