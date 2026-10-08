@@ -169,7 +169,7 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
       Object.entries(req.questions).map(([id, q]) => {
         const ins = String(q.instructions);
         // I2 ruling D: Jev's per-field scope question, asked on every route: every field it is asked about.
-        if (req.purpose === "ask.scope") return [id, { choice: "asks", confidence: 0.9 }];
+        if (req.purpose === "ask.scope") return [id, { choice: id === "section" ? "fields" : "asks", confidence: 0.9 }];
         // G2 review: a field that wants the user's details takes only a value both asks call the user's; a landlord's
         // field wants someone else's.
         if (id.endsWith("_whose")) return [id, { choice: /landlord/iu.test(ins) ? "other" : "user", confidence: 0.9 }];
@@ -315,7 +315,8 @@ describe("the heads intent maker (P1, A3)", () => {
     return { model: "jev-test", answers, inputTokens: 100, latencyMs: 1, costUsd: 0 };
   };
   const scoped = (s: IntentSnapshot, asks: readonly string[]): [JevResult, JevResult] => {
-    const one: JevResult = { model: "jev-test", answers: Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), { choice: asks.includes(f.name) ? "asks" : "not", confidence: 0.99 }])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
+    // SCP1: the section question, when the form shows a section, names no one section.
+    const one: JevResult = { model: "jev-test", answers: { ...Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), { choice: asks.includes(f.name) ? "asks" : "not", confidence: 0.99 }])), section: { choice: "fields", confidence: 0.99 } }, inputTokens: 10, latencyMs: 1, costUsd: 0 };
     return [one, one];
   };
   const everyField = (s: IntentSnapshot): string[] => s.fields.map((f) => f.name);
@@ -398,7 +399,7 @@ describe("the heads intent maker (P1, A3)", () => {
     const ask: AskJev = async (req) => {
       const s = snapOf("my email please");
       if ("route" in req.questions) return (headCalls++, answer(s, { route: "fill", source: "any", whose: "user" }));
-      if (Object.keys(req.questions).every((id) => id.startsWith("s_"))) return scoped(s, ["Email"])[0];
+      if (req.purpose === "ask.scope") return scoped(s, ["Email"])[0];
       return rest.ask(req);
     };
     const d = await planAsk("my email please", desk(), memory, about, { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "h1", windowId: "form", now: 2000 });
@@ -528,7 +529,7 @@ describe("what an Ask says when it refuses or asks (B26 lead decision 3)", () =>
     const page2 = [...form.nodes.values(), node(`${P}/button:submit~0`, "AXButton", { parent: `${P}/webarea:~0`, label: "Submit application", frame: [100, 400, 100, 20] })];
     m.apply(snap(page2, { at: 1100, windowId: "form", title: "Apply", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: KEY("full name") }));
     // I2: the scope ask (every maker's plan settles its fields) chooses no field: the plan is a press alone.
-    const press: AskJev = async (req) => ({ model: "t", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: req.purpose === "ask.scope" ? "not" : Object.entries(q.criteria).find(([, d]) => d?.includes("Submit"))?.[0] ?? "none", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
+    const press: AskJev = async (req) => ({ model: "t", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: req.purpose === "ask.scope" ? (id === "section" ? "fields" : "not") : Object.entries(q.criteria).find(([, d]) => d?.includes("Submit"))?.[0] ?? "none", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
     const e = await planAsk("ok that all looks right, hit submit", m, memory, about, { askJev: press, maker: maker({ route: "plan", scope: "none" }), writer: null, offerKey: "s1", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(AskRefused);
     expect((e as AskRefused).code).toBe("unsupportedStep");

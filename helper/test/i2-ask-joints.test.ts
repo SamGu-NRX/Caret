@@ -84,7 +84,7 @@ describe("A3's scope ask under G2's disclosure rule", () => {
     expect(heads.purpose).toBe("ask.heads");
     for (const r of scopes) expect(r.purpose).toBe("ask.scope");
     expect(Object.keys(heads.questions).map((id) => questionKind(heads, id)).sort()).toEqual(["ask.heads:route", "ask.heads:source", "ask.heads:whose", "ask.heads:why"]);
-    for (const r of scopes) for (const id of Object.keys(r.questions)) expect(questionKind(r, id)).toBe("ask.scope:field");
+    for (const r of scopes) for (const id of Object.keys(r.questions)) expect(questionKind(r, id)).toBe(id === "section" ? "ask.scope:section" : "ask.scope:field");
   });
 });
 
@@ -119,6 +119,7 @@ describe("a native plan from Jev's scope ask writes only the fields Jev chose (I
         const ins = String(q.instructions);
         const pick = (choice: string) => [id, { choice, confidence: 0.95 }] as const;
         if (req.purpose === "ask.heads") return pick({ route: "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
+        if (id === "section") return pick("fields");
         if (req.purpose === "ask.scope") {
           const label = /[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "";
           return pick(unclear.includes(label) ? "unclear" : asks.includes(label) ? "asks" : "not");
@@ -194,6 +195,7 @@ describe("property: no native plan writes a field outside Jev's selection (I2)",
               const keys = Object.keys(q.criteria);
               const pick = (choice: string) => [id, { choice, confidence: 0.99 }] as const;
               if (req.purpose === "ask.heads") return pick({ route: "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
+              if (id === "section") return pick("fields");
               if (req.purpose === "ask.scope") return pick(chosen.has(id.slice(2)) ? "asks" : "not");
               if (id === "press") return pick("none" in q.criteria ? "none" : (keys.at(-1) ?? "none"));
               if ("yes" in q.criteria) return pick("yes");

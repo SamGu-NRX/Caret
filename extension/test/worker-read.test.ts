@@ -3,6 +3,7 @@
 // before asking, and that a walk on a denied site asks for no caret text. The content scripts' halves run in a real
 // browser in fixtures/web-form/tests/tab-text.test.ts and the journey (tab-source-journey.ts).
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { sha256Hex } from "../src/shared/sha256.ts";
 
 type Listener = (...a: never[]) => unknown;
 interface Frame {
@@ -192,6 +193,23 @@ describe("the worker's read of the tab the user just left", () => {
     expect(f.asked.find((a) => a.op === "walk")?.msg.caretText).toBe(false);
     const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { focused: { text: unknown } } | undefined;
     expect(snap?.focused.text).toBeNull();
+  });
+});
+
+describe("section name tokens in a walk's snapshot (SCP1)", () => {
+  it("sends a token for each section name and no digest, salt or excluded text", async () => {
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "S0", url: "https://service.example/request" }]);
+    const digest = sha256Hex("equipment details");
+    f.answers.set("1:0:walk", { origin: "https://service.example", path: "/request", title: "t", headings: ["Equipment details"], sections: [{ id: "o1", heading: true, text: "Equipment details", digest }, { id: "o2", heading: true, digest }], sectionOverflow: [digest], controls: [], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: null, hasFocus: true, walkMs: 1 });
+    await f.fire("port.message", { type: "pageCommand", v: 1, id: "w9", expires: Date.now() + 5000, verb: { kind: "pageWalk", tabId: 1 } });
+    for (let i = 0; i < 20 && !f.sentToHelper.some((m) => m.type === "pageSnapshot"); i++) await settle();
+    const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { frames: { sections: { name: string }[]; sectionNames: string[] }[] } | undefined;
+    const frame = snap?.frames[0];
+    expect(frame?.sections[0]?.name).toMatch(/^[0-9a-f]{64}$/u);
+    expect(frame?.sections[1]?.name).toBe(frame?.sections[0]?.name);
+    expect(frame?.sectionNames).toEqual([frame?.sections[0]?.name]);
+    expect(JSON.stringify(snap)).not.toContain(digest);
+    expect(JSON.stringify(snap)).not.toMatch(/digest|salt/u);
   });
 });
 

@@ -136,6 +136,10 @@ h1{font-size:20px;font-weight:500}.hdr div{font-size:13px;color:#5f6368;margin:2
  * V4: the corpus forms as the page engine walked them (D2-04's accept.ts --sites run of 2026-10-05, copied from
  * evidence/screen/d2-04/corpus-pages/real), one `<form id>.snapshot.json` each. The pages they walked differ from
  * fixtures/realfill/forms only by the walker's data-w4 attributes and the stylesheet.
+ * SCP1: each frame's `sections` and each control's `sections` were added by hand, not walked: derived offline from
+ * fixtures/realfill/forms by the extension's own rules (extension/src/content/sections.ts sectionOutline), since
+ * re-recording needs a browser. Their name tokens are made as the worker makes them (extension
+ * src/worker/section-names.ts) under a fixed salt, not a random one. A re-recording with the SCP1 walker replaces them.
  */
 export const PAGE_WALKS = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/recorded/realfill-pages");
 

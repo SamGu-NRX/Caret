@@ -4,9 +4,10 @@
 // code, before anything leaves the frame: such controls are counted by reason and never named or read.
 import type { PageControl, PageControlKind, PageExclusion, Rect } from "../shared/messages.ts";
 import { authorIdentifier, isGeneratedId, strongKey } from "../shared/ids.ts";
-import { clean, composedParent, groupNames } from "./names.ts";
+import { clean, composedParent, groupNames, labelledBy } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
+import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -21,6 +22,12 @@ const CANDIDATE = "input, select, textarea, button, a[href], [role=button], [rol
 // W3 real-site pass: Greenhouse's EEO section asked "I consider myself a member of the LGBTQ+ community. (optional)" in a
 // section headed by an h2, not a fieldset, so neither the label nor a group name matched; the identity terms below close it.
 export const SELF_IDENTIFICATION = /\b(self[- ]identif\w*|gender|sex|race|racial|ethnicity|hispanic|latin[oax]|veteran|disabilit(y|ies)|disabled|pronouns?|sexual orientation|sexuality|transgender|lgbt\w*|queer|lesbian|gay|bisexual|non-?binary|intersex|consent|i agree|i accept|i acknowledge|i certify|terms (of|and) (service|use|conditions)|privacy policy|signature|e-?sign)\b/i;
+
+/**
+ * SCP1: whether a name or a group's question is a self-identification one, read as sectionName reads it (NFKC, case
+ * folded, whitespace collapsed), so a fullwidth "Ｇｅｎｄｅｒ" is excluded as "Gender" is.
+ */
+export const selfIdentifying = (text: string): boolean => SELF_IDENTIFICATION.test(sectionName(text));
 
 /** Field names and ids that mark a card number or code even without autocomplete. */
 const PAYMENT_NAME = /\b(card.?number|cc.?(num|number|csc|cvc|cvv)|cvc|cvv|csc|security.?code)\b/i;
@@ -98,16 +105,16 @@ export function exclusionOf(el: Element, name: string): PageExclusion | null {
   if ((el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) && PAYMENT_NAME.test(`${el.name} ${el.id}`)) return "payment";
   if (ariaHidden(el)) return "ariaHidden";
   if (!visible(el) && !visibleReactSelect(el) && !ownedFileInput(el)) return "invisible";
-  if (SELF_IDENTIFICATION.test(name) || groupNames(el).some((g) => SELF_IDENTIFICATION.test(g))) return "selfIdentification";
+  if (selfIdentifying(name) || groupNames(el).some(selfIdentifying)) return "selfIdentification";
   // A question around a radio group or a press group asks it too, when no legend does (W4: Greenhouse's EEO section
   // and Lever's custom questions put the question in a sibling element).
   // Every text the question could be read from is tested, not only the nearest, so readable text a page puts close to
   // the buttons cannot hide a sensitive question further out (W4 review #3).
   if ((el instanceof HTMLInputElement && el.type === "radio") || el.getAttribute("role") === "radio") {
-    if (radioQuestions(el).some((t) => SELF_IDENTIFICATION.test(t))) return "selfIdentification";
+    if (radioQuestions(el).some(selfIdentifying)) return "selfIdentification";
   }
   const press = pressGroup(el);
-  if (press !== null && press.texts.some((t) => SELF_IDENTIFICATION.test(t))) return "selfIdentification";
+  if (press !== null && press.texts.some(selfIdentifying)) return "selfIdentification";
   return null;
 }
 
@@ -271,6 +278,13 @@ export function* candidates(root: Document | ShadowRoot = document, shadow: "ope
 
 export interface WalkOutput {
   controls: PageControl[];
+  /** SCP1: the walk's section occurrences in document order (sections.ts), which controls' `sections` name by id. */
+  sections: Occurrence[];
+  /** SCP1: the digests of section names past the occurrence cap, and whether there were more than the walk digests. */
+  sectionOverflow: string[];
+  sectionsCut: boolean;
+  /** SCP1: the frame's heading list, from the same outline after its exclusions (sections.ts). */
+  headings: string[];
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
 }
@@ -286,6 +300,15 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
   const excluded: Partial<Record<PageExclusion, number>> = {};
   const ordinals = new Map<string, number>();
   let truncated = false;
+  // SCP1: the sections each control sits in (sections.ts). A section text the exclusions would match never leaves the frame.
+  const outline = sectionOutline<Element>(document, {
+    wanted: (el) => el.matches(CANDIDATE),
+    shown: (el) => !ariaHidden(el) && visible(el),
+    labelledBy,
+    shadowRoot: shadowRootOf,
+    assigned: (el) => (el instanceof HTMLSlotElement ? slotted(el) : null),
+    excluded: (name) => SELF_IDENTIFICATION.test(name),
+  });
   for (const f of candidates()) {
     const why = exclusionOf(f.el, f.name);
     if (why !== null) excluded[why] = (excluded[why] ?? 0) + 1;
@@ -357,10 +380,18 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       if (token !== undefined) c.autocomplete = token;
     }
     if (f.shadow !== undefined) c.shadow = f.shadow;
+    const inside = outline.chains.get(f.el) ?? [];
+    if (inside.length > 0) c.sections = inside;
     controls.push(c);
     onKept(f.el, c);
   }
-  return { controls, excluded, truncated };
+  return { controls, excluded, truncated, sections: outline.occurrences, sectionOverflow: outline.overflow, sectionsCut: outline.cut, headings: outline.headings };
+}
+
+/** A slot's assigned elements, slots within flattened, or its own children when nothing is assigned (its fallback). */
+function slotted(slot: HTMLSlotElement): Element[] {
+  const assigned = slot.assignedElements({ flatten: true });
+  return assigned.length > 0 ? assigned : [...slot.children];
 }
 
 const ACCEPT_EXTENSION = /^\.[a-z0-9][a-z0-9+_-]{0,15}$/;

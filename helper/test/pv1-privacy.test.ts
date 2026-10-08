@@ -59,7 +59,9 @@ describe("PV1 outbound redaction", () => {
     // Child-first order also must not let a removed ancestor's content through.
     const model = modelOf([node("child", "AXStaticText", { parent: "container", value: "violet-orchard-seven" }), container]);
     const kept = redactWindow(model.windows.get("form")!);
-    expect(kept.nodes.has("container")).toBe(false);
+    // SCP1: a heading or a group stays as structure only, its key and role, so it still bounds the section before it;
+    // nothing it said remains.
+    expect(kept.nodes.get("container")).toEqual({ key: "container", parent: null, role: container.role });
     expect(kept.nodes.has("child")).toBe(false);
   });
 

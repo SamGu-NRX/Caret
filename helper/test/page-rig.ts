@@ -93,7 +93,8 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     const r = await pick(req);
     for (const [id, q] of Object.entries(req.questions)) if ("yes" in q.criteria) r.answers[id] = { choice: "yes", confidence: 0.95 };
     // I2: Jev's scope ask, which settles a plan's, a next page's and a reveal's fields, says every field is asked for.
-    if (req.purpose === "ask.scope") for (const id of Object.keys(req.questions)) r.answers[id] = { choice: "asks", confidence: 0.95 };
+    // SCP1: and its section question names no one section, so no section veto applies.
+    if (req.purpose === "ask.scope") for (const id of Object.keys(req.questions)) r.answers[id] = { choice: id === "section" ? "fields" : "asks", confidence: 0.95 };
     return r;
   };
   const jev = o.jev === undefined ? canned : o.jev(canned);

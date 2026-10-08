@@ -48,6 +48,11 @@ export interface PageControl {
    * markedControl), never a value, options or entry, so the helper knows it is there and never targets it.
    */
   excluded?: "password" | "payment" | "oneTimeCode";
+  /**
+   * SCP1: the ids of the section occurrences the control sits in, outermost first (content/sections.ts), which the
+   * frame's `sections` list. Absent when it is in none.
+   */
+  sections?: string[];
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";
@@ -163,6 +168,15 @@ export interface FrameReport {
   path: string;
   title: string;
   headings: string[];
+  /**
+   * SCP1: the frame's section occurrences in document order: id, whether a heading, text unless an exclusion took it,
+   * and its name's digest, which the worker turns into a salted token and drops (worker/section-names.ts).
+   */
+  sections?: { id: string; heading: boolean; text?: string; digest?: string }[];
+  /** SCP1: digests of section names past the occurrence cap, which have no id or text. */
+  sectionOverflow?: string[];
+  /** SCP1: the frame has more section names than a walk digests. */
+  sectionsCut?: true;
   controls: PageControl[];
   iframes: { src: string; rect: Rect; inner: [number, number] }[];
   /** The frame's own viewport, [innerWidth, innerHeight]: 0 by 0 inside an iframe its embedder hides with display:none. */

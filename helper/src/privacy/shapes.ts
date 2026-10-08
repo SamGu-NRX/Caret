@@ -68,7 +68,9 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "state.task": { reasons: ["ownWording"], max: 400 }, // seen 158
   },
   "ask.scope": {
-    "questions.*.criteria.*": { reasons: ["ownWording"], max: 300 }, // seen 145
+    // INT1 (SCP1's section question): an option names one section of the form, a descriptor of its view; UNMEASURED,
+    // WINDOW_CHARS as for any slot that may hold screen text.
+    "questions.*.criteria.*": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 145 before SCP1
     "questions.*.instructions": { reasons: ["descriptor", "instruction", "memory", "ownWording"], max: 1400 }, // seen 406
     "state.form": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 99
     "state.instruction": { reasons: ["instruction"], max: 800 }, // seen 104

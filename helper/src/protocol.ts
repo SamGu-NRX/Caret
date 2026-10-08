@@ -88,6 +88,23 @@ export const Node = z.object({
   autocomplete: AutocompleteToken.optional(),
   /** SC1 2a: set by the screen model, never by a reader: the node is one whose content Caret never carries, and it has no value. */
   excluded: NodeExclusion.optional(),
+  /**
+   * SCP1, page web areas only: the frame's heading list (PageFrame.headings), the sections an Ask's section question
+   * offers when the walk gave no outline (fill/ask-scope.ts windowOutline). It says nothing about which control is under
+   * which heading.
+   */
+  headings: z.array(z.string()).optional(),
+  /**
+   * SCP1, page web areas only: the frame's section occurrences in document order (PageFrame.sections), each by a key
+   * unique in the window, with its text unless an exclusion or redaction took it. Page controls name them in `sections`.
+   */
+  outline: z.array(z.object({ key: z.string(), heading: z.boolean(), text: z.string().optional(), name: z.string().optional() })).optional(),
+  /** SCP1, page web areas only: the tokens of section names past the frame's occurrence cap (PageFrame.sectionNames). */
+  sectionNames: z.array(z.string()).optional(),
+  /** SCP1, page web areas only: the frame's section list is incomplete (PageFrame.sectionsCut). */
+  sectionsCut: z.literal(true).optional(),
+  /** SCP1, page controls and their groups only: the keys of the outline occurrences the control sits in, outermost first. */
+  sections: z.array(z.string()).optional(),
 });
 export type Node = z.infer<typeof Node>;
 
@@ -2797,12 +2814,20 @@ export const PageControl = z.object({
    * targets it; the frame also counts it in `excluded`.
    */
   excluded: z.enum(["password", "payment", "oneTimeCode"]).optional(),
+  /**
+   * SCP1: the ids of the section occurrences (PageFrame.sections) the control sits in, outermost first (extension
+   * content/sections.ts). Absent when it is in none.
+   */
+  sections: z.array(z.string().min(1).max(40)).max(8).optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 
 /** Why controls were left out, by count only: what they were called or held never leaves the frame. */
 export const PageExclusion = z.enum(["password", "hidden", "payment", "oneTimeCode", "invisible", "ariaHidden", "selfIdentification"]);
 export type PageExclusion = z.infer<typeof PageExclusion>;
+
+/** SCP1: a section name's token, HMAC-SHA256 under a salt the extension's worker makes per snapshot and never sends. */
+export const SectionToken = z.string().regex(/^[0-9a-f]{64}$/u);
 
 export const PageFrame = z.object({
   frameId: z.number().int().nonnegative(),
@@ -2814,8 +2839,19 @@ export const PageFrame = z.object({
   path: z.string(),
   navGen: z.number().int().nonnegative(),
   title: z.string(),
-  /** h1 and h2 text, clipped. No body prose. */
+  /** h1 and h2 text, clipped, none the walk's exclusions match. No body prose. SCP1: from the section outline. */
   headings: z.array(z.string()),
+  /**
+   * SCP1: the frame's section occurrences in document order (extension content/sections.ts): each heading, fieldset with
+   * a legend, or labelled group or region, by an id unique within the walk, and its text unless an exclusion took it.
+   * `name`: a token of its name (worker/section-names.ts), equal for equal names across every frame of this snapshot and
+   * nothing more, excluded occurrences included. Absent from an extension before SCP1.
+   */
+  sections: z.array(z.object({ id: z.string().min(1).max(40), heading: z.boolean(), text: z.string().min(1).max(200).optional(), name: SectionToken.optional() })).max(200).optional(),
+  /** SCP1: the tokens of section names past the frame's occurrence cap, which have no id or text. */
+  sectionNames: z.array(SectionToken).max(2000).optional(),
+  /** SCP1: the frame has more section names than a walk tokens: its section list is incomplete. */
+  sectionsCut: z.literal(true).optional(),
   controls: z.array(PageControl),
   /** The frame's visible <iframe> elements, origin plus path of src and rect: the worker drops a child frame none of them holds. */
   iframes: z.array(z.object({ src: z.string(), rect: PageRect })),

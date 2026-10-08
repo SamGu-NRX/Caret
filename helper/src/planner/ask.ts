@@ -31,7 +31,7 @@ import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf,
 import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, snapMint, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
-import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNeverTyped, saysNoValue, saysOptionsUnseen, saysPress, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
+import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNeverTyped, saysNoValue, saysOptionsUnseen, saysPress, saysSectionUnknown, saysSectionUnknownField, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
 import { choicesFor, type Choice } from "./choices.ts";
 import { fieldWords } from "./sources.ts";
 import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
@@ -153,7 +153,7 @@ export interface AskGoal {
    * the ones named), for the reveal continuation; a scope narrowed by Jev's confirmation is a list. Absent for a goal
    * about native windows, which the writer plans.
    */
-  page?: { scope: FillScope; trigger: string; kind: "all" | "section" | "list"; section: string | null; unsure?: readonly string[] };
+  page?: { scope: FillScope; trigger: string; kind: "all" | "section" | "list"; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[] };
   /** I2: the Ask's settled scope, which the goal's write contract and goal gate enforce (fill/ask-scope.ts). */
   askScope?: AskScope;
   /** I2: the Ask's id, which every scope the goal holds carries (a window with no field gives no scope of its own). */
@@ -293,6 +293,8 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fi
     // I3: the fields Jev settled stay in scope through the pick, so one that is gone changes the form under the question.
     ...(intent.sure === undefined ? {} : { sure: intent.sure.map(field) }),
     ...(intent.unsure === undefined ? {} : { unsure: intent.unsure.filter((r) => snap.fields.some((f) => f.key === refs.fields[r])).map(field) }),
+    // SCP1: fields and upload fields alike; one that is gone has nothing left to say about.
+    ...(intent.sectionless === undefined ? {} : { sectionless: intent.sectionless.flatMap((r) => [...snap.fields, ...snap.uploads].find((f) => f.key === (refs.fields[r] ?? refs.uploads[r]))?.ref ?? []) }),
     sources: intent.sources.map(source),
     whose: whose(intent.whose),
     section: section === undefined ? intent.section : (snap.sections.find((x) => x.name === section)?.ref ?? changed(`the section ${intent.section} is gone`)),
@@ -546,7 +548,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       let settled: Awaited<ReturnType<typeof settleFields>>;
       if (presettled !== undefined) {
         const of = (keys: readonly string[]): IntentField[] => [...snap.fields, ...snap.uploads].filter((f) => keys.includes(f.key));
-        settled = { asks: of(presettled.asks), unclear: of(presettled.unclear) };
+        settled = { asks: of(presettled.asks), unclear: of(presettled.unclear), sectionless: of(presettled.sectionless ?? []), section: presettled.section ?? null, notFound: presettled.notFound === true };
       } else
         try {
           settled = await settleFields(snap, askJev);
@@ -555,6 +557,15 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
         }
       const unclear = settled.unclear.filter((f) => f.upload !== true);
       frozen = [...settled.asks, ...unclear].map((f) => f.key);
+      // SCP1: the section the request named, and the fields and upload fields the veto left to the user, go into the
+      // maker's intent before any question is saved (AskResume.intent), so a continued Ask holds the section and still
+      // says why those fields are the user's. With nothing else settled, the Ask says only that.
+      const sectionless = settled.sectionless.map((f) => f.ref);
+      const held = { ...(settled.section === null ? {} : { namedSection: settled.section }), ...(sectionless.length === 0 ? {} : { sectionless }) };
+      made = { ...made, intent: { ...made.intent, ...held } };
+      intent = { ...intent, ...held };
+      if (settled.notFound) return refused(new SaidError("unsure", SAYS.sectionNotFound, "the request named a section the section question's list lacked"));
+      if (settled.asks.length === 0 && unclear.length === 0 && sectionless.length > 0) return refused(new SaidError("unsure", saysSectionUnknown(settled.sectionless.map((f) => f.name)), "the request named one section, and Caret couldn't tell which section any field Jev chose is in"));
       // I3 lead ruling, as the heads maker reads it (intent-heads.ts): the fields Jev chose are filled; the unclear ones
       // are asked about beside them when one question lists them all, else each is left to the user, said.
       const sure = snap.fields.filter((f) => settled.asks.includes(f));
@@ -612,12 +623,18 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   }
   const extra = { intent, maker: use, fill: null };
   /** I3: the fields left to the user because Jev wasn't sure the request asks for them, never one the Ask writes. */
-  const unsureOf = (writes: Iterable<string>): { key: string; name: string }[] => {
+  const byRef = (refs: readonly string[] | undefined): IntentField[] => (refs ?? []).flatMap((r) => [...snap.fields, ...snap.uploads].find((f) => f.ref === r) ?? []);
+  const notWritten = (fields: readonly IntentField[], writes: Iterable<string>): IntentField[] => {
     const writing = new Set(writes);
-    const fields = [...unsureLeft, ...(intent.unsure ?? []).flatMap((r) => snap.fields.find((f) => f.ref === r) ?? [])];
-    return fields.filter((f) => !writing.has(f.key)).map((f) => ({ key: f.key, name: f.name }));
+    return fields.filter((f) => !writing.has(f.key));
   };
-  const withUnsure = (writes: Iterable<string>): { unsure?: { key: string; name: string }[] } => {
+  /** SCP1: the fields left to the user because Caret couldn't tell which section they are in. */
+  const sectionlessOf = (writes: Iterable<string>): IntentField[] => notWritten(byRef(intent.sectionless), writes);
+  const unsureOf = (writes: Iterable<string>): { key: string; name: string; says?: string }[] => {
+    const writing = [...writes];
+    return [...notWritten([...unsureLeft, ...byRef(intent.unsure)], writing).map((f) => ({ key: f.key, name: f.name })), ...sectionlessOf(writing).map((f) => ({ key: f.key, name: f.name, says: saysSectionUnknownField(f.name) }))];
+  };
+  const withUnsure = (writes: Iterable<string>): { unsure?: { key: string; name: string; says?: string }[] } => {
     const u = unsureOf(writes);
     return u.length === 0 ? {} : { unsure: u };
   };
@@ -700,7 +717,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   let scope: AskScope;
   try {
     // A window with no field gives a scope of no field: it authorizes nothing (a goal settles each window it writes in).
-    scope = askScope(w.window.windowId, document, scopeKeys, resume?.seen.fields ?? { ...seenOf(snap, undefined).fields, ...(presettled?.seen ?? {}) }, fixed.person?.kind === "person" ? fixed.person.name : null, askId, fixed.fields ?? []);
+    scope = askScope(w.window.windowId, document, scopeKeys, resume?.seen.fields ?? { ...seenOf(snap, undefined).fields, ...(presettled?.seen ?? {}) }, fixed.person?.kind === "person" ? fixed.person.name : null, askId, fixed.fields ?? [], made.intent.namedSection ?? null);
   } catch (e) {
     return refused(new SaidError("unknownWindow", SAYS.windowChanged, e instanceof Error ? e.message : String(e)));
   }
@@ -747,8 +764,9 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     const section = bySection ? sectionName : intent.scope === "section" && fixed.fields === undefined ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;
     const narrowed = bySection ? checked.fields.length !== sectionBefore : checked.fields.length !== scopedBefore;
     const kind = narrowed ? "list" : whole ? "all" : section !== null ? "section" : "list";
-    const unsure = unsureOf(checked.scope.fields).map((f) => f.key);
-    return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: uploadKeys.length === 0 ? checked.scope : { ...checked.scope, fields: [...checked.scope.fields, ...uploadKeys] }, trigger: checked.trigger, kind, section: kind === "section" ? section : null, ...(unsure.length === 0 ? {} : { unsure }) }, askId, resumed: resume !== undefined, ...(snap.fields.length === 0 ? {} : { askScope: scope }) };
+    const unsure = notWritten([...unsureLeft, ...byRef(intent.unsure)], checked.scope.fields).map((f) => f.key);
+    const sectionless = sectionlessOf(checked.scope.fields).map((f) => f.key);
+    return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: uploadKeys.length === 0 ? checked.scope : { ...checked.scope, fields: [...checked.scope.fields, ...uploadKeys] }, trigger: checked.trigger, kind, section: kind === "section" ? section : null, ...(unsure.length === 0 ? {} : { unsure }), ...(sectionless.length === 0 ? {} : { sectionless }) }, askId, resumed: resume !== undefined, ...(snap.fields.length === 0 ? {} : { askScope: scope }) };
   }
   // I6: the sources the fill reads, which may hold the tab the user just left, read now that a fill needs them.
   const sourceModel = o.fillModel === undefined ? model : await o.fillModel(w.window.windowId);

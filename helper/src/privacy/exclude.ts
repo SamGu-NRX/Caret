@@ -213,23 +213,36 @@ export function markedPageExclusion(why: PageExclusion): why is "password" | "pa
 }
 
 /**
+ * INT1 (SCP1's section texts, Node.headings and Node.outline): a page web area's heading and section texts with every
+ * excluded value withheld, as its label's are, so the exclusion acts before any reader of the model sees them. Null
+ * when nothing changes.
+ */
+function admitSections(n: Node): Pick<Node, "headings" | "outline"> | null {
+  const headings = n.headings?.map(withholdValues);
+  const outline = n.outline?.map((o) => (o.text === undefined ? o : { ...o, text: withholdValues(o.text) }));
+  const same = (headings ?? []).every((h, i) => h === n.headings?.[i]) && (outline ?? []).every((o, i) => o.text === n.outline?.[i]?.text);
+  return same ? null : { ...(headings === undefined ? {} : { headings }), ...(outline === undefined ? {} : { outline }) };
+}
+
+/**
  * A node as the model keeps it: excluded (its value gone, `excluded` set), or with every excluded value in its label,
- * value and placeholder withheld. The same object when nothing changes.
+ * value, placeholder and section texts withheld. The same object when nothing changes.
  */
 export function admitNode(n: Node, from: Inherited = {}): Node {
   const why = excludedNode(n, from);
+  const sections = admitSections(n);
   if (why !== null) {
     const { value: _value, ...rest } = n;
     const label = rest.label === undefined ? undefined : withholdValues(rest.label);
     const placeholder = rest.placeholder === undefined ? undefined : withholdValues(rest.placeholder);
-    if (n.excluded === why && n.value === undefined && label === n.label && placeholder === n.placeholder) return n;
-    return { ...rest, ...(label === undefined ? {} : { label }), ...(placeholder === undefined ? {} : { placeholder }), excluded: why };
+    if (n.excluded === why && n.value === undefined && label === n.label && placeholder === n.placeholder && sections === null) return n;
+    return { ...rest, ...(label === undefined ? {} : { label }), ...(placeholder === undefined ? {} : { placeholder }), ...(sections ?? {}), excluded: why };
   }
   const label = n.label === undefined ? undefined : withholdValues(n.label);
   const value = n.value === undefined ? undefined : withholdValues(n.value);
   const placeholder = n.placeholder === undefined ? undefined : withholdValues(n.placeholder);
-  if (label === n.label && value === n.value && placeholder === n.placeholder) return n;
-  return { ...n, ...(label === undefined ? {} : { label }), ...(value === undefined ? {} : { value }), ...(placeholder === undefined ? {} : { placeholder }) };
+  if (label === n.label && value === n.value && placeholder === n.placeholder && sections === null) return n;
+  return { ...n, ...(label === undefined ? {} : { label }), ...(value === undefined ? {} : { value }), ...(placeholder === undefined ? {} : { placeholder }), ...(sections ?? {}) };
 }
 
 /** The typed values the model keeps: none of an excluded node, none holding an excluded value, each still in its node's text. */

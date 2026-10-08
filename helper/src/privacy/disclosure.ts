@@ -4,7 +4,7 @@
 // disappears at runtime, so the check that holds is `verify`, run on the body where each request is sent (the Jev
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
-import { assertNoExcludedValue, cut, flat, fold, SnippetLedger, type Snippet, type Span } from "../privacy.ts";
+import { assertNoExcludedValue, cut, flat, fold, sectionTexts, SnippetLedger, type Snippet, type Span } from "../privacy.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
@@ -36,6 +36,9 @@ function viewText(view: WindowState): string {
     add(n.label);
     add(n.value);
     add(n.placeholder);
+    // INT1 (SCP1): a page web area's heading and section texts are lines of the view too, as privacy.ts LineTable reads
+    // them, so a section question can mint them (descriptor) and the ledger charges them.
+    for (const t of sectionTexts(n)) add(t);
   }
   // A typed value the view keeps (a date or time the reader read off a line, in its own words) is the view's too.
   for (const v of view.values) add(v.text);

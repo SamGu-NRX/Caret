@@ -336,6 +336,9 @@ function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { 
     choice: {
       ...Object.fromEntries(Object.entries(heads).map(([k, v]) => [`ask.heads:${k}`, () => v])),
       "ask.scope:field": () => "asks",
+      // SCP1: the section question names no one section, so the section veto takes nothing out: the adversary keeps
+      // every field in scope, as before the veto.
+      "ask.scope:section": () => "fields",
       "ask.confirm:all": no,
       "ask.confirm:field": no,
       "fill.whose:whose": user,

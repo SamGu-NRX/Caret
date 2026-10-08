@@ -194,6 +194,12 @@ export function isRedacted(w: WindowState): boolean {
 }
 
 /**
+ * SCP1: Accessibility roles that group what they hold, so a heading in one ends with it (fill/ask-scope.ts windowOutline).
+ * Redaction keeps a removed one as structure only, as it keeps a removed heading.
+ */
+export const SECTION_BOUNDARY_ROLES: ReadonlySet<string> = new Set(["AXGroup", "AXRadioGroup", "AXWebArea", "AXScrollArea", "AXSplitGroup", "AXTabGroup", "AXLayoutArea", "AXSheet"]);
+
+/**
  * The window as fill may read it: a WindowState of its own, built once per window state the model holds (each snapshot
  * makes a new one) and again if that state's `updatedAt` moves, never cached per node, since a node can be kept from one
  * snapshot to the next while what labels it changes.
@@ -249,7 +255,11 @@ function build(w: WindowState): WindowState {
     // AX can split a marker between its own attributes, such as label "API" and value "key: ...".
     const attrs = [n.label, n.placeholder, n.value].filter((t): t is string => t !== undefined && t.trim() !== "");
     const splitMarker = attrs.some((a, i) => attrs.some((b, j) => i !== j && markerAcross(a, b)));
-    if ((n.parent !== null && gone.has(n.parent)) || dropped.has(n.key) || split.has(n.key) || splitMarker || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
+    if (n.parent !== null && gone.has(n.parent)) {
+      gone.add(n.key);
+      continue;
+    }
+    if (dropped.has(n.key) || split.has(n.key) || splitMarker || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
       gone.add(n.key);
       continue;
     }
@@ -265,13 +275,21 @@ function build(w: WindowState): WindowState {
       gone.add(n.key);
       continue;
     }
-    if (value === n.value && label === n.label) nodes.set(n.key, n);
+    // SCP1: a page's heading or section text that names a secret is left out, as a label that names one is. A section
+    // keeps its place in the outline without its text, so it still ends the section before it.
+    const headings = n.headings?.filter((h) => !secretText(h));
+    const outline = n.outline?.some((o) => o.text !== undefined && secretText(o.text)) === true ? n.outline.map((o) => (o.text !== undefined && secretText(o.text) ? { key: o.key, heading: o.heading, ...(o.name === undefined ? {} : { name: o.name }) } : o)) : n.outline;
+    if (value === n.value && label === n.label && headings?.length === n.headings?.length && outline === n.outline) nodes.set(n.key, n);
     else {
       const m: Node = { ...n };
       if (value === undefined) delete m.value;
       else m.value = value;
       if (label === undefined) delete m.label;
       else m.label = label;
+      if (headings === undefined || headings.length === 0) delete m.headings;
+      else m.headings = headings;
+      if (outline === undefined) delete m.outline;
+      else m.outline = outline;
       nodes.set(n.key, m);
     }
   }
@@ -290,10 +308,30 @@ function build(w: WindowState): WindowState {
     queue.push(key);
   }
   for (const key of gone) nodes.delete(key);
+  // SCP1: the section boundaries redaction took (fill/ask-scope.ts windowOutline): each removed heading and group goes
+  // back in its place as structure only, its key, its role and its nearest kept ancestor, so the outline after redaction
+  // places fields as the raw one does (a field after a removed "Password and security" group is not in the section
+  // before it). Nothing else of it comes back: `gone` still holds it, so its typed values stay out below.
+  const structural = (n: Node | undefined): boolean => n !== undefined && (n.role === "AXHeading" || SECTION_BOUNDARY_ROLES.has(n.role));
+  const stubOf = (n: Node): Node => {
+    let parent = n.parent;
+    while (parent !== null && gone.has(parent) && !structural(w.nodes.get(parent))) parent = w.nodes.get(parent)?.parent ?? null;
+    return { key: n.key, parent, role: n.role };
+  };
+  if ([...gone].some((k) => structural(w.nodes.get(k)))) {
+    const ordered = new Map<string, Node>();
+    for (const [k, n] of w.nodes) {
+      const kept = nodes.get(k) ?? (gone.has(k) && structural(n) ? stubOf(n) : undefined);
+      if (kept !== undefined) ordered.set(k, kept);
+    }
+    nodes.clear();
+    for (const [k, n] of ordered) nodes.set(k, n);
+  }
   // The reader's typed values, less those of a dropped node, and those standing on a dropped line: a value over several
   // lines goes when any line it covers went ("4410 Speedway\napt 2, Austin" under a dropped "Password:" opener), judged
   // by the lines where it stands, never by a dropped line's text (G2 round 6: a dropped "Austin" took an address).
-  const values: TypedValue[] = w.values.filter((v) => nodes.has(v.nodeKey) && !secretText(v.text) && !valueGoes(lost.get(v.nodeKey) ?? [], v.text));
+  // A removed node's values stay out whether or not a stub of it stands in the view (re-check of 479f875).
+  const values: TypedValue[] = w.values.filter((v) => !gone.has(v.nodeKey) && nodes.has(v.nodeKey) && !secretText(v.text) && !valueGoes(lost.get(v.nodeKey) ?? [], v.text));
   // A window that gives everything is read as it is: the same state, so every cache keyed by it (windowValues, the
   // ledger's budgets, descriptor.ts's label index) is shared with code that reads it raw.
   if (nodes.size === w.nodes.size && [...nodes].every(([k, n]) => w.nodes.get(k) === n) && values.length === w.values.length) return w;

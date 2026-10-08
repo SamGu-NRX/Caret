@@ -25,6 +25,50 @@
     "Professional reference",
     "Additional information"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Data Analyst",
+     "name": "f71ac741847084a272409781d5df2044a833ff1b2b43edb87585d3c5e7b97203"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Submit your application",
+     "name": "e3e2f43ec120ad30df0c3945967ec9a52395d4949f9a429096a82c678c4753c9"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Links",
+     "name": "4e55e5a02f1dd4fb6d79e131ab6618bae4362b9937f54a3da1acfa8b7d6dd2c1"
+    },
+    {
+     "id": "o4",
+     "heading": true,
+     "text": "A few questions",
+     "name": "de2cdaf1901efdb1cbe84ad707b6b8fdbd9a2ebedd051116262987593e4474bf"
+    },
+    {
+     "id": "o5",
+     "heading": false,
+     "text": "Will you now or in the future require visa sponsorship to work in the US? ✱",
+     "name": "dd3abc6ffefb03e3b01a1438fdb7987fc2aa42d773ed719995aa75d047646518"
+    },
+    {
+     "id": "o6",
+     "heading": true,
+     "text": "Professional reference",
+     "name": "0909f50424cbbb5d2add329e884cba17ef940f571a5e37c67fe4a9558cddb79a"
+    },
+    {
+     "id": "o7",
+     "heading": true,
+     "text": "Additional information",
+     "name": "155dc9f5a02c96d033a18b0e697f709908c3055230267a66f1a93bdd9e91d04e"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -39,6 +83,10 @@
       146,
       484,
       37
+     ],
+     "sections": [
+      "o1",
+      "o2"
      ]
     },
     {
@@ -55,6 +103,10 @@
       193,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o2"
      ]
     },
     {
@@ -71,6 +123,10 @@
       234,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o2"
      ]
     },
     {
@@ -87,6 +143,10 @@
       275,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o2"
      ]
     },
     {
@@ -103,6 +163,10 @@
       316,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o2"
      ]
     },
     {
@@ -119,6 +183,10 @@
       407,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o3"
      ]
     },
     {
@@ -135,6 +203,10 @@
       448,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o3"
      ]
     },
     {
@@ -151,6 +223,10 @@
       489,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o3"
      ]
     },
     {
@@ -167,6 +243,10 @@
       580,
       484,
       34
+     ],
+     "sections": [
+      "o1",
+      "o4"
      ]
     },
     {
@@ -187,7 +267,12 @@
      "group": {
       "id": "e10",
       "name": "Will you now or in the future require visa sponsorship to work in the US? ✱"
-     }
+     },
+     "sections": [
+      "o1",
+      "o4",
+      "o5"
+     ]
     },
     {
      "id": "e11",
@@ -207,7 +292,12 @@
      "group": {
       "id": "e10",
       "name": "Will you now or in the future require visa sponsorship to work in the US? ✱"
-     }
+     },
+     "sections": [
+      "o1",
+      "o4",
+      "o5"
+     ]
     },
     {
      "id": "e12",
@@ -260,6 +350,10 @@
       685.5,
       484,
       33
+     ],
+     "sections": [
+      "o1",
+      "o4"
      ]
     },
     {
@@ -276,6 +370,10 @@
       729,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o4"
      ]
     },
     {
@@ -292,6 +390,10 @@
       770,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o4"
      ]
     },
     {
@@ -308,6 +410,10 @@
       861,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o6"
      ]
     },
     {
@@ -356,6 +462,10 @@
       902,
       484,
       33
+     ],
+     "sections": [
+      "o1",
+      "o6"
      ]
     },
     {
@@ -372,6 +482,10 @@
       945,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o6"
      ]
     },
     {
@@ -388,6 +502,10 @@
       986,
       484,
       31
+     ],
+     "sections": [
+      "o1",
+      "o6"
      ]
     },
     {
@@ -404,6 +522,10 @@
       1077,
       484,
       104
+     ],
+     "sections": [
+      "o1",
+      "o7"
      ]
     },
     {
@@ -420,6 +542,10 @@
       1198,
       13,
       13
+     ],
+     "sections": [
+      "o1",
+      "o7"
      ]
     },
     {
@@ -435,6 +561,10 @@
       1254,
       227.5,
       40
+     ],
+     "sections": [
+      "o1",
+      "o7"
      ]
     }
    ],

@@ -20,6 +20,20 @@
    "headings": [
     "Submit a request"
    ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Submit a request",
+     "name": "4ee018da18fb62037aadeadc0fa407eda8df53ce95fe11b6b8abfd35daccef49"
+    },
+    {
+     "id": "o2",
+     "heading": false,
+     "text": "Priority *",
+     "name": "9ece27153f56a719eeb0ac637995dffbc9f351e69b53eb900bb4bf20f2126e76"
+    }
+   ],
    "controls": [
     {
      "id": "e1",
@@ -35,6 +49,9 @@
       166.2,
       640,
       36
+     ],
+     "sections": [
+      "o1"
      ]
     },
     {
@@ -51,6 +68,9 @@
       239.2,
       640,
       36
+     ],
+     "sections": [
+      "o1"
      ]
     },
     {
@@ -67,6 +87,9 @@
       331.2,
       640,
       36
+     ],
+     "sections": [
+      "o1"
      ]
     },
     {
@@ -115,6 +138,9 @@
       404.2,
       640,
       38
+     ],
+     "sections": [
+      "o1"
      ]
     },
     {
@@ -135,7 +161,11 @@
      "group": {
       "id": "e5",
       "name": "Priority *"
-     }
+     },
+     "sections": [
+      "o1",
+      "o2"
+     ]
     },
     {
      "id": "e6",
@@ -155,7 +185,11 @@
      "group": {
       "id": "e5",
       "name": "Priority *"
-     }
+     },
+     "sections": [
+      "o1",
+      "o2"
+     ]
     },
     {
      "id": "e7",
@@ -175,7 +209,11 @@
      "group": {
       "id": "e5",
       "name": "Priority *"
-     }
+     },
+     "sections": [
+      "o1",
+      "o2"
+     ]
     },
     {
      "id": "e8",
@@ -191,6 +229,9 @@
       581.2,
       640,
       36
+     ],
+     "sections": [
+      "o1"
      ]
     },
     {
@@ -207,6 +248,9 @@
       673.2,
       640,
       116
+     ],
+     "sections": [
+      "o1"
      ]
     },
     {
@@ -222,6 +266,9 @@
       830.2,
       253,
       21
+     ],
+     "sections": [
+      "o1"
      ]
     },
     {
@@ -238,6 +285,9 @@
       866.2,
       13,
       13
+     ],
+     "sections": [
+      "o1"
      ]
     },
     {
@@ -253,6 +303,9 @@
       914.2,
       83.6,
       36
+     ],
+     "sections": [
+      "o1"
      ]
     }
    ],
