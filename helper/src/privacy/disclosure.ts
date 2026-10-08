@@ -492,8 +492,39 @@ export class Disclosure extends SnippetLedger {
    * a window it shows is charged to that window. Null when one would go over its budget.
    */
   planText(text: string): ModelText | null {
-    if (!this.keptByViews(text) || !this.plan([text])) return null;
-    return this.record(text, ["plan"]);
+    return this.planned(text, "plan");
+  }
+
+  /**
+   * Text code composed from what it read (plan, held or drafted text), priced as plan text and declared with the
+   * whole-line fallback: it has no single source, so each line of a window it holds or that holds a line of it is its
+   * span, charged whole in that window (planSpans). Rule E alone would leave a short piece of a line uncharged.
+   */
+  private planned(text: string, reason: "plan" | "held" | "drafted"): ModelText | null {
+    if (!this.keptByViews(text)) return null;
+    const spans = this.planSpans(text);
+    if (!this.admitTexts([text], { under: "plan", kind: "candidate", lines: true, spans })) return null;
+    this.declareSpans(text, spans);
+    return this.record(text, [reason]);
+  }
+
+  /**
+   * The lines plan text reveals, as fallback spans: each line it holds whole, and each line that holds a line of it (the
+   * fallback's rule: every line containing the text). A line that only shares a run with it holds no line of it; a run of
+   * 12 or more is rule E's.
+   */
+  private planSpans(text: string): ViewSpan[] {
+    const out: ViewSpan[] = [];
+    const add = (id: string, t: string): void => {
+      const w = this.known.get(id);
+      if (w !== undefined) out.push({ view: redactWindow(w), text: t });
+    };
+    for (const piece of sourceLines(text).map((l) => l.replace(/^\u2026|\u2026$/gu, "")).filter((x) => x !== "")) {
+      const r = this.revealed(piece);
+      for (const [line, ids] of r.lines) for (const id of ids) add(id, line);
+      for (const id of r.shownBy) add(id, piece);
+    }
+    return out;
   }
 
   /**
@@ -501,8 +532,7 @@ export class Disclosure extends SnippetLedger {
    * minted when every line of a window it reveals is kept by that window's redacted view, priced as plan text.
    */
   heldText(text: string): ModelText | null {
-    if (!this.keptByViews(text) || !this.plan([text])) return null;
-    return this.record(text, ["held"]);
+    return this.planned(text, "held");
   }
 
   /**
@@ -539,8 +569,7 @@ export class Disclosure extends SnippetLedger {
    * drafted from. Null when one would go over its budget.
    */
   draftedText(text: string): ModelText | null {
-    if (!this.keptByViews(text) || !this.plan([text])) return null;
-    return this.record(text, ["drafted"]);
+    return this.planned(text, "drafted");
   }
 
   /**

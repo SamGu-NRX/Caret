@@ -457,6 +457,20 @@ describe("the early check and the seal agree on Caret's wording", () => {
   });
 });
 
+// No producer relies on rule E alone: plan text has no single source, so the lines it shows a piece of are its spans,
+// charged whole (OUTPUT-LEDGER-SPEC section 4, the fallback).
+describe("plan text", () => {
+  it("charges the whole line a short piece of it comes from: 'due friday' takes the 25-character line", () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("n0", "the deposit is due friday"), text("n1", "bring the contract")], { at: 1, windowId: "note-1", title: "Note", app: NOTES }));
+    const d = new Disclosure(m);
+    const said = d.planText("due friday");
+    expect(said).not.toBeNull();
+    // Rule E alone: 10 scalars and not a whole line, 0.
+    expect(d.measureSent("test", [said!]).charged["note-1"], "the line the plan quotes, whole").toBe(25);
+  });
+});
+
 // The promise's scope (OUTPUT-LEDGER-SPEC section 4): a request is charged what it takes from a conversation's window.
 // Text equal to the chat's that came from elsewhere is not taken from it, so each of these charges the chat nothing.
 describe("text a chat shows that the request did not take from it", () => {

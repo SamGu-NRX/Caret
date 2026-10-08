@@ -515,7 +515,12 @@ export class SnippetLedger {
         this.snippets.push({ windowId: as.under, kind: as.kind, text: t });
       }
     }
-    if (as.lines === true) for (const [key, a] of adds) for (const l of a.lines) this.snippets.push({ windowId: key, kind: "candidate", text: l });
+    // The lines it newly shows, as declared screen text: only those the texts carry. A fallback span charges a whole line
+    // the text only quotes part of, and the request does not send the rest of it.
+    if (as.lines === true) {
+      const said = fresh.map((t) => t.toLowerCase());
+      for (const [key, a] of adds) for (const l of a.lines) if (said.some((t) => t.includes(l.toLowerCase()))) this.snippets.push({ windowId: key, kind: "candidate", text: l });
+    }
     return true;
   }
 
