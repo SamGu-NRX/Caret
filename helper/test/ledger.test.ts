@@ -60,10 +60,7 @@ describe("the ledger charges every window a text reveals", () => {
     // takes the window past 2 * WINDOW_CHARS, where B12's ledger stopped reading the window's lines.
     const children = Array.from({ length: 70 }, (_, i) => `w${String(i).padStart(2, "0")}xyz`);
     const parents = Array.from({ length: 7 }, (_, p) => children.slice(p * 10, p * 10 + 10).join(" "));
-    // Distinct padding: repeated text counts once (section 5), so padding that repeated itself would add little.
-    let x = 7;
-    const letters = (n: number): string => Array.from({ length: n }, () => String.fromCharCode(97 + ((x = (x * 1103515245 + 12345) % 2147483648) % 26))).join("");
-    const pad = Array.from({ length: 40 }, (_, i) => `padding line ${i} ${letters(50)}`);
+    const pad = Array.from({ length: 40 }, (_, i) => `padding line ${i} that no request takes ${"z".repeat(40)}`);
     const m = new ScreenModel();
     m.apply(snap([...parents, ...children, ...pad].map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "big-1", title: "Thread", app: MESSAGES }));
     const w = m.windows.get("big-1") as WindowState;
@@ -71,12 +68,12 @@ describe("the ledger charges every window a text reveals", () => {
     const ledger = new Disclosure(m);
     const first = parents[0] as string;
     expect(ledger.take(w, "candidate", [first])).toBe(true);
-    // The parent's 69 characters; its ten children stand whole in it, so they are the same text, counted once.
-    expect(ledger.chars("big-1")).toBe(first.length);
+    // The parent's 69 characters and its ten 6-character children.
+    expect(ledger.chars("big-1")).toBe(first.length + 60);
     let taken = 1;
     while (taken < parents.length && ledger.take(w, "candidate", [parents[taken] as string])) taken++;
-    // Seven parents of 69 are 483, within 600.
-    expect([taken, ledger.chars("big-1")]).toEqual([parents.length, 7 * first.length]);
+    expect(ledger.chars("big-1")).toBeLessThanOrEqual(CONVERSATION_CHARS);
+    expect(taken).toBeLessThan(parents.length);
   });
 
   it("charges plan text for the window lines it quotes, and refuses past a budget", () => {
@@ -104,7 +101,7 @@ describe("the ledger charges every window a text reveals", () => {
   });
 });
 
-describe("the positions a request reveals: every occurrence, each position once, repeated text once", () => {
+describe("the positions a request reveals: every occurrence, each position once", () => {
   const LINES = ["Rental notes", "Phone: (512) 555-0147", "Call (512) 555-0147 after six", "Landlord: Gary Pruitt"];
   const card = (): { m: ScreenModel; w: WindowState; id: string } => {
     const m = new ScreenModel();
@@ -113,25 +110,22 @@ describe("the positions a request reveals: every occurrence, each position once,
   };
   const PHONE = "(512) 555-0147";
 
-  // Repeated text counts once (section 5): the window's lines in canonical order (longest first) are the Call line, the
-  // Landlord line, the Phone line and the title; the Phone line's " (512) 555-0147" repeats the Call line's and is not
-  // counted, and the line "Rental notes" stands whole in the title "Rental notes.txt" and is not counted either.
-  it("charges a value once however many lines show it, then a line holding it only its other characters", () => {
+  it("charges a value in every line that shows it, then a line holding it only its other characters", () => {
     const { m, w, id } = card();
     const ledger = new Disclosure(m);
     expect(ledger.take(w, "candidate", [PHONE])).toBe(true);
-    expect(ledger.chars(id)).toBe(PHONE.length);
+    expect(ledger.chars(id)).toBe(2 * PHONE.length);
     expect(ledger.take(w, "candidate", ["Phone: (512) 555-0147"])).toBe(true);
-    // The Phone line's own "Phone:", and in the Call line the space before the number, which the run they share holds.
-    expect(ledger.chars(id)).toBe(PHONE.length + "Phone:".length + 1);
+    // The whole Phone line, and in the Call line the run they share, " (512) 555-0147".
+    expect(ledger.chars(id)).toBe("Phone: (512) 555-0147".length + " (512) 555-0147".length);
   });
 
   it("charges two lines joined by a space as both lines, and refuses a text with a word no line shows", () => {
     const { m, w, id } = card();
     const ledger = new Disclosure(m);
     expect(ledger.take(w, "candidate", ["Rental notes Landlord: Gary Pruitt"])).toBe(true);
-    // The title's "Rental notes", which the line of that text repeats, and the Landlord line.
-    expect(ledger.chars(id)).toBe("Rental notes".length + "Landlord: Gary Pruitt".length);
+    // Both lines, and the same 12-scalar run in the title "Rental notes.txt".
+    expect(ledger.chars(id)).toBe(2 * "Rental notes".length + "Landlord: Gary Pruitt".length);
     expect(ledger.take(w, "candidate", ["Landlord: Gary Pruitt, unpaid"])).toBe(false);
   });
 
@@ -139,8 +133,8 @@ describe("the positions a request reveals: every occurrence, each position once,
     const { m, w, id } = card();
     const ledger = new Disclosure(m);
     expect(ledger.take(w, "candidate", ["Call (512) 555-0147 aft\u2026"])).toBe(true);
-    // The run in the Call line; the Phone line's copy of " (512) 555-0147" is a repeat.
-    expect(ledger.chars(id)).toBe("Call (512) 555-0147 aft".length);
+    // The run in the Call line, and in the Phone line the run they share, " (512) 555-0147".
+    expect(ledger.chars(id)).toBe("Call (512) 555-0147 aft".length + " (512) 555-0147".length);
   });
 });
 
@@ -182,7 +176,8 @@ describe("the B26 review's undercharges", () => {
   });
 });
 
-// Repeated text counts once (OUTPUT-LEDGER-SPEC section 5, N_w), in the charge and in a conversation's limit alike.
+// Run-level dedupe (N_w) was measured and dropped (~/.caret-run/evidence/screen/pv2/simplify/NW-DECISION.md): it lost
+// held-16. So every copy of a text a window shows is charged, and a conversation's limit is under half of all its lines.
 describe("repeated text at seal", () => {
   const chat = (lines: string[]): ScreenModel => {
     const m = new ScreenModel();
@@ -212,17 +207,16 @@ describe("repeated text at seal", () => {
     );
   });
 
-  it("counts a 500-character message quoted at two levels once: 250 of it is admitted, all 500 refused", () => {
+  it("charges each quoted copy of a 500-character message: 250 of it costs 750 when it is quoted at two levels", () => {
     const msg = Array.from({ length: 84 }, (_, i) => `w${String(i).padStart(4, "0")}`).join(" ").slice(0, 500);
     expect(msg.length).toBe(500);
     const half = msg.slice(100, 350);
-    // Quoted at two levels the chat has T = 4 + 500 + 502 + 504 = 1510 characters, but its distinct text is the deepest
-    // quote, "> > " and the message (504), and the title (4): 508, so its limit is 253. The quotes repeat the message.
-    const quoted = chat([msg, `> ${msg}`, `> > ${msg}`]);
-    expect(seal(quoted, [half])).toBe(250);
-    expect(seal(quoted, [msg])).toBe("test: it reveals 500 characters of window chat-1, over its limit of 253; it was not sent");
-    // Unquoted, T = 504 and the limit is 251: the same 250 fits.
+    // Unquoted, T = 504 and the limit is 251: 250 fits.
     expect(seal(chat([msg]), [half])).toBe(250);
+    // Quoted at two levels, T = 4 + 500 + 502 + 504 = 1510 and the limit is 600: 250 is charged in each copy.
+    const quoted = chat([msg, `> ${msg}`, `> > ${msg}`]);
+    expect(seal(quoted, [half])).toBe("test: it reveals 750 characters of window chat-1, over its limit of 600; it was not sent");
+    expect(seal(quoted, [msg])).toBe("test: it reveals 1500 characters of window chat-1, over its limit of 600; it was not sent");
   });
 });
 

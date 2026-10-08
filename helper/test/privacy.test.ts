@@ -10,21 +10,18 @@
 //    descriptor or a candidate value with its window (privacy.ts). Every declared piece is in the
 //    request, and once they are taken out, no line of any window (8 characters or more, or the first 40
 //    of a longer one) is left: the request carries no screen text it did not declare.
-// 2. A bound per window. The characters of a window's lines the request covers, repeated text counted once (N_w,
-//    privacy/ledger/measure.ts keptOf, held equal to the reference in ledger-core.test.ts), are at most WINDOW_CHARS,
+// 2. A bound per window. The characters of a window's lines the request covers are at most WINDOW_CHARS,
 //    1,200. Why 1,200 is in privacy.ts: the pending question's 10 lines of 120 characters, and twice the
 //    densest source window of the fill calibration recordings (589).
 // 3. No conversation, whole or half. The sessions name their conversation windows themselves (chats,
 //    a mail thread, agent threads), apart from conversation.ts. However short, and whether or not the user's Ask
-//    names it, each keeps more than half its text, repeated text counted once, out of every request and gives at
-//    most CONVERSATION_CHARS, 600.
+//    names it, each keeps more than half its text out of every request and gives at most CONVERSATION_CHARS, 600.
 //    The short-chat sessions run once more with the rule off to show they went out whole.
 // 4. Nothing from a window that is not a source. Text unique to a window the request does not name in
 //    its snippets never appears, descriptors come from the one window the question is about, and the
 //    sessions' bystander windows (paragraphs no fill can use) give nothing to any request.
 //
 // PRIVACY_REPORT=FILE writes the measured numbers as JSON.
-import { inventoryOf, keptOf } from "../src/privacy/ledger/measure.ts";
 import { Disclosure, measureBytes } from "../src/privacy/disclosure.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,9 +60,6 @@ interface WindowText {
   title: string;
   lines: string[];
   chars: number;
-  /** The window's text with repeated text counted once (N_w), as positions over its lines in order. */
-  kept: Uint8Array;
-  distinct: number;
 }
 
 /** The test's own reading of a window's text, written apart from privacy.ts so the two can disagree. */
@@ -78,30 +72,12 @@ function textOf(w: WindowState): WindowText {
       if (t !== "") seen.add(t);
     }
   }
-  return windowText(w.window.windowId, w.window.title, [...seen]);
-}
-
-/** `n` pseudo-random lowercase letters and spaces, from `seed`: text with no run of 12 repeated. */
-function noise(n: number, seed: number): string {
-  let x = seed;
-  let out = "";
-  while (out.length < n) {
-    x = (x * 1103515245 + 12345) % 2147483648;
-    out += x % 6 === 0 && !out.endsWith(" ") && out !== "" ? " " : String.fromCharCode(97 + (x % 26));
-  }
-  return out.trimEnd().padEnd(n, "z");
-}
-
-/** A window's text from its distinct lines. */
-function windowText(windowId: string, title: string, lines: string[]): WindowText {
-  const kept = lines.length === 0 ? { bits: new Uint8Array(0), size: 0 } : keptOf(inventoryOf(lines));
+  const lines = [...seen];
   return {
-    windowId,
-    title,
+    windowId: w.window.windowId,
+    title: w.window.title,
     lines,
     chars: lines.reduce((n, l) => n + l.length, 0),
-    kept: kept.bits,
-    distinct: kept.size,
   };
 }
 
@@ -139,14 +115,13 @@ interface WindowMeasure {
   windowId: string;
   covered: number;
   chars: number;
-  distinct: number;
 }
 
 /**
  * Characters of each window's text the request carries, measured here apart from the ledger and more loosely (exact
  * case, collapsed spaces): a line the request holds whole counts in full, and inside any other line each character in a
- * run of RUN (12) or more characters that the request also holds; repeated text counted once (WindowText.kept). The
- * ledger, which folds case and compatibility forms, must charge at least this much.
+ * run of RUN (12) or more characters that the request also holds. The ledger, which folds case and compatibility forms,
+ * must charge at least this much.
  */
 const RUN = 12;
 function measure(r: Recorded): WindowMeasure[] {
@@ -155,15 +130,16 @@ function measure(r: Recorded): WindowMeasure[] {
   const holds = (t: string): boolean => strings.some((x) => x.includes(t));
   return r.windows.map((w) => {
     let covered = 0;
-    let start = 0;
     for (const line of w.lines) {
+      if (holds(line)) {
+        covered += line.length;
+        continue;
+      }
       const marked = new Uint8Array(line.length);
-      if (holds(line)) marked.fill(1);
-      else for (let a = 0; a + RUN <= line.length; a++) if (holds(line.slice(a, a + RUN))) marked.fill(1, a, a + RUN);
-      for (let p = 0; p < line.length; p++) covered += marked[p]! & w.kept[start + p]!;
-      start += line.length;
+      for (let a = 0; a + RUN <= line.length; a++) if (holds(line.slice(a, a + RUN))) marked.fill(1, a, a + RUN);
+      covered += marked.reduce((n, x) => n + x, 0);
     }
-    return { windowId: w.windowId, covered, chars: w.chars, distinct: w.distinct };
+    return { windowId: w.windowId, covered, chars: w.chars };
   });
 }
 
@@ -203,7 +179,7 @@ function violations(r: Recorded, bystanders: ReadonlySet<string>, conversations:
     if (m.covered > WINDOW_CHARS) out.push(`${where}: ${m.covered} characters from ${m.windowId}, over ${WINDOW_CHARS}`);
     if (bystanders.has(m.windowId) && m.covered > 0) out.push(`${where}: ${m.covered} characters from bystander ${m.windowId}`);
     if (conversations.has(m.windowId) && m.covered > 0) {
-      if (m.covered * 2 >= m.distinct) out.push(`${where}: ${m.covered} of ${m.distinct} distinct characters of conversation ${m.windowId}, half or more`);
+      if (m.covered * 2 >= m.chars) out.push(`${where}: ${m.covered} of ${m.chars} characters of conversation ${m.windowId}, half or more`);
       if (m.covered > CONVERSATION_CHARS) out.push(`${where}: ${m.covered} characters from conversation ${m.windowId}, over ${CONVERSATION_CHARS}`);
     }
   }
@@ -405,11 +381,11 @@ describe("the privacy line on every Jev request", () => {
     expect(rec.slice(4).every((r) => r.req.snippets.some((x) => x.windowId === NOTES && x.kind === "candidate"))).toBe(true);
     // The notes are a bystander for every other producer; here the plan quoted them, and the cut kept the request under the bound.
     expect(rec.flatMap((r) => violations(r, new Set()))).toEqual([]);
-    // The cut goal quotes 120 characters of the first paragraph, and every paragraph repeats most of that phrase:
-    // repeated text counted once (section 5), the notes are charged at most the 120 the goal shows.
+    // The cut goal quotes 120 characters of the first paragraph, and every paragraph repeats most of that phrase: each
+    // occurrence counts (section 4), so the notes are charged several times 120, within their WINDOW_CHARS.
     const notesCovered = Math.max(...rec.flatMap(measure).filter((m) => m.windowId === NOTES).map((m) => m.covered));
-    expect(notesCovered).toBeGreaterThan(0);
-    expect(notesCovered).toBeLessThanOrEqual(120);
+    expect(notesCovered).toBeGreaterThan(120);
+    expect(notesCovered).toBeLessThanOrEqual(WINDOW_CHARS);
   });
 
   it("short chats: a ten-line chat, a Messages thread, a help chat with a composer and a mail thread beside a form", async () => {
@@ -419,9 +395,9 @@ describe("the privacy line on every Jev request", () => {
     });
     expect(rec.map((r) => r.producer)).toEqual(STAGED(["fill on focus", "first look"]));
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
-    // The address Dana sent in the chat is also in the mail thread, a short conversation: sending it reveals that
-    // occurrence too, and with the thread's repeated text counted once it fits, within every conversation's half.
-    expect(rec.some((r) => bodyOf(r.req).includes('"dana.whitfield@example.com"'))).toBe(true);
+    // The address Dana sent in the chat is also in the mail thread, a conversation of 113 characters (limit 56): sending
+    // it reveals that occurrence too, and after the thread's other lines it does not fit, so it is not sent.
+    expect(rec.some((r) => bodyOf(r.req).includes('"dana.whitfield@example.com"'))).toBe(false);
     // Each chat gave something (its seal charged it), and none gave half (violations).
     const took = new Set(rec.flatMap((r) => Object.keys(r.req.charged)));
     for (const id of [SHORT_CHAT, MESSAGES_CHAT, MAIL_THREAD]) expect(took, id).toContain(id);
@@ -537,12 +513,14 @@ describe("the privacy line on every Jev request", () => {
   });
 
   it("catches what it is for: a request that pastes a window, or names text it did not declare", () => {
-    const w = windowText("x-1", "Big", Array.from({ length: 60 }, (_, i) => `Line ${i}: ${noise(30, i + 1)}`));
+    const w: WindowText = { windowId: "x-1", title: "Big", lines: Array.from({ length: 60 }, (_, i) => `A line of the window, number ${i}`), chars: 0 };
+    w.chars = w.lines.reduce((n, l) => n + l.length, 0);
     const pasted: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: w.lines.join("\n") }, questions: {}, snippets: w.lines.map((t) => ({ windowId: "x-1", kind: "candidate", text: t })), charged: { "x-1": w.chars } } };
     // Over the per-window bound is what is wrong.
     expect(violations(pasted, new Set())).toEqual([expect.stringContaining("over 1200")]);
     // A short chat: a window may go out whole under the per-window bound; a conversation may not.
-    const chat = windowText("c-1", "Chat", ["Dana", "3:41 PM", "see you at five", "Kofi", "3:42 PM", "on my way"]);
+    const chat: WindowText = { windowId: "c-1", title: "Chat", lines: ["Dana", "3:41 PM", "see you at five", "Kofi", "3:42 PM", "on my way"], chars: 0 };
+    chat.chars = chat.lines.reduce((n, l) => n + l.length, 0);
     const chatWhole: Recorded = { session: "s", producer: "p", windows: [chat], req: { state: { now: chat.lines.join("\n") }, questions: {}, snippets: chat.lines.map((t) => ({ windowId: "c-1", kind: "candidate", text: t })), charged: { "c-1": chat.chars } } };
     expect(violations(chatWhole, new Set(), new Set())).toEqual([]);
     expect(violations(chatWhole, new Set(), new Set(["c-1"]))).toEqual([expect.stringContaining("conversation c-1, half or more")]);
@@ -685,11 +663,8 @@ describe("a conversation the Ask names", () => {
   });
 
   it("checks every window against rule 2, the WINDOW_CHARS bound", () => {
-    // Distinct text: a run repeated is counted once, so 1,300 of one letter would be 12.
-    const line = noise(1300, 7);
-    const w = windowText(MAIL, "x", [line]);
-    expect(w.distinct).toBe(1300);
-    const r: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: line }, questions: {}, snippets: [{ windowId: MAIL, kind: "candidate", text: line }], charged: { [MAIL]: 1300 } } };
+    const w = { windowId: MAIL, title: "x", lines: ["a".repeat(1300)], chars: 1300 };
+    const r: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: "a".repeat(1300) }, questions: {}, snippets: [{ windowId: MAIL, kind: "candidate", text: "a".repeat(1300) }], charged: { [MAIL]: 1300 } } };
     expect(violations(r, new Set(), new Set())).toEqual([expect.stringContaining(`over ${WINDOW_CHARS}`)]);
   });
 });

@@ -1,6 +1,5 @@
 // Which windows count as conversations, and the budget privacy.ts gives them. Every window here is
 // synthetic; snap() gives each an 800 by 600 frame at the origin.
-import { refConversationLimit } from "./ledger-reference.ts";
 import { Disclosure, registryOf } from "../src/privacy/disclosure.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -23,18 +22,12 @@ function windowOf(nodes: Node[], app: AppRef = OTHER): WindowState {
 }
 
 /** A Slack-like list: each message a sender and a time on one row, its text on the row below. */
-function slackRows(senders: readonly string[], says: (i: number) => string = (i) => `message ${i} about the venue`): Node[] {
+function slackRows(senders: readonly string[]): Node[] {
   return senders.flatMap((who, i) => {
     const y = 40 + i * 60;
-    return [t(who, [100, y, 120, 18]), t(`${((8 + i) % 12) + 1}:${String(i % 60).padStart(2, "0")} AM`, [230, y, 60, 18]), t(says(i), [100, y + 22, 500, 18])];
+    return [t(who, [100, y, 120, 18]), t(`${((8 + i) % 12) + 1}:${String(i % 60).padStart(2, "0")} AM`, [230, y, 60, 18]), t(`message ${i} about the venue`, [100, y + 22, 500, 18])];
   });
 }
-
-/** A message of pseudo-random words, `i` its seed: no run of 12 repeats across messages. */
-const distinctMessage = (i: number): string => {
-  let x = i * 7919 + 13;
-  return Array.from({ length: 5 }, () => Array.from({ length: 5 }, () => String.fromCharCode(97 + ((x = (x * 1103515245 + 12345) % 2147483648) % 26))).join("")).join(" ");
-};
 
 afterEach(() => setConversationCap(true));
 
@@ -113,23 +106,20 @@ describe("conversation windows", () => {
 describe("the budget of a conversation", () => {
   /** A short chat of ten distinct lines, title included, each short enough that the card rule alone would send it whole. */
   const shortChat = (): WindowState => windowOf(slackRows(["Dana Whitfield", "Kofi Mensah", "Dana Whitfield"]).concat(t("Kofi Mensah"), t("10:44 AM")));
-  const textLines = (w: WindowState): string[] => [...new Set([w.window.title, ...[...w.nodes.values()].map((n) => n.label ?? "")])].filter((l) => l !== "");
-  const textChars = (w: WindowState): number => textLines(w).reduce((n, s) => n + s.length, 0);
+  const textChars = (w: WindowState): number => [...new Set([w.window.title, ...[...w.nodes.values()].map((n) => n.label ?? "")])].reduce((n, s) => n + s.length, 0);
 
   it("is under half its text however short, and the card rule no longer sends it whole", () => {
     const w = shortChat();
-    // Under half of its text, repeated text counted once (the reference's N_w, test/ledger-reference.ts).
-    expect(windowBudget(w)).toBe(refConversationLimit(textLines(w)));
-    expect(windowBudget(w)).toBeLessThan(Math.floor((textChars(w) - 1) / 2));
+    expect(windowBudget(w)).toBe(Math.floor((textChars(w) - 1) / 2));
     setConversationCap(false);
     expect(windowBudget(shortChat())).toBe(WINDOW_CHARS);
   });
 
   it("is at most CONVERSATION_CHARS however long", () => {
-    const long = windowOf(slackRows(Array.from({ length: 120 }, (_, i) => (i % 2 === 0 ? "Dana Whitfield" : "Kofi Mensah")), distinctMessage));
+    const long = windowOf(slackRows(Array.from({ length: 120 }, (_, i) => (i % 2 === 0 ? "Dana Whitfield" : "Kofi Mensah"))));
     expect(textChars(long)).toBeGreaterThan(2 * WINDOW_CHARS);
     expect(windowBudget(long)).toBe(CONVERSATION_CHARS);
-    const mid = windowOf(slackRows(Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? "Dana Whitfield" : "Kofi Mensah")), distinctMessage));
+    const mid = windowOf(slackRows(Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? "Dana Whitfield" : "Kofi Mensah"))));
     expect(textChars(mid)).toBeGreaterThan(2 * CONVERSATION_CHARS);
     expect(windowBudget(mid)).toBe(CONVERSATION_CHARS);
   });
@@ -138,22 +128,19 @@ describe("the budget of a conversation", () => {
     expect(windowBudget(windowOf(["Dana Whitfield", "Lumen Labs", "+1 (512) 555-0142"].map((l) => t(l))))).toBe(WINDOW_CHARS);
   });
 
-  it("charges nested labels as the line that holds them, so pieces cannot carry half a chat", () => {
+  it("charges the lines a taken text contains, so nested labels cannot carry half a chat", () => {
     const MESSAGES: AppRef = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
     const w = windowOf(["Alice, meet Bob at 3:41 PM", "Alice", "meet Bob", "Bob at 3:41 PM", "3:41 PM", "Bob"].map((l) => t(l)), MESSAGES);
     const budget = windowBudget(w);
     const ledger = new Disclosure(registryOf([w]));
-    // The lines inside the parent are the same text, counted once: its 26 characters and the title's 6, a limit of 15.
-    expect(budget).toBe(15);
+    // The parent line is 26 characters, but with the four lines inside it, 59: over the budget.
+    expect(budget).toBeLessThan(59);
     expect(ledger.take(w, "candidate", ["Alice, meet Bob at 3:41 PM"])).toBe(false);
-    // Each nested line, revealed, reveals its copy in the parent, so the pieces add up as the parent does.
     expect(ledger.take(w, "candidate", ["meet Bob"])).toBe(true);
-    expect(ledger.chars(w.window.windowId)).toBe(8);
+    // "Bob" was paid for inside "meet Bob", so it is free; "Bob at 3:41 PM" pays for itself and "3:41 PM".
+    expect(ledger.chars(w.window.windowId)).toBe(11);
     expect(ledger.take(w, "candidate", ["Bob"])).toBe(true);
-    expect(ledger.chars(w.window.windowId)).toBe(8);
-    expect(ledger.take(w, "candidate", ["Alice"])).toBe(true);
-    expect(ledger.chars(w.window.windowId)).toBe(13);
-    expect(ledger.take(w, "candidate", ["3:41 PM"])).toBe(false);
+    expect(ledger.chars(w.window.windowId)).toBe(11);
   });
 
   it("charges a window's text that reads like an indicator line", () => {

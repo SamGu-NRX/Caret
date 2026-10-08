@@ -38,7 +38,7 @@ export const OWNER_NOTE_CHARS = 2000;
 /** Approved draft 2; the host onboarding owner reuses this text. Required fix acceptances remain separate. */
 export const PRIVACY_PROMISE = `What Caret sends
 
-To decide what to offer, Caret sends a cloud model what you type to it and short pieces of what's on your screen: a field's label, the values that might go in it, and the lines around them. To decide whose details a value is, Caret may send the whole note it came from, if the note is 2,000 characters or shorter. No request carries more than half of a conversation, counting repeated text once. Before anything leaves your Mac, Caret removes password fields, card numbers, one-time codes and keys, and lines it recognizes as secrets, though it can miss a secret written in ordinary words. It sends nothing from an app or website you've switched off.
+To decide what to offer, Caret sends a cloud model what you type to it and short pieces of what's on your screen: a field's label, the values that might go in it, and the lines around them. To decide whose details a value is, Caret may send the whole note it came from, if the note is 2,000 characters or shorter. No request carries more than half of a conversation. Before anything leaves your Mac, Caret removes password fields, card numbers, one-time codes and keys, and lines it recognizes as secrets, though it can miss a secret written in ordinary words. It sends nothing from an app or website you've switched off.
 
 Who receives it
 
@@ -506,10 +506,10 @@ export class SnippetLedger {
 
   /**
    * Section 8: whether `text`, read whole from the redacted view `w`, may go as an owner note, against the window's
-   * owner-note allotment rather than its limit: the note fits the allotment, and the window is no conversation.
+   * owner-note allotment rather than its limit: the allotment is on, the note fits it, and the window is no conversation.
    */
   protected ownerNoteFits(w: WindowState, text: string): boolean {
-    return text.length <= OWNER_NOTE_CHARS && !heldAsConversation(this.known.get(w.window.windowId) ?? w);
+    return OWNER_NOTE_CHARS > 0 && text.length <= OWNER_NOTE_CHARS && !heldAsConversation(this.known.get(w.window.windowId) ?? w);
   }
 
   /**
@@ -518,7 +518,7 @@ export class SnippetLedger {
    */
   notesFit(takes: readonly { w: WindowState; text: string }[]): boolean {
     for (const t of takes) this.know(t.w);
-    if (takes.some((t) => t.text.length > OWNER_NOTE_CHARS || excludedValue(t.text) !== null || !this.locatable(t.w, t.text))) return false;
+    if (takes.some((t) => excludedValue(t.text) !== null || !this.locatable(t.w, t.text))) return false;
     const notes = new Map(takes.flatMap((t) => (this.ownerNoteFits(t.w, t.text) ? [[t.text, t.w] as const] : [])));
     return this.account.admit(takes.map((t) => t.text), false, notes) !== null;
   }

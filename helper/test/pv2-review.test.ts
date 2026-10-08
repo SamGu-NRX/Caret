@@ -153,14 +153,13 @@ describe("PV2 re-review of 0f636d0", () => {
     expect(() => verifySent({ purpose: "route.judge", disclosure: d }, { state: d.jsonText({ task: d.own("Route.") }), questions: {} })).not.toThrow();
   });
 
-  it("3: a derivation is charged its basis's distinct text it shows, a repeated word once (section 5)", () => {
+  it("3: a derivation is charged every place its run stands in its basis, so a repeated word charges each copy", () => {
     const alphas = Array(20).fill("alpha").join(" ");
     expect(alphas.length).toBe(119);
     const a = note([alphas]);
     const d = new Disclosure(a.m);
     expect(d.derived(d.basis(a.view, alphas)!, "alpha alpha alpha")).toBe("alpha alpha alpha");
-    // The line's distinct text is "alpha " once, and the run shows all of it.
-    expect(d.declared().charged.note).toBe("alpha ".length);
+    expect(d.declared().charged.note).toBe(119);
   });
 
   it("4: an ancestor that becomes excluded while editable takes its kept descendants' values too", () => {

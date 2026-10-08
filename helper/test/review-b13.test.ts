@@ -225,8 +225,8 @@ describe("B13 review: mail read in a browser is a conversation", () => {
     // The reviewer's case: as a short card of values it had the whole 1,200 characters.
     const w = page("Design review - Gmail", ["Dana Whitfield", "Design review", "Please use dana@example.com for the invitation."]);
     expect(conversationSign(w)).toBe("webConversation");
-    // 95 characters in all; the line "Design review" stands whole in the title, so it counts once: 82, and under half is 40.
-    expect(windowBudget(w)).toBe(40);
+    // 95 characters in all, so just under half of them.
+    expect(windowBudget(w)).toBe(47);
   });
 
   it("F6: a mail's header in a browser page is a conversation, whatever the site", () => {

@@ -1,5 +1,4 @@
 import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
-import { SHAPES } from "../privacy/shapes.ts";
 import { instructionForModel, redactWindow } from "./redact.ts";
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
 // the same candidate spans plus "none" (deep plan section 5, "Fill"). Jev picks a candidate id;
@@ -1740,15 +1739,12 @@ export async function proposeFill(
   const titleSaid = title === null ? null : m.descriptor(w, title);
   // Each candidate's line, minted with what it carries now (its clause included), by its id in either ask.
   // The whose stage describes each with its block head, the value questions as VALUE_BLOCK_HEAD says.
-  // A description longer than an option may be in either ask is left out, as one the ledger refuses is: repeated text
-  // costs the ledger little (N_w), so a line of one character repeated can fit a window's limit and still not an option.
-  const longest = Math.min(SHAPES["fill.values"]["questions.*.criteria.*"]!.max, SHAPES["fill.whose"]["questions.*.criteria.*"]!.max);
   const describe = (blockHead: boolean): Map<string, ModelText> => {
     const out = new Map<string, ModelText>();
     for (const list of [candidates, second]) {
       for (const c of list) {
         const said = mintCandidate(m, model, c, { blockHead });
-        if (said !== null && said.length <= longest) out.set(c.id, said);
+        if (said !== null) out.set(c.id, said);
       }
     }
     return out;

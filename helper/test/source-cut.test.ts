@@ -250,10 +250,9 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     expect(filled(b12)).toBeGreaterThan(filled(inOrder));
     expect(b12.get("Meeting date")).toBe("Thursday, October 8, 2026");
     expect(b12.get("Start time")).toBe("3:00 PM");
-    // By cost per field the budget serves a time, an email and the links where B12's order serves the dates, a time and
-    // the email: three fields either way (the window's limit, its repeated text counted once, is 203).
-    expect(filled(byCost)).toBe(3);
-    expect(filled(b12)).toBe(3);
+    // By cost per field the budget serves three fields where B12's order served two: the two dates cost
+    // more than a time, an email and the links together.
+    expect(filled(byCost)).toBeGreaterThan(filled(b12));
     expect(byCost.get("Start time")).toBe("3:00 PM");
     expect(byCost.get("Attendee email")).toBe(GOLD["Attendee email"]);
     expect(byCost.get("Video link")).toBe(GOLD["Video link"]);
