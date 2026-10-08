@@ -4,8 +4,8 @@
 // Every name and value is invented.
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { proposeFill } from "../src/fill/fill.ts";
-import type { AskJev, JevRequest } from "../src/fill/jev.ts";
+import { proposeFill, type FillScope } from "../src/fill/fill.ts";
+import { sealRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, node, snap, text } from "./builders.ts";
 
@@ -141,5 +141,33 @@ describe("Sol's round 4: collection order, associations, one membership, kept ra
     );
     const p = await proposeFill(m, picking({ Reference: "AB01" }), FORM, key("Reference"), 3000);
     expect(p.fields.find((x) => x.key === key("Reference"))?.value).toBe("AB01");
+  });
+});
+
+describe("value settlement's wording, reserved when settlement decides to ask", () => {
+  it("does not lose the settlement request at seal to a chat line its task sentence holds: 'evidence'", async () => {
+    // T = 1 + 9 + 8 = 18, limit 8: AB01, its label and the title take 8. VALUE_TASK holds "evidence", the chat's other line.
+    const m = desk([text("c0", "Ref: AB01"), text("c1", "evidence")], ["Reference"]);
+    const scope: FillScope = { fields: [key("Reference")], windows: null, memory: false, instruction: "put the ref in", person: null, literals: new Map() };
+    // The base question's two wordings disagree (AB01 against none), so the field goes on to value settlement.
+    const seen: JevRequest[] = [];
+    // Each request is sealed as the Jev client seals it (jev.ts sealRequest), so the seal's measure applies.
+    const ask: AskJev = async (req) => {
+      sealRequest(req);
+      seen.push(req);
+      const answers: Record<string, { choice: string; confidence: number }> = {};
+      for (const [id, q] of Object.entries(req.questions)) {
+        const hit = Object.entries(q.criteria).find(([, d]) => d?.startsWith('"AB01"') || d?.startsWith('Proposed value: "AB01"'))?.[0];
+        const second = String(q.instructions).startsWith("Instruction from the user:");
+        answers[id] = { choice: second ? "none" : (hit ?? "none"), confidence: 0.95 };
+      }
+      return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+    };
+    const p = await proposeFill(m, ask, FORM, key("Reference"), 3000, { scope, whose: false });
+    expect(seen.filter((r) => r.purpose === "fill.values").length, "the base question's two wordings were asked").toBeGreaterThanOrEqual(2);
+    expect(p.jev.model, "settlement was not refused at seal").not.toMatch(/value settlement unavailable/u);
+    // Settlement's wording does not fit beside AB01 in the chat, so it is not asked: the field stays as the base left it.
+    expect(seen.filter((r) => r.purpose === "fill.values").length, "no settlement request").toBe(2);
+    expect(p.fields.find((x) => x.key === key("Reference"))?.withheld).toBe("disagree");
   });
 });

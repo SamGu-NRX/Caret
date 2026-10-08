@@ -326,6 +326,46 @@ const VALUE_WORDINGS = [
     d.t`Field: ${p.descriptor} Section/group: ${p.path}. Required content and format: ${p.contract}. User request: "${p.request}". Explicit user selections: ${p.selections}. Which listed proposed value can fill this field without guessing, using the source evidence and respecting all restrictions in the request? Choose none if no listed value qualifies.`,
 ] as const;
 
+/**
+ * The fixed texts value settlement's requests carry around their values (proposeFill's askValueRequest and the minters
+ * its options use: statedOf, mintSource, mintSupport, pathOf, contractOf, selectionsSaid), with `gap` (a line break)
+ * standing in for what a request inserts: its question wordings, task and none sentences, an option's sentence, and the
+ * words its source, section path, contract and selections are said in. Reserved when settlement decides to ask, as the
+ * fill's other late sentences are (reserveWording, strict): the seal charges a chat's short line this wording happens to
+ * hold ("evidence" in VALUE_TASK), and one that does not fit leaves the base's answers standing. `boxes`: whether a
+ * checkbox is asked, which says BOX_CONTRACT.
+ */
+function settlementWording(d: Disclosure, boxes: boolean): string[] {
+  const gap = d.own("\n");
+  const parts: ValueParts = { request: gap, selections: gap, descriptor: gap, path: gap, contract: gap };
+  return [
+    ...VALUE_WORDINGS.map((f) => f(d, parts)),
+    VALUE_TASK,
+    VALUE_NONE,
+    d.t`Proposed value: "${gap}". Source: ${gap}. Observed label: ${gap}. Supporting text: ${gap}. Derivation: ${gap}.`,
+    PLACEMENT_UNKNOWN,
+    NO_SECTION,
+    UNNAMED_SECTION,
+    " > ",
+    CONTRACT_UNSTATED,
+    ...(boxes ? [BOX_CONTRACT] : []),
+    d.t`the fields ${gap}`,
+    "copy from what the user told Caret",
+    d.t`copy from the ${gap} window '${gap}'`,
+    "the user's own details",
+    d.t`the details of ${gap}`,
+    d.t`the value "${gap}" for '${gap}'`,
+    "the user's own details, which the user told Caret",
+    d.t`the user's own details, which the user told Caret, saved as '${gap}'`,
+    "the user's request",
+    d.t`${gap} window '${gap}'`,
+    d.t`${gap}; it is the user's own ${gap}, which the user told Caret`,
+    d.t`${gap}; the whole text is ${gap} in source_notes`,
+    "unavailable",
+    "literal copy",
+  ];
+}
+
 /** A value the user told Caret, under this ask's id for it (m1, m2... in the first ask, n1... in the second). */
 export interface AskAbout {
   id: string;
@@ -2815,7 +2855,9 @@ export async function proposeFill(
   let s2: JevResult | null = null;
   /** Why value settlement's requests failed, if they did: its fields stay as the base left them, blank, and the rest go on. */
   let settlementDown: string | null = null;
-  if (unsettled.length > 0 && instructionFits()) {
+  // Settlement's wording is reserved before its options are minted (settlementWording); when it does not fit beside what
+  // the base admitted, settlement is not asked and the base's answers stand.
+  if (unsettled.length > 0 && instructionFits() && ledger.reserveWording(settlementWording(m, unsettled.some((f) => f.control === "checkbox")), true)) {
     const ready = unsettled.filter((f) => statedOf(f).size > 0);
     const pair = ready.length === 0 ? null : ([askValueRequest(0, ready), askValueRequest(1, ready)] as const);
     let got: readonly [JevResult, JevResult] | null = null;

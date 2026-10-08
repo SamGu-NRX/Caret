@@ -62,7 +62,9 @@ describe("the four wrong agreements are never written", () => {
   // Ines's cell and office are someone else's for Theo's fields and Dana's email is not Kenji's: the owner exclusion keeps
   // all three out of the value questions. Wren's phone is offered to Jev but not to the user: a rule relating it to the
   // field (relationalHold) holds it, so no click can pick it.
-  const OFFERED_TO_JEV: Record<string, boolean> = { "b31-08 Mobile phone": false, "b31-08 Home phone": false, "b31-09 Reference phone": true, "b31-14 Email address": false };
+  // b31-09's Reference phone is no longer offered to Jev: settlement's wording does not fit beside what the base admitted
+  // in its mail (settlementWording, reserved strictly), so settlement is not asked and the field stays blank.
+  const OFFERED_TO_JEV: Record<string, boolean> = { "b31-08 Mobile phone": false, "b31-08 Home phone": false, "b31-09 Reference phone": false, "b31-14 Email address": false };
   it.each(WRONG.map((c) => [`${c.ask} ${c.field}`, c] as const))("%s: stopped where expected, and never written", async (name, c) => {
     const wrong = c.a.text as string;
     const r = await runB31(c.ask, { values: true, value: replayed(c) });
@@ -141,9 +143,9 @@ describe("the recorded verifier pairs still fail", () => {
       const verify = (label: string, wording: 0 | 1): Answer | undefined => (label === c.field ? (wording === 0 ? c.a : c.b) : undefined);
       if ((await valueQuestionFor(await runB31(c.ask, { values: true, verify }), c.field)) !== null) offered.push(`${c.ask} ${c.field}`);
     }
-    // b31-04's School also reaches a value question with the output ledger's collection: its value is admitted with its
-    // facts where it was read.
-    expect(offered).toEqual(["b31-01 First name", "b31-01 Last name", "b31-04 School", "b31-09 Reference relationship"]);
+    // With settlement's wording reserved strictly (settlementWording), b31-04 and b31-09 are not asked again: the wording
+    // does not fit beside what their base questions admitted in the mails, and their fields stay blank.
+    expect(offered, "b31-04 and b31-09 are not settled: settlement's wording does not fit").toEqual(["b31-01 First name", "b31-01 Last name"]);
   });
 });
 

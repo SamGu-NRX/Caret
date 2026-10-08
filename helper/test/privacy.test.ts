@@ -313,6 +313,7 @@ describe("the privacy line on every Jev request", () => {
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
   });
 
+  // About 2 s alone; under the full suite at the default worker count it ran past the 5-second default, so it has 30.
   it("fill: a large screen of mail, a table, a chat, a web page, contacts, an agent thread and files", async () => {
     const rec = await run("large scene", async (s) => {
       const scene = largeScene();
@@ -324,7 +325,7 @@ describe("the privacy line on every Jev request", () => {
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
     // Windows of thousands of characters each gave at most WINDOW_CHARS.
     expect(Math.max(...rec.flatMap(measure).map((m) => m.covered))).toBeLessThanOrEqual(WINDOW_CHARS);
-  });
+  }, 30_000);
 
   it("pending: a job window watched to the end, then a first look", async () => {
     const rec = await run("pending desk", async (s) => {
