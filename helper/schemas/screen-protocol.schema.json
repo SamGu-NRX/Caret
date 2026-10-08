@@ -342,6 +342,10 @@
                         },
                         "text": {
                           "type": "string"
+                        },
+                        "sharesExcludedName": {
+                          "type": "boolean",
+                          "const": true
                         }
                       },
                       "required": [

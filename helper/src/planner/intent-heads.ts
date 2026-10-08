@@ -30,7 +30,7 @@ import { fieldWords, restrictsSources } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { jevFailedError, type AskPart } from "./says.ts";
 import { MAX_ASK_OPTIONS } from "../protocol.ts";
-import { sectionMembership, windowOutline } from "../fill/ask-scope.ts";
+import { sectionPlacement } from "../fill/ask-scope.ts";
 
 /** Lowest confidence for the route, why, source and whose heads: plan section 3's provisional router floor, not calibrated. */
 export const HEAD_FLOOR = ROUTE_CUTOFF;
@@ -257,10 +257,10 @@ export function sectionVeto(snap: IntentSnapshot, scope: readonly [JevResult, Je
   if (answer === null) return null;
   if (answer.kind === "unlisted") return { section: null, notFound: true, outside: new Set(), unknown: new Set(scopeFields(snap).map((f) => f.key)) };
   const section = answer.name;
-  // SCP1: on the raw window, compared locally and sent nowhere. Redaction limits what is sent; a decision that can only
-  // withhold reads every occurrence, so a second "Equipment details" inside a removed "Password and security" group
-  // still makes the named text two sections (confirmation of 516ac15).
-  const member = sectionMembership(windowOutline(snap.window), section);
+  // SCP1: the occurrence the redacted view names, which Jev chose from; the raw window, compared locally and sent
+  // nowhere, only takes away (ask-scope.ts sectionPlacement): a second "Equipment details" inside a removed "Password
+  // and security" group still makes the named text two sections.
+  const member = sectionPlacement(snap.window, section).member;
   const outside = new Set<string>();
   const unknown = new Set<string>();
   for (const f of scopeFields(snap)) {

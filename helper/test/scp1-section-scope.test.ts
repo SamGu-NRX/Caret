@@ -15,7 +15,8 @@ import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
 import { headsIntentMaker, headsRequest, readHeads, scopeId, scopeRequest, settleFields } from "../src/planner/intent-heads.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskGoal } from "../src/planner/ask.ts";
-import { scopeSet, windowOutline, withScope } from "../src/fill/ask-scope.ts";
+import { askScope, scopeSet, sectionMembership, sectionPlacement, sectionRefusal, windowOutline, withScope } from "../src/fill/ask-scope.ts";
+import { sectionName } from "../src/engines/page-exclusions.ts";
 import { guardFor } from "../src/fill/contract.ts";
 import { validatePlan } from "../src/planner/validate.ts";
 import { buildInventory } from "../src/goals/inventory.ts";
@@ -787,5 +788,114 @@ describe("confirmation of 516ac15: veto decisions read the raw outline", () => {
     expect(() => m.accept()).toThrow(/more than once/u);
     expect(m.guard()).toMatch(/more than once/u);
     for (const r of j.seen) expect(JSON.stringify(r)).not.toMatch(REMOVED);
+  });
+});
+
+const occ = (id: string, text: string, heading = true) => ({ id, heading, text });
+
+describe("final check of 4f644e3: one reading of a section name, and the raw window only takes away", () => {
+  const FULLWIDTH = "Ｖｏｌｕｎｔａｒｙ ｓｅｌｆ－ｉｄｅｎｔｉｆｉｃａｔｉｏｎ";
+  /** A Jev that names a listed section by its text, and answers "not in this list" when the list lacks it. */
+  const faithful = (heading: string, o: { asks?: readonly string[] } = {}) => {
+    const inner = jev(o);
+    const ask: AskJev = async (req) => {
+      const r = await inner.ask(req);
+      const q = req.questions.section;
+      if (q !== undefined) {
+        const hit = Object.entries(q.criteria).find(([k, d]) => k.startsWith("sec") && d !== null && sectionName(d).includes(`'${sectionName(heading)}'`))?.[0];
+        r.answers.section = { choice: hit ?? "unlisted", confidence: 0.95 };
+      }
+      return r;
+    };
+    return { ask, seen: inner.seen };
+  };
+
+  it("reads section names as the extension does", () => {
+    const golden = JSON.parse(readFileSync(new URL("../fixtures/golden/section-names.json", import.meta.url), "utf8")) as { names: [string, string][]; excluded: string[]; kept: string[] };
+    for (const [raw, name] of golden.names) expect(sectionName(raw), raw).toBe(name);
+    for (const t of golden.excluded) expect(SELF_IDENTIFICATION.test(sectionName(t)), t).toBe(true);
+    for (const t of golden.kept) expect(SELF_IDENTIFICATION.test(sectionName(t)), t).toBe(false);
+  });
+
+  // P1 (a): the fullwidth spelling is excluded as the ASCII one is, so it is never offered or placed.
+  it("excludes a fullwidth self-identification section as the ASCII one, from a walk that sent both", async () => {
+    const walked: Walked = { occurrences: [occ("o1", "Voluntary self-identification"), occ("o2", FULLWIDTH)], chains: { "Serial number": ["o2"], Model: ["o2"], "Contact name": ["o1"], "Contact phone": ["o1"] } };
+    const d = desk({ page: pageSnapshot(["Voluntary self-identification", FULLWIDTH], walked) });
+    expect(snapFor(d).headings).toEqual([]);
+    const j = faithful("Voluntary self-identification", { asks: EQUIPMENT });
+    // The user's words name the section without its text, so any "identification" in a request came from the page.
+    const e = await refusal(plan(d, j, "fill the survey section near the bottom"));
+    expect(e.message).toBe(SAYS.sectionNotFound);
+    // A scope that named it is refused where acceptance and dispatch recheck it.
+    const serial = [...windowOf(d).nodes.values()].find((x) => x.label === "Serial number")?.key ?? "";
+    const scope = askScope(d.windowId, null, [serial], { [serial]: "seen" }, null, "a", [], "Voluntary self-identification");
+    expect(sectionRefusal({ key: serial, name: "Serial number" }, scope, windowOf(d))).toMatch(/no longer on the form/u);
+    for (const r of j.seen) expect(JSON.stringify(r)).not.toMatch(/identification|ｉｄｅｎｔ/iu);
+  });
+
+  // P1 (b): a name kept in one place and excluded by context in another is two sections.
+  it("withholds a section whose name the walk flags as an excluded section's too", async () => {
+    const walked: Walked = {
+      occurrences: [{ id: "o1", heading: false }, { id: "o2", heading: true }, occ("o3", "Service contact"), { id: "o4", heading: true, text: "Address", sharesExcludedName: true } as Walked["occurrences"][number]],
+      chains: { "Serial number": ["o3", "o4"], Model: ["o3", "o4"], "Contact name": ["o3"], "Contact phone": ["o3"] },
+    };
+    const d = desk({ page: pageSnapshot(["Service contact"], walked) });
+    expect(windowOutline(windowOf(d)).occurrences.find((x) => x.text === "Address")?.sharesExcludedName).toBe(true);
+    const j = jev({ asks: EQUIPMENT, section: "Address" });
+    expectSectionRefusal(await refusal(plan(d, j, "fill the address section")), EQUIPMENT);
+    expect(sectionPlacement(windowOf(d), "Address").withhold).toBe("duplicate");
+  });
+
+  // P2: the redacted view's occurrence is the section; the raw window naming another one withholds.
+  it("withholds when the raw window names another occurrence than the redacted view (reviewer's input)", async () => {
+    const nodes: Node[] = [
+      node("h/one", "AXHeading", { label: "Equipment details\nPassword: violet-orchard-seven" }),
+      field("f/serial", "", { label: "Serial number" }),
+      node("h/two", "AXHeading", { label: "Equipment details", placeholder: "Password" }),
+      field("f/cphone", "", { label: "Contact phone" }),
+    ];
+    const d = desk({ reader: nodes });
+    const red = windowOutline(redactWindow(windowOf(d)));
+    expect(red.occurrences.map((x) => [x.key, x.text])).toEqual([["h/one", "Equipment details"], ["h/two", null]]);
+    const j = jev({ asks: ["Serial number", "Contact phone"], section: "Equipment details" });
+    const settled = await settleFields(snapFor(d), j.ask);
+    expect(settled.asks).toEqual([]);
+    expect(settled.sectionless.map((f) => f.name)).toEqual(["Serial number", "Contact phone"]);
+    expect(sectionPlacement(windowOf(d), "Equipment details").withhold).toBe("duplicate");
+    for (const r of j.seen) expect(JSON.stringify(r)).not.toMatch(/violet-orchard|Password/u);
+  });
+
+  it("admits only fields both outlines place in the section, for random redactions", () => {
+    const r = rng(4644);
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)] as T;
+    for (let n = 0; n < 400; n++) {
+      const nodes: Node[] = [];
+      let group: string | null = null;
+      for (let i = 0; i < 10; i++) {
+        const roll = r();
+        const parent = group === null ? {} : { parent: group };
+        if (roll < 0.3) {
+          const text = pick(["Equipment details", "Service contact", "Notes"]);
+          const secret = r();
+          nodes.push(node(`h${i}`, "AXHeading", { ...parent, label: secret < 0.2 ? `${text}\nPassword: violet-orchard-seven` : text, ...(secret > 0.85 ? { placeholder: "Password" } : {}) }));
+        } else if (roll < 0.4) {
+          group = group === null ? `g${i}` : null;
+          if (group !== null) nodes.push(node(group, "AXGroup", { label: r() < 0.5 ? "Password and security" : "Details" }));
+        } else nodes.push(field(`f${i}`, "", { ...parent, label: `Field ${i}` }));
+      }
+      forgetWindows();
+      const m = new ScreenModel();
+      m.apply(snap(nodes, { at: 2000, windowId: "R", title: "Random form", focused: true }));
+      const w = m.windows.get("R");
+      if (w === undefined) throw new Error("no window");
+      const now = sectionPlacement(w, "Equipment details");
+      const byRedacted = sectionMembership(windowOutline(redactWindow(w)), "Equipment details");
+      const byRaw = sectionMembership(windowOutline(w), "Equipment details");
+      for (const f of nodes.filter((x) => x.editable === true)) {
+        if (now.member(f.key) !== "in") continue;
+        expect(byRedacted(f.key), `seed ${n} ${f.key}`).toBe("in");
+        expect(byRaw(f.key), `seed ${n} ${f.key}`).toBe("in");
+      }
+    }
   });
 });

@@ -7,7 +7,8 @@ import type { Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import type { Owner } from "./contract.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
-import { SECTION_BOUNDARY_ROLES } from "./redact.ts";
+import { redactWindow, SECTION_BOUNDARY_ROLES } from "./redact.ts";
+import { sectionName } from "../engines/page-exclusions.ts";
 
 /**
  * I2 ruling: one request, one settlement. What the per-field scope question settled for a request, kept so a later step
@@ -134,8 +135,7 @@ export function headingsBefore(w: WindowState): Map<string, string | null> {
   return out;
 }
 
-/** How the section veto compares section names: case, Unicode width and runs of whitespace aside. */
-export const sectionName = (s: string): string => s.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase();
+export { sectionName } from "../engines/page-exclusions.ts";
 
 /**
  * SCP1: one section-defining element a window shows, by a key unique in the window: a heading, or a labelled group
@@ -146,6 +146,8 @@ export interface SectionOccurrence {
   readonly key: string;
   readonly heading: boolean;
   readonly text: string | null;
+  /** A page walk's flag: an excluded occurrence has this name too, so the name is two sections (PageFrame.sections). */
+  readonly sharesExcludedName?: true;
 }
 
 /**
@@ -182,7 +184,7 @@ export function windowOutline(w: WindowState): WindowOutline {
   const areas = nodes.filter((n) => n.role === "AXWebArea");
   let o: WindowOutline;
   if (areas.some((a) => a.outline !== undefined)) {
-    const occurrences = areas.flatMap((a) => (a.outline ?? []).map((x) => ({ key: x.key, heading: x.heading, text: x.text ?? null })));
+    const occurrences = areas.flatMap((a) => (a.outline ?? []).map((x) => ({ key: x.key, heading: x.heading, text: x.text ?? null, ...(x.sharesExcludedName === true ? { sharesExcludedName: true as const } : {}) })));
     o = { occurrences, chainOf: (key) => w.nodes.get(key)?.sections ?? [], fallback: [] };
   } else if (areas.some((a) => a.headings !== undefined)) {
     o = { occurrences: [], chainOf: () => "unknown", fallback: areas.flatMap((a) => a.headings ?? []) };
@@ -282,8 +284,6 @@ export function chainHeading(o: WindowOutline, key: string): string | null {
  * window can't say or places it in none.
  */
 export type Membership = "in" | "outside" | "unknown";
-/** How many occurrences a section text names in the window: the veto and the dispatch recheck place fields only for one. */
-export const namedOccurrences = (o: WindowOutline, section: string): number => o.occurrences.filter((x) => x.text !== null && sectionName(x.text) === sectionName(section)).length;
 export function sectionMembership(o: WindowOutline, section: string): (key: string) => Membership {
   const named = o.occurrences.filter((x) => x.text !== null && sectionName(x.text) === sectionName(section));
   if (named.length !== 1) return () => "unknown";
@@ -348,12 +348,48 @@ export function scopeRefusal(x: ScopedWrite, scope: AskScope | undefined, docume
 /** SCP1: why a field is no longer in the one section its Ask named, by the window as it reads now, or null. */
 export function sectionRefusal(f: { readonly key: string; readonly name: string }, scope: AskScope, window: WindowState): string | null {
   if (scope.section === null) return null;
-  // The raw window, compared locally: a duplicate whose text redaction removed is still a duplicate.
-  const o = windowOutline(window);
-  const n = namedOccurrences(o, scope.section);
-  if (n === 0) return `the section you named is no longer on the form, so Caret can't tell '${f.name}' is in it`;
-  if (n > 1) return `the form now shows the section you named more than once, so Caret can't tell '${f.name}' is in it`;
-  return sectionMembership(o, scope.section)(f.key) === "in" ? null : `'${f.name}' is no longer in the section you named`;
+  const p = sectionPlacement(window, scope.section);
+  if (p.withhold === "missing") return `the section you named is no longer on the form, so Caret can't tell '${f.name}' is in it`;
+  if (p.withhold === "duplicate") return `the form now shows the section you named more than once, so Caret can't tell '${f.name}' is in it`;
+  return p.member(f.key) === "in" ? null : `'${f.name}' is no longer in the section you named`;
+}
+
+/**
+ * SCP1: where a window places fields in the section a request named, for the veto at settlement and the recheck at
+ * acceptance and dispatch. The section is the occurrence the redacted view names, since that is what Jev chose from; the
+ * raw window, read locally and sent nowhere, can only take away (final check of 4f644e3):
+ *   - "missing": the redacted view names no occurrence by that text;
+ *   - "duplicate": it names more than one, or one flagged as sharing an excluded name, or the raw window names by that
+ *     text more than one occurrence, a flagged one, or another occurrence than the redacted view's (a heading whose own
+ *     label redaction cut to that text, beside one whose placeholder redaction removed);
+ *   - otherwise a field is "in" only when both outlines place it in that occurrence, so the fields admitted are a subset
+ *     of what either outline alone admits.
+ */
+export interface SectionPlacement {
+  readonly withhold: "missing" | "duplicate" | null;
+  member(key: string): Membership;
+}
+export function sectionPlacement(window: WindowState, section: string): SectionPlacement {
+  const unknown = (withhold: "missing" | "duplicate"): SectionPlacement => ({ withhold, member: () => "unknown" });
+  const name = sectionName(section);
+  const named = (o: WindowOutline): readonly SectionOccurrence[] => o.occurrences.filter((x) => x.text !== null && sectionName(x.text) === name);
+  const red = windowOutline(redactWindow(window));
+  const raw = windowOutline(window);
+  const shown = named(red);
+  if (shown.length === 0) return unknown("missing");
+  const chosen = shown[0] as SectionOccurrence;
+  const local = named(raw);
+  if (shown.length > 1 || chosen.sharesExcludedName === true || local.length !== 1 || local[0]?.key !== chosen.key || local[0].sharesExcludedName === true) return unknown("duplicate");
+  const inRed = sectionMembership(red, section);
+  const inRaw = sectionMembership(raw, section);
+  return {
+    withhold: null,
+    member: (key) => {
+      const a = inRed(key);
+      const b = inRaw(key);
+      return a === "in" && b === "in" ? "in" : a === "unknown" || b === "unknown" ? "unknown" : "outside";
+    },
+  };
 }
 
 /**

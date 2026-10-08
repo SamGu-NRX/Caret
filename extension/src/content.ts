@@ -132,7 +132,7 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
     path: location.protocol === "about:" ? location.href : location.pathname,
     title: clean(document.title, 200),
     // SCP1: a heading the walk's exclusions match (a self-identification section) never leaves the frame.
-    headings: frameHeadings([...document.querySelectorAll("h1, h2")].filter((x) => visible(x)).map((h) => h.textContent ?? ""), (t) => SELF_IDENTIFICATION.test(t)),
+    headings: frameHeadings([...document.querySelectorAll("h1, h2")].filter((x) => visible(x)).map((h) => h.textContent ?? ""), (name) => SELF_IDENTIFICATION.test(name)),
     sections: out.sections,
     controls: out.controls,
     iframes: visibleIframes(),

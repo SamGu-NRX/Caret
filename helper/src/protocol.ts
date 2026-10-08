@@ -89,7 +89,7 @@ export const Node = z.object({
    * SCP1, page web areas only: the frame's section occurrences in document order (PageFrame.sections), each by a key
    * unique in the window, with its text unless an exclusion or redaction took it. Page controls name them in `sections`.
    */
-  outline: z.array(z.object({ key: z.string(), heading: z.boolean(), text: z.string().optional() })).optional(),
+  outline: z.array(z.object({ key: z.string(), heading: z.boolean(), text: z.string().optional(), sharesExcludedName: z.literal(true).optional() })).optional(),
   /** SCP1, page controls and their groups only: the keys of the outline occurrences the control sits in, outermost first. */
   sections: z.array(z.string()).optional(),
 });
@@ -2810,9 +2810,10 @@ export const PageFrame = z.object({
   /**
    * SCP1: the frame's section occurrences in document order (extension content/sections.ts): each heading, fieldset with
    * a legend, or labelled group or region, by an id unique within the walk, and its text unless an exclusion matched it.
-   * Absent from an extension before SCP1.
+   * `sharesExcludedName`: a kept occurrence whose name an excluded one has (by where it is, not its name alone), sent
+   * with no text of the excluded one; the helper reads that name as two sections. Absent from an extension before SCP1.
    */
-  sections: z.array(z.object({ id: z.string().min(1).max(40), heading: z.boolean(), text: z.string().min(1).max(200).optional() })).max(200).optional(),
+  sections: z.array(z.object({ id: z.string().min(1).max(40), heading: z.boolean(), text: z.string().min(1).max(200).optional(), sharesExcludedName: z.literal(true).optional() })).max(200).optional(),
   controls: z.array(PageControl),
   /** The frame's visible <iframe> elements, origin plus path of src and rect: the worker drops a child frame none of them holds. */
   iframes: z.array(z.object({ src: z.string(), rect: PageRect })),

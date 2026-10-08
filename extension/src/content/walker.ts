@@ -7,7 +7,7 @@ import { authorIdentifier, isGeneratedId, strongKey } from "../shared/ids.ts";
 import { clean, composedParent, groupNames, labelledBy } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
-import { sectionOutline, type Occurrence } from "./sections.ts";
+import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -22,6 +22,12 @@ const CANDIDATE = "input, select, textarea, button, a[href], [role=button], [rol
 // W3 real-site pass: Greenhouse's EEO section asked "I consider myself a member of the LGBTQ+ community. (optional)" in a
 // section headed by an h2, not a fieldset, so neither the label nor a group name matched; the identity terms below close it.
 export const SELF_IDENTIFICATION = /\b(self[- ]identif\w*|gender|sex|race|racial|ethnicity|hispanic|latin[oax]|veteran|disabilit(y|ies)|disabled|pronouns?|sexual orientation|sexuality|transgender|lgbt\w*|queer|lesbian|gay|bisexual|non-?binary|intersex|consent|i agree|i accept|i acknowledge|i certify|terms (of|and) (service|use|conditions)|privacy policy|signature|e-?sign)\b/i;
+
+/**
+ * SCP1: whether a name or a group's question is a self-identification one, read as sectionName reads it (NFKC, case
+ * folded, whitespace collapsed), so a fullwidth "Ｇｅｎｄｅｒ" is excluded as "Gender" is.
+ */
+export const selfIdentifying = (text: string): boolean => SELF_IDENTIFICATION.test(sectionName(text));
 
 /** Field names and ids that mark a card number or code even without autocomplete. */
 const PAYMENT_NAME = /\b(card.?number|cc.?(num|number|csc|cvc|cvv)|cvc|cvv|csc|security.?code)\b/i;
@@ -99,16 +105,16 @@ export function exclusionOf(el: Element, name: string): PageExclusion | null {
   if ((el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) && PAYMENT_NAME.test(`${el.name} ${el.id}`)) return "payment";
   if (ariaHidden(el)) return "ariaHidden";
   if (!visible(el) && !visibleReactSelect(el) && !ownedFileInput(el)) return "invisible";
-  if (SELF_IDENTIFICATION.test(name) || groupNames(el).some((g) => SELF_IDENTIFICATION.test(g))) return "selfIdentification";
+  if (selfIdentifying(name) || groupNames(el).some(selfIdentifying)) return "selfIdentification";
   // A question around a radio group or a press group asks it too, when no legend does (W4: Greenhouse's EEO section
   // and Lever's custom questions put the question in a sibling element).
   // Every text the question could be read from is tested, not only the nearest, so readable text a page puts close to
   // the buttons cannot hide a sensitive question further out (W4 review #3).
   if ((el instanceof HTMLInputElement && el.type === "radio") || el.getAttribute("role") === "radio") {
-    if (radioQuestions(el).some((t) => SELF_IDENTIFICATION.test(t))) return "selfIdentification";
+    if (radioQuestions(el).some(selfIdentifying)) return "selfIdentification";
   }
   const press = pressGroup(el);
-  if (press !== null && press.texts.some((t) => SELF_IDENTIFICATION.test(t))) return "selfIdentification";
+  if (press !== null && press.texts.some(selfIdentifying)) return "selfIdentification";
   return null;
 }
 
@@ -296,7 +302,7 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     labelledBy,
     shadowRoot: shadowRootOf,
     assigned: (el) => (el instanceof HTMLSlotElement ? slotted(el) : null),
-    excluded: (text) => SELF_IDENTIFICATION.test(text),
+    excluded: (name) => SELF_IDENTIFICATION.test(name),
   });
   for (const f of candidates()) {
     const why = exclusionOf(f.el, f.name);

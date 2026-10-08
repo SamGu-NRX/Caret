@@ -164,7 +164,7 @@ export interface FrameReport {
   title: string;
   headings: string[];
   /** SCP1: the frame's section occurrences in document order: id, whether a heading, and text unless an exclusion matched. */
-  sections?: { id: string; heading: boolean; text?: string }[];
+  sections?: { id: string; heading: boolean; text?: string; sharesExcludedName?: true }[];
   controls: PageControl[];
   iframes: { src: string; rect: Rect; inner: [number, number] }[];
   /** The frame's own viewport, [innerWidth, innerHeight]: 0 by 0 inside an iframe its embedder hides with display:none. */

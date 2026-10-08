@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { frameHeadings, MAX_OCCURRENCES, MAX_SECTIONS, Outline, sectionOutline, type OutlineElement, type OutlineReader } from "../src/content/sections.ts";
+import { frameHeadings, MAX_OCCURRENCES, MAX_SECTIONS, Outline, sectionName, sectionOutline, type OutlineElement, type OutlineReader } from "../src/content/sections.ts";
 import { SELF_IDENTIFICATION } from "../src/content/walker.ts";
 
 interface El extends OutlineElement<El> {
@@ -190,5 +190,48 @@ describe("the frame's heading list", () => {
     const golden = JSON.parse(readFileSync(fileURLToPath(new URL("../../helper/fixtures/golden/self-identification.json", import.meta.url)), "utf8")) as { excluded: string[]; kept: string[] };
     for (const t of golden.excluded) expect(SELF_IDENTIFICATION.test(t), t).toBe(true);
     for (const t of golden.kept) expect(SELF_IDENTIFICATION.test(t), t).toBe(false);
+  });
+});
+
+describe("one reading of a section name (final check of 4f644e3)", () => {
+  const golden = JSON.parse(readFileSync(fileURLToPath(new URL("../../helper/fixtures/golden/section-names.json", import.meta.url)), "utf8")) as { names: [string, string][]; excluded: string[]; kept: string[] };
+
+  it("reads names as the helper does: NFKC, case folded, whitespace collapsed", () => {
+    for (const [raw, name] of golden.names) expect(sectionName(raw), raw).toBe(name);
+    for (const t of golden.excluded) expect(SELF_IDENTIFICATION.test(sectionName(t)), t).toBe(true);
+    for (const t of golden.kept) expect(SELF_IDENTIFICATION.test(sectionName(t)), t).toBe(false);
+  });
+
+  // P1: the fullwidth spelling is excluded as the ASCII one is.
+  it("excludes a fullwidth self-identification heading as it excludes the ASCII one", () => {
+    const r = walk(el("form", {}, el("h2", {}, "Voluntary self-identification"), input("a"), el("h2", {}, "Ｖｏｌｕｎｔａｒｙ ｓｅｌｆ－ｉｄｅｎｔｉｆｉｃａｔｉｏｎ"), input("b")));
+    expect(r.occurrences).toEqual([{ id: "o1", heading: true }, { id: "o2", heading: true }]);
+    expect(r.chains).toEqual({ a: ["(excluded)"], b: ["(excluded)"] });
+    expect(frameHeadings(["Ｖｏｌｕｎｔａｒｙ ｓｅｌｆ－ｉｄｅｎｔｉｆｉｃａｔｉｏｎ", "Equipment details"], (n) => SELF_IDENTIFICATION.test(n))).toEqual(["Equipment details"]);
+  });
+
+  // P1 (b): a name excluded by where it is, kept elsewhere, is flagged and never sent.
+  it("excludes a heading inside an excluded section, and flags a kept one that shares its name", () => {
+    const r = walk(
+      el("form", {}, el("fieldset", {}, el("legend", {}, "Voluntary self-identification"), el("h3", {}, "Address"), input("survey"))),
+      el("h2", {}, "Service contact"),
+      el("h3", {}, "Address"),
+      input("street"),
+      el("h2", {}, "Voluntary self-identification"),
+      el("h3", {}, "Questions"),
+      input("q"),
+      el("h2", {}, "Questions"),
+      input("other"),
+    );
+    expect(r.occurrences).toEqual([
+      { id: "o1", heading: false },
+      { id: "o2", heading: true },
+      { id: "o3", heading: true, text: "Service contact" },
+      { id: "o4", heading: true, text: "Address", sharesExcludedName: true },
+      { id: "o5", heading: true },
+      { id: "o6", heading: true },
+      { id: "o7", heading: true, text: "Questions", sharesExcludedName: true },
+    ]);
+    expect(JSON.stringify(r.occurrences)).not.toMatch(/identification/iu);
   });
 });

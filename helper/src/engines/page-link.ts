@@ -3,7 +3,7 @@
 // tab's snapshot to the screen model before answering, as the reader does, and maps the page outcome back onto
 // the reader's. Its grant() turns the executor's one-window ActGrant into one ScopedActGrant per frame of the tab
 // as last walked, each pinned to that frame's origin and navigation generation.
-import { SELF_IDENTIFICATION } from "./page-exclusions.ts";
+import { excludedSection } from "./page-exclusions.ts";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageFrame, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type VerbOutcome, type VerbResult } from "../protocol.ts";
 import type { ReaderLink } from "../executor/means.ts";
 import type { EngineSession } from "./session.ts";
@@ -182,8 +182,8 @@ const sectionsOf = (frameId: number, c: PageControl): Pick<Node, "sections"> => 
  * place, so it still ends the section before it, and loses only its text.
  */
 function frameSections(f: PageFrame): Pick<Node, "headings" | "outline"> {
-  const headings = f.headings.filter((h) => !SELF_IDENTIFICATION.test(h));
-  const outline = (f.sections ?? []).map((o) => ({ key: occurrenceKey(f.frameId, o.id), heading: o.heading, ...(o.text === undefined || SELF_IDENTIFICATION.test(o.text) ? {} : { text: o.text }) }));
+  const headings = f.headings.filter((h) => !excludedSection(h));
+  const outline = (f.sections ?? []).map((o) => ({ key: occurrenceKey(f.frameId, o.id), heading: o.heading, ...(o.text === undefined || excludedSection(o.text) ? {} : { text: o.text }), ...(o.sharesExcludedName === true ? { sharesExcludedName: true as const } : {}) }));
   return { ...(headings.length === 0 ? {} : { headings }), ...(outline.length === 0 ? {} : { outline }) };
 }
 
