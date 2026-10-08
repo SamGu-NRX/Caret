@@ -150,8 +150,9 @@ def page_loop(name, exit_code, wrong_seen, expect_ids=None, goal=False):
 _VITEST = re.compile(r"^\s*Tests\s+(?:(\d+) failed)?(?:\s*\|\s*)?(?:(\d+) passed)?", re.M)
 _NODE = re.compile(r"^\S*\s*(pass|fail) (\d+)\s*$", re.M)
 _TSC = re.compile(r"error TS\d+", re.M)
-# swift test's two frameworks: XCTest's last "Executed" line is the whole run's; Swift Testing's run line follows it.
-_XCTEST = re.compile(r"Executed (\d+) tests?, with (\d+) failures?")
+# Bundle summaries exclude nested suites and the duplicate "All tests" rollup.
+_XCTEST = re.compile(r"^(?:Test Suite '([^'\n]+)' (?:passed|failed)[^\n]*\n)?"
+                     r"[ \t]*Executed (\d+) tests?, with (?:(\d+) tests? skipped and )?(\d+) failures?", re.M)
 _SWIFT_TESTING = re.compile(r"Test run with (\d+) tests?(?: in \d+ suites?)? (passed|failed) after [\d.]+ seconds?"
                             r"(?: with (\d+) issues?)?")
 
@@ -159,19 +160,30 @@ _SWIFT_TESTING = re.compile(r"Test run with (\d+) tests?(?: in \d+ suites?)? (pa
 def _swift_summary(name, text, exit_code):
     """Counts from swift test's output, written to OUT/<name>.summary.json. A nonzero exit with no test summary at all
     is a build error: nothing ran."""
-    xc, st = _XCTEST.findall(text), _SWIFT_TESTING.findall(text)
+    xc = [{"name": suite or None, "executed": int(executed), "failures": int(failures),
+           "skipped": int(skipped or 0)} for suite, executed, skipped, failures in _XCTEST.findall(text)]
+    bundles = ([x for x in xc if (x["name"] or "").endswith(".xctest")]
+               or [x for x in xc if x["name"] == "All tests"]
+               or [x for x in xc if x["name"] is None])
+    runs = [{"tests": int(tests), "verdict": verdict, "issues": int(issues or 0)}
+            for tests, verdict, issues in _SWIFT_TESTING.findall(text)]
     summary = {"name": name, "exit": exit_code, "xctest": None, "swift_testing": None, "build_failed": False,
-               "failed": None, "passed": None}
-    if xc:
-        executed, failures = (int(x) for x in xc[-1])
-        summary["xctest"] = {"executed": executed, "failures": failures}
-    if st:
-        tests, verdict, issues = st[-1]
-        summary["swift_testing"] = {"tests": int(tests), "verdict": verdict, "issues": int(issues or 0)}
-    if xc or st:
-        x, s = summary["xctest"], summary["swift_testing"]
-        summary["failed"] = (x["failures"] if x else 0) + ((s["issues"] or 1) if s and s["verdict"] == "failed" else 0)
-        summary["passed"] = ((x["executed"] - x["failures"]) if x else 0) + (s["tests"] if s and s["verdict"] == "passed" else 0)
+               "executed": None, "skipped": None, "failed": None, "passed": None}
+    if bundles:
+        summary["xctest"] = {key: sum(x[key] for x in bundles) for key in ("executed", "failures", "skipped")}
+        summary["xctest"]["bundles"] = bundles
+    if runs:
+        summary["swift_testing"] = {"tests": sum(s["tests"] for s in runs),
+                                    "verdict": "failed" if any(s["verdict"] == "failed" for s in runs) else "passed",
+                                    "issues": sum(s["issues"] for s in runs), "runs": runs}
+    if bundles or runs:
+        summary["executed"] = sum(x["executed"] for x in bundles) + sum(s["tests"] for s in runs)
+        summary["skipped"] = sum(x["skipped"] for x in bundles)
+        # Swift Testing reports issues, not failed-test counts; retain that failure signal for each run.
+        summary["failed"] = sum(x["failures"] for x in bundles) + sum(
+            (s["issues"] or 1) for s in runs if s["verdict"] == "failed")
+        summary["passed"] = sum(x["executed"] - x["failures"] - x["skipped"] for x in bundles) + sum(
+            s["tests"] for s in runs if s["verdict"] == "passed")
     else:
         summary["build_failed"] = exit_code != 0
     path = os.path.join(out_dir(), name + ".summary.json")

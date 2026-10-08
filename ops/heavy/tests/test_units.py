@@ -210,7 +210,7 @@ class CheckTest(Temp):
     def test_swift_test_output_xctest_swift_testing_and_build_errors(self):
         xc_ok = ("Test Suite 'All tests' started at 2026-10-07 21:00:00.000.\n"
                  "Test Suite 'CaretHostTests.xctest' passed at 2026-10-07 21:00:01.234.\n"
-                 "\t Executed 40 tests, with 0 failures (0 unexpected) in 1.200 (1.230) seconds\n"
+                 "\t Executed 42 tests, with 0 failures (0 unexpected) in 1.200 (1.230) seconds\n"
                  "Test Suite 'All tests' passed at 2026-10-07 21:00:01.240.\n"
                  "\t Executed 42 tests, with 0 failures (0 unexpected) in 1.234 (1.240) seconds\n"
                  "\u2714 Test run with 12 tests in 3 suites passed after 0.004 seconds.\n")
@@ -236,7 +236,47 @@ class CheckTest(Temp):
         with open(os.path.join(self.out, "ok.summary.json")) as fh:
             summary = json.load(fh)
         self.assertEqual((summary["xctest"], summary["swift_testing"]),
-                         ({"executed": 42, "failures": 0}, {"tests": 12, "verdict": "passed", "issues": 0}))
+                         ({"executed": 42, "failures": 0, "skipped": 0,
+                           "bundles": [{"name": "CaretHostTests.xctest", "executed": 42, "failures": 0, "skipped": 0}]},
+                          {"tests": 12, "verdict": "passed", "issues": 0,
+                           "runs": [{"tests": 12, "verdict": "passed", "issues": 0}]}))
+
+    def test_swift_summary_all_bundles_from_int1_log(self):
+        with open(os.path.join(HEAVY, "tests/fixtures/swift-int1.txt")) as fh:
+            text = fh.read()
+        with mock.patch.dict(os.environ, CARET_HEAVY_OUT=self.out):
+            summary, _ = check._swift_summary("int1", text, 1)
+        self.assertEqual(summary["failed"], 10)
+        self.assertEqual(summary["executed"], 1430)
+        self.assertEqual(summary["skipped"], 14)
+        self.assertEqual(summary["passed"], 1406)
+        self.assertEqual(summary["xctest"]["bundles"], [
+            {"name": "CaretHostTests.xctest", "executed": 248, "failures": 10, "skipped": 14},
+            {"name": "CaretHostCoreTests.xctest", "executed": 1182, "failures": 0, "skipped": 0},
+        ])
+        self.assertEqual(len(summary["swift_testing"]["runs"]), 2)
+
+    def test_swift_summary_sums_runs_and_does_not_count_nested_suites(self):
+        text = ("Test Suite 'NestedTests' failed at timestamp.\n"
+                " Executed 2 tests, with 1 failure (0 unexpected) in 0.1 seconds\n"
+                "Test Suite 'First.xctest' failed at timestamp.\n"
+                " Executed 4 tests, with 1 test skipped and 1 failure (0 unexpected) in 0.1 seconds\n"
+                "Test Suite 'All tests' failed at timestamp.\n"
+                " Executed 4 tests, with 1 test skipped and 1 failure (0 unexpected) in 0.1 seconds\n"
+                "Test Suite 'Second.xctest' passed at timestamp.\n"
+                " Executed 3 tests, with 0 failures (0 unexpected) in 0.1 seconds\n"
+                "Test Suite 'All tests' passed at timestamp.\n"
+                " Executed 3 tests, with 0 failures (0 unexpected) in 0.1 seconds\n"
+                "Test run with 5 tests passed after 0.001 seconds.\n"
+                "Test run with 2 tests failed after 0.001 seconds with 1 issue.\n")
+        with mock.patch.dict(os.environ, CARET_HEAVY_OUT=self.out):
+            summary, _ = check._swift_summary("multiple", text, 1)
+        self.assertEqual((summary["executed"], summary["failed"], summary["skipped"], summary["passed"]),
+                         (14, 2, 1, 10))
+        self.assertEqual(summary["swift_testing"]["tests"], 7)
+        self.assertEqual(summary["swift_testing"]["issues"], 1)
+        self.assertEqual(summary["swift_testing"]["verdict"], "failed")
+        self.assertEqual(len(summary["swift_testing"]["runs"]), 2)
 
     def test_vm_proof_needs_every_check_true(self):
         self.write("out/proof.json", json.dumps({"checks": {"clone_gone": True, "virtualization_gone": True}}))
