@@ -46,13 +46,18 @@ final class OnboardingHostTests: XCTestCase {
         }
     }
 
-    /// The privacy line, word for word (A10 brief). A change to it is a product decision, not a
-    /// copy edit, so it fails here first.
-    func testThePrivacyLineIsPinned() {
-        XCTAssertEqual(
-            PermissionsScreen.privacyLine,
-            "To decide what to offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might fill. Never a whole document or conversation. The next words are written on this Mac."
-        )
+    /// The promise the build bundles is PRIVACY_PROMISE byte for byte (scripts/privacy_gate.sh); parsed for the
+    /// permissions step, it splits into exactly its blank-line-separated blocks, none changed, whatever its words.
+    func testTheBundledPromiseParsesIntoItsOwnBlocks() throws {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../../helper/src/privacy.ts").standardized
+        let typescript = try String(contentsOf: source, encoding: .utf8)
+        let start = try XCTUnwrap(typescript.range(of: "export const PRIVACY_PROMISE = `"), "privacy.ts has no PRIVACY_PROMISE")
+        let end = try XCTUnwrap(typescript.range(of: "`;", range: start.upperBound..<typescript.endIndex))
+        let text = String(typescript[start.upperBound..<end.lowerBound])
+        XCTAssertFalse(text.contains("${") || text.contains("\\"), "the template literal must be plain text for this read to equal the bundled bytes")
+        let promise = try XCTUnwrap(PrivacyPromise(text))
+        XCTAssertEqual(promise.blocks.map(\.text), text.components(separatedBy: PrivacyPromise.separator))
+        XCTAssertTrue(promise.blocks.contains { if case .heading = $0 { true } else { false } }, "the promise's section headings must parse as headings")
     }
 
     /// The know screen's words (A11 brief): what it asks for, why, and where it can be changed.

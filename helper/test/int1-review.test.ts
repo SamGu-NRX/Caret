@@ -6,11 +6,13 @@ import { Disclosure } from "../src/privacy/disclosure.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { node, snap, text } from "./builders.ts";
 import { ownedOf, ownedStale, unitsHolding } from "../src/fill/note-unit.ts";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { loadKey } from "../src/sealed.ts";
+import { Store } from "../src/store.ts";
 import { join } from "node:path";
-import { DailySpend, localDay } from "../src/engines/decide/daily-cap.ts";
-import { SyncedStorePath } from "../src/privacy/store-path.ts";
+import { DailySpend, JevCapError, localDay } from "../src/engines/decide/daily-cap.ts";
+import { storePathRefusal, SyncedStorePath } from "../src/privacy/store-path.ts";
 
 const SECRET = "API key: Zq7x";
 
@@ -138,4 +140,93 @@ describe("INT1 review 3", () => {
     }
   });
 
+});
+
+describe("INT1 review 4", () => {
+  // A scratch folder outside every root: under HOME, which is outside the roots unless HOME is inside one (then skipped).
+  const scratchOutside = (): string | null => {
+    const d = mkdtempSync(join(homedir(), ".caret-int1-review-"));
+    if (storePathRefusal(join(d, "x")) !== null) return d;
+    rmSync(d, { recursive: true, force: true });
+    return null;
+  };
+
+  it("an existing key outside the roots is refused like a new one", () => {
+    const d = scratchOutside();
+    if (d === null) return;
+    try {
+      const key = join(d, "memory.key");
+      writeFileSync(key, Buffer.alloc(32, 7), { mode: 0o600 });
+      expect(() => loadKey(key)).toThrow(SyncedStorePath);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("the spend log checks its path before making its folder", () => {
+    const d = scratchOutside();
+    if (d === null) return;
+    try {
+      const spend = new DailySpend({ dir: join(d, "spend"), capUsd: 1 });
+      expect(() => spend.reserve(0.01).settle(0.01, 1)).toThrow(SyncedStorePath);
+      expect(existsSync(join(d, "spend"))).toBe(false);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("INT1 review 5: a store folder is checked and made as one resolved path", () => {
+  // A folder given as `<root>/link/../spend`, where `link` points outside the roots: path.join would check
+  // `<root>/spend`, but the system makes the folder beside the link's target.
+  const setup = (): { raw: string; outside: string; done: () => void } | null => {
+    const outside = mkdtempSync(join(homedir(), ".caret-int1-review5-"));
+    if (storePathRefusal(join(outside, "x")) === null) {
+      rmSync(outside, { recursive: true, force: true });
+      return null;
+    }
+    mkdirSync(join(outside, "deep"));
+    const base = mkdtempSync(join(tmpdir(), "int1-review5-"));
+    symlinkSync(join(outside, "deep"), join(base, "link"));
+    return { raw: `${base}/link/../spend`, outside, done: () => (rmSync(outside, { recursive: true, force: true }), rmSync(base, { recursive: true, force: true })) };
+  };
+
+  it("the spend log", () => {
+    const s = setup();
+    if (s === null) return;
+    try {
+      expect(() => new DailySpend({ dir: s.raw, capUsd: 1 }).reserve(0.01).settle(0.01, 1)).toThrow(SyncedStorePath);
+      expect(existsSync(join(s.outside, "spend"))).toBe(false);
+    } finally {
+      s.done();
+    }
+  });
+
+  it("the screen store", () => {
+    const s = setup();
+    if (s === null) return;
+    try {
+      expect(() => new Store(s.raw)).toThrow(SyncedStorePath);
+      expect(existsSync(join(s.outside, "spend"))).toBe(false);
+    } finally {
+      s.done();
+    }
+  });
+});
+
+describe("INT1 review 6: the spend log reads the folder it writes", () => {
+  it("counts a spend written through `link/..` against the cap", () => {
+    // `<base>/link/../spend` lands beside the link's target, `<base>/elsewhere/spend`; path.join would read `<base>/spend`.
+    const base = mkdtempSync(join(tmpdir(), "int1-review6-"));
+    try {
+      mkdirSync(join(base, "elsewhere", "deep"), { recursive: true });
+      symlinkSync(join(base, "elsewhere", "deep"), join(base, "link"));
+      const spend = new DailySpend({ dir: `${base}/link/../spend`, capUsd: 0.03 });
+      spend.reserve(0.02).settle(0.02, 1);
+      expect(existsSync(join(base, "elsewhere", "spend"))).toBe(true);
+      expect(() => spend.reserve(0.02)).toThrow(JevCapError);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 });

@@ -25,6 +25,8 @@ struct OnboardingView: View {
     /// False for off-screen renders: every element in its end state, nothing scheduled.
     var animated = true
     var send: (OnboardingFlow.Event) -> Void = { _ in }
+    /// What the permissions step shows as the privacy promise. The window reads the bundle; renders pass their own text.
+    var promise = PermissionsScreen.privacyLine
 
     /// DIRECTION.md's 520 by 460.
     static let size = CGSize(width: 520, height: 460)
@@ -64,7 +66,7 @@ struct OnboardingView: View {
         case .welcome: WelcomeScreen(character: character, animated: animated)
         case .work: WorkScreen(state: state, send: send)
         case .know: KnowScreen(state: state, send: send)
-        case .permissions: PermissionsScreen(state: state, animated: animated, send: send)
+        case .permissions: PermissionsScreen(state: state, promise: promise, animated: animated, send: send)
         case .jevKey: JevKeyScreen(state: state, animated: animated, send: send)
         case .tryIt: TryItScreen(state: state, character: character, animated: animated)
         case .firstLook: FirstLookScreen(state: state, character: character, animated: animated, send: send)
@@ -512,11 +514,20 @@ struct KnowScreen: View {
 // MARK: - 4. Permissions
 
 struct PermissionsScreen: View {
-    /// What leaves the Mac, as B10's privacy test bounds it: field descriptors and candidate
-    /// values, never a whole window's text, and a conversation never whole (B11's cap).
-    static let privacyLine = "To decide what to offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might fill. Never a whole document or conversation. The next words are written on this Mac."
+    /// The bundle's PrivacyPromise.txt, which every app build writes from `PRIVACY_PROMISE` and refuses to finish
+    /// without (scripts/privacy_gate.sh). Nil only without an app bundle, as under `swift run`. No fallback text: a
+    /// copy here would drift from the approved one.
+    static let privacyLine = { () -> PrivacyPromise? in
+        guard let url = Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return PrivacyPromise(text)
+    }()
+    /// Only a development run can lack the resource, so this speaks to whoever is building Caret.
+    static let missingPromiseTitle = "No privacy promise in this build"
+    static let missingPromiseLine = "PrivacyPromise.txt is missing or empty, so this screen can't say what Caret sends. Development runs have no app bundle; apps/caret/scripts/build-app.sh writes the file into the app."
 
     var state: OnboardingFlow.State
+    var promise: PrivacyPromise?
     var animated: Bool
     var send: (OnboardingFlow.Event) -> Void
 
@@ -550,23 +561,81 @@ struct PermissionsScreen: View {
                 }
             }
             .padding(.top, 18)
-            VStack(alignment: .leading, spacing: 4) {
-                SectionLabel(text: "What leaves this Mac")
-                Text(Self.privacyLine)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color(token: Tokens.secondary))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.top, 18)
             if !state.permissions.accessibility {
                 Text("This screen moves on by itself once Accessibility is on.")
                     .font(.system(size: 12))
                     .foregroundStyle(Color(token: Tokens.secondary))
-                    .padding(.top, 12)
+                    .padding(.top, 10)
             }
+            Group {
+                if let promise {
+                    PrivacyPromiseText(promise: promise)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        GroupHead(text: Self.missingPromiseTitle)
+                        Text(Self.missingPromiseLine)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(token: Tokens.ink))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .padding(.top, 16)
         }
         .padding(.horizontal, OnboardingView.inset)
         .padding(.top, OnboardingView.top)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// The whole promise scrolls in the height the permission card leaves, so reading it never pushes the permission
+/// controls out of the fixed window. Its foot fades out to show there is more; the bottom padding lets the last line
+/// scroll clear of that fade.
+struct PrivacyPromiseText: View {
+    var promise: PrivacyPromise
+
+    static let fade: CGFloat = 18
+
+    var body: some View {
+        ScrollingColumn {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(promise.blocks.enumerated()), id: \.offset) { index, block in
+                    let gap = index == 0 ? 0 : Self.gap(after: promise.blocks[index - 1], before: block)
+                    switch block {
+                    case .heading(let text):
+                        GroupHead(text: text).padding(.top, gap)
+                    case .paragraph(let text):
+                        Text(text)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(token: Tokens.secondary))
+                            .lineSpacing(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, gap)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Room for the overlay scroller at the right, and for the last line to clear the fade.
+            .padding(.trailing, 10)
+            .padding(.bottom, Self.fade)
+        }
+        .mask {
+            VStack(spacing: 0) {
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: Self.fade)
+            }
+        }
+        .scrollIndicatorsFlash(onAppear: true)
+    }
+
+    /// 4 under a heading, as a group head sits over its rows; 8 between paragraphs; 14 before a new heading.
+    static func gap(after previous: PrivacyPromise.Block, before block: PrivacyPromise.Block) -> CGFloat {
+        switch (previous, block) {
+        case (.heading, _): return 4
+        case (.paragraph, .paragraph): return 8
+        case (.paragraph, .heading): return 14
+        }
     }
 }
 

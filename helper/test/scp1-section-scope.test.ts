@@ -478,6 +478,11 @@ describe("what the veto leaves as it was (preservation)", () => {
     expect(() => readHeads(s, heads(s), pair(s, asks, () => ({ choice: "sec99", confidence: 0.99 })))).toThrow(/not one of its options/u);
   });
 
+  it("an answer outside the offered sections never authorizes a field outside the named section", async () => {
+    const d = desk({ page: pageSnapshot(HEADINGS, WALKED) });
+    await expect(plan(d, jev({ section: { choice: "sec99", confidence: 0.99 } }), "fill the equipment details section")).rejects.toThrow(/jevFailed|couldn't reach|not one of its options/u);
+  });
+
   it("authorises a subset of what it authorised before the veto, for random answers", () => {
     const r = rng(31);
     const options = ["asks", "not", "unclear"];
@@ -1224,11 +1229,12 @@ describe("INT1 review 3: a split section answer is a disagreement", () => {
     const onlyFirst = s.headings.find((h) => offered[0]!.has(h.ref) && !offered[1]!.has(h.ref));
     const onlySecond = s.headings.find((h) => !offered[0]!.has(h.ref) && offered[1]!.has(h.ref));
     const one = onlyFirst ?? onlySecond;
-    // The two wordings list sections in different orders, so with a bounded list one offers a heading the other does not.
+    // The two wordings' own words differ in length, so at some Ask length the bound fits a different number of names.
     expect(one).toBeDefined();
     const pair: [JevResult, JevResult] = onlyFirst !== undefined ? [answer(onlyFirst.ref), answer("unlisted")] : [answer("unlisted"), answer(onlySecond!.ref)];
     expect(sectionVerdict(s, pair)).toBeNull();
-    // Both choosing a heading only one of them offered: the other's answer is outside its own options, which throws.
+    // Both choosing a heading only one of them offered: the other's answer is outside its own options, which is no
+    // answer at all, so the Ask fails (jevFailed), as for a missing answer.
     expect(() => sectionVerdict(s, [answer(one!.ref), answer(one!.ref)])).toThrow(PlannerError);
   });
 });

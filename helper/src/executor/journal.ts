@@ -102,7 +102,7 @@ export class RecoveryJournal {
   private readonly del: StatementSync;
 
   constructor(dir: string) {
-    // SQLite writes through the file it opens here (and its -wal and -shm beside it), so this check covers every write.
+    // The database path is checked once, here; SQLite then writes that file and its -wal and -shm beside it.
     assertLocalStorePath(join(dir, "recovery.sqlite"));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);

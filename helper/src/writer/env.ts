@@ -1,11 +1,12 @@
 // Reads one API key at call time, from the process environment or from the .env file named by
 // CARET_ENV_FILE. Errors name the variable and file, never the value.
+import { ENV, processEnv, type HostEnv } from "../host-env.ts";
 import { readFileSync } from "node:fs";
 
-export function readKey(name: string, env: NodeJS.ProcessEnv = process.env): string {
+export function readKey(name: keyof HostEnv, env: HostEnv = processEnv()): string {
   const direct = env[name];
   if (direct !== undefined && direct.length > 0) return direct;
-  const file = env.CARET_ENV_FILE;
+  const file = env[ENV.caret_env_file];
   if (file === undefined || file.length === 0) throw new Error(`${name} missing: set it, or CARET_ENV_FILE to a .env file that defines it`);
   const pattern = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=\\s*(.*)\\s*$`);
   for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {

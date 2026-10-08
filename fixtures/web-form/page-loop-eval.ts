@@ -71,7 +71,7 @@ import { readyOnLoad } from "../../helper/src/offers/ready-on-load.ts";
 import { Disclosure } from "../../helper/src/privacy/disclosure.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
 import { CFT_BUILD, Cdp, HOST_NAME, LAUNCHD_PREFIX, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
-import { NetworkSink, type Oracle, type Scored } from "./oracle.ts";
+import { NetworkSink, sameText, scoredReadings, type ExpectedValue, type Oracle, type Scored, type ScoredField } from "./oracle.ts";
 import { FixtureSite } from "./server.ts";
 import { TASK_PAGES, loadExpectation, taskPage, type Expectation } from "./tasks/site.ts";
 import { fieldWhoseAnswer, loadOwners, ownersOf, valueOwnerAnswer, type Owners } from "./owners.ts";
@@ -152,10 +152,17 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => void cle
 const W4_SITES = ["greenhouse-discord", "greenhouse-embed-figma", "lever-palantir-apply", "ashby-ramp-application", "hubspot-contact-sales"];
 
 interface Expect {
+  source: "corpus";
   label: string;
   expected: string;
   accept: string[];
   /** The corpus's control kind; null for W4's key, which does not say. */
+  control: string | null;
+}
+interface TaskExpect {
+  source: "task";
+  label: string;
+  expected: ExpectedValue;
   control: string | null;
 }
 interface Page {
@@ -171,7 +178,7 @@ interface Page {
   /** What the user told Caret, for a form whose source is memory. */
   about: { label: string; value: string }[];
   /** A task page's expectations by data-oracle name (tasks/expect/<page>.json); the oracle scores against these. */
-  expected?: Record<string, string>;
+  expected?: Expectation["expected"];
   /** G2: whose the page's values are, from owners.json, its memory entries among the user's; null when the file has no entry. */
   owners: Owners | null;
 }
@@ -191,7 +198,7 @@ const corpusPage = (f: CorpusForm): Page => ({
   id: f.id,
   kind: "corpus",
   path: `/corpus/${f.id}.html`,
-  key: f.fields.map((x) => ({ label: x.label, expected: x.expected, accept: x.accept ?? [], control: x.control })),
+  key: f.fields.map((x) => ({ source: "corpus", label: x.label, expected: x.expected, accept: x.accept ?? [], control: x.control })),
   instruction: asks.find((x) => x.form === f.id && x.expected !== "refuse")?.instruction ?? "fill in everything you can from my notes",
   sources: [...corpus.decoys, f.source].flatMap((s) => (s.kind === "memory" ? [] : [recordedFor(s.title ?? "")])),
   about: f.source.kind === "memory" ? f.source.about : [],
@@ -218,7 +225,7 @@ const w4Page = (site: string): Page => ({
   id: site,
   kind: "w4",
   path: `/w4/${site}.html`,
-  key: (w4Key[site] ?? []).map((x) => ({ label: x.label, expected: x.expected, accept: x.accept ?? [], control: null })),
+  key: (w4Key[site] ?? []).map((x) => ({ source: "corpus", label: x.label, expected: x.expected, accept: x.accept ?? [], control: null })),
   instruction: "fill in this application from my notes",
   sources: [noteWindow(w4Note)],
   about: [],
@@ -316,24 +323,27 @@ const keyFor = (ins: string): Expect | undefined => {
  * same day or minute ("March 3, 1991" for 1991-03-03, "7:30 pm" for 19:30); for a field with options, the option as a
  * whole word ("Large, mushroom and onion" for Large). Canned Jev only; fill's own rules still decide what is written.
  */
-function fits(text: string, e: Expect): boolean {
-  const values = e.expected === "none" || e.expected === "handoff" || e.expected === "unchecked" ? [] : [e.expected, ...e.accept];
-  if (values.includes(text)) return true;
+function fits(text: string, e: Expect | TaskExpect): boolean {
+  // Task alternatives are written forms, not the corpus's control-state sentinels.
+  const values = e.source === "task"
+    ? e.expected === "none" ? [] : typeof e.expected === "string" ? [e.expected] : e.expected
+    : e.expected === "none" || e.expected === "handoff" || e.expected === "unchecked" ? [] : [e.expected, ...e.accept];
+  if (sameText(text, values)) return true;
   if (e.control === "date") {
     const d = new Date(Date.parse(text.replace(/^born\s+/iu, "")));
     const iso = Number.isNaN(d.getTime()) ? null : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    return iso !== null && values.includes(iso);
+    return iso !== null && sameText(iso, values);
   }
   if (e.control === "time") {
     const m = /\b(\d{1,2}):(\d{2})\s*([ap])\.?m\.?\b/iu.exec(text);
     const hhmm = m === null ? null : `${String((Number(m[1]) % 12) + (m[3]?.toLowerCase() === "p" ? 12 : 0)).padStart(2, "0")}:${m[2]}`;
-    return hhmm !== null && values.includes(hhmm);
+    return hhmm !== null && sameText(hhmm, values);
   }
   if (e.control === "radio" || e.control === "select" || e.control === "combobox") return namesOption(text, values);
   // Task pages only. A month field: the same month ("August 2022" for 2022-08).
   if (e.control === "month") {
     const d = new Date(Date.parse(text));
-    return !Number.isNaN(d.getTime()) && values.includes(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    return !Number.isNaN(d.getTime()) && sameText(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, values);
   }
   // A picker or react-select lists options by search: the option as a whole word, or two or more words that each start
   // a word of the option, as the page's own search matches them ("San Diego, California" finds "San Diego, California,
@@ -464,7 +474,7 @@ const SAID = [/Label: '(.+?)'\.(?=\s|$)/u, /Nearest label: '(.+?)'\.(?=\s|$)/u, 
  * label (else its nearest label, else its placeholder). A label no field carries rereads the page once, for a field
  * revealed or relabelled since; a label two fields carry answers nothing.
  */
-async function taskKeyFor(ins: string): Promise<Expect | undefined> {
+async function taskKeyFor(ins: string): Promise<TaskExpect | undefined> {
   const p = page;
   if (p?.expected === undefined || readTaskFields === null) return undefined;
   const said = SAID.flatMap((re) => {
@@ -478,7 +488,10 @@ async function taskKeyFor(ins: string): Promise<Expect | undefined> {
     for (const s of said) {
       const hits = fieldsNamed(s, taskFields ?? []);
       const f = hits[0];
-      if (hits.length === 1 && f !== undefined) return { label: f.name, expected: p.expected[f.name] ?? "none", accept: [], control: controlOf(f) };
+      if (hits.length === 1 && f !== undefined) {
+        const accepted = p.expected[f.name] ?? "none";
+        return { source: "task", label: f.name, expected: accepted, control: controlOf(f) };
+      }
       if (hits.length > 1) {
         log.ambiguous.add(`'${s}': ${hits.map((h) => h.name).join(", ")}`);
         return undefined;
@@ -597,6 +610,7 @@ interface TaskRow {
   warnings: string[];
   /** Whether the oracle scored the page (right, eligible, wrong and missed below hold its result). */
   scored: boolean;
+  fields: Record<string, ScoredField> | null;
   right: number;
   eligible: number;
   wrong: Scored["wrong"];
@@ -609,8 +623,24 @@ interface TaskRow {
   revealMissing: string[];
   /** The second Ask that leaves Caret's fill on a wizard page before the harness presses Next. */
   refill: string | null;
+  refillFields: Record<string, ScoredField> | null;
   unmapped: string[];
   ambiguous: string[];
+}
+
+const oracleFieldReports: Record<string, Pick<TaskRow, "fields" | "refillFields">> = {};
+
+class OracleReportError extends Error {}
+
+/** Persist before the recipe can stop a run on a logged wrong value, rather than waiting for the final report. */
+function recordScoredFields(page: string, fields: Record<string, ScoredField>, phase: "fields" | "refillFields" = "fields"): void {
+  const report = oracleFieldReports[page] ??= { fields: null, refillFields: null };
+  report[phase] = fields;
+  try {
+    writeStoreJson(join(OUT, "oracle-fields.json"), { pages: oracleFieldReports }, 1);
+  } catch (cause) {
+    throw new OracleReportError(`writing oracle-fields.json for ${page} (${phase}) failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+  }
 }
 
 /** How the goal path judges a task page: by the oracle, not by Caret's walk. */
@@ -865,7 +895,7 @@ async function main(): Promise<number> {
     // --sources labelled: each page's note from its own labels (read with every dependent section shown) and F1's values.
     if (LABELLED) {
       for (const p of pages) {
-        const expected = p.expected as Record<string, string>;
+        const expected = p.expected as Expectation["expected"];
         await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}?show=all` }, sessionId);
         let fields: TaskField[] = [];
         for (let n = 0; n < 40; n++) {
@@ -878,7 +908,9 @@ async function main(): Promise<number> {
           const f = fields.find((x) => x.name === k);
           const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
           if (v === "none" || f === undefined || label === undefined || f.kind === "file") return [];
-          return [`${label}: ${f.kind === "checkbox" ? (v === "true" ? "yes" : "no") : v}`];
+          // A labelled source supplies one written form; loadExpectation guarantees a non-empty alternatives array.
+          const value = typeof v === "string" ? v : v[0]!;
+          return [`${label}: ${f.kind === "checkbox" ? (value === "true" ? "yes" : "no") : value}`];
         });
         p.sources = [noteWindow(lines.join("\n"))];
         p.about = [];
@@ -892,9 +924,9 @@ async function main(): Promise<number> {
       page = p;
       taskFields = null;
       const name = p.id;
-      const expected = p.expected as Record<string, string>;
+      const expected = p.expected as Expectation["expected"];
       const row = newRow(p);
-      const t: TaskRow = { arrived: "navigated", warnings: [], scored: false, right: 0, eligible: 0, wrong: [], missed: [], absent: [], attachGap: [], revealMissing: [], refill: null, unmapped: [], ambiguous: [] };
+      const t: TaskRow = { arrived: "navigated", warnings: [], scored: false, fields: null, right: 0, eligible: 0, wrong: [], missed: [], absent: [], attachGap: [], revealMissing: [], refill: null, refillFields: null, unmapped: [], ambiguous: [] };
       row.task = t;
       rows.push(row);
       const from = pressFrom;
@@ -951,10 +983,12 @@ async function main(): Promise<number> {
             t.eligible = eligibleOf(gap);
             t.right = s.right.filter((k) => !gap.includes(k)).length;
             t.wrong = s.wrong;
-            row.wrong = s.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${x.expected})`);
+            row.wrong = s.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`);
             t.missed = s.missed.filter((k) => !gap.includes(k)).map((k) => `${k} (${kinds[k]?.kind === "file" ? "file; " : ""}${!picked.has(k) ? "canned never asked" : picked.get(k) === null ? "canned: none" : `canned picked '${picked.get(k)}'`})`);
             t.attachGap = gap.filter((k) => (expected[k] ?? "none") !== "none");
             t.absent = s.absent;
+            t.fields = scoredReadings(s, kinds);
+            recordScoredFields(name, t.fields);
             return { eligible: t.eligible, right: t.right };
           },
           unrestored: async () => {
@@ -973,7 +1007,7 @@ async function main(): Promise<number> {
             const want = f === undefined || hits.length > 1 ? undefined : expected[f.name];
             if (f === undefined || want === undefined) return "unscored";
             if (want === "none") return "wrong";
-            if (value === want) return "right";
+            if (sameText(value, want)) return "right";
             // A typed text is compared as written; a pick, a date or a number may be written in another form than the oracle reads.
             return f.kind === "text" && !["date", "month", "time", "number"].includes(f.type) ? "wrong" : "unscored";
           },
@@ -998,10 +1032,13 @@ async function main(): Promise<number> {
             const s = oracle.score(name, expected);
             const gap = attachGap();
             t.refill = `${s.right.filter((k) => !gap.includes(k)).length}/${eligibleOf(gap)} right, ${s.wrong.length} wrong (${r.outcome}, ${r.tabs} tabs)`;
-            row.wrong.push(...s.wrong.map((x) => `second Ask ${x.field}: '${x.actual}' (expected ${x.expected})`));
+            row.wrong.push(...s.wrong.map((x) => `second Ask ${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`));
+            t.refillFields = scoredReadings(s, oracle.readings(name) ?? {});
+            recordScoredFields(name, t.refillFields, "refillFields");
           }
         }
       } catch (e) {
+        if (e instanceof OracleReportError) throw e;
         row.error = e instanceof Error ? e.message : String(e);
       }
       const a = asksOn(name);
@@ -1087,7 +1124,7 @@ async function main(): Promise<number> {
     const wiz = ["wizard-1", "wizard-2", "wizard-3"].map((n) => pages.find((p) => p.id === n) ?? taskPageOf(n));
     // In the dropzone journey the user gives the resume to the dropzone's row: that field, not the file input, holds it.
     if (drop) {
-      const e = wiz[2]?.expected as Record<string, string>;
+      const e = wiz[2]?.expected as Expectation["expected"];
       (wiz[2] as Page).expected = { ...e, resume: "none", resume_drop: e.resume ?? "none" };
     }
     // --sources labelled: one note of the wizard's three pages, each line a field's own label and F1's value (runTasks
@@ -1095,7 +1132,7 @@ async function main(): Promise<number> {
     if (LABELLED) {
       const all: string[] = [];
       for (const p of wiz) {
-        const expected = p.expected as Record<string, string>;
+        const expected = p.expected as Expectation["expected"];
         await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}?show=all` }, sessionId);
         let fields: TaskField[] = [];
         for (let n = 0; n < 40; n++) {
@@ -1108,7 +1145,8 @@ async function main(): Promise<number> {
           const f = fields.find((x) => x.name === k);
           const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
           if (v === "none" || f === undefined || label === undefined || f.kind === "file") continue;
-          all.push(`${label}: ${f.kind === "checkbox" ? (v === "true" ? "yes" : "no") : v}`);
+          const value = typeof v === "string" ? v : v[0]!;
+          all.push(`${label}: ${f.kind === "checkbox" ? (value === "true" ? "yes" : "no") : value}`);
         }
       }
       for (const p of wiz) {
@@ -1120,7 +1158,7 @@ async function main(): Promise<number> {
     // The resume the user chooses in page 3's attach row: the one the recruiter's email names (tasks/expect/wizard-3.json).
     const resume = join(tmp, "ines-vandermeer-resume-2026.pdf");
     writeStore(resume, "%PDF-1.4\n% synthetic resume for the P3 wizard journey\n");
-    const out: { page: string; arrived: string; previewMs: number | null; steps: number; attach: string | null; outcome: string; right: number; eligible: number; wrong: string[]; missed: string[]; note: string }[] = [];
+    const out: { page: string; arrived: string; previewMs: number | null; steps: number; attach: string | null; outcome: string; right: number; eligible: number; wrong: string[]; missed: string[]; fields: Record<string, ScoredField> | null; note: string }[] = [];
     desk(wiz[0] as Page);
     let goalId: string | null = null;
     let lastName: string | null = null;
@@ -1128,8 +1166,8 @@ async function main(): Promise<number> {
       page = p;
       taskFields = null;
       const name = p.id;
-      const expected = p.expected as Record<string, string>;
-      const row = { page: name, arrived: "", previewMs: null as number | null, steps: 0, attach: null as string | null, outcome: "-", right: 0, eligible: Object.values(expected).filter((v) => v !== "none").length, wrong: [] as string[], missed: [] as string[], note: "" };
+      const expected = p.expected as Expectation["expected"];
+      const row: (typeof out)[number] = { page: name, arrived: "", previewMs: null, steps: 0, attach: null, outcome: "-", right: 0, eligible: Object.values(expected).filter((v) => v !== "none").length, wrong: [], missed: [], fields: null, note: "" };
       out.push(row);
       try {
         stage = "load";
@@ -1187,9 +1225,12 @@ async function main(): Promise<number> {
         await settleOracle(name);
         const sc = oracle.score(name, expected);
         row.right = sc.right.length;
-        row.wrong = sc.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${x.expected})`);
+        row.wrong = sc.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`);
         row.missed = sc.missed;
+        row.fields = scoredReadings(sc, oracle.readings(name) ?? {});
+        recordScoredFields(name, row.fields);
       } catch (e) {
+        if (e instanceof OracleReportError) throw e;
         row.note = e instanceof Error ? e.message : String(e);
       }
       lastName = name;

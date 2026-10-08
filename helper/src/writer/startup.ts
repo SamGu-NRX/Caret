@@ -4,6 +4,7 @@
 import { ASK_MAKER, INTENT_ROUTE, WRITER_ROUTE } from "./config.ts";
 import { devWriterRoute } from "./routes.ts";
 import { readKey } from "./env.ts";
+import { processEnv, type HostEnv } from "../host-env.ts";
 import { makeWriterPort, type WriterPort } from "./port.ts";
 
 export interface StartWriters {
@@ -17,7 +18,7 @@ export interface StartWriters {
  * `devWriter` is main.ts's --dev-writer ("groq:<model>" or "gateway:<model>"), undefined without it. `say` writes one
  * line to the helper's log.
  */
-export function writersOnStart(devWriter: string | undefined, say: (line: string) => void, env: NodeJS.ProcessEnv = process.env): StartWriters {
+export function writersOnStart(devWriter: string | undefined, say: (line: string) => void, env: HostEnv = processEnv()): StartWriters {
   if (devWriter === undefined) {
     // Configured routes are null since L1; a non-null one is explicit configuration, used as written.
     if (ASK_MAKER === "writer" && INTENT_ROUTE === null) throw new Error("writer/config.ts ASK_MAKER is \"writer\" and INTENT_ROUTE is null: start with --dev-writer provider:model");
