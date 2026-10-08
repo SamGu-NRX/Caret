@@ -79,7 +79,7 @@ describe("the value requests", () => {
     expect(Object.values(notes)).toEqual([NOTE]);
     const id = Object.keys(notes)[0] as string;
     const cell = Object.values(r?.questions.f1?.criteria ?? {}).find((c) => optionOutput(c) === "(617) 555-0129");
-    expect(cell).toBe(`Proposed value: "(617) 555-0129". Source: TextEdit window 'Ines contact.txt', the whole text ${id} in source_notes. Observed label: unavailable. Supporting text: "My cell is (617) 555-0129, use that one.". Derivation: literal copy.`);
+    expect(cell).toBe(`Proposed value: "(617) 555-0129". Source: TextEdit window 'Ines contact.txt'; the whole text is ${id} in source_notes. Observed label: unavailable. Supporting text: "My cell is (617) 555-0129, use that one.". Derivation: literal copy.`);
     // Once: no criterion repeats the unit.
     expect(Object.values(r?.questions ?? {}).flatMap((q) => Object.values(q.criteria)).some((c) => c?.includes("Office: (617) 555-0166\nEmail"))).toBe(false);
   });
@@ -91,7 +91,7 @@ describe("the value requests", () => {
     await proposeFill(desk("Rent: $1,450 a month", labels, "Lease.txt"), j, "form", "form/0", T0, { about, rand: () => 0, scope: scope(labels, "my first name and the rent") });
     const [r] = values(j.reqs);
     const grace = Object.values(r?.questions.f1?.criteria ?? {}).find((c) => optionOutput(c) === "Grace");
-    expect(grace).toMatch(/^Proposed value: "Grace"\. Source: what the user told Caret, saved as 'Name'\. Observed label: Name\. Supporting text: "Grace Oduya"\. Derivation: the first name, split from the whole name\.$/u);
+    expect(grace).toMatch(/^Proposed value: "Grace"\. Source: the user's own details, which the user told Caret, saved as 'Name'\. Observed label: Name\. Supporting text: "Grace Oduya"\. Derivation: the first name, split from the whole name\.$/u);
     const rent = Object.values(r?.questions.f2?.criteria ?? {}).find((c) => optionOutput(c) === "1,450");
     expect(rent).toMatch(/Supporting text: "Rent: \$1,450 a month"\. Derivation: the amount's number without its currency sign\.$/u);
   });
@@ -104,7 +104,7 @@ describe("the value requests", () => {
     for (const r of j.reqs) expect(json(r)).not.toContain("hunter2");
     const [r] = values(j.reqs);
     expect((r?.state as { source_notes?: Record<string, string> }).source_notes).toBeUndefined();
-    expect(Object.values(r?.questions.f1?.criteria ?? {}).find((c) => optionOutput(c) === "QX-4471")).toContain("whole text unavailable");
+    expect(Object.values(r?.questions.f1?.criteria ?? {}).find((c) => optionOutput(c) === "QX-4471")).toMatch(/^Proposed value: "QX-4471"\. Source: TextEdit window 'Ines contact\.txt'\. Observed label: /u);
   });
 
   it("does not offer a person's value whose whole note redaction cut: its owner was judged on part of it", async () => {

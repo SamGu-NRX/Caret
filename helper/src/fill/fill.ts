@@ -2371,19 +2371,25 @@ export async function proposeFill(
     return (own === null ? null : m.derived(own, output, added)) ?? m.descriptor(w, output);
   };
   /** Where a pick was read, minted; each whole unit it names goes in `units` by its source_notes id. */
+  // What the user told Caret is their own details by what it is, and a window value that is exactly one of them (its
+  // identity, whose.ts) is the user's by code's exact match: both are said, as the earlier value questions said them.
+  // Neither is an earlier answer of Jev's. A unit that could not be sent is left unnamed rather than said to be missing:
+  // under today's budgets no B31 unit fits, so every option would carry that sentence.
   const mintSource = (p: Pick, units: Set<string>): ModelText => {
     const one = (r: Exclude<Pick, { from: "derived" }>): ModelText => {
       if (r.from === "memory") {
         const label = m.memoryText(null, r.a.label);
-        return label === null ? m.own("what the user told Caret") : m.t`what the user told Caret, saved as '${label}'`;
+        return label === null ? m.own("the user's own details, which the user told Caret") : m.t`the user's own details, which the user told Caret, saved as '${label}'`;
       }
       if (r.from === "instruction") return m.own("the user's request");
       const view = viewOf(model, r.c.source.windowId) ?? w;
       const title = r.c.source.windowTitle === "" ? null : m.descriptor(view, r.c.source.windowTitle);
       const at = title === null ? m.t`${m.app(view)} window` : m.t`${m.app(view)} window '${title}'`;
+      const identity = r.c.identity === undefined ? null : m.memoryText(null, r.c.identity.label);
+      const own = identity === null ? at : m.t`${at}; it is the user's own ${identity}, which the user told Caret`;
       const note = unitNote(r.c.source);
       if (note !== null) units.add(note);
-      return note === null ? m.t`${at}, whole text unavailable` : m.t`${at}, the whole text ${note} in source_notes`;
+      return note === null ? own : m.t`${own}; the whole text is ${note} in source_notes`;
     };
     return m.join(rootsOf(p).map(one), " and ");
   };
@@ -3033,7 +3039,7 @@ function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, writte
     // A web dropdown asked for a place with its country (placeWithCountry) writes more than the pick's text. V3: a date or
     // time input writes the date or the time its span names, a part of a date with a time (when.ts).
     const span = p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text;
-    return written === span ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, span) : "placeWithCountry", base: own, also: null };
+    return written === span ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, span) : control === "checkbox" ? "boxTicked" : control === "select" || control === "radio" ? "optionFromPart" : "placeWithCountry", base: own, also: null };
   }
   const b = base(p.base);
   const how = written !== p.text ? (control === "date" || control === "time" ? controlHow(control, written, p.text) : "placeWithCountry") : deriveHow(part, p.text, b.kind === "window" ? b.span : "", control);

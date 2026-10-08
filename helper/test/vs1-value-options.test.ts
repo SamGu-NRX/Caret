@@ -71,6 +71,12 @@ describe("each option states the exact output Caret would write (B31 desks)", ()
     expect(q?.options.map((o) => o.output)).not.toContain("Large, mushroom and onion");
   });
 
+  it("a box is offered its ticked state, said as such, never as another conversion", async () => {
+    const r = await runB31("b31-15");
+    const [q] = valueQuestions(r, "Onion");
+    expect(q?.options.find((o) => o.output === "checked")?.criterion).toMatch(/Derivation: the box ticked, as the supporting text says it should be\.$/u);
+  });
+
   it("a date input is offered the date in its own format, never the sentence it was read from", async () => {
     const r = await runB31("b31-13");
     const [q] = valueQuestions(r, "Preferred date");
