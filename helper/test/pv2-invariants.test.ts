@@ -1,3 +1,4 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 // PV2's three invariants after the second re-review, each as a property over random cases:
 // - budget: whatever path reveals a window's text (candidate, descriptor, held, a derivation from a basis, take), what
 //   the request shows of the window's prose stays within its prose share and of the window within its budget;
@@ -668,3 +669,8 @@ describe("invariant: what leaves is the sealed copy, checked as it leaves, on ev
     expect(ok, `seed ${seed}: nothing succeeded`).toBeGreaterThan(0);
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+// INT1: v2/gate added this to the tests that existed at its base; these reach the gateway route too.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

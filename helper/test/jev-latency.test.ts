@@ -1,3 +1,4 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,3 +96,8 @@ it.each([200, 403])("reports exact recorded spend when an HTTP %i sample fails",
   expect(spend.spent()).toBe(0.004);
   expect(rows[0]?.costUsd).toBe(0.004);
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+// INT1: v2/gate added this to the tests that existed at its base; these reach the gateway route too.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

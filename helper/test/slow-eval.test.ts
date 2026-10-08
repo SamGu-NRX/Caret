@@ -1,3 +1,4 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 // R1: the slow Laya runner. The layer in each eval process (engines/decide/slow.ts) and the runner's loop
 // (scripts/slow-eval-core.ts), on a fake clock: pacing and backoff, resume after a kill without a repeated request,
 // the stops (cost, auth, HOLD, disk), and the heavy lease released through every wait.
@@ -454,3 +455,8 @@ describe("harness wiring", () => {
     expect(() => harnessEngine({ name: "gateway:convaiinnovations/laya-free", canned: null, fixture, env: env({ CARET_JEV_CACHE: "off" }) })).toThrow(/needs the replay cache/);
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+// INT1: v2/gate added this to the tests that existed at its base; these reach the gateway route too.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());
