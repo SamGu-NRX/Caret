@@ -182,6 +182,12 @@ const TEXT_ROLES: ReadonlySet<string> = new Set(["AXStaticText", "AXCell", "AXHe
 const views = new WeakMap<WindowState, { at: number; view: WindowState }>();
 
 /**
+ * SCP1: Accessibility roles that group what they hold, so a heading in one ends with it (fill/ask-scope.ts windowOutline).
+ * Redaction keeps a removed one as structure only, as it keeps a removed heading.
+ */
+export const SECTION_BOUNDARY_ROLES: ReadonlySet<string> = new Set(["AXGroup", "AXRadioGroup", "AXWebArea", "AXScrollArea", "AXSplitGroup", "AXTabGroup", "AXLayoutArea", "AXSheet"]);
+
+/**
  * The window as fill may read it: a WindowState of its own, built once per window state the model holds (each snapshot
  * makes a new one) and again if that state's `updatedAt` moves, never cached per node, since a node can be kept from one
  * snapshot to the next while what labels it changes.
@@ -227,14 +233,6 @@ function build(w: WindowState): WindowState {
   const lost = new Map<string, { text: string; dropped: Set<number> }[]>();
   /** Nodes left out, so their descendants are too: a container labelled for a secret holds what it labels. */
   const gone = new Set<string>();
-  /**
-   * SCP1: headings redaction took, kept as headings with no text. A heading bounds the section before it, so a field
-   * after "Password and security" is not placed under the heading before that one (re-review of 9939ac2).
-   */
-  const stubs = new Map<string, Node>();
-  const heading = (n: Node): void => {
-    if (n.role === "AXHeading") stubs.set(n.key, { key: n.key, parent: n.parent, role: "AXHeading" });
-  };
   for (const n of w.nodes.values()) {
     // A node's own label or placeholder, as attributes, that names a secret takes the node and its value, whatever its
     // role (G2 round 6 review: a cell labelled "Password" holding an email). A static text whose only text is its label
@@ -250,7 +248,6 @@ function build(w: WindowState): WindowState {
     }
     if (dropped.has(n.key) || split.has(n.key) || splitMarker || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
       gone.add(n.key);
-      heading(n);
       continue;
     }
     // The node with its texts' secret lines gone. A node that gives no text, and had some, is gone with them.
@@ -263,7 +260,6 @@ function build(w: WindowState): WindowState {
     const had = (n.value ?? "") !== "" || (n.label ?? "") !== "";
     if (had && (value ?? "") === "" && (label ?? "") === "" && n.editable !== true) {
       gone.add(n.key);
-      heading(n);
       continue;
     }
     // SCP1: a page's heading or section text that names a secret is left out, as a label that names one is. A section
@@ -299,12 +295,20 @@ function build(w: WindowState): WindowState {
     queue.push(key);
   }
   for (const key of gone) nodes.delete(key);
-  // A text-less heading goes back in its place in document order, unless what holds it went too.
-  if (stubs.size > 0) {
+  // SCP1: the section boundaries redaction took (fill/ask-scope.ts windowOutline): each removed heading and group goes
+  // back in its place as structure only, its key, its role and its nearest kept ancestor, so the outline after redaction
+  // places fields as the raw one does (a field after a removed "Password and security" group is not in the section
+  // before it). Nothing else of it comes back: `gone` still holds it, so its typed values stay out below.
+  const structural = (n: Node | undefined): boolean => n !== undefined && (n.role === "AXHeading" || SECTION_BOUNDARY_ROLES.has(n.role));
+  const stubOf = (n: Node): Node => {
+    let parent = n.parent;
+    while (parent !== null && gone.has(parent) && !structural(w.nodes.get(parent))) parent = w.nodes.get(parent)?.parent ?? null;
+    return { key: n.key, parent, role: n.role };
+  };
+  if ([...gone].some((k) => structural(w.nodes.get(k)))) {
     const ordered = new Map<string, Node>();
     for (const [k, n] of w.nodes) {
-      const stub = stubs.get(k);
-      const kept = nodes.get(k) ?? (stub !== undefined && (n.parent === null || !gone.has(n.parent)) ? stub : undefined);
+      const kept = nodes.get(k) ?? (gone.has(k) && structural(n) ? stubOf(n) : undefined);
       if (kept !== undefined) ordered.set(k, kept);
     }
     nodes.clear();
@@ -313,7 +317,8 @@ function build(w: WindowState): WindowState {
   // The reader's typed values, less those of a dropped node, and those standing on a dropped line: a value over several
   // lines goes when any line it covers went ("4410 Speedway\napt 2, Austin" under a dropped "Password:" opener), judged
   // by the lines where it stands, never by a dropped line's text (G2 round 6: a dropped "Austin" took an address).
-  const values: TypedValue[] = w.values.filter((v) => nodes.has(v.nodeKey) && !secretText(v.text) && !valueGoes(lost.get(v.nodeKey) ?? [], v.text));
+  // A removed node's values stay out whether or not a stub of it stands in the view (re-check of 479f875).
+  const values: TypedValue[] = w.values.filter((v) => !gone.has(v.nodeKey) && nodes.has(v.nodeKey) && !secretText(v.text) && !valueGoes(lost.get(v.nodeKey) ?? [], v.text));
   // A window that gives everything is read as it is: the same state, so every cache keyed by it (windowValues, the
   // ledger's budgets, descriptor.ts's label index) is shared with code that reads it raw.
   if (nodes.size === w.nodes.size && [...nodes].every(([k, n]) => w.nodes.get(k) === n) && values.length === w.values.length) return w;

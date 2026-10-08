@@ -7,7 +7,7 @@ import type { Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import type { Owner } from "./contract.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
-import { redactWindow } from "./redact.ts";
+import { redactWindow, SECTION_BOUNDARY_ROLES } from "./redact.ts";
 
 /**
  * I2 ruling: one request, one settlement. What the per-field scope question settled for a request, kept so a later step
@@ -161,7 +161,7 @@ export interface WindowOutline {
 }
 
 /** Roles that group what they hold on the Accessibility path: a heading in one ends with it. */
-const AX_CONTAINERS: ReadonlySet<string> = new Set(["AXGroup", "AXRadioGroup", "AXWebArea", "AXScrollArea", "AXSplitGroup", "AXTabGroup", "AXLayoutArea", "AXSheet"]);
+const AX_CONTAINERS = SECTION_BOUNDARY_ROLES;
 
 const outlines = new WeakMap<WindowState, WindowOutline>();
 

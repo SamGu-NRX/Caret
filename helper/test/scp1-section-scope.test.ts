@@ -18,6 +18,9 @@ import { AskAsks, AskRefused, planAsk, type AskDraft, type AskGoal } from "../sr
 import { scopeSet, windowOutline, withScope } from "../src/fill/ask-scope.ts";
 import { guardFor } from "../src/fill/contract.ts";
 import { validatePlan } from "../src/planner/validate.ts";
+import { buildInventory } from "../src/goals/inventory.ts";
+import { macClock } from "../src/offers/event-time.ts";
+import type { TypedValue } from "../src/protocol.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { forgetWindows, SnippetLedger } from "../src/privacy.ts";
@@ -681,3 +684,57 @@ describe("re-review of 9939ac2: a named section the list can't offer, and a page
 function scopeRequestOf(d: ReturnType<typeof desk>): JevRequest {
   return scopeRequest(snapFor(d), 0);
 }
+
+describe("check of 479f875: a heading stub is structure only", () => {
+  const SECRET_EMAIL = "violet.orchard@example.test";
+  /** A note whose heading redaction removes (its label, or its placeholder, names a secret), holding an email the reader typed. */
+  function leaky(on: "label" | "placeholder") {
+    forgetWindows();
+    const m = new ScreenModel();
+    const heading = node("src/h", "AXHeading", { ...(on === "label" ? { label: "Password" } : { label: "Account", placeholder: "Password" }), value: SECRET_EMAIL });
+    const typed: TypedValue = { kind: "email", text: SECRET_EMAIL, nodeKey: "src/h" };
+    m.apply(snap([heading, { key: "src/t", parent: null, role: "AXTextArea", value: "Grocery list: oat milk, lemons", editable: true }], { at: 1000, windowId: "7001-1", title: "Account notes.txt", app: NOTE_APP, focused: true, values: [typed] }));
+    m.apply(snap([field("f/email", "", { label: "Email", frame: [20, 80, 200, 24] })], { at: 2000, windowId: "F", title: "Sign up", focused: true }));
+    return { model: m, windowId: "F" };
+  }
+
+  // P1: the removed node's typed value stays out, whether or not a stub of it stays for the outline.
+  it.each(["label", "placeholder"] as const)("never sends the typed value of a heading redaction removed (secret %s)", async (on) => {
+    const d = leaky(on);
+    const view = redactWindow(d.model.windows.get("7001-1") as never);
+    expect(view.values).toEqual([]);
+    expect(JSON.stringify([...view.nodes.values()])).not.toContain(SECRET_EMAIL);
+    const j = jev({ asks: ["Email"] });
+    await plan(d, j, "fill my email").catch((e: unknown) => {
+      if (!(e instanceof AskRefused)) throw e;
+    });
+    const fill = j.seen.filter((r) => r.purpose === "fill.whose" || r.purpose === "fill.values");
+    expect(fill.length).toBeGreaterThan(0);
+    for (const r of j.seen) expect(JSON.stringify(r), r.purpose).not.toContain(SECRET_EMAIL);
+    // The goal writer's snapshots, from the same redacted views.
+    const inv = buildInventory(d.model, { instruction: "fill my email", windows: ["F", "7001-1"], memory: [], calendar: null, clock: macClock(new Date(3000)), now: 3000, readerSession: 1 });
+    expect(JSON.stringify(inv.snapshots)).not.toContain(SECRET_EMAIL);
+  });
+
+  // P2: a removed group keeps its boundary, so the outline after redaction places fields as the raw one does.
+  it("keeps the boundary of a group redaction removed, so a field after it is not placed in the section before it", async () => {
+    const nodes: Node[] = [
+      node("h/eq", "AXHeading", { label: "Equipment details" }),
+      field("f/serial", "", { label: "Serial number" }),
+      node("g/pw", "AXGroup", { label: "Password and security" }),
+      node("h/ct", "AXHeading", { label: "Service contact", parent: "g/pw" }),
+      field("f/cphone", "", { label: "Contact phone" }),
+    ];
+    const d = desk({ reader: nodes });
+    const raw = windowOutline(windowOf(d));
+    const red = windowOutline(redactWindow(windowOf(d)));
+    expect(red.chainOf("f/serial")).toEqual(raw.chainOf("f/serial"));
+    expect(red.chainOf("f/cphone")).toEqual(raw.chainOf("f/cphone"));
+    expect(raw.chainOf("f/cphone")).toBe("unknown");
+    const j = jev({ asks: ["Serial number", "Contact phone"], section: "Equipment details" });
+    const settled = await settleFields(snapFor(d), j.ask);
+    expect(settled.asks.map((f) => f.name)).toEqual(["Serial number"]);
+    expect(settled.sectionless.map((f) => f.name)).toEqual(["Contact phone"]);
+    for (const r of j.seen) expect(JSON.stringify(r)).not.toMatch(/Password and security|Service contact/u);
+  });
+});
