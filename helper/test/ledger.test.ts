@@ -176,8 +176,8 @@ describe("the B26 review's undercharges", () => {
   });
 });
 
-// Run-level dedupe (N_w) was measured and dropped (~/.caret-run/evidence/screen/pv2/simplify/NW-DECISION.md): it lost
-// held-16. So every copy of a text a window shows is charged, and a conversation's limit is under half of all its lines.
+// OUTPUT-LEDGER-SPEC section 5: every copy of a text a window shows is charged, and a conversation's limit is under half
+// of all its lines, repeated ones included.
 describe("repeated text at seal", () => {
   const chat = (lines: string[]): ScreenModel => {
     const m = new ScreenModel();

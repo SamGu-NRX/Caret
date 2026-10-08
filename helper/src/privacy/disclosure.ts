@@ -272,7 +272,8 @@ export class Disclosure extends SnippetLedger {
   private readonly asJson = new Set<string>();
   /**
    * Section 4: each minted text's declared spans, the source texts it was read from with the redacted view each is in.
-   * A composition carries its parts' spans. The seal charges every occurrence of them, at any length.
+   * A composition carries its parts' spans. The seal charges each, at any length, at the one place in its view it is
+   * taken to stand (ledger/measure.ts spanPositions).
    */
   private readonly spans = new Map<string, ViewSpan[]>();
 
