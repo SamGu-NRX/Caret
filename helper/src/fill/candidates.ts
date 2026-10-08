@@ -433,6 +433,11 @@ export interface Collected {
    * cut, whose left-out lines were not read, so any such field may have lost its value.
    */
   cutTerms: ReadonlySet<string>;
+  /**
+   * The one set of cut kinds, which the field and pick checks read (fill.ts isCut): the kinds of a cut window's typed
+   * values that were not offered, and of every value in text the generator left unread, offered elsewhere or not.
+   */
+  cutKinds: ReadonlySet<ValueKind>;
   cutAll: boolean;
   /**
    * A field takes a name and a name may have been kept out: a conversation's names, or a line holding
@@ -654,7 +659,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     for (const id of unreadOf) {
       const lw = viewOf(model, id);
-      if (lw !== undefined) unreadRest(lw);
+      if (lw !== undefined) unreadRest(lw, undefined, id === reading ? readLines : undefined);
     }
     for (const [id, nodes] of unlistedOf) {
       const lw = viewOf(model, id);
@@ -674,7 +679,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     stats.windows = touched.size;
     stats.ms = performance.now() - t0;
-    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
+    // The one set of cut kinds: a cut window's typed values not offered (cutKinds), and every kind the unread text holds.
+    const kinds = cutKinds(model, [...missed], out);
+    for (const k of unreadKinds) kinds.add(k);
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutKinds: kinds, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
   };
   /**
    * Stops early, on either cap, partway through `reading`: what of it was offered is a partial
@@ -688,7 +696,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       missed.add(reading);
       // The rest of the window was not read, so whether it held a name is not known.
       partway = true;
-      unreadOf.add(reading);
+      // A conversation's listed part is accounted by byRelevance and its unlisted part by unlistedOf; any other window's
+      // unread rest is the nodes it did not read to the end.
+      if (!ranked.has(reading)) unreadOf.add(reading);
     }
     for (const w of unread) {
       missed.add(w.window.windowId);
@@ -705,6 +715,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const unreadOf = new Set<string>();
   /** By conversation, the older nodes its listing left unlisted (rankWindow); read when the generator finishes. */
   const unlistedOf = new Map<string, ReadonlySet<string>>();
+  /** Kinds of values in text the generator did not read (unreadRest): part of Collected.cutKinds, the one set of cut kinds. */
+  const unreadKinds = new Set<ValueKind>();
+  /** Of the window readWindow is reading, by node, how many times each line was read with every span on it offered or weighed. */
+  let readLines = new Map<string, Map<string, number>>();
   /**
    * What a window a cap stopped in, or never reached, may hold: every line of every node not offered whole, a line with
    * no candidate in it as much as one with (a note's closing "Do not use L01 ..."), since candidate extraction does not
@@ -712,7 +726,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * cutNames, its labels' associations in omitted. Every line and value read counts, a repeated one too, against
    * UNREAD_MAX; past it what the rest may hold is not known, and cutAll is set.
    */
-  const unreadRest = (w: WindowState, only?: ReadonlySet<string>): void => {
+  const unreadRest = (w: WindowState, only?: ReadonlySet<string>, read?: ReadonlyMap<string, Map<string, number>>): void => {
     // The work is counted as it is done, a node, a line and a typed value at a time, and nothing is read ahead of the
     // count: a window of a million lines costs this pass UNREAD_MAX of them, not the extraction of all of them.
     let n = 0;
@@ -726,8 +740,6 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (only !== undefined && !only.has(v.nodeKey)) continue;
       if (over()) return;
       readerValues.set(v.nodeKey, [...(readerValues.get(v.nodeKey) ?? []), v]);
-      if (secretValue(w, v) || seen.has(v.text)) continue;
-      for (const k of valueKinds(v)) cutTerms.add(kindTerm(k));
     }
     for (const node of w.nodes.values()) {
       if (only !== undefined && !only.has(node.key)) continue;
@@ -735,20 +747,30 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       // A node with no text costs one; one with text, its lines.
       if (texts.length === 0 && over()) return;
       const isSourceField = sourceField(node);
+      const readOf = read?.get(node.key);
       for (const raw of texts.flatMap((t) => [...linesUpTo(t, UNREAD_MAX - n + 1)])) {
         if (over()) return;
+        // A line readWindow read, every span on it offered or its association kept by add, is not unread text.
+        const times = readOf?.get(raw) ?? 0;
+        if (times > 0) {
+          readOf?.set(raw, times - 1);
+          continue;
+        }
         const line = bareLine(raw);
         if (line === "") continue;
+        // Everything the line holds is evidence of what the window may hold, accounted before any value of it is
+        // deduplicated: its words, its labels' associations, its values' kinds and its names, whether or not the same
+        // value was offered from another line. Deduplicated first, "Do not use this booking ref: QX7-4410" cut nothing,
+        // since QX7-4410 was offered from a newer line.
         const spans = lineSpans(raw);
         for (const sp of spans) omit(w, node, sp.text, sp.label ?? (isSourceField ? (node.label ?? null) : null));
-        if (spans.length > 0 && spans.every((sp) => seen.has(sp.text))) continue;
         for (const t of words(line)) cutTerms.add(t);
         for (const t of words(sectionAround(w, node))) cutTerms.add(t);
         // The line's typed values: the reader's on this node, and those this code's own reading finds in the line.
         const values = [...(readerValues.get(node.key) ?? []).filter((v) => line.includes(v.text)), ...lineValues(line).map((v): TypedValue => ({ kind: v.kind, text: v.text, nodeKey: node.key }))].filter((v) => !secretValue(w, v));
-        for (const v of values) for (const k of valueKinds(v)) cutTerms.add(kindTerm(k));
+        for (const v of values) for (const k of valueKinds(v)) unreadKinds.add(k);
         if (!wantsNames) continue;
-        for (const sp of spans) if (!seen.has(sp.text) && isNameLike(sp.text, sp.label)) cutNames.push(sp.text);
+        for (const sp of spans) if (isNameLike(sp.text, sp.label)) cutNames.push(sp.text);
         if (values.some((v) => valueKinds(v).some((k) => CONTACT_KINDS.has(k)))) cutNames.push(...namesOutside(line, values));
       }
     }
@@ -775,7 +797,6 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (seen.has(text)) return true;
       for (const t of words(line)) cutTerms.add(t);
       for (const t of words(sectionAround(w, node))) cutTerms.add(t);
-      for (const k of kinds) cutTerms.add(kindTerm(k));
       if (!wantsNames) return true;
       if (isNameLike(text, label)) cutNames.push(text);
       if (kinds.some((k) => CONTACT_KINDS.has(k))) cutNames.push(...namesOutside(line, valuesOf.get(node.key)));
@@ -826,7 +847,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const sp of spans) {
       omit(w, sp.node, sp.text, sp.context()?.text ?? null);
       if (seen.has(sp.text)) continue;
-      for (const t of sp.terms) if (t !== NAME_TERM) cutTerms.add(t);
+      for (const t of sp.terms) if (t !== NAME_TERM && !isKindTerm(t)) cutTerms.add(t);
       cutNames.push(...sp.names);
     }
     return finished;
@@ -1046,9 +1067,14 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         // A node can hold thousands of lines (a log, a transcript), so both caps apply per line too.
         if (full() || outOfWork()) return false;
         for (const s of lineSpans(raw)) {
+          // A span past the cap is unread, and so is the rest of its line (stop's unreadRest reads it).
+          if (full()) return false;
           const context = s.label !== null ? constant<Read>({ text: s.label, at: labelRange(node, start, raw, s.label) }) : () => lineContextRead(w, node, lines.length, isSourceField);
           add(w, node, s.text, null, context, s.with, s.partOf, undefined, { lineStart: start, raw, ...(s.at === undefined ? {} : { at: s.at }), ...(s.withAt === undefined ? {} : { withAt: s.withAt }) });
         }
+        let counts = readLines.get(node.key);
+        if (counts === undefined) readLines.set(node.key, (counts = new Map()));
+        counts.set(raw, (counts.get(raw) ?? 0) + 1);
       }
     }
     return true;
@@ -1060,6 +1086,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     if (full()) return stop(windows.slice(i));
     touched.add(w.window.windowId);
     reading = w.window.windowId;
+    readLines = new Map();
     // A conversation spends its budget on the spans nearest the form's fields first; in screen order its budget went to
     // its first lines, and the lines a form wanted came after the cut (evidence/screen/b24/dev-5).
     const whole = relevance !== null && heldAsConversation(w) ? (ranked.add(w.window.windowId), byRelevance(w, relevance)) : readWindow(w);

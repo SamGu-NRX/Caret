@@ -66,3 +66,32 @@ describe("a long conversation, listed newest first", () => {
     expect([f.value, f.withheld]).toEqual([null, "sourceCut"]);
   });
 });
+
+describe("what an unlisted line holds, accounted before any value of it is deduplicated", () => {
+  it("cuts the words of an unlisted 'Do not use this booking ref: QX7-4410', though QX7-4410 is offered from a newer line", async () => {
+    const lines = Array.from({ length: 300 }, () => "haha yes");
+    lines[149] = "Do not use this booking ref: QX7-4410";
+    lines[294] = "Booking ref: QX7-4410";
+    const m = new ScreenModel();
+    m.apply(snap(lines.map((l, i) => text(`m${i}`, l)), { at: 1000, windowId: "chat-1", title: "Sam Ortiz", app: MESSAGES }));
+    m.apply(snap([field(key("Booking ref"), "", { label: "Booking ref", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [fieldTerms(["Booking ref"])] });
+    expect([...c.cutTerms]).toEqual(expect.arrayContaining(["booking", "ref"]));
+    const p = await proposeFill(m, picking({ "Booking ref": "QX7-4410" }), FORM, key("Booking ref"), 3000, { whose: false });
+    const f = p.fields.find((x) => x.key === key("Booking ref"))!;
+    expect([f.value, f.withheld]).toEqual([null, "sourceCut"]);
+  });
+
+  it("cuts the kinds of an unlisted line past the typed-value scan: a cancelled Jan 5 withholds Meeting date", async () => {
+    // One node of 601 padding lines that ends with the cancellation, then the meeting date.
+    const long = [...Array.from({ length: 601 }, () => "lorem ipsum dolor sit amet"), "Jan 5, 2027 was cancelled; use Jan 4, 2027 instead."].join("\n");
+    const m = new ScreenModel();
+    m.apply(snap([text("m0", long), text("m1", "Meeting date: Jan 5, 2027")], { at: 1000, windowId: "chat-1", title: "Sam Ortiz", app: MESSAGES, values: [{ kind: "date", text: "Jan 5, 2027", nodeKey: "m1" }] }));
+    m.apply(snap([field(key("Meeting date"), "", { label: "Meeting date", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [fieldTerms(["Meeting date"])] });
+    expect([...c.cutKinds], "one set of cut kinds, which the field and pick checks read").toContain("date");
+    const p = await proposeFill(m, picking({ "Meeting date": "Jan 5, 2027" }), FORM, key("Meeting date"), 3000, { whose: false });
+    const f = p.fields.find((x) => x.key === key("Meeting date"))!;
+    expect([f.value, f.handoff?.value ?? null, f.withheld]).toEqual([null, null, "sourceCut"]);
+  });
+});
