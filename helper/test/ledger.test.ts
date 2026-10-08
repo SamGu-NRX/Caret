@@ -541,9 +541,9 @@ describe("where a value was read, and what an operation keeps", () => {
   });
 });
 
-// Astra's recheck of c2ce31f0: a reader's value is placed only where its text stands once in the node's raw text, and a
-// window keeps the classification and limit the operation first measured it with.
-describe("a unique place, and a window's first limit", () => {
+// A reader's value is placed only where its text stands once in the node's raw text, and a window keeps the strictest
+// classification and the lowest limit the operation measured it with.
+describe("a unique place, and a window's strictest limit", () => {
   it("does not place a reader's value its node shows twice: '555-0101' in '.555-0101' and '555-0101.' takes both lines", () => {
     const m = new ScreenModel();
     // T = 4 + 9 + 9 + 5 = 27, limit 13. The reader kept the first phone; the helper's extractor sees only the second.
@@ -572,6 +572,27 @@ describe("a unique place, and a window's first limit", () => {
     expect(d.measureSent("test", [said[1]!]).charged["mail-1"]).toBe(35);
     m.close("mail-1", 3);
     expect(() => d.measureSent("test", [said[0]!])).toThrow(/with the requests sent before it, it reveals 59 characters of window mail-1, over its limit of 41/u);
+  });
+
+  it("keeps a tab that became a mail a conversation after it closes: 59 is refused at send against 41, not taken against 1200", () => {
+    const m = new ScreenModel();
+    const body = ["see you at five tomorrow", "and the venue holds the date for us"];
+    const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+    // The operation first measures the tab as a web page, before it shows the mail.
+    m.apply(snap([text("a", "Web page")], { at: 1, windowId: "mail-1", title: "Tab", app: chrome }));
+    m.apply(snap(body.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Note", app: NOTES }));
+    const d = new Disclosure(m);
+    const said = body.map((l, i) => d.candidate(redactWindow(m.windows.get("note-1") as WindowState), l, { part: nodePart(`n${i}`, "label"), start: 0, end: l.length })!);
+    // Then the same tab shows the mail: T = 14 + 10 + 24 + 35 = 83, limit 41 (the Subject line is redacted away).
+    m.apply(snap([text("h0", "From: Dana"), text("h1", "Subject: my password is violet-orchard-seven"), ...body.map((l, i) => text(`b${i}`, l))], { at: 2, windowId: "mail-1", title: "Inbox - Chrome", app: chrome }));
+    const send = (t: string): Readonly<Record<string, number>> => {
+      const s = seal({ req: { purpose: "route.task", disclosure: d }, wire: { state: { offer: { found: t } }, questions: {} } });
+      sendable(s);
+      return s.charged;
+    };
+    expect(send(said[1]!)["mail-1"]).toBe(35);
+    m.close("mail-1", 3);
+    expect(() => send(d.join(said, "\n"))).toThrow(/it reveals 59 characters of window mail-1, over its limit of 41/u);
   });
 });
 

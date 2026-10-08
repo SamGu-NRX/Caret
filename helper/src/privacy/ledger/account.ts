@@ -82,35 +82,47 @@ const viewOf = (w: WindowState): WindowState => (isRedacted(w) ? w : redactWindo
  * name in the state the task found it; a later state of the same id is `id@n`. Classified by the raw window where there
  * is one, since redaction can empty a title the conversation rule reads.
  */
-/** A window's classification and limit as an operation first measured it (measuredWindows' `fixed`). */
+/** A window's strictest classification and lowest limit in an operation so far (measuredWindows' `fixed`). */
 export interface FixedClass {
   readonly conversation: boolean;
   readonly limit: number;
 }
 
 /**
- * `fixed`: each window id's classification and limit as the operation first measured it, kept for the operation. A later
- * state of the window (refreshed, redacted further, or closed and kept) is a conversation if the first was, and its limit
- * is never above the first: redaction that empties a mail's headers, or a closed window's kept view, cannot raise it.
+ * `fixed`: each window id's strictest classification and lowest limit the operation has measured, kept for the
+ * operation. Once any state of a window is a conversation, every state of it is one, at the lowest limit any state had:
+ * a tab first measured as a page that later shows a mail, or a mail whose redacted view loses the headers that made it
+ * one, or a closed window's kept view, cannot go back to a page's limit. All of a call's states are classified before
+ * any is measured, so the order they are listed in does not matter.
  */
-export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowState>, fixed?: Map<string, FixedClass>): MeasuredWindow[] {
-  const out: MeasuredWindow[] = [];
+export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowState>, fixed: Map<string, FixedClass> = new Map()): MeasuredWindow[] {
+  const states: { raw: WindowState; view: WindowState; inv: LineInventory }[] = [];
   const seen = new Set<WindowState>();
-  const add = (raw: WindowState): void => {
+  for (const raw of [...registry.windows.values(), ...held]) {
     const view = viewOf(raw);
-    if (seen.has(view)) return;
+    if (seen.has(view)) continue;
     seen.add(view);
+    states.push({ raw, view, inv: viewInventory(view) });
+  }
+  for (const { raw, inv } of states) {
     const id = raw.window.windowId;
-    const inv = viewInventory(view);
+    const was = fixed.get(id);
+    const conversation = was?.conversation === true || heldAsConversation(raw);
+    fixed.set(id, { conversation, limit: Math.min(limitOf(inv, conversation), was?.limit ?? Number.POSITIVE_INFINITY) });
+  }
+  // A page state measured before a later state made the window a conversation is held to that state's limit too.
+  for (const { raw, inv } of states) {
+    const id = raw.window.windowId;
+    const was = fixed.get(id)!;
+    if (was.conversation) fixed.set(id, { conversation: true, limit: Math.min(was.limit, limitOf(inv, true)) });
+  }
+  const out: MeasuredWindow[] = [];
+  for (const { raw, view, inv } of states) {
+    const id = raw.window.windowId;
     const older = out.filter((m) => m.windowId === id).length;
-    const first = fixed?.get(id);
-    const conversation = first?.conversation === true || heldAsConversation(raw);
-    const limit = Math.min(limitOf(inv, conversation), first?.limit ?? Number.POSITIVE_INFINITY);
-    if (fixed !== undefined && first === undefined) fixed.set(id, { conversation, limit });
+    const { conversation, limit } = fixed.get(id)!;
     out.push({ key: older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limit, conversation });
-  };
-  for (const w of registry.windows.values()) add(w);
-  for (const w of held) add(w);
+  }
   return out;
 }
 
