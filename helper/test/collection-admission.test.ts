@@ -8,6 +8,9 @@ import { proposeFill, type FillScope } from "../src/fill/fill.ts";
 import { sealRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, node, snap, text } from "./builders.ts";
+import { associationKey, collectCandidates } from "../src/fill/candidates.ts";
+import { kindTerm } from "../src/fill/kinds.ts";
+import { Disclosure } from "../src/privacy/disclosure.ts";
 
 const MESSAGES = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
 const FORM_APP = { pid: 5150, bundleId: "dev.caret.fixture", name: "Fixture" };
@@ -80,7 +83,7 @@ describe("a fill's candidates, admitted once with their facts", () => {
 
 const NOTES = { pid: 6161, bundleId: "dev.caret.notes", name: "Notes" };
 
-describe("Sol's round 4: collection order, associations, one membership, kept ranges", () => {
+describe("collection order, associations, one membership, kept ranges", () => {
   it("reads the windows by recency: a note's eighty dates do not crowd out the date of the chat the user just left", async () => {
     const m = new ScreenModel();
     const day = (i: number): string => new Date(Date.UTC(2026, 0, 1 + i)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
@@ -95,6 +98,63 @@ describe("Sol's round 4: collection order, associations, one membership, kept ra
     // kind is cut, and the field is withheld rather than filled with a date that was not the only one.
     expect(seen.flatMap((r) => offered(r, "Date")).concat(f.withheld === "sourceCut" ? ["2026-10-08"] : [])).toContain("2026-10-08");
     expect(f.value, "never the note's first date as if the chat's were not there").not.toBe("Jan 1, 2026");
+  });
+
+  it("reads each window whole in recency order: a newer note's 'Ref: AB01' is offered before an older chat's 80 refs fill the cap", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([...Array.from({ length: 80 }, (_, i) => text(`c${i}`, `Ref: AB${String(i + 2).padStart(2, "0")}`)), node("pad", "AXButton", { label: "Z".repeat(1400) })], { at: 500, windowId: "chat-1", title: "K", app: MESSAGES }));
+    m.apply(snap([text("n0", "Ref: AB01")], { at: 1000, windowId: "note-1", title: "N", app: NOTES, focused: true }));
+    m.apply(snap([field(key("Reference"), "", { label: "Reference", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const seen: JevRequest[] = [];
+    const p = await proposeFill(m, picking({ Reference: "AB02" }, seen), FORM, key("Reference"), 3000);
+    expect(seen.flatMap((r) => offered(r, "Reference")), "the newer note's value").toContain("AB01");
+    // The cap stopped the chat partway, so its Ref values are cut: AB02 is not written as if it were the only one.
+    const f = p.fields.find((x) => x.key === key("Reference"))!;
+    expect(f.value).toBeNull();
+    expect(f.withheld).toBe("sourceCut");
+  });
+
+  it("counts a window the cap never reached as cut: a chat's date withholds Date when a newer note's 80 lines fill the cap", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("c0", "Date: 2026-10-08")], { at: 500, windowId: "chat-1", title: "K", app: MESSAGES, values: [{ kind: "date", text: "2026-10-08", nodeKey: "c0" }] }));
+    m.apply(snap(Array.from({ length: 80 }, (_, i) => text(`n${i}`, `Ref: AB${String(i + 1).padStart(2, "0")}`)), { at: 1000, windowId: "note-1", title: "N", app: NOTES, focused: true }));
+    m.apply(snap([field(key("Date"), "", { label: "Date", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    // The chat is cut as a privacy cut would cut it: its date's kind, words and label are what it may hold.
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [new Set(["date", kindTerm("date")])] });
+    expect(c.candidates.length).toBe(80);
+    expect(c.cut).toEqual(["chat-1"]);
+    expect([...c.cutTerms]).toEqual(expect.arrayContaining(["date", kindTerm("date")]));
+    expect(c.omitted).toContain(associationKey("chat-1", null, "Date"));
+    // Read in two passes, the chat's typed date went in first and was written; now the date kind is cut.
+    const p = await proposeFill(m, picking({ Date: "2026-10-08" }), FORM, key("Date"), 3000);
+    const f = p.fields.find((x) => x.key === key("Date"))!;
+    expect(f.value).toBeNull();
+    expect(f.withheld).toBe("sourceCut");
+  });
+
+  it("counts a note the cap never reached as cut: its 'Locker' line withholds Locker when a newer note's 80 lockers fill the cap", async () => {
+    // Neither note is the window the user just left, so no anchor lets a labelled pick stand on its own. "Locker" names
+    // no kind, so the cut's words decide (fill.ts unknownCut).
+    const m = new ScreenModel();
+    m.apply(snap([text("o0", "Locker: L99")], { at: 500, windowId: "note-2", title: "O", app: NOTES }));
+    m.apply(snap(Array.from({ length: 80 }, (_, i) => text(`n${i}`, `Locker: L${String(i + 1).padStart(2, "0")}`)), { at: 1000, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("Locker"), "", { label: "Locker", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    // Left out silently as the least recent, the older note's L99 was never weighed, and L01 was written.
+    const p = await proposeFill(m, picking({ Locker: "L01" }), FORM, key("Locker"), 3000);
+    const f = p.fields.find((x) => x.key === key("Locker"))!;
+    expect(f.value).toBeNull();
+    expect(f.withheld).toBe("sourceCut");
+  });
+
+  it("omits a chat's typed 'Date' value a newer note offered as 'Other': October 8 is not the only Date value", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([node("a", "AXButton", { label: "Date: 2026-10-08" }), node("b", "AXButton", { label: "Date: 2026-10-09" }), node("pad", "AXButton", { label: "Z".repeat(100) })], { at: 1000, windowId: "chat-1", title: "K", app: MESSAGES, values: [{ kind: "date", text: "2026-10-08", nodeKey: "a" }, { kind: "date", text: "2026-10-09", nodeKey: "b" }] }));
+    m.apply(snap([text("n0", "Other: 2026-10-09")], { at: 1500, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("Date"), "", { label: "Date", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const p = await proposeFill(m, picking({ Date: "2026-10-08" }), FORM, key("Date"), 3000);
+    const f = p.fields.find((x) => x.key === key("Date"))!;
+    expect(f.value).toBeNull();
+    expect(f.withheld).toBe("sourceCut");
   });
 
   it("keeps a chat's 'Ref' association whose text a newer note offered: AB01 is not the only Ref value", async () => {

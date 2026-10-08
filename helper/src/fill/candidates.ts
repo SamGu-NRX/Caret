@@ -642,14 +642,20 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * Stops early, on either cap, partway through `reading`: what of it was offered is a partial
    * set like a privacy cut's, so it is reported cut and fill withholds the kinds it lost (B13 review: a
    * chat's 79 times filled the cap before its meeting date, and an older window's date was asked alone).
-   * Windows not reached at all are left out whole; their values are the least recent on screen.
+   * Each window in `unread`, which the cap stopped the generator from reaching, counts as cut the same way: its lines
+   * are read for what it may hold (leftOut), so the cut rules withhold those kinds, words and names. Left out silently
+   * as the least recent, a chat's other Ref values never withheld the newer note's.
    */
-  const stop = (): Collected => {
+  const stop = (unread: readonly WindowState[]): Collected => {
     if (reading !== null) {
       missed.add(reading);
       // The rest of the window was not read, so whether it held a name is not known (B14 review: the
       // cap stopped a notes window between another window's name and the right one).
       partway = true;
+    }
+    for (const w of unread) {
+      missed.add(w.window.windowId);
+      leftOutOf.add(w.window.windowId);
     }
     return finish();
   };
@@ -847,7 +853,12 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const texts = new Set<string>();
       for (const i of order) {
         const sp = spans[i] as (typeof spans)[number];
-        if (sp.group !== k || seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) continue;
+        if (sp.group !== k) continue;
+        // Not offered again under this window's label: its association is an omission, as add() records one.
+        if (seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) {
+          omit(w, sp.node, sp.text, sp.context()?.text ?? null);
+          continue;
+        }
         texts.add(sp.text);
         const c = build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset, sp.found);
         if (c !== null && (o.ledger === undefined || mintable(w, c))) group.push(c);
@@ -893,45 +904,49 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     return true;
   };
 
-  for (const w of windows) {
-    if (full()) return finish();
-    touched.add(w.window.windowId);
-    reading = w.window.windowId;
-    // A conversation spends its budget on the spans nearest the form's fields first; in screen order its budget went to
-    // its first lines, and the lines a form wanted came after the cut (evidence/screen/b24/dev-5).
-    if (relevance !== null && heldAsConversation(w)) {
-      ranked.add(w.window.windowId);
-      if (!byRelevance(w, relevance)) return stop();
-      continue;
-    }
+  /**
+   * A window that is not a conversation, whole: its typed values, then its lines. False when either cap was reached
+   * partway through it.
+   */
+  const readWindow = (w: WindowState): boolean => {
     for (const v of windowValues(w)) {
-      if (full() || outOfWork()) return stop();
+      if (full() || outOfWork()) return false;
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined || secretValue(w, v)) continue;
       add(w, node, v.text, v.kind, () => contextRead(w, node, v.text, foundAt(node, valueFound(node, v))), undefined, undefined, sourceOffsets.get(v), valueFound(node, v));
     }
-  }
-  for (const w of windows) {
-    if (full()) break;
-    touched.add(w.window.windowId);
-    if (closed.has(w.window.windowId) || ranked.has(w.window.windowId)) continue;
-    reading = w.window.windowId;
     for (const node of w.nodes.values()) {
-      if (full() || outOfWork()) return stop();
+      if (closed.has(w.window.windowId)) return true;
+      if (full() || outOfWork()) return false;
       stats.nodes++;
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeLines(node));
       for (const { raw, start } of lines) {
         // A node can hold thousands of lines (a log, a transcript), so both caps apply per line too.
-        if (full() || outOfWork()) return stop();
+        if (full() || outOfWork()) return false;
         for (const s of lineSpans(raw)) {
           const context = s.label !== null ? constant<Read>({ text: s.label, at: labelRange(node, start, raw, s.label) }) : () => lineContextRead(w, node, lines.length, isSourceField);
           add(w, node, s.text, null, context, s.with, s.partOf, undefined, { lineStart: start, raw, ...(s.at === undefined ? {} : { at: s.at }), ...(s.withAt === undefined ? {} : { withAt: s.withAt }) });
         }
       }
     }
+    return true;
+  };
+
+  // One pass, each window whole in recency order: typed values and lines together. Two passes (every window's typed
+  // values, then every window's lines) let an older chat's 80 "Ref" lines fill the cap before a newer note's "Ref: AB01"
+  // was read, with nothing reported cut, and AB02 was written (test/collection-admission.test.ts).
+  for (const [i, w] of windows.entries()) {
+    if (full()) return stop(windows.slice(i));
+    touched.add(w.window.windowId);
+    reading = w.window.windowId;
+    // A conversation spends its budget on the spans nearest the form's fields first; in screen order its budget went to
+    // its first lines, and the lines a form wanted came after the cut (evidence/screen/b24/dev-5).
+    const whole = relevance !== null && heldAsConversation(w) ? (ranked.add(w.window.windowId), byRelevance(w, relevance)) : readWindow(w);
+    if (!whole) return stop(windows.slice(i + 1));
+    reading = null;
   }
   return finish();
 }

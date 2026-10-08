@@ -319,7 +319,7 @@ describe("an Ask about a menu whose options the window does not show", () => {
   };
   const ask = (d: Desk) => planAsk("just the degree and my phone number", d.model, { values: () => d.memory }, d.about, { askJev: jev, maker: headsIntentMaker(jev), writer: null, offerKey: "v4", windowId: d.form.window.windowId, now: T0 });
 
-  // B25 held-16 is an accepted loss (lead, Sol's round 4): windows are read by recency, the bystander venue mail before
+  // B25 held-16 is an accepted loss: windows are read by recency, the bystander venue mail before
   // the note, and each candidate goes in with all its facts; the mail then takes the room the note's phone and degree
   // need in it. Its sentence about the menu still differs by window.
   it("B25 held-16 on the reader's window: finds nothing to fill, and still says Degree's menu is the user's to set", async () => {
