@@ -16,6 +16,7 @@ import { SAYS, SaidError } from "../src/planner/says.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { RoutedReaderLink, type ReaderLink } from "../src/executor/means.ts";
+import { scopeLabel } from "./builders.ts";
 
 const X = "kcmlnoabcdefghijklmnopabcdefghij";
 const chrome = { pid: 4100, bundleId: "com.google.chrome.for.testing", name: "Google Chrome for Testing" };
@@ -173,7 +174,7 @@ describe("the confirmed file's run (helper, executor, page engine)", () => {
         Object.entries(req.questions).map(([id, q]) => {
           const ins = String(q.instructions);
           if (req.purpose === "ask.heads") return [id, { choice: ({ route: "some", why: "nothingToFill", source: "any", whose: "user" } as Record<string, string>)[id] ?? "none", confidence: 0.95 }];
-          if (req.purpose === "ask.scope") return [id, { choice: ins.includes("file upload") ? (doc === "doc-2" ? "asks" : "not") : /field 'Email'/u.test(ins) ? "unclear" : "not", confidence: 0.95 }];
+          if (req.purpose === "ask.scope") return [id, { choice: ins.includes("file upload") ? (doc === "doc-2" ? "asks" : "not") : scopeLabel(ins) === "Email" ? "unclear" : "not", confidence: 0.95 }];
           return [id, { choice: Object.keys(q.criteria).at(-1) ?? "none", confidence: 0.95 }];
         }),
       );
@@ -205,7 +206,7 @@ describe("the confirmed file's run (helper, executor, page engine)", () => {
         Object.entries(req.questions).map(([id, q]) => {
           const ins = String(q.instructions);
           if (req.purpose === "ask.heads") return [id, { choice: ({ route: "some", why: "nothingToFill", source: "any", whose: "user" } as Record<string, string>)[id] ?? "none", confidence: 0.95 }];
-          if (req.purpose === "ask.scope") return [id, { choice: ins.includes("file upload") ? "not" : /field 'Email'/u.test(ins) ? "asks" : "not", confidence: 0.95 }];
+          if (req.purpose === "ask.scope") return [id, { choice: ins.includes("file upload") ? "not" : scopeLabel(ins) === "Email" ? "asks" : "not", confidence: 0.95 }];
           return [id, { choice: Object.keys(q.criteria).at(-1) ?? "none", confidence: 0.95 }];
         }),
       );

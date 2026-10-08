@@ -45,9 +45,12 @@ class ReleaseHostEnvironmentTests(unittest.TestCase):
         mac = function((ROOT / "apps/mac/Sources/CaretCore/CoreProcessTransport.swift").read_text(), "public static func childEnvironment")
         host_source = (ROOT / "apps/caret/Sources/CaretHost/Services/ServiceLauncher.swift").read_text()
         host = function(host_source, "static func childEnvironment")
-        allow_list = re.search(r"static let typeSafeEnvironmentKeys = \[[^\]]*\]", host_source)
-        self.assertIsNotNone(allow_list)
-        constants = allow_list.group(0)
+        constants = []
+        for name in ("typeSafeEnvironmentKeys", "developmentEnvironmentKeys"):
+            declaration = re.search(rf"static let {name} = \[[^\]]*\]", host_source)
+            self.assertIsNotNone(declaration, f"missing launcher constant {name}")
+            constants.append(declaration.group(0))
+        constants = "\n".join(constants)
         launch_error = function(host_source, "struct LaunchError")
         load_file = function((ROOT / "apps/mac/Sources/Caret/CoreLaunchSettings.swift").read_text(), "static func environment(fromEnvFileAt")
         with tempfile.TemporaryDirectory() as directory:

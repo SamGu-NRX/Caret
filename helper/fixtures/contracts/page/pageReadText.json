@@ -1,0 +1,7 @@
+{
+  "type": "pageReadText",
+  "v": 1,
+  "id": "fixture-read",
+  "expires": 1000,
+  "tabId": 3
+}

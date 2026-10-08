@@ -19,6 +19,7 @@
 // Cost on the corpora (fixtures/realfill/sources and F1's task notes, mails and memory: 276 non-blank lines,
 // test/g2-ownership.test.ts "the redacted view's cost"; W4's note, 15 lines, outside the repository): 1 line, Ashby's
 // "Incident question: use the token-leak story, write it fresh.", whose key is none: 0 right values lost.
+import { ENV, processEnv } from "../host-env.ts";
 import type { WindowState } from "../model.ts";
 import type { Node, TypedValue } from "../protocol.ts";
 import { markerAcross, markerEnds, PEM_BEGIN, PEM_END, secretText } from "../memory/sensitive.ts";
@@ -243,8 +244,8 @@ function splitTextNodes(w: WindowState): Set<string> {
  * drop), so tests and evaluations measure what the structural path alone (privacy/exclude.ts on read, the Disclosure, the
  * formats, the shapes, the budgets) withholds. A test-only switch: the helper refuses to start with it set (main.ts).
  */
-export const MARKERS_OFF_ENV = "CARET_TEST_MARKERS_OFF";
-const markersOff = (): boolean => process.env[MARKERS_OFF_ENV] === "1";
+export const MARKERS_OFF_ENV = ENV.caret_test_markers_off;
+const markersOff = (): boolean => processEnv()[MARKERS_OFF_ENV] === "1";
 
 function build(w: WindowState): WindowState {
   if (markersOff()) return w;

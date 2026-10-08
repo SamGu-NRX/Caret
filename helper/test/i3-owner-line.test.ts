@@ -12,7 +12,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { planAsk, type AskDraft } from "../src/planner/ask.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
-import { field, snap } from "./builders.ts";
+import { field, scopeLabel, snap } from "./builders.ts";
 
 beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => setGeneratorClock(null));
@@ -40,7 +40,7 @@ function jev(owner: { choice: string; confidence: number }) {
         if (id === "why") return [id, { choice: "nothingToFill", confidence: 0.9 }];
         if (id === "whose") return [id, { choice: "user", confidence: 0.9 }];
         if (id === "section") return [id, { choice: "fields", confidence: 0.99 }];
-        if (id.startsWith("s_")) return [id, { choice: LANDLORD.some((l) => ins.includes(`'${l}'`)) ? "asks" : "not", confidence: 0.99 }];
+        if (id.startsWith("s_")) return [id, { choice: LANDLORD.includes(scopeLabel(ins)) ? "asks" : "not", confidence: 0.99 }];
         if (id.endsWith("_owner")) return [id, /Gary|gpruitt|555-0193/u.test(ins) ? owner : { choice: "user", confidence: 0.9 }];
         if (id.endsWith("_whose")) return [id, { choice: "other" in q.criteria ? "other" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
         if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];

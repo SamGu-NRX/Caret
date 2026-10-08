@@ -13,6 +13,7 @@ import { Store } from "../src/store.ts";
 import { LineClient, until } from "./socket-reader.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { areaKey, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, type CannedStep, type GoalScene } from "./goal-desk.ts";
+import { scopeLabel } from "./builders.ts";
 
 const EMAIL = "priya.raman@northwind.example";
 const DRAFT = "Hi Priya, I'm in for Thursday, October 8 at 3:00 PM.";
@@ -174,7 +175,7 @@ describe("goalEdit under an Ask's scope (I2)", () => {
     // Heads say plan; the scope ask chooses Message alone, so the program's To is left out.
     const askJev: AskJev = async (req) => {
       if (req.purpose === "ask.heads") return { model: "t", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: { route: "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none", confidence: 0.95 }])) };
-      if (req.purpose === "ask.scope") return { model: "t", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: /[Tt]he field 'Message'/u.test(String(q.instructions)) ? "asks" : "not", confidence: 0.95 }])) };
+      if (req.purpose === "ask.scope") return { model: "t", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: scopeLabel(String(q.instructions)) === "Message" ? "asks" : "not", confidence: 0.95 }])) };
       return values(req);
     };
     const sc = goalScene({ scripts: [REPLY], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev, ask: { maker: "heads" } });

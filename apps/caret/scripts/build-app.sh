@@ -27,6 +27,12 @@
 #   Contents/Frameworks/llama.framework
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
+# Internal VM and test builds use synthetic data and are never distributed, so the release acceptance records don't
+# apply to them; every other gate check does, and the bundle is stamped CaretInternalBuild so release refuses it.
+case "${1:-release}" in
+  debug | acceptance) export CARET_INTERNAL_BUILD=1 ;;
+  *) unset CARET_INTERNAL_BUILD ;;
+esac
 CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" /bin/sh "$root/scripts/privacy_gate.sh"
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
@@ -98,6 +104,7 @@ rm -rf "$app" "$other"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Frameworks" "$contents/Helpers" "$contents/Resources" "$contents/Library/LaunchAgents"
 cp Bundle/Info.plist "$contents/Info.plist"
+if [[ -n "${CARET_INTERNAL_BUILD:-}" ]]; then /usr/libexec/PlistBuddy -c "Add :CaretInternalBuild bool true" "$contents/Info.plist"; fi
 CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" CARET_REQUIRE_PROCESSED_PLIST=1 CARET_BUILD_PLIST="$PWD/$contents/Info.plist" CARET_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt" /bin/sh "$root/scripts/privacy_gate.sh"
 cp "$bin/Caret" "$contents/MacOS/Caret"
 # Only the acceptance build may carry the acceptance code (Sources/Caret/Acceptance.swift), and it must.
@@ -114,6 +121,9 @@ ditto "$helper_out" "$contents/Resources/helper"
 ditto ../../extension/dist "$contents/Resources/Caret for Chrome"
 cp Bundle/dev.caret.host.plist "$contents/Library/LaunchAgents/dev.caret.host.plist"
 plutil -lint -s "$contents/Library/LaunchAgents/dev.caret.host.plist" "$contents/Info.plist"
+# Every file is in place: the promise onboarding shows must be there, whole, before anything is signed.
+# env -u: a verification run must not write the file it checks.
+env -u CARET_PRIVACY_RESOURCE CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" CARET_VERIFY_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt" /bin/sh "$root/scripts/privacy_gate.sh"
 
 # Inside out: each helper and the framework, then the app, which seals the resources.
 if [[ "$mode" == debug ]]; then

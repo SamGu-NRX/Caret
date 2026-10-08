@@ -11,7 +11,7 @@
 // as the same user, which can read everything Caret reads anyway; races against the check (an ancestor swapped for a
 // link, a hard link planted after it) are out of scope. O_NOFOLLOW_ANY and the hard-link refusal stay because they cost
 // nothing, not because they close that threat.
-import { closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, lstatSync, openSync, readlinkSync, realpathSync, renameSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, lstatSync, openSync, readdirSync, readlinkSync, realpathSync, renameSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,14 +75,25 @@ export function resolvedPath(path: string): string {
 
 const home = (): string => realpathSync(homedir());
 
-/** Folders a sync client or File Provider uploads from, below the home folder (macOS). */
-function syncedRoots(): string[] {
-  const h = home();
-  return [join(h, "Library", "Mobile Documents"), join(h, "Library", "CloudStorage")];
-}
-
 /** A home-folder entry an older sync client mounts directly: Dropbox, Google Drive, OneDrive, Box, iCloud Drive. */
 const SYNCED_HOME_ENTRY = /^(?:Dropbox|Google Drive|GoogleDrive|OneDrive|Box|Box Sync|iCloud Drive)(?:\b|[ (-])/iu;
+
+/**
+ * Folders a sync client or File Provider uploads from (macOS): ~/Library/Mobile Documents, ~/Library/CloudStorage and
+ * the home folder's sync mounts, each as written and as resolved, since any of them can itself be a link to a folder
+ * elsewhere (a path under the link's target syncs too).
+ */
+function syncedRoots(): string[] {
+  const h = home();
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(h).filter((n) => SYNCED_HOME_ENTRY.test(n));
+  } catch {
+    entries = [];
+  }
+  const literal = [join(h, "Library", "Mobile Documents"), join(h, "Library", "CloudStorage"), ...entries.map((n) => join(h, n))];
+  return [...new Set([...literal, ...literal.map((r) => resolvedPath(r))])];
+}
 
 /**
  * Whether the home folder's volume ignores case, as macOS volumes do by default: there `~/library/cloudstorage` is

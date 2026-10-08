@@ -1,0 +1,1 @@
+realfill-asks canned oracle: fill's 15 ms wall-clock candidate budget (GENERATOR_BUDGET_MS) flips a single run's Ask right->refused about 1 in 20 under load; rerun or loop one Ask before calling an oracle drop a regression (G35 b31-04, ask-17).

@@ -10,14 +10,14 @@ import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { Snapshot } from "../src/protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { checkIntent, intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
-import { fieldContext, headsIntentMaker, headsRequest, readHeads, SCOPE_CUTOFF, SCOPE_OPTIONS, SECTION_QUESTION, scopeId, scopeRequest } from "../src/planner/intent-heads.ts";
+import { headsIntentMaker, headsRequest, readHeads, SCOPE_CUTOFF, SCOPE_OPTIONS, SECTION_QUESTION, scopeId, scopeRequest } from "../src/planner/intent-heads.ts";
 import { AskAsks, AskRefused, planAsk } from "../src/planner/ask.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import type { MemoryValue } from "../src/planner/trace.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { rng } from "./large-scene.ts";
-import { field, node, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap } from "./builders.ts";
 
 beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => setGeneratorClock(null));
@@ -45,7 +45,7 @@ const headsOf = (s: IntentSnapshot, heads: Record<string, string> = {}): JevResu
   const dflt: Record<string, string> = { route: "some", why: "nothingToFill", source: "any", whose: "user" };
   return { model: "jev-test", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: heads[id] ?? dflt[id] ?? "none", confidence: 0.9 }])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
 };
-const names = (s: IntentSnapshot, refs: readonly string[]): string[] => refs.map((r) => s.fields.find((f) => f.ref === r)?.name ?? r);
+const names = (s: IntentSnapshot, refs: readonly string[] | undefined): string[] => (refs ?? []).map((r) => s.fields.find((f) => f.ref === r)?.name ?? r);
 
 describe("the scope ask's requests", () => {
   it("asks one categorical question per field in each of two wordings, with asks, not and unclear", () => {
@@ -62,19 +62,21 @@ describe("the scope ask's requests", () => {
     expect(headsRequest(s).nouls).toBeUndefined();
   });
 
-  it("shows each field's label, heading, group, kind and neighbours (A2: the phone under EMERGENCY CONTACT was shown bare)", () => {
+  it("shows each field's label, kind and section path, and its section's fields (A2: the phone under EMERGENCY CONTACT was shown bare)", () => {
     const s = snapOn("clinic-intake", "use Ines for the emergency contact");
     const phone = s.fields.find((f) => f.name === "Emergency contact phone");
     if (phone === undefined) throw new Error("no phone");
-    expect(fieldContext(s, phone)).toEqual({ label: "Emergency contact phone", heading: "EMERGENCY CONTACT", group: null, role: "text field", before: "Relationship to patient", after: null });
     for (const w of [0, 1] as const) {
-      const text = String(scopeRequest(s, w).questions[scopeId(phone.ref)]?.instructions);
-      for (const part of ["'Emergency contact phone'", "'EMERGENCY CONTACT'", "text field", "'Relationship to patient'", '"use Ines for the emergency contact"']) expect(text, `wording ${w}`).toContain(part);
+      const req = scopeRequest(s, w);
+      const text = String(req.questions[scopeId(phone.ref)]?.instructions);
+      for (const part of ['Field: "Emergency contact phone"', 'Control: "text field"', 'Section/group path: "EMERGENCY CONTACT"', '"use Ines for the emergency contact"']) expect(text, `wording ${w}`).toContain(part);
+      const outline = (req.state as unknown as { form: { sections: { path: string; fields: string[] }[] } }).form;
+      expect(outline.sections.find((x) => x.path === "EMERGENCY CONTACT")?.fields).toEqual(expect.arrayContaining(["Relationship to patient", "Emergency contact phone"]));
     }
-    // A group is shown when it is neither the label nor the heading.
+    // A group's label is part of the path.
     const d = snapOn("airline-passenger", "my birthday");
     const month = d.fields.find((f) => f.name === "Month");
-    expect(month && fieldContext(d, month)).toMatchObject({ group: "Date of birth", role: "pop-up menu" });
+    expect(String(scopeRequest(d, 0).questions[scopeId(month?.ref ?? "")]?.instructions)).toMatch(/Control: "pop-up menu"\. Section\/group path: "[^"]*Date of birth"/u);
   });
 
   it("declares every piece of screen text a scope request sends, a heading with quotes included (A3 review 2)", () => {
@@ -116,13 +118,16 @@ describe("which fields: Jev's, never code's", () => {
     const s = snapOn("conference-registration", "my name and email please");
     const both = ["First name", "Last name", "Email address"];
     expect(names(s, readHeads(s, headsOf(s), scopeOf(s, both)).fields)).toEqual(both);
-    // One wording under the cutoff, or saying not: that field is out.
+    // One wording under the cutoff, or saying not: that field is out of scope, and only offered to the user (G35).
     const low = readHeads(s, headsOf(s), scopeOf(s, both, (n) => (n === "Last name" ? { choice: "asks", confidence: SCOPE_CUTOFF - 0.01 } : undefined)));
-    expect(names(s, low.fields)).toEqual(["First name", "Email address"]);
+    expect(low).toMatchObject({ route: "ask", fields: [] });
+    expect(names(s, low.sure)).toEqual(["First name", "Email address"]);
+    expect(names(s, low.options)).toEqual(["Last name"]);
     const at = readHeads(s, headsOf(s), scopeOf(s, both, (n) => (n === "Last name" ? { choice: "asks", confidence: SCOPE_CUTOFF } : undefined)));
     expect(names(s, at.fields)).toEqual(both);
     const no = readHeads(s, headsOf(s), scopeOf(s, both, (n) => (n === "Email address" ? { choice: "not", confidence: 0.3 } : undefined)));
-    expect(names(s, no.fields)).toEqual(["First name", "Last name"]);
+    expect(names(s, no.sure)).toEqual(["First name", "Last name"]);
+    expect(names(s, no.options)).toEqual(["Email address"]);
   });
 
   // I3 lead ruling: the chosen fields are kept beside the question (`sure`), which offers only the unclear ones.
@@ -302,7 +307,7 @@ describe("through planAsk", () => {
           if (id === "whose" || id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user" in q.criteria ? "user" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
           if (id === SECTION_QUESTION) return [id, { choice: "fields", confidence: 0.99 }];
           if (id.startsWith("s_")) {
-            const label = /[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "";
+            const label = scopeLabel(ins);
             return [id, { choice: unclear.includes(label) ? "unclear" : asks.includes(label) ? "asks" : "not", confidence: 0.99 }];
           }
           if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];

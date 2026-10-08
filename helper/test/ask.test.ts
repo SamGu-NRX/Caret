@@ -254,7 +254,7 @@ describe("a named person's several values", () => {
 
 describe("the intent makers", () => {
   const fakeWriter = (out: () => unknown) => ({
-    route: { provider: "groq", baseUrl: "", keyName: "", model: "fake", maxTokensParam: "max_tokens", extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "" } } as const,
+    route: { provider: "groq", baseUrl: "", keyName: "GROQ_API_KEY", model: "fake", maxTokensParam: "max_tokens", extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "" } } as const,
     write: async () => {
       const json = out();
       return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 10, outputTokens: 5, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };

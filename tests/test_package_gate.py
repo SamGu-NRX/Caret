@@ -33,6 +33,16 @@ class PackageGateTest(unittest.TestCase):
             package_mac.privacy_gate, package_mac.run = original_gate, original_run
         self.assertEqual(calls, ["gate"])
 
+    def test_the_copied_app_must_carry_the_promise(self):
+        seen = []
+        def runner(command, **kwargs):
+            seen.append(kwargs["env"]["CARET_VERIFY_PRIVACY_RESOURCE"])
+            return subprocess.CompletedProcess(command, 1, "", "privacy gate: refusing to package: the app's privacy promise x is missing")
+        with self.assertRaises(SystemExit) as e:
+            package_mac.verify_privacy_resource(Path("/tmp/dist/Caret.app"), runner=runner)
+        self.assertIn("is missing", str(e.exception))
+        self.assertEqual(seen, ["/tmp/dist/Caret.app/Contents/Resources/PrivacyPromise.txt"])
+
     def test_the_real_gate_refuses_this_tree_until_required_fixes_are_accepted(self):
         with self.assertRaises(SystemExit):
             package_mac.privacy_gate()

@@ -1023,6 +1023,8 @@ export const MAX_ASK_OPTIONS = 8;
  * Consumer to helper (B29): the user's answer to an askQuestion, by option id. A question takes one answer, from the
  * connection it was sent to. The helper replies under this message's `requestId` with a planProposal (or a further
  * askQuestion); a question that is unknown, expired or answered gets a planProposal error with code `questionGone`.
+ * No picks answers only a fields question that names fields it is `filling`: Caret fills those alone. Any other empty
+ * answer gets a planProposal error with code `schema`.
  */
 export const AskAnswer = z.object({
   type: z.literal("askAnswer"),
@@ -1030,7 +1032,7 @@ export const AskAnswer = z.object({
   requestId: z.string().min(1).max(200),
   at: ms,
   questionId: z.string().min(1),
-  picks: z.array(z.string().min(1)).min(1).max(MAX_ASK_OPTIONS),
+  picks: z.array(z.string().min(1)).max(MAX_ASK_OPTIONS),
 });
 export type AskAnswer = z.infer<typeof AskAnswer>;
 
@@ -2265,6 +2267,8 @@ export type AskOption = z.infer<typeof AskOption>;
  * real choices from the screen. `part` says which: `fields` (pick one or more), `source` (one window, or memory) or `person` (whose
  * details). `text` is the question as the user reads it. Answered with askAnswer naming `questionId` and the picks,
  * once, before `expires`; the answer's reply is a planProposal or another askQuestion. `window` is the form.
+ * `filling`, on a fields question only, labels the fields Caret fills whatever is picked; with it, an answer with no
+ * picks fills those alone, so the user can decline the offered fields without dismissing the Ask.
  */
 export const AskQuestion = z
   .object({
@@ -2277,6 +2281,7 @@ export const AskQuestion = z
     text: z.string().min(1),
     pick: z.enum(["one", "many"]),
     options: z.array(AskOption).min(1).max(MAX_ASK_OPTIONS),
+    filling: z.array(z.string().min(1)).min(1).optional(),
     window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }),
     expires: ms,
   })
@@ -2285,11 +2290,13 @@ export const AskQuestion = z
     const pick = m.part === "fields" ? "many" : "one";
     const problem = m.pick !== pick
       ? `a ${m.part} question picks ${pick}`
-      : m.options.some((o) => !kinds.includes(o.kind))
-        ? `a ${m.part} question lists only ${kinds.join(" or ")} options`
-        : new Set(m.options.map((o) => o.id)).size !== m.options.length
-          ? "option ids repeat"
-          : null;
+      : m.filling !== undefined && m.part !== "fields"
+        ? "only a fields question names fields it is filling"
+        : m.options.some((o) => !kinds.includes(o.kind))
+          ? `a ${m.part} question lists only ${kinds.join(" or ")} options`
+          : new Set(m.options.map((o) => o.id)).size !== m.options.length
+            ? "option ids repeat"
+            : null;
     if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["options"] });
   });
 export type AskQuestion = z.infer<typeof AskQuestion>;

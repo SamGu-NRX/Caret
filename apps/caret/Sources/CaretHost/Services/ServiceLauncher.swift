@@ -288,7 +288,7 @@ final class ServiceLauncher {
         #else
         let release = true
         #endif
-        let devKeys = release ? [] : ["CARET_DEV_VERCEL_GEMINI", "CARET_JEV_GATEWAY_KEY"]
+        let devKeys = release ? [] : developmentEnvironmentKeys
         for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] + (passesJevKey ? typeSafeEnvironmentKeys + ["CARET_ENV_FILE"] + devKeys : []) {
             if let v = host[key], !v.isEmpty { env[key] = v }
         }
@@ -312,6 +312,8 @@ final class ServiceLauncher {
         }
         return env
     }
+
+    static let developmentEnvironmentKeys = ["CARET_DEV_VERCEL_GEMINI", "CARET_JEV_GATEWAY_KEY"]
 
     // jev.ts reads the direct key, provider and model; DailySpend reads the cap. Preserve these when
     // removing the env-file path so a release does not silently change the configured TypeSafe model.
