@@ -58,6 +58,75 @@ export function unitOf(model: ScreenModel, windowId: string, nodeKey: string): N
   return build(raw, textArea(node) ? nodeKey : null);
 }
 
+/** The unit by its identity (unitKey): a text area of the window, or (null) the whole window; null when either is gone. */
+export function unitAt(model: ScreenModel, windowId: string, nodeKey: string | null): NoteUnit | null {
+  const raw = model.windows.get(windowId);
+  if (raw === undefined) return null;
+  if (nodeKey === null) return build(raw, null);
+  const node = raw.nodes.get(nodeKey);
+  return node === undefined || !textArea(node) ? null : build(raw, nodeKey);
+}
+
+/**
+ * Every text of a node the redacted view shows (privacy/disclosure.ts viewText): its label, value and placeholder, and its
+ * section texts. Unlike unitText, an editable field's label is in it ("Optional services, not requested" over "Oil change").
+ */
+function shownText(n: Node): string {
+  return [n.label, n.value, n.placeholder, ...sectionTexts(n)].filter((t): t is string => t !== undefined && t !== "").join("\n");
+}
+
+/**
+ * The nodes of a window's own content, in document order (depth first, siblings as the walk lists them): in a browser,
+ * its page (the AXWebArea and every node whose parent chain reaches it, as controls.ts formControls reads a page's
+ * controls), not the browser's toolbar and tabs; any other window's every node. The toolbar and tab strip are the
+ * browser's, not part of anyone's message. Membership never depends on the order a snapshot lists nodes in: it may list
+ * a child before its parent.
+ */
+function contentNodes(raw: WindowState): Node[] {
+  const kids = new Map<string | null, Node[]>();
+  for (const n of raw.nodes.values()) {
+    const p = n.parent !== null && raw.nodes.has(n.parent) ? n.parent : null;
+    kids.set(p, [...(kids.get(p) ?? []), n]);
+  }
+  const web = [...raw.nodes.values()].find((n) => n.role === "AXWebArea");
+  const out: Node[] = [];
+  const seen = new Set<string>();
+  const visit = (n: Node): void => {
+    if (seen.has(n.key)) return;
+    seen.add(n.key);
+    out.push(n);
+    for (const c of kids.get(n.key) ?? []) visit(c);
+  };
+  for (const root of web === undefined ? (kids.get(null) ?? []) : [web]) visit(root);
+  return out;
+}
+
+/**
+ * The basis a choice is judged against (fill.ts), one text for what is sent, what completeness is judged on and what the
+ * digest rechecks: the window's title, then every text each node of its content shows. The content holds every message's
+ * headers, body and disclaimer, whatever nodes carry them; a text area alone is no message, since nothing on the walk says
+ * where the message it is part of begins or ends. Incomplete when redaction removed any of it (b). Null when the window is
+ * gone or shows no text.
+ */
+export function windowUnit(model: ScreenModel, windowId: string): NoteUnit | null {
+  const raw = model.windows.get(windowId);
+  if (raw === undefined) return null;
+  const nodes = contentNodes(raw);
+  if (!nodes.some((n) => shownText(n).trim() !== "")) return null;
+  const view = redactWindow(raw);
+  let complete = raw.window.title === view.window.title;
+  const texts = view.window.title.trim() === "" ? [] : [view.window.title.trim()];
+  for (const r of nodes) {
+    const v = view.nodes.get(r.key);
+    const vt = v === undefined ? "" : shownText(v).trim();
+    if (shownText(r).trim() !== vt) complete = false;
+    if (vt !== "") texts.push(vt);
+  }
+  const text = texts.join("\n");
+  const digest = createHash("sha256").update(`${windowId}\u0000shown\u0000${complete ? "1" : "0"}\u0000${text}`).digest("hex").slice(0, 32);
+  return { windowId, nodeKey: null, text, complete, digest };
+}
+
 function build(raw: WindowState, nodeKey: string | null): NoteUnit {
   const view = redactWindow(raw);
   const keys = nodeKey === null ? [...raw.nodes.keys()] : [nodeKey];

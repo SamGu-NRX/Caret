@@ -34,7 +34,7 @@ import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
 import { WITHHELD } from "../privacy/exclude.ts";
 import { alternateKinds, alternateStale, type AlternateKind, type SavedReader } from "./alternate.ts";
-import { ownedStale, type OwnedEvidence } from "./note-unit.ts";
+import { ownedStale, windowUnit, type OwnedEvidence } from "./note-unit.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -115,8 +115,10 @@ export function autocompletePart(token: AutocompleteToken | null | undefined): F
  * V4: "optionNamed" is a menu option code found a value to name (controls.ts optionLink), said as such to the verifier.
  * "amountNumber" is an amount's number without its currency sign, for a field that shows its currency (fill.ts).
  * "boxTicked" is a checkbox's checked state from text that says to tick it (controls.ts statesFact, namedInList).
+ * "sourceSupported" is a listed option or a service box's tick that code proposes for judgment against a whole source
+ * unit, memory entry or the user's whole request, without having found the source naming it (design/ask/MISSING-CANDIDATES.md).
  */
-export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat" | "amountNumber" | "boxTicked";
+export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat" | "amountNumber" | "boxTicked" | "sourceSupported";
 
 /** Where a value came from, carried unchanged from the moment it was read to the step that writes it. */
 export type Provenance =
@@ -164,6 +166,12 @@ export type Provenance =
     }
   | { kind: "memory"; id: string; label: string; part: FillMemory["part"] | null; whose: "user" | "other" | null }
   | { kind: "instruction"; span: string }
+  /**
+   * The whole window a source-supported choice was judged against (fill/note-unit.ts windowUnit): its id and the digest
+   * of the text it was shown, which the one recheck requires unchanged (provenanceStale). It has no span: the evidence is
+   * the whole window.
+   */
+  | { kind: "unit"; windowId: string; app: string; title: string; digest: string }
   | { kind: "answer"; id: string; question: string }
   | {
       kind: "derived";
@@ -622,6 +630,13 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
       const whole = pr.partOf !== null && pr.partOf !== pr.line ? m(null, pr.partOf) : null;
       return whole !== null ? d.t`${base}, which is part of "${whole}"` : base;
     }
+    case "unit": {
+      const t = pr.title.trim();
+      const app = pr.app === "" ? null : (d.appNamed(pr.app) ?? d.planText(pr.app));
+      const title = t === "" || !shown(pr.windowId, t) ? null : quote(t);
+      const at = title !== null ? d.t`${app ?? d.own("a window")} '${title}'` : (app ?? d.own("another window"));
+      return d.t`the whole text of ${at}`;
+    }
     case "memory": {
       const label = m(pr.label);
       const as = label === null ? d.own("") : d.t` as '${label}'`;
@@ -645,7 +660,7 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
   }
 }
 
-const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format", amountNumber: "the number of the amount", boxTicked: "the ticked state stated" } as const satisfies Record<DeriveHow, string>;
+const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format", amountNumber: "the number of the amount", boxTicked: "the ticked state stated", sourceSupported: "a listed option or tick, proposed for judgment on the evidence" } as const satisfies Record<DeriveHow, string>;
 
 /**
  * The proposed value as the verifier quotes it, minted from where it was read (READS): a window value at its recorded
@@ -691,6 +706,8 @@ function unreadTexts(pr: Provenance): string[] {
       const roles: [ReadRole | null, string | null][] = [["title", pr.title], ["line", pr.line], ["label", pr.label], ["span", pr.span], [null, pr.partOf]];
       return roles.flatMap(([role, t]) => (t === null || t.trim() === "" || (role !== null && read?.[role] !== undefined) ? [] : [t]));
     }
+    case "unit":
+      return pr.title.trim() === "" ? [] : [pr.title];
     case "memory":
       return [pr.label];
     case "answer":
@@ -790,6 +807,7 @@ const DERIVATION_SAYS = {
   fieldFormat: "the source value, rewritten in the field's format",
   amountNumber: "the amount's number without its currency sign",
   boxTicked: "the box ticked, as the supporting text says it should be",
+  sourceSupported: "not copied from the source",
 } as const satisfies Record<DeriveHow, string>;
 
 /**
@@ -810,7 +828,18 @@ function mintSourceEvidence(d: Disclosure, pr: Provenance, quote: (t: string) =>
     return value === null ? as : d.t`${as}, "${value}"`;
   }
   const said = mintProvenanceSays(d, pr, quote, shown);
-  return pr.kind === "window" && unit !== null ? d.t`${said}, whose whole text is ${unit} in source_notes` : said;
+  if (unit === null) return said;
+  return pr.kind === "window" ? d.t`${said}, whose whole text is ${unit} in source_notes` : pr.kind === "unit" ? d.t`${said}, which is ${unit} in source_notes` : said;
+}
+
+/** Whether a value is a choice judged against the user's whole request, which the verifier must then show. */
+function judgedOnRequest(pr: Provenance): boolean {
+  return pr.kind === "derived" && pr.how === "sourceSupported" && pr.base.kind === "instruction";
+}
+
+/** Whether a value's provenance rests on a whole source unit (Provenance kind "unit"), in itself or in what it was derived from. */
+function restsOnUnit(pr: Provenance): boolean {
+  return pr.kind === "unit" || (pr.kind === "derived" && (restsOnUnit(pr.base) || (pr.also !== null && restsOnUnit(pr.also))));
 }
 
 /** Minted texts as an English list: "a", "a and b", "a, b and c". */
@@ -921,6 +950,8 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     const named = admitted.length > 0 && admitted.length === rest.length ? admitted : null;
     const contract = named === null ? contractSays(p.field) : null;
     const unit = o.unitOf?.(p) ?? null;
+    // A value judged against a whole unit, or the whole request, is verified against it or not at all.
+    if ((unit === null && restsOnUnit(p.provenance)) || (instruction === undefined && judgedOnRequest(p.provenance))) return null;
     if (unit !== null) notes.set(p, unit);
     const parts: VerifyParts = {
       descriptor,
@@ -1189,6 +1220,12 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
       if (!sameDigests(now, pr.lines) || !sameDigests(sentenceDigests(shown, pr.span), pr.sentences)) return "what its source says around it changed";
       if (pr.context !== null && !spanContexts(view, seen as Node, pr.span).includes(pr.context)) return "the label it was read beside changed";
       return pr.owned === undefined ? null : ownedStale(model, pr.span, { windowId: pr.windowId, nodeKey: pr.nodeKey }, pr.owned);
+    }
+    case "unit": {
+      // The whole unit by digest: any edit, a cut, a window Caret may no longer read, a changed title or label.
+      const now = windowUnit(model, pr.windowId);
+      if (now === null) return "the text it was judged against is gone";
+      return now.digest === pr.digest ? null : "the text it was judged against changed";
     }
     case "derived": {
       const stale = provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));

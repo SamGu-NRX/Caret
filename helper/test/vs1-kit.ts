@@ -17,7 +17,7 @@ import { rng } from "./large-scene.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const corpus = loadCorpus(join(here, "../../fixtures/realfill"));
-const snaps = readFileSync(join(here, "../fixtures/recorded/realfill-windows.ndjson"), "utf8").trim().split("\n").map((l) => Snapshot.parse(JSON.parse(l)));
+export const snaps = readFileSync(join(here, "../fixtures/recorded/realfill-windows.ndjson"), "utf8").trim().split("\n").map((l) => Snapshot.parse(JSON.parse(l)));
 export const B31 = loadAsks(join(here, "../../fixtures/realfill"), corpus, "asks-b31.json");
 
 /**
@@ -56,6 +56,10 @@ export interface Overrides {
   /** Answers the base's value question for a field in one wording, from its criteria; undefined leaves `firstPass` to answer it. */
   firstAnswer?: (label: string, wording: 0 | 1, criteria: Readonly<Record<string, string | null | undefined>>) => Answer | undefined;
   verify?: (label: string, wording: 0 | 1, output: string, instructions: string) => Answer | undefined;
+  /** Answers any question first (a scope question, say), given its request; undefined leaves it to the rules above. */
+  raw?: (req: JevRequest, qid: string, q: JevRequest["questions"][string]) => Answer | undefined;
+  /** Rewrites a recorded window before the desk is built (a source's text, to test what it says). */
+  mapSnap?: (s: Snapshot) => Snapshot;
   /** Answers an owner question (fill.whose, `<candidate>_owner`) by the candidate's text; undefined leaves the oracle's. */
   owner?: (text: string) => Answer | undefined;
 }
@@ -97,7 +101,7 @@ export async function runB31(id: string, o: Overrides & { window?: "page" | "rea
   if (ask === undefined) throw new Error(`no B31 ask ${id}`);
   const form = corpus.forms.find((f) => f.id === ask.form);
   if (form === undefined) throw new Error(`no form ${ask.form}`);
-  const desk = buildDesk(corpus, snaps, form, (o.window ?? "page") === "page" ? pageForm(form) : undefined);
+  const desk = buildDesk(corpus, o.mapSnap === undefined ? snaps : snaps.map(o.mapSnap), form, (o.window ?? "page") === "page" ? pageForm(form) : undefined);
   const labelOf = new Map(form.fields.flatMap((f) => nodesFor(desk.form, f).map((n) => [n.key, f.label] as const)));
   const traces: FillTrace[] = [];
   const requests: JevRequest[] = [];
@@ -113,6 +117,11 @@ export async function runB31(id: string, o: Overrides & { window?: "page" | "rea
     const t = traces.find((x) => x.owns(req));
     const answers = { ...base.answers };
     for (const [qid, q] of Object.entries(req.questions)) {
+      const given = o.raw?.(req, qid, q);
+      if (given !== undefined) {
+        answers[qid] = given;
+        continue;
+      }
       const firstPass = req.purpose === "fill.values" && /^f\d+$/u.test(qid) && !isSettlement(q.criteria);
       if (firstPass) {
         const wording = (Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k)) ? 1 : 0) as 0 | 1;
