@@ -15,7 +15,7 @@ import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
 import { excludedValue, withholdValues } from "./exclude.ts";
-import { ANY_PATH, childGlob, knownPath, scalarsAt, shapeItems, shapeOf, UNNAMED, type ScalarType, type Slot } from "./shapes.ts";
+import { ANY_PATH, childGlob, containerAt, knownPath, scalarsAt, shapeItems, shapeOf, UNNAMED, type ScalarType, type Slot } from "./shapes.ts";
 import { switchedOffCount } from "./read-policy.ts";
 import { describeField, descriptorSources, type FieldDescriptor } from "../fill/descriptor.ts";
 import type { Node } from "../protocol.ts";
@@ -795,7 +795,7 @@ export class Disclosure extends SnippetLedger {
       // A whole state sent as one JSON text (Disclosure.jsonText; engines/decide/harness.ts layaState) is checked as the
       // state that text writes, parsed from the text itself. Only there: anywhere else a JSON text is a text like any
       // other, held to its own slot's reasons and length (PV2 re-review).
-      if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob, { count, scalar, key });
+      if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob, { count, scalar, key, container });
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
       if (v.length > slot.max) {
@@ -811,6 +811,9 @@ export class Disclosure extends SnippetLedger {
     const key = (path: string, glob: string): void => {
       if (!knownPath(purpose, glob)) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
     };
+    const container = (path: string, glob: string, kind: "object" | "list"): void => {
+      if (!containerAt(purpose, glob, kind)) throw new OutOfShape(`${purpose}: ${path === "" ? "the body" : path} holds ${kind === "object" ? "an object" : "a list"}, which its shape does not have there (privacy/shapes.ts, ${glob}); it was not sent`);
+    };
     const items = shapeItems(purpose);
     const count = (path: string, glob: string, n: number): void => {
       const max = items[glob] ?? items[ANY_PATH];
@@ -819,7 +822,7 @@ export class Disclosure extends SnippetLedger {
       shapeLengthLog({ purpose, slot: glob, items: n, max });
       throw new OutOfShape(`${purpose}: ${path} holds ${n} items, more than its shape's ${max}; it was not sent`);
     };
-    this.walk(purpose, body, root, check, root, { count, scalar, key });
+    this.walk(purpose, body, root, check, root, { count, scalar, key, container });
   }
 
   /**
@@ -834,7 +837,12 @@ export class Disclosure extends SnippetLedger {
     root: string,
     each: ((path: string, glob: string, v: string) => void) | null,
     rootGlob = root,
-    shape: { count: (path: string, glob: string, n: number) => void; scalar: (path: string, glob: string, type: ScalarType) => void; key: (path: string, glob: string) => void } | null = null,
+    shape: {
+      count: (path: string, glob: string, n: number) => void;
+      scalar: (path: string, glob: string, type: ScalarType) => void;
+      key: (path: string, glob: string) => void;
+      container: (path: string, glob: string, kind: "object" | "list") => void;
+    } | null = null,
   ): void {
     const at = (path: string, k: string | number): string => (typeof k === "number" ? `${path}[${k}]` : path === "" ? k : `${path}.${k}`);
     const go = (v: unknown, path: string, glob: string): void => {
@@ -851,10 +859,12 @@ export class Disclosure extends SnippetLedger {
       if (v === undefined) return;
       if (v === null || typeof v === "number" || typeof v === "boolean") return shape?.scalar(path, glob, v === null ? "null" : typeof v === "number" ? "number" : "boolean");
       if (Array.isArray(v)) {
+        shape?.container(path, glob, "list");
         if (v.length > 0) shape?.count(path, childGlob(glob, 0), v.length);
         return v.forEach((x, i) => go(x, at(path, i), childGlob(glob, i)));
       }
       if (typeof v === "object") {
+        shape?.container(path, glob, "object");
         const keys = Object.keys(v);
         const items = keys.length === 0 ? null : childGlob(glob, keys[0]!);
         if (items !== null && items.endsWith(".*")) shape?.count(path, items, keys.length);
@@ -904,10 +914,17 @@ export class Disclosure extends SnippetLedger {
   measureSent(purpose: string, sent: readonly string[], notes: OwnerNotes = new Map(), spanned: readonly string[] = sent, commit = true): Measurement {
     if (this.registry === null) throw new LedgerRefused(`${purpose}: its Disclosure has no screen registry, so what it reveals cannot be measured; it was not sent`);
     // A JSON text this Disclosure wrote (jsonText) is a declared layer: the strings it holds are measured too, decoded,
-    // since their escaped spelling can cut runs a reader of the decoded text sees whole. Added after the units, so the
-    // owner-note indexes (into `sent`) stand.
+    // since their escaped spelling can cut runs a reader of the decoded text sees whole. A layer a sink rendered into
+    // other text (a chat message quoting the wire as JSON) stands in `spanned`, the wire's strings, not in `sent`: its
+    // decoded strings are measured all the same. Added after the units, so the owner-note indexes (into `sent`) stand.
     const units = [...sent];
-    for (let i = 0; i < units.length; i++) if (this.asJson.has(units[i]!)) units.push(...decodeUnits(units[i]!).units.map((u) => u.text));
+    const layers = [...sent, ...spanned];
+    for (let i = 0; i < layers.length; i++) {
+      if (!this.asJson.has(layers[i]!)) continue;
+      const inner = decodeUnits(layers[i]!).units.map((u) => u.text);
+      units.push(...inner);
+      layers.push(...inner);
+    }
     const norm = normalizedUnits(units);
     if (norm === null) throw new LedgerRefused(`${purpose}: a text in it holds an unpaired surrogate and cannot be measured; it was not sent`);
     const ws = this.measuredWindows();

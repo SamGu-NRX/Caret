@@ -148,6 +148,32 @@ function wordsOf(texts: readonly string[]): { texts: readonly string[]; words: R
   };
 }
 
+/**
+ * Whether `v` serializes as what it is, so the bytes say what validation read: plain objects, lists, strings, booleans,
+ * null and finite numbers only. A custom toJSON (its own or its class's) can add or change what JSON.stringify writes,
+ * and NaN or Infinity is written as null. Throws OutOfShape naming the path, never text.
+ */
+function assertPlain(where: string, v: unknown, path = ""): void {
+  const fail = (why: string): never => {
+    throw new OutOfShape(`${where}: ${path === "" ? "the body" : path} ${why}; it was not sent`);
+  };
+  if (v === null || typeof v === "string" || typeof v === "boolean") return;
+  if (typeof v === "number") return Number.isFinite(v) ? undefined : fail("holds a number JSON cannot write");
+  if (typeof v !== "object") return fail(`holds a ${typeof v}, which JSON does not write as itself`);
+  if (typeof (v as { toJSON?: unknown }).toJSON === "function") return fail("has its own JSON form");
+  if (Array.isArray(v)) return v.forEach((x, i) => assertPlain(where, x, `${path}[${i}]`));
+  const proto = Object.getPrototypeOf(v) as unknown;
+  if (proto !== Object.prototype && proto !== null) return fail("is not a plain object");
+  for (const [k, x] of Object.entries(v)) if (x !== undefined) assertPlain(where, x, path === "" ? k : `${path}.${k}`);
+}
+
+/** `v` written as JSON, after assertPlain: what is validated, measured and sent are the same bytes. */
+function plainBytes(where: string, v: unknown): { bytes: string; value: unknown } {
+  assertPlain(where, v);
+  const bytes = JSON.stringify(v);
+  return { bytes, value: JSON.parse(bytes) as unknown };
+}
+
 /** Validates a sink's final body against its envelope (Sink.envelope). Throws UnmintedText naming the path, never text. */
 function validate(where: string, body: unknown, wire: unknown, sink: Pick<Sink, "name" | "envelope" | "wording">, formatsRefuse = true): void {
   const fromWire = stringsOf(wire);
@@ -201,21 +227,24 @@ function validate(where: string, body: unknown, wire: unknown, sink: Pick<Sink, 
 /**
  * Seals a request for one sink (OUTPUT-LEDGER-SPEC section 6), in this order: freezes a copy of its wire body; verifies
  * the wire (membership, shape, keys, types, lengths, the switch-off policy); renders the sink's complete final body
- * from the frozen wire; validates that body against the sink's envelope and the formats Caret never carries; then
- * measures the final bytes with the output ledger (lexically, and the declared spans of every minted unit the wire
- * holds) and admits them, committing to the operation's ledger only then. Throws UnmintedText (LedgerRefused for the
- * ledger, OutOfShape for the envelope); nothing is kept of a refused seal.
+ * from the frozen wire and writes it as JSON once, refusing a value JSON would not write as itself; validates what was
+ * written against the sink's envelope and the formats Caret never carries; then measures those bytes with the output
+ * ledger (lexically, and the declared spans of every minted unit the wire holds) and admits them, committing to the
+ * operation's ledger only then. `commit` false checks without committing: a request that waits in a queue for its
+ * sink is sealed so, and only the sink's own seal commits. Throws UnmintedText (LedgerRefused for the ledger,
+ * OutOfShape for the envelope); nothing is kept of a refused seal.
  */
-export function seal(o: Outbound, sink: Sink = WIRE): Sealed {
+export function seal(o: Outbound, sink: Sink = WIRE, commit = true): Sealed {
   const wireBytes = JSON.stringify("writer" in o ? o.writer.input : o.wire);
   const wire = freeze(JSON.parse(wireBytes) as unknown);
   const out: Outbound = "writer" in o ? { writer: { ...o.writer, input: wire } } : { req: o.req, wire };
   check(out);
   const who = owner(out);
-  const body = sink.render(wire);
-  validate(who.purpose ?? who.kind ?? "a request", body, wire, sink);
-  const bytes = JSON.stringify(body);
-  const measurement = measureBytes(who, bytes, stringsOf(wire).strings);
+  const where = who.purpose ?? who.kind ?? "a request";
+  // The body is written once, and that writing is what is validated, measured and sent (assertPlain).
+  const { bytes, value } = plainBytes(where, sink.render(wire));
+  validate(where, value, wire, sink);
+  const measurement = measureBytes(who, bytes, stringsOf(wire).strings, commit);
   return Object.freeze({ wire, out, bytes, charged: Object.freeze({ ...measurement.charged }), measurement });
 }
 
@@ -259,9 +288,10 @@ export interface StoreRecord {
  */
 export function storedLine(s: Sealed, record: StoreRecord): string {
   const wire = fromBytes(s);
-  const kept = record.build(wire);
-  validate(`${record.name} record`, kept, wire, record, false);
-  return `${JSON.stringify(withheldDeep(kept))}\n`;
+  // The record is written once, and that writing is what is validated and kept (assertPlain).
+  const { value } = plainBytes(`${record.name} record`, record.build(wire));
+  validate(`${record.name} record`, value, wire, record, false);
+  return `${JSON.stringify(withheldDeep(value))}\n`;
 }
 
 /** storedLine written to `path` (a request store's whole file), after the store-path check (privacy/store-path.ts). */

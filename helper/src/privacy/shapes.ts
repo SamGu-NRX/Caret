@@ -439,6 +439,22 @@ export function knownPath(purpose: string, glob: string): boolean {
   return false;
 }
 
+/**
+ * Whether `glob` may hold an object (`kind` "object") or a list ("list") in a request of `purpose`: some row, scalar,
+ * list or client path lies under it, as `glob.` or `glob[`. Checked for every container, empty ones too, so `{}` or `[]`
+ * where the shape has a string refuses. The root, and any path of a shape that allows any path, may hold either.
+ */
+export function containerAt(purpose: string, glob: string, kind: "object" | "list"): boolean {
+  const shape = shapeOf(purpose);
+  if (shape === null) return false;
+  if (glob === "" || Object.hasOwn(shape, ANY_PATH)) return true;
+  // The shared option descriptions an engine hoists hold the options' texts by id (childGlob maps them back).
+  if (kind === "object" && glob === "state.option_descriptions") return true;
+  const own = Object.hasOwn(SCALARS, purpose) ? Object.keys(SCALARS[purpose as ShapeKey] ?? {}) : [];
+  const under = kind === "object" ? `${glob}.` : `${glob}[`;
+  return [...Object.keys(shape), ...own, ...Object.keys(shapeItems(purpose)), ...CLIENT_GLOBS].some((g) => g.startsWith(under));
+}
+
 /** The item counts of a purpose's lists (ITEMS); none for a purpose with no shape. */
 export function shapeItems(purpose: string): Readonly<Record<string, number>> {
   return Object.hasOwn(ITEMS, purpose) ? ITEMS[purpose as ShapeKey] : {};

@@ -1,6 +1,6 @@
 import { assertNoExcludedValue } from "../../privacy.ts";
 import { UnmintedText } from "../../privacy/disclosure.ts";
-import { seal, sendable, type Envelope, type Sealed, type Sink } from "../../privacy/send.ts";
+import { seal, sendable, WIRE, type Envelope, type Sealed, type Sink } from "../../privacy/send.ts";
 // A decision engine on this Mac: an open instruct model in llama-server (llama.cpp), J1 part B.
 //
 // Each request becomes one prompt prefix, the state and every option once with a label, and then one short question
@@ -230,9 +230,10 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   // prompt prefix out of its cache, evaluating each prefix again for every question.
   const ask: AskJev = (asked) => {
     // The request waits in the queue, so it is sealed now (privacy/send.ts): one frozen copy, verified, that every prompt
-    // is rendered from; a caller that changes its request afterwards changes nothing that is sent (PV2 review).
+    // is rendered from; a caller that changes its request afterwards changes nothing that is sent. It commits no charge:
+    // each prompt's own seal for its sink does (post), so a sink that refuses leaves the conversation's limit as it was.
     assertNoExcludedValue(asked);
-    const out = seal({ req: asked, wire: wireBody(asked, opts.model) });
+    const out = seal({ req: asked, wire: wireBody(asked, opts.model) }, WIRE, false);
     const req = frozenRequest(asked, out.wire, out.charged);
     const run = queue.then(() => answer(out, req));
     queue = run.catch(() => undefined);
