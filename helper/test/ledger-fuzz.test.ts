@@ -21,6 +21,9 @@ describe("the ledger against an independent count, seed 20261008", () => {
     // Not vacuous: most cases send requests, and some are refused.
     expect(run.summary.requestsSent).toBeGreaterThan(500);
     expect(run.summary.requestsRefused).toBeGreaterThan(0);
+    // Source-supported choices are sent, some naming a whole window in source_notes, and the answers take some of them.
+    expect(run.summary.choiceWindowRequests).toBeGreaterThan(0);
+    expect(run.summary.choicesChosen).toBeGreaterThan(0);
   }, 120_000);
 });
 

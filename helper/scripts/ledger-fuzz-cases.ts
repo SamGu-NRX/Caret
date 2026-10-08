@@ -3,7 +3,10 @@
 // full set and minimizes a flagged case.
 //
 // Each case builds a synthetic desk (one or two conversations, a TextEdit note, a form; a webmail tab read through
-// TabSource in tab mode), runs proposeFill through a scripted Jev that seals every request (jev.ts sealRequest) and posts
+// TabSource in tab mode). The form may also hold selects, radio groups and a list of service boxes, whose right option a
+// note, a conversation or only the request states in prose, so an Ask offers source-supported choices judged against a
+// whole window or the request (fill.ts); their whole windows reach the count through the final bytes, by rule E, as any
+// other text does. It runs proposeFill through a scripted Jev that seals every request (jev.ts sealRequest) and posts
 // it (send.ts sendable) as the client does, and keeps the requests that pass both. The counter then reads each passing
 // request's final bytes and counts, per conversation and per operation, the source positions the request carries: rule E
 // (12-scalar runs and whole contained lines) plus the source positions of the values the scripted answers chose from
@@ -134,6 +137,32 @@ const LABELS: Record<FieldKind, string[]> = {
   zip: ["ZIP code", "Postal code"],
 };
 
+/** Choice controls, each with the prose that states its option without naming it (MISSING-CANDIDATES's B31 losses). */
+const CHOICES: readonly { control: "select" | "radio" | "boxes"; label: string; options: readonly string[]; says: string }[] = [
+  { control: "select", label: "Contact method", options: ["Select...", "Phone call", "Text message", "Email"], says: "you said you'd rather they text you than call, so pick text" },
+  { control: "select", label: "Meal", options: ["Select a meal", "Braised short rib", "Herb-roasted salmon", "Wild mushroom risotto (vegetarian)"], says: "I'll have the vegetarian one, you wanted the short rib" },
+  { control: "select", label: "Party size", options: ["Select", "1", "2", "3"], says: "can you put down both of us" },
+  { control: "radio", label: "Seating", options: ["Indoor", "Patio"], says: "somewhere outside if the weather holds" },
+  { control: "radio", label: "Section", options: ["Mon/Wed 6:00-8:30 PM", "Tue/Thu 9:00-11:30 AM", "Sat 9:00 AM-12:30 PM"], says: "the tue/thu morning one, not sat" },
+  { control: "boxes", label: "Services", options: ["Oil change", "Tire rotation", "Brake inspection", "Cabin air filter"], says: "we'd do the oil change, tire rotation and brake inspection; the cabin filter is optional" },
+];
+/** Where a choice's prose sits: a note, the user's conversation, only the request, or nowhere. */
+type Says = "note" | "conversation" | "request" | "none";
+
+/** A choice's form nodes, the keys an Ask scopes (a select, a radio group, each box) and their labels. */
+function choiceNodes(c: (typeof CHOICES)[number], y: number): { nodes: Node[]; keys: string[]; labels: string[] } {
+  const slug = c.label.toLowerCase().replace(/ /gu, "-");
+  if (c.control === "select") {
+    const key = `dev.caret.fixture/standard/popup:${slug}~0`;
+    return { nodes: [{ key, parent: null, role: "AXPopUpButton", label: c.label, editable: true, frame: [100, y, 300, 24] }, ...c.options.map((o, k): Node => ({ key: `${key}/item${k}`, parent: key, role: "AXMenuItem", label: o }))], keys: [key], labels: [c.label] };
+  }
+  const key = `dev.caret.fixture/standard/group:${slug}~0`;
+  const role = c.control === "radio" ? "AXRadioButton" : "AXCheckBox";
+  const members = c.options.map((o, k): Node => ({ key: `${key}/${k}`, parent: key, role, label: o, frame: [100, y + 20 * k, 300, 20] }));
+  const group: Node = { key, parent: null, role: "AXGroup", label: c.label, ...(c.control === "radio" ? { subrole: "AXFieldset" } : {}) };
+  return c.control === "radio" ? { nodes: [group, ...members], keys: [key], labels: [c.label] } : { nodes: [group, ...members], keys: members.map((m) => m.key), labels: members.map((m) => m.label ?? "") };
+}
+
 function sentence(r: R, n: number): string {
   return Array.from({ length: n }, () => r.pick(WORDS)).join(" ");
 }
@@ -197,8 +226,8 @@ function chatLines(r: R, p: Persona, other: Persona | null): { text: string; kin
 let atClock = 0;
 const tick = (): number => (atClock += 100);
 
-function messagesWindow(r: R, id: string, p: Persona, other: Persona | null, titleChoices: string[]): WinSpec {
-  const { nodes, values } = textNodes(r, `${id}-m`, chatLines(r, p, other));
+function messagesWindow(r: R, id: string, p: Persona, other: Persona | null, titleChoices: string[], says: readonly string[] = []): WinSpec {
+  const { nodes, values } = textNodes(r, `${id}-m`, [...chatLines(r, p, other), ...says.map((text) => ({ text }))]);
   return { windowId: id, title: r.pick(titleChoices), app: MESSAGES, nodes, values, at: tick() };
 }
 
@@ -206,9 +235,9 @@ function mailLines(r: R, p: Persona, subject: string): { text: string; kind?: st
   return [{ text: `From: ${p.name} <${p.email}>` }, { text: r.chance(0.5) ? "To: me" : `Date: ${p.date}` }, { text: `Subject: ${subject}` }, ...chatLines(r, p, null).filter(() => r.chance(0.8))];
 }
 
-function mailWindow(r: R, id: string, p: Persona, kind: string | undefined): WinSpec {
+function mailWindow(r: R, id: string, p: Persona, kind: string | undefined, says: readonly string[] = []): WinSpec {
   const subject = r.pick(["Trip details", "Booking confirmed", "Re: forms for Saturday", "Your details"]);
-  const { nodes, values } = textNodes(r, `${id}-b`, mailLines(r, p, subject));
+  const { nodes, values } = textNodes(r, `${id}-b`, [...mailLines(r, p, subject), ...says.map((text) => ({ text }))]);
   return { windowId: id, title: r.chance(0.3) ? `${subject} - Inbox` : subject, app: CHROME, nodes, values, at: tick(), ...(kind === undefined ? {} : { kind }) };
 }
 
@@ -220,8 +249,8 @@ function pageWindow(r: R, id: string, p: Persona, kind: string | undefined): Win
   return { windowId: id, title: "Account overview", app: CHROME, nodes, values, at: tick(), ...(kind === undefined ? {} : { kind }) };
 }
 
-function noteWindow(r: R, p: Persona, coincide: Persona | null, titleChoices: string[], copied: readonly string[] = []): WinSpec {
-  const lines: string[] = [...copied];
+function noteWindow(r: R, p: Persona, coincide: Persona | null, titleChoices: string[], copied: readonly string[] = [], says: readonly string[] = []): WinSpec {
+  const lines: string[] = [...copied, ...says];
   const src = coincide ?? p;
   if (r.chance(0.6)) lines.push(`Phone: ${r.chance(0.5) ? src.phone : p.phone2}`);
   if (r.chance(0.5)) lines.push(`Email: ${src.email}`);
@@ -252,20 +281,25 @@ export function makeDesk(caseSeed: number): Desk {
   // Variety: a window title equal to a label or a value.
   const labelTitle = r.chance(0.15) ? [labels[0]!] : [];
   const valueTitle = r.chance(0.1) ? [user.phone] : [];
+  // Choice controls, each stated in a note, the user's conversation, the request, or nowhere.
+  const choices = [...CHOICES].sort(() => r.f() - 0.5).slice(0, r.chance(0.6) ? 1 + r.int(3) : 0).map((c) => ({ c, where: r.pick(["note", "conversation", "request", "none"] as const satisfies readonly Says[]) }));
+  const said = (where: Says): string[] => choices.filter((x) => x.where === where).map((x) => x.c.says);
   const windows: WinSpec[] = [];
   const nConv = 1 + (r.chance(0.35) ? 1 : 0);
   const convIds: string[] = [];
   for (let c = 0; c < nConv; c++) {
     const id = `chat-${c + 1}`;
-    if (mode !== "tab" && r.chance(0.3)) windows.push(mailWindow(r, `mail-${c + 1}`, c === 0 ? user : other, undefined)), convIds.push(`mail-${c + 1}`);
-    else windows.push(messagesWindow(r, id, c === 0 ? user : other, c === 0 ? other : user, [...(c === 0 ? [other.first] : [user.first]), ...labelTitle, ...valueTitle].concat(c === 1 ? [`${other.first} ${user.first}`] : []))), convIds.push(id);
+    const says = c === 0 ? said("conversation") : [];
+    if (mode !== "tab" && r.chance(0.3)) windows.push(mailWindow(r, `mail-${c + 1}`, c === 0 ? user : other, undefined, says)), convIds.push(`mail-${c + 1}`);
+    else windows.push(messagesWindow(r, id, c === 0 ? user : other, c === 0 ? other : user, [...(c === 0 ? [other.first] : [user.first]), ...labelTitle, ...valueTitle].concat(c === 1 ? [`${other.first} ${user.first}`] : []), says)), convIds.push(id);
   }
   // Make the titles of two conversations distinct (the counter reads a window by its app and title).
   if (windows.length === 2 && windows[0]!.title === windows[1]!.title && windows[0]!.app === windows[1]!.app) windows[1]!.title += " (2)";
   // A note may hold a passage copied from the chat: still that chat's text for measurement (section 7).
   const chatText = windows[0]!.nodes.flatMap((n) => (n.label ?? "").split(LINE_BREAK));
   const copied = r.chance(0.25) ? chatText.slice(r.int(Math.max(1, chatText.length - 3))).slice(0, 2 + r.int(4)) : [];
-  if (r.chance(0.85)) windows.push(noteWindow(r, user, r.chance(0.4) ? user : null, ["Untitled", "Notes", ...labelTitle], copied));
+  // A note that states a choice is always open.
+  if (said("note").length > 0 || r.chance(0.85)) windows.push(noteWindow(r, user, r.chance(0.4) ? user : null, ["Untitled", "Notes", ...labelTitle], copied, said("note")));
   let page: WinSpec | null = null;
   if (mode !== "tab" && r.chance(0.25)) {
     page = pageWindow(r, "page:eng1:5", user, "page");
@@ -277,6 +311,12 @@ export function makeDesk(caseSeed: number): Desk {
     const isDate = kinds[i] === "date" && r.chance(0.3);
     return { key: keys[i]!, parent: null, role: isDate ? "AXDateField" : "AXTextField", editable: true, label: l, ...(isDate ? { subrole: "CaretDateInput" } : {}), frame: [100, 40 + i * 40, 300, 24] };
   });
+  for (const [k, { c }] of choices.entries()) {
+    const n = choiceNodes(c, 40 + (labels.length + 4 * k) * 40);
+    formNodes.push(...n.nodes);
+    keys.push(...n.keys);
+    labels.push(...n.labels);
+  }
   let tab: Desk["tab"] = null;
   if (mode === "tab") {
     // The webmail tab the user left for the form; fill reads its text through TabSource.
@@ -328,7 +368,7 @@ export function makeDesk(caseSeed: number): Desk {
     answerSeed: r.int(2 ** 30),
     disagree: mode === "focus" ? 0.1 : 0.5,
     lowVerify: mode === "scope" ? 0.3 : 0,
-    instruction: r.pick(["fill this in from my messages", "use what was sent to me", "fill the form"]),
+    instruction: [r.pick(["fill this in from my messages", "use what was sent to me", "fill the form"]), ...said("request")].join(", "),
   };
 }
 
@@ -527,7 +567,7 @@ export interface CaseResult {
   seed: number;
   mode: string;
   event: string;
-  requests: { purpose: string; ok: boolean; refused?: string }[];
+  requests: { purpose: string; ok: boolean; refused?: string; choices?: { offered: number; windows: number; chosen: number } }[];
   flagged: Flag[];
   gaps?: Gap[];
   inventoryMismatch: string[];
@@ -601,7 +641,11 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
       reqLog.push({ purpose: req.purpose, ok: false, refused: e instanceof Error ? e.message : String(e) });
       throw e;
     }
-    reqLog.push({ purpose: req.purpose, ok: true });
+    // How many source-supported choices it offers, how many of them name a whole window in source_notes, and how many the
+    // answers below take: whether the generator reaches the path at all.
+    const supported = Object.values<any>(req.questions).flatMap((q) => Object.values<string | null>(q.criteria)).filter((c) => String(c ?? "").includes("Derivation: not copied from the source;"));
+    const logged: CaseResult["requests"][number] = { purpose: req.purpose, ok: true, ...(supported.length === 0 ? {} : { choices: { offered: supported.length, windows: supported.filter((c) => String(c).includes("; the whole text is note_")).length, chosen: 0 } }) };
+    reqLog.push(logged);
     const t = traces.find((x) => x.owns(req));
     const answers: Record<string, { choice: string; confidence: number }> = {};
     const chosen: SentRecord["chosen"] = [];
@@ -619,7 +663,9 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
       const opts = Object.entries<string | null>(q.criteria).filter(([k]) => k !== "none" && !k.includes("_"));
       for (const [k, c] of opts) {
         const o = t?.options.get(k);
-        if (o !== undefined && o.from !== "memory") offered.push(readOf(o.text, o.app, String(c ?? ""), o.from === "derived"));
+        // A source-supported choice's text is a listed option, not a span of its window: its evidence is the whole window,
+        // which the bytes carry and rule E counts.
+        if (o !== undefined && o.from !== "memory" && o.from !== "choice") offered.push(readOf(o.text, o.app, String(c ?? ""), o.from === "derived"));
       }
       if (req.purpose !== "fill.values" || field === undefined || t === undefined) {
         answers[qid] = { choice: opts[0]?.[0] ?? "none", confidence: 0.95 };
@@ -627,6 +673,12 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
       }
       const settlement = opts.some(([, c]) => String(c ?? "").startsWith("Proposed value: "));
       let want = chosenText.get(field.key);
+      // Settlement may list source-supported choices the base never offered: half the time the answers take one of its
+      // options instead, a choice included.
+      if (settlement && opts.length > 0 && r.chance(0.5)) {
+        want = t.options.get(r.pick(opts)[0])?.text;
+        if (want !== undefined) chosenText.set(field.key, want);
+      }
       if (want === undefined && opts.length > 0) {
         want = t.options.get(r.pick(opts)[0])?.text;
         if (want !== undefined) chosenText.set(field.key, want);
@@ -641,7 +693,8 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
       }
       answers[qid] = { choice: hit[0], confidence: 0.99 };
       const o = t.options.get(hit[0])!;
-      if (o.from !== "memory") chosen.push(readOf(o.text, o.app, String(hit[1] ?? ""), o.from === "derived"));
+      if (o.from === "choice" && logged.choices !== undefined) logged.choices.chosen++;
+      if (o.from !== "memory" && o.from !== "choice") chosen.push(readOf(o.text, o.app, String(hit[1] ?? ""), o.from === "derived"));
     }
     const ledgerPositions = new Map<string, string[]>();
     for (const [key, { view, bits }] of s.sealed.measurement.positions as Map<string, { view: any; bits: Uint8Array }>) {
@@ -816,7 +869,7 @@ export interface FuzzOptions {
 }
 
 export interface FuzzRun {
-  summary: { seed: number; cases: number; ms: number; requestsSent: number; requestsRefused: number; flaggedCases: number; harnessErrors: number; inventoryMismatchCases: number };
+  summary: { seed: number; cases: number; ms: number; requestsSent: number; requestsRefused: number; flaggedCases: number; harnessErrors: number; inventoryMismatchCases: number; choiceRequests: number; choiceWindowRequests: number; choicesChosen: number };
   results: CaseResult[];
   /** The desk of every flagged (or, with dump, every) case, by index. */
   desks: Record<number, Desk>;
@@ -851,6 +904,9 @@ export async function runFuzz(o: FuzzOptions): Promise<FuzzRun> {
       flaggedCases: results.filter((r) => r.flagged.length > 0).length,
       harnessErrors: results.filter((r) => r.error?.startsWith("harness") === true).length,
       inventoryMismatchCases: results.filter((r) => r.inventoryMismatch.length > 0).length,
+      choiceRequests: results.reduce((a, r) => a + r.requests.filter((x) => x.ok && x.choices !== undefined).length, 0),
+      choiceWindowRequests: results.reduce((a, r) => a + r.requests.filter((x) => x.ok && (x.choices?.windows ?? 0) > 0).length, 0),
+      choicesChosen: results.reduce((a, r) => a + r.requests.reduce((n, x) => n + (x.ok ? (x.choices?.chosen ?? 0) : 0), 0), 0),
     },
     results,
     desks,

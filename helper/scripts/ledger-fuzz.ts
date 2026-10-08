@@ -75,12 +75,13 @@ if (args.has("minimize")) {
       x.tab!.blocks.splice(bi, 1);
       out.push(x);
     });
-    if (d.form.keys.length > 1) d.form.keys.forEach((_, fi) => {
+    // A field goes with its control's children (a menu's items, a group's buttons); a box goes alone.
+    if (d.form.keys.length > 1) d.form.keys.forEach((key, fi) => {
       const x = clone();
       x.form.keys.splice(fi, 1);
       x.form.labels.splice(fi, 1);
       const f = x.windows.find((w) => w.windowId === x.form.windowId)!;
-      f.nodes.splice(fi, 1);
+      f.nodes = f.nodes.filter((n) => n.key !== key && n.parent !== key);
       out.push(x);
     });
     return out;
