@@ -1,3 +1,4 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 // WriterPort, prompt and transport, with a fake fetch. The live measurement is scripts/writer-eval.ts.
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
@@ -128,3 +129,7 @@ describe("WriterPort", () => {
     expect(ids).toEqual(["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]);
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

@@ -407,7 +407,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "exec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
+			shellScript = "export CARET_PRIVACY_RESOURCE=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyPromise.txt\"\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

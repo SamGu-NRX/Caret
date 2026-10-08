@@ -42,6 +42,15 @@ class CompletionResult:
     usage: dict[str, Any]
 
 
+def vercel_disabled_reason() -> str | None:
+    """Release hosts cannot opt in to any Vercel route, regardless of model."""
+    if os.environ.get("CARET_RELEASE_HOST") == "1":
+        return "Vercel AI Gateway is disabled under a release host."
+    if os.environ.get(VERCEL_GEMINI_DEV_ENV) != "1":
+        return "Vercel AI Gateway is disabled; development only: set CARET_DEV_VERCEL_GEMINI=1 to enable it."
+    return None
+
+
 def gateway_api_key() -> str:
     """Resolve the Vercel AI Gateway bearer token from the environment."""
     from caret.gateway_env import inject_gateway_api_key_from_files
@@ -85,10 +94,8 @@ def complete(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> CompletionResult:
     """Create a non-streaming chat completion through Vercel AI Gateway."""
-    if not VERCEL_GEMINI_ENABLED and os.environ.get(VERCEL_GEMINI_DEV_ENV) != "1":
-        raise CompletionDisabled(
-            "Vercel Gemini is disabled; development only: set CARET_DEV_VERCEL_GEMINI=1 to enable it."
-        )
+    if reason := vercel_disabled_reason():
+        raise CompletionDisabled(reason)
     key = api_key.strip() if api_key else gateway_api_key()
     url = base_url.rstrip("/") + CHAT_COMPLETIONS_PATH
     body: dict[str, Any] = {

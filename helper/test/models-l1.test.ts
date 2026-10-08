@@ -1,3 +1,4 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 // L1: the models Sam chose. No default path calls Groq or any chat provider: the helper starts with no program writer
 // and Jev makes Ask's intents. A route runs only when a developer names it, and the helper says so on start. A goal
 // that needs a program writer says plainly that it is not available, and no model is called.
@@ -182,3 +183,7 @@ describe("drafts from the local model (lead decision 6; measured, on no default 
     expect(r).toMatchObject({ event: "stopped", reason: "refused", says: "The draft ran past its length, so Caret left it out" });
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

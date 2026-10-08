@@ -6,11 +6,14 @@
 // needs no helper source change. The QuickJS sandbox runs from it (a sandbox program run through runCodePlan).
 //
 //   cd helper && node node_modules/rolldown/bin/cli.mjs -c ../apps/caret/scripts/helper-bundle.config.mjs
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Direct rolldown invocation must not bypass the app packaging gate.
+execFileSync("/bin/sh", [fileURLToPath(new URL("../../../scripts/privacy_gate.sh", import.meta.url))], { stdio: "inherit" });
 const HELPER = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "helper");
 const out = process.env.CARET_HELPER_OUT;
 if (out === undefined || out === "") throw new Error("set CARET_HELPER_OUT to the directory the helper bundle goes in");

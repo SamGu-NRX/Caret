@@ -12,9 +12,14 @@ afterEach(() => { for (const path of fixtures.splice(0)) rmSync(path, { recursiv
 function fixture(): string {
   const path = mkdtempSync(join(tmpdir(), "caret-gate-"));
   fixtures.push(path);
-  for (const dir of ["helper/src", "helper/scripts", "scripts", "caret", "apps/mac/Sources/Caret"]) mkdirSync(join(path, dir), { recursive: true });
+  for (const dir of ["helper/src", "helper/scripts", "scripts", "caret", "apps/mac/Sources/Caret", "apps/caret/Sources/CaretHost/Onboarding"]) mkdirSync(join(path, dir), { recursive: true });
   cpSync(join(root, "helper/src"), join(path, "helper/src"), { recursive: true });
-  for (const file of ["helper/scripts/privacy-gate.ts", "scripts/check_vercel_gemini.py", "caret/completions.py", "apps/mac/Sources/Caret/Info.plist"]) cpSync(join(root, file), join(path, file));
+  for (const file of ["helper/scripts/privacy-gate.ts", "scripts/check_vercel_gemini.py", "scripts/check_onboarding_privacy.py", "apps/mac/Sources/Caret/PermissionView.swift", "caret/completions.py", "apps/mac/Sources/Caret/Info.plist"]) cpSync(join(root, file), join(path, file));
+  writeFileSync(join(path, "apps/caret/Sources/CaretHost/Onboarding/OnboardingView.swift"), `static let privacyLine = {
+    guard let url = Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt") else { return "" }
+    return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+  }()
+  Text(Self.privacyLine)`);
   return path;
 }
 function acceptAll(path: string): void {
@@ -23,7 +28,7 @@ function acceptAll(path: string): void {
 }
 function gate(path: string, enabled = "0") {
   return spawnSync(process.execPath, [join(path, "helper/scripts/privacy-gate.ts")], {
-    encoding: "utf8", env: { ...process.env, CARET_DEV_VERCEL_GEMINI: enabled },
+    encoding: "utf8", env: { ...process.env, CARET_DEV_VERCEL_GEMINI: enabled, CARET_PRIVACY_RESOURCE: join(path, "PrivacyPromise.txt") },
   });
 }
 
@@ -57,6 +62,8 @@ describe("privacy build gate", () => {
   it("allows an accepted, disclosed tree with Gemini off", () => {
     const path = fixture(); acceptAll(path);
     expect(gate(path).status).toBe(0);
+    const source = readFileSync(join(path, "helper/src/privacy.ts"), "utf8");
+    expect(readFileSync(join(path, "PrivacyPromise.txt"), "utf8")).toBe(source.split("export const PRIVACY_PROMISE = `")[1]?.split("`;")[0]);
   });
   it("refuses a Gemini default changed to on", () => {
     const path = fixture(); acceptAll(path);

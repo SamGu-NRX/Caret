@@ -22,8 +22,16 @@ def refusals(root: Path) -> list[str]:
         reasons.append("VERCEL_GEMINI_ENABLED must default to False in caret/completions.py; the Vercel Gemini route cannot ship")
     if os.environ.get("CARET_DEV_VERCEL_GEMINI") == "1":
         reasons.append("CARET_DEV_VERCEL_GEMINI=1 enables a development-only route; unset it before building Caret")
-    # LSEnvironment is the packaged launch configuration that could enable this env-only route.
-    with (root / "apps/mac/Sources/Caret/Info.plist").open("rb") as stream:
+    known_plists = [root / "apps/mac/Sources/Caret/Info.plist", root / "apps/caret/Bundle/Info.plist"]
+    configured = os.environ.get("INFOPLIST_FILE")
+    if configured and (root / configured).resolve() not in [path.resolve() for path in known_plists]:
+        reasons.append(f"INFOPLIST_FILE points outside the reviewed plists: {configured}")
+    effective = os.environ.get("CARET_BUILD_PLIST")
+    target, relative = os.environ.get("TARGET_BUILD_DIR"), os.environ.get("INFOPLIST_PATH")
+    if not effective and target and relative and (Path(target) / relative).is_file():
+        effective = str(Path(target) / relative)
+    plist_path = Path(effective) if effective else root / "apps/mac/Sources/Caret/Info.plist"
+    with plist_path.open("rb") as stream:
         plist = plistlib.load(stream)
     launch_env = plist.get("LSEnvironment", {})
     if not isinstance(launch_env, dict):

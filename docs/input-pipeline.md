@@ -172,3 +172,11 @@ their reason, so the judge is never offered them.
 First prove the loop in one supported text app: correct offer, Tab inserts once, undo works, and a focus switch makes an old response unusable. Then connect one real workflow to Teddy's cards. Exercise continuous typing, IME input, secure fields, permission denial/revocation, duplicate keypresses and user interruption. Measure offer acceptance, unwanted interruptions, latency and calls per active minute before tuning the interval or confidence rules.
 
 The reviewed app commit `827a387` has a cursor-adjacent trigger, a pinned action strip, a scrollable menu, install packaging and Accessibility reconnection. Its current pinned shortcuts use Command–Option–1/2/3; the product keyboard contract above remains the integration target. Action selection logs and closes the panel; it does not execute the Python planner. The local CLI still supports sample preview/hold/confirm. The two routers now exist behind `python3 -m caret.bridge`, but no Swift code calls it yet. Inline insertion, live workflows, Screenpipe retrieval and both execution adapters remain integration work.
+
+## Request to Teddy: render the approved privacy promise
+
+Teddy, please change the onboarding privacy copy in `apps/caret/Sources/CaretHost/Onboarding/OnboardingView.swift` to read the bundled `Contents/Resources/PrivacyPromise.txt`. The promise changed to disclose whole owner notes and provider data handling. Keeping a second copy in the view lets it drift from `helper/src/privacy.ts`.
+
+The app bundler and the apps/mac Xcode privacy phase now generate that resource from `PRIVACY_PROMISE` after the build gate passes. In the existing `PermissionsScreen.privacyLine` binding, replace the string with a closure that uses `Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt")` and `String(contentsOf: url, encoding: .utf8)`. Keep `Text(Self.privacyLine)` rendering the result and remove the hard-coded promise. A missing resource must not fall back to the old text.
+
+Packaging is blocked until this view reads the resource and contains no hard-coded promise. The gate checks the binding and verifies the generated resource equals `PRIVACY_PROMISE`. The apps/mac permission panel currently shows no cloud-data promise; if it gains one, use the same bundled resource rather than another copy.

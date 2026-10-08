@@ -276,8 +276,31 @@ final class ServiceLauncher {
     /// asks Jev and gets none of them.
     static func childEnvironment(_ host: [String: String], passesJevKey: Bool) -> [String: String] {
         var env = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] + (passesJevKey ? jevKeyNames + ["CARET_JEV_DAILY_CAP"] : []) {
+        #if DEBUG
+        let release = host["CARET_RELEASE_HOST"] == "1"
+        #else
+        let release = true
+        #endif
+        let devKeys = release ? [] : ["CARET_DEV_VERCEL_GEMINI", "CARET_JEV_PROVIDER", "CARET_JEV_MODEL", "CARET_JEV_GATEWAY_KEY"]
+        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] + (passesJevKey ? jevKeyNames + ["CARET_JEV_DAILY_CAP"] + devKeys : []) {
             if let v = host[key], !v.isEmpty { env[key] = v }
+        }
+        if release {
+            // Do not pass the file path: the helper would reread variables the host stripped.
+            if passesJevKey, let file = env["CARET_ENV_FILE"], let text = try? String(contentsOfFile: file, encoding: .utf8) {
+                for line in text.components(separatedBy: .newlines) {
+                    let parts = line.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "export ", with: "").split(separator: "=", maxSplits: 1).map(String.init)
+                    guard parts.count == 2 else { continue }
+                    let key = parts[0].trimmingCharacters(in: .whitespaces)
+                    guard ["TYPESAFE_API_KEY", "CARET_JEV_DAILY_CAP"].contains(key), env[key] == nil else { continue }
+                    env[key] = parts[1].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                }
+            }
+            env = env.filter { key, _ in
+                !key.hasPrefix("CARET_DEV_") && !key.hasPrefix("AI_GATEWAY_") && !key.hasPrefix("VERCEL_")
+            }
+            env.removeValue(forKey: "CARET_ENV_FILE")
+            env["CARET_RELEASE_HOST"] = "1"
         }
         return env
     }

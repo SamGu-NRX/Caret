@@ -1,5 +1,6 @@
 // System One through TypeSafe or Vercel (brief GW1). Keys are read at call time from the environment or
 // CARET_ENV_FILE. Gateway uses only CARET_JEV_GATEWAY_KEY, never the writer's AI_GATEWAY_API_KEY.
+import { requireVercelDevelopment } from "../privacy/vercel.ts";
 import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoSecrets, type Snippet } from "../privacy.ts";
@@ -294,6 +295,7 @@ export function expandWireBody(body: WireBody): WireBody {
 export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs = 10_000, spend: DailySpend = DailySpend.fromEnv(), settings: JevSettings = jevSettings(), fetchFn: typeof fetch = (input, init) => fetch(input, init), onUsage?: (usage: JevUsage) => void, evaluation?: { fixture: FixtureSources; env: NodeJS.ProcessEnv }): AskJev {
   const route = { ...settings };
   return async (req) => {
+    if (route.provider === "gateway" || new URL(route.url).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
     if (route.model === LAYA_FREE_MODEL) {
       // Laya's boundless endpoint reports has_no_training:false and has_zdr:false (Oct 6, 2026).
       // Real-screen text must never reach it, even with explicit model configuration or no replay cache.
@@ -393,6 +395,7 @@ async function post(key: (provider: JevProvider) => string, timeoutMs: number, r
       if (settings.model === LAYA_FREE_MODEL) await paceLaya();
       checkGatewayModel(settings.model);
     }
+    if (settings.provider === "gateway" || new URL(settings.url).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
     let credential = "";
     const t0 = performance.now();
     let res: Response;

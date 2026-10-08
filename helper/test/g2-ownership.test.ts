@@ -1,3 +1,4 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 // G2: fill's ownership stage, end to end through proposeFill on a page form with the task pages' sources as
 // page-loop-eval.ts replays them (a Mail window, then the note the user just left). Jev is a script that answers each
 // question by rule and records every request. Imports nothing G2 added, so the same file runs on the code before G2,
@@ -919,3 +920,7 @@ describe("G2 round 7: last fixes", () => {
     expect(g).toContain("City: Austin");
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());
