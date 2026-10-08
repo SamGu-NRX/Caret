@@ -1137,7 +1137,11 @@ export async function proposeFill(
   // and an asked field's pick of such a kind is not proposed. A blank costs the user a paste; a wrong
   // fill costs their trust.
   const removed = opts.cutRule === false ? new Set<ValueKind>() : cutKinds(model, cut, candidates);
-  const isCut = (kinds: ReadonlySet<ValueKind>): boolean => [...kinds].some((k) => removed.has(k));
+  // What a window holds is not known (cutAll: the unread rest of one was past its bound, or a cap stopped a listing):
+  // every field is withheld, whatever its kind, through this one check. A pick the user's instruction spells out is the
+  // user's, not a window's, and is not (pickCut).
+  const allCut = opts.cutRule !== false && cutAll;
+  const isCut = (kinds: ReadonlySet<ValueKind>): boolean => allCut || [...kinds].some((k) => removed.has(k));
   // The anchor (B24). The cut rules guard against a partial set: the right value cut by a window's budget, a
   // decoy kept. Any window that did not fit (an unrelated draft, a chat) withheld every name and every field
   // whose label names no kind, so on Q1's real forms nothing was offered although the user had just left a
@@ -1963,7 +1967,7 @@ export async function proposeFill(
   /** Whether a cut took a window's value of the kind an About entry stands beside (ABOUT_VALUE_KIND). */
   const aboutCut = (a: AboutValue): boolean => {
     const k = ABOUT_VALUE_KIND[a.kind];
-    return k !== undefined && isCut(new Set([k]));
+    return allCut || (k !== undefined && isCut(new Set([k])));
   };
   // Picks of a kind a cut took are withheld (see above); a value from memory is of its own kind; a derived
   // value meets its source's rules.

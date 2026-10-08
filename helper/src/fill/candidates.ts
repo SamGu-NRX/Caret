@@ -13,7 +13,7 @@ import { bareLine, clauseSpan, LABELLED, lineTexts, lineValues, partSpan, senten
 import { redactWindow } from "./redact.ts";
 import { WITHHELD } from "../privacy/exclude.ts";
 import { splitDate } from "./derive.ts";
-import { collapsedMap, collapsedRange, lineEndAt, lineStartAt, linesWithStarts, nextLineStart, nodePart, sourceLine, splitLines, TITLE, wholePart, type SourceAt } from "../privacy/ledger/source.ts";
+import { collapsedMap, collapsedRange, lineEndAt, lineStartAt, linesWithStarts, nextLineStart, nodePart, nodeTexts, sourceLine, splitLines, TITLE, wholePart, type SourceAt } from "../privacy/ledger/source.ts";
 
 /**
  * A field whose typed value is a candidate, as a line of text is: editable, holding text, not secure, not a kind memory
@@ -686,7 +686,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     for (const node of w.nodes.values()) {
       const isSourceField = sourceField(node);
-      for (const raw of splitLines(nodeText(node))) {
+      for (const raw of nodeTexts(node).flatMap(splitLines)) {
         if (++n > UNREAD_MAX) return void (cutAll = true);
         const line = bareLine(raw);
         if (line === "") continue;

@@ -140,6 +140,15 @@ export const nodePart = (key: string, part: "label" | "value" | "placeholder"): 
 export const sectionPart = (key: string, i: number): PartId => `node\u0000${key}\u0000section:${i}`;
 
 /** Every part of a window's text with its id, in reading order: the title, then each node's label, value, placeholder and section texts. */
+/**
+ * Every text of a node the inventory reads (partsOf): its label, value and placeholder and SCP1's section texts, an
+ * editable field's label too. The one reader of a node's complete text for the ledger and for what a window a cap left
+ * unread may hold (candidates.ts unreadRest); nodeText, the generator's reading, leaves an editable field's label out.
+ */
+export function nodeTexts(n: Node): string[] {
+  return [n.label, n.value, n.placeholder, ...sectionTexts(n)].filter((t): t is string => t !== undefined && t !== "");
+}
+
 export function partsOf(view: WindowState): { id: PartId; raw: string }[] {
   const out: { id: PartId; raw: string }[] = [];
   const add = (id: PartId, raw: string | undefined): void => {

@@ -187,6 +187,32 @@ describe("collection order, associations, one membership, kept ranges", () => {
     expect(c.cutAll, "what the unread rest may hold is not known").toBe(true);
   });
 
+  it("withholds every field when what a window holds is unknown: a phone among the 80 is not proposed beside an unread 2,001-line log", async () => {
+    const m = new ScreenModel();
+    m.apply(snap(Array.from({ length: 2001 }, (_, i) => text(`l${i}`, `build step ${i} finished`)), { at: 500, windowId: "log-1", title: "Build", app: NOTES }));
+    m.apply(snap([text("p", "Phone: 555-0101"), ...Array.from({ length: 79 }, (_, i) => text(`n${i}`, `Locker: L${String(i + 1).padStart(2, "0")}`))], { at: 1000, windowId: "note-1", title: "N", app: NOTES, focused: true }));
+    m.apply(snap([field(key("Phone"), "", { label: "Phone", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [new Set(["phone", kindTerm("phone")])] });
+    expect(c.candidates).toHaveLength(80);
+    expect(c.cutAll, "the log is past the unread bound").toBe(true);
+    const p = await proposeFill(m, picking({ Phone: "555-0101" }), FORM, key("Phone"), 3000);
+    const f = p.fields.find((x) => x.key === key("Phone"))!;
+    expect(f.value).toBeNull();
+    expect(f.withheld).toBe("sourceCut");
+  });
+
+  it("reads an unreached window's field labels for what it holds: a form's 'Locker' field showing L81 withholds L01", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([field("old/locker", "L81", { label: "Locker", role: "AXTextField" })], { at: 500, windowId: "old-form", title: "Old", app: NOTES }));
+    m.apply(snap(Array.from({ length: 80 }, (_, i) => text(`n${i}`, `Locker: L${String(i + 1).padStart(2, "0")}`)), { at: 1000, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("Locker"), "", { label: "Locker", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [new Set(["locker"])] });
+    expect(c.cut).toContain("old-form");
+    expect([...c.cutTerms]).toEqual(expect.arrayContaining(["locker", "l81"]));
+    const p = await proposeFill(m, picking({ Locker: "L01" }), FORM, key("Locker"), 3000);
+    expect(p.fields.find((x) => x.key === key("Locker"))?.value).toBeNull();
+  });
+
   it("does not count a second 'Date: 2026-10-08' as left out: the same value under the same label is offered", async () => {
     const m = new ScreenModel();
     m.apply(snap([node("a", "AXButton", { label: "Date: 2026-10-08" }), node("b", "AXButton", { label: "Date: 2026-10-08" }), node("pad", "AXButton", { label: "Z".repeat(100) })], { at: 1000, windowId: "chat-1", title: "K", app: MESSAGES, values: [{ kind: "date", text: "2026-10-08", nodeKey: "a" }, { kind: "date", text: "2026-10-08", nodeKey: "b" }] }));

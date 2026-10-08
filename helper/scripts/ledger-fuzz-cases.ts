@@ -364,10 +364,16 @@ function inventory(w: { window: { title: string }; nodes: Map<string, Node> }): 
 }
 const convLimit = (T: number): number => Math.min(600, Math.max(0, Math.floor((T - 1) / 2)));
 
-/** One scalar normalized: NFKC, lower case, NFKC again; white space to one ASCII space. */
+/**
+ * One scalar normalized by the spec's rules (section 2), written again from the runtime's own tables rather than the
+ * ledger's: NFKD, full case folding (upper then lower case, so "ß" folds to "ss" and "STRASSE" matches "Straße"), NFKD
+ * again, white space to one ASCII space. The runtime's Unicode version may differ from the ledger's pinned 16.0.0, and
+ * upper-then-lower is full case folding but for a few scripts (Cherokee folds to upper case); neither turns a breach
+ * into a pass on these desks' Latin text.
+ */
 function normScalar(ch: string): string {
   if (/^\s$/u.test(ch)) return " ";
-  return ch.normalize("NFKC").toLowerCase().normalize("NFKC").replace(/\s/gu, " ");
+  return ch.normalize("NFKD").toUpperCase().toLowerCase().normalize("NFKD").replace(/\s/gu, " ");
 }
 /** A text normalized scalar by scalar, with each normalized scalar's origin offsets (UTF-16) in the text. */
 function normalize(text: string): { cps: string[]; origins: number[][] } {
@@ -577,6 +583,8 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
     if (model !== live) for (const w of model.windows.values()) out.set(w, true);
     return [...out.keys()];
   };
+  // Every window state on screen before the first request, a window that closes before it too.
+  const initial = statesNow();
   const ask = async (req: any): Promise<any> => {
     if (desk.event !== null && reqIndex === desk.event.before) {
       const ev = desk.event.ev;
@@ -683,7 +691,7 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
     if (x === undefined) invOf.set(w, (x = inventory(w as any)));
     return x;
   };
-  const allStates = new Set<WS>();
+  const allStates = new Set<WS>(initial);
   for (const s of sent) for (const w of s.states) allStates.add(w);
   for (const w of allStates) {
     const id = w.window.windowId;
@@ -699,11 +707,11 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
   const gaps: Gap[] = [];
   for (const [id, states] of firstStates) {
     if (!states.some(isConvState)) continue;
-    // The window's limit: every line any of its states showed, as one inventory (section 7), a conversation since one of
-    // its states is.
-    const union = new Set(states.flatMap((s) => inv(s).lines));
-    const T = [...union].reduce((n, l) => n + l.length, 0);
-    const limit = convLimit(T);
+    // The window's limit at each send: every line its states had shown by then, as one inventory (section 7), a
+    // conversation once one of those states is. Each send is checked against the limit as it stood then: a state that
+    // padded the window later cannot hide an earlier breach.
+    const limitThen = (seen: readonly WS[]): number | null => (seen.some(isConvState) ? convLimit([...new Set(seen.flatMap((x) => inv(x).lines))].reduce((n, l) => n + l.length, 0)) : null);
+    let breach: { count: number; limit: number; T: number; counter: "E+chosen" | "E+offered" } | null = null;
     const E = new Set<string>();
     const ch = new Set<string>();
     const of = new Set<string>();
@@ -713,8 +721,8 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
     const offScreenSet = new Set<string>();
     const ledgerUnion = new Set<string>();
     const ledgerPerRequest: number[] = [];
-    // Every state of this window seen up to and including each send.
-    const seenSoFar: WS[] = [];
+    // Every state of this window seen up to and including each send, from the states on screen before the first.
+    const seenSoFar: WS[] = initial.filter((w) => w.window.windowId === id);
     for (const s of sent) {
       for (const w of s.states) if (w.window.windowId === id && !seenSoFar.includes(w)) seenSoFar.push(w);
       const units = unitsOf(s.bytes);
@@ -759,7 +767,18 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
       const lp = s.ledgerPositions.get(id) ?? [];
       lp.forEach((k) => ledgerUnion.add(k));
       ledgerPerRequest.push(lp.length);
+      const lim = limitThen(seenSoFar);
+      if (lim !== null && breach === null) {
+        const T = [...new Set(seenSoFar.flatMap((x) => inv(x).lines))].reduce((n, l) => n + l.length, 0);
+        const chosenNow = new Set([...E, ...ch]).size;
+        const offeredNow = new Set([...E, ...ch, ...of]).size;
+        if (chosenNow > lim) breach = { count: chosenNow, limit: lim, T, counter: "E+chosen" };
+        else if (offeredNow > lim) breach = { count: offeredNow, limit: lim, T, counter: "E+offered" };
+      }
     }
+    const final = limitThen(seenSoFar) ?? 0;
+    const T = breach?.T ?? [...new Set(seenSoFar.flatMap((x) => inv(x).lines))].reduce((n, l) => n + l.length, 0);
+    const limit = breach?.limit ?? final;
     const eChosen = new Set([...E, ...ch]);
     const eOffered = new Set([...E, ...ch, ...of]);
     const onlyBefore = [...eChosen].filter((k) => beforeConv.has(k) && !afterConv.has(k)).length;
@@ -776,8 +795,7 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
       }
       gaps.push({ windowId: id, limit, count: eOffered.size, ledger: ledgerUnion.size, missing: missing.length, eMissing: [...E].filter((k) => !ledgerUnion.has(k)).length, chosenMissing: [...ch].filter((k) => !ledgerUnion.has(k)).length, lines: [...byLine].slice(0, 4).map(([l, offs]) => ({ line: l, shown: offs.sort((a, b) => a - b).map((o) => l[o]).join("") })) });
     }
-    if (eChosen.size > limit) flagged.push({ ...base, count: eChosen.size, counter: "E+chosen" });
-    else if (eOffered.size > limit) flagged.push({ ...base, count: eOffered.size, counter: "E+offered" });
+    if (breach !== null) flagged.push({ ...base, count: breach.count, counter: breach.counter });
   }
   const evName = desk.event === null ? "none" : `${desk.event.ev.type}${desk.event.ev.type === "close" ? `:${desk.event.ev.windowId}` : `:${desk.event.ev.win.windowId}`}@${desk.event.before}`;
   void tabSource;

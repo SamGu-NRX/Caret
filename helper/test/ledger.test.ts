@@ -723,3 +723,30 @@ describe("a window's limit across its states", () => {
     expect(ws.map((w) => [w.conversation, w.limit])).toEqual(ws.map(() => [true, Math.floor((total - 1) / 2)]));
   });
 });
+
+describe("a view's window states, kept whatever the live screen does", () => {
+  const line = "see you at five tomorrow at the venue";
+  /** Kofi's chat, T = 4 + 37 + 1 = 42, limit 20, and a view of the screen made before `then`. */
+  const run = (then: (m: ScreenModel) => void): string => {
+    const m = new ScreenModel();
+    m.apply(snap([text("c0", line), text("c1", "x")], { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    const view = m.withNodes(new Map());
+    const d = new Disclosure(view);
+    then(m);
+    const said = d.heldText(line);
+    if (said === null) return "refused at mint";
+    try {
+      sendable(seal({ req: { purpose: "route.task", disclosure: d }, wire: { state: { offer: { found: said } }, questions: {} } }));
+      return "sent";
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  };
+  // The early check holds the view's state as the seal does, so the line is refused at mint, before any request.
+  it("measures a state the view held after the live window closes: 37 of a limit of 20 is refused", () => {
+    expect(run((m) => void m.close("chat-1", 2))).toBe("refused at mint");
+  });
+  it("measures a state the view held after the live window refreshes to other text: 37 of a limit of 20 is refused", () => {
+    expect(run((m) => void m.apply(snap([text("c9", "something else entirely now")], { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES })))).toBe("refused at mint");
+  });
+});
