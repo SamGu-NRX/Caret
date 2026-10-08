@@ -137,16 +137,19 @@ export function fittingFields(snap: IntentSnapshot): IntentField[] {
 }
 
 /**
- * What a field's row says beside its label: its group, else the innermost named section the window places it in that
- * no other row of the same label sits in, else its innermost named section. So "City" under Delivery > Address and
- * under Billing > Address read as Delivery and Billing; a section with no name is skipped, never invented.
+ * What a field's row says beside its label, so rows that authorize different fields read differently: its group when no
+ * other row of the same label has that group, else the innermost named section the window places it in that no such
+ * row sits in, else its group or innermost named section. So "City" under Delivery > Address and under Billing >
+ * Address read as Delivery and Billing, whether Address is a heading or a group; a section with no name is skipped,
+ * never invented.
  */
 function rowDetail(f: IntentField, rows: readonly IntentField[]): string | null {
-  if (f.section !== null) return f.section;
+  const same = rows.filter((x) => x !== f && x.name === f.name);
+  if (f.section !== null && !same.some((x) => x.section === f.section)) return f.section;
   const named = (x: IntentField): string[] => (x.place === "unknown" ? [] : x.place.flatMap((p) => (p.name === null ? [] : [p.name])));
+  const others = new Set(same.flatMap(named));
   const own = named(f).reverse();
-  const others = new Set(rows.filter((x) => x !== f && x.name === f.name).flatMap(named));
-  return own.find((n) => !others.has(n)) ?? own[0] ?? null;
+  return own.find((n) => !others.has(n)) ?? f.section ?? own[0] ?? null;
 }
 
 /**
