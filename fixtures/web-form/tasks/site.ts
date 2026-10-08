@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
-import { Oracle, type PressRecord, type StatePost } from "../oracle.ts";
+import { Oracle, type ExpectedValue, type PressRecord, type StatePost } from "../oracle.ts";
 
 const PUBLIC = fileURLToPath(new URL("../public/tasks/", import.meta.url));
 export const EXPECT_DIR = fileURLToPath(new URL("./expect/", import.meta.url));
@@ -46,7 +46,7 @@ export interface Expectation {
     email: { from: string; to: string; subject: string; body: string };
     memory: { key: string; value: string }[];
   };
-  expected: Record<string, string>;
+  expected: Record<string, ExpectedValue>;
   /** For each field with a value: the source and the words in it that give the value. */
   basis: Record<string, string>;
 }
@@ -54,6 +54,25 @@ export interface Expectation {
 export function loadExpectation(page: string): Expectation {
   const e = JSON.parse(readFileSync(`${EXPECT_DIR}${page}.json`, "utf8")) as Expectation;
   if (e.page !== page) throw new Error(`tasks/expect/${page}.json says it is for page ${e.page}`);
+  if (e.expected === null || typeof e.expected !== "object" || Array.isArray(e.expected)) {
+    throw new Error(`tasks/expect/${page}.json: expected must be a field map`);
+  }
+  for (const [field, value] of Object.entries(e.expected)) {
+    const fail = (reason: string): never => { throw new Error(`tasks/expect/${page}.json field ${field}: ${reason}`); };
+    if (typeof value === "string") continue;
+    if (!Array.isArray(value)) fail('expected a string or a non-empty array of strings');
+    if (value.length === 0) fail('alternatives must be a non-empty array of strings');
+    const seen = new Set<string>();
+    for (const alternative of value) {
+      if (typeof alternative !== "string") fail('every alternative must be a string');
+      if (alternative === "none") fail('"none" must be a bare string, not an alternative');
+      const normalized = alternative.normalize("NFC");
+      // A written form must contain text; otherwise an untouched field could score right.
+      if (/^\s*$/u.test(normalized)) fail("blank alternatives are not written forms");
+      if (seen.has(normalized)) fail(`duplicate alternative after NFC: ${JSON.stringify(alternative)}`);
+      seen.add(normalized);
+    }
+  }
   return e;
 }
 
