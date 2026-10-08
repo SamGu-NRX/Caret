@@ -1,1 +1,0 @@
-Privacy gate covers build-app.sh, Xcode, package_mac and helper bundling; CARET_VERIFY_PRIVACY_RESOURCE refuses a finished app whose PrivacyPromise.txt is missing, empty or not PRIVACY_PROMISE. Onboarding reads it (nil under swift run/xctest); tests inject text.

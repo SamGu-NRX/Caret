@@ -1,0 +1,1 @@
+Privacy: request text is ModelText only, every slot needs a shapes.ts row, excluded values read [withheld]; Disclosure keys match KEY (note_1). Every app build runs privacy_gate.sh (acceptances, no Vercel opt-in, bundled PrivacyPromise.txt); release sets CARET_RELEASE_HOST=1.
