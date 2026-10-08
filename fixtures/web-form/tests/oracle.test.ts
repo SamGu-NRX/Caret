@@ -166,3 +166,51 @@ test("stop destroys CONNECT sockets still open, which closeAllConnections does n
   assert.equal(open.destroyed, 1);
   assert.equal(closed.destroyed, 0);
 });
+
+for (const kind of ["text", "select", "picker", "radios", "pressgroup", "react-select", "file"]) {
+  for (const expected of ["none", "a value"]) {
+    test(`${kind}: literal false is a wrong write against ${expected}`, () => {
+      const o = new Oracle();
+      state(o, "p", "/p", "a", 0, { x: f("false", kind) });
+      assert.deepEqual(o.score("p", { x: expected }), {
+        right: [], wrong: [{ field: "x", expected, actual: "false" }], missed: [], leftAlone: [], absent: [],
+      });
+    });
+  }
+}
+
+test("an unticked checkbox is left alone for none and missed for true", () => {
+  const o = new Oracle();
+  state(o, "p", "/p", "a", 0, { x: f("false", "checkbox") });
+  assert.deepEqual(o.score("p", { x: "none" }).leftAlone, ["x"]);
+  assert.deepEqual(o.score("p", { x: "true" }).missed, ["x"]);
+});
+
+for (const [actual, expected, right] of [
+  ["Işık".normalize("NFD"), "Işık", true],
+  ["İ", "İ", true],
+  ["İ", "İ", true],
+  ["ELIF", "ELİF", false],
+  ["１２３", "123", false],
+  ["elif", "Elif", false],
+  [" Elif ", "Elif", false],
+] as const) {
+  test(`NFC comparison: ${JSON.stringify(actual)} against ${JSON.stringify(expected)}`, () => {
+    const o = new Oracle();
+    state(o, "p", "/p", "a", 0, { x: f(actual) });
+    assert.equal(o.score("p", { x: expected }).right.length, right ? 1 : 0);
+    assert.equal(o.score("p", { x: expected }).wrong.length, right ? 0 : 1);
+    assert.equal(o.unmet("p", { x: expected }).length, right ? 0 : 1);
+  });
+}
+
+test("score accepts any NFC alternative and preserves alternatives in wrong reports", () => {
+  const o = new Oracle();
+  state(o, "p", "/p", "a", 0, { first: f("Işık".normalize("NFD")), second: f("İ"), wrong: f("ELIF"), empty: f("") });
+  const alternatives = ["Işık", "İ"];
+  const s = o.score("p", { first: alternatives, second: alternatives, wrong: alternatives, empty: alternatives, gone: alternatives });
+  assert.deepEqual(s, {
+    right: ["first", "second"], wrong: [{ field: "wrong", expected: alternatives, actual: "ELIF" }],
+    missed: ["empty"], leftAlone: [], absent: ["gone"],
+  });
+});

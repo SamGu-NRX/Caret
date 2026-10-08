@@ -171,7 +171,7 @@ interface Page {
   /** What the user told Caret, for a form whose source is memory. */
   about: { label: string; value: string }[];
   /** A task page's expectations by data-oracle name (tasks/expect/<page>.json); the oracle scores against these. */
-  expected?: Record<string, string>;
+  expected?: Expectation["expected"];
   /** G2: whose the page's values are, from owners.json, its memory entries among the user's; null when the file has no entry. */
   owners: Owners | null;
 }
@@ -478,7 +478,12 @@ async function taskKeyFor(ins: string): Promise<Expect | undefined> {
     for (const s of said) {
       const hits = fieldsNamed(s, taskFields ?? []);
       const f = hits[0];
-      if (hits.length === 1 && f !== undefined) return { label: f.name, expected: p.expected[f.name] ?? "none", accept: [], control: controlOf(f) };
+      if (hits.length === 1 && f !== undefined) {
+        const accepted = p.expected[f.name] ?? "none";
+        const values = typeof accepted === "string" ? [accepted] : accepted;
+        // loadExpectation rejects empty arrays; a bare string becomes one accepted value.
+        return { label: f.name, expected: values[0]!, accept: values.slice(1), control: controlOf(f) };
+      }
       if (hits.length > 1) {
         log.ambiguous.add(`'${s}': ${hits.map((h) => h.name).join(", ")}`);
         return undefined;
@@ -865,7 +870,7 @@ async function main(): Promise<number> {
     // --sources labelled: each page's note from its own labels (read with every dependent section shown) and F1's values.
     if (LABELLED) {
       for (const p of pages) {
-        const expected = p.expected as Record<string, string>;
+        const expected = p.expected as Expectation["expected"];
         await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}?show=all` }, sessionId);
         let fields: TaskField[] = [];
         for (let n = 0; n < 40; n++) {
@@ -878,7 +883,9 @@ async function main(): Promise<number> {
           const f = fields.find((x) => x.name === k);
           const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
           if (v === "none" || f === undefined || label === undefined || f.kind === "file") return [];
-          return [`${label}: ${f.kind === "checkbox" ? (v === "true" ? "yes" : "no") : v}`];
+          // A labelled source supplies one written form; loadExpectation guarantees a non-empty alternatives array.
+          const value = typeof v === "string" ? v : v[0]!;
+          return [`${label}: ${f.kind === "checkbox" ? (value === "true" ? "yes" : "no") : value}`];
         });
         p.sources = [noteWindow(lines.join("\n"))];
         p.about = [];
@@ -892,7 +899,7 @@ async function main(): Promise<number> {
       page = p;
       taskFields = null;
       const name = p.id;
-      const expected = p.expected as Record<string, string>;
+      const expected = p.expected as Expectation["expected"];
       const row = newRow(p);
       const t: TaskRow = { arrived: "navigated", warnings: [], scored: false, right: 0, eligible: 0, wrong: [], missed: [], absent: [], attachGap: [], revealMissing: [], refill: null, unmapped: [], ambiguous: [] };
       row.task = t;
@@ -951,7 +958,7 @@ async function main(): Promise<number> {
             t.eligible = eligibleOf(gap);
             t.right = s.right.filter((k) => !gap.includes(k)).length;
             t.wrong = s.wrong;
-            row.wrong = s.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${x.expected})`);
+            row.wrong = s.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`);
             t.missed = s.missed.filter((k) => !gap.includes(k)).map((k) => `${k} (${kinds[k]?.kind === "file" ? "file; " : ""}${!picked.has(k) ? "canned never asked" : picked.get(k) === null ? "canned: none" : `canned picked '${picked.get(k)}'`})`);
             t.attachGap = gap.filter((k) => (expected[k] ?? "none") !== "none");
             t.absent = s.absent;
@@ -973,7 +980,7 @@ async function main(): Promise<number> {
             const want = f === undefined || hits.length > 1 ? undefined : expected[f.name];
             if (f === undefined || want === undefined) return "unscored";
             if (want === "none") return "wrong";
-            if (value === want) return "right";
+            if ((typeof want === "string" ? [want] : want).includes(value)) return "right";
             // A typed text is compared as written; a pick, a date or a number may be written in another form than the oracle reads.
             return f.kind === "text" && !["date", "month", "time", "number"].includes(f.type) ? "wrong" : "unscored";
           },
@@ -998,7 +1005,7 @@ async function main(): Promise<number> {
             const s = oracle.score(name, expected);
             const gap = attachGap();
             t.refill = `${s.right.filter((k) => !gap.includes(k)).length}/${eligibleOf(gap)} right, ${s.wrong.length} wrong (${r.outcome}, ${r.tabs} tabs)`;
-            row.wrong.push(...s.wrong.map((x) => `second Ask ${x.field}: '${x.actual}' (expected ${x.expected})`));
+            row.wrong.push(...s.wrong.map((x) => `second Ask ${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`));
           }
         }
       } catch (e) {
@@ -1087,7 +1094,7 @@ async function main(): Promise<number> {
     const wiz = ["wizard-1", "wizard-2", "wizard-3"].map((n) => pages.find((p) => p.id === n) ?? taskPageOf(n));
     // In the dropzone journey the user gives the resume to the dropzone's row: that field, not the file input, holds it.
     if (drop) {
-      const e = wiz[2]?.expected as Record<string, string>;
+      const e = wiz[2]?.expected as Expectation["expected"];
       (wiz[2] as Page).expected = { ...e, resume: "none", resume_drop: e.resume ?? "none" };
     }
     // --sources labelled: one note of the wizard's three pages, each line a field's own label and F1's value (runTasks
@@ -1095,7 +1102,7 @@ async function main(): Promise<number> {
     if (LABELLED) {
       const all: string[] = [];
       for (const p of wiz) {
-        const expected = p.expected as Record<string, string>;
+        const expected = p.expected as Expectation["expected"];
         await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}?show=all` }, sessionId);
         let fields: TaskField[] = [];
         for (let n = 0; n < 40; n++) {
@@ -1108,7 +1115,9 @@ async function main(): Promise<number> {
           const f = fields.find((x) => x.name === k);
           const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
           if (v === "none" || f === undefined || label === undefined || f.kind === "file") continue;
-          all.push(`${label}: ${f.kind === "checkbox" ? (v === "true" ? "yes" : "no") : v}`);
+          // As in runTasks, a labelled source uses the first accepted written form.
+          const value = typeof v === "string" ? v : v[0]!;
+          all.push(`${label}: ${f.kind === "checkbox" ? (value === "true" ? "yes" : "no") : value}`);
         }
       }
       for (const p of wiz) {
@@ -1128,7 +1137,7 @@ async function main(): Promise<number> {
       page = p;
       taskFields = null;
       const name = p.id;
-      const expected = p.expected as Record<string, string>;
+      const expected = p.expected as Expectation["expected"];
       const row = { page: name, arrived: "", previewMs: null as number | null, steps: 0, attach: null as string | null, outcome: "-", right: 0, eligible: Object.values(expected).filter((v) => v !== "none").length, wrong: [] as string[], missed: [] as string[], note: "" };
       out.push(row);
       try {
@@ -1187,7 +1196,7 @@ async function main(): Promise<number> {
         await settleOracle(name);
         const sc = oracle.score(name, expected);
         row.right = sc.right.length;
-        row.wrong = sc.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${x.expected})`);
+        row.wrong = sc.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`);
         row.missed = sc.missed;
       } catch (e) {
         row.note = e instanceof Error ? e.message : String(e);

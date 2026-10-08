@@ -67,11 +67,19 @@ export interface FieldChange {
   to: string;
 }
 
+/** A bare "none" means no write; an array lists accepted written forms. Validated by loadExpectation. */
+export type ExpectedValue = string | readonly string[];
+
+/** Canonically equivalent strings are the same text. NFC only: no NFKC, case folding or whitespace trimming. */
+function sameText(actual: string, expected: string): boolean {
+  return actual.normalize("NFC") === expected.normalize("NFC");
+}
+
 export interface Scored {
-  /** Expected a value and holds exactly it. */
+  /** Expected a value and holds a canonically equivalent accepted form. */
   right: string[];
   /** Holds a value other than the expected one, or any value where `none` was expected. */
-  wrong: { field: string; expected: string; actual: string }[];
+  wrong: { field: string; expected: ExpectedValue; actual: string }[];
   /** Expected a value and is still empty. */
   missed: string[];
   /** Expected `none` and is empty. */
@@ -202,27 +210,29 @@ export class Oracle {
       .map((k) => ({ field: k, from: base[k] ?? "", to: now[k] ?? "" }));
   }
 
-  /** Fields named in `asked` whose value is not exactly what was asked. */
+  /** Fields named in `asked` whose value is not canonically equivalent to what was asked. */
   unmet(page: string, asked: Readonly<Record<string, string>>): FieldChange[] {
     const now = this.values(page);
     return Object.entries(asked)
-      .filter(([k, v]) => now[k] !== v)
+      .filter(([k, v]) => now[k] === undefined || !sameText(now[k], v))
       .map(([k, v]) => ({ field: k, from: v, to: now[k] ?? "(absent)" }));
   }
 
   /** Scores `page` against its expectations: a value, or "none" for a field nothing should fill. */
-  score(page: string, expected: Readonly<Record<string, string>>): Scored {
-    const now = this.values(page);
+  score(page: string, expected: Readonly<Record<string, ExpectedValue>>): Scored {
+    const now = this.readings(page);
+    if (now === null) throw new Error(`the oracle has no state from page ${page}: it never loaded, or probe.js is not on it`);
     const out: Scored = { right: [], wrong: [], missed: [], leftAlone: [], absent: [] };
     // An unticked checkbox reads "false", which is its empty state.
-    const empty = (v: string): boolean => v === "" || v === "false";
+    const empty = (r: FieldReading): boolean => r.value === "" || (r.kind === "checkbox" && r.value === "false");
     for (const [k, want] of Object.entries(expected)) {
-      const got = now[k];
-      if (got === undefined) out.absent.push(k);
-      else if (want === "none" && empty(got)) out.leftAlone.push(k);
+      const reading = now[k];
+      const got = reading?.value;
+      if (reading === undefined || got === undefined) out.absent.push(k);
+      else if (want === "none" && empty(reading)) out.leftAlone.push(k);
       else if (want === "none") out.wrong.push({ field: k, expected: want, actual: got });
-      else if (got === want) out.right.push(k);
-      else if (empty(got)) out.missed.push(k);
+      else if ((typeof want === "string" ? [want] : want).some((v) => sameText(got, v))) out.right.push(k);
+      else if (empty(reading)) out.missed.push(k);
       else out.wrong.push({ field: k, expected: want, actual: got });
     }
     return out;
