@@ -45,9 +45,8 @@ const liveLike: AskJev = async (req) => ({
   model: "verify-live-verdicts",
   answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
     const ins = String(q.instructions);
-    const text = /nothing added or removed: "([^"]*)"|^Proposed text for the field '[^']*': "([^"]*)"/u.exec(ins);
-    const v = LIVE_VERDICTS[text?.[1] ?? text?.[2] ?? ""];
-    const second = ins.startsWith("Proposed text");
+    const v = LIVE_VERDICTS[/Exact output: "([^"]*)"/u.exec(ins)?.[1] ?? ""];
+    const second = ins.startsWith("Exact output:");
     return [id, v === undefined ? { choice: "exact", confidence: 0.95 } : { choice: second ? v[1] : v[0], confidence: v[2] }];
   })),
   inputTokens: 0,
@@ -85,7 +84,8 @@ const picking = (label: string, want: string, seen?: JevRequest[]): AskJev => {
 /** The option descriptions in the questions about the field labelled `label`. */
 const options = (seen: readonly JevRequest[], label: string): string[] =>
   seen.flatMap((r) => Object.entries(r.questions).filter(([id, q]) => /^f\d+$/u.test(id) && about(String(q.instructions), label)).flatMap(([, q]) => Object.values(q.criteria).map(String)));
-const offered = (seen: readonly JevRequest[], label: string): string[] => options(seen, label).map((d) => /^"(.*?)" \(/u.exec(d)?.[1] ?? "");
+/** Each option's value: an Ask's exact proposed value, or the quoted candidate a fill on focus describes. */
+const offered = (seen: readonly JevRequest[], label: string): string[] => options(seen, label).map((d) => (/^Proposed value: "(.*?)"\. Source: /u.exec(d) ?? /^"(.*?)" \(/u.exec(d))?.[1] ?? "");
 const fieldOf = (p: FillProposal, key: string) => p.fields.find((f) => f.key === key) ?? (() => { throw new Error(`no proposal field ${key}`); })();
 /** The goal path's Ask for the whole form, over the given fields. */
 const wholeForm = (keys: readonly string[], instruction: string): FillScope => ({ fields: keys, windows: null, memory: true, instruction, person: null, literals: new Map(), wholeForm: true });
@@ -434,7 +434,9 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
       execFileSync(process.execPath, [join(here, "../scripts/guard-adversary.ts"), "--out", out, "--sets", "corpus,b24,b25,b26,b31", "--corpus-pages", join(out, "none")], { stdio: "pipe" });
       const r = JSON.parse(readFileSync(join(out, "guard-adversary.json"), "utf8")) as { desks: Record<string, number>; a: { written: number }; attempts: { cls: string; value: string; outcome: string }[]; canned: { outcome: string }[] };
       expect(r.desks).toMatchObject({ "corpus-reader": 14, b24: 15, b25: 14, b26: 13, b31: 22 });
-      expect(r.attempts.filter((x) => x.cls === "a").length).toBeGreaterThan(100);
+      // Value settlement offers an Ask only values that pass the shape vetoes, so class (a) has fewer to try: 87 on these
+      // desks at v2/vs1, 175 at its base (dcc47c99).
+      expect(r.attempts.filter((x) => x.cls === "a").length).toBeGreaterThan(80);
       // W2: with every value check saying exact, class (a) measures code alone, which no longer reads text shapes (W1's
       // families left the gate on the verifier's evidence, fill/writable.ts RETIRED_FAMILIES); the refuse-mode run below
       // holds every class at 0. Canned right values measured on these desks when W1's review fixes landed (the corpus by the reader's windows, the Ask sets through

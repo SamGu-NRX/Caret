@@ -2,7 +2,7 @@
 // their own, since each has one right answer; then planTask with a fake Jev on a synthetic desk, and the
 // helper's planRequest, proposal and accept under an act grant. Everything here is invented.
 import { TEST_AUTHORITY } from "./mint.ts";
-import { answeringScope } from "./builders.ts";
+import { answeringScope, optionIs } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -268,7 +268,7 @@ function plannerJev(o: Oracle): AskJev & { requests: JevRequest[] } {
         const section = /Section: '([^']+)'/.exec(ins)?.[1];
         const name = [section, label].filter((x) => x !== undefined).join(" ");
         const want = o.fields?.[name];
-        choice = want === undefined || (second && o.flip === name) ? "keep" : find((d) => d.startsWith(`"${want}"`));
+        choice = want === undefined || (second && o.flip === name) ? "keep" : find((d) => optionIs(d, want));
       }
       if (choice === undefined) throw new Error(`the fake Jev found no option for ${id}`);
       answers[id] = { choice, confidence: o.conf ?? 0.9 };
@@ -628,7 +628,7 @@ describe("planRequest through the helper", () => {
       const answers = Object.fromEntries(
         Object.entries(req.questions).map(([id, q]) => {
           if (id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user", confidence: 0.9 }];
-          const hit = String(q.instructions).includes("'Name'") ? Object.entries(q.criteria).find(([, d]) => d?.startsWith('"Dana Whitfield"'))?.[0] : undefined;
+          const hit = String(q.instructions).includes("'Name'") ? Object.entries(q.criteria).find(([, d]) => optionIs(d, "Dana Whitfield"))?.[0] : undefined;
           return [id, { choice: hit ?? "none", confidence: 0.9 }];
         }),
       );

@@ -21,7 +21,7 @@ import { scopeRefusal } from "../src/fill/ask-scope.ts";
 import { traceValue } from "../src/planner/trace.ts";
 import { exactJev } from "./mint.ts";
 import { buildDesk, loadCorpus, pageForm, type Desk } from "../scripts/realfill-corpus.ts";
-import { field, node, scopeLabel, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap, optionIs } from "./builders.ts";
 
 beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => setGeneratorClock(null));
@@ -91,7 +91,7 @@ function askJev(by: ScopeBy, instruction = INSTRUCTION) {
       if (id.endsWith("_whose") || id.endsWith("_owner")) return [[id, { choice: "user" in q.criteria ? "user" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }]];
       if ("yes" in q.criteria) return [[id, { choice: "yes", confidence: 0.9 }]];
       const want = Object.entries(NOTE).find(([label]) => ins.includes(`'${label}'`))?.[1];
-      const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
+      const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
       return [[id, { choice: hit?.[0] ?? "none", confidence: 0.9 }]];
     }));
     return result(answers);

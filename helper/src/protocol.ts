@@ -2246,12 +2246,20 @@ export type PlanProposal = z.infer<typeof PlanProposal>;
  * the planProposal error as before; an askAnswer from it is refused by name.
  */
 export const ASK_CHOICES_CAPABILITY = "askChoices";
+/**
+ * The hello capability for value questions (design/ask/VALUE-SETTLEMENT.md): a consumer that declares it beside
+ * ASK_CHOICES_CAPABILITY may get an askQuestion whose part is `value`. Any other consumer gets the proposal with those
+ * values left to the user, as before, so a host that cannot draw value rows never receives one.
+ */
+export const ASK_VALUES_CAPABILITY = "askValues";
 
 /**
  * One choice of an askQuestion, typed by what it fixes. `id` is the helper's, valid for that question only; the host
  * sends it back and never a field key or window id. `field`: a field of the form (its label, and its section's
  * heading). `window`: an open window to copy from, as the user knows it. `memory`: what the user told Caret about
- * themselves. `you`: the user's own details. `person`: someone named in the instruction or on screen.
+ * themselves. `you`: the user's own details. `person`: someone named in the instruction or on screen. `value`: a value
+ * for the question's field, exactly as Caret would put it in (`value`), and where Caret read it, in the user's words
+ * (`source`: "Your saved Email", or a window's title and the line). `blank`: leave the field blank.
  */
 export const AskOption = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("field"), id: z.string().min(1), label: z.string().min(1), section: z.string().nullable() }),
@@ -2259,16 +2267,20 @@ export const AskOption = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("memory"), id: z.string().min(1) }),
   z.object({ kind: z.literal("you"), id: z.string().min(1) }),
   z.object({ kind: z.literal("person"), id: z.string().min(1), name: z.string().min(1) }),
+  z.object({ kind: z.literal("value"), id: z.string().min(1), value: z.string().min(1), source: z.string().min(1) }),
+  z.object({ kind: z.literal("blank"), id: z.string().min(1) }),
 ]);
 export type AskOption = z.infer<typeof AskOption>;
 
 /**
  * Helper to the asker, in place of a planProposal (B29): the Ask needs one part settled, and code listed that part's
- * real choices from the screen. `part` says which: `fields` (pick one or more), `source` (one window, or memory) or `person` (whose
- * details). `text` is the question as the user reads it. Answered with askAnswer naming `questionId` and the picks,
- * once, before `expires`; the answer's reply is a planProposal or another askQuestion. `window` is the form.
- * `filling`, on a fields question only, labels the fields Caret fills whatever is picked; with it, an answer with no
- * picks fills those alone, so the user can decline the offered fields without dismissing the Ask.
+ * real choices from the screen. `part` says which: `fields` (pick one or more), `source` (one window, or memory), `person` (whose
+ * details) or `value` (which value goes in one field: its values, then exactly one `blank`; only to a consumer that
+ * declared ASK_VALUES_CAPABILITY). `text` is the question as the user reads it. Answered with askAnswer naming
+ * `questionId` and the picks, once, before `expires`; the answer's reply is a planProposal or another askQuestion.
+ * `window` is the form. `filling`, on a fields question, labels the fields Caret fills whatever is picked; with it, an
+ * answer with no picks fills those alone, so the user can decline the offered fields without dismissing the Ask. On a
+ * value question it lists the values already checked, each as "Label: value", which a pick leaves as they are.
  */
 export const AskQuestion = z
   .object({
@@ -2277,7 +2289,7 @@ export const AskQuestion = z
     requestId: z.string(),
     at: ms,
     questionId: z.string().min(1),
-    part: z.enum(["fields", "source", "person"]),
+    part: z.enum(["fields", "source", "person", "value"]),
     text: z.string().min(1),
     pick: z.enum(["one", "many"]),
     options: z.array(AskOption).min(1).max(MAX_ASK_OPTIONS),
@@ -2286,17 +2298,19 @@ export const AskQuestion = z
     expires: ms,
   })
   .superRefine((m, ctx) => {
-    const kinds = { fields: ["field"], source: ["window", "memory"], person: ["you", "person"] }[m.part];
+    const kinds = { fields: ["field"], source: ["window", "memory"], person: ["you", "person"], value: ["value", "blank"] }[m.part];
     const pick = m.part === "fields" ? "many" : "one";
     const problem = m.pick !== pick
       ? `a ${m.part} question picks ${pick}`
-      : m.filling !== undefined && m.part !== "fields"
-        ? "only a fields question names fields it is filling"
+      : m.filling !== undefined && m.part !== "fields" && m.part !== "value"
+        ? "only a fields or value question names what it is filling"
         : m.options.some((o) => !kinds.includes(o.kind))
           ? `a ${m.part} question lists only ${kinds.join(" or ")} options`
-          : new Set(m.options.map((o) => o.id)).size !== m.options.length
-            ? "option ids repeat"
-            : null;
+          : m.part === "value" && (m.options.filter((o) => o.kind === "blank").length !== 1 || m.options.at(-1)?.kind !== "blank" || m.options.length < 2)
+            ? "a value question lists its values, then one blank"
+            : new Set(m.options.map((o) => o.id)).size !== m.options.length
+              ? "option ids repeat"
+              : null;
     if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["options"] });
   });
 export type AskQuestion = z.infer<typeof AskQuestion>;

@@ -12,7 +12,7 @@ import { MemoryStore } from "../src/patterns/memory.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { WriterRequest } from "../src/writer/port.ts";
-import { MAIL_APP, scopeLabel, snap, text } from "./builders.ts";
+import { MAIL_APP, optionIs, scopeLabel, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, wireButtons } from "./fake-app.ts";
 
 const REF = "5150-3";
@@ -39,8 +39,8 @@ const jevWith = (name: { choice: string; confidence: number }): AskJev => async 
     }
     if (req.purpose === "fill.verify") return [id, { choice: "exact" in q.criteria ? "exact" : "none", confidence: 1 }];
     if (id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user", confidence: 0.9 }];
-    const want = ins.includes("'Name'") ? '"Dana Ortiz"' : ins.includes("'City'") ? '"Austin"' : null;
-    const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(want))?.[0];
+    const want = ins.includes("'Name'") ? "Dana Ortiz" : ins.includes("'City'") ? "Austin" : null;
+    const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want))?.[0];
     return [id, { choice: hit ?? "none", confidence: 0.9 }];
   }));
   return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };

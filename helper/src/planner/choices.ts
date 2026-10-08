@@ -26,7 +26,8 @@ import { mentionedKind } from "../memory/sensitive.ts";
 import { namesShortLabel } from "./planner.ts";
 import { normalizeInstruction, SECTION_WORDS } from "./scope-words.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
-import { ASKS, asksPress, type AskPart } from "./says.ts";
+import { ASKS, asksPress, asksValue, type AskPart, type QuestionPart } from "./says.ts";
+import type { UnresolvedValue } from "../fill/fill.ts";
 import type { AskFixed, IntentField, IntentSnapshot } from "./intent.ts";
 
 /** One option as the host shows it, and what picking it fixes. */
@@ -36,7 +37,7 @@ export interface Choice {
 }
 
 export interface Choices {
-  part: AskPart;
+  part: QuestionPart;
   text: string;
   pick: "one" | "many";
   options: Choice[];
@@ -213,4 +214,22 @@ function personChoices(snap: IntentSnapshot): ChoicesResult {
   const options: Choice[] = pointsAtOther(snap) ? [] : [{ option: { kind: "you", id: "o1" }, fixes: { person: { kind: "user" } } }];
   for (const name of names.slice(0, MAX_ASK_OPTIONS - options.length)) options.push({ option: { kind: "person", id: `o${options.length + 1}`, name }, fixes: { person: { kind: "person", name } } });
   return { choices: { part: "person", text: ASKS.person, pick: "one", options }, why: null };
+}
+
+/**
+ * Value clarification's bounds (design/ask/VALUE-SETTLEMENT.md), the usability bounds scope clarification set, not
+ * calibrated limits: value questions only when at most MAX_ASK_OPTIONS fields are eligible, counted before any is
+ * dropped, and only for a field whose values fit one question beside Leave blank. No value is ranked or cut to fit.
+ * Form order, one question at a time.
+ */
+export function valueQueue(unresolved: readonly UnresolvedValue[]): UnresolvedValue[] {
+  if (unresolved.length > MAX_ASK_OPTIONS) return [];
+  return unresolved.filter((u) => u.options.length < MAX_ASK_OPTIONS);
+}
+
+/** One field's value question: each eligible value as Caret would put it in, where it was read, then Leave blank. */
+export function valueChoices(u: UnresolvedValue): Choices {
+  const options: Choice[] = u.options.map((o, i) => ({ option: { kind: "value", id: `o${i + 1}`, value: o.display, source: o.source }, fixes: { values: [{ key: u.key, option: o.id }] } }));
+  options.push({ option: { kind: "blank", id: `o${options.length + 1}` }, fixes: { values: [{ key: u.key, option: null }] } });
+  return { part: "value", text: asksValue(u.kind, u.name), pick: "one", options };
 }

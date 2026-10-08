@@ -1,0 +1,167 @@
+// The 26 B31 value losses and 5 verifier losses (live B31 at v2/g35 c213ae2c; fixtures/vs1/b31-value-losses.json), replayed
+// on their corpus desks with every downstream veto active. A recorded answer is mapped onto the new options by the
+// output or the candidate it named; one that names no option now is answered none, never renormalized or summed. Each
+// recorded pair stays unadmitted; the four wrong agreements are never written, automatically or after the user picks
+// one; explicit negatives stay unoffered or unwritten. Fresh model runs are the live comparison's to measure.
+import { readFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { checkValues, makeFieldContract, setTestVerifier } from "../src/fill/contract.ts";
+import type { AskJev } from "../src/fill/jev.ts";
+import { STAND_IN } from "./setup/verifier.ts";
+import { AskAsks, answerQuestion } from "../src/planner/ask.ts";
+import { automatic, byOutput, byRecorded, proposedOf, runB31, valueQuestions, type Answer, type Run } from "./vs1-kit.ts";
+
+// The verifier answers as each test says (the kit's oracle calls every value exact), not as the suite's stand-in.
+beforeEach(() => {
+  setGeneratorClock(() => 0);
+  setTestVerifier(null);
+});
+afterEach(() => {
+  setGeneratorClock(null);
+  setTestVerifier(STAND_IN);
+});
+
+interface Recorded {
+  ask: string;
+  field: string;
+  kind: "disagree" | "low" | "wrong";
+  a: { text: string | null; confidence: number };
+  b: { text: string | null; confidence: number };
+  key: string;
+}
+interface Verified {
+  ask: string;
+  field: string;
+  a: { choice: string; confidence: number };
+  b: { choice: string; confidence: number };
+  key: string;
+}
+const LOSSES = JSON.parse(readFileSync(new URL("../fixtures/vs1/b31-value-losses.json", import.meta.url), "utf8")) as { values: Recorded[]; verifier: Verified[] };
+const WRONG = LOSSES.values.filter((c) => c.kind === "wrong");
+
+const replayed = (c: Recorded) => (label: string, wording: 0 | 1, options: Parameters<typeof byRecorded>[0]): Answer | undefined => {
+  if (label !== c.field) return undefined;
+  const r = wording === 0 ? c.a : c.b;
+  return byRecorded(options, r.text, r.confidence);
+};
+
+describe("the recorded value pairs stay unadmitted", () => {
+  it("covers 8 disagreements and 18 low agreements, four of them wrong", () => {
+    expect([LOSSES.values.filter((c) => c.kind === "disagree").length, LOSSES.values.filter((c) => c.kind !== "disagree").length, WRONG.length]).toEqual([8, 18, 4]);
+  });
+
+  it.each(LOSSES.values.map((c) => [`${c.ask} ${c.field}`, c] as const))("%s", async (_, c) => {
+    for (const window of ["page", "reader"] as const) {
+      const r = await runB31(c.ask, { window, values: true, value: replayed(c) });
+      const auto = proposedOf(r, automatic(r.outcome));
+      expect(auto[c.field], `${window}: written from the recorded pair`).toBeUndefined();
+    }
+  });
+});
+
+describe("the four wrong agreements are never written", () => {
+  it.each(WRONG.map((c) => [`${c.ask} ${c.field}`, c] as const))("%s: not automatically, and not after the user picks it", async (_, c) => {
+    const wrong = c.a.text as string;
+    const r = await runB31(c.ask, { values: true, value: replayed(c) });
+    expect(Object.values(proposedOf(r, automatic(r.outcome)))).not.toContain(wrong);
+    const question = await valueQuestionFor(r, c.field);
+    if (question === null) return;
+    // A hostile pick of the wrong value, answered again with the recorded pair: the pick waives no cutoff.
+    const pick = question.options.find((o) => o.option.kind === "value" && o.option.value === wrong);
+    if (pick === undefined) return;
+    const resume = answerQuestion(question, [pick.option.id]);
+    if (typeof resume === "string") throw new Error(resume);
+    const after = await r.resume(resume);
+    expect(Object.values(proposedOf(r, automatic(after)))).not.toContain(wrong);
+  });
+});
+
+/** The value question an Ask's outcome asks about `label`, following Leave blank through earlier fields; null when none. */
+async function valueQuestionFor(r: Run, label: string) {
+  let o = r.outcome;
+  for (let i = 0; i < 8 && o instanceof AskAsks && o.question.part === "value"; i++) {
+    const q = o.question;
+    if (q.options.some((c) => c.fixes.values?.some((v) => r.labelOf.get(v.key) === label) === true)) return q;
+    const blank = q.options.find((c) => c.option.kind === "blank");
+    const resume = answerQuestion(q, [blank?.option.id ?? ""]);
+    if (typeof resume === "string") throw new Error(resume);
+    o = await r.resume(resume);
+  }
+  return null;
+}
+
+describe("the recorded verifier pairs still fail", () => {
+  // Isolated: the write contract alone, each recorded pair as the verifier's answer to the key's own value.
+  it.each(LOSSES.verifier.map((c) => [`${c.ask} ${c.field}`, c] as const))("%s: refused by checkValues", async (_, c) => {
+    const field = makeFieldContract({ windowId: "form", node: { key: "f", parent: null, role: "AXTextField", label: c.field }, descriptor: `Text field. Label: '${c.field}'.`, name: c.field, labelWords: [c.field], control: "text", kinds: new Set(), part: null });
+    const pair: AskJev = async (req) => ({ model: "recorded", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, String(req.questions[id]?.instructions).startsWith("Exact output:") ? c.b : c.a])), inputTokens: 0, latencyMs: 0, costUsd: 0 });
+    const r = await checkValues([{ field, text: c.key, display: c.key, provenance: { kind: "instruction", span: c.key }, owner: null }], { askJev: pair, ledger: null, now: 0, authority: { kind: "plan", offerKey: "vs1" } });
+    expect(r.ok).toHaveLength(0);
+    expect(r.refused[0]?.why).toBe("notExact");
+  });
+
+  // On the B31 desks, where the scripted run reaches the verifier with the field's value: refused, and a pick of the
+  // refused value runs the verifier again, which says the same. b31-07's address parts never reach it there (the oracle's
+  // owner answers withhold them), and b31-04's School dropdown has more eligible values than one question lists.
+  it.each(LOSSES.verifier.map((c) => [`${c.ask} ${c.field}`, c] as const))("%s: on its desk", async (_, c) => {
+    const verify = (label: string, wording: 0 | 1): Answer | undefined => (label === c.field ? (wording === 0 ? c.a : c.b) : undefined);
+    const r = await runB31(c.ask, { values: true, verify });
+    expect(proposedOf(r, automatic(r.outcome))[c.field]).toBeUndefined();
+    const q = await valueQuestionFor(r, c.field);
+    if (q === null) return;
+    const pick = q.options.find((o) => o.option.kind === "value" && o.option.value === c.key);
+    expect(pick, "the refused value is among the options").toBeDefined();
+    const resume = answerQuestion(q, [pick?.option.id ?? ""]);
+    if (typeof resume === "string") throw new Error(resume);
+    expect(proposedOf(r, automatic(await r.resume(resume)))[c.field]).toBeUndefined();
+  });
+
+  it("offers the exact-but-low fields whose values fit one question", async () => {
+    const offered: string[] = [];
+    for (const c of LOSSES.verifier) {
+      const verify = (label: string, wording: 0 | 1): Answer | undefined => (label === c.field ? (wording === 0 ? c.a : c.b) : undefined);
+      if ((await valueQuestionFor(await runB31(c.ask, { values: true, verify }), c.field)) !== null) offered.push(`${c.ask} ${c.field}`);
+    }
+    expect(offered).toEqual(["b31-01 First name", "b31-01 Last name", "b31-09 Reference relationship"]);
+  });
+});
+
+describe("explicit negatives", () => {
+  const outputs = (r: Run, label: string): (string | null)[] => valueQuestions(r, label).flatMap((q) => q.options.map((o) => o.output));
+
+  it("an absent mileage, a ZIP inside a place and a whole birthday are no options", async () => {
+    expect(outputs(await runB31("b31-13"), "Current mileage")).not.toContain("59,870");
+    expect(outputs(await runB31("b31-11"), "ZIP code")).not.toContain("Redwood City CA 94061");
+    const birthday = await runB31("b31-02");
+    for (const label of ["Day", "Year"]) expect(outputs(birthday, label)).not.toContain("04/12/1990");
+  });
+
+  it("a date read without a stated year says the year Caret assumed", async () => {
+    const r = await runB31("b31-13");
+    const [q] = valueQuestions(r, "Preferred date");
+    const iso = q?.options.find((o) => o.output === "2026-10-17");
+    expect(iso?.criterion).toMatch(/Derivation: the date, split from a date and time; the year 2026 is assumed: /u);
+  });
+
+  it("an unspecified 9:30 is neither written nor offered to the user", async () => {
+    const r = await runB31("b31-20", { values: true });
+    expect(proposedOf(r, automatic(r.outcome))["Preferred time"]).toBeUndefined();
+    expect(await valueQuestionFor(r, "Preferred time")).toBeNull();
+  });
+
+  it("the office phone never goes in a cell field, even when both wordings choose it", async () => {
+    const office = "(617) 555-0166";
+    const r = await runB31("b31-16", { values: true, value: (label, _w, options) => (label === "Emergency contact phone" ? byOutput(options, office, 0.99) : undefined) });
+    expect(Object.values(proposedOf(r, automatic(r.outcome)))).not.toContain(office);
+    const q = await valueQuestionFor(r, "Emergency contact phone");
+    expect(q?.options.some((o) => o.option.kind === "value" && o.option.value === office) ?? false).toBe(false);
+  });
+
+  it("an unoffered VIN, service or topping has no option to choose", async () => {
+    const car = await runB31("b31-13");
+    expect(outputs(car, "VIN (optional)").filter((x) => x !== null)).toEqual([]);
+    const pizza = await runB31("b31-15");
+    expect(outputs(pizza, "Bacon").filter((x) => x !== null)).toEqual([]);
+  });
+});

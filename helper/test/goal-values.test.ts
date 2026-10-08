@@ -64,7 +64,7 @@ describe("Jev confirms each value belongs in its field, with fill's question and
     expect(g.warnings).toEqual([`Caret left 'Description' empty: '${PROBLEM.slice(0, 59)}…' isn't this field's value.`]);
     // The verifier's question, in both of its wordings, for each of the two writes.
     expect(jev.asked.filter((q) => q.startsWith("Field: ") && q.includes("'Order number'"))).toHaveLength(1);
-    expect(jev.asked.filter((q) => q.startsWith("Proposed text for the field 'Order number'"))).toHaveLength(1);
+    expect(jev.asked.filter((q) => q.startsWith("Exact output: ") && q.includes("'Order number'"))).toHaveLength(1);
     expect(jev.asked.filter((q) => q.includes("'Description'"))).toHaveLength(2);
   });
 

@@ -14,6 +14,23 @@ export type DatePart = "month" | "day" | "year";
 /** A field's part as fill asks for it: fieldPart's parts, (B27) a place's country, which only fill derives, or (C1) a date's month or year. */
 export type FillPart = FieldPart | "country" | DatePart;
 
+/** Each part in Caret's words. */
+export const PART_SAYS = {
+  first: "first name",
+  middle: "middle name",
+  last: "last name",
+  full: "name",
+  street: "street line",
+  unit: "apartment or unit",
+  city: "city",
+  state: "state",
+  zip: "ZIP code",
+  country: "country",
+  month: "month",
+  day: "day",
+  year: "year",
+} as const satisfies Record<FillPart, string>;
+
 const FIRST = /\b(?:first|given|forename)\b/;
 const MIDDLE = /\bmiddle\b/;
 const LAST = /\b(?:last|surname|family)\b/;

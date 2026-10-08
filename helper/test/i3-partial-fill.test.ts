@@ -16,7 +16,7 @@ import { AskAsks, AskRefused, planAsk, type AskDraft } from "../src/planner/ask.
 import { planSpec } from "../src/planner/proposal.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
-import { field, scopeLabel, snap } from "./builders.ts";
+import { field, scopeLabel, snap, optionIs } from "./builders.ts";
 import type { PageControl } from "../src/protocol.ts";
 import { c } from "./fake-page.ts";
 import { closeRigs, rig, type Segment } from "./page-rig.ts";
@@ -113,7 +113,7 @@ describe("through planAsk", () => {
           if (id.startsWith("s_")) return [id, by(scopeLabel(ins), ins.startsWith("User request:") ? 0 : 1)];
           if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
           const want = Object.entries(values).find(([label]) => ins.includes(`'${label}'`))?.[1];
-          const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
+          const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
           return [id, { choice: hit?.[0] ?? "none", confidence: 0.9 }];
         }),
       );

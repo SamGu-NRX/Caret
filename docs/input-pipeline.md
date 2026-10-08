@@ -205,3 +205,27 @@ The host change:
 The keyboard contract does not change: the card owns Tab, Space, the arrows and Esc only while it shows. Rows are unchanged, and a row's detail now names the field's section when no group does: two "City" rows under Delivery > Address and Billing > Address read "Delivery" and "Billing".
 
 Until this ships, a user who wants none of the offered fields has to dismiss the question, and the settled fields go unfilled too.
+
+## Host change, done by the Caret lane: value questions in the Ask panel
+
+The host-integration lane (v2/hostint2) builds this after the value settlement branch (v2/vs1) merges. Teddy, nothing is needed from you.
+
+When an Ask settles which fields to fill but Jev's two value questions don't agree on a field's value, the helper can now ask the user which value goes in. Without a host that draws it, those fields stay blank, as before. The helper side is done (`helper/src/protocol.ts`, `helper/src/planner/choices.ts` `valueChoices`, `helper/src/planner/ask.ts`, tests in `helper/test/vs1-value-clarify.test.ts`, golden lines in `helper/fixtures/golden/ask-values.ndjson`):
+
+- A new hello capability, `askValues`, beside `askChoices`. Only a consumer that declares both gets a value question.
+- `askQuestion.part` may be `value`, with `pick: "one"`. Its options are one or more `{ "kind": "value", "id", "value", "source" }` rows and then exactly one `{ "kind": "blank", "id" }`, at most eight in all. `value` is the exact text Caret would put in the field. `source` says where Caret read it, in the user's words: "Your saved Email", or a window's title and the line ("Order 48213: Email: dana.ortiz@example.com").
+- On a value question, `filling` lists the values already checked, each as "Label: value". The answer leaves those as they are.
+- The answer is one pick. A value pick prepares the next preview, and Caret checks it again before offering it, so it may still come back blank. The blank pick asks nothing more. The reply is the next value question (one field at a time, in form order, at most eight) or the proposal. A pick that names a source or field that changed since gets the `unknownWindow` refusal.
+
+The host change:
+
+1. `CaretHostCore/AskChoices.swift`: decode `part: value`, the `value` and `blank` options, and `filling` on value questions. Copy `fixtures/golden/ask-values.ndjson` into `Tests/CaretHostCoreTests/Fixtures/` and decode it byte for byte in `AskChoicesTests`.
+2. `AskCopy.option`: a value row's title is `value` and its detail is `source`. The blank row's title is "Leave blank", with no detail. Both wrap to as many lines as they need. Two addresses can differ only in their last characters, so a value is never truncated. The row in `Perch/AskView.swift` is a fixed 26 points today; a value row takes its text's height instead.
+3. Nothing is preselected. `AskCaret.Question.highlight` becomes optional, and a value question opens with no row highlighted. Down moves to the first row and Up to the last, then they move as now. Tab answers with the highlighted row. Tab with no row highlighted is consumed and does nothing. Esc dismisses and writes nothing, as on every question. Return stays swallowed while a question shows (`Perch/PerchController.swift`), as now. The fields question's empty answer (the section above) stays a fields question's only: a value question always answers with one pick.
+4. `AskCopy.answerLabel` says "Choose". `AskCopy.questionHint` takes the question, not only its pick mode, and for a value question says: "Up and Down move between the values. Tab chooses one. Escape writes nothing."
+5. Above the rows, when `filling` is present, one quiet line that wraps: "Caret will fill" and the entries, joined with commas. The question text is the helper's ("Which email should go in Work email?"). When the rows outgrow the panel, the list scrolls within it and keeps the highlighted row in view, with no animation.
+6. No motion. The card redraws at once on each key, as now. There is no confidence badge and no timed auto-accept, so reduced motion has nothing to change.
+7. VoiceOver: the card reads the question, then the "Caret will fill" line, then the rows, then the actions. Each row is one element whose label reads the value, then "from" and the source ("grace.oduya@example.com, from Your saved Email"), with a Choose action bound to its option id. The blank row reads "Leave blank". Each Up or Down announces the highlighted row's label. Opening the question announces the question and the number of values, and highlights nothing.
+8. Declare `askValues` in the host's hello, beside `askChoices`, only once 1 to 7 ship and a keyboard-only and a VoiceOver pass through a value question both work.
+
+The keyboard contract does not change: the card owns Tab, the arrows and Esc only while it shows.

@@ -29,7 +29,7 @@ import { forgetWindows, SnippetLedger } from "../src/privacy.ts";
 import { secretText } from "../src/memory/sensitive.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { rng } from "./large-scene.ts";
-import { field, node, scopeLabel, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap, optionIs } from "./builders.ts";
 
 const NOTE_APP = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
 const NOTES = "Serial number: SN-4471-B\nModel: Kestrel 9\nContact name: Mira Vale\nContact phone: +1 202-555-0146";
@@ -151,7 +151,7 @@ function jev(o: { asks?: readonly string[]; unclear?: readonly string[]; section
         if (id.endsWith("_owner")) return a(/Mira|202-555/u.test(ins) ? "other" : "user" in q.criteria ? "user" : "other");
         if ("yes" in q.criteria) return a("yes");
         const want = Object.entries(VALUES).find(([label]) => ins.includes(`'${label}'`))?.[1];
-        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
+        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
         return a(hit?.[0] ?? "none");
       }),
     );

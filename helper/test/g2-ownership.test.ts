@@ -3,6 +3,7 @@ import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as ver
 // page-loop-eval.ts replays them (a Mail window, then the note the user just left). Jev is a script that answers each
 // question by rule and records every request. Imports nothing G2 added, so the same file runs on the code before G2,
 // where the tests marked "G2" fail (evidence/screen/g2/whose/ownership-before.txt). Every value is synthetic.
+import { optionIs } from "./builders.ts";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,7 +103,7 @@ function scripted(pick: Record<string, string>, owner: (text: string, ask: numbe
       else {
         const label = /Label: '(.+?)'\./u.exec(ins)?.[1];
         const want = label === undefined ? undefined : pick[label];
-        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`))?.[0];
+        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want))?.[0];
         answers[id] = { choice: hit ?? "none", confidence: 0.95 };
       }
     }

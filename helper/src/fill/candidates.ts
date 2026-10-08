@@ -126,7 +126,7 @@ export function setGeneratorClock(clock: (() => number) | null): void {
 /** Nodes or values between clock reads. */
 const CLOCK_EVERY = 64;
 const MIN_LINE = 2;
-const MAX_LINE = 80;
+export const MAX_LINE = 80;
 const LINE_ROLES = new Set(["AXStaticText", "AXCell", "AXHeading", "AXLink"]);
 /**
  * C1: how much of a node's text code scans for typed values, as the reader scans (TypedValues.swift maxScan): a longer

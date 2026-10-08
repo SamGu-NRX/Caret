@@ -16,7 +16,7 @@ import type { AskJev } from "../src/fill/jev.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { WriterRequest } from "../src/writer/port.ts";
 import { SAYS } from "../src/planner/says.ts";
-import { MAIL_APP, snap, text } from "./builders.ts";
+import { MAIL_APP, optionIs, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, wireButtons } from "./fake-app.ts";
 import { LineClient } from "./socket-reader.ts";
 
@@ -73,7 +73,7 @@ const cityJev: AskJev = async (req) => {
   const answers = Object.fromEntries(
     Object.entries(req.questions).map(([id, q]) => {
       if (id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user", confidence: 0.9 }];
-      const hit = String(q.instructions).includes("'City'") ? Object.entries(q.criteria).find(([, d]) => d?.startsWith('"Austin"'))?.[0] : undefined;
+      const hit = String(q.instructions).includes("'City'") ? Object.entries(q.criteria).find(([, d]) => optionIs(d, "Austin"))?.[0] : undefined;
       return [id, { choice: hit ?? "none", confidence: 0.9 }];
     }),
   );

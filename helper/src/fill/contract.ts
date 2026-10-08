@@ -21,7 +21,7 @@ import { bareLine, LABELLED, lineDigests, logicalLines, sentenceAround } from ".
 import { spanContexts } from "./candidates.ts";
 import { redactWindow } from "./redact.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
+import { asksCountry, datePart, fieldPart, PART_SAYS, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
 import { authorityRefusal, fieldFingerprint, scopeRefusal, type Authority, type DocumentReader, type Origin } from "./ask-scope.ts";
 import { sentLineFor } from "./when.ts";
@@ -109,8 +109,11 @@ export function autocompletePart(token: AutocompleteToken | null | undefined): F
  * V3: "timePart" is the time of a span that names a date and a time; "resolved" is a whole date, time or date and time
  * written in its input's own format (when.ts), no part taken.
  */
-/** V4: "optionNamed" is a menu option code found a value to name (controls.ts optionLink), said as such to the verifier. */
-export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat";
+/**
+ * V4: "optionNamed" is a menu option code found a value to name (controls.ts optionLink), said as such to the verifier.
+ * "amountNumber" is an amount's number without its currency sign, for a field that shows its currency (fill.ts).
+ */
+export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat" | "amountNumber";
 
 /** Where a value came from, carried unchanged from the moment it was read to the step that writes it. */
 export type Provenance =
@@ -210,15 +213,19 @@ export type ExemptRule =
 /**
  * The verifier's categories (AC1 section 4). A yes/no "is this right for the field?" invites a yes to a note about the
  * field (LV1: the instruction text won the value question at 0.77 and 0.96); offering the failure categories as options
- * asks the model to classify instead of endorse. Only "exact" from both wordings mints.
+ * asks the model to classify instead of endorse. Only "exact" from both wordings mints. Worded by value settlement
+ * (design/ask/VALUE-SETTLEMENT.md): in live B31 five correct values got "exact" twice with the lower answer at 0.46 to
+ * 0.74, every low one from the old second wording, and "part" ("too little") could compete with a correct first name.
  */
 export const VERDICTS = {
-  exact: "Exactly this field's value: all of it and nothing else.",
-  more: "More than this field asks for: another value, an amount, a date, a label, a remark or extra words beside the value.",
-  part: "Too little: the field wants a longer value, and this text is only a piece of it.",
-  note: "A note, reminder or instruction to the user about what to write, not a value.",
-  other: "Not this field's value: the value of another field, of a different person or thing than the field names, or unrelated.",
+  exact: "Source-supported value for this field and requested person or thing, containing everything this field requires and nothing else. A complete requested part counts as exact.",
+  more: "Contains the field's value plus content this field does not take, such as another part, label, remark, date or amount.",
+  part: "Omits content this field requires. Being shorter than the source alone does not make it incomplete.",
+  note: "Advice, a reminder or an instruction about what to enter, rather than the requested field value.",
+  other: "Unsupported for this field or requested person or thing, including the wrong role or an unsupported derivation assumption.",
 } as const;
+/** Both verifier requests' task. */
+export const VERIFY_TASK = "Judge the proposed operation and output against this field and its source evidence. Judge completeness relative to this field, not the whole source: a first-name field needs only the first name. A listed menu option is selected, not typed as source prose. Do not rewrite the output. Respect the user request and reject unsupported assumptions.";
 export type VerdictChoice = keyof typeof VERDICTS;
 
 export interface VerifyAsk {
@@ -282,6 +289,12 @@ export interface CheckOptions {
   now: number;
   /** An abort counts as the verifier being unavailable. */
   signal?: AbortSignal;
+  /** Value settlement: the user's explicit picks in this Ask, minted with `ledger`; absent says none. */
+  selections?: ModelText;
+  /** Value settlement: the whole source unit a value was read from, minted with `ledger` by its id in source_notes, when one was admitted. */
+  unitOf?: (p: Proposed) => { id: ModelText; text: ModelText } | null;
+  /** The user's memory entries, so a value from one is checked against the whole entry it came from. */
+  memory?: readonly { id: string; label: string; value: string }[];
   cutoff?: number;
   /** I2: who authorizes the values (ask-scope.ts Authority): an Ask's scope refuses a value outside it, for a field that changed since, or not the picked person's. */
   authority: Authority;
@@ -590,7 +603,7 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
   }
 }
 
-const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format" } as const satisfies Record<DeriveHow, string>;
+const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format", amountNumber: "the number of the amount" } as const satisfies Record<DeriveHow, string>;
 
 /** The texts of a provenance a question may quote, for the ledger: its window's title, line, label, span and whole value. */
 function provenanceTexts(pr: Provenance): string[] {
@@ -635,24 +648,105 @@ const INPUT_TAKES: Partial<Record<NonNullable<InputKind>, string>> = { email: "o
 const AUTOCOMPLETE_TAKES: Partial<Record<AutocompleteToken, string>> = { organization: "an organization's name", "organization-title": "a job title", nickname: "the name a person goes by", bday: "a date of birth", email: "one email address", tel: "one phone number", "tel-national": "one phone number", url: "one web address" };
 
 export function takesSays(f: FieldContract): string {
-  const fromPage = f.autocomplete === null ? null : (AUTOCOMPLETE_TAKES[f.autocomplete] ?? null);
-  const takes = [f.part === null ? null : PART_TAKES[f.part], fromPage !== null && !(f.inputKind !== null && INPUT_TAKES[f.inputKind] === fromPage) ? fromPage : null, f.inputKind === null ? null : (INPUT_TAKES[f.inputKind] ?? null), f.dateFormat === null ? null : `a date written as ${f.dateFormat}`, f.currencyShown ? "the number alone, since the field shows its currency" : null].filter((t): t is string => t !== null);
+  const takes = takesOf(f);
   return takes.length === 0 ? "" : ` The field takes ${takes.join("; ")}.`;
 }
 
-/** A question's minted parts: the field's descriptor and name, the proposed text, what the field takes, where it was read. */
+function takesOf(f: FieldContract): string[] {
+  const fromPage = f.autocomplete === null ? null : (AUTOCOMPLETE_TAKES[f.autocomplete] ?? null);
+  return [f.part === null ? null : PART_TAKES[f.part], fromPage !== null && !(f.inputKind !== null && INPUT_TAKES[f.inputKind] === fromPage) ? fromPage : null, f.inputKind === null ? null : (INPUT_TAKES[f.inputKind] ?? null), f.dateFormat === null ? null : `a date written as ${f.dateFormat}`, f.currencyShown ? "the number alone, since the field shows its currency" : null].filter((t): t is string => t !== null);
+}
+
+/** Value settlement's "Required content and format": what the field takes (takesSays's list), or that code read nothing more than its label. */
+export function contractSays(f: FieldContract): string | null {
+  const takes = takesOf(f);
+  return takes.length === 0 ? null : takes.join("; ");
+}
+/** Said in Caret's words when code read nothing of what a field takes beyond its label. */
+export const CONTRACT_UNSTATED = "nothing beyond what its label says";
+
+/** The operation a value is written by, by the field's control, as the verifier is told it. */
+const OPERATION = {
+  text: "type this text into the text field",
+  combobox: "type this text into the dropdown's filter and pick the option named exactly that",
+  select: "select this listed menu option",
+  radio: "choose this listed radio option",
+  checkbox: "tick this checkbox",
+  date: "set the date field to this value",
+  time: "set the time field to this value",
+} as const satisfies Record<Control, string>;
+
+/** The part of a whole a derivation took, in Caret's words. */
+const WHOLE_OF = { namePart: "name", addressPart: "address", placePart: "place", datePart: "date" } as const;
+
+/**
+ * How code derived `p`'s output from its source, in Caret's words, with the choice it made when it made one (Provenance
+ * says, minted by `quote`); null for a value copied as it was read. A part names the field's part ("the first name,
+ * split from the whole name"): in live B31 the verifier was told only "a part of the name" of the user's First name.
+ */
+export function mintDerivation(d: Disclosure, p: Pick<Proposed, "field" | "provenance">, quote: (t: string) => ModelText | null): ModelText | null {
+  const pr = p.provenance;
+  if (pr.kind !== "derived") return null;
+  const part = p.field.part;
+  const how = pr.how;
+  const phrase =
+    (how === "namePart" || how === "addressPart" || how === "placePart" || how === "datePart") && part !== null && part !== "full"
+      ? d.t`the ${d.own(PART_SAYS[part])}, split from the whole ${d.own(WHOLE_OF[how])}`
+      : d.own(DERIVATION_SAYS[how]);
+  const says = pr.says === undefined ? null : quote(pr.says);
+  return says === null ? phrase : d.t`${phrase}; ${says}`;
+}
+const DERIVATION_SAYS = {
+  namePart: "the name, read from the line",
+  addressPart: "a part of the address",
+  placePart: "a part of the place",
+  datePart: "the date, split from a date and time",
+  timePart: "the time, split from a date and time",
+  resolved: "the date or time, rewritten in the field's own format",
+  placeWithCountry: "the place, with its country added",
+  optionFromPart: "the menu option for a part of the source value",
+  optionNamed: "the menu option the source value names",
+  fieldFormat: "the source value, rewritten in the field's format",
+  amountNumber: "the amount's number without its currency sign",
+} as const satisfies Record<DeriveHow, string>;
+
+/**
+ * Where a value came from, for the verifier's "Source evidence": the source itself, never the derivation (said apart),
+ * with the whole memory entry a value from memory came from and the whole unit a window value sits in when the caller
+ * admitted one (CheckOptions.unitOf).
+ */
+function mintSourceEvidence(d: Disclosure, pr: Provenance, quote: (t: string) => ModelText | null, shown: (windowId: string, t: string) => boolean, memory: CheckOptions["memory"], unit: ModelText | null): ModelText {
+  if (pr.kind === "derived") {
+    const base = mintSourceEvidence(d, pr.base, quote, shown, memory, unit);
+    return pr.also === null ? base : d.t`${base}, and ${mintSourceEvidence(d, pr.also, quote, shown, memory, null)}`;
+  }
+  if (pr.kind === "memory") {
+    const entry = memory?.find((a) => a.id === pr.id);
+    const label = quote(pr.label);
+    const value = entry === undefined ? null : d.memoryText(entry.label, entry.value);
+    const as = label === null ? d.own("what the user told Caret") : d.t`what the user told Caret as '${label}'`;
+    return value === null ? as : d.t`${as}, "${value}"`;
+  }
+  const said = mintProvenanceSays(d, pr, quote, shown);
+  return pr.kind === "window" && unit !== null ? d.t`${said}, whose whole text is ${unit} in source_notes` : said;
+}
+
+/** A question's minted parts: the field, what it takes, the request and the user's picks, the operation, the output, its source and derivation. */
 interface VerifyParts {
   descriptor: ModelText;
-  name: ModelText;
+  contract: ModelText;
+  request: ModelText;
+  selections: ModelText;
+  operation: ModelText;
   text: ModelText;
-  takes: ModelText;
   from: ModelText;
+  derivation: ModelText;
 }
 const WORDINGS = [
   (d: Disclosure, p: VerifyParts): ModelText =>
-    d.t`Field: ${p.descriptor}${p.takes} Caret proposes to type this into it, with nothing added or removed: "${p.text}". It was read from ${p.from}. What is the proposed text, for this field?`,
+    d.t`Field: ${p.descriptor} Required content and format: ${p.contract}. User request: ${p.request}. Explicit user selections: ${p.selections}. Proposed operation: ${p.operation}. Exact output: "${p.text}". Source evidence: ${p.from}. Derivation: ${p.derivation}. How does this output fit this field?`,
   (d: Disclosure, p: VerifyParts): ModelText =>
-    d.t`Proposed text for the field '${p.name}': "${p.text}". Read from ${p.from}. The field: ${p.descriptor}${p.takes} If Caret typed exactly this text into the field, what would it have typed?`,
+    d.t`Exact output: "${p.text}". Operation: ${p.operation}. Source evidence: ${p.from}. Derivation: ${p.derivation}. Field: ${p.descriptor} Required content and format: ${p.contract}. User request: ${p.request}. Explicit user selections: ${p.selections}. If Caret performs this operation without changing the output, which description applies to the field's resulting value?`,
 ] as const;
 
 /** Every string a request carries in its state and questions. */
@@ -722,28 +816,35 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
   const raw = o.instruction === undefined || o.instruction === "" || secretText(o.instruction) ? undefined : o.instruction;
   if (raw !== undefined && !ledger.plan([raw])) throw new VerifierUnavailable("the instruction quotes more of an open window than the verifier may carry");
   const instruction = raw === undefined ? undefined : d.instruction(raw);
+  const userRequest = instruction === undefined ? d.own("none") : d.t`"${instruction}"`;
+  const selections = o.selections ?? d.own("none");
+  const notes: Record<string, ModelText> = {};
   const questions = proposed.map((p) => {
     // The field's descriptor and the text itself must go; a value whose own text the ledger refuses is not verified.
     const descriptor = admit(p.field.descriptor);
     const text = admit(p.text);
-    const name = admit(p.field.name);
-    if (descriptor === null || text === null || name === null) return null;
+    if (descriptor === null || text === null) return null;
     for (const t of provenanceTexts(p.provenance)) admit(t);
-    const takes = takesSays(p.field);
+    const contract = contractSays(p.field);
+    const unit = o.unitOf?.(p) ?? null;
+    if (unit !== null) notes[unit.id] = unit.text;
     const parts: VerifyParts = {
       descriptor,
-      name,
+      contract: contract === null ? d.own(CONTRACT_UNSTATED) : (admit(contract) ?? d.own(CONTRACT_UNSTATED)),
+      request: userRequest,
+      selections,
+      operation: d.own(OPERATION[p.field.control]),
       text,
-      takes: takes === "" ? d.own("") : (admit(takes) ?? d.own("")),
-      from: mintProvenanceSays(d, p.provenance, admit, (id, t) => d.shownIn(id, t)),
+      from: mintSourceEvidence(d, p.provenance, admit, (id, t) => d.shownIn(id, t), o.memory, unit?.id ?? null),
+      derivation: mintDerivation(d, p, admit) ?? d.own("none"),
     };
     // HA2: no ownership claim. "The screen says it is the user's" restated an earlier answer of Jev's as a screen fact, and
     // on a held-out note it carried an answer given without the note's own disclaimer into this check. This check judges
-    // exactness; its "other" verdict can still refuse another person's value.
+    // exactness; its "other" verdict can still refuse another person's value. Nor any value question's confidence.
     return [WORDINGS[0](d, parts), WORDINGS[1](d, parts)] as const;
   });
   const declared = ledger.declared();
-  const state: Record<string, ModelValue> = { task: d.own("Caret checks that each value it is about to type is exactly what its field asks for."), ...(instruction === undefined ? {} : { instruction }) };
+  const state: Record<string, ModelValue> = { task: d.own(VERIFY_TASK), ...(instruction === undefined ? {} : { instruction }), ...(Object.keys(notes).length === 0 ? {} : { source_notes: notes }) };
   const batches: number[][] = [];
   const asked = proposed.flatMap((_, i) => (questions[i] === null ? [] : [i]));
   for (let i = 0; i < asked.length; i += VERIFY_BATCH) batches.push(asked.slice(i, i + VERIFY_BATCH));

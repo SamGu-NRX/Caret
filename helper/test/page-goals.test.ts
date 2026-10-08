@@ -34,8 +34,8 @@ describe("an Ask about a page is planned by the page planner (P2)", () => {
       // I6: the form's one forward button, by its own label; never pressed.
       "You press Submit Application",
     ]);
-    // The box whose value fill would not write ("34" for "Are you over 18?") is named as the user's before Tab.
-    expect(preview.warnings.some((w) => /Are you over 18\?/.test(w))).toBe(true);
+    // "34" ticks no box, so value settlement never offers it for "Are you over 18?" (fill.ts optionsOf), and no step ticks it.
+    expect(preview.steps.some((st) => /Are you over 18\?/.test(st.says))).toBe(false);
     // Fill's own two wordings chose every value: the goal value gate's question was never asked.
     expect(r.asked.some((q) => typeof q.state !== "string" && (q.state as { task?: unknown }).task === VERIFY_TASK)).toBe(false);
   });
