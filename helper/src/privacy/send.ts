@@ -23,6 +23,8 @@ export interface Sealed {
   /** The frozen wire body: a Jev body, or a writer's input. */
   readonly wire: unknown;
   readonly out: Outbound;
+  /** The wire body as bytes, taken once: what every send posts and every store parses, never an object. */
+  readonly bytes: string;
 }
 
 function freeze<T>(v: T): T {
@@ -40,10 +42,18 @@ function check(o: Outbound): void {
 
 /** Seals a request: copies its wire body once, freezes the copy and verifies it. Throws UnmintedText as a send would. */
 export function seal(o: Outbound): Sealed {
-  const wire = freeze(JSON.parse(JSON.stringify("writer" in o ? o.writer.input : o.wire)) as unknown);
+  const bytes = JSON.stringify("writer" in o ? o.writer.input : o.wire);
+  const wire = freeze(JSON.parse(bytes) as unknown);
   const out: Outbound = "writer" in o ? { writer: { ...o.writer, input: wire } } : { req: o.req, wire };
   check(out);
-  return { wire, out };
+  return Object.freeze({ wire, out, bytes });
+}
+
+/** The sealed wire read again from its bytes, a fresh value, checked as it leaves (a switch-off since refuses it). */
+function fromBytes(s: Sealed): unknown {
+  const wire = JSON.parse(s.bytes) as unknown;
+  check("writer" in s.out ? { writer: { ...s.out.writer, input: wire } } : { req: s.out.req, wire });
+  return wire;
 }
 
 /**
@@ -51,8 +61,8 @@ export function seal(o: Outbound): Sealed {
  * messages, a local engine's prompt), rendered from the frozen copy only. Throws UnmintedText when it may not leave.
  */
 export function sealedBody(s: Sealed, render?: (wire: unknown) => unknown): string {
-  check(s.out);
-  return JSON.stringify(render === undefined ? s.wire : render(s.wire));
+  const wire = fromBytes(s);
+  return render === undefined ? s.bytes : JSON.stringify(render(wire));
 }
 
 /**
@@ -60,8 +70,16 @@ export function sealedBody(s: Sealed, render?: (wire: unknown) => unknown): stri
  * request, beside what came back), as JSON with every value in a format Caret never carries withheld, and a newline.
  */
 export function storedLine(s: Sealed, build: (wire: unknown) => unknown): string {
-  check(s.out);
-  return `${JSON.stringify(withheldDeep(build(s.wire)))}\n`;
+  return `${JSON.stringify(withheldDeep(build(fromBytes(s))))}\n`;
+}
+
+/**
+ * A request's record for a store, read from the sealed bytes (frozenRequest over a fresh parse), checked as it is
+ * written, with every value in a format Caret never carries withheld: never built from an object a caller holds.
+ */
+export function storedRequest<T>(s: Sealed, req: JevRequest, build: (frozen: JevRequest) => T): T {
+  const wire = fromBytes(s);
+  return withheldDeep(build(frozenRequest(req, wire))) as T;
 }
 
 /**
@@ -92,5 +110,6 @@ export function frozenRequest(req: JevRequest, wire: unknown): JevRequest {
     if (q.type === "noul") nouls[id] = q;
     else questions[id] = q;
   }
-  return { ...req, state: w.state, questions, ...(req.nouls === undefined ? {} : { nouls }) };
+  // Frozen, deep: a caller holding the snapshot cannot change what it says (defence in depth; stores read the bytes).
+  return Object.freeze({ ...req, state: freeze(w.state), questions: freeze(questions), ...(req.nouls === undefined ? {} : { nouls: freeze(nouls) }) });
 }

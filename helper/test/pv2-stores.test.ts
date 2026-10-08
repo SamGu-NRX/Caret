@@ -85,3 +85,22 @@ describe("PV2: a store records the copy that was sent, never the live request", 
     expect(JSON.stringify(sent.asked.state)).toBe(JSON.stringify({ task: "before" }));
   });
 });
+
+describe("PV2: a stored record is read from the sent bytes, never from an object", () => {
+  it("stores what was sent although the exposed snapshot was changed while pending", () => {
+    const d = new Disclosure([]);
+    const req: JevRequest = d.seal({ purpose: "route.judge" as const, state: { task: d.own("before") }, questions: {}, snippets: [], charged: {} });
+    const sent = sealRequest(req);
+    const bytes = JSON.stringify({ state: sent.asked.state });
+    const foreign = new Disclosure([]).own("after, from another request");
+    // The snapshot itself, as a caller holding it could change it (frozen now, so these throw; before, they did not).
+    for (const change of [() => ((sent.asked as { state: unknown }).state = { task: foreign }), () => ((sent.asked.state as { task: unknown }).task = foreign)]) {
+      try {
+        change();
+      } catch {
+        // A frozen snapshot refuses the change.
+      }
+    }
+    expect(JSON.stringify(storedRecord(sent, (f) => ({ state: f.state })))).toBe(bytes);
+  });
+});

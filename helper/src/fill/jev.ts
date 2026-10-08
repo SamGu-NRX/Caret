@@ -3,8 +3,8 @@
 import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
-import { storable, UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
-import { frozenRequest, seal, sealedBody, type Sealed } from "../privacy/send.ts";
+import { UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
+import { frozenRequest, seal, sealedBody, storedRequest, type Sealed } from "../privacy/send.ts";
 import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
@@ -284,11 +284,6 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
   return { state: { ...state, [OPTION_DESCRIPTIONS]: shared }, model, questions };
 }
 
-/**
- * PV2 Q2: what an evaluation's request log or dump keeps of a request: `kept`, its own record of it, once the request's
- * wire body verifies as the client's would, with every value in a format Caret never carries withheld (privacy/
- * disclosure.ts storable). A replayed request that never reaches the client is checked here the same way.
- */
 export { frozenRequest };
 
 export interface SealedRequest {
@@ -303,7 +298,7 @@ export interface SealedRequest {
  */
 export function sealRequest(req: JevRequest): SealedRequest {
   const sealed = seal({ req, wire: wireBody(req) });
-  return { sealed, asked: frozenRequest(req, sealed.wire) };
+  return Object.freeze({ sealed, asked: frozenRequest(req, sealed.wire) });
 }
 
 /**
@@ -312,7 +307,7 @@ export function sealRequest(req: JevRequest): SealedRequest {
  * the live request again at storage time.
  */
 export function storedRecord<T>(s: SealedRequest, build: (frozen: JevRequest) => T): T {
-  return storable(s.asked, s.sealed.wire, build(s.asked));
+  return storedRequest(s.sealed, s.asked, build);
 }
 
 

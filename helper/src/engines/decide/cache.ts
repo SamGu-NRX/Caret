@@ -229,11 +229,15 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
       return i;
     };
     const name = (id: string): string => c.toCanon.get(id) ?? id;
-    const entry: Entry = {
+    // The request's part of the entry is read from the sealed bytes as it is written (storedLine's `wire`), never from an
+    // object; the rest is what came back.
+    const entry = (wire: unknown): Entry => {
+      const sent = canonicalRequest(frozenRequest(req, wire), opts.engine, opts.model, opts.variant ?? "");
+      return {
       v: FORMAT,
       engine: opts.engine,
       model: opts.model,
-      canonical: { exact: c.exact, state: asked.state, questions: c.questions },
+      canonical: { exact: sent.exact, state: (wire as { state: unknown }).state, questions: sent.questions },
       answeredBy: r.model,
       answers: Object.fromEntries(Object.entries(r.answers).map(([id, a]) => [at(id), { choice: name(a.choice), confidence: a.confidence }])),
       nouls: Object.fromEntries(Object.entries(r.nouls ?? {}).map(([id, p]) => [at(id), p])),
@@ -241,12 +245,13 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
       inputTokens: r.inputTokens,
       latencyMs: r.latencyMs,
       recordedAt: new Date().toISOString(),
+      };
     };
     mkdirSync(join(opts.dir, c.key.slice(0, 2)), { recursive: true, mode: 0o700 });
     mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
     const tmp = `${path}.${process.pid}.tmp`;
     // Checked as it is written, after the answer came back (privacy/send.ts storedLine).
-    writeFileSync(tmp, storedLine(sealed, () => entry), { mode: 0o600 });
+    writeFileSync(tmp, storedLine(sealed, entry), { mode: 0o600 });
     renameSync(tmp, path);
     return r;
   };

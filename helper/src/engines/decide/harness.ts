@@ -170,7 +170,7 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
         appendFileSync(log, storedLine(sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 })), { mode: 0o600 });
         throw e;
       }
-      appendFileSync(log, storedLine(sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(asked, engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })), { mode: 0o600 });
+      appendFileSync(log, storedLine(sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })), { mode: 0o600 });
       return r;
     };
   }
