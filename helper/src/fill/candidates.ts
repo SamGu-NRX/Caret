@@ -7,6 +7,7 @@ import { ValueKind, type FillSource, type Node, type TypedValue } from "../proto
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestLabel, nearestText } from "./descriptor.ts";
 import { heldAsConversation, type ViewSpan } from "../privacy.ts";
+import { messageOrder, type MessageOrder } from "../conversation.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, namesInAt, overlap, textKind, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
 import { bareLine, clauseSpan, LABELLED, lineTexts, lineValues, partSpan, sentenceSpan, rawURLToken, WARNS } from "./line-values.ts";
@@ -29,6 +30,19 @@ function* linesUpTo(text: string, max: number): Generator<string> {
  * never keeps. A page checkbox is editable too since D2-04 (engines/page-link.ts), but what it holds, "checked", is its
  * state, not text anyone typed.
  */
+/**
+ * The indexes of a conversation's `n` nodes, newest first by `order`: from the end when the oldest come first, from the
+ * start when the newest do, and from both ends in turn when the order is not known (conversation.ts MessageOrder).
+ */
+function* newestFirst(n: number, order: MessageOrder): Generator<number> {
+  if (order === "newestFirst") for (let i = 0; i < n; i++) yield i;
+  else if (order === "oldestFirst") for (let i = n - 1; i >= 0; i--) yield i;
+  else for (let lo = 0, hi = n - 1; lo <= hi; lo++, hi--) {
+    yield hi;
+    if (lo < hi) yield lo;
+  }
+}
+
 function sourceField(node: Node): boolean {
   return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox";
 }
@@ -871,22 +885,23 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       for (const k of kinds) t.add(kindTerm(k));
       return t;
     };
-    // Which nodes are listed: newest first (the end of the window's order), within the conversation's share of the
-    // generator's visits (CONVERSATION_LIST_SHARE) and what is left of them, each listed node's own visits counted (the
-    // node, each of its lines, each typed value on it). An older node left unlisted is read for what it may hold
-    // (unreadRest, unlistedOf), as any unread text is, so the window counts as cut, not as unknown. The listed nodes are
-    // then ranked in the window's own order, as a conversation listed whole always was.
+    // Which nodes are listed: newest first, by the order the window's messages run in (conversation.ts messageOrder), and
+    // from both ends at once when that is not known; within the conversation's share of the generator's visits
+    // (CONVERSATION_LIST_SHARE) and what is left of them, each listed node's own visits counted (the node, each of its
+    // lines, each typed value on it). A node left unlisted is read for what it may hold (unreadRest, unlistedOf), as any
+    // unread text is, so the window counts as cut, not as unknown. The listed nodes are then ranked in the window's own
+    // order, as a conversation listed whole always was.
     const listed = new Set<string>();
     const linesOf = new Map<string, { raw: string; start: number }[]>();
     {
       let spent = 0;
       const nodes = [...w.nodes.values()];
-      for (let i = nodes.length - 1; i >= 0; i--) {
+      for (const i of newestFirst(nodes.length, messageOrder(w))) {
         const node = nodes[i] as Node;
         const lines = LINE_ROLES.has(node.role) || sourceField(node) ? timed("split", () => nodeLines(node)) : [];
         const cost = 1 + lines.length + (valuesOf.get(node.key)?.length ?? 0);
         if (spent + cost > CONVERSATION_LIST_SHARE || visits + spent + cost > MAX_GENERATOR_VISITS) {
-          unlistedOf.set(w.window.windowId, new Set(nodes.slice(0, i + 1).map((n) => n.key)));
+          unlistedOf.set(w.window.windowId, new Set(nodes.filter((n) => !listed.has(n.key)).map((n) => n.key)));
           missed.add(w.window.windowId);
           break;
         }
