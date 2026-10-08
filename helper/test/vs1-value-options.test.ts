@@ -79,6 +79,15 @@ describe("each option states the exact output Caret would write (B31 desks)", ()
     for (const x of valueQuestions(r, "Onion")) expect(x.instructions).toContain(`Required content and format: ${BOX_CONTRACT}.`);
   });
 
+  it("a time no reading resolves is no option: one 08:45 for Preferred time, the one read with the message's year", async () => {
+    const r = await runB31("b31-13");
+    for (const q of valueQuestions(r, "Preferred time")) {
+      const times = q.options.filter((o) => o.output === "08:45");
+      expect(times).toHaveLength(1);
+      expect(times[0]?.criterion).toMatch(/the year 2026 is assumed/u);
+    }
+  });
+
   it("a date input is offered the date in its own format, never the sentence it was read from", async () => {
     const r = await runB31("b31-13");
     const [q] = valueQuestions(r, "Preferred date");

@@ -191,7 +191,7 @@ describe("a value question in the Ask", () => {
 
   it("asks one field at a time in form order, and skipping every one keeps only the settled values", async () => {
     const m = desk();
-    const j = jev({ ...split, Phone: [["555-0188", 0.6], ["555-0188", 0.6]] });
+    const j = jev({ ...split, Phone: [["555-0188", 0.4], ["555-0188", 0.4]] });
     const q1 = ask(await outcome(plan(m, j)));
     expect(q1.question.text).toBe("Which email should go in Work email?");
     const q2 = ask(await outcome(plan(m, j, pickValue(q1, null))));
@@ -202,7 +202,7 @@ describe("a value question in the Ask", () => {
 
   it("a changed source invalidates the pick", async () => {
     const m = desk();
-    const j = jev({ "First name": GRACE, Phone: [["555-0188", 0.6], ["555-0188", 0.6]] }, () => ["555-0188", 0.9]);
+    const j = jev({ "First name": GRACE, Phone: [["555-0188", 0.4], ["555-0188", 0.4]] }, () => ["555-0188", 0.9]);
     const q = ask(await outcome(plan(m, j)));
     const resume = pickValue(q, "555-0188");
     m.apply(snap([field("note/body", "Phone: 555-0188 (old, do not use)", { role: "AXTextArea" })], { at: T0 + 1000, windowId: "note", title: "Phone.txt", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" } }));

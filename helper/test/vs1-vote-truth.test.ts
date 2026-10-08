@@ -1,5 +1,6 @@
 // Value settlement's admission rule, pinned at its boundaries: an Ask's value is admitted only when both value wordings
-// choose the same option at the existing cutoff (FILL_CUTOFF for a screen value; MEMORY_CUTOFF for the user's own, with
+// choose the same option at its cutoff (FILL_CUTOFF on the implied top probability for a screen value, VALUE_P below;
+// MEMORY_CUTOFF on Jev's confidence for the user's own, with
 // both whose answers saying the user's at WHOSE_CUTOFF), and a window value for a field that wants the user's details
 // only when both owner answers say the user's at WHOSE_CUTOFF. None, a remapped or invalid id, a missing answer and a
 // failed call admit nothing, and nothing but an admitted value is minted. Synthetic desk: every value is invented.
@@ -30,7 +31,9 @@ type A = { choice: string; confidence: number };
 /** One cell: each wording's value answer for `label` (an output to pick, null for none), and the whose and owner answers. */
 interface Cell {
   label: (typeof LABELS)[number];
+  /** Each wording's answer: an output (null for none) and a confidence, or with `p`, the implied top probability. */
   values: [[string | null, number], [string | null, number]];
+  p?: boolean;
   whose?: [number, number];
   owner?: [number, number];
   /** Rewrites one wording's answer after it is chosen (a remapped, invalid or missing id). */
@@ -51,7 +54,9 @@ function jev(c: Cell): AskJev {
       else if (id.endsWith("_owner")) answers[id] = { choice: "user", confidence: (c.owner ?? [0.9, 0.9])[id.startsWith("v") ? 1 : 0] ?? 0.9 };
       else {
         const label = LABELS.find((l) => ins.includes(`'${l}'`)) ?? "";
-        const [want, confidence] = label === c.label ? c.values[w as 0 | 1] : [WANT[label] ?? null, 0.99];
+        const [want, given] = label === c.label ? c.values[w as 0 | 1] : [WANT[label] ?? null, 0.99];
+        const n = Object.keys(q.criteria).length;
+        const confidence = label === c.label && c.p === true ? (given - 1 / n) / (1 - 1 / n) : given;
         const hit = Object.entries(q.criteria).find(([, d]) => want !== null && optionOutput(d) === want)?.[0] ?? "none";
         const a = { choice: hit, confidence };
         const t = label === c.label && c.tamper !== undefined ? c.tamper(w as 0 | 1, a, req) : a;
@@ -71,18 +76,30 @@ async function settle(c: Cell): Promise<FillField> {
 }
 const admitted = async (c: Cell): Promise<boolean> => (await settle(c)).value !== null;
 
-describe("a screen value: both wordings, the same option, each at FILL_CUTOFF", () => {
+/**
+ * Jev's confidence is (p - 1/n)/(1 - 1/n) over the n options it saw, so an Ask's short value questions read lower for
+ * the same top probability p; a screen value is admitted on p, both wordings at FILL_CUTOFF. A hundredth either side.
+ */
+describe("a screen value: both wordings, the same option, each with p at FILL_CUTOFF", () => {
   const v = WANT.Name as string;
   const lo = FILL_CUTOFF - 0.01;
+  const hi = FILL_CUTOFF + 0.01;
   it.each([
-    [[v, lo], [v, FILL_CUTOFF], false],
-    [[v, FILL_CUTOFF], [v, lo], false],
-    [[v, FILL_CUTOFF], [v, FILL_CUTOFF], true],
+    [[v, lo], [v, hi], false],
+    [[v, hi], [v, lo], false],
+    [[v, hi], [v, hi], true],
     [[v, 0.99], [null, 0.99], false],
     [[null, 0.99], [v, 0.99], false],
     [[null, 0.99], [null, 0.99], false],
-  ] as const)("%j / %j -> admitted %s", async (a, b, want) => {
-    expect(await admitted({ label: "Name", values: [a as [string | null, number], b as [string | null, number]] })).toBe(want);
+  ] as const)("p %j / %j -> admitted %s", async (a, b, want) => {
+    expect(await admitted({ label: "Name", p: true, values: [a as [string | null, number], b as [string | null, number]] })).toBe(want);
+  });
+
+  it("admits on p where Jev's confidence alone reads under the cutoff", async () => {
+    let confidence = 1;
+    const f = await settle({ label: "Name", p: true, values: [[v, hi], [v, hi]], tamper: (_w, a) => ((confidence = Math.min(confidence, a.confidence)), a) });
+    expect(confidence).toBeLessThan(FILL_CUTOFF);
+    expect(f.value).toBe(v);
   });
 
   it("two different options disagree at any confidence", async () => {

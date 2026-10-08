@@ -10,7 +10,7 @@ import { checkValues, makeFieldContract, setTestVerifier } from "../src/fill/con
 import type { AskJev } from "../src/fill/jev.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { AskAsks, answerQuestion } from "../src/planner/ask.ts";
-import { byOutput, byRecorded, proposedOf, runB31, valueQuestions, type Answer, type Run } from "./vs1-kit.ts";
+import { B31, byOutput, byRecorded, corpus, proposedOf, runB31, valueQuestions, type Answer, type Run } from "./vs1-kit.ts";
 
 // The verifier answers as each test says (the kit's oracle calls every value exact), not as the suite's stand-in.
 beforeEach(() => {
@@ -46,16 +46,20 @@ const replayed = (c: Recorded) => (label: string, wording: 0 | 1, options: Param
   return byRecorded(options, r.text, r.confidence);
 };
 
-describe("the recorded value pairs stay unadmitted", () => {
+describe("the recorded value pairs write nothing the key calls wrong", () => {
   it("covers 8 disagreements and 18 low agreements, four of them wrong", () => {
     expect([LOSSES.values.filter((c) => c.kind === "disagree").length, LOSSES.values.filter((c) => c.kind !== "disagree").length, WRONG.length]).toEqual([8, 18, 4]);
   });
 
+  // Under the probability bar (fill.ts topProbability) a recorded pair may now admit its value; only the key's own value may
+  // be written, and a pair whose value the key calls wrong never is.
   it.each(LOSSES.values.map((c) => [`${c.ask} ${c.field}`, c] as const))("%s", async (_, c) => {
     for (const window of ["page", "reader"] as const) {
       const r = await runB31(c.ask, { window, values: true, value: replayed(c) });
-      const auto = proposedOf(r, r.outcome);
-      expect(auto[c.field], `${window}: written from the recorded pair`).toBeUndefined();
+      const written = proposedOf(r, r.outcome)[c.field];
+      const form = corpus.forms.find((f) => f.id === B31.find((x) => x.id === c.ask)?.form);
+      const accepted = [c.key, ...(form?.fields.find((f) => f.label === c.field)?.accept ?? [])];
+      if (written !== undefined) expect(accepted, `${window}: wrote '${written}'`).toContain(written);
     }
   });
 });

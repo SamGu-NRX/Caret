@@ -295,6 +295,11 @@ export interface CheckOptions {
   selections?: ModelText;
   /** Value settlement: the whole source unit a value was read from, minted with `ledger` by its id in source_notes, when one was admitted. */
   unitOf?: (p: Proposed) => { id: ModelText; text: ModelText } | null;
+  /**
+   * The names of the form's fields that take the rest of an address, for a street line, said in its required content. The
+   * old wording's "the form has other fields for the rest" alone left B31's "4410 Speedway" at exact 0.49 in wording A.
+   */
+  restOf?: (p: Proposed) => readonly string[];
   /** The user's memory entries, so a value from one is checked against the whole entry it came from. */
   memory?: readonly { id: string; label: string; value: string }[];
   cutoff?: number;
@@ -734,6 +739,13 @@ function mintSourceEvidence(d: Disclosure, pr: Provenance, quote: (t: string) =>
   return pr.kind === "window" && unit !== null ? d.t`${said}, whose whole text is ${unit} in source_notes` : said;
 }
 
+/** Minted texts as an English list: "a", "a and b", "a, b and c". */
+function listSaid(d: Disclosure, xs: readonly ModelText[]): ModelText {
+  const last = xs.at(-1);
+  if (xs.length < 2 || last === undefined) return d.join(xs, ", ");
+  return d.t`${d.join(xs.slice(0, -1), ", ")} and ${last}`;
+}
+
 /** A question's minted parts: the field, what it takes, the request and the user's picks, the operation, the output, its source and derivation. */
 interface VerifyParts {
   descriptor: ModelText;
@@ -828,12 +840,15 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     const text = admit(p.text);
     if (descriptor === null || text === null) return null;
     for (const t of provenanceTexts(p.provenance)) admit(t);
-    const contract = contractSays(p.field);
+    const rest = (o.restOf?.(p) ?? []).map(admit);
+    const admitted = rest.filter((x): x is ModelText => x !== null);
+    const named = admitted.length > 0 && admitted.length === rest.length ? admitted : null;
+    const contract = named === null ? contractSays(p.field) : null;
     const unit = o.unitOf?.(p) ?? null;
     if (unit !== null) notes[unit.id] = unit.text;
     const parts: VerifyParts = {
       descriptor,
-      contract: contract === null ? d.own(CONTRACT_UNSTATED) : (admit(contract) ?? d.own(CONTRACT_UNSTATED)),
+      contract: named !== null ? d.t`only the street line of an address; the form's fields ${listSaid(d, named.map((x) => d.t`'${x}'`))} take the rest` : contract === null ? d.own(CONTRACT_UNSTATED) : (admit(contract) ?? d.own(CONTRACT_UNSTATED)),
       request: userRequest,
       selections,
       operation: d.own(OPERATION[p.field.control]),

@@ -2310,7 +2310,8 @@ export async function proposeFill(
       const members = picks.flatMap(({ id, second, pick }): Member[] => {
         const veto = (why: OptionVeto): Member[] => (vetoed.set(id, why), []);
         const read = controlValue(f, pick);
-        if ("why" in read) {
+        // A value no reading resolves (a clock time with no year to place it) is never written, so it is no option.
+        if ("why" in read || read.unresolved === true) {
           if (pickText(pick) === literalOf(f)) unreadLiterals.add(f.node.key);
           return veto("conversion");
         }
@@ -2626,6 +2627,18 @@ export async function proposeFill(
     return field;
   };
   /**
+   * The top probability an Ask's value answer implies. Jev's confidence is (p - 1/n)/(1 - 1/n) over the n options it saw
+   * (TypeSafe confidence.md), and FILL_CUTOFF was set on fill's shared lists of 15 to 33 candidates, where it is within
+   * about 0.04 of p. An Ask's value question lists only its field's writable outputs, often one beside none, where the
+   * same p reads far lower (p 0.84 is 0.68 at n 2): live B31's Course and ZIP agreed at p 0.6 to 0.84 and read 0.18 to
+   * 0.68. So a screen value is held to FILL_CUTOFF on p, the bar the shared lists set. The memory and ownership cutoffs
+   * were set on short lists and stay on Jev's confidence.
+   */
+  const topProbability = (f: Field, a: FillAsk): number => {
+    const n = (optionsOf.get(f.id)?.length ?? 0) + 1;
+    return a.confidence * (1 - 1 / n) + 1 / n;
+  };
+  /**
    * An Ask's decision on one field from its two value answers, shared by the first answers and a pick's fresh pair:
    * "blank" when both chose none; else "admitted" only when both chose the same option (exactly `only`, for a pick) at its
    * cutoff (MEMORY_CUTOFF with both whose answers the user's, for the user's own value; else FILL_CUTOFF) and no rule that
@@ -2638,7 +2651,8 @@ export async function proposeFill(
     const option = optionsOf.get(f.id)?.find((o) => o.id === a1.choice) as ValueOption<Member>;
     const first = option.members[0] as Member;
     const fromMemory = memoryOf(first.pick) !== null;
-    if (Math.min(a1.confidence, a2.confidence) < (fromMemory ? memoryCutoff : cutoff) || (fromMemory && !theUsers(f))) return { kind: "held", why: "lowConfidence" };
+    const sure = fromMemory ? Math.min(a1.confidence, a2.confidence) >= memoryCutoff : Math.min(topProbability(f, a1), topProbability(f, a2)) >= cutoff;
+    if (!sure || (fromMemory && !theUsers(f))) return { kind: "held", why: "lowConfidence" };
     const why = relationalHold(f, first.pick);
     return why === null ? { kind: "admitted", option } : { kind: "held", why };
   };
@@ -2731,13 +2745,16 @@ export async function proposeFill(
     const text = id === null ? undefined : notes.get(id);
     return id === null || text === undefined ? null : { id, text };
   };
-  /** What the verifier is told beyond the value: an Ask's request, picks and source units, and the user's memory entries. */
+  /** The form's other address fields, by name, which take what a street line leaves out (CheckOptions.restOf). */
+  const restOf = (p: Proposed): readonly string[] =>
+    p.field.part !== "street" ? [] : fields.filter((x) => x.node.key !== p.field.key && x.part !== null && x.part !== "street" && PERSON_PLACE_PARTS.has(x.part)).map((x) => x.name);
+  /** What the verifier is told beyond the value: an Ask's request, picks, source units and address fields, and the user's memory entries. */
   const verifierContext = (selections?: ModelText): Omit<CheckOptions, "askJev" | "now"> => ({
     ledger,
     authority,
     documentOf,
     memory: opts.about ?? [],
-    ...(scope === undefined ? {} : { instruction: scope.instruction, selections: selections ?? selectionsSaid(), unitOf: verifierUnit }),
+    ...(scope === undefined ? {} : { instruction: scope.instruction, selections: selections ?? selectionsSaid(), unitOf: verifierUnit, restOf }),
   });
   /** By field index, the verifier's refusal of its value: an Ask clarifies a field it called exact twice under the cutoff. */
   const verifierRefused = new Map<number, Refused>();
@@ -2828,7 +2845,7 @@ export async function proposeFill(
   };
   const eligible = (f: Field, o: ValueOption<Member>): boolean => {
     const first = o.members[0] as Member;
-    return first.read.unresolved !== true && relationalHold(f, first.pick) === null && (memoryOf(first.pick) === null || theUsers(f)) && !restsOnStale(first.pick);
+    return relationalHold(f, first.pick) === null && (memoryOf(first.pick) === null || theUsers(f)) && !restsOnStale(first.pick);
   };
   const unresolvedValues = (): UnresolvedValue[] =>
     asked.flatMap((f): UnresolvedValue[] => {
@@ -2841,8 +2858,9 @@ export async function proposeFill(
       const exactLow = refused !== undefined && refused[0].choice === "exact" && refused[1].choice === "exact";
       const offered = options.filter((x) => eligible(f, x) && (refused === undefined || exactLow || x.output !== o.asks[0]?.value));
       const [a1, a2] = o.asks;
-      const floor = offered.every((x) => memoryOf((x.members[0] as Member).pick) !== null) ? memoryCutoff : cutoff;
-      const unsure = o.withheld === "disagree" || o.withheld === "lowConfidence" || (o.withheld === null && a1?.choice === NONE && a2?.choice === NONE && Math.min(a1.confidence, a2.confidence) < floor);
+      const memoryOnly = offered.every((x) => memoryOf((x.members[0] as Member).pick) !== null);
+      const noneSure = a1 === undefined || a2 === undefined ? true : memoryOnly ? Math.min(a1.confidence, a2.confidence) >= memoryCutoff : Math.min(topProbability(f, a1), topProbability(f, a2)) >= cutoff;
+      const unsure = o.withheld === "disagree" || o.withheld === "lowConfidence" || (o.withheld === null && a1?.choice === NONE && a2?.choice === NONE && !noneSure);
       const why = refused !== undefined ? "verifier" : unsure ? "selection" : null;
       if (why === null || offered.length === 0) return [];
       return [{ key: f.node.key, name: f.name, kind: kindOf(f), why, options: offered.map((x) => ({ id: x.id, value: x.output, display: (x.members[0] as Member).read.display, source: rowSource((x.members[0] as Member).pick) })) }];
