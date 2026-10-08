@@ -96,6 +96,17 @@ export function nextLineStart(text: string, end: number): number {
   return text[end] === "\r" && text[end + 1] === "\n" ? end + 2 : end + 1;
 }
 
+/** Each line of `text` (splitLines), one at a time: a reader that stops early splits no more of a long text than it read. */
+export function* eachLine(text: string): Generator<string> {
+  for (let start = 0; ; ) {
+    const end = lineEndAt(text, start);
+    yield text.slice(start, end);
+    const next = nextLineStart(text, end);
+    if (next < 0) return;
+    start = next;
+  }
+}
+
 /** Each line of `text` (splitLines) with where it starts in the text. */
 export function linesWithStarts(text: string): { raw: string; start: number }[] {
   const out: { raw: string; start: number }[] = [];

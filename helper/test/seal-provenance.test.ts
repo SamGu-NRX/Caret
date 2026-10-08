@@ -357,7 +357,7 @@ describe("checking requests sent together, as their seals will", () => {
   });
 });
 
-describe("round 7", () => {
+describe("a view's class through re-redaction, and plan text a bare CR splits", () => {
   it("keeps a view's class when it is redacted again: a mail's basis is still held to 41 after its provenance is taken", () => {
     const m = new ScreenModel();
     const body = ["see you at five tomorrow", "and the venue holds the date for us"];

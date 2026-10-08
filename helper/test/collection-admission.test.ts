@@ -213,6 +213,33 @@ describe("collection order, associations, one membership, kept ranges", () => {
     expect(p.fields.find((x) => x.key === key("Locker"))?.value).toBeNull();
   });
 
+  /** A note of 80 dates, `copies` more of the first, and a warning not to use any of them; a Meeting date field. */
+  const datesDesk = (copies: number): ScreenModel => {
+    const dates = Array.from({ length: 80 }, (_, i) => new Date(Date.UTC(2026, 0, i + 1)).toISOString().slice(0, 10));
+    const m = new ScreenModel();
+    m.apply(snap([...dates.map((d, i) => text(`n${i}`, `Date: ${d}`)), ...Array.from({ length: copies }, (_, i) => text(`dup${i}`, `Date: ${dates[0]}`)), text("warn", "Do not use any of the dates above; they are obsolete and no longer scheduled. Leave the date blank.")], { at: 1000, windowId: "note-1", title: "N", app: NOTES }));
+    m.apply(snap([field(key("Meeting date"), "", { label: "Meeting date", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    return m;
+  };
+
+  it("withholds a field of a known kind a cut term names: the note's closing warning about its dates leaves Meeting date blank", async () => {
+    const m = datesDesk(0);
+    const p = await proposeFill(m, picking({ "Meeting date": "2026-01-01" }), FORM, key("Meeting date"), 3000, { whose: false });
+    const f = p.fields.find((x) => x.key === key("Meeting date"))!;
+    expect([f.value, f.handoff?.value ?? null]).toEqual([null, null]);
+    expect(f.withheld).toBe("sourceCut");
+  });
+
+  it("withholds a field of a known kind when what a window holds is unknown: 2,200 copies before the warning", async () => {
+    const m = datesDesk(2200);
+    const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [new Set(["date", kindTerm("date")])] });
+    expect(c.cutAll).toBe(true);
+    const p = await proposeFill(m, picking({ "Meeting date": "2026-01-01" }), FORM, key("Meeting date"), 3000, { whose: false });
+    const f = p.fields.find((x) => x.key === key("Meeting date"))!;
+    expect([f.value, f.handoff?.value ?? null]).toEqual([null, null]);
+    expect(f.withheld).toBe("sourceCut");
+  });
+
   it("does not count a second 'Date: 2026-10-08' as left out: the same value under the same label is offered", async () => {
     const m = new ScreenModel();
     m.apply(snap([node("a", "AXButton", { label: "Date: 2026-10-08" }), node("b", "AXButton", { label: "Date: 2026-10-08" }), node("pad", "AXButton", { label: "Z".repeat(100) })], { at: 1000, windowId: "chat-1", title: "K", app: MESSAGES, values: [{ kind: "date", text: "2026-10-08", nodeKey: "a" }, { kind: "date", text: "2026-10-08", nodeKey: "b" }] }));

@@ -376,7 +376,7 @@ function normScalar(ch: string): string {
   return ch.normalize("NFKD").toUpperCase().toLowerCase().normalize("NFKD").replace(/\s/gu, " ");
 }
 /** A text normalized scalar by scalar, with each normalized scalar's origin offsets (UTF-16) in the text. */
-function normalize(text: string): { cps: string[]; origins: number[][] } {
+export function normalize(text: string): { cps: string[]; origins: number[][] } {
   const cps: string[] = [];
   const origins: number[][] = [];
   let off = 0;

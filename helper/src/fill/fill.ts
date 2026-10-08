@@ -1507,8 +1507,13 @@ export async function proposeFill(
   // about (the calibration chat's links gave way to its names and Attendee job title was still blanked).
   const nameCut = opts.cutRule !== false && opts.nameGroup !== false && namesCut;
   const takesName = (f: { terms: ReadonlySet<string> }): boolean => opts.nameGroup !== false && f.terms.has(NAME_TERM);
-  const unknownCut = (f: { terms: ReadonlySet<string> }): boolean => (removed.size > 0 && !takesName(f)) || (nameCut && takesName(f)) || cutAll || overlap(f.terms, cutTerms) > 0;
-  const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? unknownCut(f) : isCut(f.kinds));
+  // One withholding rule for every field, whatever its kind: what a window holds is unknown (allCut, in isCut); a word of
+  // what a cut left out is one of the field's label terms (its kind terms are the kind rule's); a cut took a value of a kind the
+  // field takes; a name may have been kept out of a field that takes one; or the field names no kind and a cut took a
+  // value of some kind, which may be the one it wants. A recognized field consulted only its kinds, so a note's closing
+  // "Do not use any of the dates above" left Meeting date filled with the first of them.
+  const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean =>
+    opts.cutRule !== false && (isCut(f.kinds) || [...f.terms].some((t) => !isKindTerm(t) && t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f)));
   // A select whose options the app does not show cannot be matched to a value, so it is named and left (controls.ts).
   // A web dropdown's options are hidden too, but the page engine's handler picks the one option named exactly the
   // value and verifies it, so it is asked (B27).

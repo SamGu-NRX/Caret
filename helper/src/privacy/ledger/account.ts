@@ -82,13 +82,6 @@ export interface MeasuredWindow {
 const viewOf = (w: WindowState): WindowState => (isRedacted(w) ? w : redactWindow(w));
 
 /**
- * Section 1: every window the registry knows, as its redacted view, and every older snapshot the Disclosure holds that is
- * not the registry's current state, each measured on its own (a retained revision keeps its own bound; it does not
- * pool with the live one). A window's first state is keyed by its id, so a window that has closed is still charged by
- * name in the state the task found it; a later state of the same id is `id@n`. Classified by the raw window where there
- * is one, since redaction can empty a title the conversation rule reads.
- */
-/**
  * A window's strictest classification and every line any of its states showed, in an operation so far
  * (measuredWindows' `fixed`). Keyed by line, as the operation's charges are (sourceKeys).
  */
@@ -98,6 +91,10 @@ export interface FixedClass {
 }
 
 /**
+ * Section 1: every window the registry knows, as its redacted view, and every older snapshot the Disclosure holds that is
+ * not the registry's current state, each charged in its own inventory. A window's first state is keyed by its id, so a
+ * window that has closed is still charged by name in the state the task found it; a later state of the same id is `id@n`.
+ *
  * `fixed`: each window id's strictest classification and the union of its states' inventory lines, kept for the
  * operation. Once any state of a window is a conversation every state of it is one, at the limit of everything its
  * states showed: a tab first measured as a page that later shows a mail, or a mail whose kept view lost the headers

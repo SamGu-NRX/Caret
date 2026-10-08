@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { collectCandidates, countSpans, generateCandidates, MAX_CANDIDATES, MAX_GENERATOR_VISITS } from "../src/fill/candidates.ts";
+import { collectCandidates, countSpans, generateCandidates, MAX_CANDIDATES, MAX_GENERATOR_VISITS, valuesIncomplete, windowValues } from "../src/fill/candidates.ts";
+import { redactWindow } from "../src/fill/redact.ts";
 import { ScreenModel } from "../src/model.ts";
 import type { Node, TypedValue } from "../src/protocol.ts";
 import { legacyGenerateCandidates } from "./legacy-candidates.ts";
@@ -142,5 +143,18 @@ describe("candidate generator", () => {
 
   it("keeps generateCandidates' signature and default cap", () => {
     expect(generateCandidates(scene.model, scene.formWindowId, undefined, NOW)).toEqual(legacyGenerateCandidates(scene.model, scene.formWindowId, MAX_CANDIDATES, NOW));
+  });
+});
+
+describe("work counted as it is done", () => {
+  it("reads at most its bound of a window's lines for typed values, and says the rest is not known", () => {
+    const model = new ScreenModel();
+    model.apply(snap(Array.from({ length: 10_000 }, (_, i) => ({ key: `n${i}`, parent: null, role: "AXStaticText", label: `Phone: 555-${String(i).padStart(4, "0")}` })), { at: 1000, windowId: "big", focused: true }));
+    model.apply(snap([], { at: 2000, windowId: "form", focused: true }));
+    const w = redactWindow(model.windows.get("big")!);
+    expect(windowValues(w).length).toBeLessThan(2000);
+    expect(valuesIncomplete(w)).toBe(true);
+    // A window whose values are not all known holds anything: everything is withheld.
+    expect(collectCandidates(model, "form", { now: 3000 }).cutAll).toBe(true);
   });
 });

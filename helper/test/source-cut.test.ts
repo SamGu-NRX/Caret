@@ -245,13 +245,16 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     for (const [l, v] of [...byCost, ...b12, ...inOrder, ...b14]) expect(v === null || v === GOLD[l as string], `${l}: ${v}`).toBe(true);
     const filled = (m: Map<unknown, string | null>) => [...m.values()].filter((v) => v !== null).length;
     expect(filled(b12)).toBeGreaterThan(filled(inOrder));
-    expect(b12.get("Meeting date")).toBe("Thursday, October 8, 2026");
+    // Withheld rather than filled: what the chat's budget left out says "meeting" (its meeting block's lines), one of
+    // Meeting date's label terms, and one withholding rule holds every field to the words a cut left out (fill.ts fieldCut).
+    expect(b12.get("Meeting date"), "a left-out line names a meeting").toBeNull();
     expect(b12.get("Start time")).toBe("3:00 PM");
-    // By cost per field the budget serves three fields where B12's order served two: the two dates cost
-    // more than a time, an email and the links together.
+    // By cost per field the budget serves more fields than B12's order: the two dates cost more than a time, an email and
+    // the links together.
     expect(filled(byCost)).toBeGreaterThan(filled(b12));
     expect(byCost.get("Start time")).toBe("3:00 PM");
-    expect(byCost.get("Attendee email")).toBe(GOLD["Attendee email"]);
+    // Withheld rather than filled, by the same rule: what was left out says "email" (the Email signature block).
+    expect(byCost.get("Attendee email"), "a left-out line names an email").toBeNull();
     expect(byCost.get("Video link")).toBe(GOLD["Video link"]);
     expect(byCost.get("Meeting date")).toBeNull();
     // With the names' group (B14) every name the chat holds is offered as well. A time is now charged its own text with

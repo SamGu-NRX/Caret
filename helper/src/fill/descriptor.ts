@@ -232,10 +232,10 @@ export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean, 
   return out;
 }
 
-/** Every static text with a frame, in full and cleaned of runs of white space: what admission reads (nodesLabelledBy). */
 /** A text of several nonblank lines, split as the inventory splits them (a bare CR too): a document, not a label. */
 const isDocument = (raw: string): boolean => splitLines(raw).filter((l) => l.trim() !== "").length > 1;
 
+/** Every static text with a frame, in full and cleaned of runs of white space: what admission reads (nodesLabelledBy). */
 function allTexts(w: WindowState): FullText[] {
   let out = fullIndex.get(w);
   if (out !== undefined) return out;

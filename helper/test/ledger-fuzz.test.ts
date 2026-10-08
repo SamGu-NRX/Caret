@@ -3,7 +3,7 @@
 // takes no conversation past its limit. scripts/ledger-fuzz.ts runs the full set (2,400 cases at seed 20261008).
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { setTestVerifier } from "../src/fill/contract.ts";
-import { runFuzz } from "../scripts/ledger-fuzz-cases.ts";
+import { normalize, runFuzz } from "../scripts/ledger-fuzz-cases.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 
 // The cases' scripted Jev answers the verifier too, through the same seal; the suite's stand-in would skip it.
@@ -22,4 +22,15 @@ describe("the ledger against an independent count, seed 20261008", () => {
     expect(run.summary.requestsSent).toBeGreaterThan(500);
     expect(run.summary.requestsRefused).toBeGreaterThan(0);
   }, 120_000);
+});
+
+describe("the counter's normalization, written again from section 2", () => {
+  const n = (t: string): string => normalize(t).cps.join("");
+  it("folds case fully and decomposes each scalar on its own: Straße is STRASSE, a composed café the decomposed one, ß is SS", () => {
+    expect(n("Straße")).toBe(n("STRASSE"));
+    expect(n("caf\u00e9")).toBe(n("cafe\u0301"));
+    expect(n("\u00df")).toBe(n("SS"));
+    // White space runs collapse to one space, and the ends are trimmed.
+    expect(n("  a \t\n b  ")).toBe("a b");
+  });
 });

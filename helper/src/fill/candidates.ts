@@ -3,7 +3,7 @@
 // lines so the value is the span and the label is its context. Jev later picks among these by id,
 // and code copies the chosen span verbatim.
 import { Disclosure, viewHolds, type ModelText } from "../privacy/disclosure.ts";
-import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
+import { ValueKind, type FillSource, type Node, type TypedValue } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestLabel, nearestText } from "./descriptor.ts";
 import { heldAsConversation, type ViewSpan } from "../privacy.ts";
@@ -13,7 +13,16 @@ import { bareLine, clauseSpan, LABELLED, lineTexts, lineValues, partSpan, senten
 import { redactWindow } from "./redact.ts";
 import { WITHHELD } from "../privacy/exclude.ts";
 import { splitDate } from "./derive.ts";
-import { collapsedMap, collapsedRange, lineEndAt, lineStartAt, linesWithStarts, nextLineStart, nodePart, nodeTexts, sourceLine, splitLines, TITLE, wholePart, type SourceAt } from "../privacy/ledger/source.ts";
+import { collapsedMap, collapsedRange, eachLine, lineEndAt, lineStartAt, linesWithStarts, nextLineStart, nodePart, nodeTexts, sourceLine, splitLines, TITLE, wholePart, type SourceAt } from "../privacy/ledger/source.ts";
+
+/** At most `max` lines of `text`, split one at a time (source.ts eachLine). */
+function* linesUpTo(text: string, max: number): Generator<string> {
+  let k = 0;
+  for (const l of eachLine(text)) {
+    if (++k > max) return;
+    yield l;
+  }
+}
 
 /**
  * A field whose typed value is a candidate, as a line of text is: editable, holding text, not secure, not a kind memory
@@ -332,12 +341,20 @@ const MAX_SCAN = 4000;
  */
 const LEFT_OUT_MAX = 2000;
 /**
- * Lines (and typed values) of a window the cap stopped in, or never reached, read for what it may hold (unreadRest), each
- * one counted, a repeated line too; past it the rest is unknown and everything it could touch is withheld. LEFT_OUT_MAX's
- * size. Not tuned: no fixture desk needs the pass, and the scan prototype in
- * ~/.caret-run/evidence/screen/pv2/simplify/cap-binding.md read at most 1,280 in one window of a realistic desk.
+ * Nodes, lines and typed values of a window the cap stopped in, or never reached, read for what it may hold
+ * (unreadRest), each one counted, a repeated line too; past it the rest is unknown and everything is withheld. A chosen
+ * cap, LEFT_OUT_MAX's size, not a tuned one: no fixture desk needs the pass, so nothing measured its effect on recall.
+ * The scan prototype in ~/.caret-run/evidence/screen/pv2/simplify/cap-binding.md read at most 1,280 in one window of
+ * a synthetic realistic desk, so the cap is above that one desk and nothing more.
  */
 const UNREAD_MAX = 2000;
+/** Nodes and lines a window's own reading for typed values reads (windowValues), counted as read: UNREAD_MAX's size, chosen. */
+const EXTRACT_MAX = UNREAD_MAX;
+const INCOMPLETE = new WeakSet<WindowState>();
+/** Whether windowValues stopped at EXTRACT_MAX in `w`, so its values are not all known. */
+export function valuesIncomplete(w: WindowState): boolean {
+  return INCOMPLETE.has(w);
+}
 /**
  * The kinds of typed value that make a line a contact line ("Dana Whitfield <dana@example.com>", "Priya,
  * (415) 555-0162"), whose names count as kept out when the line is cut (B14). A date or a time does not: "a
@@ -637,6 +654,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     leftOutOf.clear();
     unreadOf.clear();
+    // A window read whose own reading for typed values stopped at its bound may hold anything: what it holds is unknown.
+    for (const id of touched) {
+      const tw = viewOf(model, id);
+      if (tw !== undefined && valuesIncomplete(tw)) cutAll = true;
+    }
     stats.windows = touched.size;
     stats.ms = performance.now() - t0;
     return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
@@ -676,18 +698,26 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * UNREAD_MAX; past it what the rest may hold is not known, and cutAll is set.
    */
   const unreadRest = (w: WindowState): void => {
-    const valuesOf = new Map<string, TypedValue[]>();
+    // The work is counted as it is done, a node, a line and a typed value at a time, and nothing is read ahead of the
+    // count: a window of a million lines costs this pass UNREAD_MAX of them, not the extraction of all of them.
     let n = 0;
-    for (const v of windowValues(w)) {
-      if (++n > UNREAD_MAX) return void (cutAll = true);
-      valuesOf.set(v.nodeKey, [...(valuesOf.get(v.nodeKey) ?? []), v]);
+    const over = (): boolean => {
+      if (++n <= UNREAD_MAX) return false;
+      cutAll = true;
+      return true;
+    };
+    const readerValues = new Map<string, TypedValue[]>();
+    for (const v of w.values) {
+      if (over()) return;
+      readerValues.set(v.nodeKey, [...(readerValues.get(v.nodeKey) ?? []), v]);
       if (secretValue(w, v) || seen.has(v.text)) continue;
       for (const k of valueKinds(v)) cutTerms.add(kindTerm(k));
     }
     for (const node of w.nodes.values()) {
+      if (over()) return;
       const isSourceField = sourceField(node);
-      for (const raw of nodeTexts(node).flatMap(splitLines)) {
-        if (++n > UNREAD_MAX) return void (cutAll = true);
+      for (const raw of nodeTexts(node).flatMap((t) => [...linesUpTo(t, UNREAD_MAX - n + 1)])) {
+        if (over()) return;
         const line = bareLine(raw);
         if (line === "") continue;
         const spans = lineSpans(raw);
@@ -695,7 +725,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         if (spans.length > 0 && spans.every((sp) => seen.has(sp.text))) continue;
         for (const t of words(line)) cutTerms.add(t);
         for (const t of words(sectionAround(w, node))) cutTerms.add(t);
-        const values = (valuesOf.get(node.key) ?? []).filter((v) => line.includes(v.text));
+        // The line's typed values: the reader's on this node, and those this code's own reading finds in the line.
+        const values = [...(readerValues.get(node.key) ?? []).filter((v) => line.includes(v.text)), ...lineValues(line).map((v): TypedValue => ({ kind: v.kind, text: v.text, nodeKey: node.key }))].filter((v) => !secretValue(w, v));
         for (const v of values) for (const k of valueKinds(v)) cutTerms.add(kindTerm(k));
         if (!wantsNames) continue;
         for (const sp of spans) if (!seen.has(sp.text) && isNameLike(sp.text, sp.label)) cutNames.push(sp.text);
@@ -1074,6 +1105,10 @@ const valueLines = new WeakMap<TypedValue, { lineStart: number; raw: string; at:
 export function windowValues(w: WindowState): readonly TypedValue[] {
   const cached = valuesCache.get(w);
   if (cached !== undefined) return cached;
+  // Lines this code's own reading of the window has read, counted as it reads them; past EXTRACT_MAX it stops, and the
+  // window's values are incomplete (valuesIncomplete), which every reader of them treats as a window whose values are
+  // not known.
+  let lines = 0;
   const out: TypedValue[] = w.values.filter((v) => {
     if (v.kind !== "url") return true;
     const node = w.nodes.get(v.nodeKey);
@@ -1081,7 +1116,11 @@ export function windowValues(w: WindowState): readonly TypedValue[] {
   });
   const byNode = new Map<string, TypedValue[]>();
   for (const v of w.values) byNode.set(v.nodeKey, [...(byNode.get(v.nodeKey) ?? []), v]);
-  for (const node of w.nodes.values()) {
+  read: for (const node of w.nodes.values()) {
+    if (++lines > EXTRACT_MAX) {
+      INCOMPLETE.add(w);
+      break;
+    }
     if (!LINE_ROLES.has(node.role) && !sourceField(node)) continue;
     const reader = byNode.get(node.key) ?? [];
     const seen = new Set(reader.map((v) => v.text));
@@ -1089,6 +1128,10 @@ export function windowValues(w: WindowState): readonly TypedValue[] {
     // reading's line and offset are where it was read; found twice or not at all, it keeps the whole-line fallback.
     const readAt = new Map<TypedValue, { lineStart: number; raw: string; at: number } | null>();
     for (const { raw, start } of linesWithStarts(nodeText(node).slice(0, MAX_SCAN))) {
+      if (++lines > EXTRACT_MAX) {
+        INCOMPLETE.add(w);
+        break read;
+      }
       const match = { index: start };
       const line = bareLine(raw);
       if (line.length < 3) continue;
@@ -1353,6 +1396,13 @@ export function generateCandidates(model: ScreenModel, targetWindowId: string, m
 export function cutKinds(model: ScreenModel, cut: readonly string[], offered: readonly { text: string }[]): Set<ValueKind> {
   const out = new Set<ValueKind>();
   if (cut.length === 0) return out;
+  // A cut window whose own reading stopped at its bound may hold a value of any kind.
+  if (cut.some((id) => {
+    const w = viewOf(model, id);
+    if (w === undefined) return false;
+    windowValues(w);
+    return valuesIncomplete(w);
+  })) return new Set(ValueKind.options);
   // One string, so each value is one search; NUL appears in no screen text, so a match never spans two spans.
   const taken = offered.map((c) => c.text).join("\u0000");
   for (const id of cut) {
