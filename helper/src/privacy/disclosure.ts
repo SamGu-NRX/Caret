@@ -831,11 +831,18 @@ export class Disclosure extends SnippetLedger {
    * sent through this Disclosure before it, held to each conversation's limit together. Throws LedgerRefused, naming the
    * purpose, window key and limit, when there is no registry, a unit cannot be measured, or a limit breaks.
    */
-  measureSent(purpose: string, units: readonly string[], notes: OwnerNotes = new Map()): Measurement {
+  measureSent(purpose: string, sent: readonly string[], notes: OwnerNotes = new Map()): Measurement {
     if (this.registry === null) throw new LedgerRefused(`${purpose}: its Disclosure has no screen registry, so what it reveals cannot be measured; it was not sent`);
+    // A JSON text this Disclosure wrote (jsonText) is a declared layer: the strings it holds are measured too, decoded,
+    // since their escaped spelling can cut runs a reader of the decoded text sees whole. Added after the units, so the
+    // owner-note indexes (into `sent`) stand.
+    const units = [...sent];
+    for (let i = 0; i < units.length; i++) if (this.asJson.has(units[i]!)) units.push(...decodeUnits(units[i]!).units.map((u) => u.text));
     const norm = normalizedUnits(units);
     if (norm === null) throw new LedgerRefused(`${purpose}: a text in it holds an unpaired surrogate and cannot be measured; it was not sent`);
     const ws = this.measuredWindows();
+    const bad = ws.find((w) => w.inv.malformed);
+    if (bad !== undefined) throw new LedgerRefused(`${purpose}: window ${bad.key} shows text the ledger cannot measure (an unpaired surrogate); it was not sent`);
     // Every declared span of every minted unit the bytes hold (section 4): a unit is a minted text, so its spans are known.
     const spans = spansOf(units.flatMap((u) => this.spans.get(u) ?? []));
     const m = measure(norm, ws, spans);

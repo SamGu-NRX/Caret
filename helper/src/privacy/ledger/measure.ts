@@ -43,10 +43,15 @@ export interface LineInventory {
   readonly starts: readonly number[];
   /** T_w: the code units of all lines. */
   readonly total: number;
+  /**
+   * The window showed a line holding an unpaired surrogate, which the ledger cannot measure: the line is left out of
+   * `lines`, and any request measured against the window is refused.
+   */
+  readonly malformed: boolean;
 }
 
 /** A window's inventory from its lines as section 1 collects them (already split, collapsed, trimmed and distinct). */
-export function inventoryOf(lines: readonly string[]): LineInventory {
+export function inventoryOf(lines: readonly string[], malformed = false): LineInventory {
   if (new Set(lines).size !== lines.length) throw new Error("inventoryOf: a line twice; section 1 deduplicates exact lines");
   const starts: number[] = [];
   let total = 0;
@@ -55,7 +60,7 @@ export function inventoryOf(lines: readonly string[]): LineInventory {
     starts.push(total);
     total += l.length;
   }
-  return Object.freeze({ lines: Object.freeze([...lines]), normalized: Object.freeze(lines.map(ledgerNormalizeV1)), starts: Object.freeze(starts), total });
+  return Object.freeze({ lines: Object.freeze([...lines]), normalized: Object.freeze(lines.map(ledgerNormalizeV1)), starts: Object.freeze(starts), total, malformed });
 }
 
 /** What one request reveals of one window: the positions (bits over 0..total-1) and their count. */
@@ -118,8 +123,11 @@ export class UnitIndex {
     this.last = cur;
   }
 
-  /** For each normalized position of one line, whether a qualifying run covers it; all of them when the line is whole in a unit. */
-  scanLine(line: readonly number[]): Uint8Array {
+  /**
+   * For one line: for each normalized position, whether a qualifying run covers it, all of them when the line is whole
+   * in a unit; and whether it is (one match spanning the line, not runs that together cover it).
+   */
+  scanLine(line: readonly number[]): { marks: Uint8Array; whole: boolean } {
     const n = line.length;
     const diff = new Int32Array(n + 1);
     let state = 0;
@@ -144,13 +152,13 @@ export class UnitIndex {
       }
     }
     const marks = new Uint8Array(n);
-    if (n > 0 && len === n) return marks.fill(1);
+    if (n > 0 && len === n) return { marks: marks.fill(1), whole: true };
     let run = 0;
     for (let i = 0; i < n; i++) {
       run += diff[i]!;
       marks[i] = run > 0 ? 1 : 0;
     }
-    return marks;
+    return { marks, whole: false };
   }
 }
 
@@ -161,13 +169,13 @@ function revealLines(index: UnitIndex, inv: LineInventory, which: Iterable<numbe
   for (const li of which) {
     const norm = inv.normalized[li]!;
     const start = inv.starts[li]!;
-    const marks = index.scanLine(norm.cps);
+    const { marks, whole } = index.scanLine(norm.cps);
     const mark = (p: number): void => {
       if (positions[start + p] === 1) return;
       positions[start + p] = 1;
       charged++;
     };
-    if (marks.length > 0 && marks.every((m) => m === 1)) for (let p = 0; p < inv.lines[li]!.length; p++) mark(p);
+    if (whole) for (let p = 0; p < inv.lines[li]!.length; p++) mark(p);
     else marks.forEach((m, i) => {
       if (m === 1) for (const p of norm.origins[i]!) mark(p);
     });

@@ -236,6 +236,16 @@ describe("the Astra counterexamples", () => {
   });
 });
 
+// Sol review of 9d110306: full coverage by separate runs is not whole-line containment.
+describe("whole-line containment is one match, not full coverage", () => {
+  it("charges two runs that cover a line's scalars only their positions: a leading NEL, which normalizes to nothing, is not", () => {
+    const line = "\u0085abcdefghijklmnopqrstuvwx";
+    expect(charge(["abcdefghijkl", "mnopqrstuvwx"], [line])).toBe(24);
+    // Held whole in one unit, the line is charged whole, its NEL included.
+    expect(charge(["abcdefghijklmnopqrstuvwx"], [line])).toBe(25);
+  });
+});
+
 describe("section 5's limits", () => {
   const lines = (n: number): string[] => Array.from({ length: Math.ceil(n / 10) }, (_, i) => `${String(i).padStart(4, "0")}${"x".repeat(6)}`.slice(0, 10)).map((l, i, a) => (i === a.length - 1 ? l.slice(0, n - 10 * (a.length - 1)) : l));
   it("a conversation gives under half its text: 632 gives 315, 993 gives 496, never more than 600", () => {

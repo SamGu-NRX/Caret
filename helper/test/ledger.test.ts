@@ -352,3 +352,34 @@ describe("declared spans at mint and at seal", () => {
     expect(d.measureSent("test", [said]).charged["chat-1"]).toBe(8);
   });
 });
+
+// Sol review of 9d110306, P1: a declared nested JSON text is measured as the text it decodes to.
+describe("a JSON state at seal", () => {
+  it("measures the strings a JSON state holds, not its escaped spelling", () => {
+    // Quotes every few characters: escaped, they would cut every run under 12.
+    const line = `say "abcdefghij" then "klmnopqrs" ok`;
+    const m = new ScreenModel();
+    m.apply(snap([text("n0", line)], { at: 1, windowId: "note-1", title: "Note", app: NOTES }));
+    const d = new Disclosure(m);
+    const said = d.candidate(redactWindow(m.windows.get("note-1") as WindowState), line);
+    expect(said).not.toBeNull();
+    const state = d.jsonText({ said: said! });
+    // A chat that shows the same line opens after it was minted; the seal measures it. T = 4 + 36 + 1, limit 20.
+    m.apply(snap([text("c0", line), text("c1", "x")], { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    expect(() => measureBytes({ purpose: "test", disclosure: d }, JSON.stringify({ state }))).toThrow(/reveals 36 characters of window chat-1, over its limit of 20/u);
+  });
+});
+
+// Sol review of 9d110306, P1: a window line the ledger cannot measure refuses, rather than leaving the measure.
+describe("a window with an unpaired surrogate", () => {
+  it("refuses a request that carries the line's valid prefix", () => {
+    const prefix = "the deposit is due friday";
+    const m = new ScreenModel();
+    m.apply(snap([text("n0", "Shared note")], { at: 1, windowId: "note-1", title: "Note", app: NOTES }));
+    const d = new Disclosure(m);
+    const said = d.candidate(redactWindow(m.windows.get("note-1") as WindowState), "Shared note");
+    m.apply(snap([text("c0", `${prefix}\uD800`), text("c1", "ok")], { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    const leak = d.t`${said!}: the deposit is due friday` as string;
+    expect(() => measureBytes({ purpose: "test", disclosure: d }, JSON.stringify({ state: { said: leak } }))).toThrow(/window chat-1 shows text the ledger cannot measure/u);
+  });
+});

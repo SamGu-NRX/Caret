@@ -67,10 +67,10 @@ export function viewInventory(view: WindowState): LineInventory {
     add(n.placeholder);
     for (const t of sectionTexts(n)) add(t);
   }
-  // A line holding an unpaired surrogate cannot be measured; it is kept out of the measure and refuses nothing here, but
-  // a unit holding one refuses at seal (units.ts), so such text is never sent either way.
+  // A line holding an unpaired surrogate cannot be measured: the inventory says so, and every request is refused while
+  // the window is on screen (MeasuredWindow.inv.malformed), rather than measured without the line.
   const measurable = [...lines].filter((l) => l.isWellFormed());
-  inv = inventoryOf(measurable);
+  inv = inventoryOf(measurable, measurable.length !== lines.size);
   INVENTORY.set(view, inv);
   return inv;
 }
@@ -311,7 +311,9 @@ export class MintAccount {
     if (units.length === 0 && spans.size === 0) return new Map();
     const probe = new UnitProbe(units);
     const adds: { m: MeasuredWindow; r: { bits: Uint8Array; charged: number; notes: Uint8Array; noted: number }; bits: Uint8Array; notes: Uint8Array | null; added: number; addedNotes: number }[] = [];
-    for (const m of this.windows()) {
+    const windows = this.windows();
+    if (windows.some((m) => m.inv.malformed)) return null;
+    for (const m of windows) {
       const mine = new Set(kept.flatMap((t, i) => (notes.get(t) === m.view ? [i] : [])));
       const got = revealIn(mine.size === 0 ? probe : new UnitProbe(units.filter((_, i) => !mine.has(i))), m, spans);
       const noted = mine.size === 0 ? null : new UnitProbe(units.filter((_, i) => mine.has(i))).reveal(m.inv);
