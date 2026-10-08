@@ -13,7 +13,7 @@ import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
 import { excludedValue, withholdValues } from "./exclude.ts";
-import { ANY_PATH, childGlob, shapeOf, UNNAMED, type Slot } from "./shapes.ts";
+import { ANY_PATH, childGlob, shapeItems, shapeOf, UNNAMED, type Slot } from "./shapes.ts";
 import { switchedOffCount } from "./read-policy.ts";
 import { describeField, type FieldDescriptor } from "../fill/descriptor.ts";
 import type { Node } from "../protocol.ts";
@@ -160,19 +160,16 @@ export class LedgerRefused extends UnmintedText {
 }
 
 /** A request a shape refused for its length: what a live run needs to measure the limits by, and no text. */
-export interface ShapeLengthRefusal {
-  purpose: string;
-  slot: string;
-  length: number;
-  max: number;
-}
+/** A request a shape's chosen limit refused: a text over its slot's length, or a list over its item count. */
+export type ShapeLengthRefusal = { purpose: string; slot: string; max: number } & ({ length: number } | { items: number });
 
 let shapeLengthLog: (r: ShapeLengthRefusal) => void = (r) => {
-  process.stderr.write(`[caret-privacy ${new Date().toISOString()}] shape refused on length: ${JSON.stringify(r)}\n`);
+  process.stderr.write(`[caret-privacy ${new Date().toISOString()}] shape refused on a limit: ${JSON.stringify(r)}\n`);
 };
 
 /**
- * Where a refusal on length is logged (privacy/shapes.ts: the limits are unmeasured): the helper's stderr unless set.
+ * Where a refusal on a length or an item count is logged (privacy/shapes.ts: the limits are chosen, not measured): the
+ * helper's stderr unless set.
  * Returns the one it replaced.
  */
 export function setShapeLengthLog(log: (r: ShapeLengthRefusal) => void): (r: ShapeLengthRefusal) => void {
@@ -697,7 +694,7 @@ export class Disclosure extends SnippetLedger {
       // A whole state sent as one JSON text (Disclosure.jsonText; engines/decide/harness.ts layaState) is checked as the
       // state that text writes, parsed from the text itself. Only there: anywhere else a JSON text is a text like any
       // other, held to its own slot's reasons and length (PV2 re-review).
-      if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob);
+      if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob, count);
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
       if (v.length > slot.max) {
@@ -707,14 +704,23 @@ export class Disclosure extends SnippetLedger {
       const ways = this.ways.get(v) ?? [];
       if (!ways.some((w) => w.every((r) => slot.reasons.includes(r)))) throw new OutOfShape(`${purpose}: ${path} carries text minted as ${[...(this.mints.get(v) ?? [])].sort().join(", ")}, which its shape allows only as ${slot.reasons.join(", ")}; it was not sent`);
     };
-    this.walk(purpose, body, root, check);
+    const items = shapeItems(purpose);
+    const count = (path: string, glob: string, n: number): void => {
+      const max = items[glob] ?? items[ANY_PATH];
+      if (max === undefined) throw new OutOfShape(`${purpose}: ${path} is a list with no item count in the request shapes (privacy/shapes.ts ITEMS, ${glob}); it was not sent`);
+      if (n <= max) return;
+      shapeLengthLog({ purpose, slot: glob, items: n, max });
+      throw new OutOfShape(`${purpose}: ${path} holds ${n} items, more than its shape's ${max}; it was not sent`);
+    };
+    this.walk(purpose, body, root, check, root, count);
   }
 
   /**
    * Walks a body: every string a text this Disclosure minted (or a client-written path's allowed value), every key an
-   * identifier; `each` is called on every minted string with its path and glob (privacy/shapes.ts childGlob).
+   * identifier; `each` is called on every minted string with its path and glob (privacy/shapes.ts childGlob), and
+   * `count` on every nonempty list (an array, or an object whose keys are ids) with its items' glob and their number.
    */
-  private walk(purpose: string, body: unknown, root: string, each: ((path: string, glob: string, v: string) => void) | null, rootGlob = root): void {
+  private walk(purpose: string, body: unknown, root: string, each: ((path: string, glob: string, v: string) => void) | null, rootGlob = root, count: ((path: string, glob: string, n: number) => void) | null = null): void {
     const at = (path: string, k: string | number): string => (typeof k === "number" ? `${path}[${k}]` : path === "" ? k : `${path}.${k}`);
     const go = (v: unknown, path: string, glob: string): void => {
       if (typeof v === "string") {
@@ -728,8 +734,14 @@ export class Disclosure extends SnippetLedger {
         return;
       }
       if (v === null || typeof v === "number" || typeof v === "boolean" || v === undefined) return;
-      if (Array.isArray(v)) return v.forEach((x, i) => go(x, at(path, i), childGlob(glob, i)));
+      if (Array.isArray(v)) {
+        if (v.length > 0) count?.(path, childGlob(glob, 0), v.length);
+        return v.forEach((x, i) => go(x, at(path, i), childGlob(glob, i)));
+      }
       if (typeof v === "object") {
+        const keys = Object.keys(v);
+        const items = keys.length === 0 ? null : childGlob(glob, keys[0]!);
+        if (items !== null && items.endsWith(".*")) count?.(path, items, keys.length);
         for (const [k, x] of Object.entries(v)) {
           if (!KEY.test(k)) throw new UnmintedText(`${purpose}: a key under ${path === "" ? "the body" : path} is not an identifier; it was not sent`);
           go(x, at(path, k), childGlob(glob, k));

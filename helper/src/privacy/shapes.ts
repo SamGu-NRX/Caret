@@ -309,6 +309,86 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
   },
 };
 
+/**
+ * The most items each list of a request may hold, by the glob of its items: an array's `[*]`, or the ids of
+ * `questions.*`, `criteria.*` and `source_notes.*`. Every list a shape's rows reach has one; a nonempty list without one,
+ * or over it, is refused and logged (privacy/disclosure.ts setShapeLengthLog), so a request is bounded in its number of
+ * pieces as well as their length (OUTPUT-LEDGER-SPEC section 4: what is under 12 scalars goes uncharged).
+ *
+ * CHOSEN, NOT CALIBRATED. Where a builder caps the list, the cap is that constant, named beside it; elsewhere it is about
+ * twice the most seen across every helper test, the scripted oracle and the adversary (~/.caret-run/evidence/screen/
+ * pv2/items, 2026-10-08), rounded up, the seen value in the comment. A select's options have no builder cap: 300 covers
+ * a country menu.
+ */
+export const ITEMS: { readonly [K in ShapeKey]: Readonly<Record<string, number>> } = {
+  [UNNAMED]: { [ANY_PATH]: 200 }, // tests and evaluation scripts only
+  "ask.confirm": { "questions.*": 10, "questions.*.criteria.*": 4 }, // seen 5, 2
+  "ask.heads": {
+    "questions.*": 8, // seen 4
+    "questions.*.criteria.*": 12, // seen 6
+    "state.form.fields[*]": 40, // planner/intent.ts MAX_INTENT_FIELDS
+    "state.form.sections[*]": 40, // MAX_INTENT_HEADINGS
+    "state.people[*]": 8, // seen 2
+    "state.sources[*]": 8, // MAX_INTENT_WINDOWS
+  },
+  "ask.scope": { "questions.*": 44, "questions.*.criteria.*": 44 }, // MAX_INTENT_FIELDS or MAX_INTENT_HEADINGS, and 4 fixed
+  "codemode.choice": { "questions.*": 2, "questions.*.criteria.*": 8 }, // seen 1, 3
+  "codeplan.asksAbout": { "questions.*": 2, "questions.*.criteria.*": 4 }, // seen 1, 2
+  "draft.check": { "questions.*": 4 }, // seen 2
+  "event.card": { "questions.*": 2, "questions.*.criteria.*": 4 }, // seen 1, 2
+  "executor.target": { "questions.*": 2, "questions.*.criteria.*": 41 }, // seen 1; executor/target.ts MAX_TARGET_CANDIDATES and none
+  "fill.values": { "questions.*": 20, "questions.*.criteria.*": 100 }, // fill.ts MAX_FIELDS; MAX_CANDIDATES (80), remembered values and none (seen 81)
+  "fill.verify": { "questions.*": 40, "questions.*.criteria.*": 8 }, // two per MAX_FIELDS (seen 20); seen 5
+  "fill.whose": { "questions.*": 60, "questions.*.criteria.*": 8, "state.source_notes.*": 40 }, // MAX_FIELDS and MAX_OWNERS; seen 4; one per MAX_OWNERS
+  "goal": {
+    "input.snapshots[*]": 4, // goals/inventory.ts MAX_GOAL_WINDOWS and the calendar
+    "input.snapshots[*].targets[*]": 40, // planner.ts MAX_PLAN_FIELDS and MAX_PLAN_BUTTONS (seen 5)
+    "input.snapshots[*].targets[*].allowedPressEffects[*]": 4, // seen 2
+    "input.snapshots[*].targets[*].options[*]": 300, // a select's options
+    "input.snapshots[*].values[*]": 40, // planner/codeplan.ts MAX_VALUES
+    "input.snapshots[*].values[*].origin.inputs[*]": 4, // seen 0
+    "input.snapshots[*].questions[*]": 8, // seen 0
+    "input.snapshots[*].questions[*].options[*]": 300, // a select's options
+  },
+  "intent": {
+    "input.fields[*]": 40, // MAX_INTENT_FIELDS
+    "input.memory[*]": 40, // planner.ts MAX_PLAN_VALUES (seen 3)
+    "input.persons[*]": 8, // seen 1
+    "input.sections[*]": 40, // MAX_INTENT_HEADINGS
+    "input.windows[*]": 8, // MAX_INTENT_WINDOWS
+  },
+  "intent.fields": { "questions.*": 40 }, // MAX_INTENT_FIELDS (seen 8)
+  "intent.route": { "questions.*": 12, "questions.*.criteria.*": 12 }, // seen 6, 6
+  "pattern.naming": { "questions.*": 2, "questions.*.criteria.*": 7, "state.fromSections[*]": 8, "state.from[*]": 8, "state.intoFields[*]": 8 }, // patterns/naming.ts MAX_NAME_CANDIDATES and none; seen 1, 1, 3
+  "pending.change": { "questions.*": 4, "questions.*.criteria.*": 6 }, // seen 2, 3
+  "pending.look": { "questions.*": 4, "questions.*.criteria.*": 6 }, // seen 2, 3
+  "plan": {
+    "input.snapshots[*]": 4, // codeplan.ts MAX_SOURCE_WINDOWS and the form
+    "input.snapshots[*].targets[*]": 40, // MAX_PLAN_FIELDS and MAX_PLAN_BUTTONS (seen 7)
+    "input.snapshots[*].targets[*].allowedPressEffects[*]": 4, // seen 1
+    "input.snapshots[*].targets[*].options[*]": 300, // a select's options
+    "input.snapshots[*].values[*]": 40, // MAX_VALUES
+    "input.snapshots[*].values[*].origin.inputs[*]": 4, // seen 0
+    "input.snapshots[*].questions[*]": 8, // seen 1
+    "input.snapshots[*].questions[*].options[*]": 300, // a select's options
+  },
+  "plan.verify": { "questions.*": 80, "questions.*.criteria.*": 6, "state.source_notes.*": 40 }, // two per MAX_VALUES (seen 10); seen 3; one per value
+  "planner.fields": { "questions.*": 20, "questions.*.criteria.*": 51 }, // MAX_PLAN_FIELDS; MAX_PLAN_VALUES, MAX_ADDRESS_PARTS and none (seen 43)
+  "planner.window": { "questions.*": 2, "questions.*.criteria.*": 9 }, // MAX_INTENT_WINDOWS and none
+  "probe.latency": { "questions.*": 2, "questions.*.criteria.*": 4, "state.form[*]": 20, "state.form[*].options[*]": 8, "state.windows[*]": 8, "providerOptions.gateway.only[*]": 4 }, // fixture wording
+  "route.judge": { "questions.*": 4, "questions.*.criteria.*": 12, "state.form.labels[*]": 20, "state.otherWindows[*]": 8 }, // seen 3; routing/routes.ts MAX_ROUTES and none; seen 5, 2
+  "route.pick": { "questions.*": 2, "questions.*.criteria.*": 12, "state.form.labels[*]": 20, "state.otherWindows[*]": 8 }, // seen 1; MAX_ROUTES and none; seen 3, 0
+  "route.task": { "questions.*": 2, "questions.*.criteria.*": 4, "state.otherWindows[*]": 8 }, // seen 1, 2, 0
+  "savedFile.match": { "questions.*": 2, "questions.*.criteria.*": 9 }, // goals/saved-files.ts MAX_FILES_ASKED and none
+  polish: {}, // not implemented (writer/port.ts)
+  memoryProposal: {}, // not implemented (writer/port.ts)
+};
+
+/** The item counts of a purpose's lists (ITEMS); none for a purpose with no shape. */
+export function shapeItems(purpose: string): Readonly<Record<string, number>> {
+  return Object.hasOwn(ITEMS, purpose) ? ITEMS[purpose as ShapeKey] : {};
+}
+
 /** The shape of a purpose or writer kind, or null when it has none (a request with no purpose, or a name no request uses). */
 export function shapeOf(purpose: string): Readonly<Record<string, Slot>> | null {
   return Object.hasOwn(SHAPES, purpose) ? SHAPES[purpose as ShapeKey] : null;

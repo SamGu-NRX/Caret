@@ -5,7 +5,7 @@
 // correct answer, and that a builder adding a slot without a row fails.
 import { describe, expect, it } from "vitest";
 import { Disclosure, OutOfShape, setShapeLengthLog, UnmintedText, verifySent, type MintReason, type ModelText, type ShapeLengthRefusal, registryOf } from "../src/privacy/disclosure.ts";
-import { ANY_PATH, childGlob, SHAPES, UNNAMED } from "../src/privacy/shapes.ts";
+import { ANY_PATH, childGlob, ITEMS, SHAPES, UNNAMED } from "../src/privacy/shapes.ts";
 import { OPTION_DESCRIPTIONS, wireBody, type JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { redactWindow } from "../src/fill/redact.ts";
@@ -142,5 +142,34 @@ describe("T-M1: verify holds each text to its slot", () => {
     expect(() => d.verify("no.such.purpose", { state: {} })).toThrow(/no\.such\.purpose has no request shape/u);
     // OutOfShape is an UnmintedText: every caller that handles one handles both.
     expect(new OutOfShape("x")).toBeInstanceOf(UnmintedText);
+  });
+});
+
+describe("every list in a request has an item count (privacy/shapes.ts ITEMS)", () => {
+  it("names one for every list a shape's rows reach", () => {
+    const missing: string[] = [];
+    for (const [purpose, rows] of Object.entries(SHAPES)) {
+      for (const glob of Object.keys(rows)) {
+        for (const m of glob.matchAll(/\[\*\]|\.\*/gu)) {
+          const items = glob.slice(0, m.index + m[0].length);
+          if ((ITEMS as Record<string, Record<string, number>>)[purpose]?.[items] === undefined) missing.push(`${purpose} ${items}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("refuses a list over its count, naming the counts, never the text, and logs the purpose, list and count", () => {
+    const d = new Disclosure(registryOf([]));
+    const ask = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`q${i}`, { type: "choice" as const, instructions: d.own(`Question ${i}?` as "x"), criteria: {} }]));
+    const logged: ShapeLengthRefusal[] = [];
+    const was = setShapeLengthLog((r) => logged.push(r));
+    try {
+      expect(() => d.seal({ purpose: "route.task", state: {}, questions: ask(3) })).toThrow(/questions holds 3 items, more than its shape's 2/u);
+      expect(() => d.seal({ purpose: "route.task", state: {}, questions: ask(2) })).not.toThrow();
+    } finally {
+      setShapeLengthLog(was);
+    }
+    expect(logged).toEqual([{ purpose: "route.task", slot: "questions.*", items: 3, max: 2 }]);
   });
 });
