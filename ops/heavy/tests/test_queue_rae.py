@@ -84,6 +84,11 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(len(f), 1)
         self.assertIn("stop", f[0])
 
+    def test_an_unverified_undo_is_named(self):
+        # The harness says unverified when an element is missing from the undo read-back: the undo's effect is unknown.
+        p, f = accept(data(row("contacts-me", undone="unverified"), row("mail-compose", "blocked"), row("usps-address")))
+        self.assertEqual((p, f), (["undo unverified: contacts-me"], []))
+
     def test_a_ran_row_without_its_scoring_evidence_is_a_problem(self):
         for field in ("verdict", "taken", "right", "partial", "kept", "missed", "abstained", "extra", "clipboard",
                       "wrong", "undone", "stopped"):

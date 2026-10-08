@@ -345,7 +345,7 @@ RAE_VERDICTS = ("complete", "partial", "none", "wrong", "evidence-incomplete")
 RAE_OUTCOMES = ("right", "partial", "kept", "missed", "abstained", "extra")
 RAE_COUNTS = ("taken",) + RAE_OUTCOMES
 RAE_COLUMNS = {"verdict": RAE_VERDICTS, "clipboard": ("restored", "changed"), "wrong": ("yes", "no"),
-               "undone": ("yes", "no", "n/a"), "stopped": ("yes", "no", "finished-first", "n/a")}
+               "undone": ("yes", "no", "unverified", "n/a"), "stopped": ("yes", "no", "finished-first", "n/a")}
 
 
 def rae_options_problem(options, known_targets):
@@ -445,6 +445,9 @@ def rae_acceptance(data, options, known_targets, scores):
         if r["clipboard"] == "changed":
             failures.append("{}: the clipboard was not put back".format(tid))
         # As H11's undo gate: a check that ran and failed fails the run.
+        # unverified: an element was missing from the undo read-back, so the undo's effect is not known.
+        if r["undone"] == "unverified":
+            problems.append("undo unverified: {}".format(tid))
         if r["undone"] == "no":
             failures.append("{}: the undo did not restore the fields ({})".format(tid, str(r.get("note"))[:160]))
         if r["stopped"] == "no":
