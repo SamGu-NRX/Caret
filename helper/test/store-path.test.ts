@@ -55,3 +55,32 @@ describe("the store path check", () => {
     expect(existsSync(join(dir, "ok.json"))).toBe(true);
   });
 });
+
+describe("INT1 review 2 P1: symlinks and .. cannot route a store into a synced folder", () => {
+  const synced = join(h, "Library", "CloudStorage", "Dropbox-caret-store-path-test");
+
+  it("refuses a dangling final symlink whose target is in a synced folder", () => {
+    const link = join(dir, "dangling.json");
+    symlinkSync(join(synced, "new.json"), link);
+    expect(existsSync(link)).toBe(false);
+    expect(storePathRefusal(link)).not.toBeNull();
+    expect(() => writeStoreJson(link, { n: 1 })).toThrow(SyncedStorePath);
+  });
+
+  it("resolves a symlinked directory before '..', so to-sync/../rows.json is judged where it lands", () => {
+    // The link points into a synced folder (which need not exist: nothing is written there).
+    const link = join(dir, "to-sync");
+    symlinkSync(join(synced, "sub"), link);
+    expect(storePathRefusal(join(dir, "rows.json"))).toBeNull();
+    expect(storePathRefusal(`${link}/../rows.json`)).not.toBeNull();
+    expect(() => writeStore(`${link}/../rows.json`, "x")).toThrow(SyncedStorePath);
+  });
+
+  it("refuses a final symlink even to an allowed place: the write would follow it", () => {
+    const real = join(dir, "real.json");
+    writeStoreJson(real, { n: 1 });
+    const link = join(dir, "link-to-real.json");
+    symlinkSync(real, link);
+    expect(() => writeStoreJson(link, { n: 2 })).toThrow(SyncedStorePath);
+  });
+});
