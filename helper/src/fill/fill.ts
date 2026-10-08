@@ -25,6 +25,7 @@ import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, dateP
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { secretText } from "../memory/sensitive.ts";
+import { formatForField } from "./field-format.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -1049,7 +1050,7 @@ export async function proposeFill(
       const c = candidates[i];
       if (c === undefined) continue;
       const moved = labelledCandidate(anchorWindow, l.node, l.value, l.label, c.id, c.kind, "justLeft");
-      if (ledger.take(anchorWindow, "candidate", candidateTexts(moved))) candidates[i] = moved;
+      if (moved !== null && ledger.take(anchorWindow, "candidate", candidateTexts(moved))) candidates[i] = moved;
     }
   }
   // Values code derives for one field (derive.ts): a name's first, middle or last part for a field that asks
@@ -1164,6 +1165,32 @@ export async function proposeFill(
           const v = memoryValue(a.value, part as FillMemoryPart);
           add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, partSaid(v ?? "", m.own(PART_SAYS[part]), "of", aboutSaid(a), aboutValue(a)), { from: "memory", a });
         }
+      }
+      if (list.length > 0) derived.set(f.id, list);
+    }
+  }
+  // F1: offer the field's format of a known month/year or GitHub address, retaining the original source and stating
+  // the conversion for the verifier. The shape gate still checks the formatted value, and no exemption is added.
+  if (derive) {
+    for (const f of fields) {
+      if (f.control !== "text") continue;
+      const list = derived.get(f.id) ?? [];
+      for (const c of candidates) {
+        const source = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
+        if (source === undefined) continue;
+        // URL candidates already carry required raw evidence from their extraction occurrence.
+        const r = formatForField(c.text, f.labelWords, f.node.inputKind, c.line ?? nodeText(source));
+        if (r === null || candidates.some((x) => x.text === r.value) || list.some((x) => x.text === r.value)) continue;
+        // GFM strips link punctuation from the value, but both verifier wordings must read the complete source token.
+        const original = r.sourceToken === undefined || r.sourceToken === c.text ? c : { ...c, text: r.sourceToken };
+        const [whole, base] = [candidateSaid(original), textSaid(original)];
+        list.push({ key: `${f.id}:${list.length}`, text: r.value, describe: `"${r.value}" (the value in the field's format of ${describeCandidate(original)})`, said: () => {
+          const wm = whole();
+          const b = base();
+          // HTTPS is the only word this transform adds; derived already accepts a caller's literal code vocabulary.
+          const v = b === null ? null : m.derived(b, r.value, ["https"]);
+          return wm === null || v === null ? null : m.t`"${v}" (the value in the field's format of ${wm})`;
+        }, base: { from: "window", c: original }, also: null, chose: { says: `Caret assumed: ${r.assumptions.join("; ")}`, also: null, how: "fieldFormat" } });
       }
       if (list.length > 0) derived.set(f.id, list);
     }

@@ -102,7 +102,7 @@ export function autocompletePart(token: AutocompleteToken | null | undefined): F
  * written in its input's own format (when.ts), no part taken.
  */
 /** V4: "optionNamed" is a menu option code found a value to name (controls.ts optionLink), said as such to the verifier. */
-export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed";
+export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat";
 
 /** Where a value came from, carried unchanged from the moment it was read to the step that writes it. */
 export type Provenance =
@@ -575,7 +575,7 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
   }
 }
 
-const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named" } as const satisfies Record<DeriveHow, string>;
+const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format" } as const satisfies Record<DeriveHow, string>;
 
 /** The texts of a provenance a question may quote, for the ledger: its window's title, line, label, span and whole value. */
 function provenanceTexts(pr: Provenance): string[] {

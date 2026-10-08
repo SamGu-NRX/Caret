@@ -36,6 +36,47 @@ const DATE = new RegExp(
 );
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu;
 const URL = /\bhttps?:\/\/[^\s<>()"'`]+|\bwww\.[^\s<>()"'`]+|\b(?:linkedin|github)\.com\/[^\s<>()"'`]+/giu;
+
+/** GFM extended-autolink path validation, https://github.github.com/gfm/#extended-autolink-path-validation. */
+export function autolinkText(token: string): string {
+  let text = token;
+  for (;;) {
+    const before = text;
+    text = text.replace(/[?!.,:*_~]+$/u, "");
+    if (text.endsWith(")")) {
+      const excess = [...text].filter((c) => c === ")").length - [...text].filter((c) => c === "(").length;
+      const closing = /\)+$/u.exec(text)?.[0].length ?? 0;
+      if (excess > 0) text = text.slice(0, -Math.min(excess, closing));
+    }
+    text = text.replace(/&[A-Za-z0-9]+;$/u, "");
+    if (text === before) return text;
+  }
+}
+
+/** Raw source evidence at a code extraction's offset, or an excerpt containing every distinct token for a reader span. */
+export function rawURLToken(source: string, span: string, scanLimit = Number.POSITIVE_INFINITY, sourceOffset?: number): string | null {
+  if (span === "" || /\s/u.test(span)) return null;
+  if (sourceOffset !== undefined && (!Number.isInteger(sourceOffset) || sourceOffset < 0 || source.slice(sourceOffset, sourceOffset + span.length) !== span)) return null;
+  let first = source.length;
+  let last = 0;
+  const tokens = new Set<string>();
+  for (let at = sourceOffset ?? source.indexOf(span); at >= 0; at = sourceOffset === undefined ? source.indexOf(span, at + span.length) : -1) {
+    let start = at;
+    let end = at + span.length;
+    while (start > 0 && !/\s/u.test(source[start - 1]!)) start--;
+    while (end < source.length && !/\s/u.test(source[end]!)) end++;
+    // A reader span or code fallback at the slice edge may omit the rest of this very same token.
+    if (source.length >= scanLimit && end >= scanLimit) return null;
+    const raw = source.slice(start, end);
+    if (tokens.has(raw)) continue;
+    tokens.add(raw);
+    first = Math.min(first, start);
+    last = Math.max(last, end);
+  }
+  // An actual source excerpt keeps all tokens verbatim and can use the existing disclosure/provenance path.
+  // The caller must admit the entire excerpt within its evidence budget, or withhold the candidate.
+  return tokens.size > 1 ? source.slice(first, last) : tokens.values().next().value ?? null;
+}
 /**
  * Phone numbers: international with a "+", ten digits in the North American groups, and seven digits joined by a
  * hyphen ("555-0147"). Digits or a joining mark on either side refuse it, so a part of a card number, a ZIP+4, a date
