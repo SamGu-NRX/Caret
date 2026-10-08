@@ -1,10 +1,9 @@
 // HA2 focused review of eb9d19d, items 1-8: regressions built from the reviewer's probes. Fresh synthetic fixtures.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { heldReason, mintOf, NOTE_PRIVATE, NOTE_UNSHOWN, OWNER_UNREADABLE, proposeFill, type FillScope } from "../src/fill/fill.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import { OwnerVerdicts } from "../src/fill/owner-cache.ts";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { Node } from "../src/protocol.ts";
 import { planTask } from "../src/planner/planner.ts";
@@ -89,9 +88,7 @@ const scopeOf = (instruction: string, extra: Partial<FillScope> = {}): FillScope
 
 const written = (run: Promise<{ checked: { writes: readonly { value: string }[] } }>): Promise<string[]> => run.then((d) => d.checked.writes.map((w) => w.value), () => []);
 
-beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => {
-  setGeneratorClock(null);
   closeRigs();
 });
 beforeAll(() => setTestVerifier(null));

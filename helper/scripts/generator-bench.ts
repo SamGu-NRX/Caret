@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { positiveInt } from "./flags.ts";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { collectCandidates, MAX_CANDIDATES } from "../src/fill/candidates.ts";
+import { collectCandidates, MAX_CANDIDATES, MAX_GENERATOR_VISITS } from "../src/fill/candidates.ts";
 import { Helper } from "../src/helper.ts";
 import { ScreenModel } from "../src/model.ts";
 import { PROTOCOL_VERSION, type Snapshot } from "../src/protocol.ts";
@@ -200,7 +200,7 @@ const md = [
   `\`node ${(globalThis as { gc?: unknown }).gc === undefined ? "" : "--expose-gc "}scripts/generator-bench.ts --out DIR --focuses ${FOCUSES} --legacy-focuses ${LEGACY_FOCUSES}\` in the helper, ${new Date().toISOString().slice(0, 16)}Z, one-minute load average ${load[0]?.toFixed(1)} before and ${loadAfter[0]?.toFixed(1)} after (this Mac was shared). ${FOCUSES} focuses per row, the first ${LEGACY_FOCUSES} of them also timed before.`,
   "",
   "- *Before*: the generator as of 129b4b3 with the product's cap of 80.",
-  "- *After*: the early-capped generator with its 15 ms budget.",
+  `- *After*: the generator capped at ${MAX_CANDIDATES} candidates and ${MAX_GENERATOR_VISITS} visits.`,
   "- *Request*: the synchronous part of a fill request through the Helper, with a Jev that answers at once. It covers form fields, descriptors, the generator and both asks' prompts, and is how long the request holds the event loop.",
   "- *Request CPU*: the CPU time the process used in that slice. Wall time well above it is the process waiting for a CPU on a loaded Mac, not the helper's code.",
   "- *Answer to proposal*: from the second ask's answer to the finished proposal, the request's other synchronous slice.",

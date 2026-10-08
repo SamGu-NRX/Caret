@@ -9,7 +9,6 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { AskAsks, planAsk } from "../src/planner/ask.ts";
@@ -24,9 +23,6 @@ import { buildDesk, loadCorpus, pageForm, T0, type Desk } from "../scripts/realf
 import { PAGE_LOOP_HEADS, pageLoopCanned } from "../../fixtures/web-form/canned-jev.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
-
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));

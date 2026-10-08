@@ -1,0 +1,1 @@
+INT1: OWNER_NOTE_CHARS=0 and tests skipped/floored behind TODO(INT1); restore 2,000 after HA2 uses output ledger. PermissionsScreen reads bundle PrivacyPromise.txt; swift run/xctest inject it. CARET_VERIFY_PRIVACY_RESOURCE rejects missing, empty or non-PRIVACY_PROMISE app copy.
