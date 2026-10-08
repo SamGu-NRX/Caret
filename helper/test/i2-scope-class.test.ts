@@ -16,7 +16,7 @@ import { lowerGoal } from "../src/goals/lower.ts";
 import { runCodePlan } from "../src/codemode/sandbox.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import { caseWindow, cannedProgram, goalScene, mailWindow, standInJev, SUPPORT, textField, type CannedStep, type GoalScene } from "./goal-desk.ts";
-import { field, node, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap } from "./builders.ts";
 
 beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => setGeneratorClock(null));
@@ -68,7 +68,7 @@ const jev = (asks: readonly string[], seen: JevRequest[] = []): AskJev => async 
         const pick = (c: string) => [id, { choice: c, confidence: 0.95 }] as const;
         if (req.purpose === "ask.heads") return pick({ route: "some", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
         if (req.purpose === "ask.scope" && id === "section") return pick("fields");
-        if (req.purpose === "ask.scope") return pick(asks.includes(/[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
+        if (req.purpose === "ask.scope") return pick(asks.includes(scopeLabel(ins)) ? "asks" : "not");
         if ("yes" in q.criteria) return pick("yes");
         const want = Object.entries(VALUES).find(([l]) => ins.includes(`'${l}'`))?.[1];
         const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => String(d).startsWith(`"${want}"`));
@@ -95,7 +95,7 @@ describe("ruling B: uploads are asked in the same scope question as the fields, 
       const req = scopeRequest(s, w);
       // SCP1: the field questions; the section question rides beside them.
       const ins = Object.entries(req.questions).filter(([id]) => id !== "section").map(([, q]) => String(q.instructions));
-      expect(ins.map((t) => /[Tt]he field '([^']+)'/u.exec(t)?.[1])).toEqual(["Name", "Email", "Resume"]);
+      expect(ins.map((t) => scopeLabel(t))).toEqual(["Name", "Email", "Resume"]);
       expect(ins[2]).toContain("file upload");
       expect(req.snippets.map((x) => x.text)).toContain("Documents");
     }

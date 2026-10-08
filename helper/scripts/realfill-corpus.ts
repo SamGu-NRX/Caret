@@ -159,6 +159,19 @@ export function pageForm(form: CorpusForm, dir = PAGE_WALKS): Snapshot {
 /** The replay's clock: every desk is built as if the form were focused at this instant. */
 export const T0 = 1_800_000_000_000;
 
+/**
+ * The candidate generator's clock for an evaluation (fill/candidates.ts setGeneratorClock), or null for the wall clock.
+ * The scripted oracle (`canned`) gets the fixed clock the tests use: under load the 15 ms wall-clock budget cut b31-04's
+ * and ask-17's candidate lists about 1 run in 20 and scored them refused, which is noise, not the code under test. A live
+ * engine keeps the wall clock, the product's real budget. `named` ("fixed" or "wall") overrides either, for measuring
+ * the budget's own effect.
+ */
+export function generatorClock(engine: string, named?: string): (() => number) | null {
+  const which = named ?? (engine === "canned" ? "fixed" : "wall");
+  if (which !== "fixed" && which !== "wall") throw new Error(`--generator-clock is fixed or wall, not '${which}'`);
+  return which === "fixed" ? () => 0 : null;
+}
+
 /** One form on a replayed desk: the screen model, the form's window and the field it is focused on, and its memory. */
 export interface Desk {
   model: ScreenModel;

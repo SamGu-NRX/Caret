@@ -14,7 +14,8 @@ import { sectionName } from "../engines/page-exclusions.ts";
 /**
  * I2 ruling: one request, one settlement. What the per-field scope question settled for a request, kept so a later step
  * of the same request (the Ask after the direct attach rule fell through) uses it rather than asking again: the Ask's
- * id, the window and the document it was asked on, each field's fingerprint then, and the keys Jev chose or left unclear.
+ * id, the window and the document it was asked on, each field's fingerprint then, and the keys Jev chose or left
+ * unresolved (intent-heads.ts scopeVerdict).
  */
 export interface Settled {
   readonly askId: string;
@@ -22,7 +23,7 @@ export interface Settled {
   readonly document: string | null;
   readonly seen: Readonly<Record<string, string>>;
   readonly asks: readonly string[];
-  readonly unclear: readonly string[];
+  readonly unresolved: readonly string[];
   /**
    * SCP1: fields Jev chose whose section Caret couldn't tell, when the request named one section (intent-heads.ts
    * sectionVeto): never in `asks`, each the user's, said.
@@ -242,9 +243,11 @@ function axOutline(w: WindowState, nodes: readonly Node[]): WindowOutline {
       chains.set(n.key, "unknown");
       continue;
     }
-    // The innermost heading only: with no levels, a heading in an inner group replaces the ones it inherits.
-    const inner = [...stack].reverse().find((f) => f.heading !== null)?.heading ?? null;
-    chains.set(n.key, [...stack.flatMap((f) => (f.label === null ? [] : [f.label])), ...(inner === null ? [] : [inner])]);
+    // The innermost heading only: with no levels, a heading in an inner group replaces the ones it inherits. It sits
+    // after its own group's label and before the labels of groups opened after it, so the chain reads outermost first.
+    const at = stack.findLastIndex((f) => f.heading !== null);
+    const labels = (fs: readonly Frame[]): string[] => fs.flatMap((f) => (f.label === null ? [] : [f.label]));
+    chains.set(n.key, at < 0 ? labels(stack) : [...labels(stack.slice(0, at + 1)), (stack[at] as Frame).heading as string, ...labels(stack.slice(at + 1))]);
   }
   return { occurrences, chainOf: (key) => chains.get(key) ?? [], fallback: [], tokens: [], cut: false };
 }

@@ -115,3 +115,8 @@ export function answeringScope(ask: AskJev, choose: (instructions: string) => "a
       ? { model: "scope-stand-in", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: id === "section" ? "fields" : choose(String(q.instructions)), confidence: 0.95 }])) }
       : ask(req);
 }
+
+/** The label a scope question (planner/intent-heads.ts SCOPE_WORDINGS) asks about, for stand-ins that answer by label; "" for any other question. */
+export function scopeLabel(instructions: string): string {
+  return /Field: "(.*?)"\. Control: "/u.exec(instructions)?.[1] ?? "";
+}

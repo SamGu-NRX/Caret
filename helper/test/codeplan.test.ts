@@ -9,7 +9,7 @@ import { PlannerError } from "../src/planner/validate.ts";
 import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { field, node, snap, text } from "./builders.ts";
+import { field, node, scopeLabel, snap, text } from "./builders.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { askScope, fieldFingerprint } from "../src/fill/ask-scope.ts";
@@ -241,7 +241,7 @@ describe("planWithCode under an Ask's scope (I2)", () => {
     // finds nothing and the code-mode writer, whose program fills Full name and Email, plans instead.
     const ask: AskJev = async (req) => {
       if (req.purpose === "ask.heads") return { model: "t", inputTokens: 1, latencyMs: 1, costUsd: 0, answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: { route: "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none", confidence: 0.95 }])) };
-      if (req.purpose === "ask.scope") return { model: "t", inputTokens: 1, latencyMs: 1, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: /[Tt]he field '([^']+)'/u.exec(String(q.instructions))?.[1] === "Full name" ? "asks" : "not", confidence: 0.95 }])) };
+      if (req.purpose === "ask.scope") return { model: "t", inputTokens: 1, latencyMs: 1, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: scopeLabel(String(q.instructions)) === "Full name" ? "asks" : "not", confidence: 0.95 }])) };
       if (req.purpose === "planner.fields") return { model: "t", inputTokens: 1, latencyMs: 1, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: "keep" in q.criteria ? "keep" : "none", confidence: 0.95 }])) };
       return values.ask(req);
     };

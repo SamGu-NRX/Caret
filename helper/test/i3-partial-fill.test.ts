@@ -16,7 +16,7 @@ import { AskAsks, AskRefused, planAsk, type AskDraft } from "../src/planner/ask.
 import { planSpec } from "../src/planner/proposal.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
-import { field, snap } from "./builders.ts";
+import { field, scopeLabel, snap } from "./builders.ts";
 import type { PageControl } from "../src/protocol.ts";
 import { c } from "./fake-page.ts";
 import { closeRigs, rig, type Segment } from "./page-rig.ts";
@@ -83,13 +83,15 @@ describe("which fields, when Jev settled some and not others (readHeads)", () =>
     expect(i.unsure).toBeUndefined();
   });
 
-  it("leaves below-cutoff fields to the user beside settled ones when nothing is unclear", () => {
+  // G35: Jev answered "unclear" 0 times in B31's 300 live pairs, so a below-cutoff "asks" is asked about too.
+  it("asks about below-cutoff fields beside settled ones even when nothing is unclear", () => {
     const s = pizza();
     const by = scopeBy(["Customer name"], [], ["Telephone"]);
     const i = readHeads(s, headsOf(s), [wording(s, 0, by), wording(s, 1, by)]);
-    expect(i).toMatchObject({ route: "fill", agreed: true });
-    expect(names(s, i.fields)).toEqual(["Customer name"]);
-    expect(names(s, i.unsure)).toEqual(["Telephone"]);
+    expect(i).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"], fields: [] });
+    expect(names(s, i.sure)).toEqual(["Customer name"]);
+    expect(names(s, i.options)).toEqual(["Telephone"]);
+    expect(i.unsure).toBeUndefined();
   });
 });
 
@@ -106,9 +108,9 @@ describe("through planAsk", () => {
           if (id === "source") return [id, { choice: "any", confidence: 0.9 }];
           if (id === "why") return [id, { choice: "nothingToFill", confidence: 0.9 }];
           if (id === "whose" || id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user" in q.criteria ? "user" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
-          // Wording 0 ends "Does the request ask Caret to fill in or change this field?" (intent-heads.ts SCOPE_WORDINGS).
+          // Wording 0 opens with the request (intent-heads.ts SCOPE_WORDINGS).
           if (id === "section") return [id, { choice: "fields", confidence: 0.99 }];
-          if (id.startsWith("s_")) return [id, by(/[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "", /Does the request ask Caret to fill in or change this field\?$/u.test(ins) ? 0 : 1)];
+          if (id.startsWith("s_")) return [id, by(scopeLabel(ins), ins.startsWith("User request:") ? 0 : 1)];
           if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
           const want = Object.entries(values).find(([label]) => ins.includes(`'${label}'`))?.[1];
           const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
@@ -190,7 +192,7 @@ describe("a page goal through the helper", () => {
     const scoped = (inner: AskJev): AskJev => async (req) => {
       const r = await inner(req);
       if (req.purpose !== "ask.scope") return r;
-      const answers = Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, /[Tt]he field '(?:Full name|Email)'/u.test(String(q.instructions)) ? settled : unclear]));
+      const answers = Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, ["Full name", "Email"].includes(scopeLabel(String(q.instructions))) ? settled : unclear]));
       return { ...r, answers };
     };
     const r = await rig({ controls, note: "Full name: Robin Okafor\nEmail: robin.okafor@example.com", picks: { "Full name": "Robin Okafor", Email: "robin.okafor@example.com" }, jev: scoped });
@@ -209,7 +211,7 @@ describe("the writer maker's settlement (ask.ts settleFields)", () => {
     const scoped = (inner: AskJev): AskJev => async (req) => {
       const r = await inner(req);
       if (req.purpose !== "ask.scope") return r;
-      return { ...r, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, /[Tt]he field 'Full name'/u.test(String(q.instructions)) ? settled : unclear])) };
+      return { ...r, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, scopeLabel(String(q.instructions)) === "Full name" ? settled : unclear])) };
     };
     const r = await rig({ controls, note: "Full name: Robin Okafor\nEmail: robin.okafor@example.com\nPhone: (737) 555-0101", picks: { "Full name": "Robin Okafor", Email: "robin.okafor@example.com", Phone: "(737) 555-0101" }, jev: scoped });
     const q = (await r.ask("fill out this form from my note")) as unknown as AskQuestion;
