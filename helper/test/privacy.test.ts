@@ -1,6 +1,6 @@
 // The privacy line, checked on every Jev request the producers and the first look make over the
 // synthetic sessions, against what privacy.ts PRIVACY_PROMISE says: short pieces of what is on screen, and no request
-// carrying more than half of a conversation.
+// taking more than half of any one conversation.
 //
 // A recorder wraps the Jev client and keeps each request with the text of every window in the model at
 // that moment. A window's text is its title and every line of its nodes' labels, values and placeholders,
@@ -571,6 +571,10 @@ describe("the privacy line on every Jev request", () => {
   };
 
   afterAll(() => {
+    // The report asserts nothing and is only written when asked for; building it measures every request again, which
+    // passed the 10-second hook limit under the full suite.
+    const out = process.env.PRIVACY_REPORT;
+    if (out === undefined) return;
     const ms = all.map((r) => ({ r, m: measure(r) }));
     const bodies = all.map((r) => bodyOf(r.req).length);
     const largest = Math.max(...bodies);
@@ -600,7 +604,7 @@ describe("the privacy line on every Jev request", () => {
        */
       ledgerVsTest: ledgerVsTest(all),
     };
-    if (process.env.PRIVACY_REPORT !== undefined) writeFileSync(process.env.PRIVACY_REPORT, `${JSON.stringify(report, null, 2)}\n`);
+    writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
   });
 });
 
