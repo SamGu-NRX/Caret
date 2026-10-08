@@ -39,12 +39,14 @@ grep -n '^export const ASK_MAKER' "$S/helper/src/writer/config.ts"
 # Gitignored inputs, as clones. Lockfiles must match, or the cloned node_modules may not be this commit's.
 mkdir -p "$S/packages/keytype/Packages/ModelRuntime/Vendor"
 cp -cR "$IN/llama.xcframework" "$S/packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework"
+chmod -R u+w "$S/packages/keytype/Packages/ModelRuntime/Vendor"  # the sealed inputs are read-only; this copy is the build's
 mkdir -p "$S/apps/caret/.build/node-dist"
 # The tarball build-app.sh pins at this commit, sealed against its SHA-256 (caret_heavy.node_pin); build-app.sh checks it again.
 cp -c "$IN"/node-dist/node-v*-darwin-arm64.tar.gz "$S/apps/caret/.build/node-dist/"
 for d in helper extension; do
   cmp -s "$W/$d/pnpm-lock.yaml" "$S/$d/pnpm-lock.yaml" || { echo "$d/pnpm-lock.yaml differs from the worktree's; run pnpm install --offline in $S/$d"; exit 1; }
   cp -cR "$IN/$d-node_modules" "$S/$d/node_modules"
+  chmod -R u+w "$S/$d/node_modules"
 done
 
 echo "== acceptance bundle (team-signed; the page bridge needs a team-signed agent)"

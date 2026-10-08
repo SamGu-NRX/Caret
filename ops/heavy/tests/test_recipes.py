@@ -357,6 +357,12 @@ class SwiftTests(RecipeWorld):
                                   check=True).stdout.strip()
         write(os.path.join(self.inputs, "keytype/Packages/A/Package.swift"), "// keytype at the gitlink\n")
         write(os.path.join(self.inputs, "llama.xcframework/Info.plist"), "plist\n")
+        os.makedirs(os.path.join(self.inputs, "keytype/Packages/ModelRuntime"))  # as in the real archive, no Vendor/
+        # Read-only, as enqueue seals a job's inputs (caret_heavy._read_only); caret-swift-s2-70a6845-n1 failed here.
+        import sys
+        sys.path.insert(0, HEAVY)
+        import caret_heavy
+        caret_heavy._read_only(self.inputs)
         self.tmp = os.path.join(self.root, "tmp")
         os.makedirs(self.tmp)
 
@@ -388,6 +394,15 @@ class SwiftTests(RecipeWorld):
         done, result, calls = self.swift({"STUB_SWIFT_FAIL": "screen-reader"})
         self.assertEqual(done.returncode, 11)
         self.assertEqual(len(calls), 3)
+
+    def test_the_inputs_come_from_read_only_sealed_copies_and_are_checked_against_them(self):
+        done, result, calls = self.swift()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("keytype=yes", calls[0])
+        # The sealed inputs stay read-only; only the job's own work copy was written.
+        self.assertFalse(os.access(os.path.join(self.inputs, "keytype/Packages/ModelRuntime"), os.W_OK))
+        with open(os.path.join(self.out, "inputs.log")) as fh:
+            self.assertIn("matches the sealed copy", fh.read())
 
     def test_a_build_error_is_14(self):
         done, result, calls = self.swift({"STUB_SWIFT_BUILD_ERROR": "bridge"})

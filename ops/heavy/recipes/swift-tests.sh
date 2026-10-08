@@ -26,10 +26,18 @@ if [ -d "$IN/keytype" ]; then
     K="$WORK/src/packages/keytype"
     rm -rf "$K"
     mkdir -p "$WORK/src/packages"
+    # The job's sealed inputs are read-only (enqueue seals them; the supervisor checks them against the plan's digests
+    # just before the spawn). The build writes into its own copy (Vendor/, SwiftPM output), so the copy is made
+    # writable and checked to hold exactly the sealed content.
     cp -c -R "$IN/keytype" "$K"
+    chmod -R u+w "$K"
+    diff -r "$IN/keytype" "$K"
+    echo "keytype matches the sealed copy"
     mkdir -p "$K/Packages/ModelRuntime/Vendor"
     cp -c -R "$IN/llama.xcframework" "$K/Packages/ModelRuntime/Vendor/llama.xcframework"
-    chmod -R u+w "$K"
+    chmod -R u+w "$K/Packages/ModelRuntime/Vendor"
+    diff -r "$IN/llama.xcframework" "$K/Packages/ModelRuntime/Vendor/llama.xcframework"
+    echo "llama.xcframework matches the sealed copy"
   ) > "$OUT/inputs.log" 2>&1
   check prepare inputs --log "$OUT/inputs.log" --exit $? || finish
 fi
