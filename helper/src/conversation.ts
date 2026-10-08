@@ -4,6 +4,7 @@
 // a conversation when any of five signs holds: its app is a known chat or mail app, it is a browser
 // showing a known mail or chat site or a mail's header, it has a message composer, or it shows a message
 // list.
+import { sourceLines } from "./privacy/ledger/source.ts";
 import type { Frame, Node } from "./protocol.ts";
 import type { WindowState } from "./model.ts";
 
@@ -241,10 +242,8 @@ function nodeLines(n: Node): string[] {
   if (n.editable === true) return [];
   const raw = n.label ?? n.value;
   if (raw === undefined) return [];
-  return raw
-    .split("\n")
-    .map((l) => l.replace(/\s+/g, " ").trim())
-    .filter((l) => l !== "");
+  // The inventory's lines (privacy/ledger/source.ts sourceLines): a bare CR separates headers as LF does.
+  return sourceLines(raw);
 }
 
 /**

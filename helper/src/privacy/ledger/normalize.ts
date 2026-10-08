@@ -10,15 +10,12 @@
 // Every normalized scalar keeps the UTF-16 positions of the source text that produced it (its origin), so a charge is
 // counted in source code units: a supplementary character's scalars map to both of its code units, and a collapsed
 // space maps to every position that contributed to the run. Positions dropped by trimming produce no scalar.
-//
-// A measured unit can hold hard boundaries (a certified template literal, section 3): the normalized unit carries the
-// BOUNDARY token there, which no scalar equals, so no match crosses it. Spaces do not collapse across a boundary, and
-// only the unit's two ends are trimmed.
+
 import { SCALAR_MAP, UNICODE_VERSION } from "./unicode16.ts";
 
 export const LEDGER_NORMALIZATION = `ledgerNormalizeV1/unicode-${UNICODE_VERSION}`;
 
-/** The token between measured pieces: outside the scalar range, so no text, a NUL included, can equal it. */
+/** The token between measured units in an index: outside the scalar range, so no text, a NUL included, can equal it. */
 export const BOUNDARY = -1;
 
 /** Text the ledger will not measure: an unpaired surrogate (or, at the byte layer, malformed UTF-8). */
@@ -49,7 +46,7 @@ const N_COUNT = 588;
 const S_COUNT = 11172;
 
 /** What one scalar maps to, on its own. */
-export function scalarMap(cp: number): readonly number[] {
+function scalarMap(cp: number): readonly number[] {
   const s = cp - S_BASE;
   if (s >= 0 && s < S_COUNT) {
     const l = L_BASE + Math.floor(s / N_COUNT);
@@ -62,73 +59,46 @@ export function scalarMap(cp: number): readonly number[] {
 
 const SPACE = 0x20;
 
-/** A normalized text: its scalars (BOUNDARY between pieces), and for each the source UTF-16 positions it came from. */
+/** A normalized text: its scalars, and for each the source UTF-16 positions it came from. */
 export interface Normalized {
   readonly cps: readonly number[];
   readonly origins: readonly (readonly number[])[];
 }
 
-function normalizePieces(pieces: readonly string[]): Normalized {
+/** ledgerNormalizeV1 of one source line or one measured unit. Throws LedgerEncodingError on an unpaired surrogate. */
+export function ledgerNormalizeV1(text: string): Normalized {
   const cps: number[] = [];
   const origins: number[][] = [];
-  let base = 0;
-  pieces.forEach((text, k) => {
-    if (k > 0) {
-      cps.push(BOUNDARY);
-      origins.push([]);
+  for (let i = 0; i < text.length; i++) {
+    const hi = text.charCodeAt(i);
+    let cp = hi;
+    let at = [i];
+    if (hi >= 0xd800 && hi <= 0xdbff) {
+      const lo = i + 1 < text.length ? text.charCodeAt(i + 1) : -1;
+      if (lo < 0xdc00 || lo > 0xdfff) throw new LedgerEncodingError(`an unpaired surrogate at UTF-16 position ${i}`);
+      cp = 0x10000 + ((hi - 0xd800) << 10) + (lo - 0xdc00);
+      at = [i, i + 1];
+      i++;
+    } else if (hi >= 0xdc00 && hi <= 0xdfff) {
+      throw new LedgerEncodingError(`an unpaired surrogate at UTF-16 position ${i}`);
     }
-    for (let i = 0; i < text.length; i++) {
-      const hi = text.charCodeAt(i);
-      let cp = hi;
-      let at = [base + i];
-      if (hi >= 0xd800 && hi <= 0xdbff) {
-        const lo = i + 1 < text.length ? text.charCodeAt(i + 1) : -1;
-        if (lo < 0xdc00 || lo > 0xdfff) throw new LedgerEncodingError(`an unpaired surrogate at UTF-16 position ${base + i}`);
-        cp = 0x10000 + ((hi - 0xd800) << 10) + (lo - 0xdc00);
-        at = [base + i, base + i + 1];
-        i++;
-      } else if (hi >= 0xdc00 && hi <= 0xdfff) {
-        throw new LedgerEncodingError(`an unpaired surrogate at UTF-16 position ${base + i}`);
-      }
-      for (const out of scalarMap(cp)) {
-        if (out === SPACE) {
-          // Leading spaces are trimmed; a run of spaces is one space, mapped to every position in the run.
-          if (cps.length === 0) continue;
-          if (cps[cps.length - 1] === SPACE) {
-            const last = origins[origins.length - 1]!;
-            for (const p of at) if (!last.includes(p)) last.push(p);
-            continue;
-          }
+    for (const out of scalarMap(cp)) {
+      if (out === SPACE) {
+        // Leading spaces are trimmed; a run of spaces is one space, mapped to every position in the run.
+        if (cps.length === 0) continue;
+        if (cps[cps.length - 1] === SPACE) {
+          const last = origins[origins.length - 1]!;
+          for (const p of at) if (!last.includes(p)) last.push(p);
+          continue;
         }
-        cps.push(out);
-        origins.push([...at]);
       }
+      cps.push(out);
+      origins.push([...at]);
     }
-    base += text.length;
-  });
+  }
   if (cps[cps.length - 1] === SPACE) {
     cps.pop();
     origins.pop();
   }
   return { cps, origins };
-}
-
-/** ledgerNormalizeV1 of one source line or one measured unit. Throws LedgerEncodingError on an unpaired surrogate. */
-export function ledgerNormalizeV1(text: string): Normalized {
-  return normalizePieces([text]);
-}
-
-/**
- * ledgerNormalizeV1 of a measured unit whose certified literals were replaced by hard boundaries: `pieces` are its runtime
- * stretches in order, each nonempty literal between two of them a BOUNDARY. Origins count across the pieces' texts.
- */
-export function ledgerNormalizeUnit(pieces: readonly string[]): Normalized {
-  return normalizePieces(pieces);
-}
-
-/** The normalized text as a string (a boundary as U+FFFC), for tests and diagnostics. */
-export function normalizedText(n: Normalized): string {
-  let s = "";
-  for (const cp of n.cps) s += cp === BOUNDARY ? "￼" : String.fromCodePoint(cp);
-  return s;
 }

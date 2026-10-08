@@ -1,6 +1,6 @@
 import { assertNoExcludedValue } from "../../privacy.ts";
 import { UnmintedText } from "../../privacy/disclosure.ts";
-import { seal, sealedBody, type Sealed } from "../../privacy/send.ts";
+import { seal, sendable, WIRE, type Envelope, type Sealed, type Sink } from "../../privacy/send.ts";
 // A decision engine on this Mac: an open instruct model in llama-server (llama.cpp), J1 part B.
 //
 // Each request becomes one prompt prefix, the state and every option once with a label, and then one short question
@@ -47,6 +47,18 @@ const EXPAND = 0.01;
 const SYSTEM =
   "You make one decision at a time for software that helps a person on their computer. The state below is what the software sees. " +
   "Each question lists the labels of the options it allows; answer with exactly one of them. Follow the question's own rules, such as choosing none when no option fits.";
+
+/** What a llama-server call writes beside the request's own strings and keys (privacy/send.ts Sink.wording). */
+const LLAMA_WORDING: readonly string[] = [SYSTEM, "State: Options, by label: Question: Answer with one of these labels: Yes No Answer: root", "A B C D E F G H I J K L M N O P Q R S T U V W X Y Z"];
+const TEMPLATE_BODY: Envelope = { "messages[*].role": { kind: "config", max: 20 }, "messages[*].content": { kind: "rendered", max: 400_000 }, chat_template_kwargs: { kind: "config", max: 200 } };
+const COMPLETION_BODY: Envelope = {
+  prompt: { kind: "rendered", max: 400_000 },
+  n_predict: { kind: "scalar", types: ["number"] },
+  n_probs: { kind: "scalar", types: ["number"] },
+  temperature: { kind: "scalar", types: ["number"] },
+  cache_prompt: { kind: "scalar", types: ["boolean"] },
+  grammar: { kind: "rendered", max: 20_000 },
+};
 
 interface Option {
   label: string;
@@ -109,11 +121,17 @@ class LlamaUnavailable extends Error {
 export function llamaEngine(opts: LlamaOptions): DecideEngine {
   const f = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 300_000;
-  const post = async (path: string, body: unknown, out: Sealed): Promise<Record<string, unknown>> => {
+  /**
+   * Posts one call to llama-server: its body rendered from the sealed request's frozen copy (answer reads only
+   * frozenRequest's), then sealed for this sink (privacy/send.ts) and sent as those bytes. `markup` is text the server's
+   * own chat template wrote around the content it was given, which a completion prompt carries back.
+   */
+  const post = async (path: "/apply-template" | "/completion", body: unknown, out: Sealed, markup = ""): Promise<Record<string, unknown>> => {
+    const sink: Sink = { name: `llama ${path}`, render: () => body, envelope: path === "/apply-template" ? TEMPLATE_BODY : COMPLETION_BODY, wording: [...LLAMA_WORDING, markup] };
+    const sealed = seal(out.out, sink);
     let res: Response;
     try {
-      // Rendered from the sealed copy (answer reads only frozenRequest's), checked as it leaves.
-      res = await f(`${opts.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: sealedBody(out, () => body), signal: AbortSignal.timeout(timeoutMs) });
+      res = await f(`${opts.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: sendable(sealed), signal: AbortSignal.timeout(timeoutMs) });
     } catch (e) {
       // A request the boundary refused is that refusal, not an engine that did not answer.
       if (e instanceof UnmintedText) throw e;
@@ -123,17 +141,18 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
     return (await res.json()) as Record<string, unknown>;
   };
 
-  const frame = async (content: string, out: Sealed): Promise<string> => {
-    if (opts.prompt === "document") return `${SYSTEM}\n\n${content}\nAnswer:`;
+  /** A question's prompt, and the markup the server's template wrote around its content (none for a document prompt). */
+  const frame = async (content: string, out: Sealed): Promise<{ prompt: string; markup: string }> => {
+    if (opts.prompt === "document") return { prompt: `${SYSTEM}\n\n${content}\nAnswer:`, markup: "" };
     const r = await post("/apply-template", { messages: [{ role: "system", content: SYSTEM }, { role: "user", content }], ...(opts.templateKwargs === undefined ? {} : { chat_template_kwargs: opts.templateKwargs }) }, out);
     if (typeof r.prompt !== "string") throw new LlamaUnavailable("llama-server /apply-template returned no prompt");
-    return r.prompt;
+    return { prompt: r.prompt, markup: r.prompt.split(content).join("\n").split(SYSTEM).join("\n") };
   };
 
-  const complete = async (prompt: string, allowed: readonly string[], out: Sealed): Promise<Completion> => {
+  const complete = async (prompt: { prompt: string; markup: string }, prefix: string, allowed: readonly string[], out: Sealed): Promise<Completion> => {
     // Temperature below 0 is greedy, and the probabilities are then the plain softmax of the logits over the whole
     // vocabulary (llama-server README, n_probs), which is what the labels' split is read from.
-    const r = await post("/completion", { prompt, n_predict: 1, n_probs: N_PROBS, temperature: -1, cache_prompt: true, grammar: gbnf(allowed) }, out);
+    const r = await post("/completion", { prompt: prompt.prompt + prefix, n_predict: 1, n_probs: N_PROBS, temperature: -1, cache_prompt: true, grammar: gbnf(allowed) }, out, prompt.markup);
     const list = (r.completion_probabilities ?? r.probs) as { top_logprobs?: { token: string; logprob: number }[] }[] | undefined;
     const top = list?.[0]?.top_logprobs;
     if (top === undefined) throw new LlamaUnavailable("llama-server returned no token probabilities");
@@ -150,7 +169,7 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
    * normalized over the labels (review: renormalizing per position counted a forced digit as certain, and read a yes of
    * 0.5 against a no of 0.001 as 0.998).
    */
-  const split = async (prompt: string, labels: readonly string[], out: Sealed): Promise<{ p: Map<string, number>; evaluated: number }> => {
+  const split = async (prompt: { prompt: string; markup: string }, labels: readonly string[], out: Sealed): Promise<{ p: Map<string, number>; evaluated: number }> => {
     const width = labels[0]?.length ?? 1;
     let evaluated = 0;
     const raw = new Map<string, number>();
@@ -160,7 +179,7 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
         return;
       }
       const next = [...new Set(under.map((l) => l[prefix.length] as string))];
-      const c = await complete(prompt + prefix, next, out);
+      const c = await complete(prompt, prefix, next, out);
       evaluated += c.evaluated;
       for (const ch of next) {
         const q = (c.probs.get(ch) ?? 0) * mass;
@@ -211,10 +230,11 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   // prompt prefix out of its cache, evaluating each prefix again for every question.
   const ask: AskJev = (asked) => {
     // The request waits in the queue, so it is sealed now (privacy/send.ts): one frozen copy, verified, that every prompt
-    // is rendered from; a caller that changes its request afterwards changes nothing that is sent (PV2 review).
+    // is rendered from; a caller that changes its request afterwards changes nothing that is sent. It commits no charge:
+    // each prompt's own seal for its sink does (post), so a sink that refuses leaves the conversation's limit as it was.
     assertNoExcludedValue(asked);
-    const out = seal({ req: asked, wire: wireBody(asked, opts.model) });
-    const req = frozenRequest(asked, out.wire);
+    const out = seal({ req: asked, wire: wireBody(asked, opts.model) }, WIRE, false);
+    const req = frozenRequest(asked, out.wire, out.charged);
     const run = queue.then(() => answer(out, req));
     queue = run.catch(() => undefined);
     return run;

@@ -39,6 +39,18 @@ export function intentUserMessage(input: IntentInput): string {
   return JSON.stringify({ instruction: input.instruction, form: input.form, fields: input.fields, sections: input.sections, windows: input.windows, memory: input.memory, persons: input.persons }, null, 1);
 }
 
+/**
+ * What an intent request's chat body writes beside the input's own strings and keys (the chat sink's wording,
+ * privacy/send.ts): the system prompt, and the response format's schema around its refs.
+ */
+export const INTENT_WORDING: readonly string[] = [
+  INTENT_SYSTEM,
+  "json_schema ask_intent object array string enum items type strict schema required properties additionalProperties",
+  "route why scope section fields sources whose literals field text all list none any memory instruction user unnamed",
+  ...ROUTES,
+  ...REASONS,
+];
+
 /** A non-empty enum: an empty list of refs becomes the one placeholder "none", which checkIntent refuses as a ref. */
 const oneOf = (xs: readonly string[]): { type: "string"; enum: string[] } => ({ type: "string", enum: xs.length === 0 ? ["none"] : [...xs] });
 

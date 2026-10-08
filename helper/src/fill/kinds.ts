@@ -105,6 +105,7 @@ export function isNameLike(text: string, label: string | null): boolean {
 
 /** Punctuation that can wrap a word of a name in a line: "(Dana", "Whitfield,", "<dana@…>". */
 const WRAP = /^[("'“‘<[]+|[)"'”’>\],;:!?]+$/gu;
+const WRAP_FRONT = /^[("'“‘<[]+/u;
 
 /**
  * The names a line holds: each run of two or more capitalized words, joining words allowed between them
@@ -115,21 +116,36 @@ const WRAP = /^[("'“‘<[]+|[)"'”’>\],;:!?]+$/gu;
  * too, which errs toward withholding.
  */
 export function namesIn(line: string): string[] {
-  const out: string[] = [];
-  let run: string[] = [];
+  return namesInAt(line).map((n) => n.name);
+}
+
+/**
+ * namesIn's names, each with where it starts in the line when the line spells it as the name reads (`at`); a name whose
+ * words the line wraps in other marks has none.
+ */
+export function namesInAt(line: string): { name: string; at?: number }[] {
+  const out: { name: string; at?: number }[] = [];
+  let run: { w: string; at: number }[] = [];
   let names = 0;
   const end = (): void => {
-    while (run.length > 0 && NAME_JOINERS.has(run[run.length - 1] as string)) run.pop();
-    if (names >= 2) out.push(run.join(" "));
+    while (run.length > 0 && NAME_JOINERS.has(run[run.length - 1]!.w)) run.pop();
+    if (names >= 2) {
+      const name = run.map((x) => x.w).join(" ");
+      const at = run[0]!.at;
+      out.push(line.slice(at, at + name.length) === name ? { name, at } : { name });
+    }
     run = [];
     names = 0;
   };
-  for (const raw of line.split(/\s+/)) {
+  for (const m of line.matchAll(/\S+/gu)) {
+    const raw = m[0];
     const w = raw.replace(WRAP, "");
+    // Where the word starts: after the marks WRAP takes off its front.
+    const at = m.index + raw.length - raw.replace(WRAP_FRONT, "").length;
     if (!/\p{N}/u.test(w) && NAME_WORD.test(w)) {
-      run.push(w);
+      run.push({ w, at });
       names++;
-    } else if (names > 0 && NAME_JOINERS.has(w) && !(run.length >= 2 && NAME_JOINERS.has(run[run.length - 1] as string) && NAME_JOINERS.has(run[run.length - 2] as string))) run.push(w);
+    } else if (names > 0 && NAME_JOINERS.has(w) && !(run.length >= 2 && NAME_JOINERS.has(run[run.length - 1]!.w) && NAME_JOINERS.has(run[run.length - 2]!.w))) run.push({ w, at });
     else end();
     // Punctuation after a word ends the run: "Whitfield, see" is not one name with what follows.
     if (names > 0 && raw !== w && /[,;:!?)>\]"”’]$/u.test(raw)) end();

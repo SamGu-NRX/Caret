@@ -5,11 +5,12 @@ import { requireVercelDevelopment } from "../privacy/vercel.ts";
 import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
-import { UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
-import { frozenRequest, seal, sealedBody, storedRequest, type Sealed } from "../privacy/send.ts";
+import { asDisclosure, UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
+import { frozenRequest, seal, sendable, storedRequest, type Sealed } from "../privacy/send.ts";
 import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
+import { splitLines } from "../privacy/ledger/source.ts";
 
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -27,7 +28,7 @@ function setting(name: keyof HostEnv, env: HostEnv): string | undefined {
   if (direct !== undefined && direct !== "") return direct;
   const file = env[ENV.caret_env_file];
   if (file === undefined || file === "") return undefined;
-  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+  for (const line of splitLines(readFileSync(file, "utf8"))) {
     const m = /^\s*(?:export\s+)?([A-Z_]+)\s*=\s*(.*?)\s*$/.exec(line);
     if (m?.[1] === name && m[2] !== undefined) {
       const value = m[2].replace(/^(['"])(.*)\1$/, "$2").trim();
@@ -168,11 +169,6 @@ export interface JevRequest {
    */
   retry429?: boolean;
   /**
-   * Windows the user's Ask named, which may give this request up to WINDOW_CHARS whatever their kind (privacy.ts
-   * CONSENTED). Never sent; privacy.test.ts holds every other window to its usual rules.
-   */
-  consented?: readonly string[];
-  /**
    * G2: for each whose-value question (fill.ts ownerId), the text of the value it asks about, so an evaluation harness
    * answers from the value itself and never parses it back out of the question (page-loop-eval.ts canned Jev). Never
    * sent: the text is already in the question, through the ledger.
@@ -295,12 +291,28 @@ export interface SealedRequest {
 }
 
 /**
+ * Whether `reqs`, requests of one Disclosure, would pass their seals if sent now in order, committing nothing: each sealed
+ * as sealRequest seals it, against a copy of the operation's ledger (Disclosure.trialSends), so each is held to every
+ * window's limit alone and the conversations' unions across them, as the real seals hold them. The admission check for
+ * requests built ahead of sending (value settlement's pair, and the pair a clarification would send). Throws
+ * LedgerRefused when the ledger refuses one, and any other error a seal would throw.
+ */
+export function checkSealable(reqs: readonly JevRequest[]): void {
+  const d = asDisclosure(reqs[0]?.disclosure);
+  if (d === null) throw new UnmintedText("checkSealable: a request has no Disclosure");
+  if (reqs.some((r) => r.disclosure !== d)) throw new Error("checkSealable: the requests are of different Disclosures");
+  d.trialSends(() => {
+    for (const req of reqs) seal({ req, wire: wireBody(req) });
+  });
+}
+
+/**
  * PV2: seals a request before it is sent (privacy/send.ts seal): what an evaluation sends is `asked`, the frozen copy, and
  * what it stores of the request comes from that same copy (storedRecord), never from the live request.
  */
 export function sealRequest(req: JevRequest): SealedRequest {
   const sealed = seal({ req, wire: wireBody(req) });
-  return Object.freeze({ sealed, asked: frozenRequest(req, sealed.wire) });
+  return Object.freeze({ sealed, asked: frozenRequest(req, sealed.wire, sealed.charged) });
 }
 
 /**
@@ -359,7 +371,7 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
     assertNoExcludedValue(req);
     const wire = wireBody(req, route.model);
     // SC1 2b: every string on the wire was minted for this request, checked after wireBody so a string the client makes
-    // up shows too; checked again as it leaves, on every attempt (privacy/send.ts sealedBody).
+    // up shows too; checked again as it leaves, on every attempt (privacy/send.ts sendable).
     verifySent(req, wire);
     if (route.provider === "gateway") {
       wire.providerOptions = { gateway: { only: [checkGatewayModel(route.model)] } };
@@ -458,11 +470,11 @@ async function post(key: (provider: JevProvider) => string, timeoutMs: number, r
       res = await fetchFn(settings.url, {
         method: "POST",
         headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
-        body: sealedBody(sealed),
+        body: sendable(sealed),
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
-      // A request the boundary refused (privacy/send.ts sealedBody) is that refusal, not a network failure.
+      // A request the boundary refused (privacy/send.ts sendable) is that refusal, not a network failure.
       if (e instanceof UnmintedText) throw e;
       const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
       const rawDetail = e instanceof Error ? e.message : String(e);

@@ -5,7 +5,7 @@ import { redactWindow } from "../fill/redact.ts";
 //   - A word that names the source never names a field. "do the checkout details from my note" asks for the
 //     checkout fields, not the form's "Add a gift note"; B25 scoped that Ask to the gift note alone (held-08).
 //     So the words that name fields are the instruction with its source phrases blanked (fieldWords).
-//   - Naming a window is consent to read it for that request (B26 lead decision 1, privacy.ts consented). The
+//   - Naming a window is consent to read it for that request (B26 lead decision 1). The
 //     window an instruction names ("from my note", "Bea's email", "the Saturday Chris mentioned") is resolved here,
 //     by code, from the instruction and the windows' titles and senders, never by a model's choice.
 //

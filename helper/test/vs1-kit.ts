@@ -5,7 +5,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Snapshot } from "../src/protocol.ts";
-import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
+import { sealRequest, type AskJev, type JevRequest, type JevResult } from "../src/fill/jev.ts";
+import { sendable } from "../src/privacy/send.ts";
 import { mintOf, type FillTrace } from "../src/fill/fill.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { AskAsks, AskRefused, answerQuestion, planAsk, type AskDraft, type AskResume } from "../src/planner/ask.ts";
@@ -59,6 +60,8 @@ export interface Overrides {
   raw?: (req: JevRequest, qid: string, q: JevRequest["questions"][string]) => Answer | undefined;
   /** Rewrites a recorded window before the desk is built (a source's text, to test what it says). */
   mapSnap?: (s: Snapshot) => Snapshot;
+  /** Answers an owner question (fill.whose, `<candidate>_owner`) by the candidate's text; undefined leaves the oracle's. */
+  owner?: (text: string) => Answer | undefined;
 }
 
 export interface Run {
@@ -93,7 +96,7 @@ export function proposedOf(r: Pick<Run, "labelOf">, d: AskDraft | AskRefused | n
  * "split" (the default) answers it with splitFirst, so every field with a candidate goes on to value settlement, where
  * these tests look, as when settlement asked every field; "oracle" answers it as the scripted oracle does.
  */
-export async function runB31(id: string, o: Overrides & { window?: "page" | "reader"; values?: boolean; seed?: number; firstPass?: "split" | "oracle" } = {}): Promise<Run> {
+export async function runB31(id: string, o: Overrides & { window?: "page" | "reader"; values?: boolean; seed?: number; firstPass?: "split" | "oracle"; transport?: false } = {}): Promise<Run> {
   const ask = B31.find((x) => x.id === id);
   if (ask === undefined) throw new Error(`no B31 ask ${id}`);
   const form = corpus.forms.find((f) => f.id === ask.form);
@@ -105,6 +108,9 @@ export async function runB31(id: string, o: Overrides & { window?: "page" | "rea
   let current = ask.id;
   const oracle = realfillOracle({ asks: B31, corpus, current: () => current, traces: () => traces, corpusLabel: () => labelOf });
   const jev: AskJev = async (req) => {
+    // Through the production boundary first, as the Jev client sends a request (jev.ts sealRequest, then send.ts sendable),
+    // unless the test says it checks the builders alone (`transport: false`).
+    if (o.transport !== false) sendable(sealRequest(req).sealed);
     requests.push(req);
     if (o.fail?.(req) === true) throw new Error("Jev HTTP 503: the provider failed this request");
     const base: JevResult = await oracle(req);
@@ -131,6 +137,11 @@ export async function runB31(id: string, o: Overrides & { window?: "page" | "rea
         const options = Object.entries(q.criteria).map(([k, c]) => ({ id: k, output: optionOutput(c), source: t.options.get(k)?.text ?? null, criterion: c ?? "" }));
         const wording = (Object.keys(q.criteria).some((k) => /^[vne]\d+$/u.test(k)) ? 1 : 0) as 0 | 1;
         const a = o.value(label, wording, options, req);
+        if (a !== undefined) answers[qid] = a;
+      }
+      if (req.purpose === "fill.whose" && qid.endsWith("_owner") && o.owner !== undefined) {
+        const text = t?.options.get(qid.replace(/_owner$/u, ""))?.text;
+        const a = text === undefined ? undefined : o.owner(text);
         if (a !== undefined) answers[qid] = a;
       }
       if (req.purpose === "fill.verify" && o.verify !== undefined) {

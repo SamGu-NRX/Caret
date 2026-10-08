@@ -9,7 +9,7 @@
 import { ENV, processEnv, type HostEnv } from "../../host-env.ts";
 import { assertNoExcludedValue } from "../../privacy.ts";
 import { verifySent } from "../../privacy/disclosure.ts";
-import { appendStoredLine, seal } from "../../privacy/send.ts";
+import { appendStoredLine, seal, type StoreRecord } from "../../privacy/send.ts";
 import { withholdValues } from "../../privacy/exclude.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -127,6 +127,21 @@ function slowFromEnv(engine: DecideEngine, env: HostEnv, cacheDir: string | null
   });
 }
 
+/** A request log's record (privacy/send.ts StoreRecord): the sealed body, its sizes and timings, and an error's text. */
+const LOG_RECORD: Omit<StoreRecord, "build"> = {
+  name: "request log",
+  envelope: {
+    body: { kind: "wire" },
+    chars: { kind: "scalar", types: ["number"] },
+    sharedChars: { kind: "scalar", types: ["number"] },
+    latencyMs: { kind: "scalar", types: ["number"] },
+    inputTokens: { kind: "scalar", types: ["number"] },
+    afterMs: { kind: "scalar", types: ["number"] },
+    error: { kind: "answer", max: 2000 },
+  },
+  wording: [],
+};
+
 export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   const env = o.env ?? processEnv();
   const engine = baseEngine(o, env);
@@ -160,17 +175,18 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
       // Caret never carries withheld (privacy/send.ts storedLine).
       // Sealed once: the engine is asked, and the log written, from this frozen copy only.
       const sealed = seal({ req, wire: { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } } });
-      const asked = frozenRequest(req, sealed.wire);
+      const asked = frozenRequest(req, sealed.wire, sealed.charged);
       const t0 = performance.now();
       let r: Awaited<ReturnType<AskJev>>;
       try {
         r = await inner(asked);
       } catch (e) {
         // A failed request is logged with its error, which the eval's report shows only as the user's sentence.
-        appendStoredLine(log, sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 }), { mode: 0o600 });
+        const error = withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+        appendStoredLine(log, sealed, { ...LOG_RECORD, build: (w) => ({ body: w, chars: JSON.stringify(w).length, error, afterMs: performance.now() - t0 }) }, { mode: 0o600 });
         throw e;
       }
-      appendStoredLine(log, sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens }), { mode: 0o600 });
+      appendStoredLine(log, sealed, { ...LOG_RECORD, build: (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens }) }, { mode: 0o600 });
       return r;
     };
   }
