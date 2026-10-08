@@ -341,14 +341,14 @@ else:
             self.assertIn("export.sh", text)
 
 
-class SwiftTests(RecipeWorld):
-    """swift-tests.sh: `swift test` in each package of a fresh export of the pinned commit, with keytype and
-    llama.xcframework from the sealed inputs; every package runs; 11 on a test failure, 14 on a build error."""
+class SwiftWorld(RecipeWorld):
+    """A worktree with the three Swift packages committed, sealed keytype inputs, and swift-tests.sh run in it."""
 
     def setUp(self):
         super().setUp()
         for pkg in ("apps/caret", "apps/screen-reader", "bridge"):
             write(os.path.join(self.worktree, pkg, "Package.swift"), "// {}\n".format(pkg))
+        write(os.path.join(self.worktree, "apps/caret/Tests/__Snapshots__/T/old.png"), "old\n")  # a committed reference
         subprocess.run(["git", "-C", self.worktree, "init", "-q"], check=True)
         subprocess.run(["git", "-C", self.worktree, "add", "-A"], check=True)
         subprocess.run(["git", "-C", self.worktree, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
@@ -373,6 +373,11 @@ class SwiftTests(RecipeWorld):
             calls = fh.read().splitlines()
         self.assertEqual(os.listdir(self.tmp), [])  # the export and the builds are gone, whatever happened
         return done, result, calls
+
+
+class SwiftTests(SwiftWorld):
+    """swift-tests.sh: `swift test` in each package of a fresh export of the pinned commit, with keytype and
+    llama.xcframework from the sealed inputs; every package runs; 11 on a test failure, 14 on a build error."""
 
     def test_every_package_passes(self):
         done, result, calls = self.swift()
@@ -408,6 +413,44 @@ class SwiftTests(RecipeWorld):
         done, result, calls = self.swift({"STUB_SWIFT_BUILD_ERROR": "bridge"})
         self.assertEqual(done.returncode, 14)
         self.assertIn(("suite", "swift-bridge-t", 14), self.steps(result))
+
+
+class SwiftRecordMode(SwiftWorld):
+    """CARET_RECORD_SNAPSHOTS=1: every image file the run adds or changes in the export is copied to OUT/snapshots at
+    its path in the repository, with OUT/snapshots/manifest.json giving each one's sha256 and whether it was added or
+    modified; any other file the run adds or changes there is listed (not copied). Without it, nothing is copied."""
+
+    def manifest(self):
+        with open(os.path.join(self.out, "snapshots", "manifest.json")) as fh:
+            return json.load(fh)
+
+    def test_recorded_images_are_copied_out_with_their_sha256(self):
+        import hashlib
+        done, result, calls = self.swift({"CARET_RECORD_SNAPSHOTS": "1"})
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        m = self.manifest()
+        images = {i["path"]: i for i in m["images"]}
+        expected = {"apps/caret/Tests/__Snapshots__/T/new.1.png": "added",
+                    "apps/caret/Tests/__Snapshots__/T/old.png": "modified",
+                    "apps/screen-reader/Tests/__Snapshots__/T/new.1.png": "added",
+                    "bridge/Tests/__Snapshots__/T/new.1.png": "added"}
+        self.assertEqual({p: i["change"] for p, i in images.items()}, expected)
+        for path, item in images.items():
+            with open(os.path.join(self.out, "snapshots", path), "rb") as fh:
+                self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), item["sha256"])
+        with open(os.path.join(self.out, "snapshots/apps/caret/Tests/__Snapshots__/T/old.png")) as fh:
+            self.assertEqual(fh.read(), "recorded\n")
+        self.assertEqual(sorted(o["path"] for o in m["other_changes"]),
+                         ["apps/caret/.swiftpm/state.txt", "apps/screen-reader/.swiftpm/state.txt",
+                          "bridge/.swiftpm/state.txt"])
+        self.assertFalse(os.path.exists(os.path.join(self.out, "snapshots/bridge/.swiftpm")))
+        self.assertIn(("prepare", "snapshots", 0), self.steps(result))
+        self.assertEqual(m["rev"], self.rev)
+
+    def test_without_record_mode_nothing_is_copied(self):
+        done, result, calls = self.swift()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "snapshots")))
 
 
 class VmCancelProof(RecipeWorld):
