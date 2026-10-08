@@ -11,7 +11,7 @@ import { planWithCode } from "../src/planner/codeplan.ts";
 import type { WriterPort } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import { STAND_IN } from "./setup/verifier.ts";
-import { field, node, snap, text } from "./builders.ts";
+import { field, node, snap, text, optionIs } from "./builders.ts";
 import { closeRigs, rig } from "./page-rig.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
 
@@ -71,7 +71,7 @@ function jev(o: { owner?: () => string; whose?: string; during?: (req: JevReques
       else if (crit.includes("user") || crit.includes("person")) answers[id] = { choice: o.whose ?? "user", confidence: 1 };
       else if (crit.includes("asks")) answers[id] = { choice: "asks", confidence: 1 };
       else {
-        const hit = Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${PHONE}"`))?.[0];
+        const hit = Object.entries(q.criteria).find(([, d]) => optionIs(d, PHONE))?.[0];
         answers[id] = { choice: hit ?? (crit.includes("keep") ? "keep" : (crit.find((c) => c === "none") ?? crit[0] ?? "none")), confidence: 1 };
       }
     }

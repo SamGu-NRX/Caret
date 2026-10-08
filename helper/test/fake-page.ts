@@ -39,7 +39,18 @@ export const PICKS: Record<string, string> = {
   "Available from": "Oct 19, 2026 at 9:00 AM",
   "Country of residence": "United States",
 };
-export const byLabel = (_: string, ins: string): string | null => PICKS[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null;
+/** PICKS's values as an Ask's options state them, converted for their controls (fill.ts optionsOf). */
+export const PICKED_OUTPUTS: Record<string, string> = {
+  "Do you have a valid driving license?": "checked",
+  "Start date": "2026-10-20",
+  "Interview time": "15:30",
+  "Available from": "2026-10-19T09:00",
+};
+export const byLabel = (_: string, ins: string): string[] | null => {
+  const label = /Label: '([^']+)'/.exec(ins)?.[1] ?? "";
+  const picked = [PICKS[label], PICKED_OUTPUTS[label]].filter((x): x is string => x !== undefined);
+  return picked.length === 0 ? null : picked;
+};
 
 export const c = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({
   id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, 0, 200, 20], ...extra,

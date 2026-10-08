@@ -17,7 +17,7 @@ import { fieldKinds } from "../src/fill/kinds.ts";
 import { fillPlan, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { assertNoExcludedValue } from "../src/privacy.ts";
 import type { HelperMessage, TaskProgress } from "../src/protocol.ts";
-import { field, MAIL_APP, snap, text } from "./builders.ts";
+import { field, MAIL_APP, snap, text, optionIs } from "./builders.ts";
 import { executorWindow, FakeApp, K, WIN, wireButtons } from "./fake-app.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { holds } from "./recheck.ts";
@@ -53,7 +53,7 @@ function scripted(o: { pick: (label: string) => string | null; others?: RegExp; 
       else {
         const label = /Label: '(.+?)'/u.exec(ins)?.[1];
         const want = label === undefined ? null : o.pick(label);
-        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`))?.[0];
+        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want))?.[0];
         answers[id] = { choice: hit ?? "none", confidence: 0.95 };
       }
     }

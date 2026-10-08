@@ -11,7 +11,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { planAsk, type AskDraft } from "../src/planner/ask.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
-import { field, scopeLabel, snap } from "./builders.ts";
+import { field, scopeLabel, snap, optionIs } from "./builders.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));
@@ -41,7 +41,7 @@ function jev(owner: { choice: string; confidence: number }) {
         if (id.endsWith("_whose")) return [id, { choice: "other" in q.criteria ? "other" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
         if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
         const want = /Landlord phone/u.test(ins) ? "(512) 555-0193" : /Landlord or property manager name/u.test(ins) ? "Gary Pruitt" : null;
-        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
+        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
         return [id, { choice: hit?.[0] ?? "none", confidence: 0.95 }];
       }),
     );

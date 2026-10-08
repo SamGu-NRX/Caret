@@ -10,7 +10,7 @@ import { fillPlan, recheckFill, writtenFields } from "../src/offers/fill-popup.t
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { Node } from "../src/protocol.ts";
 import { STAND_IN } from "./setup/verifier.ts";
-import { field, node, snap, text } from "./builders.ts";
+import { field, node, snap, text, optionIs } from "./builders.ts";
 
 const T0 = 1_000_000;
 const PHONE = "555-0388";
@@ -49,7 +49,7 @@ function jev(owner?: () => "user" | "other"): AskJev {
         if (req.purpose === "fill.verify") return [id, { choice: "exact", confidence: 1 }];
         if (id.endsWith("_whose")) return [id, { choice: "user", confidence: 1 }];
         if (id.endsWith("_owner")) return [id, { choice: owner?.() ?? (/\bneither\b[^.\n]*\bmine\b/iu.test(`${ins}\n${notesIn(req, ins)}`) ? "other" : "user"), confidence: 1 }];
-        const hit = Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${PHONE}"`))?.[0];
+        const hit = Object.entries(q.criteria).find(([, d]) => optionIs(d, PHONE))?.[0];
         return [id, { choice: hit ?? "none", confidence: 1 }];
       }),
     );

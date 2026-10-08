@@ -16,7 +16,7 @@ import { PlannerError } from "../src/planner/validate.ts";
 import type { MemoryValue } from "../src/planner/trace.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { rng } from "./large-scene.ts";
-import { field, node, scopeLabel, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap, optionIs } from "./builders.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));
@@ -309,7 +309,7 @@ describe("through planAsk", () => {
           }
           if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
           const want = Object.entries(values).find(([label]) => ins.includes(`'${label}'`))?.[1];
-          const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
+          const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
           return [id, { choice: hit?.[0] ?? "none", confidence: 0.9 }];
         }),
       );

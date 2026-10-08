@@ -7,7 +7,7 @@ import { makeFieldContract, setTestVerifier, verifyProposed } from "../src/fill/
 import type { AboutValue } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { STAND_IN } from "./setup/verifier.ts";
-import { field, snap } from "./builders.ts";
+import { field, snap, optionIs } from "./builders.ts";
 import { OWNER_NOTE_CHARS, ownerNoteGate } from "../src/privacy.ts";
 import { OwnerVerdicts } from "../src/fill/owner-cache.ts";
 
@@ -53,7 +53,7 @@ function jev(pick: (label: string) => string | null, owner: (shown: string) => "
         if (id.endsWith("_whose")) return [id, { choice: "user", confidence: 1 }];
         if (id.endsWith("_owner")) return [id, { choice: owner(`${ins}\n${noteOf(req, ins)}`), confidence: 1 }];
         const want = pick(/Label: '([^']+)'/u.exec(ins)?.[1] ?? "");
-        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`))?.[0];
+        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want))?.[0];
         return [id, { choice: hit ?? "none", confidence: 1 }];
       }),
     );
@@ -192,8 +192,8 @@ describe("HA2 rule 1: the exactness check makes no ownership claim", () => {
     await verifyProposed([{ field, text: USER_PHONE, display: USER_PHONE, provenance: { kind: "instruction", span: USER_PHONE }, owner: "user" }], { askJev: ask, ledger: null, now: T0, authority: { kind: "fill", proposalId: "p1" } });
     expect(sent.sort()).toEqual(
       [
-        `Field: Text field. Label: 'Phone'. Caret proposes to type this into it, with nothing added or removed: "${USER_PHONE}". It was read from the user's instruction. What is the proposed text, for this field?`,
-        `Proposed text for the field 'Phone': "${USER_PHONE}". Read from the user's instruction. The field: Text field. Label: 'Phone'. If Caret typed exactly this text into the field, what would it have typed?`,
+        `Field: Text field. Label: 'Phone'. Required content and format: nothing beyond what its label says. User request: none. Explicit user selections: none. Proposed operation: type this text into the text field. Exact output: "${USER_PHONE}". Source evidence: the user's instruction. Derivation: none. How does this output fit this field?`,
+        `Exact output: "${USER_PHONE}". Operation: type this text into the text field. Source evidence: the user's instruction. Derivation: none. Field: Text field. Label: 'Phone'. Required content and format: nothing beyond what its label says. User request: none. Explicit user selections: none. If Caret performs this operation without changing the output, which description applies to the field's resulting value?`,
       ].sort(),
     );
   });

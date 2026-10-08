@@ -112,17 +112,28 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
   },
   "fill.values": {
     "questions.*.criteria.*": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording"], max: 1400 }, // seen 426
-    "questions.*.instructions": { reasons: ["descriptor", "instruction", "ownWording"], max: 2500 }, // seen 989
+    // Value settlement: an Ask's value question carries the request, the user's picks (a field's name, a window's title,
+    // a person, a value), the section path and the field's contract (held: code's reading of its label) around the
+    // descriptor. UNMEASURED: the old 2500 plus the 500-character request and as much again for the rest. "plan": the
+    // fresh pair after a pick is composed again from texts the verifier minted as plan text (its field, its contract), and
+    // past Disclosure's MAX_WAYS the composition carries every reason of its parts (live B26, one pick).
+    "questions.*.instructions": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording", "plan"], max: 3500 }, // seen 989 before value settlement
     "state.destination_window": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 99
     "state.form_fields": { reasons: ["candidate", "descriptor", "instruction", "memory", "ownWording"], max: 2900 }, // seen 1176
     "state.instruction": { reasons: ["instruction"], max: 700 }, // seen 92
+    // Value settlement: the whole units an Ask's options name, as fill.whose's source_notes.
+    "state.source_notes.*": { reasons: ["candidate"], max: 1200 },
     "state.task": { reasons: ["candidate", "descriptor", "instruction", "memory", "ownWording"], max: 1800 }, // seen 624
   },
   "fill.verify": {
     "questions.*.criteria.*": { reasons: ["ownWording"], max: 300 }, // seen 118
-    "questions.*.instructions": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording", "plan"], max: 2800 }, // seen 1118
+    // Value settlement adds the request and the user's picks: UNMEASURED, the old 2800 plus the 500-character request and as much again.
+    "questions.*.instructions": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording", "plan"], max: 3800 }, // seen 1118 before value settlement
     "state.instruction": { reasons: ["instruction"], max: 800 }, // seen 135
-    "state.task": { reasons: ["ownWording"], max: 200 }, // seen 84
+    // Value settlement: the whole unit each Ask value sits in, as the value questions sent it.
+    "state.source_notes.*": { reasons: ["candidate"], max: 1200 },
+    // VERIFY_TASK is 335 characters (contract.ts); doubled and rounded up.
+    "state.task": { reasons: ["ownWording"], max: 700 },
   },
   "fill.whose": {
     "questions.*.criteria.*": { reasons: ["candidate", "descriptor", "instruction", "ownWording"], max: 1200 }, // seen 135
@@ -349,8 +360,10 @@ export const ITEMS: { readonly [K in ShapeKey]: Readonly<Record<string, number>>
   "draft.check": { "questions.*": 4 }, // seen 2
   "event.card": { "questions.*": 2, "questions.*.criteria.*": 4 }, // seen 1, 2
   "executor.target": { "questions.*": 2, "questions.*.criteria.*": 41 }, // seen 1; executor/target.ts MAX_TARGET_CANDIDATES and none
-  "fill.values": { "questions.*": 20, "questions.*.criteria.*": 100 }, // fill.ts MAX_FIELDS; MAX_CANDIDATES (80), remembered values and none (seen 81)
-  "fill.verify": { "questions.*": 40, "questions.*.criteria.*": 8 }, // two per MAX_FIELDS (seen 20); seen 5
+  // Value settlement's source_notes: at most one unit per option a question offers (its criteria's count).
+  "fill.values": { "questions.*": 20, "questions.*.criteria.*": 100, "state.source_notes.*": 100 }, // fill.ts MAX_FIELDS; MAX_CANDIDATES (80), remembered values and none (seen 81)
+  // source_notes: the one unit each value sits in, at most one per value of a batch (contract.ts VERIFY_BATCH).
+  "fill.verify": { "questions.*": 40, "questions.*.criteria.*": 8, "state.source_notes.*": 20 }, // two per MAX_FIELDS (seen 20); seen 5
   "fill.whose": { "questions.*": 60, "questions.*.criteria.*": 8, "state.source_notes.*": 40 }, // MAX_FIELDS and MAX_OWNERS; seen 4; one per MAX_OWNERS
   "goal": {
     "input.snapshots[*]": 4, // goals/inventory.ts MAX_GOAL_WINDOWS and the calendar

@@ -15,7 +15,7 @@ import { lowerGoal } from "../src/goals/lower.ts";
 import { runCodePlan } from "../src/codemode/sandbox.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import { caseWindow, cannedProgram, goalScene, mailWindow, standInJev, SUPPORT, textField, type CannedStep, type GoalScene } from "./goal-desk.ts";
-import { field, node, scopeLabel, snap } from "./builders.ts";
+import { field, node, optionIs, scopeLabel, snap } from "./builders.ts";
 
 const PAGE = "page:i2:9";
 const WEB = "pg/web";
@@ -67,7 +67,7 @@ const jev = (asks: readonly string[], seen: JevRequest[] = []): AskJev => async 
         if (req.purpose === "ask.scope") return pick(asks.includes(scopeLabel(ins)) ? "asks" : "not");
         if ("yes" in q.criteria) return pick("yes");
         const want = Object.entries(VALUES).find(([l]) => ins.includes(`'${l}'`))?.[1];
-        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => String(d).startsWith(`"${want}"`));
+        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
         if (hit !== undefined) return pick(hit[0]);
         if ("user" in q.criteria) return pick("user");
         return pick(Object.keys(q.criteria).at(-1) ?? "none");

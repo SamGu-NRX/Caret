@@ -30,7 +30,7 @@ import { fieldWords, restrictsSources } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { jevFailedError, type AskPart } from "./says.ts";
 import { MAX_ASK_OPTIONS } from "../protocol.ts";
-import { sectionPlacement } from "../fill/ask-scope.ts";
+import { NO_SECTION, PLACEMENT_UNKNOWN, sectionPlacement } from "../fill/ask-scope.ts";
 
 /** Lowest confidence for the route, why, source and whose heads: plan section 3's provisional router floor, not calibrated. */
 export const HEAD_FLOOR = ROUTE_CUTOFF;
@@ -122,9 +122,6 @@ export const SCOPE_OPTIONS = {
 
 const CONTROL_WORDS = { text: "text field", date: "date field", time: "time field", select: "pop-up menu", radio: "set of radio buttons", checkbox: "checkbox", combobox: "combo box" } as const satisfies Record<Control, string>;
 
-/** A field's section path in Caret's own words when the window shows none, or can't say. */
-const NO_SECTION = "(no section or group)";
-const PLACEMENT_UNKNOWN = "(placement unknown)";
 /** What the outline says after its list when the snapshot left fields out. */
 const FIELDS_CUT = "The form has more fields than these.";
 

@@ -3,7 +3,7 @@
 // and nothing else trusted: Jev still chooses every value, sources stay what the user picked, and must-refuse asks
 // stay refusals. Imports only what existed before B29, so each test fails on the old code instead of failing to load.
 // All text is synthetic.
-import { answeringScope } from "./builders.ts";
+import { answeringScope, optionIs } from "./builders.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
@@ -73,7 +73,7 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
         if (id.endsWith("_owner")) return [id, { choice: owner(ins), confidence: 0.9 }];
         if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
         const want = pick(ins);
-        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
+        const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => optionIs(d, want));
         return [id, { choice: hit?.[0] ?? "none", confidence: 0.9 }];
       }),
     );

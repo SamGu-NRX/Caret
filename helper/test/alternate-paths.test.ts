@@ -13,7 +13,7 @@ import { macClock } from "../src/offers/event-time.ts";
 import type { DraftPlan } from "../src/codemode/types.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import type { Node, PageControl } from "../src/protocol.ts";
-import { field, jevPickingText, node, snap, text, value } from "./builders.ts";
+import { field, jevPickingText, node, snap, text, value, optionIs } from "./builders.ts";
 import { alternateReason } from "../src/fill/alternate.ts";
 import { c } from "./fake-page.ts";
 import { closeRigs, rig, WIN } from "./page-rig.ts";
@@ -205,7 +205,7 @@ describe("R2: the native planner checks the user's saved primary identity", () =
       model: "jev-test",
       answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
         const ins = String(q.instructions);
-        const hit = /Alternate email/u.test(ins) && !/Work email/u.test(ins) ? Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${EMAIL}"`))?.[0] : undefined;
+        const hit = /Alternate email/u.test(ins) && !/Work email/u.test(ins) ? Object.entries(q.criteria).find(([, d]) => optionIs(d, EMAIL))?.[0] : undefined;
         return [id, { choice: hit ?? ("keep" in q.criteria ? "keep" : (Object.keys(q.criteria)[0] ?? "none")), confidence: 0.95 }];
       })),
       inputTokens: 10, latencyMs: 1, costUsd: 0,
