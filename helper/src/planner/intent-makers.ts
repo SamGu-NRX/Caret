@@ -38,7 +38,7 @@ export interface IntentMaker {
    * `settled`: what the request's scope question already settled (fill/ask-scope.ts Settled), which the heads maker uses
    * instead of asking it again (I2 ruling: one request, one settlement); other makers ignore it.
    */
-  make(snap: IntentSnapshot, signal?: AbortSignal, settled?: Pick<Settled, "asks" | "unclear" | "sectionless" | "section">): Promise<{ intent: AskIntent; use: MakerUse }>;
+  make(snap: IntentSnapshot, signal?: AbortSignal, settled?: Pick<Settled, "asks" | "unclear" | "sectionless" | "section" | "notFound">): Promise<{ intent: AskIntent; use: MakerUse }>;
 }
 
 const IntentJson = z

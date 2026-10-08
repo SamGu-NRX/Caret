@@ -227,6 +227,14 @@ function build(w: WindowState): WindowState {
   const lost = new Map<string, { text: string; dropped: Set<number> }[]>();
   /** Nodes left out, so their descendants are too: a container labelled for a secret holds what it labels. */
   const gone = new Set<string>();
+  /**
+   * SCP1: headings redaction took, kept as headings with no text. A heading bounds the section before it, so a field
+   * after "Password and security" is not placed under the heading before that one (re-review of 9939ac2).
+   */
+  const stubs = new Map<string, Node>();
+  const heading = (n: Node): void => {
+    if (n.role === "AXHeading") stubs.set(n.key, { key: n.key, parent: n.parent, role: "AXHeading" });
+  };
   for (const n of w.nodes.values()) {
     // A node's own label or placeholder, as attributes, that names a secret takes the node and its value, whatever its
     // role (G2 round 6 review: a cell labelled "Password" holding an email). A static text whose only text is its label
@@ -236,8 +244,13 @@ function build(w: WindowState): WindowState {
     // AX can split a marker between its own attributes, such as label "API" and value "key: ...".
     const attrs = [n.label, n.placeholder, n.value].filter((t): t is string => t !== undefined && t.trim() !== "");
     const splitMarker = attrs.some((a, i) => attrs.some((b, j) => i !== j && markerAcross(a, b)));
-    if ((n.parent !== null && gone.has(n.parent)) || dropped.has(n.key) || split.has(n.key) || splitMarker || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
+    if (n.parent !== null && gone.has(n.parent)) {
       gone.add(n.key);
+      continue;
+    }
+    if (dropped.has(n.key) || split.has(n.key) || splitMarker || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
+      gone.add(n.key);
+      heading(n);
       continue;
     }
     // The node with its texts' secret lines gone. A node that gives no text, and had some, is gone with them.
@@ -250,6 +263,7 @@ function build(w: WindowState): WindowState {
     const had = (n.value ?? "") !== "" || (n.label ?? "") !== "";
     if (had && (value ?? "") === "" && (label ?? "") === "" && n.editable !== true) {
       gone.add(n.key);
+      heading(n);
       continue;
     }
     // SCP1: a page's heading or section text that names a secret is left out, as a label that names one is. A section
@@ -285,6 +299,17 @@ function build(w: WindowState): WindowState {
     queue.push(key);
   }
   for (const key of gone) nodes.delete(key);
+  // A text-less heading goes back in its place in document order, unless what holds it went too.
+  if (stubs.size > 0) {
+    const ordered = new Map<string, Node>();
+    for (const [k, n] of w.nodes) {
+      const stub = stubs.get(k);
+      const kept = nodes.get(k) ?? (stub !== undefined && (n.parent === null || !gone.has(n.parent)) ? stub : undefined);
+      if (kept !== undefined) ordered.set(k, kept);
+    }
+    nodes.clear();
+    for (const [k, n] of ordered) nodes.set(k, n);
+  }
   // The reader's typed values, less those of a dropped node, and those standing on a dropped line: a value over several
   // lines goes when any line it covers went ("4410 Speedway\napt 2, Austin" under a dropped "Password:" opener), judged
   // by the lines where it stands, never by a dropped line's text (G2 round 6: a dropped "Austin" took an address).

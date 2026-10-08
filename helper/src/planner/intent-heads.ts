@@ -165,22 +165,26 @@ export const SECTION_QUESTION = "section";
 export const SECTION_OPTIONS = {
   whole: "The whole form: everything Caret can fill, with no one part of it named.",
   fields: "Particular fields or values, or more than one part of the form: not exactly one section.",
-  unclear: "Unclear: Caret can't tell which of these the request means.",
+  unlisted: "One section of the form that isn't in this list: the request names a section, and none listed is it.",
+  unclear: "Unclear: Caret can't tell which of these the request means, or whether it names a section at all.",
 } as const;
+/** SCP1: what the section question says after its list when the window shows more sections than it lists. */
+const SECTIONS_CUT = "The list may be incomplete: the form has more sections than these.";
 ownWording(...Object.values(SECTION_OPTIONS));
 
-const sectionOption = (name: string): string => `One section: the fields under the heading '${name}', and no others.`;
-const sectionList = (snap: IntentSnapshot): string => snap.headings.map((h) => `'${sendable(h.name, SECTION)}'`).join(", ");
+const sectionOption = (name: string): string => `One section: the fields in the section '${name}', and no others.`;
+const sectionList = (snap: IntentSnapshot): string => `${snap.headings.length === 0 ? "none listed" : snap.headings.map((h) => `'${sendable(h.name, SECTION)}'`).join(", ")}.${snap.sectionsCut ? ` ${SECTIONS_CUT}` : ""}`;
 
-/** The section question's two wordings. The first quotes the request first; the second lists the headings first. */
+/** The section question's two wordings. The first quotes the request first; the second lists the sections first. */
 const SECTION_WORDINGS = [
-  (instr: string, list: string): string => `The user asked Caret: "${instr}". The form's sections, by heading: ${list}. Does the request ask for exactly one of these sections, and if so which?`,
-  (instr: string, list: string): string => `Headings on the form: ${list}. The request: "${instr}". Is the request about one section of the form, the whole form, or particular fields?`,
+  (instr: string, list: string): string => `The user asked Caret: "${instr}". The form's sections: ${list} Does the request ask for exactly one section of the form, and if so which?`,
+  (instr: string, list: string): string => `Sections of the form: ${list} The request: "${instr}". Is the request about one section of the form, the whole form, or particular fields?`,
 ] as const;
 
 function sectionQuestion(snap: IntentSnapshot, wording: 0 | 1): JevRequest["questions"][string] {
   const criteria: Record<string, string> = { whole: SECTION_OPTIONS.whole, fields: SECTION_OPTIONS.fields };
   for (const h of snap.headings) criteria[h.ref] = sectionOption(sendable(h.name, SECTION));
+  criteria.unlisted = SECTION_OPTIONS.unlisted;
   criteria.unclear = SECTION_OPTIONS.unclear;
   return { type: "choice", instructions: SECTION_WORDINGS[wording](instructionForModel(snap.instruction), sectionList(snap)), criteria };
 }
@@ -190,7 +194,7 @@ export function scopeRequest(snap: IntentSnapshot, wording: 0 | 1, only?: Readon
   const declared = snap.ledger.declared();
   const questions: JevRequest["questions"] = {};
   for (const f of scopeFields(snap)) if (only === undefined || only.has(f.key)) questions[scopeId(f.ref)] = { type: "choice", instructions: SCOPE_WORDINGS[wording](instructionForModel(snap.instruction), fieldContext(snap, f)), criteria: { ...SCOPE_OPTIONS } };
-  if (snap.headings.length > 0) questions[SECTION_QUESTION] = sectionQuestion(snap, wording);
+  if (asksSection(snap)) questions[SECTION_QUESTION] = sectionQuestion(snap, wording);
   const state = { instruction: instructionForModel(snap.instruction), form: formTitle(snap), task: "Caret checks, field by field, which fields of the form the user's request asks it to fill in or change." };
   // Raw text, not JSON: a heading with a quote or a backslash is sent, so its snippet must be declared (A3 review 2).
   const sent = [state.instruction, state.form, ...Object.values(questions).flatMap((q) => [String(q.instructions), ...Object.values(q.criteria).map((c) => c ?? "")])].join("\n");
@@ -198,13 +202,23 @@ export function scopeRequest(snap: IntentSnapshot, wording: 0 | 1, only?: Readon
 }
 
 /**
- * SCP1: the one section both wordings of the section question chose, at SCOPE_CUTOFF or above, by its heading text; null
- * when the question was not asked (no heading shown), or either wording chose the whole form, fields, unclear or
- * another section, or either is below the cutoff. Null never adds a field: the veto only removes. Throws when Jev left
+ * SCP1: whether the scope ask carries the section question: when the window shows a section, or has sections it could
+ * not list. With none at all, a request can name no section Caret could hold it to, and the question would only risk
+ * an "isn't in this list" that withholds a request about particular fields.
+ */
+const asksSection = (snap: IntentSnapshot): boolean => snap.headings.length > 0 || snap.sectionsCut;
+
+/** What both wordings of the section question settled on: one listed section by its text, or one the list lacks. */
+export type SectionAnswer = { readonly kind: "section"; readonly name: string } | { readonly kind: "unlisted" };
+
+/**
+ * SCP1: what both wordings of the section question chose, at SCOPE_CUTOFF or above: one listed section, or "a section
+ * this list lacks". Null when the question was not asked, or either wording chose the whole form, fields or unclear,
+ * or they differ, or either is below the cutoff. Null never adds a field: the veto only removes. Throws when Jev left
  * the question unanswered or answered outside its options.
  */
-export function sectionVerdict(snap: IntentSnapshot, scope: readonly [JevResult, JevResult], cutoff: number = SCOPE_CUTOFF): string | null {
-  if (snap.headings.length === 0) return null;
+export function sectionVerdict(snap: IntentSnapshot, scope: readonly [JevResult, JevResult], cutoff: number = SCOPE_CUTOFF): SectionAnswer | null {
+  if (!asksSection(snap)) return null;
   const options = new Set([...Object.keys(SECTION_OPTIONS), ...snap.headings.map((h) => h.ref)]);
   const answers = scope.map((r) => {
     const a = r.answers[SECTION_QUESTION];
@@ -214,7 +228,9 @@ export function sectionVerdict(snap: IntentSnapshot, scope: readonly [JevResult,
   });
   const [x, y] = answers as [{ choice: string; confidence: number }, { choice: string; confidence: number }];
   if (x.choice !== y.choice || x.confidence < cutoff || y.confidence < cutoff) return null;
-  return snap.headings.find((h) => h.ref === x.choice)?.name ?? null;
+  if (x.choice === "unlisted") return { kind: "unlisted" };
+  const name = snap.headings.find((h) => h.ref === x.choice)?.name;
+  return name === undefined ? null : { kind: "section", name };
 }
 
 /**
@@ -225,6 +241,8 @@ export function sectionVerdict(snap: IntentSnapshot, scope: readonly [JevResult,
  */
 export interface SectionVeto {
   readonly section: string | null;
+  /** The request named a section the question's list lacks: every field is withheld, said as SAYS.sectionNotFound. */
+  readonly notFound: boolean;
   readonly outside: ReadonlySet<string>;
   readonly unknown: ReadonlySet<string>;
 }
@@ -235,8 +253,10 @@ export interface SectionVeto {
  * later settlement can't widen the request.
  */
 export function sectionVeto(snap: IntentSnapshot, scope: readonly [JevResult, JevResult], held: string | null = null): SectionVeto | null {
-  const section = held ?? sectionVerdict(snap, scope);
-  if (section === null) return null;
+  const answer: SectionAnswer | null = held !== null ? { kind: "section", name: held } : sectionVerdict(snap, scope);
+  if (answer === null) return null;
+  if (answer.kind === "unlisted") return { section: null, notFound: true, outside: new Set(), unknown: new Set(scopeFields(snap).map((f) => f.key)) };
+  const section = answer.name;
   const member = sectionMembership(windowOutline(redactWindow(snap.window)), section);
   const outside = new Set<string>();
   const unknown = new Set<string>();
@@ -245,7 +265,7 @@ export function sectionVeto(snap: IntentSnapshot, scope: readonly [JevResult, Je
     if (m === "outside") outside.add(f.key);
     else if (m === "unknown") unknown.add(f.key);
   }
-  return { section, outside, unknown };
+  return { section, notFound: false, outside, unknown };
 }
 
 const vetoed = (veto: SectionVeto | null, f: IntentField): boolean => veto !== null && (veto.outside.has(f.key) || veto.unknown.has(f.key));
@@ -270,9 +290,9 @@ export function scopeVerdict(scope: readonly [JevResult, JevResult], ref: string
  * window). `only` limits it to those fields, by key. The fields and upload fields Jev chose and the ones it left unclear,
  * in document order; Caret cannot ask the user mid-goal, so a goal's callers write only `asks`.
  */
-export async function settleFields(snap: IntentSnapshot, askJev: AskJev, only?: ReadonlySet<string>, held: string | null = null): Promise<{ asks: IntentField[]; unclear: IntentField[]; sectionless: IntentField[]; section: string | null }> {
+export async function settleFields(snap: IntentSnapshot, askJev: AskJev, only?: ReadonlySet<string>, held: string | null = null): Promise<{ asks: IntentField[]; unclear: IntentField[]; sectionless: IntentField[]; section: string | null; notFound: boolean }> {
   const fields = scopeFields(snap).filter((f) => only === undefined || only.has(f.key));
-  if (fields.length === 0) return { asks: [], unclear: [], sectionless: [], section: held };
+  if (fields.length === 0) return { asks: [], unclear: [], sectionless: [], section: held, notFound: false };
   let rs: [JevResult, JevResult];
   try {
     rs = await Promise.all([askJev(scopeRequest(snap, 0, only)), askJev(scopeRequest(snap, 1, only))]);
@@ -286,6 +306,7 @@ export async function settleFields(snap: IntentSnapshot, askJev: AskJev, only?: 
   const chosen = verdicts.filter((x) => x.v === "asks").map((x) => x.f);
   return {
     section: veto?.section ?? null,
+    notFound: veto?.notFound === true,
     asks: chosen.filter((f) => !vetoed(veto, f)),
     unclear: verdicts.filter((x) => x.v === "unclear" && !vetoed(veto, x.f)).map((x) => x.f),
     sectionless: veto === null ? [] : chosen.filter((f) => veto.unknown.has(f.key)),
@@ -373,7 +394,7 @@ export function headsIntentMaker(askJev: AskJev): IntentMaker {
       // SCP1: a settlement made before (helper.ts settleRequest) applied the section veto when it settled; what it left to
       // the user for that is said here too.
       const pair: [JevResult, JevResult] | null = a === undefined || b === undefined ? null : [a, b];
-      const veto: SectionVeto | null = settled !== undefined ? ((settled.section ?? null) === null && (settled.sectionless ?? []).length === 0 ? null : { section: settled.section ?? null, outside: new Set(), unknown: new Set(settled.sectionless) }) : pair === null ? null : sectionVeto(snap, pair);
+      const veto: SectionVeto | null = settled !== undefined ? ((settled.section ?? null) === null && settled.notFound !== true && (settled.sectionless ?? []).length === 0 ? null : { section: settled.section ?? null, notFound: settled.notFound === true, outside: new Set(), unknown: new Set(settled.sectionless) }) : pair === null ? null : sectionVeto(snap, pair);
       return { intent: readHeads(snap, heads, pair, veto), use };
     },
   };
@@ -404,6 +425,11 @@ function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly
     return { ...base, route: "refuse", why: why !== null && why in WHY ? (why as AskIntent["why"]) : "nothingToFill", scope: "none" };
   }
 
+  // SCP1: the request named a section the question's list lacks. Every field is withheld, whatever Jev chose of them.
+  if (veto?.notFound === true) {
+    const chosenAll = scope === null ? [] : scopeFields(snap).filter((f) => scopeVerdict(scope, f.ref) === "asks");
+    return { ...base, route: "refuse", why: "sectionNotFound", scope: "none", ...(chosenAll.length === 0 ? {} : { sectionless: chosenAll.map((f) => f.ref) }) };
+  }
   // Which fields: Jev's, field by field. A fill route under its floor is no reason to ask; the fields decide.
   const open: AskPart[] = [];
   const verdicts = scope === null ? [] : snap.fields.map((f) => ({ f, v: scopeVerdict(scope, f.ref) }));

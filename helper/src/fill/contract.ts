@@ -978,7 +978,7 @@ export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, Ch
     // read from the window the executor resolved, right before the dispatch.
     if (m.authority.kind === "ask" && target !== undefined) {
       if (target.window === undefined) return "Caret can't see the field to check it is still the one the Ask was about";
-      const out = scopeRefusal({ field: { ...m.field, fingerprint: fieldFingerprint(target.window, m.field.key) }, owner: m.owner }, m.authority.scope, documentOf);
+      const out = scopeRefusal({ field: { ...m.field, fingerprint: fieldFingerprint(target.window, m.field.key) }, owner: m.owner }, m.authority.scope, documentOf, target.window);
       if (out !== null) return out;
     }
     // V6 B3: an alternate field's value against the form's primary fields as they read right before the dispatch, in the

@@ -7,6 +7,7 @@ import type { Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import type { Owner } from "./contract.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
+import { redactWindow } from "./redact.ts";
 
 /**
  * I2 ruling: one request, one settlement. What the per-field scope question settled for a request, kept so a later step
@@ -27,6 +28,8 @@ export interface Settled {
   readonly sectionless?: readonly string[];
   /** SCP1: the one section the request named (intent-heads.ts sectionVeto), held by every later settlement of it; null for none. */
   readonly section?: string | null;
+  /** SCP1: the request named a section the question's list lacked: every field is withheld, said as SAYS.sectionNotFound. */
+  readonly notFound?: boolean;
 }
 
 /** Which page document a window shows now (the helper's page engine, helper.ts HelperOptions.pageDocument). */
@@ -238,12 +241,26 @@ function axOutline(w: WindowState, nodes: readonly Node[]): WindowOutline {
   return { occurrences, chainOf: (key) => chains.get(key) ?? [], fallback: [] };
 }
 
-/** SCP1: the heading texts a window offers as sections, in document order, each once: its heading occurrences', else its fallback. */
-export function shownHeadings(o: WindowOutline): string[] {
-  const texts = o.occurrences.length > 0 ? o.occurrences.flatMap((x) => (x.heading && x.text !== null ? [x.text] : [])) : [...o.fallback];
+/**
+ * SCP1: the section texts a window offers, each once: every occurrence that can be a section (a heading, a fieldset's
+ * legend, a labelled group or region), else its fallback heading list. Those containing one of `fields` come first, in
+ * document order, then the rest: a list cut to a limit then drops sections no field is in before any a field is in,
+ * and drops nothing silently (the question says when it is cut).
+ */
+export function shownSections(o: WindowOutline, fields: readonly string[] = []): string[] {
+  const texts = o.occurrences.length > 0 ? o.occurrences.flatMap((x) => (x.text !== null ? [x.text] : [])) : [...o.fallback];
+  const placed = new Set<string>();
+  for (const k of fields) {
+    const chain = o.chainOf(k);
+    if (chain === "unknown") continue;
+    for (const c of chain) {
+      const t = o.occurrences.find((x) => x.key === c)?.text ?? null;
+      if (t !== null) placed.add(sectionName(t));
+    }
+  }
   const out: string[] = [];
   for (const t of texts) if (!out.some((x) => sectionName(x) === sectionName(t))) out.push(t);
-  return out;
+  return [...out.filter((t) => placed.has(sectionName(t))), ...out.filter((t) => !placed.has(sectionName(t)))];
 }
 
 /** SCP1: the text of the innermost heading in a field's chain, or null: the heading a page field is shown under. */
@@ -265,6 +282,8 @@ export function chainHeading(o: WindowOutline, key: string): string | null {
  * window can't say or places it in none.
  */
 export type Membership = "in" | "outside" | "unknown";
+/** How many occurrences a section text names in the window: the veto and the dispatch recheck place fields only for one. */
+export const namedOccurrences = (o: WindowOutline, section: string): number => o.occurrences.filter((x) => x.text !== null && sectionName(x.text) === sectionName(section)).length;
 export function sectionMembership(o: WindowOutline, section: string): (key: string) => Membership {
   const named = o.occurrences.filter((x) => x.text !== null && sectionName(x.text) === sectionName(section));
   if (named.length !== 1) return () => "unknown";
@@ -309,8 +328,12 @@ export interface ScopedWrite {
  * than the one asked about (read through `documentOf`, the owning helper's reader; with none, a scope on a page refuses),
  * the field no longer reads as it did when the question was asked, or the user picked a person and the value is not
  * that person's. Null with no scope.
+ *
+ * SCP1: with `window`, the window as it reads now, an Ask that named one section also needs the field still in it:
+ * the fingerprint records section text, not which occurrence, so a page that now shows the section twice, no longer
+ * shows it, or moved the field out of it would pass the fingerprint alone (re-review of 9939ac2).
  */
-export function scopeRefusal(x: ScopedWrite, scope: AskScope | undefined, documentOf: DocumentReader | null = null): string | null {
+export function scopeRefusal(x: ScopedWrite, scope: AskScope | undefined, documentOf: DocumentReader | null = null, window?: WindowState): string | null {
   if (scope === undefined) return null;
   const f = x.field;
   if (f.windowId !== scope.windowId || !scope.fields.has(f.key)) return `your request didn't ask Caret to fill '${f.name}'`;
@@ -319,7 +342,17 @@ export function scopeRefusal(x: ScopedWrite, scope: AskScope | undefined, docume
   if (f.fingerprint === null) return `Caret has no record of how '${f.name}' read, so it can't tell the field is the one the Ask was about`;
   if (f.fingerprint !== scope.seen[f.key]) return `'${f.name}' changed since Caret asked about it`;
   if (scope.person !== null && x.owner !== "person") return `the value for '${f.name}' is not ${scope.person}'s, whom you picked`;
-  return null;
+  return window === undefined ? null : sectionRefusal(f, scope, window);
+}
+
+/** SCP1: why a field is no longer in the one section its Ask named, by the window as it reads now, or null. */
+export function sectionRefusal(f: { readonly key: string; readonly name: string }, scope: AskScope, window: WindowState): string | null {
+  if (scope.section === null) return null;
+  const o = windowOutline(redactWindow(window));
+  const n = namedOccurrences(o, scope.section);
+  if (n === 0) return `the section you named is no longer on the form, so Caret can't tell '${f.name}' is in it`;
+  if (n > 1) return `the form now shows the section you named more than once, so Caret can't tell '${f.name}' is in it`;
+  return sectionMembership(o, scope.section)(f.key) === "in" ? null : `'${f.name}' is no longer in the section you named`;
 }
 
 /**

@@ -1464,8 +1464,8 @@ export class Helper {
     if (w === undefined || ask === null) return { askId, windowId, document: doc, seen: {}, asks: [], unclear: [], section: held };
     const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory());
     const seen = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldFingerprint(w, f.key)]));
-    const { asks, unclear, sectionless, section } = await settleFields(snap, ask, undefined, held);
-    return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unclear: unclear.map((f) => f.key), sectionless: sectionless.map((f) => f.key), section };
+    const { asks, unclear, sectionless, section, notFound } = await settleFields(snap, ask, undefined, held);
+    return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unclear: unclear.map((f) => f.key), sectionless: sectionless.map((f) => f.key), section, ...(notFound ? { notFound } : {}) };
   }
 
 

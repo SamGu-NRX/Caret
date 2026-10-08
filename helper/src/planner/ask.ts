@@ -540,7 +540,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       let settled: Awaited<ReturnType<typeof settleFields>>;
       if (presettled !== undefined) {
         const of = (keys: readonly string[]): IntentField[] => [...snap.fields, ...snap.uploads].filter((f) => keys.includes(f.key));
-        settled = { asks: of(presettled.asks), unclear: of(presettled.unclear), sectionless: of(presettled.sectionless ?? []), section: presettled.section ?? null };
+        settled = { asks: of(presettled.asks), unclear: of(presettled.unclear), sectionless: of(presettled.sectionless ?? []), section: presettled.section ?? null, notFound: presettled.notFound === true };
       } else
         try {
           settled = await settleFields(snap, askJev);
@@ -556,6 +556,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       const held = { ...(settled.section === null ? {} : { namedSection: settled.section }), ...(sectionless.length === 0 ? {} : { sectionless }) };
       made = { ...made, intent: { ...made.intent, ...held } };
       intent = { ...intent, ...held };
+      if (settled.notFound) return refused(new SaidError("unsure", SAYS.sectionNotFound, "the request named a section the section question's list lacked"));
       if (settled.asks.length === 0 && unclear.length === 0 && sectionless.length > 0) return refused(new SaidError("unsure", saysSectionUnknown(settled.sectionless.map((f) => f.name)), "the request named one section, and Caret couldn't tell which section any field Jev chose is in"));
       // I3 lead ruling, as the heads maker reads it (intent-heads.ts): the fields Jev chose are filled; the unclear ones
       // are asked about beside them when one question lists them all, else each is left to the user, said.

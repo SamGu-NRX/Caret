@@ -36,19 +36,25 @@ export interface Occurrence {
   text?: string;
 }
 
+/**
+ * An occurrence as the outline holds it: its id, or null for one past MAX_OCCURRENCES, which still bounds the sections
+ * around it but can't be named, so a control inside it has no chain.
+ */
+type Slot = string | null;
+
 interface Frame {
   /** The container's own label occurrence, if it has one. */
-  readonly label: string | null;
-  headings: { level: number; id: string }[];
+  readonly label: { id: Slot } | null;
+  headings: { level: number; id: Slot }[];
 }
 
 /** The outline at each point of a walk in document order: containers opened and closed, headings met, by occurrence id. */
 export class Outline {
   private readonly frames: Frame[] = [{ label: null, headings: [] }];
 
-  /** A sectioning container begins; `label` is the id of its label occurrence, null for none. */
-  open(label: string | null): void {
-    this.frames.push({ label, headings: [] });
+  /** A sectioning container begins; `label` is its label occurrence (an id, or null past the cap), undefined for none. */
+  open(label?: Slot): void {
+    this.frames.push({ label: label === undefined ? null : { id: label }, headings: [] });
   }
 
   /** The innermost open container ends, and the headings met inside it end with it. */
@@ -57,8 +63,11 @@ export class Outline {
     this.frames.pop();
   }
 
-  /** A heading of `level` (1-6) in the innermost container: it ends that container's open headings of its level or deeper. */
-  heading(level: number, id: string): void {
+  /**
+   * A heading of `level` (1-6) in the innermost container: it ends that container's open headings of its level or
+   * deeper. `id` is null past the cap: the heading still ends them.
+   */
+  heading(level: number, id: Slot): void {
     const top = this.frames.at(-1) as Frame;
     top.headings = [...top.headings.filter((h) => h.level < level), { level, id }];
   }
@@ -66,17 +75,20 @@ export class Outline {
   /**
    * The occurrences a control here sits in, outermost first, at most MAX_SECTIONS (the innermost kept): each open
    * container's label, and each open heading not suppressed by a heading of its rank or higher in a container inside it.
+   * Empty when one of them is past the cap: its section can't be named, so the control is placed in none, never in the
+   * section before it (the helper reads an empty chain as unknown and withholds).
    */
   here(): string[] {
-    const kept: string[][] = [];
+    const kept: Slot[][] = [];
     let below = 7;
     for (let i = this.frames.length - 1; i >= 0; i--) {
       const f = this.frames[i] as Frame;
       const headings = f.headings.filter((h) => h.level < below);
-      kept.unshift([...(f.label === null ? [] : [f.label]), ...headings.map((h) => h.id)]);
+      kept.unshift([...(f.label === null ? [] : [f.label.id]), ...headings.map((h) => h.id)]);
       for (const h of f.headings) below = Math.min(below, h.level);
     }
-    return kept.flat().slice(-MAX_SECTIONS);
+    const chain = kept.flat();
+    return chain.includes(null) ? [] : (chain as string[]).slice(-MAX_SECTIONS);
   }
 }
 
@@ -139,10 +151,7 @@ function isContainer(el: OutlineElement<unknown>, label: { text: string } | null
   return label !== null && LABELLED_CONTAINER_ROLES.has(el.getAttribute("role")?.trim().toLowerCase() ?? "");
 }
 
-/**
- * The walk's section occurrences in document order, and each wanted control under `root` with the ids of the
- * occurrences it sits in, outermost first. `prefix` makes the ids unique when one frame walks more than once.
- */
+/** The walk's section occurrences in document order, and each wanted control under `root` with the ids of the occurrences it sits in, outermost first. */
 export function sectionOutline<E extends OutlineElement<E>>(root: { readonly children: ArrayLike<E> }, r: OutlineReader<E>): { occurrences: Occurrence[]; chains: Map<E, string[]> } {
   const occurrences: Occurrence[] = [];
   const chains = new Map<E, string[]>();
@@ -159,17 +168,14 @@ export function sectionOutline<E extends OutlineElement<E>>(root: { readonly chi
     for (const el of Array.from(parent)) {
       const label = labelOf(el, r);
       const container = isContainer(el, label);
-      if (container) outline.open(label === null || !label.own ? null : occur(false, label.text));
+      if (container) outline.open(label === null || !label.own ? undefined : occur(false, label.text));
       const level = headingLevel(el);
-      if (level !== null && r.shown(el)) {
-        const id = occur(true, clean(el.textContent, MAX_SECTION_NAME));
-        if (id !== null) outline.heading(level, id);
-      }
+      if (level !== null && r.shown(el)) outline.heading(level, occur(true, clean(el.textContent, MAX_SECTION_NAME)));
       if (r.wanted(el)) chains.set(el, outline.here());
       // A heading's content is its text, not more of the outline. A shadow root is a container of its own.
       if (level === null) {
         const shadow = r.assigned(el) === null ? r.shadowRoot(el) : null;
-        if (shadow !== null) outline.open(null);
+        if (shadow !== null) outline.open();
         visit(children(el));
         if (shadow !== null) outline.close();
       }

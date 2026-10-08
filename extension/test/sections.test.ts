@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { frameHeadings, MAX_SECTIONS, Outline, sectionOutline, type OutlineElement, type OutlineReader } from "../src/content/sections.ts";
+import { frameHeadings, MAX_OCCURRENCES, MAX_SECTIONS, Outline, sectionOutline, type OutlineElement, type OutlineReader } from "../src/content/sections.ts";
 import { SELF_IDENTIFICATION } from "../src/content/walker.ts";
 
 interface El extends OutlineElement<El> {
@@ -165,6 +165,14 @@ describe("the outline", () => {
     const o = new Outline();
     for (let i = 1; i <= MAX_SECTIONS + 2; i++) o.open(`g${i}`);
     expect(o.here()).toEqual(Array.from({ length: MAX_SECTIONS }, (_, i) => `g${i + 3}`));
+  });
+
+  // Re-review item 4: past the occurrence cap a heading still ends the sections before it, and places nothing.
+  it("ends earlier sections at a heading past the occurrence cap, and gives the controls under it no chain", () => {
+    const r = walk(el("form", {}, el("h2", {}, "Equipment details"), input("serial"), ...Array.from({ length: MAX_OCCURRENCES - 1 }, (_, i) => el("h3", {}, `Part ${i + 1}`)), el("h2", {}, "Service contact"), input("phone")));
+    expect(r.occurrences).toHaveLength(MAX_OCCURRENCES);
+    expect(r.chains.serial).toEqual(["Equipment details"]);
+    expect(r.chains.phone).toEqual([]);
   });
 
   it("refuses to close the document", () => {

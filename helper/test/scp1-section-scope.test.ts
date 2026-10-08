@@ -12,10 +12,13 @@ import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { SELF_IDENTIFICATION } from "../src/engines/page-exclusions.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
-import { headsIntentMaker, headsRequest, readHeads, scopeId, settleFields } from "../src/planner/intent-heads.ts";
+import { headsIntentMaker, headsRequest, readHeads, scopeId, scopeRequest, settleFields } from "../src/planner/intent-heads.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskGoal } from "../src/planner/ask.ts";
 import { scopeSet, windowOutline, withScope } from "../src/fill/ask-scope.ts";
+import { guardFor } from "../src/fill/contract.ts";
+import { validatePlan } from "../src/planner/validate.ts";
+import { PlannerError } from "../src/planner/validate.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { forgetWindows, SnippetLedger } from "../src/privacy.ts";
 import { secretText } from "../src/memory/sensitive.ts";
@@ -328,7 +331,8 @@ describe("sections are occurrences (review of fc233af and 3e8a129)", () => {
   // Review P1 6: every heading is offered, placed or not; a page title holds every field.
   it("offers every heading the window shows, whether or not it places a field", () => {
     const d = desk({ page: pageSnapshot(HEADINGS, { occurrences: [...WALKED.occurrences, { id: "o4", heading: true, text: "Need help?" }], chains: { "Serial number": ["o2"], Model: ["o2"], "Contact name": ["o3"], "Contact phone": ["o3"] } }) });
-    expect(snapFor(d).headings.map((h) => h.name)).toEqual([...HEADINGS, "Need help?"]);
+    // Those holding a field first (re-review item 3), then the rest, none dropped.
+    expect(snapFor(d).headings.map((h) => h.name)).toEqual(["Equipment details", "Service contact", "Service request", "Need help?"]);
     // A section Ask naming a heading no field sits in withholds rather than reading as particular fields.
   });
 
@@ -554,3 +558,126 @@ describe("a section-only Ask on the page walk (Part B: page fields carry their s
     expect(written(a, sectioned)).toEqual(ALL);
   });
 });
+
+describe("re-review of 9939ac2: a named section the list can't offer, and a page that changes after the mint", () => {
+  const occ = (id: string, text: string, heading = true) => ({ id, heading, text });
+
+  // Re-review 1: "the request names a section that isn't in this list" withholds every field.
+  it("withholds every field, said, when both wordings say the named section isn't in the list", async () => {
+    const d = desk({ page: pageSnapshot(HEADINGS, WALKED) });
+    const e = await refusal(plan(d, jev({ section: "unlisted" })));
+    expect(e.code).toBe("unsure");
+    expect(e.message).toBe(SAYS.sectionNotFound);
+    expect(e.intent).toMatchObject({ route: "refuse", why: "sectionNotFound" });
+    // The writer's path, which settles the fields itself.
+    const listed: IntentMaker = { name: "writer", make: async (x) => ({ intent: { route: "fill", why: "none", scope: "list", section: "none", fields: x.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "writer", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }) };
+    const w = await refusal(plan(d, jev({ section: "unlisted" }), INSTRUCTION, false, listed));
+    expect(w.message).toBe(SAYS.sectionNotFound);
+    // One wording only, or below the cutoff: nothing is taken out.
+    const split = (await plan(d, jev({ section: (wd) => ({ choice: wd === 0 ? "unlisted" : "unclear", confidence: 0.99 }) }))) as AskDraft;
+    expect(written(split, d)).toEqual(ALL);
+  });
+
+  it("keeps a whole-form Ask unchanged when the section answer is unclear, with the new option offered", async () => {
+    const d = desk({ page: pageSnapshot(HEADINGS, WALKED) });
+    const bare = desk({ page: pageSnapshot([]) });
+    const q = (await jev({}).ask(scopeRequestOf(d))).answers;
+    expect(Object.keys(q).includes("section")).toBe(true);
+    const a = (await plan(d, jev({ section: "unclear", route: "all" }), "fill out this form from my notes", true)) as AskGoal;
+    const b = (await plan(bare, jev({ route: "all" }), "fill out this form from my notes", true)) as AskGoal;
+    expect(written(a, d)).toEqual(written(b, bare));
+    expect(written(a, d)).toEqual(ALL);
+  });
+
+  // Re-review 2 (item 3): legends are sections too, and two that read alike withhold.
+  it("offers fieldset legends, and withholds every field when two legends read 'Address'", async () => {
+    const twoAddresses: Walked = {
+      occurrences: [occ("o1", "Service request"), occ("o2", "Address", false), occ("o3", "Address", false)],
+      chains: { "Serial number": ["o1", "o2"], Model: ["o1", "o2"], "Contact name": ["o1", "o3"], "Contact phone": ["o1", "o3"] },
+    };
+    const d = desk({ page: pageSnapshot(["Service request"], twoAddresses) });
+    expect(snapFor(d).headings.map((h) => h.name)).toEqual(["Service request", "Address"]);
+    expectSectionRefusal(await refusal(plan(d, jev({ section: "Address" }), "fill the address section")), ALL);
+    // One "Address" legend places its fields.
+    const one = desk({ page: pageSnapshot(["Service request"], { occurrences: [occ("o1", "Service request"), occ("o2", "Address", false)], chains: { "Serial number": ["o1", "o2"], Model: ["o1", "o2"], "Contact name": ["o1"], "Contact phone": ["o1"] } }) });
+    expect(written((await plan(one, jev({ section: "Address" }), "fill the address section")) as AskDraft, one)).toEqual(EQUIPMENT);
+  });
+
+  // Re-review 3: forty empty h2s before the form's own sections.
+  it("offers the sections holding fields first, past forty empty headings, and says when the list is cut", async () => {
+    const empties = Array.from({ length: 40 }, (_, i) => occ(`e${i + 1}`, `Notice ${i + 1}`));
+    const walked: Walked = { occurrences: [...empties, occ("o2", "Equipment details"), occ("o3", "Service contact")], chains: { "Serial number": ["o2"], Model: ["o2"], "Contact name": ["o3"], "Contact phone": ["o3"] } };
+    const d = desk({ page: pageSnapshot([], walked) });
+    const s = snapFor(d);
+    expect(s.headings.slice(0, 2).map((h) => h.name)).toEqual(["Equipment details", "Service contact"]);
+    expect(s.sectionsCut).toBe(true);
+    const question = scopeRequestOf(d).questions.section;
+    expect(String(question?.instructions)).toContain("The list may be incomplete");
+    expect(Object.keys(question?.criteria ?? {})).toContain("unlisted");
+    expect(written((await plan(d, jev({ section: "Equipment details" }))) as AskDraft, d)).toEqual(EQUIPMENT);
+    // A section the cut list lacks is "not in this list": every field is withheld.
+    expect((await refusal(plan(d, jev({ section: "unlisted" }), "fill the notice 40 section"))).message).toBe(SAYS.sectionNotFound);
+  });
+
+  // Re-review 4: a control past the walk's occurrence cap has no chain (extension test/sections.test.ts), so it is withheld.
+  it("withholds a field the walk could place in no section past its cap, never inheriting the one before", async () => {
+    const h3s = Array.from({ length: 199 }, (_, i) => occ(`o${i + 2}`, `Part ${i + 1}`));
+    const walked: Walked = { occurrences: [occ("o1", "Equipment details"), ...h3s], chains: { "Serial number": ["o1"], Model: ["o1"], "Contact name": [], "Contact phone": [] } };
+    const d = desk({ page: pageSnapshot([], walked) });
+    const r = (await plan(d, jev({ section: "Equipment details" }))) as AskDraft;
+    expect(written(r, d)).toEqual(EQUIPMENT);
+    expect(r.unsure).toEqual(CONTACT.map((n) => ({ key: expect.any(String), name: n, says: SECTION_FIELD(n) })));
+  });
+
+  // Re-review 5: the fingerprint keeps section text, so the guard and the acceptance recheck place the field again.
+  it("refuses at dispatch and at acceptance when the named section appears twice after the mint, or no longer holds the field", async () => {
+    const d = desk({ page: pageSnapshot(HEADINGS, WALKED) });
+    const r = (await plan(d, jev({ section: "Equipment details" }))) as AskDraft;
+    const mints = new Map(r.checked.writes.map((x, i) => [i, x.checked]));
+    const serial = r.checked.writes[0];
+    if (serial === undefined) throw new Error("no write");
+    const guard = guardFor(() => d.model, mints, r.checked.origin, null, null);
+    const now = () => {
+      const w = windowOf(d);
+      return { windowId: w.window.windowId, node: w.nodes.get(serial.node.key) as Node, window: w };
+    };
+    expect(guard(0, serial.value, now())).toBeNull();
+    const accept = () => validatePlan(r.plan, r.slots, { model: d.model, memory: [], instruction: INSTRUCTION, origin: r.checked.origin, documentOf: null }, r.checked.mints);
+    expect(() => accept()).not.toThrow();
+    // The page now shows a second "Equipment details" section; Serial number's chain still reads the same text.
+    const twice: Walked = { occurrences: [...WALKED.occurrences, occ("o4", "Equipment details")], chains: { ...WALKED.chains } };
+    d.model.apply({ ...pageSnapshot(HEADINGS, twice), at: 2500, focused: true });
+    expect(guard(0, serial.value, now())).toMatch(/more than once/u);
+    expect(() => accept()).toThrow(PlannerError);
+    // Or it no longer shows the section at all, the field's chain text unchanged by a relabelled heading elsewhere.
+    const gone: Walked = { occurrences: [occ("o1", "Service request"), occ("o2", "Equipment details"), occ("o3", "Service contact")], chains: { "Serial number": ["o1", "o3"], Model: ["o1", "o2"], "Contact name": ["o1", "o3"], "Contact phone": ["o1", "o3"] } };
+    d.model.apply({ ...pageSnapshot(HEADINGS, gone), at: 2600, focused: true });
+    expect(guard(0, serial.value, now())).not.toBeNull();
+  });
+
+  // Re-review 6: a redacted Accessibility heading keeps its boundary.
+  it("does not place a reader field after a redacted 'Password and security' heading in the section before it", async () => {
+    const nodes: Node[] = [
+      node("h/ct", "AXHeading", { label: "Service contact" }),
+      field("f/cname", "", { label: "Contact name" }),
+      field("f/cphone", "", { label: "Contact phone" }),
+      node("h/pw", "AXHeading", { label: "Password and security" }),
+      field("f/serial", "", { label: "Serial number" }),
+      field("f/model", "", { label: "Model" }),
+    ];
+    const d = desk({ reader: nodes });
+    const view = redactWindow(windowOf(d));
+    expect(view.nodes.get("h/pw")).toEqual({ key: "h/pw", parent: null, role: "AXHeading" });
+    // The Ask's authority: only the named section's two fields, though Jev chose all four. (Fill withholds the fields
+    // after a password heading for its own reasons, so the writes alone would not show it.)
+    const settled = await settleFields(snapFor(d, "fill the service contact section from my notes"), jev({ section: "Service contact" }).ask);
+    expect(settled.asks.map((f) => f.name)).toEqual(CONTACT);
+    expect(settled.sectionless).toEqual([]);
+    expect(JSON.stringify(scopeRequestOf(d))).not.toMatch(/Password and security/u);
+  });
+});
+
+/** The scope ask's first wording for a desk's form, as the Ask sends it. */
+function scopeRequestOf(d: ReturnType<typeof desk>): JevRequest {
+  return scopeRequest(snapFor(d), 0);
+}

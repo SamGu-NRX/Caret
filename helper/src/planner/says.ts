@@ -49,6 +49,8 @@ export const SAYS = {
   delete: "Deleting is yours to do.",
   whichPerson: "Which person do you mean? Say their name.",
   noSuchField: "This form has no field for that.",
+  // SCP1: the request named a section the form doesn't show in the list Caret offered Jev.
+  sectionNotFound: "Caret couldn't find the section you named on this form. Name the fields you want filled.",
   notOnScreen: "Caret can't see what you want copied. Open it and ask again.",
   cannot: "Caret can't do that on this form.",
   whichFields: "Which fields do you mean? Name one.",

@@ -39,7 +39,8 @@ const below: A = { choice: "asks", confidence: SCOPE_CUTOFF - 0.2 };
 const unclear: A = { choice: "unclear", confidence: 0.3 };
 const not: A = { choice: "not", confidence: 0.99 };
 
-const wording = (s: IntentSnapshot, w: 0 | 1, by: ScopeBy): JevResult => ({ model: "jev-test", answers: Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), by(f.name, w)])), inputTokens: 10, latencyMs: 1, costUsd: 0 });
+// SCP1: the section question, when the form shows a section, names no one section.
+const wording = (s: IntentSnapshot, w: 0 | 1, by: ScopeBy): JevResult => ({ model: "jev-test", answers: { ...Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), by(f.name, w)])), section: { choice: "fields", confidence: 0.99 } }, inputTokens: 10, latencyMs: 1, costUsd: 0 });
 const headsOf = (s: IntentSnapshot, route = "some"): JevResult => {
   const dflt: Record<string, string> = { route, why: "nothingToFill", source: "any", whose: "user" };
   return { model: "jev-test", answers: Object.fromEntries(Object.keys(headsRequest(s).questions).map((id) => [id, { choice: dflt[id] ?? "none", confidence: 0.9 }])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
@@ -106,6 +107,7 @@ describe("through planAsk", () => {
           if (id === "why") return [id, { choice: "nothingToFill", confidence: 0.9 }];
           if (id === "whose" || id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user" in q.criteria ? "user" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
           // Wording 0 ends "Does the request ask Caret to fill in or change this field?" (intent-heads.ts SCOPE_WORDINGS).
+          if (id === "section") return [id, { choice: "fields", confidence: 0.99 }];
           if (id.startsWith("s_")) return [id, by(/[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "", /Does the request ask Caret to fill in or change this field\?$/u.test(ins) ? 0 : 1)];
           if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
           const want = Object.entries(values).find(([label]) => ins.includes(`'${label}'`))?.[1];

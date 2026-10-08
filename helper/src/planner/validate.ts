@@ -98,7 +98,7 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
     const foreign = authorityRefusal(mint.authority, ctx.origin);
     if (foreign !== null) throw new PlannerError("outOfScope", `${at}: ${foreign}`);
     if (mint.authority.kind === "ask") {
-      const out = scopeRefusal({ field: { ...mint.field, fingerprint: fieldFingerprint(w, node.key) }, owner: mint.owner }, mint.authority.scope, ctx.documentOf ?? null);
+      const out = scopeRefusal({ field: { ...mint.field, fingerprint: fieldFingerprint(w, node.key) }, owner: mint.owner }, mint.authority.scope, ctx.documentOf ?? null, w);
       if (out !== null) throw new PlannerError("outOfScope", `${at}: ${out}`);
     }
   };

@@ -15,7 +15,7 @@ import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { chainHeading, headingsBefore, shownHeadings, windowOutline } from "../fill/ask-scope.ts";
+import { chainHeading, headingsBefore, shownSections, windowOutline } from "../fill/ask-scope.ts";
 import { inWebArea, type Control } from "../fill/controls.ts";
 import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
@@ -31,7 +31,7 @@ import { SAYS, SaidError, Unclear, saysLeftToYou, saysNeverTyped, saysPressAsked
 export const ROUTES = ["fill", "plan", "ask", "refuse"] as const;
 export type AskRoute = (typeof ROUTES)[number];
 /** Why an intent refuses, or what it asks; each has a sentence in says.ts (sayWhy). */
-export const REASONS = ["none", "neverTyped", "noSuchField", "notOnScreen", "pressOrSend", "payment", "otherPersonUnnamed", "nothingToFill", "whichFields", "whichSource", "whichPerson", "sectionUnknown"] as const;
+export const REASONS = ["none", "neverTyped", "noSuchField", "notOnScreen", "pressOrSend", "payment", "otherPersonUnnamed", "nothingToFill", "whichFields", "whichSource", "whichPerson", "sectionUnknown", "sectionNotFound"] as const;
 export type Reason = (typeof REASONS)[number];
 
 export interface AskIntent {
@@ -151,11 +151,13 @@ export interface IntentSnapshot {
   uploads: IntentField[];
   sections: { ref: string; name: string }[];
   /**
-   * SCP1: the sections the window shows by heading (fill/ask-scope.ts observedSections), in document order, as the
-   * ledger took them, each text once: the only sections an Ask's section question offers (intent-heads.ts
-   * sectionRequest). Refs sec1, sec2, ...
+   * SCP1: the sections the window shows (fill/ask-scope.ts shownSections: headings, legends, labelled groups), those
+   * holding a field first, as the ledger took them, each text once: the only sections an Ask's section question offers
+   * (intent-heads.ts sectionRequest). Refs sec1, sec2, ...
    */
   headings: { ref: string; name: string }[];
+  /** SCP1: the window shows more sections than `headings` lists (the limit, or the ledger's budget): the question says so. */
+  sectionsCut: boolean;
   /** Other open windows a value could come from, most recent first, by title, and a mail's sender when it shows one. */
   windows: { ref: string; windowId: string; app: string; title: string; from: string | null }[];
   /** Labels of what the user told Caret (About entries, people), never their values. */
@@ -179,7 +181,7 @@ export interface IntentSnapshot {
 
 /** Fields and windows one snapshot lists at most: the plan's provisional inventory limit (section 4), and sources by recency. */
 export const MAX_INTENT_FIELDS = 40;
-/** SCP1: headings one snapshot offers as sections at most, as many as fields; not measured. A heading past it is never offered. */
+/** SCP1: sections one snapshot offers at most, as many as fields; not measured. Past it the question says its list is cut. */
 export const MAX_INTENT_HEADINGS = 40;
 export const MAX_INTENT_WINDOWS = 8;
 
@@ -251,13 +253,21 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
     uploads.push({ ref: `u${uploads.length + 1}`, key: n.key, name, section: d.section, heading, control: "text", filled: false, neverTyped: null, upload: true });
   }
-  // SCP1: every heading the window shows, for the section question, whether or not it places a field: a heading left
-  // out could not be named, and a section Ask naming it would read as particular fields. A heading the ledger does not
-  // take, or one redaction or an exclusion took the text of, is never offered.
+  // SCP1: every section the window shows, for the section question, whether or not it places a field: one left out
+  // could not be named, and a section Ask naming it would read as particular fields. Sections holding a field come first,
+  // so a list cut at MAX_INTENT_HEADINGS keeps those; a cut list, or one the ledger would not take a section of, is said
+  // to be incomplete in the question, whose "not in this list" answer then withholds (intent-heads.ts). A section whose
+  // text redaction or an exclusion took is never offered.
   const sectionHeadings: IntentSnapshot["headings"] = [];
-  for (const name of shownHeadings(outline)) {
-    if (sectionHeadings.length >= MAX_INTENT_HEADINGS) break;
-    if (!secretText(name) && ledger.take(w, "descriptor", [name])) sectionHeadings.push({ ref: `sec${sectionHeadings.length + 1}`, name });
+  let sectionsCut = false;
+  for (const name of shownSections(outline, [...fields, ...uploads].map((f) => f.key))) {
+    if (sectionHeadings.length >= MAX_INTENT_HEADINGS) {
+      sectionsCut = true;
+      break;
+    }
+    if (secretText(name)) continue;
+    if (ledger.take(w, "descriptor", [name])) sectionHeadings.push({ ref: `sec${sectionHeadings.length + 1}`, name });
+    else sectionsCut = true;
   }
   // Other windows by title, most recently focused first. A title is what names a source ("Morgan's email"); a
   // window whose title does not fit what the ledger allows is left out.
@@ -287,6 +297,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     uploads,
     sections,
     headings: sectionHeadings,
+    sectionsCut,
     windows,
     memory: memoryLabels,
     persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),
@@ -306,7 +317,7 @@ export type CheckedIntent =
   | { route: "plan" };
 
 /** The plan error code a refusal or an ask is reported under (protocol PlanErrorCode, unchanged). */
-const REFUSE_CODE = { neverTyped: "notEditable", noSuchField: "unknownTarget", notOnScreen: "noWindow", pressOrSend: "unsupportedStep", payment: "unsupportedStep", otherPersonUnnamed: "unsure", nothingToFill: "nothingToDo", sectionUnknown: "unsure" } as const;
+const REFUSE_CODE = { neverTyped: "notEditable", noSuchField: "unknownTarget", notOnScreen: "noWindow", pressOrSend: "unsupportedStep", payment: "unsupportedStep", otherPersonUnnamed: "unsure", nothingToFill: "nothingToDo", sectionUnknown: "unsure", sectionNotFound: "unsure" } as const;
 
 /** What an Ask says for each reason (says.ts). A never-typed refusal names the kind the instruction or a field names. */
 function sayWhy(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readonly IntentField[] = [], kind: SensitiveKind | null = null): string {
@@ -337,6 +348,8 @@ function sayWhy(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: read
       return SAYS.whichSource;
     case "sectionUnknown":
       return saysSectionUnknown(fields.map((f) => f.name));
+    case "sectionNotFound":
+      return SAYS.sectionNotFound;
   }
 }
 
