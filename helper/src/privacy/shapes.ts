@@ -384,6 +384,49 @@ export const ITEMS: { readonly [K in ShapeKey]: Readonly<Record<string, number>>
   memoryProposal: {}, // not implemented (writer/port.ts)
 };
 
+/** A JSON scalar a request may hold where its shape names it. */
+export type ScalarType = "number" | "boolean" | "null";
+
+/**
+ * Where a request may hold a number, a boolean or null instead of text, and of which type: every other path holds a
+ * minted string, a list or an object a row reaches. Read from every helper test, the scripted oracle and the adversary
+ * (2026-10-08). An option with no description is null in every shape.
+ */
+export const SCALARS: { readonly [K in ShapeKey]?: Readonly<Record<string, readonly ScalarType[]>> } = {
+  [UNNAMED]: { [ANY_PATH]: ["number", "boolean", "null"] },
+  "ask.heads": { "state.form.fields[*].filled": ["boolean"], "state.form.fields[*].section": ["null"] },
+  goal: { "input.snapshots[*].targets[*].canFill": ["boolean"], "input.snapshots[*].values[*].origin.startUTF16": ["number"], "input.snapshots[*].values[*].origin.endUTF16": ["number"] },
+  intent: { "input.fields[*].filled": ["boolean"], "input.fields[*].section": ["null"], "input.windows[*].from": ["null"] },
+  "pattern.naming": { "state.timesSeen": ["number"] },
+  plan: { "input.snapshots[*].targets[*].canFill": ["boolean"], "input.snapshots[*].values[*].origin.startUTF16": ["number"], "input.snapshots[*].values[*].origin.endUTF16": ["number"] },
+  "route.judge": { "state.conversation": ["boolean"], "state.field.empty": ["boolean"], "state.field.finishedSentences": ["number"], "state.form.emptyFields": ["number"] },
+  "route.pick": { "state.conversation": ["boolean"], "state.field.empty": ["boolean"], "state.field.finishedSentences": ["number"], "state.form.emptyFields": ["number"] },
+  "route.task": { "state.conversation": ["boolean"], "state.field.empty": ["boolean"], "state.field.finishedSentences": ["number"] },
+};
+
+/** Paths the client writes itself (privacy/disclosure.ts EXEMPT_EXACT), as globs. */
+const CLIENT_GLOBS = ["model", "providerOptions.gateway.only[*]", "questions.*.type", "state.option_descriptions"];
+
+/** The scalar types `glob` may hold in a request of `purpose`, or none. */
+export function scalarsAt(purpose: string, glob: string): readonly ScalarType[] {
+  const own = Object.hasOwn(SCALARS, purpose) ? SCALARS[purpose as ShapeKey] : undefined;
+  if (glob === "questions.*.criteria.*") return ["null", ...(own?.[glob] ?? own?.[ANY_PATH] ?? [])];
+  return own?.[glob] ?? own?.[ANY_PATH] ?? [];
+}
+
+/**
+ * Whether a key at `glob` is one a request of `purpose` may have: a row's path, a scalar's, a list's (ITEMS), a path the
+ * client writes, or an object or list on the way to one. Any other key, whatever it holds, is outside the shape.
+ */
+export function knownPath(purpose: string, glob: string): boolean {
+  const shape = shapeOf(purpose);
+  if (shape === null) return false;
+  if (Object.hasOwn(shape, ANY_PATH)) return true;
+  const own = Object.hasOwn(SCALARS, purpose) ? Object.keys(SCALARS[purpose as ShapeKey] ?? {}) : [];
+  for (const g of [...Object.keys(shape), ...own, ...Object.keys(shapeItems(purpose)), ...CLIENT_GLOBS]) if (g === glob || g.startsWith(`${glob}.`) || g.startsWith(`${glob}[`)) return true;
+  return false;
+}
+
 /** The item counts of a purpose's lists (ITEMS); none for a purpose with no shape. */
 export function shapeItems(purpose: string): Readonly<Record<string, number>> {
   return Object.hasOwn(ITEMS, purpose) ? ITEMS[purpose as ShapeKey] : {};

@@ -13,7 +13,7 @@ import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
 import { excludedValue, withholdValues } from "./exclude.ts";
-import { ANY_PATH, childGlob, shapeItems, shapeOf, UNNAMED, type Slot } from "./shapes.ts";
+import { ANY_PATH, childGlob, knownPath, scalarsAt, shapeItems, shapeOf, UNNAMED, type ScalarType, type Slot } from "./shapes.ts";
 import { switchedOffCount } from "./read-policy.ts";
 import { describeField, type FieldDescriptor } from "../fill/descriptor.ts";
 import type { Node } from "../protocol.ts";
@@ -699,7 +699,12 @@ export class Disclosure extends SnippetLedger {
     // The client's format check, at build too (privacy.ts assertNoExcludedValue).
     assertNoExcludedValue(req as Parameters<typeof assertNoExcludedValue>[0]);
     if (req.input !== undefined && req.kind !== undefined) this.verify(req.kind, req.input, "input");
-    else this.verify(req.purpose ?? UNNAMED, { state: req.state, questions: { ...(req.questions as object), ...(req.nouls as object | undefined) } });
+    else {
+      // The questions as given: a value that is not an object is checked as it is, not spread into one.
+      const q = req.questions;
+      const questions = req.nouls === undefined || typeof q !== "object" || q === null ? q : { ...q, ...(req.nouls as object) };
+      this.verify(req.purpose ?? UNNAMED, { state: req.state, questions });
+    }
     return sealed;
   }
 
@@ -720,7 +725,7 @@ export class Disclosure extends SnippetLedger {
       // A whole state sent as one JSON text (Disclosure.jsonText; engines/decide/harness.ts layaState) is checked as the
       // state that text writes, parsed from the text itself. Only there: anywhere else a JSON text is a text like any
       // other, held to its own slot's reasons and length (PV2 re-review).
-      if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob, count);
+      if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob, { count, scalar, key });
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
       if (v.length > slot.max) {
@@ -730,6 +735,12 @@ export class Disclosure extends SnippetLedger {
       const ways = this.ways.get(v) ?? [];
       if (!ways.some((w) => w.every((r) => slot.reasons.includes(r)))) throw new OutOfShape(`${purpose}: ${path} carries text minted as ${[...(this.mints.get(v) ?? [])].sort().join(", ")}, which its shape allows only as ${slot.reasons.join(", ")}; it was not sent`);
     };
+    const scalar = (path: string, glob: string, type: ScalarType): void => {
+      if (!scalarsAt(purpose, glob).includes(type)) throw new OutOfShape(`${purpose}: ${path} holds a ${type}, which its shape does not allow there; it was not sent`);
+    };
+    const key = (path: string, glob: string): void => {
+      if (!knownPath(purpose, glob)) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
+    };
     const items = shapeItems(purpose);
     const count = (path: string, glob: string, n: number): void => {
       const max = items[glob] ?? items[ANY_PATH];
@@ -738,15 +749,23 @@ export class Disclosure extends SnippetLedger {
       shapeLengthLog({ purpose, slot: glob, items: n, max });
       throw new OutOfShape(`${purpose}: ${path} holds ${n} items, more than its shape's ${max}; it was not sent`);
     };
-    this.walk(purpose, body, root, check, root, count);
+    this.walk(purpose, body, root, check, root, { count, scalar, key });
   }
 
   /**
    * Walks a body: every string a text this Disclosure minted (or a client-written path's allowed value), every key an
-   * identifier; `each` is called on every minted string with its path and glob (privacy/shapes.ts childGlob), and
-   * `count` on every nonempty list (an array, or an object whose keys are ids) with its items' glob and their number.
+   * identifier; `each` is called on every minted string with its path and glob (privacy/shapes.ts childGlob), and the
+   * shape's callbacks on every nonempty list (`count`, with its items' glob and their number), every number, boolean
+   * and null (`scalar`), and every object key (`key`, with the key's glob).
    */
-  private walk(purpose: string, body: unknown, root: string, each: ((path: string, glob: string, v: string) => void) | null, rootGlob = root, count: ((path: string, glob: string, n: number) => void) | null = null): void {
+  private walk(
+    purpose: string,
+    body: unknown,
+    root: string,
+    each: ((path: string, glob: string, v: string) => void) | null,
+    rootGlob = root,
+    shape: { count: (path: string, glob: string, n: number) => void; scalar: (path: string, glob: string, type: ScalarType) => void; key: (path: string, glob: string) => void } | null = null,
+  ): void {
     const at = (path: string, k: string | number): string => (typeof k === "number" ? `${path}[${k}]` : path === "" ? k : `${path}.${k}`);
     const go = (v: unknown, path: string, glob: string): void => {
       if (typeof v === "string") {
@@ -759,17 +778,19 @@ export class Disclosure extends SnippetLedger {
         each?.(path, glob, v);
         return;
       }
-      if (v === null || typeof v === "number" || typeof v === "boolean" || v === undefined) return;
+      if (v === undefined) return;
+      if (v === null || typeof v === "number" || typeof v === "boolean") return shape?.scalar(path, glob, v === null ? "null" : typeof v === "number" ? "number" : "boolean");
       if (Array.isArray(v)) {
-        if (v.length > 0) count?.(path, childGlob(glob, 0), v.length);
+        if (v.length > 0) shape?.count(path, childGlob(glob, 0), v.length);
         return v.forEach((x, i) => go(x, at(path, i), childGlob(glob, i)));
       }
       if (typeof v === "object") {
         const keys = Object.keys(v);
         const items = keys.length === 0 ? null : childGlob(glob, keys[0]!);
-        if (items !== null && items.endsWith(".*")) count?.(path, items, keys.length);
+        if (items !== null && items.endsWith(".*")) shape?.count(path, items, keys.length);
         for (const [k, x] of Object.entries(v)) {
           if (!KEY.test(k)) throw new UnmintedText(`${purpose}: a key under ${path === "" ? "the body" : path} is not an identifier; it was not sent`);
+          shape?.key(at(path, k), childGlob(glob, k));
           go(x, at(path, k), childGlob(glob, k));
         }
         return;

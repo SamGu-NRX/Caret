@@ -173,3 +173,24 @@ describe("every list in a request has an item count (privacy/shapes.ts ITEMS)", 
     expect(logged).toEqual([{ purpose: "route.task", slot: "questions.*", items: 3, max: 2 }]);
   });
 });
+
+// Sol review of 9d110306, P1: the shapes held strings and lists, not the keys and scalar types around them.
+describe("a request's keys and scalar types are its shape's too", () => {
+  it("refuses a number where its shape has an object, and an object where it has none", () => {
+    const d = new Disclosure(registryOf([]));
+    expect(() => d.seal({ purpose: "fill.whose", state: { source_notes: 12 as never }, questions: {} })).toThrow(OutOfShape);
+    expect(() => d.seal({ purpose: "fill.whose", state: {}, questions: 4 as never })).toThrow(OutOfShape);
+  });
+
+  it("refuses ten thousand numeric fields no row names", () => {
+    const d = new Disclosure(registryOf([]));
+    const state = Object.fromEntries(Array.from({ length: 10_000 }, (_, i) => [`f${i}`, i]));
+    expect(() => d.seal({ purpose: "route.judge", state, questions: {} })).toThrow(OutOfShape);
+  });
+
+  it("accepts the scalars a shape names, at their type only", () => {
+    const d = new Disclosure(registryOf([]));
+    expect(() => d.seal({ purpose: "pattern.naming", state: { timesSeen: 3 }, questions: {} })).not.toThrow();
+    expect(() => d.seal({ purpose: "pattern.naming", state: { timesSeen: true as never }, questions: {} })).toThrow(OutOfShape);
+  });
+});
