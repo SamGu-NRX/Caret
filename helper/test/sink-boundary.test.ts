@@ -8,6 +8,7 @@ import { seal, sendable, storedLine, type Sink, type StoreRecord } from "../src/
 import { llamaEngine } from "../src/engines/decide/llama.ts";
 import type { JevRequest } from "../src/fill/jev.ts";
 import { chat, chatSink, type ChatRoute } from "../src/writer/chat.ts";
+import { PLAN_SYSTEM, PLAN_WORDING, planUserMessage, PlanInputSchema } from "../src/writer/plan-prompt.ts";
 import { snap, text } from "./builders.ts";
 import { redactWindow as redactOf } from "../src/fill/redact.ts";
 
@@ -127,6 +128,37 @@ describe("what the final bytes say", () => {
     // The chat opens after the value was minted. T = 4 + 36 + 1 = 41, limit 20.
     m.apply(snap([text("c0", line), text("c1", "x")], { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES_APP }));
     expect(() => seal({ req: { purpose: "route.task", disclosure: d }, wire: { state, questions: {} } }, CHAT_LIKE)).toThrow(/reveals 36 characters of window chat-1, over its limit of 20/u);
+  });
+
+  it("measures the decoded wire strings a rendered message embeds: a plan quoting a minted line is charged the chat's line, over its limit", () => {
+    // planUserMessage writes the source values as JSON inside the message, so the line's quotes are escaped there and cut
+    // every run; the wire string the message embeds is the line whole.
+    const line = `say "abcdefghij" then "klmnopqrs" ok`;
+    const m = new ScreenModel();
+    m.apply(snap([text("n0", line)], { at: 1, windowId: "note-1", title: "Note", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" } }));
+    const d = new Disclosure(m);
+    const said = d.candidate(redactOf(m.windows.get("note-1")!), line)!;
+    // The chat opens before the first seal. T = 4 + 36 + 1 = 41, limit 20. Charged 37: the line's 36, and the 1 the escaped
+    // rendering alone was charged.
+    m.apply(snap([text("c0", line), text("c1", "x")], { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES_APP }));
+    const goal = d.instruction("fill the form");
+    const req = d.seal({ kind: "plan", disclosureId: "t1", disclosed: [], input: { goal, snapshots: [{ snapshot: d.id("s1"), window: d.id("w1"), revision: d.id("r1"), title: d.own(""), targets: [], values: [{ ref: d.id("v1"), display: said, origin: { kind: d.own("span"), snapshot: d.id("s1"), source: d.own("n0"), startUTF16: 0, endUTF16: 36, digest: d.id("g1") } }], questions: [] }] }, maxOutputTokens: 100, signal: new AbortController().signal });
+    const messages = (wire: unknown) => [{ role: "system" as const, content: PLAN_SYSTEM }, { role: "user" as const, content: planUserMessage(PlanInputSchema.parse(wire)) }];
+    expect(() => sendable(seal({ writer: req }, chatSink(ROUTE, messages, [PLAN_SYSTEM, ...PLAN_WORDING], 100)))).toThrow(/reveals 37 characters of window chat-1, over its limit of 20/u);
+  });
+
+  it("measures the embedded wire strings again as the bytes leave: a chat opened after the plan's seal refuses them", () => {
+    const line = `say "abcdefghij" then "klmnopqrs" ok`;
+    const m = new ScreenModel();
+    m.apply(snap([text("n0", line)], { at: 1, windowId: "note-1", title: "Note", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" } }));
+    const d = new Disclosure(m);
+    const said = d.candidate(redactOf(m.windows.get("note-1")!), line)!;
+    const goal = d.instruction("fill the form");
+    const req = d.seal({ kind: "plan", disclosureId: "t1", disclosed: [], input: { goal, snapshots: [{ snapshot: d.id("s1"), window: d.id("w1"), revision: d.id("r1"), title: d.own(""), targets: [], values: [{ ref: d.id("v1"), display: said, origin: { kind: d.own("span"), snapshot: d.id("s1"), source: d.own("n0"), startUTF16: 0, endUTF16: 36, digest: d.id("g1") } }], questions: [] }] }, maxOutputTokens: 100, signal: new AbortController().signal });
+    const messages = (wire: unknown) => [{ role: "system" as const, content: PLAN_SYSTEM }, { role: "user" as const, content: planUserMessage(PlanInputSchema.parse(wire)) }];
+    const sealed = seal({ writer: req }, chatSink(ROUTE, messages, [PLAN_SYSTEM, ...PLAN_WORDING], 100));
+    m.apply(snap([text("c0", line), text("c1", "x")], { at: 2, windowId: "chat-1", title: "Kofi", app: MESSAGES_APP }));
+    expect(() => sendable(sealed)).toThrow(/reveals 37 characters of window chat-1, over its limit of 20/u);
   });
 
   it("sends the bytes it validated: a body whose toJSON adds a field is refused, and nothing is posted", async () => {

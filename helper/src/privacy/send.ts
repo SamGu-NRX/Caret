@@ -73,6 +73,12 @@ export interface Sealed {
   /** The sink's complete final body as bytes, taken once: what every send posts, never an object. */
   readonly bytes: string;
   /**
+   * The wire strings and keys the body's rendered texts embed, decoded (validate): the ledger measures them as units
+   * beside the bytes', since a rendering that escapes them (JSON inside a chat message) can cut runs the decoded string
+   * holds whole. Never sent.
+   */
+  readonly embedded: readonly string[];
+  /**
    * What the bytes reveal of each window (OUTPUT-LEDGER-SPEC, the output ledger), by window key, as measured at seal: the
    * request's declared charge. Never sent.
    */
@@ -127,15 +133,27 @@ function blanked(text: string, piece: string): string {
   return out + text.slice(from);
 }
 
+/** A wire string or key as a rendered text may hold it (`text`: as written, or as JSON writes it), and the string itself. */
+interface Piece {
+  readonly text: string;
+  readonly of: string;
+}
+
 /**
  * Whether `text` is made of the sink's own wording and the wire's strings and keys (as written, or as JSON writes
  * them), with nothing between them but punctuation, spaces, digits and JSON's words. The wording's texts go first, then
- * the wire's pieces, longest first, each where it does not cut a word; what is left must be words of the wording.
+ * the wire's pieces, longest first, each where it does not cut a word; what is left must be words of the wording. Each
+ * wire string a piece of which the text holds goes in `embedded`, decoded.
  */
-function renderedFrom(text: string, pieces: readonly string[], wording: { texts: readonly string[]; words: ReadonlySet<string> }): boolean {
+function renderedFrom(text: string, pieces: readonly Piece[], wording: { texts: readonly string[]; words: ReadonlySet<string> }, embedded: Set<string>): boolean {
   let rest = text;
   for (const t of wording.texts) rest = rest.split(t).join("\u0000");
-  for (const p of pieces) if (p !== "") rest = blanked(rest, p);
+  for (const p of pieces) {
+    if (p.text === "") continue;
+    const next = blanked(rest, p.text);
+    if (next !== rest) embedded.add(p.of);
+    rest = next;
+  }
   for (const w of rest.split(/[^\p{L}]+/u)) if (w !== "" && !wording.words.has(w)) return false;
   return true;
 }
@@ -174,11 +192,17 @@ function plainBytes(where: string, v: unknown): { bytes: string; value: unknown 
   return { bytes, value: JSON.parse(bytes) as unknown };
 }
 
-/** Validates a sink's final body against its envelope (Sink.envelope). Throws UnmintedText naming the path, never text. */
-function validate(where: string, body: unknown, wire: unknown, sink: Pick<Sink, "name" | "envelope" | "wording">, formatsRefuse = true): void {
+/**
+ * Validates a sink's final body against its envelope (Sink.envelope), and returns the wire strings and keys its rendered
+ * texts embed, decoded (renderedFrom). Throws UnmintedText naming the path, never text.
+ */
+function validate(where: string, body: unknown, wire: unknown, sink: Pick<Sink, "name" | "envelope" | "wording">, formatsRefuse = true): string[] {
   const fromWire = stringsOf(wire);
   // Longest first, so a string inside a longer one does not cut the longer one's occurrences.
-  const pieces = [...new Set([...fromWire.strings, ...fromWire.keys].flatMap((x) => [x, JSON.stringify(x).slice(1, -1)]))].sort((a, b) => b.length - a.length);
+  const byText = new Map<string, string>();
+  for (const x of [...fromWire.strings, ...fromWire.keys]) for (const t of [x, JSON.stringify(x).slice(1, -1)]) if (!byText.has(t)) byText.set(t, x);
+  const pieces: Piece[] = [...byText].map(([text, of]) => ({ text, of })).sort((a, b) => b.text.length - a.text.length);
+  const embedded = new Set<string>();
   const wording = wordsOf(sink.wording);
   const fail = (path: string, why: string): never => {
     throw new OutOfShape(`${where}: ${path === "" ? "the body" : path} ${why}; it was not sent`);
@@ -203,7 +227,7 @@ function validate(where: string, body: unknown, wire: unknown, sink: Pick<Sink, 
     for (const x of all.strings) {
       if (slot.kind !== "answer") formats(path, x);
       if (x.length > slot.max) fail(path, `holds ${x.length} characters, more than the ${sink.name} body's ${slot.max}`);
-      if (slot.kind === "rendered" && !renderedFrom(x, pieces, wording)) fail(path, `holds text that is neither the request's nor the ${sink.name} sink's own wording`);
+      if (slot.kind === "rendered" && !renderedFrom(x, pieces, wording, embedded)) fail(path, `holds text that is neither the request's nor the ${sink.name} sink's own wording`);
     }
   };
   const go = (v: unknown, path: string, glob: string): void => {
@@ -222,6 +246,7 @@ function validate(where: string, body: unknown, wire: unknown, sink: Pick<Sink, 
     fail(path, `is no part of the ${sink.name} body`);
   };
   go(body, "", "");
+  return [...embedded];
 }
 
 /**
@@ -243,9 +268,9 @@ export function seal(o: Outbound, sink: Sink = WIRE, commit = true): Sealed {
   const where = who.purpose ?? who.kind ?? "a request";
   // The body is written once, and that writing is what is validated, measured and sent (assertPlain).
   const { bytes, value } = plainBytes(where, sink.render(wire));
-  validate(where, value, wire, sink);
-  const measurement = measureBytes(who, bytes, stringsOf(wire).strings, commit);
-  return Object.freeze({ wire, out, bytes, charged: Object.freeze({ ...measurement.charged }), measurement });
+  const embedded = Object.freeze(validate(where, value, wire, sink));
+  const measurement = measureBytes(who, bytes, stringsOf(wire).strings, commit, embedded);
+  return Object.freeze({ wire, out, bytes, embedded, charged: Object.freeze({ ...measurement.charged }), measurement });
 }
 
 /** The sealed wire read again, a fresh value, checked as it leaves (a switch-off since refuses it). */
@@ -264,7 +289,7 @@ function fromBytes(s: Sealed): unknown {
 export function sendable(s: Sealed): string {
   const wire = fromBytes(s);
   // Committed: a window opened since the seal is charged what the bytes reveal of it, in the operation's union.
-  measureBytes(owner(s.out), s.bytes, stringsOf(wire).strings);
+  measureBytes(owner(s.out), s.bytes, stringsOf(wire).strings, true, s.embedded);
   return s.bytes;
 }
 

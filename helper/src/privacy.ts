@@ -396,14 +396,16 @@ export class SnippetLedger {
    * builder holds (a task's kept source window), measured as well.
    */
   constructor(registry: ScreenRegistry | null, o: { snapshots?: Iterable<WindowState> } = {}) {
-    // A view of the screen (a tab-backed fill's model) is measured as the live registry it was made from, with every one of
-    // the view's window states kept beside it, a state the live registry shared too: measured against the view alone, a
-    // chat that opened after it was made was not; with only the states that differed kept, a chat that closed or
-    // refreshed after the view was made took nothing from its old text.
+    // The operation starts here: every window state on screen now is kept and measured, with its class, until the
+    // operation ends, whatever the screen does after. A view of the screen (a tab-backed fill's model) is measured as the
+    // live registry it was made from, with every one of the view's states kept beside it. Kept only when the view was a
+    // copy, a chat that closed before the first request took nothing from what a note copied of it.
     const live = registry?.live ?? null;
     this.registry = live ?? registry;
-    for (const w of registry?.windows.values() ?? []) this.known.set(w.window.windowId, w);
-    if (live !== null) for (const w of registry?.windows.values() ?? []) this.heldStates.add(w);
+    for (const w of registry?.windows.values() ?? []) {
+      this.known.set(w.window.windowId, w);
+      this.heldStates.add(w);
+    }
     for (const w of o.snapshots ?? []) this.know(w);
     this.account = new MintAccount(() => this.measuredWindows(), OWNER_NOTE_CHARS);
   }

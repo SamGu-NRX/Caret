@@ -3,7 +3,8 @@
 // takes no conversation past its limit. scripts/ledger-fuzz.ts runs the full set (2,400 cases at seed 20261008).
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { setTestVerifier } from "../src/fill/contract.ts";
-import { normalize, runFuzz } from "../scripts/ledger-fuzz-cases.ts";
+import { readFileSync } from "node:fs";
+import { normalize, runFuzz, type Desk } from "../scripts/ledger-fuzz-cases.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 
 // The cases' scripted Jev answers the verifier too, through the same seal; the suite's stand-in would skip it.
@@ -33,4 +34,15 @@ describe("the counter's normalization, written again from section 2", () => {
     // White space runs collapse to one space, and the ends are trimmed.
     expect(n("  a \t\n b  ")).toBe("a b");
   });
+});
+
+// Two desks the extended generator found and minimized (fixtures/ledger-fuzz): a chat whose line a note copies whole,
+// closed before the first request; the note goes whole in source_notes, or in a choice's whole-window evidence.
+describe("windows on screen when the operation starts", () => {
+  it.each(["min-7-2371", "min-7-60"])("charges a chat that closed before the first request for what the request copies of it: %s", async (name) => {
+    const desk = JSON.parse(readFileSync(new URL(`../fixtures/ledger-fuzz/${name}.desk.json`, import.meta.url), "utf8")) as Desk;
+    const run = await runFuzz({ seed: 7, cases: [0], replay: desk });
+    expect(run.summary.harnessErrors).toBe(0);
+    expect(run.results.flatMap((r) => r.flagged), "requests the counter finds past a limit").toEqual([]);
+  }, 60_000);
 });
