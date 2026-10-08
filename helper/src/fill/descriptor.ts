@@ -5,7 +5,7 @@ import type { Frame, Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import { secretText } from "../memory/sensitive.ts";
 import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
-import { collapsedRange, nodePart, type SourceAt } from "../privacy/ledger/source.ts";
+import { collapsedRange, nodePart, type SourceAt, splitLines } from "../privacy/ledger/source.ts";
 
 export interface FieldDescriptor {
   text: string;
@@ -145,7 +145,7 @@ function labelTexts(w: WindowState): LabelText[] {
     if (n.role !== "AXStaticText" || n.frame === undefined) continue;
     const raw = n.label ?? n.value;
     // A document is content, never a competing nearest label.
-    if (raw === undefined || raw.length === 0 || /\S\s*\n\s*\S/u.test(raw)) continue;
+    if (raw === undefined || raw.length === 0 || isDocument(raw)) continue;
     // With nothing to collapse, cleaning leaves the text as it is, so a long one is over the cap without running the replace.
     const unclean = UNCLEAN.test(raw);
     if (!unclean && raw.length > MAX_LABEL_CHARS) continue;
@@ -233,6 +233,9 @@ export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean, 
 }
 
 /** Every static text with a frame, in full and cleaned of runs of white space: what admission reads (nodesLabelledBy). */
+/** A text of several nonblank lines, split as the inventory splits them (a bare CR too): a document, not a label. */
+const isDocument = (raw: string): boolean => splitLines(raw).filter((l) => l.trim() !== "").length > 1;
+
 function allTexts(w: WindowState): FullText[] {
   let out = fullIndex.get(w);
   if (out !== undefined) return out;
@@ -242,7 +245,7 @@ function allTexts(w: WindowState): FullText[] {
     const raw = n.label ?? n.value;
     const t = clean(raw);
     if (t === null) continue;
-    out.push({ key: n.key, frame: n.frame, t, labelLike: false, document: /\S\s*\n\s*\S/u.test(raw ?? "") });
+    out.push({ key: n.key, frame: n.frame, t, labelLike: false, document: isDocument(raw ?? "") });
   }
   fullIndex.set(w, out);
   return out;

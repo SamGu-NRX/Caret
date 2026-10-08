@@ -1088,8 +1088,8 @@ export function windowValues(w: WindowState): readonly TypedValue[] {
     // A reader's value says no offset. Where this code's own reading of the node finds the same text exactly once, that
     // reading's line and offset are where it was read; found twice or not at all, it keeps the whole-line fallback.
     const readAt = new Map<TypedValue, { lineStart: number; raw: string; at: number } | null>();
-    for (const match of nodeText(node).slice(0, MAX_SCAN).matchAll(/([^\n]*)(?:\n|$)/gu)) {
-      const raw = match[1]!;
+    for (const { raw, start } of linesWithStarts(nodeText(node).slice(0, MAX_SCAN))) {
+      const match = { index: start };
       const line = bareLine(raw);
       if (line.length < 3) continue;
       for (const v of lineValues(line)) {

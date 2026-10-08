@@ -392,6 +392,15 @@ describe("one line splitter", () => {
     m.apply(snap([text("b0", `From: Tomas Castell <tomas.castell@example.net>${eol}Subject: Re: forms for Saturday`)], { at: 100, windowId: "mail-1", title: "Re: forms for Saturday - Inbox", app: chrome }));
     return m;
   };
+  it("redacts a text a bare CR splits as it redacts one LF splits: a chat's 'great\rDate: 2027-06-03' and the node under it are kept", () => {
+    for (const eol of ["\n", "\r"]) {
+      const m = new ScreenModel();
+      const at = (k: string, l: string, y: number): Node => ({ key: k, parent: null, role: "AXStaticText", label: l, frame: [20, y, 600, 20] });
+      m.apply(snap([at("m0", "Phone: 555-0134", 60), at("m1", `great${eol}Date: 2027-06-03${eol}555-0134`, 84), at("m2", "Address: 366 Elm Way, Madison, WI 53703", 156)], { at: 1, windowId: "chat", title: "Mei Olu", app: MESSAGES }));
+      expect([eol, [...redactWindow(m.windows.get("chat") as WindowState).nodes.keys()]]).toEqual([eol, ["m0", "m1", "m2"]]);
+    }
+  });
+
   it("reads a mail whose headers a bare CR separates as a conversation, as it reads one with LF: limit 53 of 108", () => {
     for (const eol of ["\n", "\r", "\r\n"]) {
       const m = mail(eol);

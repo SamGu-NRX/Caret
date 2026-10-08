@@ -198,7 +198,7 @@ const JOINERS = new Set(["&", "of", "the", "de"]);
 /** A word written as a name: an initial capital, a capital inside ("GitHub", "iOS"), or two or more capitals ("AWS"). */
 const capitalized = (t: string): boolean => /^\p{Lu}/u.test(t) || /^\p{Ll}+\p{Lu}/u.test(t);
 
-const sentencesOf = (text: string): string[] => text.split(/(?<=[.!?:;])\s+|\n+|[()"“”]/u);
+const sentencesOf = (text: string): string[] => text.split(/(?<=[.!?:;])\s+|[\r\n]+|[()"“”]/u);
 const tokensOf = (sentence: string): string[] => (sentence.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*[\p{L}\p{N}]|[\p{L}\p{N}]|&/gu) ?? []).map((t) => t.replace(/['’]s$/u, ""));
 
 /**
