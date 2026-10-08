@@ -6,6 +6,7 @@
 // The cap is CARET_JEV_DAILY_CAP, from the environment or the .env file named by CARET_ENV_FILE (where the Jev key
 // comes from), in dollars. Without it the cap is DEFAULT_DAILY_CAP_USD. The day's file is in CARET_JEV_SPEND_DIR, or
 // SPEND_DIR by default.
+import { ENV, processEnv, type HostEnv } from "../../host-env.ts";
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -19,7 +20,7 @@ import { assertLocalStorePath, writeLocalFile } from "../../privacy/store-path.t
  */
 export const DEFAULT_DAILY_CAP_USD = 0.5;
 export const SPEND_DIR = join(homedir(), "Library", "Application Support", "CaretV2", "jev-spend");
-const CAP_VAR = "CARET_JEV_DAILY_CAP";
+const CAP_VAR = ENV.caret_jev_daily_cap;
 
 /**
  * Body characters per Jev input token, low on purpose: a reservation (DailySpend.reserve) should overestimate a
@@ -55,12 +56,12 @@ export function localDay(d: Date): string {
 }
 
 /** The cap the environment configures, in dollars. A value that is not a dollar amount above zero fails here, at start. */
-export function capFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+export function capFromEnv(env: HostEnv = processEnv()): number {
   let raw = env[CAP_VAR];
-  const file = env.CARET_ENV_FILE;
+  const file = env[ENV.caret_env_file];
   if ((raw === undefined || raw === "") && file !== undefined && file !== "") {
     for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
-      const m = /^\s*(?:export\s+)?CARET_JEV_DAILY_CAP\s*=\s*(.*)\s*$/.exec(line);
+      const m = new RegExp(`^\\s*(?:export\\s+)?${CAP_VAR}\\s*=\\s*(.*)\\s*$`).exec(line);
       if (m?.[1] !== undefined) raw = m[1].replace(/^(['"])(.*)\1$/, "$2").trim();
     }
   }
@@ -108,8 +109,8 @@ export class DailySpend {
     this.now = opts.now ?? (() => new Date());
   }
 
-  static fromEnv(env: NodeJS.ProcessEnv = process.env): DailySpend {
-    const dir = env.CARET_JEV_SPEND_DIR;
+  static fromEnv(env: HostEnv = processEnv()): DailySpend {
+    const dir = env[ENV.caret_jev_spend_dir];
     return new DailySpend({ dir: dir === undefined || dir === "" ? SPEND_DIR : dir, capUsd: capFromEnv(env) });
   }
 

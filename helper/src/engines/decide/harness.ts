@@ -6,6 +6,7 @@
 //   CARET_LLAMA_URL (http://127.0.0.1:8091), CARET_LLAMA_MODEL (a name for reports and cache keys), CARET_LLAMA_PROMPT
 //   (chat or document), CARET_LLAMA_THINKING=off (tells a thinking model's template not to think), and
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
+import { ENV, processEnv, type HostEnv } from "../../host-env.ts";
 import { assertNoExcludedValue } from "../../privacy.ts";
 import { verifySent } from "../../privacy/disclosure.ts";
 import { appendStoredLine, seal, type StoreRecord } from "../../privacy/send.ts";
@@ -28,7 +29,7 @@ export interface HarnessEngineOptions {
   /** The harness's answer-key engine, for `canned`. */
   canned: AskJev | null;
   fixture: FixtureSources;
-  env?: NodeJS.ProcessEnv;
+  env?: HostEnv;
   /** Appends every request (fixture text only) to this file, with its size as sent and with shared options sent once. */
   logRequests?: string;
 }
@@ -52,8 +53,8 @@ export const CALIBRATIONS: Readonly<Record<string, Calibration>> = {
   "qwen3-4b-instruct-2507-q4km": { choiceT: 1, noulT: 1 },
 };
 
-export function calibrationFromEnv(env: NodeJS.ProcessEnv, model?: string): Calibration {
-  const raw = env.CARET_ENGINE_CALIBRATION;
+export function calibrationFromEnv(env: HostEnv, model?: string): Calibration {
+  const raw = env[ENV.caret_engine_calibration];
   if (raw === undefined || raw === "") {
     const known = model === undefined ? undefined : CALIBRATIONS[model];
     if (known !== undefined) return known;
@@ -74,9 +75,9 @@ function layaState(ask: AskJev): AskJev {
   return (req) => ask(typeof req.state === "string" ? req : { ...req, state: req.disclosure.jsonText(req.state) });
 }
 
-function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngine {
+function baseEngine(o: HarnessEngineOptions, env: HostEnv): DecideEngine {
   if (o.name === "jev" || o.name.startsWith("gateway:")) {
-    const providerEnv = o.name === "jev" ? env : { ...env, CARET_JEV_PROVIDER: "gateway", CARET_JEV_MODEL: o.name.slice("gateway:".length) };
+    const providerEnv = o.name === "jev" ? env : { ...env, [ENV.caret_jev_provider]: "gateway", [ENV.caret_jev_model]: o.name.slice("gateway:".length) };
     const settings = jevSettings(providerEnv);
     const ask = makeJevClient((provider) => loadJevKey(providerEnv, provider), 10_000, DailySpend.fromEnv(providerEnv), settings, undefined, undefined, { fixture: o.fixture, env });
     return { name: o.name, model: settings.model, reach: settings.provider, ask: settings.model === LAYA_FREE_MODEL ? layaState(ask) : ask };
@@ -88,11 +89,11 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
       // (privacy.ts assertNoExcludedValue) and the minting and shape check on the body a live client would send (SC1 2b, 2c).
       return { name: "canned", model: "canned", reach: "mac", ask: (req) => (assertNoExcludedValue(req), verifySent(req, wireBody(req, "canned")), (o.canned as AskJev)(req)) };
     case "llama": {
-      const prompt = env.CARET_LLAMA_PROMPT ?? "chat";
+      const prompt = env[ENV.caret_llama_prompt] ?? "chat";
       if (prompt !== "chat" && prompt !== "document") throw new Error(`CARET_LLAMA_PROMPT is '${prompt}'; it must be chat or document`);
-      const model = env.CARET_LLAMA_MODEL;
+      const model = env[ENV.caret_llama_model];
       if (model === undefined || model === "") throw new Error("--engine llama needs CARET_LLAMA_MODEL, the name of the model llama-server runs");
-      return llamaEngine({ url: env.CARET_LLAMA_URL ?? "http://127.0.0.1:8091", model, prompt, ...(env.CARET_LLAMA_THINKING === "off" ? { templateKwargs: { enable_thinking: false } } : {}) });
+      return llamaEngine({ url: env[ENV.caret_llama_url] ?? "http://127.0.0.1:8091", model, prompt, ...(env[ENV.caret_llama_thinking] === "off" ? { templateKwargs: { enable_thinking: false } } : {}) });
     }
     case "gemini":
       // Brief J1: Gemini Flash-Lite's free tier only with a key in Caret's .env, and there is none.
@@ -106,18 +107,18 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
  * R1: the slow runner's layer (slow.ts) under the cache, when the runner (scripts/slow-eval.ts) names an events file in
  * CARET_SLOW_EVAL_EVENTS. It needs the cache on, since a rerun after a limit must not ask again what was answered.
  */
-function slowFromEnv(engine: DecideEngine, env: NodeJS.ProcessEnv, cacheDir: string | null, variant: string): AskJev {
-  const events = env.CARET_SLOW_EVAL_EVENTS;
+function slowFromEnv(engine: DecideEngine, env: HostEnv, cacheDir: string | null, variant: string): AskJev {
+  const events = env[ENV.caret_slow_eval_events];
   if (events === undefined || events === "" || engine.name === "canned") return engine.ask;
   if (cacheDir === null) throw new Error("CARET_SLOW_EVAL_EVENTS needs the replay cache on: a rerun after a rate limit would ask every answered request again");
-  const paceMs = Number(env.CARET_SLOW_EVAL_PACE_MS ?? DEFAULT_PACE_MS);
-  if (!(paceMs >= 0)) throw new Error(`CARET_SLOW_EVAL_PACE_MS is '${env.CARET_SLOW_EVAL_PACE_MS}'; it must be milliseconds, 0 or more`);
-  const where = { holdFile: env.CARET_SLOW_EVAL_HOLD ?? HOLD_FILE, diskPath: homedir(), floorGiB: Number(env.CARET_SLOW_EVAL_DISK_GIB ?? DISK_FLOOR_GIB) };
+  const paceMs = Number(env[ENV.caret_slow_eval_pace_ms] ?? DEFAULT_PACE_MS);
+  if (!(paceMs >= 0)) throw new Error(`CARET_SLOW_EVAL_PACE_MS is '${env[ENV.caret_slow_eval_pace_ms]}'; it must be milliseconds, 0 or more`);
+  const where = { holdFile: env[ENV.caret_slow_eval_hold] ?? HOLD_FILE, diskPath: homedir(), floorGiB: Number(env[ENV.caret_slow_eval_disk_gib] ?? DISK_FLOOR_GIB) };
   return slowAsk(engine.ask, {
     clock: REAL_CLOCK,
     freeOnly: engine.model === LAYA_FREE_MODEL,
     paceMs,
-    pace: filePace(env.CARET_SLOW_EVAL_PACE_FILE ?? PACE_FILE),
+    pace: filePace(env[ENV.caret_slow_eval_pace_file] ?? PACE_FILE),
     failures: fileFailures(join(cacheDir, "failures")),
     keyOf: (req) => canonicalRequest(req, engine.name, engine.model, variant).key,
     stopCheck: () => runStop(where, Date.now()),
@@ -142,19 +143,19 @@ const LOG_RECORD: Omit<StoreRecord, "build"> = {
 };
 
 export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
-  const env = o.env ?? process.env;
+  const env = o.env ?? processEnv();
   const engine = baseEngine(o, env);
   const cache = engine.name === "canned" ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
-  const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}${engine.model === LAYA_FREE_MODEL ? ";state:json-text" : ""}` : engine.name === "llama" ? `prompt:${env.CARET_LLAMA_PROMPT ?? "chat"};thinking:${env.CARET_LLAMA_THINKING ?? "default"};read:${LLAMA_READING}` : "";
+  const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}${engine.model === LAYA_FREE_MODEL ? ";state:json-text" : ""}` : engine.name === "llama" ? `prompt:${env[ENV.caret_llama_prompt] ?? "chat"};thinking:${env[ENV.caret_llama_thinking] ?? "default"};read:${LLAMA_READING}` : "";
   const sent = slowFromEnv(engine, env, cache?.dir ?? null, variant);
   let ask = cache === null ? sent : cachedAsk(sent, { ...cache, engine: engine.name, model: engine.model, variant, fixture: o.fixture, env });
   if (engine.model === LAYA_FREE_MODEL) {
     // Guard cached answers too: fixture-only Laya is not available in the shipped app.
-    refuseShipped(process.env);
+    refuseShipped(processEnv());
     refuseShipped(env);
     const fixtureAsk = ask;
     ask = async (req) => {
-      refuseShipped(process.env);
+      refuseShipped(processEnv());
       refuseShipped(env);
       checkFixture(req, o.fixture);
       return fixtureAsk(req);

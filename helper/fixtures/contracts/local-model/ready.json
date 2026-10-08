@@ -1,0 +1,12 @@
+{
+  "ready": true,
+  "model": "fixture.gguf",
+  "loadMs": 5,
+  "nCtx": 4096,
+  "memory": {
+    "residentMB": 1,
+    "footprintMB": 2,
+    "peakFootprintMB": 3,
+    "peakResidentMB": 4
+  }
+}

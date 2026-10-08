@@ -173,10 +173,33 @@ First prove the loop in one supported text app: correct offer, Tab inserts once,
 
 The reviewed app commit `827a387` has a cursor-adjacent trigger, a pinned action strip, a scrollable menu, install packaging and Accessibility reconnection. Its current pinned shortcuts use Command–Option–1/2/3; the product keyboard contract above remains the integration target. Action selection logs and closes the panel; it does not execute the Python planner. The local CLI still supports sample preview/hold/confirm. The two routers now exist behind `python3 -m caret.bridge`, but no Swift code calls it yet. Inline insertion, live workflows, Screenpipe retrieval and both execution adapters remain integration work.
 
-## Request to Teddy: render the approved privacy promise
+## Onboarding privacy promise: done in the Caret lane
 
-Teddy, please change the onboarding privacy copy in `apps/caret/Sources/CaretHost/Onboarding/OnboardingView.swift` to read the bundled `Contents/Resources/PrivacyPromise.txt`. The promise changed to disclose whole owner notes and provider data handling. Keeping a second copy in the view lets it drift from `helper/src/privacy.ts`.
+Sam assigned this to the Caret lane on 2026-10-08, so Teddy does not need to. The permissions step (`PermissionsScreen` in `apps/caret/Sources/CaretHost/Onboarding/OnboardingView.swift`) now reads the bundled `PrivacyPromise.txt` and shows all of it, word for word, under the permission card. The text scrolls in the space the card leaves, with its two headings set as group heads. The view has no promise text of its own and no fallback. A run without an app bundle, such as `swift run`, shows a developer-only line that names the missing file.
 
-The app bundler and the apps/mac Xcode privacy phase now generate that resource from `PRIVACY_PROMISE` after the build gate passes. In the existing `PermissionsScreen.privacyLine` binding, replace the string with a closure that uses `Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt")` and `String(contentsOf: url, encoding: .utf8)`. Keep `Text(Self.privacyLine)` rendering the result and remove the hard-coded promise. A missing resource must not fall back to the old text.
+An app build cannot get that far without the file. `scripts/privacy_gate.sh` refuses to finish `build-app.sh`, the Xcode target and `package_mac.py` when the assembled app's `PrivacyPromise.txt` is missing, empty, a link or outside the app, or different from `PRIVACY_PROMISE`. Those verification runs never write the file. `build-app.sh debug` and `acceptance`, and `make app` (an Xcode Debug build), are internal builds: they skip only the two release acceptance records, stamp the bundle `CaretInternalBuild`, and release and packaging refuse a stamped bundle. It also refuses a copy of any promise sentence in Swift or fallback text in the view (`scripts/check_onboarding_privacy.py`); the onboarding snapshot tests check what the step draws. The apps/mac permission panel still has no cloud-data promise; if it gains one, it should read the same resource.
 
-Packaging is blocked until this view reads the resource and contains no hard-coded promise. The gate checks the binding and verifies the generated resource equals `PRIVACY_PROMISE`. The apps/mac permission panel currently shows no cloud-data promise; if it gains one, use the same bundled resource rather than another copy.
+## Host change, done by the Caret lane: let the fields question fill only what Caret already settled
+
+This was a request to Teddy. Sam decided that the Caret lane fixes a Teddy-owned surface when it blocks Caret, so the host-integration lane (v2/hostint2) builds it after this branch merges into v2/int1. Teddy, nothing is needed from you.
+
+An Ask now asks which fields far more often. Jev's two scope answers rarely say "unclear" (0 of 300 field pairs in B31's live run). They more often disagree, or both vote "asks" just under the cutoff. The helper now offers those fields by their exact labels whenever eight or fewer remain, beside the fields Jev settled. The question text names the settled ones: "Caret will fill Name. Which of these should it fill too?"
+
+Today the card has no way to say "just those". Tab with nothing selected picks the highlighted row, and Esc fills nothing, the settled fields included. The helper side is done (`helper/src/protocol.ts`, `helper/src/helper.ts` `handleAskAnswer`, tests in `helper/test/g35-clarify-wire.test.ts`):
+
+- `askQuestion.filling` (optional, fields questions only) lists the labels Caret fills whatever is picked.
+- An `askAnswer` with `picks: []` answers such a question: Caret fills only the `filling` fields. Any other empty answer is refused with `schema`.
+
+The host change:
+
+1. `CaretHostCore/AskChoices.swift`: decode `filling` on `AskQuestion` (absent, or one or more labels, fields questions only), and let `AskAnswer` carry zero picks.
+2. `CaretHostCore/AskCaret.swift`: on a question with `filling`, Tab with no row selected sends `picks: []`. Space still selects rows, and Tab with rows selected sends them. Leave every other question's Tab as it is.
+3. `AskCopy.answerLabel`: on such a question, say what Tab fills, counting the settled fields: "Fill 1" with nothing selected, "Fill 3" with two rows selected. Keep "Choose" for questions without `filling`.
+4. `AskCopy.questionHint`: for such a question, "Up and Down move between the fields. Space selects or clears one. Tab fills the selected fields and the ones Caret named. Escape fills nothing."
+5. No motion. The card redraws on each key at once, as it does now: the user is watching the key they pressed.
+6. VoiceOver (found in review, and true of every fields question today): a row has a label and a value but no action, so a VoiceOver user can't pick an arbitrary field. Give each row a Select/Clear action bound to its option id, and take `.isSelected` from the checkbox, not from the highlight, on a many-pick question.
+7. Tests: add golden lines for a question with `filling` and an answer with no picks to both copies of `ask-choices.ndjson`, and change `AskChoicesTests` where it expects an empty answer to fail to decode.
+
+The keyboard contract does not change: the card owns Tab, Space, the arrows and Esc only while it shows. Rows are unchanged, and a row's detail now names the field's section when no group does: two "City" rows under Delivery > Address and Billing > Address read "Delivery" and "Billing".
+
+Until this ships, a user who wants none of the offered fields has to dismiss the question, and the settled fields go unfilled too.

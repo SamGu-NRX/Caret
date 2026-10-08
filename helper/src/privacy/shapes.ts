@@ -73,9 +73,14 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     // WINDOW_CHARS as for any slot that may hold screen text.
     "questions.*.criteria.*": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 145 before SCP1
     "questions.*.instructions": { reasons: ["descriptor", "instruction", "memory", "ownWording"], max: 1400 }, // seen 406
-    "state.form": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 99
+    // The form's outline (intent-heads.ts formOutline): its title, each section's path and field labels, and a note when
+    // the snapshot left fields out. UNMEASURED: screen-text slots at WINDOW_CHARS, as above.
+    "state.form.more": { reasons: ["ownWording"], max: 100 }, // seen 37
+    "state.form.sections[*].fields[*]": { reasons: ["descriptor", "ownWording"], max: 1200 },
+    "state.form.sections[*].path": { reasons: ["descriptor", "ownWording"], max: 1200 },
+    "state.form.title": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 99
     "state.instruction": { reasons: ["instruction"], max: 800 }, // seen 104
-    "state.task": { reasons: ["ownWording"], max: 300 }, // seen 103
+    "state.task": { reasons: ["ownWording"], max: 800 }, // seen 381
   },
   "codemode.choice": {
     "questions.*.criteria.*": { reasons: ["ownWording"], max: 100 }, // seen 47
@@ -331,7 +336,14 @@ export const ITEMS: { readonly [K in ShapeKey]: Readonly<Record<string, number>>
     "state.people[*]": 8, // seen 2
     "state.sources[*]": 8, // MAX_INTENT_WINDOWS
   },
-  "ask.scope": { "questions.*": 44, "questions.*.criteria.*": 44 }, // MAX_INTENT_FIELDS or MAX_INTENT_HEADINGS, and 4 fixed
+  "ask.scope": {
+    "questions.*": 44, // MAX_INTENT_FIELDS or MAX_INTENT_HEADINGS, and 4 fixed
+    "questions.*.criteria.*": 44,
+    // intent-heads.ts formOutline: a section per field at most, and a section's fields among the scope's; the scope's
+    // fields are the questions' bound.
+    "state.form.sections[*]": 44,
+    "state.form.sections[*].fields[*]": 44,
+  },
   "codemode.choice": { "questions.*": 2, "questions.*.criteria.*": 8 }, // seen 1, 3
   "codeplan.asksAbout": { "questions.*": 2, "questions.*.criteria.*": 4 }, // seen 1, 2
   "draft.check": { "questions.*": 4 }, // seen 2

@@ -1,6 +1,7 @@
 // Routes a developer may name (L1): "groq:<model>" for one of the measured Groq routes, "gateway:<model>" for Vercel AI
 // Gateway's OpenAI-compatible endpoint by model id. Nothing here is a default: writer/startup.ts uses a route only when
 // --dev-writer names it, and the eval scripts only when their flags do.
+import { ENV } from "../host-env.ts";
 import type { ChatRoute } from "./chat.ts";
 import { CANDIDATES } from "./config.ts";
 
@@ -29,7 +30,7 @@ export const GATEWAY_MODEL_IDS: readonly string[] = Object.keys(GATEWAY_MODELS);
 export function gatewayRoute(model: string): ChatRoute {
   const m = GATEWAY_MODELS[model];
   if (m === undefined) throw new Error(`Vercel AI Gateway model '${model}' has no route here; known: ${GATEWAY_MODEL_IDS.join(", ")} (writer/routes.ts)`);
-  return { provider: "gateway", baseUrl: GATEWAY_BASE_URL, keyName: "AI_GATEWAY_API_KEY", model, maxTokensParam: "max_tokens", ...m };
+  return { provider: "gateway", baseUrl: GATEWAY_BASE_URL, keyName: ENV.ai_gateway_api_key, model, maxTokensParam: "max_tokens", ...m };
 }
 
 /** "groq:<model>" or "gateway:<model>"; anything else is an error that lists what may be named. */

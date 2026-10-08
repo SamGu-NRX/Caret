@@ -14,7 +14,7 @@ import { AskAsks, AskRefused, planAsk } from "../src/planner/ask.ts";
 import { SAYS } from "../src/planner/says.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel } from "../src/model.ts";
-import { field, node, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap } from "./builders.ts";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,9 +64,9 @@ describe("A3's scope ask under G2's disclosure rule", () => {
       // The field is still asked about, named as what it is.
       const hint = s.fields.find((f) => f.name === SECRET_LABEL);
       expect(String(req.questions[scopeId(hint?.ref ?? "")]?.instructions)).toContain("a field Caret leaves to the user");
-      // Its neighbour names it the same way.
-      const name = s.fields.find((f) => f.name === "Full name");
-      expect(String(req.questions[scopeId(name?.ref ?? "")]?.instructions)).toContain("'a field Caret leaves to the user'");
+      // The form's outline names it the same way.
+      const outline = (req.state as unknown as { form: { sections: { fields: string[] }[] } }).form;
+      expect(outline.sections.flatMap((x) => x.fields)).toContain("a field Caret leaves to the user");
     }
   });
 
@@ -121,7 +121,7 @@ describe("a native plan from Jev's scope ask writes only the fields Jev chose (I
         if (req.purpose === "ask.heads") return pick({ route: "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none");
         if (id === "section") return pick("fields");
         if (req.purpose === "ask.scope") {
-          const label = /[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "";
+          const label = scopeLabel(ins);
           return pick(unclear.includes(label) ? "unclear" : asks.includes(label) ? "asks" : "not");
         }
         if (id === "press") return pick(Object.entries(q.criteria).find(([, d]) => /Submit/u.test(String(d)))?.[0] ?? "none");

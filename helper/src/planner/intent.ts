@@ -131,6 +131,12 @@ export interface IntentField {
   /** A3: the nearest heading before the field in document order, when the ledger took its text. */
   heading: string | null;
   control: Control;
+  /**
+   * Where the window places the field (fill/ask-scope.ts windowOutline): its sections and groups, outermost first, each by
+   * occurrence key and by its text as the ledger took it (null when it took none); an empty list for a field in no
+   * section or group; "unknown" when the window can't say.
+   */
+  place: readonly { key: string; name: string | null }[] | "unknown";
   /** A text field that already holds a value; only a list names it. */
   filled: boolean;
   neverTyped: SensitiveKind | null;
@@ -158,6 +164,8 @@ export interface IntentSnapshot {
   headings: { ref: string; name: string }[];
   /** SCP1: the window shows more sections than `headings` lists (the limit, or the ledger's budget): the question says so. */
   sectionsCut: boolean;
+  /** The window has fields `fields` leaves out (MAX_INTENT_FIELDS, or a name the ledger would not take): the scope ask says so. */
+  fieldsCut: boolean;
   /** Other open windows a value could come from, most recent first, by title, and a mail's sender when it shows one. */
   windows: { ref: string; windowId: string; app: string; title: string; from: string | null }[];
   /** Labels of what the user told Caret (About entries, people), never their values. */
@@ -231,20 +239,36 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   const outline = windowOutline(w);
   const paged = [...w.nodes.values()].some((n) => n.outline !== undefined);
   const headingOf = (key: string): string | null => (paged ? chainHeading(outline, key) : (headings.get(key) ?? null));
+  const occurrenceText = new Map(outline.occurrences.map((x) => [x.key, x.text]));
+  const placeOf = (key: string): IntentField["place"] => {
+    const chain = outline.chainOf(key);
+    if (chain === "unknown") return "unknown";
+    return chain.map((k) => {
+      const t = occurrenceText.get(k) ?? null;
+      return { key: k, name: t !== null && !secretText(t) && ledger.take(w, "descriptor", [t]) ? t : null };
+    });
+  };
+  let fieldsCut = false;
   // I2 ruling: the one inventory the native planner reads too (targets.ts): a field with no readable name is in neither.
   for (const x of localTargets(local)) {
-    if (fields.length >= MAX_INTENT_FIELDS) break;
+    if (fields.length >= MAX_INTENT_FIELDS) {
+      fieldsCut = true;
+      break;
+    }
     const kept = w.nodes.get(x.node.key);
     const d = kept === undefined ? { section: null } : describeField(w, kept);
     const name = x.name;
     // Its window texts only: a field the view leaves unnamed is named in Caret's words (UNNAMED_FIELD), which no window
     // shows and nothing is charged for (PV2: a text is located where it is cut).
-    if (!ledger.take(w, "descriptor", [x.modelName === UNNAMED_FIELD ? null : x.modelName, d.section])) continue;
+    if (!ledger.take(w, "descriptor", [x.modelName === UNNAMED_FIELD ? null : x.modelName, d.section])) {
+      fieldsCut = true;
+      continue;
+    }
     if (d.section !== null && !sections.some((s) => s.name === d.section)) sections.push({ ref: `s${sections.length + 1}`, name: d.section });
     const filled = x.control === "text" && (x.node.value ?? "") !== "";
     const h = headingOf(x.node.key);
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
-    fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, modelName: x.modelName, section: d.section, heading, control: x.control, filled, neverTyped: x.neverTyped });
+    fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, modelName: x.modelName, section: d.section, heading, control: x.control, place: placeOf(x.node.key), filled, neverTyped: x.neverTyped });
   }
   // File controls, as upload fields for the scope question: the name and its group taken together, as a field's are.
   const uploads: IntentField[] = [];
@@ -255,7 +279,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     if (name === null || !ledger.take(w, "descriptor", [name, d.section])) continue;
     const h = headingOf(n.key);
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
-    uploads.push({ ref: `u${uploads.length + 1}`, key: n.key, name, section: d.section, heading, control: "text", filled: false, neverTyped: null, upload: true });
+    uploads.push({ ref: `u${uploads.length + 1}`, key: n.key, name, section: d.section, heading, control: "text", place: placeOf(n.key), filled: false, neverTyped: null, upload: true });
   }
   // SCP1: every section the window shows, for the section question, whether or not it places a field: one left out
   // could not be named, and a section Ask naming it would read as particular fields. Sections holding a field come first,
@@ -306,6 +330,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     sections,
     headings: sectionHeadings,
     sectionsCut,
+    fieldsCut,
     windows,
     memory: memoryLabels,
     persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),

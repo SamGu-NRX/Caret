@@ -21,6 +21,10 @@
 // counted controls apart and called an ask with only control values right whenever a plan wrote nothing wrong.
 // Wrong must be 0. Keys come from CARET_ENV_FILE and are never printed; output holds synthetic corpus text only.
 //
+// Any HTTP 503 in an Ask, its continuations included, makes it "not run" whatever it then proposed or said: b31-03's
+// verifier 503 had scored as "no value". Each request is numbered and tied to its Ask when it is sent, so a log line
+// stays attributable when its answer arrives after the scorer moved on (four of SCP1's live lines named the next Ask).
+//
 // B29: an Ask that asks a question with choices is "asked", apart from "refused". For each, option recall says whether
 // the right answer is among the options: every expected field for a fields question; the form's corpus source window
 // for a source question (none when the source is memory); for a person question, the person whose name an expected
@@ -46,9 +50,11 @@ import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { ASK_MAKER } from "../src/writer/config.ts";
 import { devWriterRoute } from "../src/writer/routes.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
+import { attributedJev } from "./attributed-jev.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
-import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, pageForm, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
+import { buildDesk, generatorClock, loadAsks, loadCorpus, nodesFor, normLabel, pageForm, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
+import { setGeneratorClock } from "../src/fill/candidates.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: a } = parseArgs({
@@ -86,11 +92,15 @@ const { values: a } = parseArgs({
      * browser Ask uses. Pass "reader" to compare with runs before V4, which all used the reader's window.
      */
     "form-window": { type: "string", default: "page" },
+    /** The candidate generator's clock: "fixed" (the oracle's default) or "wall" (a live engine's), realfill-corpus.ts generatorClock. */
+    "generator-clock": { type: "string" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
 if (a["form-window"] !== "reader" && a["form-window"] !== "page") throw new Error("--form-window is reader or page");
 if (a.maker !== "writer" && a.maker !== "jev" && a.maker !== "heads") throw new Error("--maker is heads, jev or writer");
+const clock = generatorClock(a.engine, a["generator-clock"]);
+setGeneratorClock(clock);
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
 const corpus = loadCorpus(resolve(a.corpus));
@@ -187,7 +197,7 @@ const oracle: AskJev = async (req) => {
       pick(named ?? (form !== undefined && form.fields.every((f) => wanted(f.label)) ? "whole" : "fields"));
     }
     // The scope ask's label, which may hold an apostrophe ("Guest's full name"), ends where the wording goes on.
-    else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(/[Tt]he field '(.*?)'(?: is a |\. Kind: )/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
+    else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(/Field: "(.*?)"\. Control: "/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
     else if (id === "why") pick(ask?.reason === "payment" ? "payment" : ask?.reason === "neverTyped" ? "neverTyped" : ask?.reason === "noSuchField" ? "noSuchField" : "nothingToFill");
     else if (id === "source") pick("any");
     else if (id === "whose") pick("user");
@@ -250,7 +260,9 @@ const recorded = new Map<string, { answers: Awaited<ReturnType<AskJev>>["answers
 if (a.replay !== undefined) {
   for (const line of readFileSync(resolve(a.replay), "utf8").split("\n")) {
     if (line.trim() === "") continue;
-    const e = JSON.parse(line) as { ask: string; questions: Record<string, string>; answers: Awaited<ReturnType<AskJev>>["answers"]; nouls?: Record<string, number> };
+    const e = JSON.parse(line) as { ask: string; questions?: Record<string, string>; answers?: Awaited<ReturnType<AskJev>>["answers"]; nouls?: Record<string, number> };
+    // A dispatch line, or a request that failed: nothing to replay.
+    if (e.questions === undefined || e.answers === undefined) continue;
     const k = replayKey(e.ask, e.questions);
     recorded.set(k, [...(recorded.get(k) ?? []), { answers: e.answers, nouls: e.nouls ?? {} }]);
   }
@@ -265,11 +277,12 @@ let traces: FillTrace[] = [];
 let corpusLabel = new Map<string, string>();
 /** A1: decision requests by the ask (or "<id>+pick" for the simulated picks after a question) that made them. */
 const requestsBy = new Map<string, number>();
-const askJev: AskJev = async (req) => {
+const logJev = a["log-jev"];
+const jev = attributedJev(async (req, ask) => {
   if (jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  requestsBy.set(current, (requestsBy.get(current) ?? 0) + 1);
+  requestsBy.set(ask, (requestsBy.get(ask) ?? 0) + 1);
   const qs = Object.fromEntries(Object.entries({ ...req.questions, ...req.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]));
-  const hit = a.replay === undefined ? undefined : recorded.get(replayKey(current, qs))?.shift();
+  const hit = a.replay === undefined ? undefined : recorded.get(replayKey(ask, qs))?.shift();
   // Sealed before it is sent: the engine is asked, and the log written, from this frozen copy (PV2).
   const sent = sealRequest(req);
   if (a.replay !== undefined) replay[hit === undefined ? "misses" : "hits"]++;
@@ -277,9 +290,16 @@ const askJev: AskJev = async (req) => {
   jevSpent += r.costUsd;
   jevModels.add(r.model);
   requestMs.push(r.latencyMs);
-  if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { ask: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers, nouls: r.nouls ?? {} });
   return r;
-};
+}, () => current, (line) => {
+  if (logJev === undefined) return;
+  // Each request's dispatch, then its answer or its error, by request number and the Ask that sent it.
+  const { request, ask } = line;
+  if (line.event === "dispatch") return appendStoreJson(logJev, { request, ask, purpose: line.req.purpose ?? null, dispatchedAt: Date.now() });
+  const questions = storedRecord(sealRequest(line.req), (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])));
+  appendStoreJson(logJev, line.event === "error" ? { request, ask, questions, error: line.error } : { request, ask, questions, answers: line.result.answers, nouls: line.result.nouls ?? {} });
+});
+const askJev = jev.ask;
 // Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.
 if (a.maker === "writer" && a["writer-model"] === undefined) throw new Error("--maker writer needs --writer-model provider:model (no route is a default since L1)");
 const route = a["writer-model"] === undefined ? null : devWriterRoute(a["writer-model"]);
@@ -315,7 +335,7 @@ const spaced = (port: WriterPort): WriterPort => {
 const writer = route === null ? null : spaced(makeWriterPort(route));
 const planWriter = planRoute === null ? null : spaced(makeWriterPort(planRoute));
 
-type Verdict = "right" | "partial" | "wrong" | "refused" | "asked";
+type Verdict = "right" | "partial" | "wrong" | "refused" | "asked" | "notRun";
 interface Proposed {
   field: string;
   value: string;
@@ -409,22 +429,27 @@ for (const [i, ask] of asks.entries()) {
     const verdict: Verdict = proposed.length === 0 ? (asked ? "asked" : "refused") : ask.expected === "refuse" || proposed.some((p) => !ok(p)) ? "wrong" : missing.length === 0 ? "right" : "partial";
     return { verdict, proposed, missing };
   };
-  const { verdict, proposed, missing } = scoreDraft(draft, question !== null);
+  const scored = scoreDraft(draft, question !== null);
+  const { proposed, missing } = scored;
   // B29: option recall, then the simulated pick of the right options, continued up to three questions deep.
   const expectedValues = Object.values(expected).filter((v) => v !== "none" && v !== "handoff" && v !== "unchecked" && v !== "checked");
-  const rightOf = (q: AskQuestionDraft): { ids: string[]; right: string[] } => {
+  /** The right picks, or null when the right answer is not on offer. A question beside fields Caret settled may be answered with no pick. */
+  const rightOf = (q: AskQuestionDraft): { ids: string[] | null; right: string[] } => {
     if (q.part === "fields") {
-      const ids = q.options.filter((c) => wanted.includes(labelOf.get(c.fixes.fields?.[0] ?? "") ?? "")).map((c) => c.option.id);
-      return { ids: ids.length === wanted.length && wanted.length > 0 ? ids : [], right: wanted };
+      const settledKeys = (q.resume.intent.sure ?? []).flatMap((r) => q.resume.refs.fields[r] ?? []);
+      const rest = wanted.filter((l) => !settledKeys.some((k) => labelOf.get(k) === l));
+      const ids = q.options.filter((c) => rest.includes(labelOf.get(c.fixes.fields?.[0] ?? "") ?? "")).map((c) => c.option.id);
+      const answerable = ids.length === rest.length && (rest.length > 0 || q.filling.length > 0);
+      return { ids: answerable ? ids : null, right: rest };
     }
     if (q.part === "source") {
       const id = desk.source?.window.windowId ?? null;
       const hit = q.options.find((c) => (id === null ? c.fixes.source?.kind === "memory" : c.fixes.source?.kind === "window" && c.fixes.source.windowId === id));
-      return { ids: hit === undefined ? [] : [hit.option.id], right: [desk.source === null ? "memory" : desk.source.window.title] };
+      return { ids: hit === undefined ? null : [hit.option.id], right: [desk.source === null ? "memory" : desk.source.window.title] };
     }
     const named = q.options.find((c) => c.option.kind === "person" && expectedValues.some((v) => v.toLowerCase().includes(c.option.kind === "person" ? (c.option.name.toLowerCase().split(/\s+/u)[0] ?? "\u0000") : "\u0000")));
     const pick = named ?? q.options.find((c) => c.option.kind === "you");
-    return { ids: pick === undefined ? [] : [pick.option.id], right: [pick === undefined ? "(none)" : pick.option.kind === "you" ? "you" : (pick.option as { name: string }).name] };
+    return { ids: pick === undefined ? null : [pick.option.id], right: [pick === undefined ? "(none)" : pick.option.kind === "you" ? "you" : (pick.option as { name: string }).name] };
   };
   const optionText = (c: AskQuestionDraft["options"][number]): string => {
     const o = c.option;
@@ -436,9 +461,10 @@ for (const [i, ask] of asks.entries()) {
   let q = question;
   for (let depth = 0; q !== null && depth < 3; depth++) {
     const { ids, right } = rightOf(q);
-    askedRows.push({ part: q.part, options: q.options.map(optionText), recall: ids.length > 0, right, picked: ids.map((id) => optionText(q?.options.find((c) => c.option.id === id) as AskQuestionDraft["options"][number])) });
-    if (ids.length === 0) break;
-    const fixed = { ...q.resume.fixed };
+    askedRows.push({ part: q.part, options: q.options.map(optionText), recall: ids !== null, right, picked: (ids ?? []).map((id) => optionText(q?.options.find((c) => c.option.id === id) as AskQuestionDraft["options"][number])) });
+    if (ids === null) break;
+    // No pick answers a question beside settled fields: those alone are filled (helper.ts handleAskAnswer).
+    const fixed = { ...q.resume.fixed, ...(ids.length === 0 ? { fields: [] } : {}) };
     for (const c of q.options.filter((x) => ids.includes(x.option.id))) {
       if (c.fixes.fields !== undefined) fixed.fields = [...(fixed.fields ?? []), ...c.fixes.fields];
       if (c.fixes.source !== undefined) fixed.source = c.fixes.source;
@@ -477,6 +503,9 @@ for (const [i, ask] of asks.entries()) {
       }
     }
   }
+  // HTTP 503 anywhere in this Ask, its picks included: not run, and rerun under the same id. Read once every request the
+  // Ask sent has answered, so a 503 arriving after the Ask ended still counts.
+  const verdict: Verdict = (await jev.notRun(ask.id)) ? "notRun" : scored.verdict;
   const fill = (draft?.fill?.fields ?? []).map((f) => ({ field: labelOf.get(f.key) ?? f.descriptor, value: f.value ?? f.handoff?.value ?? null, withheld: f.withheld }));
   const sentenceOk = ask.reason === undefined ? null : says !== null && sentenceFor(ask.reason, says);
   rows.push({ ask, route: draft?.route ?? intent?.route ?? "none", verdict, proposed, missing, error, says, detail, sentenceOk, intent, maker: use, fill, asked: askedRows, continued, refusePicks, requests: requestsBy.get(ask.id) ?? 0 });
@@ -531,10 +560,10 @@ const md = [
   `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker !== "writer" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
   ...(a.replay === undefined ? [] : [`Replayed from ${a.replay}: ${replay.hits} requests; ${replay.misses} asked of ${decide.says} instead.`]),
-  `Decisions: ${decide.says}; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
+  `Decisions: ${decide.says}; generator clock ${clock === null ? "wall (15 ms budget)" : "fixed"}; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
   `Maker requests per intent: ${[...new Set(makerCalls)].sort((x, y) => x - y).join(", ") || "none"} (${makerCalls.length} intents made); maker latency p50 ${pct(makerMs, 0.5)} ms, p95 ${pct(makerMs, 0.95)} ms.`,
   "",
-  `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, asked with choices ${n("asked")}, refused ${n("refused")}, **wrong ${n("wrong")}**.`,
+  `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, asked with choices ${n("asked")}, refused ${n("refused")}, **wrong ${n("wrong")}**; not run (HTTP 503) ${n("notRun")}${n("notRun") === 0 ? "" : `, rerun ${rows.filter((r) => r.verdict === "notRun").map((r) => r.ask.id).join(",")}`}.`,
   `Asked ${asked.length}: the right answer among the first question's options in ${recalled.length} (fields ${asked.filter((r) => r.asked[0]?.part === "fields").length}, source ${asked.filter((r) => r.asked[0]?.part === "source").length}, person ${asked.filter((r) => r.asked[0]?.part === "person").length}).`,
   `Must-refuse asks that were asked: ${rows.filter((r) => r.refusePicks !== null).length}; every pick tried (${rows.reduce((s2, r) => s2 + (r.refusePicks?.tried ?? 0), 0)} picks) proposed **${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)} values (all wrong)**${rows.flatMap((r) => (r.refusePicks?.proposed ?? []).map((x) => `${r.ask.id}: ${x}`)).map((x) => `; ${x}`).join("")}.`,
   `After the simulated right pick: right ${cont("right")}, partial ${cont("partial")}, asked again with no right option ${cont("asked")}, refused ${cont("refused")}, **wrong ${cont("wrong")}**; not continued (right answer not offered) ${asked.length - recalled.length}.`,
@@ -559,4 +588,4 @@ function ok2(p: Proposed): boolean {
 }
 writeStore(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
 writeStoreJson(join(OUT, "realfill-asks.json"), { engine: decide.says, formWindow: a["form-window"], requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, 1);
-process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; asked back ${back.length}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}${a.replay === undefined ? "" : `; replayed ${replay.hits}, missed ${replay.misses}`}\n`);
+process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}, not run ${n("notRun")}${n("notRun") === 0 ? "" : ` (rerun ${rows.filter((r) => r.verdict === "notRun").map((r) => r.ask.id).join(",")})`}; asked back ${back.length}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}${a.replay === undefined ? "" : `; replayed ${replay.hits}, missed ${replay.misses}`}\n`);

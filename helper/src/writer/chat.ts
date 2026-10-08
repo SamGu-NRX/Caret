@@ -2,6 +2,7 @@ import { requireVercelDevelopment } from "../privacy/vercel.ts";
 // One OpenAI-compatible chat completion, the shape both Vercel AI Gateway and Groq serve. No retry: a
 // failed write is reported, and the plan says a provider change is explicit configuration.
 import { sendable, type Sealed, type Sink } from "../privacy/send.ts";
+import type { HostEnv } from "../host-env.ts";
 import * as z from "zod";
 
 export interface Pricing {
@@ -15,7 +16,7 @@ export interface ChatRoute {
   provider: "gateway" | "groq";
   baseUrl: string;
   /** Environment variable holding the key; read at call time. */
-  keyName: string;
+  keyName: keyof HostEnv;
   model: string;
   /** Name of the output cap in this API's request body. */
   maxTokensParam: "max_tokens" | "max_completion_tokens";

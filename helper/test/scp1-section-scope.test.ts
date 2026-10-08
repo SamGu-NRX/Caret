@@ -29,7 +29,7 @@ import { forgetWindows, SnippetLedger } from "../src/privacy.ts";
 import { secretText } from "../src/memory/sensitive.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { rng } from "./large-scene.ts";
-import { field, node, snap } from "./builders.ts";
+import { field, node, scopeLabel, snap } from "./builders.ts";
 
 const NOTE_APP = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
 const NOTES = "Serial number: SN-4471-B\nModel: Kestrel 9\nContact name: Mira Vale\nContact phone: +1 202-555-0146";
@@ -141,7 +141,7 @@ function jev(o: { asks?: readonly string[]; unclear?: readonly string[]; section
           return [id, typeof s === "function" ? s(wording) : s] as const;
         }
         if (req.purpose === "ask.scope") {
-          const label = /[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "";
+          const label = scopeLabel(ins);
           if ((o.unclear ?? []).includes(label)) return a("unclear", 0.99);
           const once = (o.asksOnce ?? []).includes(label) && wording === 1;
           return a((o.asks ?? ALL).includes(label) && !once ? "asks" : "not", 0.99);
@@ -234,7 +234,7 @@ describe("a section-only Ask (Part A: the veto)", () => {
     const s = snapFor(d);
     const settled = await settleFields(s, jev({ section: "Equipment details" }).ask);
     expect(settled.asks.map((f) => f.name)).toEqual(EQUIPMENT);
-    expect(settled.unclear).toEqual([]);
+    expect(settled.unresolved).toEqual([]);
     expect(settled.section).toBe("Equipment details");
     // Revealed fields only (`only`): the contact fields alone are asked about, and none is settled.
     const only = await settleFields(s, jev({ section: "Equipment details" }).ask, new Set(["f/cname", "f/cphone"]));
@@ -258,7 +258,7 @@ describe("a section-only Ask (Part A: the veto)", () => {
     expect(pre.asks).toEqual([]);
     expect(pre.sectionless.map((f) => f.name)).toEqual(ALL);
     const j = jev({ section: "Equipment details" });
-    const made = await headsIntentMaker(j.ask).make(ps, undefined, { asks: [], unclear: [], sectionless: pre.sectionless.map((f) => f.key), section: pre.section });
+    const made = await headsIntentMaker(j.ask).make(ps, undefined, { asks: [], unresolved: [], sectionless: pre.sectionless.map((f) => f.key), section: pre.section });
     expect(made.intent).toMatchObject({ route: "refuse", why: "sectionUnknown", namedSection: "Equipment details" });
     expect(made.intent.settled).toEqual([]);
   });
@@ -444,10 +444,13 @@ describe("what the veto leaves as it was (preservation)", () => {
   const refOf = (s: IntentSnapshot, heading: string): string => s.headings.find((h) => h.name === heading)?.ref ?? "none";
   const chosenNames = (s: IntentSnapshot, refs: readonly string[]): string[] => refs.map((r) => s.fields.find((f) => f.ref === r)?.name ?? r);
 
-  it("still needs both wordings' asks for a field in the named section", async () => {
+  it("still needs both wordings' asks for a field in the named section: one wording's is only offered", async () => {
     const d = desk({ reader: readerForm() });
-    const r = (await plan(d, jev({ section: "Equipment details", asksOnce: ["Model"] }))) as AskDraft;
-    expect(written(r, d)).toEqual(["Serial number"]);
+    const e = await plan(d, jev({ section: "Equipment details", asksOnce: ["Model"] })).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskAsks);
+    const q = (e as AskAsks).question;
+    expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Model"]);
+    expect(q.filling).toEqual(["Serial number"]);
   });
 
   it("never lets not, unclear, a disagreement or a low answer to the section question take anything out", () => {

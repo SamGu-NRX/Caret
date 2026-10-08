@@ -3,15 +3,21 @@
 // runs it, one undo restores it, and controls the writes reveal are offered as a second segment (afterReveal). Caret
 // presses nothing on the page. Driven through the Helper and the page engine of fill-transaction.test.ts. Every name and
 // value is invented.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, type GoalProgress, type PageControl } from "../src/protocol.ts";
 import { MAX_FIELDS } from "../src/fill/fill.ts";
+import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { byLabel, c, chrome, FakePage, mixedControls, NOTE, PICKS, TEXTEDIT, WIN } from "./fake-page.ts";
 import { closeRigs, goalMessages, presses, rig, type Finished, type Rig, type Segment } from "./page-rig.ts";
 
-afterEach(closeRigs);
+// Canned picks require the complete candidate list, regardless of CPU load.
+beforeEach(() => setGeneratorClock(() => 0));
+afterEach(() => {
+  closeRigs();
+  setGeneratorClock(null);
+});
 
 /** The question a goal's value gate asks (planner/codeplan.ts verifyWrites): a page plan's fill picks must not be asked it. */
 const VERIFY_TASK = "Caret checks each value a drafted plan would write before offering the plan.";

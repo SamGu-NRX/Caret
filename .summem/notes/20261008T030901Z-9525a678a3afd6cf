@@ -1,1 +1,0 @@
-Disclosure.walk refuses any request-body key outside KEY (no spaces), so ids like 'note 1' cannot be state keys (INT1 uses note_1); a state map with dynamic keys also needs a childGlob rule in privacy/shapes.ts besides its .* row.
