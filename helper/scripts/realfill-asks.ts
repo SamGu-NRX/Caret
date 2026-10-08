@@ -53,7 +53,8 @@ import { ChatHttpError } from "../src/writer/chat.ts";
 import { attributedJev } from "./attributed-jev.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
-import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, pageForm, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
+import { buildDesk, generatorClock, loadAsks, loadCorpus, nodesFor, normLabel, pageForm, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
+import { setGeneratorClock } from "../src/fill/candidates.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: a } = parseArgs({
@@ -91,11 +92,15 @@ const { values: a } = parseArgs({
      * browser Ask uses. Pass "reader" to compare with runs before V4, which all used the reader's window.
      */
     "form-window": { type: "string", default: "page" },
+    /** The candidate generator's clock: "fixed" (the oracle's default) or "wall" (a live engine's), realfill-corpus.ts generatorClock. */
+    "generator-clock": { type: "string" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
 if (a["form-window"] !== "reader" && a["form-window"] !== "page") throw new Error("--form-window is reader or page");
 if (a.maker !== "writer" && a.maker !== "jev" && a.maker !== "heads") throw new Error("--maker is heads, jev or writer");
+const clock = generatorClock(a.engine, a["generator-clock"]);
+setGeneratorClock(clock);
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
 const corpus = loadCorpus(resolve(a.corpus));
@@ -554,7 +559,7 @@ const md = [
   `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker !== "writer" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
   ...(a.replay === undefined ? [] : [`Replayed from ${a.replay}: ${replay.hits} requests; ${replay.misses} asked of ${decide.says} instead.`]),
-  `Decisions: ${decide.says}; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
+  `Decisions: ${decide.says}; generator clock ${clock === null ? "wall (15 ms budget)" : "fixed"}; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
   `Maker requests per intent: ${[...new Set(makerCalls)].sort((x, y) => x - y).join(", ") || "none"} (${makerCalls.length} intents made); maker latency p50 ${pct(makerMs, 0.5)} ms, p95 ${pct(makerMs, 0.95)} ms.`,
   "",
   `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, asked with choices ${n("asked")}, refused ${n("refused")}, **wrong ${n("wrong")}**; not run (HTTP 503) ${n("notRun")}${n("notRun") === 0 ? "" : `, rerun ${rows.filter((r) => r.verdict === "notRun").map((r) => r.ask.id).join(",")}`}.`,
