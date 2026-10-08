@@ -8,7 +8,7 @@ import { assertNoExcludedValue, cut, flat, fold, sectionTexts, SnippetLedger, ty
 import { breach, measure, normalizedUnits, type Measurement } from "./ledger/account.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits } from "./ledger/units.ts";
-import { LedgerEncodingError } from "./ledger/normalize.ts";
+import { LedgerEncodingError, ledgerNormalizeUnit } from "./ledger/normalize.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
@@ -585,7 +585,13 @@ export class Disclosure extends SnippetLedger {
       if (typeof h !== "string") throw new UnmintedText("t: a hole is not text");
       out += h + (strings[i + 1] ?? "");
     });
+    if ((process.env.LEDGER_EXPERIMENT ?? "").includes("t") && !EXP_T.has(out)) EXP_T.set(out, { strings: [...strings], holes: [...holes] });
     return this.recordWays(out, this.composedWays(holes, "t", strings.some((s) => s !== "")));
+  }
+
+  /** EXPERIMENT ONLY (never committed). */
+  expWays(t: string): MintReason[][] {
+    return this.ways.get(t) ?? [];
   }
 
   /** A minted text cut to `max` characters with an ellipsis (privacy.ts cut); it keeps its reasons. */
@@ -729,6 +735,24 @@ export class Disclosure extends SnippetLedger {
     return m;
   }
 
+  /** EXPERIMENT ONLY (never committed). */
+  expMeasure(purpose: string, pieces: readonly string[][]): Measurement {
+    const norm = pieces.map((p) => ledgerNormalizeUnit(p));
+    const ws = this.measuredWindows();
+    const m = measure(norm, ws);
+    const b = breach(m, ws);
+    if (b !== null && process.env.LEDGER_DEBUG === "1") {
+      const w = ws.find((x) => x.key === b.key)!;
+      const bits = m.positions.get(b.key)?.bits;
+      const marked: string[] = [];
+      if (bits !== undefined) w.inv.lines.forEach((l, li) => { const st = w.inv.starts[li]!; let t = ""; for (let p = 0; p < l.length; p++) t += bits[st + p] === 1 ? l[p] : "_"; if (/[^_]/u.test(t)) marked.push(t); });
+      const contrib = pieces.map((u, i) => ({ u: u.join(" | ").slice(0, 120), r: measure([norm[i]!], [w]).prose[w.key] ?? 0, reasons: u.map((x) => [...(this.reasonsOf(x) ?? [])].join("+")).join(" | ") })).filter((x) => x.r > 0).sort((a, b) => b.r - a.r);
+      process.stderr.write(`LEDGER_DEBUG ${purpose} ${JSON.stringify(b)}\n${marked.join("\n")}\n${contrib.slice(0, 15).map((c) => `  ${c.r} [${c.reasons}] ${JSON.stringify(c.u)}`).join("\n")}\n`);
+    }
+    if (b !== null) throw new LedgerRefused(`${purpose}: it reveals ${b.charged} ${b.bound === "prose" ? "prose " : ""}characters of window ${b.key}, over its limit of ${b.limit}; it was not sent`);
+    return m;
+  }
+
   /** Never serialized with a request: JSON of a request names its Disclosure, nothing it holds. */
   toJSON(): string {
     return "[disclosure]";
@@ -750,7 +774,37 @@ export function verifySent(req: { purpose?: string; disclosure?: unknown }, body
  * string and scalar spelling), then measured by the request's Disclosure (Disclosure.measureSent). Bytes that do not
  * decode refuse. Throws LedgerRefused (an UnmintedText) naming no text.
  */
+const EXP_T = new Map<string, { strings: string[]; holes: string[] }>();
+function expPieces(text: string, depth = 0): string[] {
+  const seg = EXP_T.get(text);
+  if (seg === undefined || depth > 20) return [text];
+  const out: string[] = [""];
+  seg.strings.forEach((lit, i) => {
+    if (lit !== "") out.push("");
+    if (i < seg.holes.length) {
+      const inner = expPieces(seg.holes[i] as string, depth + 1);
+      out[out.length - 1] += inner[0] ?? "";
+      for (const p of inner.slice(1)) out.push(p);
+    }
+  });
+  return out.filter((p) => p !== "");
+}
 export function measureBytes(req: { purpose?: string; kind?: string; disclosure?: unknown }, bytes: string): Measurement {
+  const exp = process.env.LEDGER_EXPERIMENT ?? "";
+  if (exp !== "") {
+    const purpose0 = req.purpose ?? req.kind ?? UNNAMED;
+    const d0 = asDisclosure(req.disclosure);
+    if (d0 === null) throw new UnmintedText(`${purpose0} has no Disclosure`);
+    const us = decodeUnits(bytes).units;
+    const kept: string[][] = [];
+    for (const u of us) {
+      if (exp.includes("own") && u.kind === "key") continue;
+      const ways = d0.expWays(u.text);
+      if (exp.includes("own") && ways.length > 0 && ways.every((w) => w.every((r) => r === "ownWording"))) continue;
+      kept.push(exp.includes("t") ? expPieces(u.text) : [u.text]);
+    }
+    return d0.expMeasure(purpose0, kept);
+  }
   const purpose = req.purpose ?? req.kind ?? UNNAMED;
   const d = asDisclosure(req.disclosure);
   if (d === null) throw new UnmintedText(`${purpose} has no Disclosure, so nothing in it was minted; it was not sent`);
