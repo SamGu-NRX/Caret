@@ -46,13 +46,38 @@ final class OnboardingHostTests: XCTestCase {
         }
     }
 
-    /// The privacy line, word for word (A10 brief). A change to it is a product decision, not a
-    /// copy edit, so it fails here first.
-    func testThePrivacyLineIsPinned() {
-        XCTAssertEqual(
-            PermissionsScreen.privacyLine,
-            "To decide what to offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might fill. Never a whole document or conversation. The next words are written on this Mac."
-        )
+    /// The permissions step shows the promise it is given, all of it: the text below is this test's own, so the check
+    /// holds whatever the approved words become. Rendering it differs from rendering no promise, so the text reaches
+    /// the step rather than stopping at the window.
+    func testThePermissionsStepShowsTheInjectedPromise() throws {
+        let text = "What a test sends\n\nA first paragraph, long enough to wrap onto a second line in the permissions step of onboarding.\n\nWho a test tells\n\nA second paragraph.\n\nA third paragraph."
+        let promise = try XCTUnwrap(PrivacyPromise(text))
+        XCTAssertEqual(promise.blocks.map(\.text).joined(separator: PrivacyPromise.separator), text)
+        let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: false, inputMonitoring: true), clock: Gallery.StillClock())
+        flow.send(.next)
+        flow.send(.next)
+        XCTAssertEqual(flow.state.step, .permissions)
+        let shown = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false, promise: promise), dark: false))
+        let missing = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false, promise: nil), dark: false))
+        XCTAssertGreaterThan(try SnapshotTests.difference(shown, missing), 0)
+        // Other words in the same shape draw differently: the step draws the text it was given, not a fixed one.
+        let other = try XCTUnwrap(PrivacyPromise(text.replacingOccurrences(of: "A first paragraph", with: "Another opening")))
+        let otherShown = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false, promise: other), dark: false))
+        XCTAssertGreaterThan(try SnapshotTests.difference(shown, otherShown), 0)
+    }
+
+    /// A test process has no app bundle, as `swift run` has none: no promise is read, the window's default shows the
+    /// missing state (the same pixels as passing no promise), and that state names the file. Nothing stands in for it.
+    func testWithoutTheResourceTheStepNamesItAndShowsNoPromise() throws {
+        XCTAssertNil(Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt"), "the test runner must have no resource")
+        XCTAssertNil(PermissionsScreen.privacyLine)
+        XCTAssertTrue(PermissionsScreen.missingPromiseLine.contains("PrivacyPromise.txt"))
+        let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: false, inputMonitoring: true), clock: Gallery.StillClock())
+        flow.send(.next)
+        flow.send(.next)
+        let byDefault = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false), dark: false))
+        let missing = try XCTUnwrap(Gallery.png(OnboardingView(state: flow.state, character: .pebble, animated: false, promise: nil), dark: false))
+        XCTAssertEqual(try SnapshotTests.difference(byDefault, missing), 0)
     }
 
     /// The know screen's words (A11 brief): what it asks for, why, and where it can be changed.

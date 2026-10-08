@@ -185,6 +185,21 @@ extension Gallery {
         return try! JSONDecoder().decode(TaskProgress.self, from: Data(line.utf8))
     }
 
+    /// Stands in for the approved privacy promise in renders, so a reference changes only when the screen does, not
+    /// when the promise's words do. Same shape as the promise: two headed sections, one long paragraph and two
+    /// shorter ones, about as long overall.
+    static let samplePrivacyPromise = PrivacyPromise("""
+        What this sample sends
+
+        This is sample text that stands in for Caret's privacy promise in rendered references, so a reference does not change when the approved promise does. It has the promise's shape: two headed sections, a long first paragraph and two shorter ones. Each sentence is ordinary prose of about the length the promise uses, so the screen's wrapping, spacing and fade are drawn as the real text would draw them.
+
+        Who receives this sample
+
+        The second section begins here. A paragraph of this length runs past the height the permission card leaves, so the render shows where the text is cut and how the fade at its foot reads. Nothing in this sample describes what Caret does: the app shows the bundled PrivacyPromise.txt, which the build writes from the approved text.
+
+        A last paragraph closes the sample, as the promise closes with a short one about a second provider. It makes the text long enough to need scrolling.
+        """)
+
     /// Every onboarding screen, and each state of the ones that change, reached by sending the
     /// flow the events the window would.
     static func onboarding(_ character: FigureCharacter = .pebble) -> [Item] {
@@ -228,9 +243,13 @@ extension Gallery {
             ("first-look-nothing", flow(toFirstLook + [.firstLookReply(nothing)])),
             ("first-look-error", flow(toFirstLook + [.firstLookUnsent])),
         ]
-        return screens.map { name, state in
-            Item(name: "onboarding-\(name)", view: AnyView(OnboardingView(state: state, character: character, animated: false)))
+        let items = screens.map { name, state in
+            Item(name: "onboarding-\(name)", view: AnyView(OnboardingView(state: state, character: character, animated: false, promise: samplePrivacyPromise)))
         }
+        // A run with no PrivacyPromise.txt, as under `swift run`; an app build cannot reach it (scripts/privacy_gate.sh).
+        let missing = Item(name: "onboarding-permissions-no-promise", view: AnyView(OnboardingView(
+            state: flow(ax: false, input: false, [.next, .next]), character: character, animated: false, promise: nil)))
+        return items + [missing]
     }
 }
 

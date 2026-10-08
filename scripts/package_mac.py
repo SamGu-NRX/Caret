@@ -1,5 +1,6 @@
 """Build a Release Caret.app, optional DMG, and optional /Applications install."""
 
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -23,6 +24,18 @@ def privacy_gate(runner=subprocess.run) -> None:
         ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")],
         capture_output=True,
         text=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit((result.stderr or result.stdout or "privacy gate: refusing to package").strip())
+
+
+def verify_privacy_resource(app: Path, runner=subprocess.run) -> None:
+    """Refuse an app whose PrivacyPromise.txt is missing, empty or not PRIVACY_PROMISE; onboarding shows that file."""
+    result = runner(
+        ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "CARET_VERIFY_PRIVACY_RESOURCE": str(app / "Contents" / "Resources" / "PrivacyPromise.txt")},
     )
     if result.returncode != 0:
         raise SystemExit((result.stderr or result.stdout or "privacy gate: refusing to package").strip())
@@ -53,6 +66,7 @@ def build() -> None:
             shutil.rmtree(seed_dst)
         shutil.copytree(seed_src, seed_dst)
     stamp_project_root(dist_app, root=root, release=_release_mode())
+    verify_privacy_resource(dist_app)
     adhoc_sign(dist_app)
     print(f"Built {dist_app}")
 

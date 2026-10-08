@@ -42,4 +42,16 @@ if (resource) {
   writeStore(resource, PRIVACY_PROMISE, "utf8");
   if (readFileSync(resource, "utf8") !== PRIVACY_PROMISE) throw new Error(`${resource}: generated privacy resource differs from PRIVACY_PROMISE`);
 }
+// The finished app's copy, checked after every step that could drop or replace it and before the app is signed or
+// handed on. Onboarding has no text of its own to show in its place (OnboardingView.swift, PermissionsScreen).
+const shipped = process.env.CARET_VERIFY_PRIVACY_RESOURCE;
+if (shipped) {
+  let text: string | null = null;
+  try { text = readFileSync(shipped, "utf8"); } catch { /* reported as missing below */ }
+  const why = text === null ? "is missing" : text.trim() === "" ? "is empty" : text !== PRIVACY_PROMISE ? "differs from PRIVACY_PROMISE in helper/src/privacy.ts" : null;
+  if (why !== null) {
+    console.error(`privacy gate: refusing to package: the app's privacy promise ${shipped} ${why}; onboarding would have nothing approved to show`);
+    process.exit(1);
+  }
+}
 console.log("privacy gate: disclosure, required acceptances and dev-only gateway configuration checked");

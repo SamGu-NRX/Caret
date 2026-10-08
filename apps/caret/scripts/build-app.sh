@@ -114,6 +114,8 @@ ditto "$helper_out" "$contents/Resources/helper"
 ditto ../../extension/dist "$contents/Resources/Caret for Chrome"
 cp Bundle/dev.caret.host.plist "$contents/Library/LaunchAgents/dev.caret.host.plist"
 plutil -lint -s "$contents/Library/LaunchAgents/dev.caret.host.plist" "$contents/Info.plist"
+# Every file is in place: the promise onboarding shows must be there, whole, before anything is signed.
+CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" CARET_VERIFY_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt" /bin/sh "$root/scripts/privacy_gate.sh"
 
 # Inside out: each helper and the framework, then the app, which seals the resources.
 if [[ "$mode" == debug ]]; then
