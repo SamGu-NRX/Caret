@@ -172,16 +172,22 @@ export function excludedAncestor(nodes: ReadonlyMap<string, Node>, n: Node): Nod
   const seen = new Set<string>([n.key]);
   for (let p = n.parent === null ? undefined : nodes.get(n.parent); p !== undefined && !seen.has(p.key); p = p.parent === null ? undefined : nodes.get(p.parent)) {
     seen.add(p.key);
-    if (p.excluded !== undefined) return p.excluded;
-    if (p.states?.includes("secure") === true || p.role === "AXSecureTextField") return "secure";
-    // A container labelled for a secret (a group named "Password") holds what it names. Its own label is a name, an
-    // attribute: not a text's content (TEXT_ROLES), nor a window's, page's or scroll view's title (NOT_A_GROUP), which
-    // names no field.
-    if (!TEXT_ROLES.has(p.role) && !NOT_A_GROUP.has(p.role) && p.editable !== true) {
-      const kind = labelKind(p.label);
-      if (kind !== null) return kind;
-    }
+    const kind = confers(p);
+    if (kind !== null) return kind;
   }
+  return null;
+}
+
+/**
+ * The exclusion a node holds over everything under it, or null: its own exclusion, a secure state or role, or, for a
+ * container labelled for a secret (a group named "Password"), the kind its label names. The label of a container is a
+ * name, an attribute: not a text's content (TEXT_ROLES), nor a window's, page's or scroll view's title (NOT_A_GROUP),
+ * which names no field. The model re-admits a window's kept nodes whenever one of its nodes confers (model.ts).
+ */
+export function confers(p: Node): NodeExclusion | null {
+  if (p.excluded !== undefined) return p.excluded;
+  if (p.states?.includes("secure") === true || p.role === "AXSecureTextField") return "secure";
+  if (!TEXT_ROLES.has(p.role) && !NOT_A_GROUP.has(p.role) && p.editable !== true) return labelKind(p.label);
   return null;
 }
 
@@ -241,6 +247,16 @@ function admitSections(n: Node): Pick<Node, "headings" | "outline"> | null {
  */
 export function admitNode(n: Node, from: Inherited = {}, typed = false): Node {
   const why = excludedNode(n, from, typed);
+  // Inside an excluded node, a node is its content, every text it holds (INT1 review 2: a "Password" group's static
+  // text kept its label "violet-orchard-seven"). Its label, value, placeholder, heading list and section texts all go;
+  // its key, role, place and the outline's structure stay.
+  if (from.excluded !== undefined) {
+    const { value: _v, label: _l, placeholder: _p, headings: _h, sectionNames: _s, ...rest } = n;
+    const outline = n.outline?.map((o) => ({ key: o.key, heading: o.heading }));
+    const bare = n.value === undefined && n.label === undefined && n.placeholder === undefined && n.headings === undefined && n.sectionNames === undefined && (n.outline ?? []).every((o) => o.text === undefined && o.name === undefined);
+    if (bare && n.excluded === from.excluded) return n;
+    return { ...rest, ...(outline === undefined ? {} : { outline }), excluded: from.excluded };
+  }
   const sections = admitSections(n);
   if (why !== null) {
     const { value: _value, ...rest } = n;

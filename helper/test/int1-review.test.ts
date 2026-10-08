@@ -73,3 +73,44 @@ describe("INT1 review P1: ownership units read a page's heading and outline text
     expect(units.map((u) => u.windowId).sort()).toEqual(["other", "page"]);
   });
 });
+
+describe("INT1 review 2 P1: a container labelled for a secret takes everything under it", () => {
+  const SECRET = "violet-orchard-seven";
+  const group = (label: string): Node => node("g", "AXGroup", { label });
+  const child = (extra: Partial<Node>): Node => ({ ...node("c", "AXStaticText", extra), parent: "g" });
+  const textOf = (m: ScreenModel): string => JSON.stringify([...(m.windows.get("w")?.nodes.values() ?? [])]);
+
+  it("readmits the kept descendants when a truncated snapshot renames the container to a secret's kind", () => {
+    const m = new ScreenModel();
+    m.apply(snap([group("Details"), child({ value: SECRET })], { at: 1000, windowId: "w", title: "Notes" }));
+    expect(textOf(m)).toContain(SECRET);
+    // A cut walk that reaches only the container, now labelled "Password", with no value of its own.
+    m.apply({ ...snap([group("Password")], { at: 2000, windowId: "w", title: "Notes" }), stats: { walkMs: 5, visited: 1, truncated: true } });
+    expect(textOf(m)).not.toContain(SECRET);
+    expect(m.windows.get("w")?.nodes.get("c")?.excluded).toBe("password");
+  });
+
+  it("drops a descendant's content-bearing label, not only its value", () => {
+    const m = new ScreenModel();
+    m.apply(snap([group("Password"), child({ label: SECRET })], { at: 1000, windowId: "w", title: "Notes" }));
+    expect(textOf(m)).not.toContain(SECRET);
+    // With the marker heuristics off too (SC1 step 3's switch): the structural rule alone keeps it out.
+    const was = process.env.CARET_TEST_MARKERS_OFF;
+    process.env.CARET_TEST_MARKERS_OFF = "1";
+    try {
+      const m2 = new ScreenModel();
+      m2.apply(snap([group("Password"), child({ label: SECRET })], { at: 1000, windowId: "w2", title: "Notes" }));
+      const d = new Disclosure(m2.windows.values());
+      expect(d.candidate(redactWindow(m2.windows.get("w2") as WindowState), SECRET)).toBeNull();
+    } finally {
+      if (was === undefined) delete process.env.CARET_TEST_MARKERS_OFF;
+      else process.env.CARET_TEST_MARKERS_OFF = was;
+    }
+  });
+
+  it("drops a descendant's placeholder, heading list and outline text too", () => {
+    const m = new ScreenModel();
+    m.apply(snap([group("Password"), { ...node("p", "AXWebArea", { placeholder: SECRET, headings: [SECRET], outline: [{ key: "p#o1", heading: true, text: SECRET }] }), parent: "g" }], { at: 1000, windowId: "w", title: "Notes" }));
+    expect(textOf(m)).not.toContain(SECRET);
+  });
+});
