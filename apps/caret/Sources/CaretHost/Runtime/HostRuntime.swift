@@ -546,9 +546,9 @@ public final class HostRuntime {
         let focusObserver = focus
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
-                // Before the Tab returns: no key typed after it reaches the app while its word is
-                // selected for the fix. The executor ends the hold.
-                if claim.insertsText, claim.rangeEdit != nil, !writesNothing { keyHold.begin(pid: claim.offer.target.pid) }
+                // Before the Tab returns: no key typed after it reaches the app while Caret writes there (a
+                // word selected for a fix, offsets approved for an insert). The executor ends the hold.
+                if claim.insertsText, !writesNothing { keyHold.begin(pid: claim.offer.target.pid) }
                 if claim.insertsText {
                     // A headless host writes nothing: the claim is decided and recorded, never applied.
                     if writesNothing { arbiter.abandon(claimID: claim.claimID, reason: "headless") } else { executor.submit(claim) }
@@ -592,6 +592,8 @@ public final class HostRuntime {
                         }
                     }
                 } else {
+                    // The same for Caret's own Undo: keys after the ⌘Z wait until its "" is written.
+                    if !writesNothing { keyHold.begin(pid: grant.target.pid) }
                     executor.submitUndo(grant)
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
