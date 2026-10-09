@@ -257,6 +257,13 @@ export interface VerifyAsk {
  * lower floor stays wrong-free beyond these cases; the bar was about 100. Replaying B24 to B31's recorded Asks with no
  * floor gains 14 fields and 0 wrong, but those are fixtures and cannot settle it alone. The floor does not keep out
  * b-032, another person's email, which the verifier answered exact at 0.85 to 0.89.
+ *
+ * A second, larger set confirms it at the current wording (Oct 9; ~/.caret-run/evidence/act/slice3: 4,251 synthetic cases,
+ * one pass, $0.11, labelled by construction from the guard adversary's canned values, tools/hardset.py; sweep.txt). Its
+ * plainest wrong class, the source value with characters around it ('"123456796"', a URL with a trailing period, a link in
+ * angle brackets), is answered "exact" twice by values the shape check lets through: 4 at 0.75, 7 at 0.70, 9 at 0.65 and
+ * 13 at 0.60, among 162 wrong answers between 0.60 and 0.75. No floor from 0.60 to 0.75 is free of false exacts, so none
+ * is lower than this one, and those 4 at 0.75 are for a code check to catch, not the floor.
  */
 export const VERIFY_CUTOFF = 0.75;
 
