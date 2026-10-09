@@ -356,6 +356,16 @@ describe("Decisions errors, retries, key fallback and the result cache (recorded
     expect(r.servedBy).toBe("org");
     expect(r.attempts.map((x) => [x.key, x.status, x.code, x.waitMs])).toEqual([["org", errors[name]!.status, name, wait], ["org", 200, null, 0]]);
   });
+  it("keeps aggregate billing unknown after a billed retry followed by a transport failure", async () => {
+    const failed = errors.server_is_overloaded!;
+    const t = scripted(() => new Response(JSON.stringify({ ...(failed.body as object), usage: { input_tokens: 17 } }), { status: failed.status, headers: failed.headers }), () => { throw new Error("synthetic timeout"); });
+    const dir = folder(); const s = spend(dir);
+    const error = await make({ OPENAI_API_KEY: key }, t.fn, s)(request()).catch((e) => e);
+    expect(error.attempts.map((a: { costUsd: number | null }) => a.costUsd)).toEqual([17 * DECISIONS_USD_PER_TOKEN, null]);
+    expect(error.attempt.costUsd).toBeNull();
+    expect(error.attempt.inputTokens).toBeNull();
+    expect(s.run().unsettledUsd).toBeGreaterThan(0);
+  });
   it("includes billed failed attempts in a successful retry's reported cost", async () => {
     const failed = errors.server_is_overloaded!;
     const t = scripted(() => new Response(JSON.stringify({ ...(failed.body as object), usage: { input_tokens: 17 } }), { status: failed.status, headers: failed.headers }), ok());
