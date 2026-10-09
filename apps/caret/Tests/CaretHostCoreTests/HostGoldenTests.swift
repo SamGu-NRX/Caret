@@ -160,6 +160,18 @@ final class PageSightTests: XCTestCase {
         XCTAssertEqual(sight.debugInfo, PageSight.DebugInfo(shown: nil, asked: [6100], missing: [6100]))
     }
 
+    /// PR #16 review: turning Caret off in the browser takes its line down at once, and only its own.
+    func testTurningCaretOffInTheBrowserTakesItsLineDown() {
+        let (sight, _, take) = rig()
+        sight.receive(state(.missing), frontmostPID: 6100, paused: false)
+        _ = take()
+        sight.turnedOff(7000)
+        XCTAssertEqual(take(), [], "another app's switch leaves it")
+        sight.turnedOff(6100)
+        XCTAssertEqual(take(), [nil])
+        XCTAssertNil(sight.shown)
+    }
+
     func testTheLineLeavesWithItsBrowserAndAfterItsLifetime() {
         let (sight, clock, take) = rig()
         sight.receive(state(.missing), frontmostPID: 6100, paused: false)

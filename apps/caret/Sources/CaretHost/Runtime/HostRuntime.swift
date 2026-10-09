@@ -277,6 +277,9 @@ public final class HostRuntime {
         let pageSight = PageSightCoordinator(draws: !configuration.surfacesHeadless)
         self.pageSight = pageSight
         pageSight.paused = { MainActor.assumeIsolated { SettingsStore.shared.settings.paused } }
+        pageSight.appOff = { pid in
+            NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map { AppSwitch.shared.isOff(bundleID: $0) } ?? false
+        }
         pageSight.sight.onChange = { [weak pageSight] line in
             pageSight?.redraw(line)
             status.update { $0.pageSight = pageSight?.sight.debugInfo }
@@ -503,6 +506,7 @@ public final class HostRuntime {
                 pageInline.gateClosed()
                 fill.gateClosed()
                 surface.gateClosed()
+                pageSight.appSwitchChanged()
             }
             if !HostGate.allowsGhostText(settings) {
                 coordinator.gateClosed()

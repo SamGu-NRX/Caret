@@ -142,6 +142,12 @@ public final class PageSight {
     /// Caret was paused: it says nothing.
     public func paused() { hide() }
 
+    /// Caret was turned off in the browser `pid` (`CaretSettings.appsOff`): its line goes now. The
+    /// caller passes `paused: true` for that browser from then on, so it does not come back.
+    public func turnedOff(_ pid: Int32) {
+        if shown?.browserPID == pid { hide() }
+    }
+
     /// The helper went away: what it said about browsers no longer holds.
     public func helperGone() {
         missing = [:]
