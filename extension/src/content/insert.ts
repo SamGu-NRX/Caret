@@ -177,6 +177,18 @@ function selectReplacement(el: Element, before: string, replace: number): boolea
   return false;
 }
 
+/** Collapses a selection that is still exactly the text `selectReplacement` chose to its end, where the caret was. */
+function restoreCaret(el: Element, before: string, replace: number): void {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const at = before.length;
+    if (el.selectionStart === at - replace && el.selectionEnd === at) el.setSelectionRange(at, at);
+    return;
+  }
+  const sel = selectionOf(el);
+  if (sel === null || sel.rangeCount !== 1) return;
+  if (shown(el, serialize(sel.getRangeAt(0))) === shown(el, before.slice(before.length - replace))) sel.collapseToEnd();
+}
+
 export async function insertAtCaret(
   el: Element,
   verb: { expect: string; text: string; replace?: number },
@@ -201,6 +213,9 @@ export async function insertAtCaret(
   const now = caretState(el);
   if (now !== null && shown(el, now.before) === shown(el, expectedBefore) && shown(el, now.after) === shown(el, was.after)) return answer("ok", null);
   if (wholeText(el) === `${was.before}${was.after}`) {
+    // Review: a refused replace leaves the text to replace selected, and the user's next key would type over it. While
+    // the field still has focus and nothing else moved the selection, the caret goes back after that text.
+    if (replace > 0 && hasFocus(el)) restoreCaret(el, was.before, replace);
     return { outcome: "failed", detail: went ? "the field reads as it did before the insert" : "the page did not take the insert", insert: "unchanged" };
   }
   return { outcome: "failed", detail: "the field changed, but not to its text with the insert at the caret and the caret after it", insert: "unverified" };

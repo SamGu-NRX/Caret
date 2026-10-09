@@ -450,6 +450,17 @@ describe("the insert at the caret (item 8)", () => {
     assert.deepEqual([cancelled.outcome, cancelled.insert], ["failed", "unchanged"]);
     assert.equal(await tab2.evaluate(`document.getElementById("ta").value`), "Dear team,");
     await tab2.close();
+    // Review: a replace the page puts back leaves no selection behind for the user's next key to type over. The page's
+    // handler restores the value without touching the selection, so the caret lands after the text Caret selected.
+    const tab3 = await open("/fields");
+    await tab3.evaluate(`(() => {
+      const ta = document.getElementById("ta"); ta.value = "I like teh "; ta.focus(); ta.setSelectionRange(11, 11);
+      ta.addEventListener("input", () => { ta.value = "I like teh "; ta.setSelectionRange(7, 11); });
+    })()`);
+    const refused = await tab3.evaluate<{ outcome: string; insert?: string }>(insert("#ta", "I like teh ", "the ", 4));
+    assert.deepEqual([refused.outcome, refused.insert], ["failed", "unchanged"]);
+    assert.deepEqual(await tab3.evaluate(`[document.getElementById("ta").selectionStart, document.getElementById("ta").selectionEnd]`), [11, 11]);
+    await tab3.close();
   });
 
   test("touches nothing when the text before the caret changed, text is selected, or the field lost focus", async () => {
