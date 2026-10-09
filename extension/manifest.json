@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Caret for Chrome",
-  "version": "0.1.0",
-  "description": "Lets Caret on your Mac read the fields of the form you are in and fill them when you accept. Nothing leaves your Mac from here.",
+  "version": "2.0.0",
+  "description": "Fills the form you are in from the Caret app on your Mac, when you accept. Talks only to that app, never to a server.",
+  "icons": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" },
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuUmdUBq2FFIS/hh4MVp42CikvbMYagMsgXW+BcfoC3G9IAyGLobAwtavIrRLoDxqfsdXNLQpeIP1WGByy6hMlfz9O3SXI9btX9UoI2vIsI8jU72j1Sa83dON/MtkBj2hT7R8KvlUXM1/F5rQZMHKwkq1vJxhju619SjuOwk/lWlwUjONqw4JGErWuTCRNNskZVSTEuu4FiAjq8nwp4hn5FVKS/LFIJ0RUME5xQQDkxPxYOJneRHBxQ6RgpBEnt2WbNKZzTfIcJcE9MuPz7KU49/vkaWXtgHljankd1rEXr9AmGstQrn9QNUY+l3qXJYmnmqsNOX2fh9np0GXsu7gywIDAQAB",
   "minimum_chrome_version": "116",
   "background": { "service_worker": "worker.js" },
@@ -16,6 +17,5 @@
     }
   ],
   "host_permissions": ["http://*/*", "https://*/*"],
-  "permissions": ["scripting", "tabs", "webNavigation", "nativeMessaging", "storage"],
-  "optional_permissions": ["debugger"]
+  "permissions": ["scripting", "webNavigation", "nativeMessaging", "storage"]
 }
