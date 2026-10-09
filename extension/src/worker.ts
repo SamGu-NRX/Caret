@@ -92,9 +92,11 @@ function send(m: object): void {
 function guard(tabId: number, frameId: number, until: number): void {
   const k = `${tabId}:${frameId}`;
   // `until` is the end of the last grant covering the frame (GrantTable.coverUntil), never one task's alone.
-  if (until === 0) {
-    if (!armed.delete(k)) return;
-  } else armed.set(k, until);
+  // A disarm is sent even to a frame the map no longer holds: an act arms its document itself when a guard message
+  // failed (and the failure dropped the frame from the map), and that document must stop noting the user's input
+  // 30 s after the grant ends, not after the grant's own expiry (PR #33 review).
+  if (until === 0) armed.delete(k);
+  else armed.set(k, until);
   const msg: ToContent = { caret: 1, op: "guard", until };
   chrome.tabs.sendMessage(tabId, msg, { frameId }).catch(() => armed.delete(k));
 }

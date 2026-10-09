@@ -1131,6 +1131,30 @@ public struct UserInput: Codable, Equatable, Sendable {
     }
 }
 
+/// A key the user pressed in a watched process that may have changed text (issue #26; FieldInputs): the element it
+/// went to, never the key. `windowId` is nil when the reader does not know which window had focus, `key` when it does
+/// not know the element. Never sent for Esc.
+public struct FieldInput: Codable, Equatable, Sendable {
+    public static let type = "fieldInput"
+    public var at: Int64
+    public var pid: Int
+    public var windowId: String?
+    public var key: String?
+    public init(at: Int64, pid: Int, windowId: String?, key: String?) { self.at = at; self.pid = pid; self.windowId = windowId; self.key = key }
+    enum CodingKeys: String, CodingKey { case at, pid, windowId, key }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Int64.self, forKey: .at); pid = try c.decode(Int.self, forKey: .pid)
+        windowId = try c.decodeNullable(String.self, forKey: .windowId); key = try c.decodeNullable(String.self, forKey: .key)
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(at, forKey: .at); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId); try c.encode(key, forKey: .key)
+    }
+}
+
 /// B20: the user pressed something in a window under a press watch: the pressable element under the click,
 /// its role and label as the element carries them, and when the button went down. `key` is the element's key
 /// in the window's latest walk, nil when that walk did not keep it. Mirrors UserPress in protocol.ts.
@@ -1229,7 +1253,7 @@ public struct TaskProgress: Codable, Equatable, Sendable {
 public enum Message: Codable, Equatable, Sendable {
     case hello(Hello), snapshot(Snapshot), focus(Focus), appSwitch(AppSwitch), windowClosed(WindowClosed)
     case pasteboard(Pasteboard), fillRequest(FillRequest), fillProposal(FillProposal), error(HelperError)
-    case readerCommand(ReaderCommand), verbResult(VerbResult), userInput(UserInput), taskProgress(TaskProgress)
+    case readerCommand(ReaderCommand), verbResult(VerbResult), userInput(UserInput), fieldInput(FieldInput), taskProgress(TaskProgress)
     case fillResult(FillResult), taskControl(TaskControl), activityRequest(ActivityRequest), activity(Activity), activityReply(ActivityReply)
     case alternatives(OfferAlternatives), action(OfferAction), popup(OfferPopup), offerAccept(OfferAccept), offerStop(OfferStop)
     case offerWithdrawn(OfferWithdrawn), settings(GateSettings), actGrant(ActGrant), actRevoke(ActRevoke)
@@ -1253,6 +1277,7 @@ public enum Message: Codable, Equatable, Sendable {
         case ReaderCommand.type: self = .readerCommand(try ReaderCommand(from: decoder))
         case VerbResult.type: self = .verbResult(try VerbResult(from: decoder))
         case UserInput.type: self = .userInput(try UserInput(from: decoder))
+        case FieldInput.type: self = .fieldInput(try FieldInput(from: decoder))
         case TaskProgress.type: self = .taskProgress(try TaskProgress(from: decoder))
         case FillResult.type: self = .fillResult(try FillResult(from: decoder))
         case TaskControl.type: self = .taskControl(try TaskControl(from: decoder))
@@ -1295,6 +1320,7 @@ public enum Message: Codable, Equatable, Sendable {
         case .readerCommand(let m): try m.encode(to: encoder)
         case .verbResult(let m): try m.encode(to: encoder)
         case .userInput(let m): try m.encode(to: encoder)
+        case .fieldInput(let m): try m.encode(to: encoder)
         case .taskProgress(let m): try m.encode(to: encoder)
         case .fillResult(let m): try m.encode(to: encoder)
         case .taskControl(let m): try m.encode(to: encoder)
