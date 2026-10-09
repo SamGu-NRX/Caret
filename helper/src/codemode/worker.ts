@@ -221,11 +221,18 @@ let observeIndex = 0;
 /** An API body returns a handle, or a guest call's result whose error passes through to the guest. */
 type Impl = (...args: QuickJSHandle[]) => QuickJSHandle | { error: QuickJSHandle };
 
-/** Wraps an API function: a Violation is recorded and thrown into the guest, and the guest is interrupted. */
+/**
+ * Wraps an API function: a Violation is recorded and thrown into the guest, and the guest is interrupted. Once a rule is
+ * broken the API is closed: a program that catches the error gets no further call, so a replay that diverged asks Jev
+ * nothing new before the interrupt stops it (CU-COUNSEL-R2 D4). While an observe is unanswered no call is taken either:
+ * everything after an observe is planned from what it returns, so nothing may be registered beside it.
+ */
 function api(name: string, impl: Impl): QuickJSHandle {
   return vm.newFunction(name, (...args) => {
     if (readingError) return { error: vm.newError(`${name}: the API is closed while the run is ending`) };
+    if (violation !== null || diverged !== null || hostFault !== null) return { error: vm.newError(`${name}: the API is closed: the run already broke a rule`) };
     try {
+      if ([...pending.values()].some((c) => c.kind === "observe")) throw new Violation("an observe is unanswered: await it before any other call");
       return impl(...args);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -301,7 +308,6 @@ const fns: [string, QuickJSHandle][] = [
       const after = refArg(a, "after");
       const last = [...steps.values()].at(-1);
       if (last === undefined || last.ref !== after || last.kind !== "navigate") throw new Violation(`observe takes the navigate step created just before it, not ${after}`);
-      if ([...pending.values()].some((c) => c.kind === "observe")) throw new Violation("one observe at a time");
       const index = observeIndex++;
       const ref = addStep({ kind: "observe", after });
       const callId = nextCallId++;

@@ -151,6 +151,33 @@ describe("a replay on the record", () => {
     expect(refusal(await run(0))).toMatchObject({ kind: "violation", detail: expect.stringMatching(/at most 0 steps/) });
   });
 
+  test("a program that catches its divergence still asks Jev nothing new", async () => {
+    // Review of 49901539: the API stayed open after a diverged step, so a caught error could reach the chooser.
+    const program = `async function main(caret: CaretPlanAPI): Promise<PlanRef> {
+  const box = await caret.readWindow();
+  try { caret.navigate("t1", "e:open"); } catch (e) {}
+  await caret.choose(box.questions[0].options.map((o) => o.ref));
+  return caret.plan({ basedOn: box.snapshot, steps: [] });
+}`;
+    const chooser = counting();
+    const prefix: PlanStep[] = [{ ref: "step:1", kind: "navigate", target: "t2", effect: "e:open" }];
+    expect(refusal(await runCodePlan(program, [INBOX], chooser, { multiWindow: true, navigation: true, replay: { observations: [], choices: [], prefix, mayObserve: true } })).kind).toBe("diverged");
+    expect(chooser.calls).toBe(0);
+  });
+
+  test("an observe must be awaited before anything else is registered", async () => {
+    // Review of 49901539: a step registered beside an unanswered observe went into the pending plan.
+    const program = `async function main(caret: CaretPlanAPI): Promise<PlanRef> {
+  const box = await caret.readWindow();
+  const open = caret.navigate("t1", "e:open");
+  const seen = caret.observe(open);
+  caret.navigate("t2", "e:open");
+  await seen;
+  return caret.plan({ basedOn: box.snapshot, steps: [open] });
+}`;
+    expect(refusal(await runCodePlan(program, [INBOX], counting(), { multiWindow: true, navigation: true }))).toMatchObject({ kind: "violation", detail: expect.stringMatching(/an observe is unanswered/) });
+  });
+
   test("an observation whose refs repeat a snapshot's is refused as input", async () => {
     const { record } = await firstRun();
     const clash = { ...OPENED, targets: [{ ...OPENED.targets[0]!, ref: "t1" }] };

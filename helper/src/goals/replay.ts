@@ -16,12 +16,11 @@ import { runProgramJs, type ChooserPort } from "../codemode/sandbox.ts";
 import type { PendingObserve, PlanStep, PlanningSnapshot, RefusalKind } from "../codemode/types.ts";
 import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { nodeText, ScreenModel, type WindowState } from "../model.ts";
-import type { Node } from "../protocol.ts";
+import { ScreenModel, type WindowState } from "../model.ts";
 import type { EventClock } from "../offers/event-time.ts";
 import type { Disclosure } from "../privacy/disclosure.ts";
 import { confirmClaims, DraftRefused } from "./drafts.ts";
-import { fieldKinds } from "../fill/kinds.ts";
+import { redactWindow } from "../fill/redact.ts";
 import { inListItem } from "./identity.ts";
 import { basisText, buildInventory } from "./inventory.ts";
 import { frozenBasis, GoalError, lowerGoal } from "./lower.ts";
@@ -165,10 +164,11 @@ function viewOf(model: ScreenModel, windows: readonly WindowState[]): ScreenMode
  * be, and the snapshot's window ref names the copy: a draft drawing on it is checked against the item as it was read.
  * Instruction and memory values are gen 0's and are not repeated.
  *
- * The copy holds the item, not the list: the list's rows are left out, and the nodes whose "Label: value" line names a
- * kind of value the instruction asks for (fill/kinds.ts fieldKinds: "the confirmation number" asks for an id) come first.
- * Candidates are cut to a window's share of what one request may disclose in node order (fill/candidates.ts), so in a
- * short detail the From and Subject lines ahead of "Confirmation number: QX7R2P" used the whole share before it.
+ * The copy holds the item, not the list: it is the window as redaction leaves it (fill/redact.ts), in the window's own
+ * order, less the list's rows. Redacting first matters: the redactor reads neighbouring nodes ("Verification" above
+ * "code: 4471"), so dropping or moving a node before it could make a withheld code read as an ordinary value. Values
+ * are still cut to the copy's share of what one request may disclose (a mail item is a conversation: under half of it),
+ * in the item's own order.
  *
  * Targets and values go through two ledgers because they leave in different requests: a choose() carries the rows of a
  * list question, a value check or draft claim carries values. In one ledger the copy, itself a conversation of which a
@@ -179,14 +179,9 @@ export function observe(model: ScreenModel, windowId: string, n: number, o: Obse
   const live = model.windows.get(windowId);
   if (live === undefined) throw new GoalError("nothingToDo", "the window closed before Caret could read what it shows", windowId);
   const qid = observationId(n, windowId);
-  const asked = fieldKinds([o.instruction]);
-  const names = (n: Node): boolean => nodeText(n).split("\n").some((line) => {
-    const label = /^([^:\n]{1,60}):\s*\S/u.exec(line)?.[1];
-    return label !== undefined && [...fieldKinds([label])].some((k) => asked.has(k));
-  });
-  const kept = [...live.nodes].filter(([, n]) => !inListItem(live, n));
-  const item = new Map([...kept.filter(([, n]) => names(n)), ...kept.filter(([, n]) => !names(n))]);
-  const frozen: WindowState = { ...live, window: { ...live.window, windowId: qid }, nodes: item, values: live.values.filter((v) => item.has(v.nodeKey)) };
+  const seen = redactWindow(live);
+  const item = new Map([...seen.nodes].filter(([, n]) => !inListItem(seen, n)));
+  const frozen: WindowState = { ...seen, window: { ...seen.window, windowId: qid }, nodes: item, values: seen.values.filter((v) => item.has(v.nodeKey)) };
   const base = { instruction: o.instruction, windows: [windowId], memory: [], calendar: null, clock: o.clock, now: o.now, readerSession: o.readerSession, ...(o.pageDocument === undefined ? {} : { pageDocument: o.pageDocument }) };
   const acted = buildInventory(viewOf(model, [live]), base);
   const read = buildInventory(viewOf(model, [live, frozen]), base);

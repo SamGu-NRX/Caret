@@ -46,7 +46,7 @@ export class MailSite {
   /** Kayak's and Dana's "Flight itinerary", a decoy "(old)" from Dana with another code, and three others. */
   messages(): MailMessage[] {
     return [
-      { id: "kayak", sender: "Kayak", subject: "Flight itinerary", time: "3m ago", from: "Kayak <no-reply@kayak.example>", body: ["Your flight to SFO departs Oct 14 at 7:05 AM.", `Confirmation number: ${this.code}`] },
+      { id: "kayak", sender: "Kayak", subject: "Flight itinerary", time: "3m ago", from: "Kayak <no-reply@kayak.example>", body: ["Your trip to San Francisco is booked.", `Confirmation number: ${this.code}`, "Depart Oct 14 at 7:05 AM from AUS, gate B3.", "Seat 14C, economy, one carry-on bag.", "Manage your trip at kayak.example/trips.", "Questions? Reply to this message and our travel team will help."] },
       { id: "dana", sender: "Dana Whitfield", subject: "Flight itinerary", time: "9:41 AM", from: "Dana Whitfield <dana.whitfield@example.com>", body: ["Could you send me the confirmation number for the SFO flight?"] },
       { id: "dana-old", sender: "Dana Whitfield", subject: "Flight itinerary (old)", time: "Oct 2", from: "Dana Whitfield <dana.whitfield@example.com>", body: ["The booking we cancelled, for your records.", `Confirmation number: ${this.decoy}`] },
       { id: "priya", sender: "Priya Raman", subject: "Desk lamp order", time: "Yesterday", from: "Priya Raman <priya.raman@northwind.example>", body: ["The lamp arrived with a cracked base."] },
