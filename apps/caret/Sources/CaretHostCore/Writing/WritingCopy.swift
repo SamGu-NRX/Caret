@@ -8,6 +8,7 @@ public enum WritingCopy {
         case .spelling: return "Spelling"
         case .grammar: return "Grammar"
         case .punctuation: return "Spacing and punctuation"
+        case .rewrite: return "Wording"
         }
     }
 
@@ -61,8 +62,21 @@ public enum WritingCopy {
         case .fix: return "fix"
         case .original: return "keep original"
         case .fixAll: return "fix all"
+        case .rewrite: return "use this"
         }
     }
+
+    // MARK: Rewrites
+
+    /// The open list's first line, over the other ways to say it.
+    public static let rewriteReason = "Other ways to say it"
+    /// While the model writes them, at the text.
+    public static let rewriting = "Finding other ways to say it"
+    public static let noRewrite = "Caret found no other way to say this."
+    public static let rewriteNeedsModel = "Rewrites need the local model, and it isn't loaded."
+    public static let rewriteNothingHere = "Select some text, or put the caret in a sentence, to rewrite it."
+    public static let rewrittenLead = "Rewritten"
+    public static let rewriteUndone = "Your wording is back"
 
     public static func fixCount(_ n: Int) -> String { n == 1 ? "1 fix" : "\(n) fixes" }
 
@@ -102,6 +116,7 @@ public enum WritingCopy {
         let text: String
         switch alternative.kind {
         case .fixAll: text = fixedAll(alternative.diff.count)
+        case .rewrite: text = rewriteUndone
         default:
             let change = alternative.diff.first
             text = "“\(visible(change?.original ?? ""))” is back"
@@ -116,6 +131,11 @@ public enum WritingCopy {
     // MARK: VoiceOver
 
     /// The line, spoken: what is wrong, the fix, and the keys.
+    /// What VoiceOver reads when the rewrites open.
+    public static func spokenRewrite(count: Int, first: String) -> String {
+        "\(rewriteReason), \(count == 1 ? "1 option" : "\(count) options"). \(spoken(first)). Down Arrow for the next, Tab uses it, Escape keeps yours."
+    }
+
     public static func spokenLine(reason: String, original: String, replacement: String) -> String {
         "\(reason). Replace \(spoken(original)) with \(spoken(replacement)). Tab fixes it, Down Arrow shows more."
     }

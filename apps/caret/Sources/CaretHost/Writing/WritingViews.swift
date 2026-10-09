@@ -87,6 +87,10 @@ struct CorrectionLineView: View {
 struct WritingAlternativesView: View {
     var offer: WritingOffer
 
+    /// Rewrites are whole sentences: their rows wrap to three lines in a wider panel, where a fix's
+    /// row is one word on one line.
+    private var rewrites: Bool { offer.active.kind == .rewrite }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(offer.active.reason)
@@ -98,7 +102,8 @@ struct WritingAlternativesView: View {
                 WritingAlternativeRow(
                     alternative: alternative,
                     number: index < WritingOffer.numberedRows ? index + 1 : nil,
-                    highlighted: index == offer.current
+                    highlighted: index == offer.current,
+                    lines: rewrites ? 3 : 1
                 )
             }
             let highlighted = offer.alternatives[offer.current]
@@ -120,7 +125,7 @@ struct WritingAlternativesView: View {
         .padding(.top, 4)
         .padding(.bottom, 8)
         .padding(.horizontal, 12)
-        .frame(minWidth: 240, maxWidth: 360, alignment: .leading)
+        .frame(minWidth: 240, maxWidth: rewrites ? 440 : 360, alignment: .leading)
         .fixedSize()
         .panelChrome(radius: 8)
     }
@@ -132,10 +137,13 @@ private struct WritingAlternativeRow: View {
     var alternative: WritingOffer.Alternative
     var number: Int?
     var highlighted: Bool
+    /// More than 1 wraps the words, the hint and keycap staying on the first line.
+    var lines = 1
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(label).foregroundStyle(Color(token: Tokens.ink)).lineLimit(1)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).foregroundStyle(Color(token: Tokens.ink)).lineLimit(lines)
+                .fixedSize(horizontal: false, vertical: lines > 1)
             Spacer(minLength: 12)
             // On the Carrot wash Secondary falls under 4.5:1 (4.47 light, 4.20 dark), so the
             // highlighted row sets its hint and keycap in Ink.
@@ -146,7 +154,8 @@ private struct WritingAlternativeRow: View {
         }
         .font(Tokens.Font.body)
         .padding(.leading, PopupView.indent)
-        .frame(height: 24)
+        .padding(.vertical, lines > 1 ? 4 : 0)
+        .frame(minHeight: 24)
         .padding(.horizontal, 12)
         .background {
             if highlighted {
@@ -166,14 +175,14 @@ private struct WritingAlternativeRow: View {
     /// words are the text that row leaves in the field.
     private var label: String {
         switch alternative.kind {
-        case .fix, .fixAll: return alternative.label
+        case .fix, .fixAll, .rewrite: return alternative.label
         case .original: return alternative.detail ?? alternative.label
         }
     }
 
     private var hint: String? {
         switch alternative.kind {
-        case .fix: return nil
+        case .fix, .rewrite: return nil
         case .original: return alternative.label
         case .fixAll: return alternative.detail
         }
@@ -181,7 +190,7 @@ private struct WritingAlternativeRow: View {
 
     private var spokenLabel: String {
         switch alternative.kind {
-        case .fix: return alternative.label
+        case .fix, .rewrite: return alternative.label
         case .original: return "\(alternative.label), “\(alternative.detail ?? "")”"
         case .fixAll: return "\(alternative.label), \(alternative.detail ?? "")"
         }

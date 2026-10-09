@@ -172,6 +172,7 @@ final class WritingCorpusTests: XCTestCase {
         switch s {
         case .rule(let r): return r.rawValue
         case .spellChecker: return "NSSpellChecker"
+        case .model: return "model"
         }
     }
 

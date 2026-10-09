@@ -202,6 +202,10 @@ public final class HostRuntime {
         writing.route = routeLink
         routeLink.onChange = [{ coordinator.routeChanged() }, { writing.routeChanged() }]
         writing.allowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
+        // List mode: the blind judge preferred its rewrites 11 to 4 over sampled ones, which changed
+        // the meaning of 16 of 41 (rewrite probe 02f3cda9; judge verdicts in the PR).
+        let rewriteEngine = engine
+        writing.rewriter = { text in try? await rewriteEngine.rewrites(of: text, mode: .list)?.rewrites }
         // Every host write asks this right before it acts; pause, stop, take over and the helper's
         // connection closing end it (S1 audit #2).
         let authority = HostAuthority()
@@ -626,6 +630,9 @@ public final class HostRuntime {
             },
             typed: { pid in
                 DispatchQueue.main.async { MainActor.assumeIsolated { focusObserver.keyTyped(pid: pid) } }
+            },
+            rewrite: { pid in
+                DispatchQueue.main.async { MainActor.assumeIsolated { writing.requestRewrite(pid: pid) } }
             }
         ), keyHold: keyHold)
         let fixMethods = executor.writeMethods

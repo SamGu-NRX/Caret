@@ -16,7 +16,8 @@ import SwiftUI
 @MainActor
 final class WritingOverlay {
     enum Role: String {
-        case line, expanded, toast, error
+        /// `working`: the rewrite key's line while the model writes.
+        case line, expanded, toast, error, working
     }
 
     /// Where the panel goes: under `under` (a line of text, or the caret), its left edge at `x`;

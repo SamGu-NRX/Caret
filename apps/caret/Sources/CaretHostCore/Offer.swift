@@ -234,6 +234,17 @@ public struct KeyStroke: Equatable, Sendable {
         KeyStroke(keyCode: 0, text: text, targetPID: pid)
     }
 
+    /// ANSI R (`kVK_ANSI_R`).
+    public static let rKeyCode: Int64 = 15
+
+    /// The rewrite key, ⌃⌥R: other ways to say the selection or the sentence at the caret. Control
+    /// and Option together with R type nothing on the standard layouts, and no macOS text binding or
+    /// common app shortcut uses the chord; ⌥R alone types "®" and ⌃R is VS Code's Open Recent. Matched
+    /// by key code, so on a layout that moves R it sits where R is on ANSI, as ⌘Z does.
+    public var isRewriteRequest: Bool {
+        keyCode == Self.rKeyCode && control && option && !command && !shift
+    }
+
     /// Tab with no modifiers. Shift+Tab and other chords keep their native meaning.
     public var isPlainTab: Bool {
         keyCode == Self.tabKeyCode && !command && !control && !option && !shift

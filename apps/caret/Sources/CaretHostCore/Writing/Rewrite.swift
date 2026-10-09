@@ -121,3 +121,48 @@ public enum RewriteFilter {
         text.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 }
+
+/// What the rewrite key rewrites: the selection, or else the sentence the caret is in or has just
+/// ended. Whitespace at either end is left out, so the rewrite never eats a space or a line break.
+public enum RewriteSpan {
+    /// Longer than this, in UTF-16 units, is not offered: the prompt's examples are single sentences.
+    public static let maxLength = 400
+
+    public static func at(value: String, selection: UTF16Selection) -> UTF16Span? {
+        let units = Array(value.utf16)
+        var span: UTF16Span
+        if !selection.isEmpty {
+            span = UTF16Span(start: selection.start, end: selection.end)
+        } else {
+            var caret = min(selection.start, units.count)
+            // A caret just after a sentence's end (and its spaces) rewrites that sentence.
+            var back = caret
+            while back > 0, isSpace(units[back - 1]) { back -= 1 }
+            if back > 0, isTerminator(units[back - 1]), back < caret || caret == units.count { caret = back - 1 }
+            var start = caret
+            while start > 0, !isTerminator(units[start - 1]), !isBreak(units[start - 1]) { start -= 1 }
+            var end = caret
+            while end < units.count, !isBreak(units[end]) {
+                end += 1
+                if isTerminator(units[end - 1]) {
+                    // Closing quotes and brackets stay with their sentence.
+                    while end < units.count, [0x22, 0x27, 0x29, 0x201D, 0x2019].contains(units[end]) { end += 1 }
+                    break
+                }
+            }
+            span = UTF16Span(start: start, end: end)
+        }
+        while span.start < span.end, isSpace(units[span.start]) || isBreak(units[span.start]) { span.start += 1 }
+        while span.end > span.start, isSpace(units[span.end - 1]) || isBreak(units[span.end - 1]) { span.end -= 1 }
+        guard !span.isEmpty, span.length <= maxLength, WritingText.isCharacterBoundary(span.start, in: value),
+              WritingText.isCharacterBoundary(span.end, in: value),
+              let text = UTF16Text.slice(value, start: span.start, end: span.end),
+              text.split(whereSeparator: \.isWhitespace).count >= 2
+        else { return nil }
+        return span
+    }
+
+    private static func isTerminator(_ u: UInt16) -> Bool { u == 0x2E || u == 0x21 || u == 0x3F }
+    private static func isBreak(_ u: UInt16) -> Bool { u == 0x0A || u == 0x0D || u == 0x2028 || u == 0x2029 }
+    private static func isSpace(_ u: UInt16) -> Bool { u == 0x20 || u == 0x09 || u == 0xA0 }
+}

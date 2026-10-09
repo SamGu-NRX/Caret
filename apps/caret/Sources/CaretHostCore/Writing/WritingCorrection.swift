@@ -38,11 +38,15 @@ public struct WritingCorrection: Hashable, Sendable {
         case grammar
         /// Spaces, punctuation and capitals.
         case punctuation
+        /// Another way to say the same thing, asked for with the rewrite key (`WritingOffer.rewrite`).
+        case rewrite
     }
 
     public enum Source: Hashable, Sendable {
         case rule(WritingRule)
         case spellChecker
+        /// The local model (`RewritePrompt`).
+        case model
     }
 
     /// The text replaced, in the full field value.

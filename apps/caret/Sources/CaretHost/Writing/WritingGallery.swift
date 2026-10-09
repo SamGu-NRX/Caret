@@ -46,7 +46,34 @@ extension Gallery {
             Item(name: "writing-not-fixed", view: AnyView(
                 LineView(content: WritingCopy.error(WritingCopy.notFixed("revisionChanged")), character: character, animated: false)
             )),
+            Item(name: "rewrite-working", view: AnyView(RewriteScene(moment: .working, character: character))),
+            Item(name: "rewrite-open", view: AnyView(RewriteScene(moment: .open(downs: 0), character: character))),
+            Item(name: "rewrite-open-second", view: AnyView(RewriteScene(moment: .open(downs: 1), character: character))),
+            Item(name: "rewrite-open-original", view: AnyView(RewriteScene(moment: .open(downs: 3), character: character))),
+            Item(name: "rewrite-toast", view: AnyView(RewriteScene(moment: .toast, character: character))),
+            Item(name: "rewrite-none", view: AnyView(
+                LineView(content: WritingCopy.error(WritingCopy.noRewrite), character: character, animated: false)
+            )),
         ]
+    }
+
+    static let rewriteText = "Sorry for the late reply, I was out of the office on Monday."
+    /// From the rewrite probe's list mode on this sentence's neighbors (02f3cda9), edited to three distinct ones.
+    static let rewriteAlternatives = [
+        "I'm sorry for the delayed response; I was out of the office on Monday.",
+        "Apologies for the slow reply, I was out of the office on Monday.",
+        "Sorry it took me a while to reply. I was out of the office on Monday.",
+    ]
+
+    /// The rewrites of `rewriteText`, opened and moved `downs` times.
+    static func rewriteOffer(downs: Int = 0) -> WritingOffer {
+        let text = rewriteText
+        let target = TargetIdentity(pid: 4242, bundleID: "com.apple.TextEdit", windowID: "4242-1", elementID: "body", elementRevision: UTF16Text.digest(text))
+        let live = RangeEdit.Live(target: target, value: text, selection: .caret(UTF16Text.length(text)))
+        // Synthetic content built from the same values every time; it cannot fail to make an offer.
+        var offer = WritingOffer.rewrite(span: UTF16Span(start: 0, end: UTF16Text.length(text)), rewrites: rewriteAlternatives, live: live, now: StillClock().now)!
+        for _ in 0..<downs { _ = offer.send(.down) }
+        return offer
     }
 
     static let choiceText = "Can you adress the feedback?"
@@ -187,6 +214,39 @@ struct MarkedSentence: View {
             Rectangle().fill(Color(token: Tokens.ink)).frame(width: 1, height: 15).offset(y: 3)
         }
         .font(.system(size: 13))
+        .fixedSize()
+    }
+}
+
+/// The sentence with the caret at its end, and under it the rewrite key's working line, the open
+/// rewrites, or the toast after Tab, placed as the host places them: rows under the sentence.
+struct RewriteScene: View {
+    enum Moment: Equatable {
+        case working, toast
+        case open(downs: Int)
+    }
+
+    var moment: Moment
+    var character: FigureCharacter
+
+    var body: some View {
+        let offer = Gallery.rewriteOffer(downs: { if case .open(let d) = moment { return d } else { return 0 } }())
+        VStack(alignment: .leading, spacing: 6) {
+            MarkedSentence(text: moment == .toast ? Gallery.rewriteAlternatives[0] : Gallery.rewriteText, marks: [], active: nil)
+            Group {
+                switch moment {
+                case .working:
+                    LineView(content: LineContent(figure: .working, text: WritingCopy.rewriting, emphasis: .secondary), character: character, animated: false)
+                case .open:
+                    WritingAlternativesView(offer: offer)
+                case .toast:
+                    if let content = WritingOffer.toast(after: offer.alternatives[0]) {
+                        LineView(content: content, character: character, animated: false)
+                    }
+                }
+            }
+            .padding(.leading, 0)
+        }
         .fixedSize()
     }
 }

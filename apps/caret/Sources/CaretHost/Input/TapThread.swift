@@ -36,6 +36,8 @@ public final class TapThread: @unchecked Sendable {
         public var closedOffer: @Sendable (UInt64) -> Void
         /// A user key that types text (no ⌘ or ⌃), with the pid it goes to. Tap thread; enqueue.
         public var typed: @Sendable (Int32) -> Void
+        /// The rewrite key (`KeyStroke.isRewriteRequest`), with the pid it went to. Tap thread; enqueue.
+        public var rewrite: @Sendable (Int32) -> Void
 
         public init(
             claimed: @escaping @Sendable (Claim) -> Void,
@@ -47,10 +49,12 @@ public final class TapThread: @unchecked Sendable {
             realKey: @escaping @Sendable (Int32) -> Void = { _ in },
             mouseDown: @escaping @Sendable (CGPoint) -> Void = { _ in },
             closedOffer: @escaping @Sendable (UInt64) -> Void = { _ in },
-            typed: @escaping @Sendable (Int32) -> Void = { _ in }
+            typed: @escaping @Sendable (Int32) -> Void = { _ in },
+            rewrite: @escaping @Sendable (Int32) -> Void = { _ in }
         ) {
             self.closedOffer = closedOffer
             self.typed = typed
+            self.rewrite = rewrite
             self.claimed = claimed
             self.offerChanged = offerChanged
             self.undo = undo
@@ -313,6 +317,11 @@ public final class TapThread: @unchecked Sendable {
         if let pid = key.targetPID {
             callbacks.realKey(pid)
             if key.text != nil, !key.command, !key.control { callbacks.typed(pid) }
+            // Caret's own key: it never reaches the app, whatever is showing.
+            if key.isRewriteRequest {
+                callbacks.rewrite(pid)
+                return .consume
+            }
         }
         switch arbiter.handleKeyDown(key) {
         case .consume(let claim):

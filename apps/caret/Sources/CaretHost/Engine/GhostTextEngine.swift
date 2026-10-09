@@ -124,6 +124,9 @@ final class GhostTextEngine {
 
     /// Rewrites of `sentence` with the same model (`RewriteGenerator`); nil when it isn't loaded.
     func rewrites(of sentence: String, mode: RewriteGenerator.Mode) async throws -> RewriteGenerator.Output? {
+        if let replay {
+            return replay.rewrites?[sentence].map { RewriteGenerator.Output(rewrites: $0, firstMs: 0, totalMs: 0, tokens: 0) }
+        }
         guard let runtime else { return nil }
         return try await RewriteGenerator(runtime: runtime).rewrites(of: sentence, mode: mode)
     }
