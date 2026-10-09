@@ -271,14 +271,15 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     await swallow(planGoal(rentalDesk(), { goalId: "tp1-goal", instruction: "do the landlord part from my notes", writer: writer(() => ({ program: null, reply: "" })), askJev: ask, windows: ["form"], memory: [], calendar: null, clock: macClock(new Date(2000)), now: 2000, readerSession: 0 }));
   });
 
-  it("covers every builder's purpose, sent through the real client, and every writer kind", () => {
+  // Both aggregate checks need every producer's requests, not the subset that ran before them in a shuffle.
+  afterAll(() => {
     const purposes = new Set(sent.map((r) => r.purpose));
     expect(PURPOSES.filter((p) => !purposes.has(p))).toEqual([]);
     expect(new Set(written.map((w) => w.kind))).toEqual(new Set(WRITER_KINDS));
     expect(fetched.length).toBeGreaterThan(0);
   });
 
-  it("refuses each recorded request with one raw string inserted, before anything is fetched", async () => {
+  afterAll(async () => {
     const before = fetched.length;
     for (const req of sent) {
       const raw = "a raw screen line no Disclosure minted";
