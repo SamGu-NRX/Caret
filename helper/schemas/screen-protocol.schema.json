@@ -1504,6 +1504,17 @@
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
+            },
+            "previewId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -1514,6 +1525,52 @@
             "families",
             "level",
             "deadlineMs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "firstLookPreviewRequest"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "families": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "level": {
+              "type": "string",
+              "enum": [
+                "quiet",
+                "balanced",
+                "eager"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "at",
+            "families",
+            "level"
           ],
           "additionalProperties": false
         },
@@ -7113,6 +7170,97 @@
             "found",
             "scanned",
             "error"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "firstLookPreview"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "previewId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "windows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "bundleId": {
+                    "type": "string"
+                  },
+                  "appName": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "lines": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        },
+                        "sent": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "sent"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "charsSent": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "bundleId",
+                  "appName",
+                  "title",
+                  "lines",
+                  "charsSent"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "totalChars": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "at",
+            "previewId",
+            "windows",
+            "totalChars"
           ],
           "additionalProperties": false
         },

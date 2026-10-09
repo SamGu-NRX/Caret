@@ -1030,11 +1030,15 @@ export class SnippetLedger {
    * from windows, so each line of a known window the text holds is charged to that window, as `take` does;
    * false, declaring nothing, when one would go over its budget.
    */
-  plan(texts: readonly string[]): boolean {
+  protected takePlan(texts: readonly string[], windowId: string): Span[] | null {
     const p = this.price(null, texts);
-    if (p === null) return false;
-    this.commit(p, "plan", "candidate", null);
-    return true;
+    if (p === null) return null;
+    this.commit(p, windowId, "candidate", null);
+    return p.chosen;
+  }
+
+  plan(texts: readonly string[]): boolean {
+    return this.takePlan(texts, "plan") !== null;
   }
 
   /**
@@ -1044,10 +1048,7 @@ export class SnippetLedger {
    * nothing, when such a window would go over its budget.
    */
   memory(texts: readonly string[]): boolean {
-    const p = this.price(null, texts);
-    if (p === null) return false;
-    this.commit(p, MEMORY_SNIPPETS, "candidate", null);
-    return true;
+    return this.takePlan(texts, MEMORY_SNIPPETS) !== null;
   }
 
   /** Characters charged to each window so far, by window id. */

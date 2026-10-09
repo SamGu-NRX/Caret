@@ -4,7 +4,8 @@
 // disappears at runtime, so the check that holds is `verify`, run on the body where each request is sent (the Jev
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
-import { assertNoExcludedValue, cut, flat, fold, sectionTexts, SnippetLedger, type Snippet, type Span } from "../privacy.ts";
+import { checkFirstLookText, checkFirstLookOpen } from "./first-look-allow-list.ts";
+import { MEMORY_SNIPPETS, assertNoExcludedValue, cut, flat, fold, sectionTexts, SnippetLedger, type Snippet, type Span } from "../privacy.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
@@ -265,6 +266,8 @@ export class Disclosure extends SnippetLedger {
    * it was located, a composed or derived one the union of what its parts reveal. Text with none is not window text.
    */
   private readonly spansOf = new Map<string, Span[]>();
+  /** Original saved/user text, carried through composition so a template cannot hide unpreviewed words. */
+  private readonly originsOf = new Map<string, Set<string>>();
   /** Texts jsonText wrote: verify parses each and checks the strings it holds against the shape. */
   private readonly asJson = new Set<string>();
   /** Texts plan() or memory() already priced, so minting them again declares nothing twice. */
@@ -275,7 +278,13 @@ export class Disclosure extends SnippetLedger {
 
   /** Records `text` as minted under `reasons`, as one way of minting it, and brands it. */
   private record(text: string, reasons: Iterable<MintReason>): ModelText {
-    return this.recordWays(text, [[...reasons]]);
+    const way = [...reasons];
+    if (way.includes("memory") || way.includes("instruction")) {
+      const origins = this.originsOf.get(text) ?? new Set<string>();
+      origins.add(text);
+      this.originsOf.set(text, origins);
+    }
+    return this.recordWays(text, [way]);
   }
 
   /** Records `text` as minted in each of `ways` (each a set of reasons) and brands it. */
@@ -331,14 +340,24 @@ export class Disclosure extends SnippetLedger {
   }
 
   override plan(texts: readonly string[]): boolean {
-    if (texts.some((t) => excludedValue(t) !== null) || !super.plan(texts)) return false;
-    for (const t of texts) this.asPlan.add(t);
+    if (texts.some((t) => excludedValue(t) !== null)) return false;
+    const spans = this.takePlan(texts, "plan");
+    if (spans === null) return false;
+    for (const t of texts) {
+      this.asPlan.add(t);
+      this.addSpans(t, spans);
+    }
     return true;
   }
 
   override memory(texts: readonly string[]): boolean {
-    if (texts.some((t) => excludedValue(t) !== null) || !super.memory(texts)) return false;
-    for (const t of texts) this.asMemory.add(t);
+    if (texts.some((t) => excludedValue(t) !== null)) return false;
+    const spans = this.takePlan(texts, MEMORY_SNIPPETS);
+    if (spans === null) return false;
+    for (const t of texts) {
+      this.asMemory.add(t);
+      this.addSpans(t, spans);
+    }
     return true;
   }
 
@@ -381,6 +400,12 @@ export class Disclosure extends SnippetLedger {
     }
     if (as !== "") this.addSpans(as, texts.flatMap((t) => (typeof t === "string" ? (this.spansOf.get(t) ?? []) : [])));
     return true;
+  }
+
+  private carryOrigins(text: string, parts: readonly string[]): void {
+    const origins = new Set(this.originsOf.get(text));
+    for (const part of parts) for (const origin of this.originsOf.get(part) ?? []) origins.add(origin);
+    if (origins.size > 0) this.originsOf.set(text, origins);
   }
 
   private addSpans(text: string, spans: readonly Span[]): void {
@@ -638,6 +663,7 @@ export class Disclosure extends SnippetLedger {
     const revealed = spans.length === 0 ? [] : this.takeSpans(views, spans, text);
     if (revealed === null) return null;
     // What it reveals: every stretch charged for it, in every window, and what its minted bases reveal.
+    this.carryOrigins(text, minted);
     this.addSpans(text, [...revealed, ...minted.flatMap((m) => this.spansOf.get(m) ?? [])]);
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }
@@ -700,24 +726,28 @@ export class Disclosure extends SnippetLedger {
       if (typeof h !== "string") throw new UnmintedText("t: a hole is not text");
       out += h + (strings[i + 1] ?? "");
     });
+    this.carryOrigins(out, holes);
     this.addSpans(out, holes.flatMap((h) => this.spansOf.get(h) ?? []));
     return this.recordWays(out, this.composedWays(holes, "t", strings.some((s) => s !== "")));
   }
 
   /** A minted text cut to `max` characters with an ellipsis (privacy.ts cut); it keeps its reasons. */
   cut(s: ModelText, max?: number): ModelText {
+    this.carryOrigins(cut(s, max), [s]);
     this.addSpans(cut(s, max), this.spansOf.get(s) ?? []);
     return this.recordWays(cut(s, max), this.composedWays([s], "cut", false));
   }
 
   /** A minted text's first `max` characters, with no ellipsis (String.slice); it keeps its reasons. */
   slice(s: ModelText, max: number): ModelText {
+    this.carryOrigins(s.slice(0, max), [s]);
     this.addSpans(s.slice(0, max), this.spansOf.get(s) ?? []);
     return this.recordWays(s.slice(0, max), this.composedWays([s], "slice", false));
   }
 
   /** A minted text with its whitespace collapsed (privacy.ts flat); it keeps its reasons. */
   flat(s: ModelText): ModelText {
+    this.carryOrigins(flat(s), [s]);
     this.addSpans(flat(s), this.spansOf.get(s) ?? []);
     return this.recordWays(flat(s), this.composedWays([s], "flat", false));
   }
@@ -731,6 +761,7 @@ export class Disclosure extends SnippetLedger {
   join(parts: readonly ModelText[], sep: ModelText): ModelText;
   join(parts: readonly ModelText[], sep: string): ModelText {
     const text = parts.join(sep);
+    this.carryOrigins(text, [...parts, sep]);
     this.addSpans(text, [...parts, sep].flatMap((p) => this.spansOf.get(p) ?? []));
     if (parts.length < 2 || sep === "") return this.recordWays(text, this.composedWays(parts, "join", false));
     if (SEPARATORS.has(sep)) return this.recordWays(text, this.composedWays(parts, "join", true));
@@ -760,6 +791,7 @@ export class Disclosure extends SnippetLedger {
    * the body in paths: "" for a Jev wire body, "input" for a writer's input.
    */
   verify(purpose: string, body: unknown, root = ""): void {
+    checkFirstLookOpen();
     // The user switched an app or a site off since this request's text was read (PV2 re-review): none of it is sent,
     // whichever window it came from, since what was read before the switch is not rechecked text by text.
     if (switchedOffCount() !== this.policy) throw new UnmintedText(`${purpose}: an app or a site was switched off after this request was built; it was not sent`);
@@ -770,6 +802,7 @@ export class Disclosure extends SnippetLedger {
       // state that text writes, parsed from the text itself. Only there: anywhere else a JSON text is a text like any
       // other, held to its own slot's reasons and length (PV2 re-review).
       if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob);
+      checkFirstLookText(this.spansOfText(v), this.reasonsOf(v), v, [...this.originsOf.get(v) ?? []]);
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
       if (v.length > slot.max) {
