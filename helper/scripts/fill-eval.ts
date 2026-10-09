@@ -43,12 +43,14 @@ const gold = JSON.parse(readFileSync(a.gold, "utf8")) as { pid: number; forms: G
 
 // Latest full snapshot of each form window.
 const latest = new Map<string, Snapshot>();
+const snapshots: Snapshot[] = [];
 for (const line of readFileSync(a.record, "utf8").trim().split("\n")) {
   const m = JSON.parse(line) as { type: string };
   if (m.type !== "snapshot") continue;
   const s = Snapshot.parse(m);
   // Proposals are written to disk with their values, so every source must be the synthetic fixture.
   if (s.app.pid !== gold.pid) throw new Error(`recording has a window from pid ${s.app.pid}; run caret-screen with --only-pids ${gold.pid}`);
+  snapshots.push(s);
   if (s.root === null) latest.set(s.window.title, s);
 }
 
@@ -77,13 +79,14 @@ if (a.engine === "decisions") {
   // Decisions never runs in the helper that reads live screens. Replay only the declared synthetic fixture recording
   // locally and score proposals without sending a write to the reader. The default Jev/socket path stays unchanged.
   const model = new ScreenModel();
-  for (const snapshot of latest.values()) model.apply(snapshot);
+  // Partial walks and repeated focus visits affect values and the source window just left.
+  for (const snapshot of snapshots) model.apply(snapshot);
   const ids = new Set([...latest.values()].map((s) => s.window.windowId));
   const decide = harnessEngine({ name: "decisions", canned: null,
     fixture: { windows: (id) => ids.has(id), memory: false, plan: false },
     logRequests: a["log-requests"] ?? join(a.out, "requests.ndjson"),
   });
-  const now = Math.max(...[...latest.values()].map((s) => s.at)) + 1;
+  const now = snapshots.reduce((at, s) => Math.max(at, s.at), 0) + 1;
   try {
     for (let r = 0; r < rounds; r++) for (const target of targets) {
       const proposal = await proposeFill(model, decide.ask, target.windowId, target.trigger, now);
