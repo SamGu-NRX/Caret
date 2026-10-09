@@ -374,15 +374,40 @@ describe("offer lifetimes over the socket", () => {
     expect(withdrawals()).toEqual([[action.offerKey, "expired"]]);
   });
 
-  it("open: outlives the old ten-minute hold and ends as taken when the user visits the window", async () => {
+  /** The reader's walk of `windowId` again, as a focus or a change there sends it, `ms` from now. */
+  const readAgain = async (windowId: string, ms: number): Promise<void> => {
+    const w = helper.model.windows.get(windowId);
+    if (w === undefined) throw new Error(`window ${windowId} is not in the model`);
+    const again = snap([...w.nodes.values()], { at: reader.clock + ms, windowId, title: w.window.title, app: w.app, values: w.values });
+    reader.send(again);
+    await until(() => hooks.applied(windowId, again.at));
+  };
+
+  it("open: outlives the old ten-minute hold while its window is read again, and ends as taken when the user visits the window", async () => {
     await reader.replay(loadRecording("offers-pending.ndjson"), hooks);
     await helper.pending.whenIdle();
     const action = await host.waitFor<{ at: number; offerKey: string }>((m) => m.type === "action");
-    await tickAt(action.at + 24 * 60 * MIN);
+    reader.clock = action.at;
+    for (let i = 0; i < DAY / (9 * MIN); i++) {
+      await readAgain(JOB, 9 * MIN);
+      helper.tick(reader.clock);
+    }
     expect(withdrawals()).toEqual([]);
     expect(helper.offers.get(action.offerKey)?.kind).toBe("action");
     reader.send(focus(JOB, null, reader.clock + 10, { editable: false, empty: false }));
     expect(await host.waitFor((m) => m.type === "offerWithdrawn")).toMatchObject({ id: action.offerKey, reason: "taken" });
+  });
+
+  it("open: is withdrawn as stale once its window goes ten minutes without a snapshot: Caret no longer holds its status line", async () => {
+    await reader.replay(loadRecording("offers-pending.ndjson"), hooks);
+    await helper.pending.whenIdle();
+    const action = await host.waitFor<{ at: number; offerKey: string }>((m) => m.type === "action");
+    const last = helper.model.windows.get(JOB)?.updatedAt ?? 0;
+    await tickAt(last + 10 * MIN);
+    expect(withdrawals()).toEqual([]);
+    await tickAt(last + 10 * MIN + 10_000);
+    expect(helper.model.windows.has(JOB)).toBe(false);
+    expect(withdrawals()).toContainEqual([action.offerKey, "stale"]);
   });
 
   it("open: closing the window of the field it is shown in withdraws that showing and offers it again in the next field", async () => {

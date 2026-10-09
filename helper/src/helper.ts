@@ -3344,10 +3344,11 @@ export class Helper {
 
   /**
    * The model dropped a window whose text went ten minutes without a snapshot (ScreenModel.expire). Not a close: the
-   * window may still be open, so pending watches, routines and open-app offers don't hear of it. What keeps a copy of its
-   * text lets it go. Whatever depends on the window is rechecked against the model now, as on a close: a fill pop-up that
-   * showed a value from it is withdrawn as stale, and a goal segment or a run, running or paused, that copies from it or
-   * acts in it is revoked, its grant and kept sources with it. The router reads the moment again.
+   * window may still be open, so pending watches and routines don't hear of it. What keeps a copy of its text lets it go:
+   * an open-app offer quoting its status line is withdrawn as stale, as on a close, since accepting it would find no
+   * window. Whatever depends on the window is rechecked against the model now: a fill pop-up that showed a value from it
+   * is withdrawn as stale, and a goal segment or a run, running or paused, that copies from it or acts in it is revoked,
+   * its grant and kept sources with it. The router reads the moment again.
    */
   private windowExpired(windowId: string, now: number): void {
     this.opts.store.count("model.window_expired", 1, now);
@@ -3355,6 +3356,8 @@ export class Helper {
     this.record(this.transfers.flush(windowId));
     forgetWindow(windowId);
     this.ownerVerdicts.forget(new Set([windowId]));
+    this.openApp.onWindowClosed(windowId);
+    if (this.preFocus?.windowId === windowId) this.preFocus = null;
     this.goals.onChanges([]);
     this.executor.recheck();
     this.checkFills(windowId);
