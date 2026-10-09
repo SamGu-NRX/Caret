@@ -787,9 +787,10 @@ struct Hatch: View {
                 var p = Path()
                 p.move(to: CGPoint(x: x, y: size.height))
                 p.addLine(to: CGPoint(x: x + size.height, y: 0))
-                // Full Ink 3: hatching says a line stays, a state mark, so it needs 3:1 (WCAG 1.4.11). At half opacity
-                // it measured 1.45:1 (CI run 37906771739).
-                ctx.stroke(p, with: .color(Color(token: Tokens.ink3)), lineWidth: 1)
+                // Ink 2: hatching says a line stays, a state mark, so it needs 3:1 (WCAG 1.4.11). A 1 pt diagonal
+                // never shows its color solid: Ink 3 at half opacity measured 1.45:1 (CI run 37906771739) and full
+                // Ink 3 2.23:1 (run 37911638733). Ink 2 is 5.4:1 solid.
+                ctx.stroke(p, with: .color(Color(token: Tokens.ink2)), lineWidth: 1)
                 x += 4
             }
         }

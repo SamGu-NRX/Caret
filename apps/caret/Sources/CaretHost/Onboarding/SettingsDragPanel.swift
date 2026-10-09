@@ -310,14 +310,28 @@ final class DragRowView: NSView, NSDraggingSource {
 }
 
 struct DragRowContent: View {
+    @Environment(\.rendersOffscreen) private var offscreen
+
+    /// This bundle's name and folder; an off-screen render shows the installed app's, since the bundle there is the
+    /// test runner (CI run 37911637796 drew "bin in /Applications/Xcode…/usr").
+    private var name: String {
+        offscreen ? "Caret" : FileManager.default.displayName(atPath: Bundle.main.bundlePath).replacingOccurrences(of: ".app", with: "")
+    }
+    private var folder: String { offscreen ? "/Applications" : Bundle.main.bundleURL.deletingLastPathComponent().path }
+
     var body: some View {
         HStack(spacing: 10) {
             // This exact bundle, by its icon, name and folder, so it can't be mistaken for another Caret in the list.
-            Image(nsImage: NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)).resizable().frame(width: 32, height: 32)
+            Group {
+                // Off screen, AppIcon's stand-in for an app it cannot find: the runner's icon is not Caret's.
+                if offscreen { RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color(token: Tokens.rule)) }
+                else { Image(nsImage: NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)).resizable() }
+            }
+            .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 1) {
-                Text(FileManager.default.displayName(atPath: Bundle.main.bundlePath).replacingOccurrences(of: ".app", with: ""))
+                Text(name)
                     .font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink))
-                Text("in \(Bundle.main.bundleURL.deletingLastPathComponent().path)")
+                Text("in \(folder)")
                     .font(.system(size: 11)).foregroundStyle(Color(token: Tokens.ink2)).lineLimit(1).truncationMode(.middle)
             }
             Spacer()
