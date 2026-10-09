@@ -210,7 +210,9 @@ if (globalThis.__caretContent === undefined) {
     const at = Date.now();
     const target = e.composedPath()[0];
     if (target instanceof Element) inputs.noted(target, at);
-    if (e.type === "pointerdown") return;
+    // A pointer is noted at the focused control too only inside a listbox or an option, which a combobox may render
+    // elsewhere in the page (content/combobox.ts): picking there sets the control with no input event (PR #33 review).
+    if (e.type === "pointerdown" && !(target instanceof Element && target.closest('[role="option"],[role="listbox"]') !== null)) return;
     const active = deepActiveElement();
     if (active !== null && active !== target) inputs.noted(active, at);
   };

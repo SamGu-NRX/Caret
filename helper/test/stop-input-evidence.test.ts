@@ -48,8 +48,8 @@ interface Rig {
 
 /** `landed`: Caret's write reaches the field. `user`: what the user does, `at` ms after the send. */
 /** `inputBefore`: page only, the user's last input on the field that many ms before the run starts. */
-/** `answer`: the write's late answer, refused by default. `failRead`: the recovery read fails (on a page, only that one). */
-function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act: (r: Rig) => void }; failRead?: boolean; inputBefore?: number; answer?: "ok" | "notAllowed" }): Rig {
+/** `noStop`: no Stop comes, and the plan has its first step only. `answer`: the write's late answer, refused by default. `failRead`: the recovery read fails (on a page, only that one). */
+function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act: (r: Rig) => void }; failRead?: boolean; inputBefore?: number; answer?: "ok" | "notAllowed"; noStop?: boolean }): Rig {
   vi.useFakeTimers();
   const dir = mkdtempSync(join(tmpdir(), "caret-stop-input-"));
   const store = new Store(join(dir, "data"));
@@ -59,15 +59,16 @@ function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act
   let dispatchAt = 0;
   const key = mean === "AX" ? K("textfield:name~0") : KEY("e1");
   const title = mean === "AX" ? AX_TITLE : PAGE_TITLE;
-  const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+  const steps: Plan["steps"] = [
     { says: "First Name", end: { kind: "valueEquals", window: { title }, target: { key, describe: "First Name" }, value: INTENDED } },
     { says: "Another field", end: { kind: "valueEquals", window: { title }, target: { key, describe: "First Name" }, value: "Must not run" } },
-  ] };
+  ];
+  const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: steps.slice(0, o.noStop === true ? 1 : 2) };
   const self = {} as Rig;
   const dispatch = () => {
     dispatched = true;
     dispatchAt = Date.now();
-    setTimeout(() => helper.executor.stop("t"), STOP_AT);
+    if (o.noStop !== true) setTimeout(() => helper.executor.stop("t"), STOP_AT);
     if (o.user !== undefined) {
       const user = o.user;
       setTimeout(() => user.act(self), user.at);
@@ -338,7 +339,24 @@ describe("page: the walk's record of the user's input", () => {
     r.helper.executor.recover({ taskId: "rec", startedAt: sentAt - 100, savedAt: sentAt, plan: r.plan, unprompted: false, granted: true, readerId: null, next: 0, ledger: [], pending: { kind: "write", step: 0, pid: 4100, windowId: PAGE_WIN, key: r.key, role: "AXTextField", before: ORIGINAL, value: INTENDED, mark: "m-rec", sentAt }, skillId: null, window: null, afterIntended: true });
     expect(r.helper.executor.ledger("rec")).toMatchObject([{ unconfirmed: true, sentAt }]);
     r.type(INTENDED);
+    // A walk after the restart reads the page's record, and keeps it for Undo past the page's 30 s.
+    await r.walk();
+    expect(r.helper.executor.ledger("rec")).toMatchObject([{ mayIncludeInput: true }]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    r.forget();
     expect(await r.helper.executor.undo("rec")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("may hold your typing") }] });
+    expect(r.held()).toBe(INTENDED);
+  });
+
+  it("keeps Undo off a write that finished normally when the user then retypes its value (PR #33 review)", async () => {
+    const r = rig("page", { landed: true, answer: "ok", noStop: true });
+    await run(r);
+    expect(r.helper.executor.ledger("t")[0]).toMatchObject({ after: INTENDED, sentAt: r.dispatchAt() });
+    r.type(INTENDED);
+    await r.walk();
+    await vi.advanceTimersByTimeAsync(31_000);
+    r.forget();
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("may hold your typing") }] });
     expect(r.held()).toBe(INTENDED);
   });
 

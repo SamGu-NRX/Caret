@@ -368,6 +368,8 @@ export class Executor {
   private readonly heardAfterInterrupt = new WeakSet<Change>();
   /** The value writes on their way, and those a lost answer left in a ledger, whose field's input is watched (InputWatch). */
   private readonly inputWatches = new Set<InputWatch>();
+  /** Tasks whose ledger may hold a write with a send time (sentAt) not yet marked mayIncludeInput: onWindowRead reads them. */
+  private readonly timed = new Set<Task>();
   /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
   readonly targetChoices: { taskId: string; step: number; chose: string | null; jev: JevTrace }[] = [];
   /** Bumped on every reader connection: a running task stops at its next act when it changes. */
@@ -576,26 +578,39 @@ export class Executor {
   }
 
   /**
-   * Keeps a watch with the ledger entry its write left, until the entry leaves the ledger (onWindowRead). A page keeps its
-   * record of the user's input for only 30 s (PageControl.inputAt), so every later read of the field is checked too:
-   * what a failed recovery read could not see stays with the entry for Undo, however late Undo comes (PR #33 review).
+   * Keeps a watch with the ledger entry its write left, until the entry leaves the ledger, for the reader's input that
+   * arrives after the read (B29). The entry's send time is kept on it (onWindowRead).
    */
   private keepWatch(watch: InputWatch, entry: Extract<LedgerEntry, { kind: "write" }>): void {
     watch.entry = entry;
     entry.sentAt ??= watch.since;
+    this.timed.add(watch.task);
     this.inputWatches.add(watch);
   }
 
   /**
-   * A reader or page walk of this window reached the model: a kept watch's field that shows the user's input since its
-   * write was sent marks the entry for good. Every walk, not only one that changes the text: the user may type the
-   * value the field already shows (PR #33 review).
+   * A reader or page walk of this window reached the model. A page keeps its record of the user's input for only 30 s
+   * (PageControl.inputAt), so every walk is checked: a written field that shows the user's input since its write was
+   * sent (LedgerEntry sentAt) marks the entry for good, and Undo leaves it however late it comes. Every walk, not only
+   * one that changes the text, since the user may type the value the field already shows; recovered entries included
+   * (PR #33 review).
    */
   onWindowRead(windowId: string): void {
-    for (const w of this.inputWatches) {
-      if (w.entry === null || w.windowId !== windowId) continue;
-      const at = this.deps.model.windows.get(windowId)?.nodes.get(w.key)?.inputAt;
-      if (at !== undefined && at >= w.since) this.inputSeen(w, "you typed in it");
+    const w = this.deps.model.windows.get(windowId);
+    if (w === undefined) return;
+    for (const task of this.timed) {
+      let open = false;
+      for (const e of task.ledger) {
+        if (e.kind !== "write" || e.sentAt === undefined || e.mayIncludeInput === true) continue;
+        open = true;
+        if (e.windowId !== windowId) continue;
+        const at = w.nodes.get(e.key)?.inputAt;
+        if (at === undefined || at < e.sentAt) continue;
+        e.mayIncludeInput = true;
+        // As in inputSeen: only a paused run's row is saved now; a running one's next save carries the flag.
+        if (task.journaled && task.finished === "paused") this.journalSave(task, null);
+      }
+      if (!open) this.timed.delete(task);
     }
   }
 
@@ -1210,6 +1225,11 @@ export class Executor {
       const typed = watches.some((x) => x.seen !== null) || (since !== undefined && now?.inputAt !== undefined && now.inputAt >= since);
       const kept = (entry: Extract<LedgerEntry, { kind: "write" }>): void => {
         if (typed) entry.mayIncludeInput = true;
+        // Set before the entry is saved, so the row that replaces the pending one keeps it (PR #33 review).
+        if (since !== undefined) {
+          entry.sentAt = since;
+          this.timed.add(task);
+        }
         this.addLedger(task, entry);
         if (since === undefined) return;
         // Under a pause or stop the reader's input can still arrive after this read (B29): the watch stays with the entry.
@@ -1595,6 +1615,8 @@ export class Executor {
       startedAt: r.startedAt,
       journaled: true,
     });
+    // A page outlives the helper, so its record of the user's input still counts against a recovered write (onWindowRead).
+    if (ledger.some((e) => e.kind === "write" && e.sentAt !== undefined)) this.timed.add(this.need(r.taskId));
   }
 
   // MARK: - act grants
