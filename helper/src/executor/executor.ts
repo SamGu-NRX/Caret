@@ -903,6 +903,11 @@ export class Executor {
     if (end.kind === "calendarEvent") return this.calendarStep(task, i, end);
 
     const w = await this.refresh(task, end.window);
+    // A pick this run made but could not verify (readUnconfirmed) shows the option's name whether or not the option was
+    // pressed, so the control cannot show the step already holds (PR #21 review). Checking it is the user's.
+    if (end.kind === "valueEquals" && task.ledger.some((e) => e.kind === "write" && e.step === i && e.unconfirmed === true && e.role === "AXComboBox")) {
+      throw StepStop.handoff(`Caret cannot tell whether '${end.value}' was picked for '${step.says}', so checking it is yours`);
+    }
     if (await this.holds(task, i, w, end)) {
       task.skipped++;
       this.progress(task, "skipped", i, "already true");

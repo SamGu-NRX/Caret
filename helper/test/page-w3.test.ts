@@ -223,6 +223,21 @@ describe("W3 page findings, helper side", () => {
       expect(result.detail).toContain("cannot tell whether the option was picked");
       expect(helper.executor.ledger("t1")).toEqual([expect.objectContaining({ kind: "write", key: KEY.dept, before: "", after: "Research", unconfirmed: true })]);
     });
+
+    it("a resumed run does not take the unverified pick's filter text as the step already done", async () => {
+      page.onAct = (v, p) => {
+        if (v.kind !== "pageChooseOption" || v.rebind === false) return null;
+        p.set(v.id, v.value);
+        p.session.receive({ type: "pageInput", v: 1, at: Date.now(), tabId: 7, frameId: 0, kind: "mouse" });
+        return { outcome: "failed", detail: "the task's grant ended (picking the option)", choice: { flavor: "aria", matches: [v.value], expanded: true, hiddenInput: "none" } };
+      };
+      expect(await helper.executor.run("t1", plan([step(KEY.dept, "Research"), step(KEY.first, "Ada")]), {}, undefined, { grant: true })).toMatchObject({ outcome: "paused", step: 0 });
+      page.onAct = null;
+      const resumed = await helper.executor.resume("t1");
+      expect(resumed).toMatchObject({ skipped: 0, detail: expect.stringContaining("cannot tell whether 'Research' was picked") });
+      expect(resumed.outcome).not.toBe("done");
+      expect(page.verbs.filter((v) => v.kind === "pageChooseOption")).toHaveLength(1);
+    });
   });
 
   describe("1e: a native select reaches the value write", () => {
