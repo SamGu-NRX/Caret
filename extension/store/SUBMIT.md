@@ -13,7 +13,7 @@ Upload
    - Description: the "Description" section.
    - Category: Productivity, Workflow & planning. Language: English.
    - Store icon: `extension/icons/icon-128.png`.
-   - Screenshots, in order: `screenshot-1-offer.png`, `screenshot-2-preview.png`, `screenshot-3-filled.png`.
+   - Screenshots, in order: `screenshot-2-preview.png`, `screenshot-3-filled.png`. Leave out `screenshot-1-offer.png` for now: its offer covers the next field's label, a placement bug being fixed.
    - Small promo tile: `promo-small-440x280.png`. Leave the marquee tile empty.
    - Name and summary come from the package; check they read "Caret for Chrome" and the 117-character summary.
 3. Privacy tab.
