@@ -70,6 +70,14 @@ class InternalBuildGateTests(unittest.TestCase):
         result = subprocess.run(["/bin/bash", str(script), "debug"], capture_output=True, text=True, env=clean_env())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(marker.exists(), "the gate ran on a node other than the pinned one")
+        # The later gate runs, and the one helper-bundle.config.mjs starts, inherit that PATH: it is exported before
+        # the first gate, and no gate line sets PATH for itself.
+        text = (ROOT / "apps/caret/scripts/build-app.sh").read_text()
+        gate_lines = [line for line in text.splitlines() if "privacy_gate.sh" in line and not line.lstrip().startswith("#")]
+        self.assertEqual(len(gate_lines), 3)
+        self.assertLess(text.index('export PATH="$root/apps/caret/.build/node-dist/'), text.index(gate_lines[0]))
+        for line in gate_lines:
+            self.assertNotIn("PATH=", line)
 
     def run_mac(self, root: Path) -> list:
         """run_mac.py from the tree, up to its first command after the gate, which is recorded and not run."""
