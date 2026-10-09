@@ -166,6 +166,44 @@ final class ModelResidencyTests: XCTestCase {
         XCTAssertEqual(model.log, ["load"], "ignored after stop")
     }
 
+    func testAFinishedLoadTellsTheFields() async {
+        let model = FakeModel()
+        model.residency.want(true)
+        await model.residency.settled()
+        XCTAssertEqual(model.told, 1)
+        model.residency.want(false)
+        await model.residency.settled()
+        XCTAssertEqual(model.told, 1, "a release tells nothing")
+    }
+
+    /// Codex on #30: quit closes the residency before it tears the fields down, so a load ending then wakes none.
+    func testALoadEndingAfterCloseTellsNoField() async {
+        let model = FakeModel(holding: true)
+        model.residency.want(true)
+        await model.untilHeld()
+        model.residency.close()
+        model.finish()
+        await model.residency.settled()
+        XCTAssertEqual(model.log, ["load"])
+        XCTAssertEqual(model.told, 0)
+    }
+
+    // MARK: - Onboarding's hello field
+
+    func testTheHelloFieldReadsOffTheMomentWordsGoesOff() {
+        var off = CaretSettings()
+        off.roles.remove(.words)
+        let states: [GhostTextEngine.State] = [.ready, .loading, .unavailable("missing"), .off]
+        for state in states {
+            XCTAssertEqual(HostRuntime.onboardingReadiness(state, off), .off, "\(state)")
+        }
+        let on = CaretSettings()
+        XCTAssertEqual(HostRuntime.onboardingReadiness(.ready, on), .ready)
+        XCTAssertEqual(HostRuntime.onboardingReadiness(.loading, on), .loading(nil))
+        XCTAssertEqual(HostRuntime.onboardingReadiness(.unavailable("missing"), on), .unavailable)
+        XCTAssertEqual(HostRuntime.onboardingReadiness(.off, on), .off, "on, before the load starts")
+    }
+
     // MARK: - Calls inside the model
 
     func testDrainedReturnsAtOnceWithNoCallInside() async {
@@ -253,6 +291,8 @@ private final class Flag {
 @MainActor
 private final class FakeModel {
     var log: [String] = []
+    /// Times the fields were told a load finished.
+    var told = 0
     var holding: Bool
     private var held: [CheckedContinuation<Void, Never>] = []
     private(set) var residency: ModelResidency!
@@ -260,6 +300,7 @@ private final class FakeModel {
     init(holding: Bool = false) {
         self.holding = holding
         residency = ModelResidency(load: { [unowned self] in await self.step("load") },
+                                   loaded: { [unowned self] in self.told += 1 },
                                    release: { [unowned self] in await self.step("release") })
     }
 

@@ -16,10 +16,15 @@ final class ModelResidency {
     private(set) var stopped = false
     private var work: Task<Void, Never>?
     private let load: @MainActor () async -> Void
+    /// After a load, unless `close` came first: what tells the fields the model is there. Quit tears the fields down
+    /// before it waits for a load to end, so this must not reach them then (Codex on #30).
+    private let loadedCallback: @MainActor () -> Void
     private let release: @MainActor () async -> Void
 
-    init(load: @escaping @MainActor () async -> Void, release: @escaping @MainActor () async -> Void) {
+    init(load: @escaping @MainActor () async -> Void, loaded: @escaping @MainActor () -> Void = {},
+         release: @escaping @MainActor () async -> Void) {
         self.load = load
+        self.loadedCallback = loaded
         self.release = release
     }
 
@@ -42,6 +47,7 @@ final class ModelResidency {
             if wanted {
                 await load()
                 loaded = true
+                if !stopped { loadedCallback() }
             } else {
                 await release()
                 loaded = false
@@ -55,9 +61,15 @@ final class ModelResidency {
         while let work { await work.value }
     }
 
-    /// Quit: no step starts after the one running, which is awaited. The engine's `shutdown` then frees what is loaded.
-    func stop() async {
+    /// Quit begins: no step starts after the one running, and a load that ends now tells no field. Call `settled`
+    /// before the engine's `shutdown` frees what is loaded.
+    func close() {
         stopped = true
+    }
+
+    /// `close`, then waits for the step running.
+    func stop() async {
+        close()
         await settled()
     }
 }
