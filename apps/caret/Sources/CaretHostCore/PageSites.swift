@@ -214,9 +214,9 @@ public enum SitesPage {
         public var pageInline = PageInlineSettings()
         /// H14: the two switches for inline text in pages (`CaretSettings.pageInlineText`, `pageInlineContentEditable`).
         public var pageInlineText = true
-        public var pageInlineContentEditable = false
+        public var pageInlineContentEditable = true
         public init(off: [String] = [], here: String? = nil, draft: String = "", problem: String? = nil, pageInline: PageInlineSettings = PageInlineSettings(),
-                    pageInlineText: Bool = true, pageInlineContentEditable: Bool = false) {
+                    pageInlineText: Bool = true, pageInlineContentEditable: Bool = true) {
             self.pageInline = pageInline
             self.pageInlineText = pageInlineText
             self.pageInlineContentEditable = pageInlineContentEditable

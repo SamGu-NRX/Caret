@@ -453,16 +453,15 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(b.requests, [])
     }
 
-    /// The lead's defaults (2026-10-06, after the H13 review): on by default in text inputs and textareas, where one ⌘Z
-    /// after real typing and Tab removed only the insert, 4 of 4 each (runs/20261006T161320Z-68498). Off by default in
-    /// contenteditables. Chrome's own undo step now takes the insert alone there too (same run), but a rich editor
-    /// (ProseMirror, Lexical, Draft.js, Notion) keeps its own history groups, which closing Chrome's typing step does
-    /// not close. `pageInlineContentEditable` turns them on, and Gmail's line shows only then: Turn Caret on here would
-    /// otherwise show nothing.
-    func testInlineTextIsOnInInputsAndTextareasAndOffInContentEditablesByDefault() throws {
+    /// The defaults: inline text on in text inputs, textareas and contenteditables (rich editors). Contenteditables went
+    /// on after the v2/inline VM rows (run 20261009T082301Z-79056): in ProseMirror, Lexical and Draft.js, one ⌘Z after
+    /// typing, a 5 s pause, arrow keys or a paste, then Tab, left the user's text alone, 42 of 42, with no offer until
+    /// 600 ms after a paste, drop, undo or redo (`editQuietMs`). Gmail keeps its own rule: Caret stays quiet there, and
+    /// its line offers to turn Caret on.
+    func testInlineTextIsOnByDefaultInInputsTextareasAndContentEditables() throws {
         let d = CaretSettings()
         XCTAssertTrue(d.pageInlineText)
-        XCTAssertFalse(d.pageInlineContentEditable)
+        XCTAssertTrue(d.pageInlineContentEditable)
         XCTAssertTrue(PageInline.allowed(d, wordsAllowed: true, engineReady: true, browserAllowed: true, composing: false))
         func rig(_ s: CaretSettings) -> Rig {
             let r = Rig()
@@ -483,22 +482,22 @@ final class PageInlineTests: XCTestCase {
         ce.fieldKind = .contenteditable
         let editor = rig(d)
         editor.field(ce)
-        XCTAssertEqual(editor.requests, [])
-        XCTAssertEqual(editor.machine.lastOutcome, "contentEditableOff")
+        XCTAssertEqual(editor.requests.count, 1)
         let gmail = rig(d)
         XCTAssertEqual(try Self.field(7).fieldKind, .contenteditable)
         gmail.field(try Self.field(7))
-        XCTAssertEqual(gmail.requests, [])
-        XCTAssertEqual(gmail.notices, [], "no Gmail line where Turn Caret on here would show nothing")
-        // Contenteditables turned on by the user: inline text there, and Gmail's line.
-        var editors = d
-        editors.pageInlineContentEditable = true
-        let on = rig(editors)
-        on.field(ce)
-        XCTAssertEqual(on.requests.count, 1)
-        let lineGmail = rig(editors)
-        lineGmail.field(try Self.field(7))
-        XCTAssertEqual(lineGmail.notices.count, 1)
+        XCTAssertEqual(gmail.requests, [], "Gmail suggests text itself: Caret stays quiet there")
+        XCTAssertEqual(gmail.notices.count, 1, "and its line offers to turn Caret on")
+        // Rich editors turned off by the user: nothing there, and no Gmail line, where Turn Caret on here would show nothing.
+        var off = d
+        off.pageInlineContentEditable = false
+        let quiet = rig(off)
+        quiet.field(ce)
+        XCTAssertEqual(quiet.requests, [])
+        XCTAssertEqual(quiet.machine.lastOutcome, "contentEditableOff")
+        let noLine = rig(off)
+        noLine.field(try Self.field(7))
+        XCTAssertEqual(noLine.notices, [])
         // A field whose kind the page did not say gets nothing.
         let unknown = rig(d)
         var bare = try Self.field(1)
@@ -512,10 +511,10 @@ final class PageInlineTests: XCTestCase {
         XCTAssertNil(json["pageInlineContentEditable"])
         var chosen = d
         chosen.pageInlineText = false
-        chosen.pageInlineContentEditable = true
+        chosen.pageInlineContentEditable = false
         let back = try JSONDecoder().decode(CaretSettings.self, from: JSONEncoder().encode(chosen))
         XCTAssertFalse(back.pageInlineText)
-        XCTAssertTrue(back.pageInlineContentEditable)
+        XCTAssertFalse(back.pageInlineContentEditable)
     }
 
     /// H13 review (P1): while an input method composes (Pinyin, Kotoeri), inline text on pages is neither offered nor

@@ -112,12 +112,14 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// after real typing and Tab removed only the insert on the test Mac, 4 of 4 each (runs/20261006T161320Z-68498).
     /// Contenteditables only with `pageInlineContentEditable` too.
     public var pageInlineText = true
-    /// H13: inline text in contenteditable editors as well. Off by default (lead decision after the H13 review,
-    /// 2026-10-06): the insert closes Chrome's typing step (extension content/insert.ts closeTyping), and on the test Mac
-    /// ⌘Z then removed only the insert, 4 of 4 (runs/20261006T161320Z-68498). But a rich editor (ProseMirror, Lexical,
-    /// Draft.js, Notion) keeps its own undo history, whose groups that does not close, so its ⌘Z may still take the
-    /// user's typing with the insert. The user can turn it on.
-    public var pageInlineContentEditable = false
+    /// H13: inline text in contenteditable editors (rich editors) as well. On by default since the v2/inline VM rows
+    /// (run 20261009T082301Z-79056): in ProseMirror, Lexical and Draft.js, which keep their own undo history, one ⌘Z after
+    /// typing, a 5 s pause, arrow keys or a paste, then Tab, left the user's text alone, 42 of 42. That needs the insert
+    /// to close Chrome's typing step (extension content/insert.ts closeTyping) and no offer within 600 ms of a paste,
+    /// drop, undo or redo (`PageInlineMachine.editQuietMs`). Pages with their own suggestions keep their own rule.
+    /// It was off before (lead decision after the H13 review, 2026-10-06) because ProseMirror grouped a paste with the
+    /// insert. Written only when the user turns it off.
+    public var pageInlineContentEditable = true
     /// Which keys take ghost text (brief item 6). Caret's own until Sam picks a default; Cotypist's is
     /// the other preset.
     public var ghostKeys = GhostKeys.caret
@@ -190,7 +192,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         pageInline = try c.decodeIfPresent(PageInlineSettings.self, forKey: .pageInline) ?? PageInlineSettings()
         // Absent: the defaults, as for a new user.
         pageInlineText = try c.decodeIfPresent(Bool.self, forKey: .pageInlineText) ?? true
-        pageInlineContentEditable = try c.decodeIfPresent(Bool.self, forKey: .pageInlineContentEditable) ?? false
+        pageInlineContentEditable = try c.decodeIfPresent(Bool.self, forKey: .pageInlineContentEditable) ?? true
         // Absent: the default. A scheme this host does not know is refused with the file.
         ghostKeys = try c.decodeIfPresent(GhostKeys.self, forKey: .ghostKeys) ?? .caret
         // Absent from a file written before item 7: no app was turned off.
@@ -223,7 +225,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         if pageInline != PageInlineSettings() { try c.encode(pageInline, forKey: .pageInline) }
         // Written only when the user changed them, so a later default reaches a user who never did.
         if !pageInlineText { try c.encode(pageInlineText, forKey: .pageInlineText) }
-        if pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
+        if !pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
         if ghostKeys != .caret { try c.encode(ghostKeys, forKey: .ghostKeys) }
         if !appsOff.isEmpty { try c.encode(appsOff, forKey: .appsOff) }
         if instructions != PersonalInstructions() { try c.encode(instructions, forKey: .instructions) }
