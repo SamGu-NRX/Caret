@@ -1,7 +1,7 @@
 // WriterPort (action-engine-v2 section 5): one bounded write by the configured model. This batch serves
 // `plan`; `polish` and `memoryProposal` are refused until their schemas exist. The output is untrusted
 // text: a plan program still has to pass compileProgram and the sandbox.
-import { chat, chatSink, type ChatRoute } from "./chat.ts";
+import { chat, ChatHttpError, chatSink, type ChatRoute } from "./chat.ts";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
 import { verifyWriterInput, type Disclosure, type ModelValue } from "../privacy/disclosure.ts";
 import { seal, sendable } from "../privacy/send.ts";
@@ -109,10 +109,12 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
       const sealed = seal({ writer: req }, chatSink(route, messages, [system, ...PLAN_WORDING], req.maxOutputTokens));
       const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);
       let hold;
+      let estimate = 0;
       try {
         // DailySpend permits a zero-price request at equality, so check the landed total explicitly too.
         if (spend.spent() >= spend.capUsd) throw new WriterUnavailable("budget");
-        hold = spend.reserve(writerEstimateUsd(route, sendable(sealed), req.maxOutputTokens));
+        estimate = writerEstimateUsd(route, sendable(sealed), req.maxOutputTokens);
+        hold = spend.reserve(estimate);
       } catch (e) {
         if (e instanceof JevCapError) throw new WriterUnavailable("budget");
         throw e;
@@ -121,7 +123,10 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
       try {
         r = await chat(route, key(), sealed, signal, opts.fetchFn);
       } catch (e) {
-        hold.release();
+        // Only a provider's 4xx refusal is known unbilled. A timeout, a network error, a 5xx or an unreadable answer may
+        // have been processed and billed, so it counts at its reservation, and repeated failures still reach the cap.
+        if (e instanceof ChatHttpError && e.status >= 400 && e.status < 500) hold.release();
+        else hold.settle(estimate, 0);
         throw e;
       }
       hold.settle(r.costUsd, r.inputTokens);

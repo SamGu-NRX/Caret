@@ -112,6 +112,29 @@ describe("bounded page-select Choice", () => {
     expect(result.requests).toHaveLength(0);
   });
 
+  // Review: a country menu's options name no value kind, so its field's own semantics put it with addresses.
+  it("an address cut withholds a country menu, whose option names are no kind of their own", async () => {
+    const model = desk(["Canada", "France"]);
+    model.apply(snap(form(["Canada", "France"]).map((n) => n.key === "meal" ? { ...n, label: "Country" } : n), { at: 2500, windowId: "form", kind: PAGE_WINDOW_KIND, title: "RSVP", focused: true }));
+    cutChat(model, "address");
+    const result = await run(model, { want: "France" });
+    expect(result.field).toMatchObject({ withheld: "sourceCut", value: null, handoff: null });
+    expect(result.mint).toBeUndefined();
+  });
+
+  // Review: a cut that left out text under one of the select's own label words still withholds it (cutTerms), as for any field.
+  it("a cut of text under the select's own label words still withholds it", async () => {
+    const model = desk();
+    const labels = Array.from({ length: 60 }, (_, i) => `Guest meal ${i}: ${OPTIONS[i % 3]}`);
+    model.apply(snap(labels.map((label, i) => text(`chat/${i}`, label)), { at: 1500, windowId: "chat", title: "Guest meals", app: CHAT }));
+    const collected = collectCandidates(model, "form", { now: 3000, ledger: new Disclosure(model) });
+    expect([...collected.cutTerms], "the fixture cuts text under the select's label words").toEqual(expect.arrayContaining(["guest", "meal"]));
+    const result = await run(model);
+    // Cut, the select is not proposed at all: no value, no mint, nothing a Fill all would write.
+    expect(result.proposal.fields.filter((f) => f.key === "meal" && (f.handoff !== null || f.value !== null))).toEqual([]);
+    expect(writtenFields(result.proposal).fields).toEqual([]);
+  });
+
   it.each(["day", "month"] as const)("a related date cut withholds numeric %s options", async (part) => {
     const model = desk(["1", "2", "3"]);
     model.apply(snap(form(["1", "2", "3"]).map((n) => n.key === "meal" ? { ...n, label: `Birth ${part}` } : n), { at: 2500, windowId: "form", kind: PAGE_WINDOW_KIND, title: "RSVP", focused: true }));

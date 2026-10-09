@@ -112,7 +112,7 @@ describe("writer's local-day cap", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
-  it("reserves the byte-count input estimate and full output cap before sending, then releases a failed call", async () => {
+  it("reserves the byte-count input estimate and full output cap before sending; a call that may have been billed keeps it", async () => {
     const ledger = spend(0.0001);
     const fetchFn = vi.fn(fake([]));
     await expect(makeWriterPort(route, { evaluation: true, key: () => KEY, fetchFn, spend: ledger }).write(request())).rejects.toBeInstanceOf(WriterUnavailable);
@@ -121,9 +121,13 @@ describe("writer's local-day cap", () => {
     const bigger = spend();
     const failed = makeWriterPort(route, { evaluation: true, key: () => KEY, fetchFn: async () => { throw new Error("offline"); }, spend: bigger });
     await expect(failed.write(request())).rejects.toThrow("offline");
-    expect(bigger.spent()).toBe(0);
-    // A released reservation leaves the whole budget available.
-    bigger.reserve(bigger.capUsd).release();
+    // A network failure may have reached the provider: it counts at its reservation.
+    expect(bigger.spent()).toBeGreaterThan(0);
+    // A provider's 4xx refusal is known unbilled: its reservation is released.
+    const refusedLedger = spend();
+    const refused = makeWriterPort(route, { evaluation: true, key: () => KEY, fetchFn: async () => new Response(JSON.stringify({ error: { type: "invalid_request_error", message: "bad" } }), { status: 400 }), spend: refusedLedger });
+    await expect(refused.write(request())).rejects.toThrow(/HTTP 400/);
+    expect(refusedLedger.spent()).toBe(0);
   });
 
   it("shares landed spend across ports and resets on the next local day", async () => {

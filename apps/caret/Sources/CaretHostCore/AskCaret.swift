@@ -619,6 +619,13 @@ public final class AskCaret {
     /// was the desk's answer, so the caller does not treat it as anyone else's.
     @discardableResult
     public func receive(_ goal: GoalProgress, toForm: (GoalProgress) -> Bool) -> Bool {
+        // A fresh plan after the card's goal stopped (GoalRuns.stopAndReplan): a new goal that replaces it, previewed on
+        // the card for its own Tab. Its first segment names the goal it replaces.
+        if case .goal(let card) = phase, case .segment(let p) = goal.event, p.replaces == card.goalId, goal.goalId != card.goalId,
+           let fresh = GoalCard(preview: p, goalId: goal.goalId, instruction: card.instruction) {
+            showGoal(fresh)
+            return true
+        }
         // A later message of the goal on the card: a new preview, a receipt, the stop or the end.
         if case .goal(var card) = phase, goal.goalId == card.goalId {
             // The goal's own ending answers a stop Esc sent.

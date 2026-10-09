@@ -256,6 +256,27 @@ final class GoalCardTests: XCTestCase {
         XCTAssertEqual(try card(ask).stage, .ended(.init(kind: .notRun, line: PageTaskCopy.expired)))
     }
 
+    func testAFreshPlanAfterAStopIsPreviewedOnTheCard() throws {
+        let (ask, _, sent) = try showing()
+        XCTAssertTrue(ask.tab())
+        XCTAssertTrue(ask.receive(GoalProgress(at: 2, goalId: "goal-4-ask-32", requestId: nil, event: .stopped(.init(segment: 0, step: 0, reason: .targetChanged, says: "The To field changed before Caret reached it. Caret made a fresh plan.", freshPlan: "goal-4-ask-32~1"))), toForm: { _ in false }))
+        var fresh = try Self.goal(4)
+        fresh.goalId = "goal-4-ask-32~1"
+        fresh.requestId = nil
+        guard case .segment(var p) = fresh.event else { return XCTFail() }
+        p.reason = .freshPlan
+        p.replaces = "goal-4-ask-32"
+        fresh.event = .segment(p)
+        XCTAssertTrue(ask.receive(fresh, toForm: { _ in XCTFail("not a page's"); return false }))
+        let c = try card(ask)
+        XCTAssertEqual(c.goalId, "goal-4-ask-32~1")
+        XCTAssertEqual(c.stage, .preview)
+        let before = sent().count
+        XCTAssertTrue(ask.tab())
+        guard case .goalAccept(let a)? = sent().dropFirst(before).first else { return XCTFail("no acceptance of the fresh plan") }
+        XCTAssertEqual(a.goalId, "goal-4-ask-32~1")
+    }
+
     func testAPageGoalStillGoesToTheForm() throws {
         let (ask, _, sent) = try asked()
         guard case .plan(let request)? = sent().last else { return XCTFail() }

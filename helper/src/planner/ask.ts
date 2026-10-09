@@ -192,7 +192,8 @@ export interface AskQuestionDraft {
  */
 export function askedKeyOf(q: AskQuestionDraft): AskedKey {
   const keys = q.options.flatMap((c) => c.fixes.fields ?? []);
-  return { form: q.resume.seen.title, part: q.part, fields: keys.map((k) => q.resume.seen.fields[k] ?? k) };
+  // The app is part of the form, so two apps' forms of one title and the same fields don't share what was put away.
+  return { form: `${q.window.appName}\u0000${q.resume.seen.title}`, part: q.part, fields: keys.map((k) => q.resume.seen.fields[k] ?? k) };
 }
 
 /** The wire options of a question: what the host shows, never a key or window id. */
@@ -430,13 +431,17 @@ function openParts(intent: AskIntent): AskPart[] {
  * fill; otherwise it still asks, about the next open part.
  */
 function applyFixed(intent: AskIntent, fixed: AskFixed, snap: IntentSnapshot): AskIntent {
-  // The task question's plan reading: the same fields, sources and person, planned as a task (what it leaves open is
-  // asked as a plan's parts are, ask.ts planAsAll and nativeFields). The fill reading is the intent as it stands.
-  if (fixed.task === "plan") {
-    const { open: parts, ...rest } = intent;
-    const pending = parts ?? (intent.route === "ask" ? openParts(intent) : []);
-    return { ...rest, route: "plan", why: "none", ...(pending.length === 0 ? {} : { pageOpen: pending }) };
-  }
+  const picked = applyPicks(intent, fixed, snap);
+  if (fixed.task !== "plan") return picked;
+  // The task question's plan reading: the intent with every pick since (fields, a source, a person), planned as a task;
+  // what it still leaves open is asked as a plan's parts are (planAsAll, nativeFields). The fill reading is the intent.
+  const { open: parts, ...rest } = picked;
+  const pending = parts ?? (picked.route === "ask" ? openParts(picked) : []);
+  return { ...rest, route: "plan", why: "none", ...(pending.length === 0 ? {} : { pageOpen: pending }) };
+}
+
+/** The intent with the fields, source and person the user picked in place of the parts they fix. */
+function applyPicks(intent: AskIntent, fixed: AskFixed, snap: IntentSnapshot): AskIntent {
   if (fixed.fields === undefined && fixed.source === undefined && fixed.person === undefined) return intent;
   let open = openParts(intent);
   let it: AskIntent = intent;

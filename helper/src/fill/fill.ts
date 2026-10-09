@@ -1534,13 +1534,19 @@ export async function proposeFill(
   // value of some kind, which may be the one it wants. A recognized field consulted only its kinds, so a note's closing
   // "Do not use any of the dates above" left Meeting date filled with the first of them.
   const pageSelect = (f: Field): f is Field & { form: FormControl & { options: string[] } } => pageOwned && f.control === "select" && f.form?.options != null;
-  const selectKinds = new Map(fields.filter(pageSelect).map((f) => [f.id, optionKinds(f.form.options, f.part)]));
+  // A page select's kinds are what its own option labels could be (a month is a date, a state an address), and an address
+  // when its field asks for a place or a country, whose names optionKinds does not know (review: a cut address holding
+  // Canada left a France option writable).
+  const selectKinds = new Map(fields.filter(pageSelect).map((f) => {
+    const kinds = optionKinds(f.form.options, f.part);
+    if (asksCountry(f.form.label) || asksPlace(f.form.label)) kinds.add("address");
+    return [f.id, kinds] as const;
+  }));
   const fieldCut = (f: Field): boolean =>
-    opts.cutRule !== false && (pageSelect(f)
-      // The menu supplies the answer vocabulary. A date/address cut can hide a month/state, not a meal.
-      // An unread remainder of unknown kinds (allCut) still cannot establish that the choice is safe.
-      ? isCut(selectKinds.get(f.id)!)
-      : (isCut(f.kinds) || [...f.terms].some((t) => t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f))));
+    opts.cutRule !== false &&
+    // A page select keeps every other cut rule (its label's terms, a name kept out); only the rule that withholds a field
+    // naming no kind for any cut at all is replaced by its menu's own kinds: a date cut can hide a month, not a meal.
+    (isCut(pageSelect(f) ? (selectKinds.get(f.id) as Set<ValueKind>) : f.kinds) || [...f.terms].some((t) => t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (!pageSelect(f) && f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f)));
   // A select whose options the app does not show cannot be matched to a value, so it is named and left (controls.ts).
   // A web dropdown's options are hidden too, but the page engine's handler picks the one option named exactly the
   // value and verifies it, so it is asked (B27).
@@ -2250,8 +2256,10 @@ export async function proposeFill(
       return { value: PAGE_CHECKED, display: "Ticked", writes: pageOwned && f.node.subrole !== PAGE_SUBROLE.switch, chose };
     }
     if ((f.control !== "select" && f.control !== "radio") || f.form === null || !pickableOptions(w, f.form).includes(p.text)) return { why: "ambiguous" };
-    // A page select is settled by the bounded pair, not a mapping code inferred. Native menus and radios keep the verifier.
-    if (pageSelect(f)) return { value: p.text, display: p.text, writes: true };
+    // A page select's option supported by a window's text is settled by the bounded pair, not a mapping code inferred.
+    // One supported only by memory or the request keeps the verifier and its stated choice, as native menus and radios
+    // do: the goal's lowering and memory recheck read those literally (review).
+    if (pageSelect(f) && p.basis.from === "unit") return { value: p.text, display: p.text, writes: true };
     const chose: Chosen = { says: `Caret proposes the listed option '${p.text}' for judgment against ${against}; code did not check that it names it`, also: null, how: "sourceSupported" };
     return { value: p.text, display: p.text, writes: pageOwned && f.node.subrole !== PAGE_SUBROLE.pressGroup, chose };
   };
@@ -2526,7 +2534,7 @@ export async function proposeFill(
           if (pickText(pick) === literalOf(f)) unreadLiterals.add(f.node.key);
           return veto("conversion");
         }
-        const cut = pageSelect(f) ? fieldCut(f) : anchored(f) && fromAnchor(f, pick) ? anchoredCut(pick) : fieldCut(f) || pickCut(pick);
+        const cut = anchored(f) && fromAnchor(f, pick) ? anchoredCut(pick) : fieldCut(f) || pickCut(pick);
         if (cut) return veto("sourceCut");
         const unshown = noteUnshown(f, pick);
         if (unshown !== null && !privacyHeld.has(f.id)) privacyHeld.set(f.id, unshown);
@@ -2539,7 +2547,7 @@ export async function proposeFill(
         const verifier = f.control === "text" || f.control === "combobox" || chose !== undefined;
         if (neverTypedRefusal(proposed, scope.instruction) !== null) return veto("neverTyped");
         if (verifier && (shapeRefusal(proposed) ?? textShapeRefusal(proposed)) !== null) return veto("shape");
-        return [{ id, second, pick, read, proposed, output: read.value, owner: proposed.owner, assumptions: pick.from === "choice" && pageSelect(f) ? ["bounded Jev page option"] : saysOf(proposed.provenance), verifier, ...evidenceOf(pick) }];
+        return [{ id, second, pick, read, proposed, output: read.value, owner: proposed.owner, assumptions: pick.from === "choice" && pick.basis.from === "unit" && pageSelect(f) ? ["bounded Jev page option"] : saysOf(proposed.provenance), verifier, ...evidenceOf(pick) }];
       });
       optionsOf.set(f.id, groupOptions(members));
     }
@@ -2994,7 +3002,7 @@ export async function proposeFill(
     const fromMemory = picked !== undefined && memoryOf(picked) !== null;
     // An anchored field's pick from the anchor window is judged on its own; any other pick meets the cut rules.
     const anchoredPick = picked !== undefined && anchored(f) && fromAnchor(f, picked);
-    const cutOut = picked !== undefined && (pageSelect(f) ? fieldCut(f) : anchoredPick ? anchoredCut(picked) : fieldCut(f) || pickCut(picked));
+    const cutOut = picked !== undefined && (anchoredPick ? anchoredCut(picked) : fieldCut(f) || pickCut(picked));
     const read = picked === undefined ? null : controlValue(f, picked);
     const unshown = picked === undefined ? null : noteUnshown(f, picked);
     const withheld: FillWithheld | null =
@@ -3497,9 +3505,9 @@ export function candidateProvenance(model: ScreenModel, c: Candidate, text?: str
  */
 function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, written: string, judged: (c: Candidate) => string | undefined, control: Control | null = null, chose?: Chosen): Provenance {
   if (p.from === "choice") {
-    // Only a page select's bounded Jev choice has no code-inferred assumption. All other choices keep theirs.
-    if (chose === undefined && control !== "select") throw new Error(`a source-supported choice '${p.text}' reached provenance without its derivation`);
+    // Only a page select's bounded Jev choice on a window's text has no code-inferred assumption. All other choices keep theirs.
     const b = p.basis;
+    if (chose === undefined && !(control === "select" && b.from === "unit")) throw new Error(`a source-supported choice '${p.text}' reached provenance without its derivation`);
     const base: Provenance = b.from === "unit" ? { kind: "unit", windowId: b.unit.windowId, app: b.app, title: b.title, digest: b.unit.digest } : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
     return chose === undefined
       ? { kind: "derived", how: "jevOption", base, also: null }
