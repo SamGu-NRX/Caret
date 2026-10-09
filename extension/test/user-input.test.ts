@@ -126,6 +126,12 @@ describe("inOwnList", () => {
     expect(inOwnList(el("combobox", "c2", { "aria-owns": "list-1" }), list)).toBe(true);
   });
 
+  it("counts a list labelled by the control, and the option the control names as active", () => {
+    expect(inOwnList(el("combobox", "c1"), el("option", "", {}, el("listbox", "", { "aria-labelledby": "c1" })))).toBe(true);
+    expect(inOwnList(el("combobox", "c1", { "aria-activedescendant": "opt-3" }), el("option", "opt-3", {}, el("listbox")))).toBe(true);
+    expect(inOwnList(el("combobox", "c1", { "aria-activedescendant": "opt-3" }), el("option", "opt-4", {}, el("listbox")))).toBe(false);
+  });
+
   it("counts a list inside the control", () => {
     const combo = el("combobox", "c1");
     expect(inOwnList(combo, el("option", "", {}, el("listbox", "", {}, combo)))).toBe(true);

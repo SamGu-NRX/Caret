@@ -6,8 +6,8 @@
 //
 // Esc is never reported: it types nothing, and it is Caret's Stop key, so counting it would turn every Stop into one
 // whose write Caret cannot claim. Tab is reported at the element it leaves, and it moves focus: until the reader reads
-// where focus went, the keys after it are reported at no element, so the helper counts them against every field of
-// the window.
+// where focus went, the keys after it are reported in no window, so the helper counts them against every field of the
+// process. Caret's own focusing of a field for a write does the same, and that field may be in another window.
 import Foundation
 
 public enum FieldInputs {
@@ -16,10 +16,12 @@ public enum FieldInputs {
     public static let tabCode: UInt16 = 48
 
     /// The report for a key going down at `at` in process `pid`, or nil for Esc. `windowId` and `key` are where focus
-    /// was last read; `focusMoved` says a Tab went down since then, so the element is not known.
+    /// was last read; `focusMoved` says focus may have moved since (a Tab, or Caret focusing a field), so neither the
+    /// element nor its window is known (PR #33 review).
     public static func report(keyCode: UInt16, at: Int64, pid: Int, windowId: String?, key: String?, focusMoved: Bool) -> FieldInput? {
         if keyCode == escapeCode { return nil }
-        return FieldInput(at: at, pid: pid, windowId: windowId, key: focusMoved || windowId == nil ? nil : key)
+        if focusMoved { return FieldInput(at: at, pid: pid, windowId: nil, key: nil) }
+        return FieldInput(at: at, pid: pid, windowId: windowId, key: windowId == nil ? nil : key)
     }
 
     /// Whether the key moves keyboard focus away from the element the reader last read as focused.

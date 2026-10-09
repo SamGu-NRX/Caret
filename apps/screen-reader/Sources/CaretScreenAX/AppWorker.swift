@@ -123,15 +123,16 @@ final class PressIndex: @unchecked Sendable {
     }
 
     /// Caret is about to focus an element itself (a focus-first write, PR #33 review): until the focus change it causes
-    /// is read, on the worker's queue after the write, the user's keys go to an element the index does not know.
+    /// is read, on the worker's queue after the write, the user's keys go to an element, maybe in another window, that
+    /// the index does not know.
     func focusMayMove() {
         lock.lock(); defer { lock.unlock() }
         focusMoved = true
     }
 
     /// The fieldInput for a key going down now (FieldInputs), placed at the focused element as last read; nil for Esc.
-    /// A Tab, or Caret focusing a field itself (focusMayMove), leaves the element unknown until the next focus change is
-    /// read, so the keys after it count against the whole window. A focus change read before the Tab's own report leaves it unknown until the one after.
+    /// A Tab, or Caret focusing a field itself (focusMayMove), leaves the element and its window unknown until the next
+    /// focus change is read, so the keys after it count against every field of the app. A focus change read before the Tab's own report leaves it unknown until the one after.
     func fieldInput(keyCode: UInt16, at: Int64, pid: Int) -> FieldInput? {
         lock.lock(); defer { lock.unlock() }
         let entry = focus.flatMap { byWindow[$0.window] }

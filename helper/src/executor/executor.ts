@@ -273,6 +273,8 @@ interface Task {
   journaled: boolean;
   /** Keep the reconciliation warning when a goal converts an input pause to Stop. */
   recoveryDetail?: string;
+  /** The pending act the task's journal row holds now (journalSave), kept by a save that only adds evidence. */
+  pending?: PendingAct | null;
   /** When reconciliation must end: STOP_RECONCILE_MS after the first pause or stop of this run reached it. */
   reconcileBy?: number;
 }
@@ -583,8 +585,10 @@ export class Executor {
    */
   private keepWatch(watch: InputWatch, entry: Extract<LedgerEntry, { kind: "write" }>): void {
     watch.entry = entry;
-    entry.sentAt ??= watch.since;
-    this.timed.add(watch.task);
+    if (entry.windowId.startsWith("page:")) {
+      entry.sentAt ??= watch.since;
+      this.timed.add(watch.task);
+    }
     this.inputWatches.add(watch);
   }
 
@@ -627,12 +631,11 @@ export class Executor {
   }
 
   /**
-   * Saves input evidence to a task's journal row when nothing of it is on its way: a paused run, or a run recovered after
-   * a restart, which keeps its row (PR #33 review). A running run or an undo may have a write on its way, and a save would
-   * drop that pending row; its next save carries the flag. An ended run has no row: its undo lives in memory.
+   * Saves input evidence to a task's journal row at once (PR #33 review), keeping the act the row says is on its way. An
+   * undo saves its own row at its end, which carries the flag. An ended run has no row: its undo lives in memory.
    */
   private saveEvidence(task: Task): void {
-    if (task.journaled && task.finished !== null && !task.undoing) this.journalSave(task, null);
+    if (task.journaled && !task.undoing) this.journalSave(task, task.pending ?? null);
   }
 
   private acting(task: Task): boolean {
@@ -1232,7 +1235,9 @@ export class Executor {
       const kept = (entry: Extract<LedgerEntry, { kind: "write" }>): void => {
         if (typed) entry.mayIncludeInput = true;
         // Set before the entry is saved, so the row that replaces the pending one keeps it (PR #33 review).
-        if (since !== undefined) {
+        // Only a page field reports the user's input in a walk (PageControl.inputAt), so only a page write is timed: a
+        // native one would keep its task in every walk's scan for nothing (PR #33 review).
+        if (since !== undefined && w.window.windowId.startsWith("page:")) {
           entry.sentAt = since;
           this.timed.add(task);
         }
@@ -1547,6 +1552,7 @@ export class Executor {
   private journalSave(task: Task, pending: PendingAct | null, ledger: LedgerEntry[] = task.ledger): void {
     const j = this.deps.journal;
     if (j === undefined) return;
+    task.pending = pending;
     const bound = [...task.windows.values()].map((id) => this.deps.model.windows.get(id)).find((w) => w !== undefined);
     j.save({
       taskId: task.id,

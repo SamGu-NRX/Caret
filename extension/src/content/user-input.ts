@@ -38,17 +38,21 @@ export interface ListElement<E> {
 }
 
 /**
- * Whether `target` sits in the list of options `control` owns: a listbox (or an option's parent) inside the control or
- * around it, or one the control names by aria-controls or aria-owns. A combobox may render its options elsewhere in the
- * page (content/combobox.ts), and a pick there sets the control with no input event; a list that belongs to another
- * control is not this one's (PR #33 review).
+ * Whether `target` sits in the list of options `control` owns, by the associations content/combobox.ts accepts: a
+ * listbox (or an option's parent) inside the control or around it, one the control names by aria-controls or
+ * aria-owns, one whose aria-labelledby names the control, or the option the control's aria-activedescendant names. A
+ * combobox may render its options elsewhere in the page, and a pick there sets the control with no input event; a list
+ * that belongs to another control is not this one's (PR #33 review).
  */
 export function inOwnList<E extends ListElement<E>>(control: E, target: E): boolean {
-  const list = target.closest('[role="listbox"]') ?? target.closest('[role="option"]')?.parentElement ?? null;
+  const option = target.closest('[role="option"]');
+  const list = target.closest('[role="listbox"]') ?? option?.parentElement ?? null;
   if (list === null) return false;
   if (control.contains(list) || list.contains(control)) return true;
-  const owned = `${control.getAttribute("aria-controls") ?? ""} ${control.getAttribute("aria-owns") ?? ""}`.split(/\s+/u);
-  return list.id !== "" && owned.includes(list.id);
+  const ids = (name: string, of: E): string[] => (of.getAttribute(name) ?? "").split(/\s+/u).filter((x) => x !== "");
+  if (list.id !== "" && [...ids("aria-controls", control), ...ids("aria-owns", control)].includes(list.id)) return true;
+  if (control.id !== "" && ids("aria-labelledby", list).includes(control.id)) return true;
+  return option != null && option.id !== "" && control.getAttribute("aria-activedescendant") === option.id;
 }
 
 export class UserInputs<E extends object> {

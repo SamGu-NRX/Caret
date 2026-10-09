@@ -26,11 +26,12 @@ private let goldenURL = URL(fileURLWithPath: #filePath)
         }
     }
 
-    @Test func placesAKeyAtNoElementOnceTabMayHaveMovedFocus() {
+    // PR #33 review: Caret's own focusing of a field may move focus to another window of the app, so neither is kept.
+    @Test func placesAKeyInNoWindowOnceFocusMayHaveMoved() {
         #expect(FieldInputs.movesFocus(keyCode: 48))
         for code: UInt16 in [0, 36, 49, 53, 123] { #expect(!FieldInputs.movesFocus(keyCode: code), "key code \(code)") }
         #expect(FieldInputs.report(keyCode: 0, at: 7, pid: 5150, windowId: window, key: name, focusMoved: true)
-                == FieldInput(at: 7, pid: 5150, windowId: window, key: nil))
+                == FieldInput(at: 7, pid: 5150, windowId: nil, key: nil))
     }
 
     @Test func placesAKeyInNoWindowWhenTheFocusedWindowIsUnknown() {

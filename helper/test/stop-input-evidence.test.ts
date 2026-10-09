@@ -195,6 +195,9 @@ describe.each(["AX", "page"] as const)("%s: input on the field when the answer c
     await run(r);
     expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED }]);
     expect(r.helper.executor.ledger("t")[0]).not.toHaveProperty("mayIncludeInput");
+    // Only a page field reports input in a walk, so only a page write keeps its send time (PR #33 review).
+    if (mean === "AX") expect(r.helper.executor.ledger("t")[0]).not.toHaveProperty("sentAt");
+    else expect(r.helper.executor.ledger("t")[0]).toHaveProperty("sentAt");
     expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1 });
     expect(r.held()).toBe(ORIGINAL);
   });

@@ -481,8 +481,8 @@ export type UserInput = z.infer<typeof UserInput>;
  * A key the user pressed in a watched process that may have changed text (issue #26): sent with the window-level
  * userInput for every key except Esc, which types nothing and is Caret's Stop key. It names the element the key went
  * to, never the key: the element with keyboard focus as the reader last read it. `windowId` is null when the reader
- * does not know which of the process's windows had focus; `key` is null when it does not know the element, which
- * includes the time from a Tab, or from Caret focusing a field for a write, until the reader reads where focus went. The executor counts it against a write whose
+ * does not know which of the process's windows had focus; `key` is null when it does not know the element. Both
+ * are null from a Tab, or from Caret focusing a field for a write, until the reader reads where focus went. The executor counts it against a write whose
  * answer was lost (executor.ts readUnconfirmed): typing in that field after the write was sent makes Caret's own value
  * indistinguishable from the user's.
  */
