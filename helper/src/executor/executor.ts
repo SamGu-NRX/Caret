@@ -208,6 +208,8 @@ const EFFECT_POLLS = 4;
 /** Extra tries for a failed walk. One cut-short walk in 20 shipping runs stopped a run on a loaded Mac. */
 const WALK_RETRIES = 2;
 const EFFECT_POLL_MS = 150;
+/** Matches the links' ordinary 5 s deadline; a stopped run must not wait forever for an in-flight call. */
+const STOP_RECONCILE_MS = 5000;
 
 interface Task {
   id: string;
@@ -269,6 +271,8 @@ interface Task {
   startedAt: number;
   /** The journal holds a row for it (ExecutorDeps.journal). */
   journaled: boolean;
+  /** Keep the reconciliation warning when a goal converts an input pause to Stop. */
+  recoveryDetail?: string;
 }
 
 /**
@@ -333,6 +337,7 @@ class Restored extends Error {
 
 export class Executor {
   private readonly tasks = new Map<string, Task>();
+  private readonly interruptedActs = new Map<string, () => void>();
   /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
   readonly targetChoices: { taskId: string; step: number; chose: string | null; jev: JevTrace }[] = [];
   /** Bumped on every reader connection: a running task stops at its next act when it changes. */
@@ -562,7 +567,7 @@ export class Executor {
       releaseSources(task);
       // A paused run kept its row; stopped, it ends like any run (B23 second review: the row stayed for every start).
       this.journalDrop(task);
-      this.stopped(task, this.stepAt(task), `stopped by you ${this.boundary(task)}`, "you", "you");
+      this.stopped(task, this.stepAt(task), `stopped by you ${this.boundary(task)}${task.recoveryDetail === undefined ? "" : `; ${task.recoveryDetail}`}`, "you", "you");
       this.reportUses(task, "stopped");
       return;
     }
@@ -834,6 +839,8 @@ export class Executor {
       if (e instanceof Interrupted && it !== null) {
         task.interrupt = null;
         const at = this.stepAt(task);
+        if (e.message !== "") task.recoveryDetail = e.message;
+        else delete task.recoveryDetail;
         const recovery = e.message === "" ? "" : `; ${e.message}`;
         if (it.kind === "stop") {
           task.finished = "stopped";
@@ -992,9 +999,23 @@ export class Executor {
         if (attribute === "value" && (answered || e instanceof UnconfirmedAct)) {
           const entry: Extract<LedgerEntry, { kind: "write" }> = { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true };
           this.addLedger(task, entry);
-          const detail = await this.readUnconfirmed(task, entry);
-          if (task.interrupt !== null) throw new Interrupted(detail ?? "");
-          throw StepStop.stop("reader", `${e instanceof Error ? e.message : String(e)}${detail === null ? "" : `; ${detail}`}`);
+          const recovery = await this.readUnconfirmed(task, entry);
+          if (task.interrupt !== null) {
+            if (recovery.state === "landed") {
+              delete entry.unconfirmed;
+              this.expectedFor(task, entry.windowId).set(entry.key, value);
+              await this.verified(task, i, step);
+              task.next = i + 1;
+              this.journalSave(task, null);
+              throw new Interrupted(`Written before ${task.interrupt.kind === "stop" ? "stop" : "pause"}: ${node.label?.trim() || step.says}. Undo puts it back.`);
+            }
+            if (recovery.state === "untouched") {
+              task.ledger.splice(task.ledger.indexOf(entry), 1);
+              this.journalSave(task, null);
+            }
+            throw new Interrupted(recovery.detail ?? "");
+          }
+          throw StepStop.stop("reader", `${e instanceof Error ? e.message : String(e)}${recovery.detail === null ? "" : `; ${recovery.detail}`}`);
         }
         throw e;
       }
@@ -1281,16 +1302,19 @@ export class Executor {
     try {
       let r: VerbResult;
       try {
-        r = await this.deps.reader.run(verb);
+        r = await this.waitForAct(task, verb);
       } catch (e) {
         throw new UnconfirmedAct(e instanceof Error ? e.message : String(e));
       }
       // The page left or submitted after a press: nothing more runs, whatever else came in meanwhile (B28).
       if (r.pageChanged !== undefined) throw new PageChanged(`${r.pageChanged.join(", ")}${r.detail === null ? "" : ` (${r.detail})`}`);
-      // A pause, stop or take-over came in while the verb was on its way (a stop or take-over also revoked
-      // the grant, so the reader refused). The reader acted on none of these outcomes, so the run ends as the
-      // user asked, not as a reader failure. An axError may follow an act that landed, so it keeps its path.
-      if (r.outcome !== "ok" && r.outcome !== "axError" && task.interrupt !== null) throw new Interrupted();
+      // An interruption wins over a refusal as the reason the run ends. A dispatched value write still needs
+      // reconciliation: the refusal may describe a later stage, after the value went in.
+      if (r.outcome !== "ok" && r.outcome !== "axError" && task.interrupt !== null) {
+        // Revocation refuses new dispatch, but an answer after Stop cannot prove an already-dispatched write did nothing.
+        if (verb.kind === "write" && verb.attribute !== "focused") throw new UnconfirmedAct(`the reader answered ${r.outcome} after interruption`);
+        throw new Interrupted();
+      }
       if (r.outcome === "focusMoved") throw new FocusMoved(r.detail ?? "focus moved");
       if (r.outcome === "changed" && r.restored === true) throw new Restored(`the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`, r.detail, [...seen]);
       // Use the outcome, not text inside the detail: a refused field may itself contain "axError".
@@ -1302,6 +1326,23 @@ export class Executor {
       off();
     }
     return seen;
+  }
+
+  /** Revocation ends new acts, not the answer to one already dispatched. Bound the remaining wait from that moment. */
+  private async waitForAct(task: Task, verb: ReaderVerb): Promise<VerbResult> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const interrupted = new Promise<never>((_, reject) => {
+      this.interruptedActs.set(task.id, () => {
+        if (timer !== undefined) return;
+        timer = setTimeout(() => reject(new Error("no answer to the in-flight act after interruption")), STOP_RECONCILE_MS);
+      });
+    });
+    try {
+      return await Promise.race([this.deps.reader.run(verb), interrupted]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      this.interruptedActs.delete(task.id);
+    }
   }
 
   // MARK: - the recovery journal (B23, S1 audit #11)
@@ -1416,6 +1457,7 @@ export class Executor {
 
   /** Ends both of the task's grants with one revoke. */
   private revokeGrant(task: Task): void {
+    if (task.interrupt !== null) this.interruptedActs.get(task.id)?.();
     if (task.grant === null && !task.calendarGranted) return;
     task.grant = null;
     task.calendarGranted = false;
@@ -1599,24 +1641,37 @@ export class Executor {
   // MARK: - undo
 
   /** Read a faulted whole-field write before acknowledging stop, without issuing or renewing a grant. */
-  private async readUnconfirmed(task: Task, e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null> {
+  private async readUnconfirmed(task: Task, e: Extract<LedgerEntry, { kind: "write" }>): Promise<{ state: "landed" | "untouched" | "unknown"; detail: string | null }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       this.checkSession(task);
-      await this.walk(this.window(e.windowId));
+      const w = this.window(e.windowId);
+      if (task.interrupt === null) await this.walk(w);
+      else {
+        // Stop gets one read, without a new grant or retries. A hung recovery read also has a deadline.
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("the recovery read timed out")), STOP_RECONCILE_MS);
+        });
+        const r = await Promise.race([this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId }), timeout]);
+        if (r.outcome !== "ok") throw new Error(`cannot re-read '${w.window.title}': ${r.outcome}`);
+      }
       this.checkSession(task);
     } catch (error) {
-      return `Caret could not read the field after writing it; before the write it held ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}`;
+      return { state: "unknown", detail: `The field may have been written. Undo can put it back. Caret could not read the field after writing it; before the write it held ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}` };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
-    if (field === undefined) return `the field is gone; before the write it held ${JSON.stringify(e.before)}`;
+    if (field === undefined) return { state: "unknown", detail: `The field may have been written; the field is gone; before the write it held ${JSON.stringify(e.before)}` };
     const held = field.value ?? "";
-    if (held === e.before || held === e.after) return null;
+    if (held === e.before) return { state: "untouched", detail: null };
+    if (held === e.after) return { state: "landed", detail: null };
     if (partialReplacement(e.before, e.after, held)) {
       e.partialWrite = true;
       this.journalSave(task, null);
-      return null;
+      return { state: "unknown", detail: "The field was partly written before stop. Undo puts it back." };
     }
-    return `${fieldContents(e.before, held)}; Caret left it as it is`;
+    return { state: "unknown", detail: `${fieldContents(e.before, held)}; Caret left it as it is` };
   }
 
   private async undoWrite(task: Task, e: Extract<LedgerEntry, { kind: "write" }>, settled: Set<LedgerEntry>): Promise<string | null | typeof UNTOUCHED> {

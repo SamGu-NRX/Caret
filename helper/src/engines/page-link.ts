@@ -672,7 +672,8 @@ export class PageEngineLink implements ReaderLink {
    * walk. What the page does in reaction (a revealed field, reformatting, another injector's write) is seen by the next
    * step's refresh walk, and after the last such act by one trailing walk (TRAILING_WALK_MS).
    *
-   * Every other act re-walks the tab, as before: a combobox or Yes/No pick and an attach change more than one value,
+   * A write with no answer leaves the recovery read to the executor. Other acts re-walk the tab: a combobox or
+   * Yes/No pick and an attach change more than one value,
    * and a failed or refused act may have left anything. So does a native select (P2 review): the page reads back the
    * option's value, not the label the model shows, and a page that relabels the chosen option would have Caret verify
    * a label the walk before the act showed. A press after which the page left is answered at once, with no
@@ -693,6 +694,13 @@ export class PageEngineLink implements ReaderLink {
       this.session.tabs.set(tabId, patched);
       this.apply(toWindowSnapshot(patched, this.session, ++this.seq));
       this.scheduleTrailingWalk(tabId);
+      this.report(verb, a.result.outcome, commandMs, null, null);
+      return out;
+    }
+    // A timed-out whole-field write goes back as axError. The executor owns its single recovery read and
+    // already saved the original before dispatch; re-walking here would read twice and delay Stop's reconciliation.
+    if (a.result.outcome === "error" && (verb.kind === "pageWrite" || verb.kind === "pageSelect" || verb.kind === "pageChooseOption" || verb.kind === "pageSetChecked")) {
+      this.cancelTrailingWalks(tabId);
       this.report(verb, a.result.outcome, commandMs, null, null);
       return out;
     }

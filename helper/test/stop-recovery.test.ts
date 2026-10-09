@@ -193,6 +193,7 @@ describe("E1 stop at the reader's last grant check", () => {
     expect(helper.executor.ledger("t")).toMatchObject([{ before: "Original name", after: "Dana", unconfirmed: true }]);
     expect(helper.executor.ledger("t")[0]).not.toHaveProperty("partialWrite");
     const entry = helper.executor.ledger("t")[0];
+    app.failWalks = 0;
     app.normalize = null;
     expect(await helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
     expect(entry).toHaveProperty("partialWrite", true);
@@ -353,7 +354,7 @@ describe("E1 stop at the reader's last grant check", () => {
     expect(cases).toBeGreaterThan(100);
   });
 
-  it("a dispatched write with a lost acknowledgement remains undoable, not falsely verified", async () => {
+  it("a dispatched write with a lost acknowledgement is verified by its recovery read before Stop", async () => {
     app.timeoutAfterWrite = true;
     app.afterVerb = (a, v) => {
       if (v.kind !== "write" || v.key !== NAME) return;
@@ -364,9 +365,11 @@ describe("E1 stop at the reader's last grant check", () => {
     expect(result.outcome).toBe("stopped");
     expect(app.node(NAME)?.value).toBe("Dana");
     expect(app.node(EMAIL)?.value).toBe("old@example.com");
-    expect(helper.executor.ledger("t")).toMatchObject([{ kind: "write", key: NAME, before: "", after: "Dana", unconfirmed: true }]);
+    expect(helper.executor.ledger("t")).toMatchObject([{ kind: "write", key: NAME, before: "", after: "Dana" }]);
     expect(helper.executor.ledger("t")).toHaveLength(1);
-    expect(published.some((m) => m.type === "taskProgress" && m.taskId === "t" && m.phase === "verified")).toBe(false);
+    expect(helper.executor.ledger("t")[0]).not.toHaveProperty("unconfirmed");
+    expect(result).toMatchObject({ acted: 1, step: 1 });
+    expect(published.some((m) => m.type === "taskProgress" && m.taskId === "t" && m.phase === "verified")).toBe(true);
     app.timeoutAfterWrite = false;
     expect(await helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
     expect(app.node(NAME)?.value ?? "").toBe("");

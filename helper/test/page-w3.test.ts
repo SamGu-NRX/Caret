@@ -188,7 +188,7 @@ describe("W3 page findings, helper side", () => {
   });
 
   describe("1d: a pick a revoke cut short still goes into undo", () => {
-    it("records the pick, unconfirmed, before any verify; the run ends paused; undo restores it", async () => {
+    it("reconciles the pick by read-back before pausing; undo restores it", async () => {
       page.onAct = (v, p) => {
         if (v.kind !== "pageChooseOption" || v.rebind === false) return null;
         // The pick lands, then the user's click revokes the grant before blur: the content script stops with no readings.
@@ -198,7 +198,9 @@ describe("W3 page findings, helper side", () => {
       };
       const r = await helper.executor.run("t1", plan([step(KEY.dept, "Research")]), {}, undefined, { grant: true });
       expect(r.outcome).toBe("paused");
-      expect(helper.executor.ledger("t1")).toEqual([expect.objectContaining({ kind: "write", key: KEY.dept, before: "", after: "Research", unconfirmed: true })]);
+      expect(r).toMatchObject({ acted: 1, step: null });
+      expect(helper.executor.ledger("t1")).toEqual([expect.objectContaining({ kind: "write", key: KEY.dept, before: "", after: "Research" })]);
+      expect(helper.executor.ledger("t1")[0]).not.toHaveProperty("unconfirmed");
       const u = await helper.executor.undo("t1");
       expect(u).toMatchObject({ restored: 1, notRestored: [] });
       expect(page.shown("e3")).toBe("");
