@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import AutocompleteCore
+import CaretScreenCore
 import CoreGraphics
 import Foundation
 import os
@@ -102,7 +103,8 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
 /// `AXSelectedText` on the field itself comes first (A17): it can land only in that element and
 /// leaves the clipboard alone. Some apps refuse it or accept it and change nothing; those get a ⌘V
 /// posted to their pid through the reconciled pasteboard, and once an app has been seen to do so,
-/// later writes paste straight away, so the slow detection is paid once per app per launch.
+/// later writes paste straight away, so the slow detection is paid once per app per launch. Apps
+/// known to ignore it never pay it (`WriteFallback.pastesFirst`).
 final class WriteMethodTable: @unchecked Sendable {
     enum Method: String, Codable, Sendable {
         case pastePid
@@ -113,6 +115,22 @@ final class WriteMethodTable: @unchecked Sendable {
 
     func method(for app: String) -> Method {
         learned.withLock { $0[app] } ?? .axSelectedText
+    }
+
+    /// What a write in this app has shown it needs; nil before any write there told.
+    func learnedMethod(for app: String) -> Method? {
+        learned.withLock { $0[app] }
+    }
+
+    private let electron = OSAllocatedUnfairLock(initialState: [String: Bool]())
+
+    /// Whether the app is built on Electron (`AppClassifier` reads its bundle), once per app.
+    func isElectron(pid: pid_t) -> Bool {
+        let key = Self.appKey(pid: pid)
+        if let known = electron.withLock({ $0[key] }) { return known }
+        let found = NSRunningApplication(processIdentifier: pid)?.bundleURL.map { AppClassifier.family(bundleURL: $0) == .electron } ?? false
+        electron.withLock { $0[key] = found }
+        return found
     }
 
     func record(_ method: Method, for app: String) {

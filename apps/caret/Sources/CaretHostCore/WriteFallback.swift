@@ -56,6 +56,22 @@ public enum WriteFallback {
         case axWrite, paste
     }
 
+    /// Whether a write should paste rather than try `AXSelectedText` first. `learned`: what this app
+    /// was found to need (true: a paste), nil until a write there has told. `selectedTextSettable`:
+    /// the field's own answer for `AXSelectedText`, nil when it gave none. `electron`: an Electron
+    /// app (`AppFamily.electron`).
+    ///
+    /// The VM runs on v2/inline (20261009T103304Z-38308, 20261009T104144Z-36771) found two kinds
+    /// of field that answer an `AXSelectedText` write with success and never change, so their first
+    /// Tab used to insert nothing (`writeIgnored`) and only later ones pasted:
+    /// - Mac Catalyst text views and fields, which also say the attribute is not settable;
+    /// - Electron 44's textarea and contenteditable, a value unchanged 1.5 s after the write.
+    /// A field that says it cannot take the write is believed; Electron is known by its framework.
+    public static func pastesFirst(learned: Bool?, selectedTextSettable: Bool?, electron: Bool) -> Bool {
+        if let learned { return learned }
+        return selectedTextSettable == false || electron
+    }
+
     /// The failure code when the paste route was the only one left and the clipboard holds
     /// something Caret cannot restore exactly (`ReconcilingClipboard.unrestorable`).
     public static let clipboardUnrestorable = "clipboardUnrestorable"

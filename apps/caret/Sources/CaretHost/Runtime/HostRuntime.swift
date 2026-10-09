@@ -902,6 +902,7 @@ public final class HostRuntime {
         startTapWhenTrusted()
         InputMethodState.shared.start()
         // The perch no longer follows focus: it sits on the task's window (v3 rim and perch).
+        focus.onNote = { [status] in status.increment($0) }
         focus.onChange = { [coordinator, writing] change in
             coordinator.handle(change)
             writing.handle(change)

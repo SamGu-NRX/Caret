@@ -80,6 +80,8 @@ final class HostCoordinator {
     func handle(_ change: FocusObserver.Change) {
         guard let snapshot = change.snapshot, let element = change.element,
               let field = FieldReader.read(element) else {
+            // Which step failed, for the debug state: a field Caret cannot see shows only as no focus.
+            status.increment(change.element == nil ? "focus.read.noElement" : change.snapshot == nil ? "focus.read.noSnapshot" : "focus.read.unreadable")
             status.update { $0.focus = nil }
             onFocus?(nil)
             route?.observe(nil)

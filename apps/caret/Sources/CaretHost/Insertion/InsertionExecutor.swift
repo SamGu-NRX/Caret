@@ -22,7 +22,9 @@ import TextInsertion
 ///    it with an AX error gets a ⌘V posted to its pid through the reconciled pasteboard
 ///    (`ReconcilingPasteboard`) instead, and is remembered (`WriteMethodTable`). An app that takes
 ///    the AX write and shows nothing gets no second write now, since the first may still land; the
-///    claim fails and the app pastes from its next one.
+///    claim fails and the app pastes from its next one. Fields known to do that paste from the
+///    first write (`WriteFallback.pastesFirst`: Electron apps, and fields that say `AXSelectedText`
+///    cannot be set, as Mac Catalyst's do).
 /// 5. Reread until the field holds exactly the value the guard predicted. After a paste, put the
 ///    user's clipboard back only if nobody wrote to it since Caret did, and if the field did not
 ///    take the paste, name the element that has focus now if the paste shows there
@@ -227,8 +229,13 @@ final class InsertionExecutor: @unchecked Sendable {
             }
         }
         // The clipboard is read only when a paste would come first; the AX route never touches it.
-        let route: WriteFallback.Route = writeMethods.method(for: appKey) == .axSelectedText
-            ? .axWrite : WriteFallback.firstRoute(appPastes: true, clipboardRestorable: clipboardRestorable())
+        let pastes = WriteFallback.pastesFirst(
+            learned: writeMethods.learnedMethod(for: appKey).map { $0 == .pastePid },
+            selectedTextSettable: AXRead.isSettable(kAXSelectedTextAttribute, on: element),
+            electron: writeMethods.isElectron(pid: pid)
+        )
+        let route: WriteFallback.Route = pastes
+            ? WriteFallback.firstRoute(appPastes: true, clipboardRestorable: clipboardRestorable()) : .axWrite
         var method: FillResult.Method = route == .paste ? .pastePid : .axSelectedText
         var fellBack = false
         var stray: String?
