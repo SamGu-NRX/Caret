@@ -17,6 +17,8 @@ export function labelQuestion(
   q: { instructions: string; criteria: Record<string, string | null> },
 ): QuestionLabel {
   const want = ask.expected === "refuse" ? {} : ask.expected;
+  // B31's person answer keys name another person's requested details, even under neutral labels such as First name.
+  const recipient = ask.kind === "person";
   const has = (id: string): boolean => Object.hasOwn(q.criteria, id);
   const result = (kind: LabelKind, right: string[] | null): QuestionLabel => {
     const offered = right?.filter(has) ?? [];
@@ -50,7 +52,7 @@ export function labelQuestion(
     const text = /"([^"]*)"/u.exec(q.instructions)?.[1];
     if (text === undefined) return result("owner", null);
     const matches = Object.entries(want).filter(([, v]) => sameValue(text, v));
-    if (matches.some(([l]) => SOMEONE_ELSES.test(l))) return result("owner", ["other", "person"]);
+    if (matches.some(([l]) => SOMEONE_ELSES.test(l)) || (recipient && matches.length > 0)) return result("owner", ["other", "person"]);
     if (matches.length > 0) return result("owner", ["user"]);
     if (form.fields.some((f) => !SOMEONE_ELSES.test(f.label) && sameValue(text, f.expected))) return result("owner", ["user"]);
     return result("owner", null);
@@ -58,7 +60,7 @@ export function labelQuestion(
   if (qid.endsWith("_whose")) {
     const label = labelIn();
     if (label === null) return result("owner", null);
-    if (SOMEONE_ELSES.test(label)) return result("owner", ["other", "person"]);
+    if (SOMEONE_ELSES.test(label) || (recipient && wantedValue(label) !== undefined && wantedValue(label) !== "none")) return result("owner", ["other", "person"]);
     const f = field(label);
     return result("owner", f !== undefined && f.expected !== "none" ? ["user"] : null);
   }

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { CorpusAsk, CorpusForm } from "../scripts/realfill-corpus.ts";
 import { labelQuestion } from "../scripts/decisions-labels.ts";
@@ -67,6 +68,19 @@ describe("labelQuestion", () => {
   });
   it("limits other-owner labels to options present", () => {
     expect(labelQuestion(ask({ "Guest name": "Grace" }), form, "c_owner", ownerQ("Grace", { person: null, unclear: null }))).toEqual({ kind: "owner", right: ["person"] });
+  });
+  it("labels B31's explicit recipient values and neutral shipping fields as other-owned", () => {
+    const keys = JSON.parse(readFileSync(new URL("../../fixtures/realfill/asks-b31.json", import.meta.url), "utf8")) as { asks: CorpusAsk[] };
+    const recipient = keys.asks.find((a) => a.id === "b31-18")!;
+    expect(recipient.instruction).toBe("actually ship it straight to lena instead");
+    expect(recipient.expected).toMatchObject({ "First name": "Lena", "Last name": "Marsh", Phone: "828-555-0104" });
+    const shipping: CorpusForm = { ...form, fields: [{ label: "First name", control: "text", expected: "Grace" }, { label: "Phone", control: "tel", expected: "828-555-0104" }] };
+    for (const text of ["Lena", "Marsh", "828-555-0104"]) {
+      expect(labelQuestion(recipient, shipping, "c_owner", ownerQ(text))).toEqual({ kind: "owner", right: ["other", "person"] });
+    }
+    expect(labelQuestion(recipient, shipping, "f1_whose", { ...valueQ("First name"), criteria: { user: null, other: null } })).toEqual({ kind: "owner", right: ["other"] });
+    // Grace is still the user; changing the recipient does not transfer ownership of an unrequested candidate.
+    expect(labelQuestion(recipient, shipping, "c_owner", ownerQ("Grace"))).toEqual({ kind: "owner", right: ["user"] });
   });
   it("labels user owner through the ask", () => {
     expect(labelQuestion(ask({ Email: "new@example.test" }), form, "c_owner", ownerQ("new@example.test"))).toEqual({ kind: "owner", right: ["user"] });

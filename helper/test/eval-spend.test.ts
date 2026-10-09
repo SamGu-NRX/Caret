@@ -76,6 +76,20 @@ it.each([0.02, 0, null, "ordinary"] as const)("counts success once and adds only
   expect(report.spent).toBeCloseTo(0.01 + (typeof failedCost === "number" ? failedCost : 0), 10);
   expect(fake.ask).toHaveBeenCalledTimes(2);
 });
+it("Ask evaluation rewrites scored samples when the same output directory is rerun", async () => {
+  fake.ask.mockImplementation(async (req) => ({ model: "gpt-6-luna", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: Object.keys((q as { criteria: object }).criteria)[0], confidence: 1 }])), probabilities: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, Object.fromEntries(Object.keys((q as { criteria: object }).criteria).map((option, i) => [option, i === 0 ? 1 : 0]))])), latencyMs: 0, inputTokens: 0, costUsd: 0 }));
+  process.argv = [argv[0]!, "realfill-asks.ts", "--out", dir, "--engine", "decisions", "--maker", "jev", "--asks", "ask-01", "--max-usd", "0.1", "--gap", "0"];
+  await import("../scripts/realfill-asks.ts");
+  const first = readFileSync(join(dir, "scored.ndjson"), "utf8");
+  expect(first.trim().split("\n").length).toBeGreaterThan(0);
+  vi.resetModules();
+  await import("../scripts/realfill-asks.ts");
+  expect(readFileSync(join(dir, "scored.ndjson"), "utf8")).toBe(first);
+  fake.ask.mockRejectedValue(new Error("synthetic failure"));
+  vi.resetModules();
+  await import("../scripts/realfill-asks.ts");
+  expect(readFileSync(join(dir, "scored.ndjson"), "utf8")).toBe("");
+});
 it("Ask evaluation counts billed failures before the next Ask's budget check", async () => {
   const { DecisionsAttemptError } = await import("../src/engines/decide/decisions.ts");
   fake.ask.mockRejectedValue(new DecisionsAttemptError(new Error("synthetic refusal"), { latencyMs: 1, inputTokens: 10, costUsd: 0.04, refused: true }, []));

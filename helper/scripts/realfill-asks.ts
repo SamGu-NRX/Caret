@@ -145,6 +145,8 @@ const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixtu
   ...(MAX_USD === undefined ? {} : { decisionsMaxUsd: MAX_USD }), noCache: a["no-cache"],
 });
 const SCORED = join(OUT, "scored.ndjson");
+// A sweep must describe this run, not give earlier samples extra weight when an output directory is reused.
+if (a.engine === "decisions") writeStore(SCORED, "");
 /** Why the run ended early: a billing stop or cap (Decisions), or the first wrong Ask under --stop-on-wrong. */
 let runStop: string | null = null;
 /** Failed decision requests, by Ask, for the report: each one is a harness error. */
