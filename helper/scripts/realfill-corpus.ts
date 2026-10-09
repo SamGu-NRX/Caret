@@ -9,7 +9,7 @@ import { forgetWindows } from "../src/privacy.ts";
 import { aboutKind, type AboutValue } from "../src/fill/about.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import { PageSnapshot, type Node, type Snapshot } from "../src/protocol.ts";
+import { PageSnapshot, Snapshot, type Node } from "../src/protocol.ts";
 
 const Control = z.enum(["text", "email", "tel", "url", "textarea", "select", "radio", "checkbox", "date", "time", "file", "combobox"]);
 export type Control = z.infer<typeof Control>;
@@ -30,11 +30,14 @@ export type CorpusField = z.infer<typeof Field>;
 const Source = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("note"), file: z.string() }).strict(),
   z.object({ kind: z.literal("mail"), file: z.string() }).strict(),
+  // A window given as its snapshot (a chat or a mail thread the long-conversation set writes, fixtures/longchat), not
+  // captured from a rendered source: the snapshot is the window, and its title names it.
+  z.object({ kind: z.literal("window"), file: z.string() }).strict(),
   z.object({ kind: z.literal("memory"), about: z.array(z.object({ label: z.string(), value: z.string() }).strict()).min(1) }).strict(),
 ]);
 type RawSource = z.infer<typeof Source>;
 /** A source with the title of the window that shows it (a note's file name, a mail's subject); memory has none. */
-export type CorpusSource = RawSource & { title?: string };
+export type CorpusSource = RawSource & { title?: string; snapshot?: Snapshot };
 
 const Form = z.object({ id: z.string(), file: z.string(), origin: z.string(), source: Source, fields: z.array(Field).min(1) }).strict();
 const CorpusFile = z.object({ about: z.string(), decoys: z.array(Source), forms: z.array(Form).min(1) }).strict();
@@ -85,6 +88,10 @@ export function noteTitle(file: string): string {
 function withTitle(dir: string, s: RawSource): CorpusSource {
   if (s.kind === "note") return { ...s, title: noteTitle(s.file) };
   if (s.kind === "mail") return { ...s, title: Mail.parse(JSON.parse(readFileSync(join(dir, s.file), "utf8"))).subject };
+  if (s.kind === "window") {
+    const snapshot = Snapshot.parse(JSON.parse(readFileSync(join(dir, s.file), "utf8")));
+    return { ...s, title: snapshot.window.title, snapshot };
+  }
   return s;
 }
 
@@ -186,7 +193,7 @@ export function buildDesk(corpus: Corpus, snaps: readonly Snapshot[], form: Corp
     if (hits.length !== 1) throw new Error(`${hits.length} recorded windows are titled '${title}'`);
     return hits[0] as Snapshot;
   };
-  const sourceSnap = (s: CorpusSource): Snapshot | null => (s.kind === "memory" ? null : windowOf(s.title ?? ""));
+  const sourceSnap = (s: CorpusSource): Snapshot | null => (s.kind === "memory" ? null : (s.snapshot ?? windowOf(s.title ?? "")));
   forgetWindows();
   const model = new ScreenModel();
   const put = (s: Snapshot, at: number, focusedKey: string | null = null): void => {

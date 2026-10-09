@@ -4,6 +4,7 @@
 // a conversation when any of five signs holds: its app is a known chat or mail app, it is a browser
 // showing a known mail or chat site or a mail's header, it has a message composer, or it shows a message
 // list.
+import { sourceLines } from "./privacy/ledger/source.ts";
 import type { Frame, Node } from "./protocol.ts";
 import type { WindowState } from "./model.ts";
 
@@ -100,16 +101,91 @@ export function isConversation(w: WindowState): boolean {
   return conversationSign(w) !== null;
 }
 
-/** Whether the window's title or a web area's label (the page title) names a mail or chat site as one of its parts. */
+/** The mail or chat sites the window's title or a web area's label (the page title) names as one of its parts. */
+function webConversationNames(w: WindowState): string[] {
+  const names = (title: string | undefined): string[] =>
+    title === undefined
+      ? []
+      : title
+          .split(/\s[-–—|·]\s|\s*[|·]\s*/u)
+          .map((part) => part.replace(/^\(\d+\)\s*/, "").trim().toLowerCase())
+          .filter((part) => WEB_CONVERSATION_NAMES.has(part));
+  const out = names(w.window.title);
+  for (const n of w.nodes.values()) if (n.role === "AXWebArea") out.push(...names(n.label));
+  return out;
+}
+
 function namesWebConversation(w: WindowState): boolean {
-  const names = (title: string | undefined): boolean =>
-    title !== undefined &&
-    title
-      .split(/\s[-–—|·]\s|\s*[|·]\s*/u)
-      .some((part) => WEB_CONVERSATION_NAMES.has(part.replace(/^\(\d+\)\s*/, "").trim().toLowerCase()));
-  if (names(w.window.title)) return true;
-  for (const n of w.nodes.values()) if (n.role === "AXWebArea" && names(n.label)) return true;
-  return false;
+  return webConversationNames(w).length > 0;
+}
+
+/**
+ * How a conversation's messages run in its tree's document order (model.ts keeps document order, not time order):
+ * oldest first, newest first, or not known. A conversation's listing starts from its newest end, and from both ends
+ * when the order is not known (candidates.ts rankWindow). A wrong guess costs recall only: what a listing leaves out is
+ * read for what it holds and cut (unreadRest), so the newest messages left unlisted withhold the fields they speak to.
+ */
+export type MessageOrder = "oldestFirst" | "newestFirst" | "unknown";
+
+/**
+ * Apps that draw a conversation oldest at the top and newest at the bottom, by the composer, with no setting to turn it
+ * around. Mail and Outlook are not here: each has a setting that puts the newest message of a thread at the top, and a
+ * mail window can show the message list, newest first. Teams is not either: a channel's posts can be sorted newest
+ * first. Assumed from how each app draws its messages, with the tree read top to bottom; no window's tree was read for it.
+ */
+const OLDEST_FIRST_BUNDLES: ReadonlySet<string> = new Set([
+  "com.apple.MobileSMS",
+  "com.tinyspeck.slackmacgap",
+  "com.hnc.Discord",
+  "ru.keepcoder.Telegram",
+  "com.tdesktop.Telegram",
+  "net.whatsapp.WhatsApp",
+  "desktop.WhatsApp",
+  "com.t3tools.t3code",
+  "com.openai.codex",
+  "com.openai.codex.alternate",
+  "com.openai.chat",
+  "com.anthropic.claudefordesktop",
+]);
+
+/**
+ * Chat sites drawn oldest first, as their apps are (OLDEST_FIRST_BUNDLES). The mail sites are not: a Gmail tab shows a
+ * thread oldest first, but its inbox newest first, and the title does not say which is showing.
+ */
+const OLDEST_FIRST_SITES: ReadonlySet<string> = new Set(["slack", "discord", "whatsapp", "messenger", "telegram", "telegram web", "google chat", "google messages", "messages for web"]);
+
+const DATED = /^(?:date|sent):\s*(.+)$/i;
+
+/**
+ * The order the window's own mail headers say: their "Date:" or "Sent:" lines in document order, when at least two
+ * parse and all run one way. Null when they say nothing, or disagree (a quoted reply's header among a thread's).
+ */
+function datedOrder(w: WindowState): MessageOrder | null {
+  const times: number[] = [];
+  for (const n of w.nodes.values()) {
+    for (const l of nodeLines(n)) {
+      const m = DATED.exec(l);
+      const t = m === null ? Number.NaN : Date.parse(m[1]!);
+      if (!Number.isNaN(t)) times.push(t);
+    }
+  }
+  let up = false;
+  let down = false;
+  for (let i = 1; i < times.length; i++) {
+    if (times[i]! > times[i - 1]!) up = true;
+    if (times[i]! < times[i - 1]!) down = true;
+  }
+  if (up === down) return null;
+  return up ? "oldestFirst" : "newestFirst";
+}
+
+/** messageOrder's answer for a conversation: its own dates first, then its app's or site's way of drawing. */
+export function messageOrder(w: WindowState): MessageOrder {
+  const dated = datedOrder(w);
+  if (dated !== null) return dated;
+  if (OLDEST_FIRST_BUNDLES.has(w.app.bundleId)) return "oldestFirst";
+  if (BROWSER_BUNDLES.has(w.app.bundleId) && webConversationNames(w).some((n) => OLDEST_FIRST_SITES.has(n))) return "oldestFirst";
+  return "unknown";
 }
 
 const FROM = /^from:/i;
@@ -241,10 +317,8 @@ function nodeLines(n: Node): string[] {
   if (n.editable === true) return [];
   const raw = n.label ?? n.value;
   if (raw === undefined) return [];
-  return raw
-    .split("\n")
-    .map((l) => l.replace(/\s+/g, " ").trim())
-    .filter((l) => l !== "");
+  // The inventory's lines (privacy/ledger/source.ts sourceLines): a bare CR separates headers as LF does.
+  return sourceLines(raw);
 }
 
 /**

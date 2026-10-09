@@ -23,6 +23,7 @@
 import type { JevPurpose } from "../fill/jev.ts";
 import type { WriterRequest } from "../writer/port.ts";
 import type { MintReason } from "./disclosure.ts";
+import { OWNER_NOTE_CHARS } from "../privacy.ts";
 
 /** What one path of a request may hold: texts minted under these reasons only, at most `max` characters long. */
 export interface Slot {
@@ -35,6 +36,13 @@ export interface Slot {
  * jev.ts JevRequest.purpose); it may carry Caret's own wording, at any path, and no screen text at all.
  */
 export const UNNAMED = "unnamed";
+
+/**
+ * The requests that ask owner questions, whose state.source_notes holds whole owner notes at the owner-note allotment
+ * (OUTPUT-LEDGER-SPEC section 8): fill's owner questions and HA2's on a plan's values. A value question that names the
+ * same notes (value settlement's fill.values and fill.verify) holds them to the window's limit.
+ */
+export const OWNER_QUESTION_PURPOSES: ReadonlySet<string> = new Set<ShapeKey>(["fill.whose", "plan.verify"]);
 /** The glob a row may use for every path: only UNNAMED's row does. */
 export const ANY_PATH = "**";
 
@@ -140,9 +148,8 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "state.destination_window": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 99
     "state.form_fields": { reasons: ["candidate", "descriptor", "instruction", "memory", "ownWording"], max: 2900 }, // seen 1176
     "state.instruction": { reasons: ["instruction"], max: 700 }, // seen 92
-    // INT1 (HA2's notes): a note is a candidate cut whole from one window, within its budget while OWNER_NOTE_CHARS is 0
-    // (privacy.ts, TODO(INT1)), so WINDOW_CHARS; not observed in PV2's step 5 run, which predates the notes.
-    "state.source_notes.*": { reasons: ["candidate"], max: 1200 },
+    // A whole owner note, at most the owner-note allotment (privacy.ts OWNER_NOTE_CHARS).
+    "state.source_notes.*": { reasons: ["candidate"], max: OWNER_NOTE_CHARS },
     "state.task": { reasons: ["candidate", "descriptor", "instruction", "ownWording"], max: 1800 }, // seen 624
   },
   "goal": {
@@ -253,8 +260,8 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "questions.*.criteria.*": { reasons: ["ownWording"], max: 300 }, // seen 135
     "questions.*.instructions": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording", "plan"], max: 1200 }, // seen 278
     "state.instruction": { reasons: ["instruction"], max: 700 }, // seen 51
-    // INT1 (HA2's notes, verifyWrites): as fill.whose's source_notes.
-    "state.source_notes.*": { reasons: ["candidate"], max: 1200 },
+    // HA2's notes (verifyWrites): as fill.whose's source_notes.
+    "state.source_notes.*": { reasons: ["candidate"], max: OWNER_NOTE_CHARS },
     "state.task": { reasons: ["ownWording"], max: 200 }, // seen 76
   },
   "planner.fields": {
@@ -324,6 +331,154 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "state.task": { reasons: ["ownWording"], max: 400 }, // seen 191
   },
 };
+
+/**
+ * The most items each list of a request may hold, by the glob of its items: an array's `[*]`, or the ids of
+ * `questions.*`, `criteria.*` and `source_notes.*`. Every list a shape's rows reach has one; a nonempty list without one,
+ * or over it, is refused and logged (privacy/disclosure.ts setShapeLengthLog), so a request is bounded in its number of
+ * pieces as well as their length (OUTPUT-LEDGER-SPEC section 4: what is under 12 scalars goes uncharged).
+ *
+ * CHOSEN, NOT CALIBRATED. Where a builder caps the list, the cap is that constant, named beside it; elsewhere it is about
+ * twice the most seen across every helper test, the scripted oracle and the adversary (~/.caret-run/evidence/screen/
+ * pv2/items, 2026-10-08), rounded up, the seen value in the comment. A select's options have no builder cap: 300 covers
+ * a country menu.
+ */
+export const ITEMS: { readonly [K in ShapeKey]: Readonly<Record<string, number>> } = {
+  [UNNAMED]: { [ANY_PATH]: 200 }, // tests and evaluation scripts only
+  "ask.confirm": { "questions.*": 10, "questions.*.criteria.*": 4 }, // seen 5, 2
+  "ask.heads": {
+    "questions.*": 8, // seen 4
+    "questions.*.criteria.*": 12, // seen 6
+    "state.form.fields[*]": 40, // planner/intent.ts MAX_INTENT_FIELDS
+    "state.form.sections[*]": 40, // MAX_INTENT_HEADINGS
+    "state.people[*]": 8, // seen 2
+    "state.sources[*]": 8, // MAX_INTENT_WINDOWS
+  },
+  "ask.scope": {
+    "questions.*": 44, // MAX_INTENT_FIELDS or MAX_INTENT_HEADINGS, and 4 fixed
+    "questions.*.criteria.*": 44,
+    // intent-heads.ts formOutline: a section per field at most, and a section's fields among the scope's; the scope's
+    // fields are the questions' bound.
+    "state.form.sections[*]": 44,
+    "state.form.sections[*].fields[*]": 44,
+  },
+  "codemode.choice": { "questions.*": 2, "questions.*.criteria.*": 8 }, // seen 1, 3
+  "codeplan.asksAbout": { "questions.*": 2, "questions.*.criteria.*": 4 }, // seen 1, 2
+  "draft.check": { "questions.*": 4 }, // seen 2
+  "event.card": { "questions.*": 2, "questions.*.criteria.*": 4 }, // seen 1, 2
+  "executor.target": { "questions.*": 2, "questions.*.criteria.*": 41 }, // seen 1; executor/target.ts MAX_TARGET_CANDIDATES and none
+  // Value settlement's source_notes: at most one unit per option a question offers (its criteria's count).
+  "fill.values": { "questions.*": 20, "questions.*.criteria.*": 100, "state.source_notes.*": 100 }, // fill.ts MAX_FIELDS; MAX_CANDIDATES (80), remembered values and none (seen 81)
+  // source_notes: the one unit each value sits in, at most one per value of a batch (contract.ts VERIFY_BATCH).
+  "fill.verify": { "questions.*": 40, "questions.*.criteria.*": 8, "state.source_notes.*": 20 }, // two per MAX_FIELDS (seen 20); seen 5
+  "fill.whose": { "questions.*": 60, "questions.*.criteria.*": 8, "state.source_notes.*": 40 }, // MAX_FIELDS and MAX_OWNERS; seen 4; one per MAX_OWNERS
+  "goal": {
+    "input.snapshots[*]": 4, // goals/inventory.ts MAX_GOAL_WINDOWS and the calendar
+    "input.snapshots[*].targets[*]": 40, // planner.ts MAX_PLAN_FIELDS and MAX_PLAN_BUTTONS (seen 5)
+    "input.snapshots[*].targets[*].allowedPressEffects[*]": 4, // seen 2
+    "input.snapshots[*].targets[*].options[*]": 300, // a select's options
+    "input.snapshots[*].values[*]": 40, // planner/codeplan.ts MAX_VALUES
+    "input.snapshots[*].values[*].origin.inputs[*]": 4, // seen 0
+    "input.snapshots[*].questions[*]": 8, // seen 0
+    "input.snapshots[*].questions[*].options[*]": 300, // a select's options
+  },
+  "intent": {
+    "input.fields[*]": 40, // MAX_INTENT_FIELDS
+    "input.memory[*]": 40, // planner.ts MAX_PLAN_VALUES (seen 3)
+    "input.persons[*]": 8, // seen 1
+    "input.sections[*]": 40, // MAX_INTENT_HEADINGS
+    "input.windows[*]": 8, // MAX_INTENT_WINDOWS
+  },
+  "intent.fields": { "questions.*": 40 }, // MAX_INTENT_FIELDS (seen 8)
+  "intent.route": { "questions.*": 12, "questions.*.criteria.*": 12 }, // seen 6, 6
+  "pattern.naming": { "questions.*": 2, "questions.*.criteria.*": 7, "state.fromSections[*]": 8, "state.from[*]": 8, "state.intoFields[*]": 8 }, // patterns/naming.ts MAX_NAME_CANDIDATES and none; seen 1, 1, 3
+  "pending.change": { "questions.*": 4, "questions.*.criteria.*": 6 }, // seen 2, 3
+  "pending.look": { "questions.*": 4, "questions.*.criteria.*": 6 }, // seen 2, 3
+  "plan": {
+    "input.snapshots[*]": 4, // codeplan.ts MAX_SOURCE_WINDOWS and the form
+    "input.snapshots[*].targets[*]": 40, // MAX_PLAN_FIELDS and MAX_PLAN_BUTTONS (seen 7)
+    "input.snapshots[*].targets[*].allowedPressEffects[*]": 4, // seen 1
+    "input.snapshots[*].targets[*].options[*]": 300, // a select's options
+    "input.snapshots[*].values[*]": 40, // MAX_VALUES
+    "input.snapshots[*].values[*].origin.inputs[*]": 4, // seen 0
+    "input.snapshots[*].questions[*]": 8, // seen 1
+    "input.snapshots[*].questions[*].options[*]": 300, // a select's options
+  },
+  "plan.verify": { "questions.*": 80, "questions.*.criteria.*": 6, "state.source_notes.*": 40 }, // two per MAX_VALUES (seen 10); seen 3; one per value
+  "planner.fields": { "questions.*": 20, "questions.*.criteria.*": 51 }, // MAX_PLAN_FIELDS; MAX_PLAN_VALUES, MAX_ADDRESS_PARTS and none (seen 43)
+  "planner.window": { "questions.*": 2, "questions.*.criteria.*": 9 }, // MAX_INTENT_WINDOWS and none
+  "probe.latency": { "questions.*": 2, "questions.*.criteria.*": 4, "state.form[*]": 20, "state.form[*].options[*]": 8, "state.windows[*]": 8, "providerOptions.gateway.only[*]": 4 }, // fixture wording
+  "route.judge": { "questions.*": 4, "questions.*.criteria.*": 12, "state.form.labels[*]": 20, "state.otherWindows[*]": 8 }, // seen 3; routing/routes.ts MAX_ROUTES and none; seen 5, 2
+  "route.pick": { "questions.*": 2, "questions.*.criteria.*": 12, "state.form.labels[*]": 20, "state.otherWindows[*]": 8 }, // seen 1; MAX_ROUTES and none; seen 3, 0
+  "route.task": { "questions.*": 2, "questions.*.criteria.*": 4, "state.otherWindows[*]": 8 }, // seen 1, 2, 0
+  "savedFile.match": { "questions.*": 2, "questions.*.criteria.*": 9 }, // goals/saved-files.ts MAX_FILES_ASKED and none
+  polish: {}, // not implemented (writer/port.ts)
+  memoryProposal: {}, // not implemented (writer/port.ts)
+};
+
+/** A JSON scalar a request may hold where its shape names it. */
+export type ScalarType = "number" | "boolean" | "null";
+
+/**
+ * Where a request may hold a number, a boolean or null instead of text, and of which type: every other path holds a
+ * minted string, a list or an object a row reaches. Read from every helper test, the scripted oracle and the adversary
+ * (2026-10-08). An option with no description is null in every shape.
+ */
+export const SCALARS: { readonly [K in ShapeKey]?: Readonly<Record<string, readonly ScalarType[]>> } = {
+  [UNNAMED]: { [ANY_PATH]: ["number", "boolean", "null"] },
+  "ask.heads": { "state.form.fields[*].filled": ["boolean"], "state.form.fields[*].section": ["null"] },
+  goal: { "input.snapshots[*].targets[*].canFill": ["boolean"], "input.snapshots[*].values[*].origin.startUTF16": ["number"], "input.snapshots[*].values[*].origin.endUTF16": ["number"] },
+  intent: { "input.fields[*].filled": ["boolean"], "input.fields[*].section": ["null"], "input.windows[*].from": ["null"] },
+  "pattern.naming": { "state.timesSeen": ["number"] },
+  plan: { "input.snapshots[*].targets[*].canFill": ["boolean"], "input.snapshots[*].values[*].origin.startUTF16": ["number"], "input.snapshots[*].values[*].origin.endUTF16": ["number"] },
+  "route.judge": { "state.conversation": ["boolean"], "state.field.empty": ["boolean"], "state.field.finishedSentences": ["number"], "state.form.emptyFields": ["number"] },
+  "route.pick": { "state.conversation": ["boolean"], "state.field.empty": ["boolean"], "state.field.finishedSentences": ["number"], "state.form.emptyFields": ["number"] },
+  "route.task": { "state.conversation": ["boolean"], "state.field.empty": ["boolean"], "state.field.finishedSentences": ["number"] },
+};
+
+/** Paths the client writes itself (privacy/disclosure.ts EXEMPT_EXACT), as globs. */
+const CLIENT_GLOBS = ["model", "providerOptions.gateway.only[*]", "questions.*.type", "state.option_descriptions"];
+
+/** The scalar types `glob` may hold in a request of `purpose`, or none. */
+export function scalarsAt(purpose: string, glob: string): readonly ScalarType[] {
+  const own = Object.hasOwn(SCALARS, purpose) ? SCALARS[purpose as ShapeKey] : undefined;
+  if (glob === "questions.*.criteria.*") return ["null", ...(own?.[glob] ?? own?.[ANY_PATH] ?? [])];
+  return own?.[glob] ?? own?.[ANY_PATH] ?? [];
+}
+
+/**
+ * Whether a key at `glob` is one a request of `purpose` may have: a row's path, a scalar's, a list's (ITEMS), a path the
+ * client writes, or an object or list on the way to one. Any other key, whatever it holds, is outside the shape.
+ */
+export function knownPath(purpose: string, glob: string): boolean {
+  const shape = shapeOf(purpose);
+  if (shape === null) return false;
+  if (Object.hasOwn(shape, ANY_PATH)) return true;
+  const own = Object.hasOwn(SCALARS, purpose) ? Object.keys(SCALARS[purpose as ShapeKey] ?? {}) : [];
+  for (const g of [...Object.keys(shape), ...own, ...Object.keys(shapeItems(purpose)), ...CLIENT_GLOBS]) if (g === glob || g.startsWith(`${glob}.`) || g.startsWith(`${glob}[`)) return true;
+  return false;
+}
+
+/**
+ * Whether `glob` may hold an object (`kind` "object") or a list ("list") in a request of `purpose`: some row, scalar,
+ * list or client path lies under it, as `glob.` or `glob[`. Checked for every container, empty ones too, so `{}` or `[]`
+ * where the shape has a string refuses. The root, and any path of a shape that allows any path, may hold either.
+ */
+export function containerAt(purpose: string, glob: string, kind: "object" | "list"): boolean {
+  const shape = shapeOf(purpose);
+  if (shape === null) return false;
+  if (glob === "" || Object.hasOwn(shape, ANY_PATH)) return true;
+  // The shared option descriptions an engine hoists hold the options' texts by id (childGlob maps them back).
+  if (kind === "object" && glob === "state.option_descriptions") return true;
+  const own = Object.hasOwn(SCALARS, purpose) ? Object.keys(SCALARS[purpose as ShapeKey] ?? {}) : [];
+  const under = kind === "object" ? `${glob}.` : `${glob}[`;
+  return [...Object.keys(shape), ...own, ...Object.keys(shapeItems(purpose)), ...CLIENT_GLOBS].some((g) => g.startsWith(under));
+}
+
+/** The item counts of a purpose's lists (ITEMS); none for a purpose with no shape. */
+export function shapeItems(purpose: string): Readonly<Record<string, number>> {
+  return Object.hasOwn(ITEMS, purpose) ? ITEMS[purpose as ShapeKey] : {};
+}
 
 /** The shape of a purpose or writer kind, or null when it has none (a request with no purpose, or a name no request uses). */
 export function shapeOf(purpose: string): Readonly<Record<string, Slot>> | null {

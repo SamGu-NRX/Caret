@@ -1,4 +1,4 @@
-import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText, type ScreenRegistry } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
 // Finding the element a step names. An exact key wins. Otherwise role and label filter the window;
 // one match is used as is. Several matches go to Jev as the executor-step question (deep plan
@@ -123,7 +123,7 @@ export function quotedPart(sent: string, value: string): string | null {
  * unknown, or a quoted value or the candidates do not all fit: the question is then not asked, since leaving one out
  * could leave out the right one.
  */
-export function targetSnippets(w: WindowState, screen: Iterable<WindowState>, goal: string, t: Target, cands: readonly { node: Node }[], sourced: readonly SourcedValue[] = []): TargetText | null {
+export function targetSnippets(w: WindowState, screen: ScreenRegistry, goal: string, t: Target, cands: readonly { node: Node }[], sourced: readonly SourcedValue[] = []): TargetText | null {
   w = redactWindow(w);
   const d = new Disclosure(screen);
   const sent = [cut(goal), cut(t.describe)];
@@ -205,7 +205,7 @@ export function buildTargetRequest(w: WindowState, text: TargetText, cands: { id
 /** Resolves a target, asking Jev twice when the locator is ambiguous. */
 export async function resolveTarget(
   w: WindowState,
-  screen: Iterable<WindowState>,
+  screen: ScreenRegistry,
   t: Target,
   goal: string,
   askJev: AskJev | null,

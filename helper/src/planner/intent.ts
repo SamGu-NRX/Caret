@@ -230,7 +230,7 @@ export function personSpans(instruction: string): string[] {
 export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[]): IntentSnapshot {
   const local = w;
   w = redactWindow(w);
-  const ledger = new Disclosure(model.windows.values());
+  const ledger = new Disclosure(model);
   if (!ledger.plan([instructionForModel(instruction)])) throw new SaidError("privacy", SAYS.privacy, "the instruction quotes more of an open window than one request may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const fields: IntentField[] = [];

@@ -20,7 +20,7 @@ import { holds as holdsAfter } from "./recheck.ts";
 import { provenanceStale } from "../src/fill/contract.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
 import { assertNoExcludedValue, SecretInRequest } from "../src/privacy.ts";
-import { Disclosure, OutOfShape, UnmintedText, type ModelText } from "../src/privacy/disclosure.ts";
+import { Disclosure, OutOfShape, UnmintedText, type ModelText, registryOf } from "../src/privacy/disclosure.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { headsRequest, scopeRequest } from "../src/planner/intent-heads.ts";
 import { intentSnapshot } from "../src/planner/intent.ts";
@@ -56,8 +56,17 @@ const control = (id: string, name: string, kind: PageControl["kind"] = "text"): 
 const keyOf = (c: PageControl): string => `f0/${c.key}`;
 
 /** page-loop-eval.ts's mailWindow: the header lines, then the body as one static text. */
+/**
+ * A mail is a conversation, so a request may carry under half of it; the footer, which no request here needs, keeps the
+ * header and body lines the owner questions describe under that half, as in a real mail.
+ */
 function mailWindow(m: Mail, extra: string[] = []): Snapshot {
-  const lines = [`From: ${m.from}`, `To: ${m.to}`, ...extra, `Subject: ${m.subject}`, m.body];
+  const footer = [
+    "You are receiving this message because you volunteered with the Riverside Food Bank this season.",
+    "To change how often we write to you, reply with the word settings and a coordinator will help.",
+    "Riverside Food Bank, 214 Mill Street, open Tuesday to Saturday from nine in the morning until four.",
+  ];
+  const lines = [`From: ${m.from}`, `To: ${m.to}`, ...extra, `Subject: ${m.subject}`, m.body, ...footer];
   return {
     type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7002, bundleId: "com.apple.mail", name: "Mail" },
     window: { windowId: "task-mail", kind: "standard", title: m.subject, frame: [0, 520, 900, 640] }, focused: false, root: null,
@@ -229,7 +238,7 @@ describe("a date's or a contact's clause (G2)", () => {
     expect(sept).toMatch(/in the line '[^']*September 2016 to May 2020/u);
   });
 
-  it("G2: shows 'August 2022' with the sentence that says it is when the job started, where budget is left after every span", async () => {
+  it("G2: shows 'August 2022' with the sentence that says it is when the job started", async () => {
     const w = expectation("wizard-2").sources;
     const ask = async (note: string): Promise<string | undefined> => {
       const { ask: jev, requests } = scripted({}, () => ({ choice: "user", confidence: 0.95 }));
@@ -237,12 +246,10 @@ describe("a date's or a contact's clause (G2)", () => {
       await proposeFill(desk([control("e0", "Employer"), start], [mailWindow(w.email), noteWindow(note)]), jev, WIN, keyOf(start), 2000, { about: memoryOf("wizard-2") });
       return descriptions(requests).find((d) => d.startsWith(`"August 2022" (`));
     };
-    // A note of the job line alone leaves budget once its spans are in, and the clause part goes out.
     const job = w.note.split("\n").filter((l) => l.includes("Tallgrass")).join("\n");
     expect(await ask(job)).toContain("in the line 'Started at Tallgrass Mechatronics in August 2022'");
-    // On F1's whole note the spans spend the budget first, and the clause, optional context, does not go (G2 review:
-    // charged earlier, clauses pushed values out). wizard-2's Start date gets no clause from this change.
-    expect(await ask(w.note)).not.toContain("Started at Tallgrass");
+    // F1's whole note fits its window's limit of 1,200 with the clause beside every span.
+    expect(await ask(w.note)).toContain("in the line 'Started at Tallgrass Mechatronics in August 2022'");
   });
 });
 
@@ -398,7 +405,7 @@ describe("G2 review round 2: one disclosure rule", () => {
   it("b: a request that still carries a secret marker is refused where it is built, loudly and without the text", () => {
     // SC1: a block head the redacted view dropped is text no Disclosure minted, so sealing the request throws, naming the
     // path. The client no longer checks words on the wire (privacy.ts assertNoExcludedValue checks formats).
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const req = { purpose: "fill.values" as const, state: { task: d.own("t") }, questions: { f1: { type: "choice" as const, instructions: d.own("Field."), criteria: { c1: `"Robin" (in a block that starts 'Password: hunter2')` as ModelText, none: d.own("None.") } } } };
     expect(() => d.seal(req)).toThrow(UnmintedText);
     expect(() => d.seal(req)).toThrow(/questions\.f1\.criteria\.c1/u);
@@ -771,7 +778,7 @@ describe("G2 round 5", () => {
   });
 
   it("8: Caret's own wording passes only where its request's shape has a slot for it", () => {
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const refuse = d.own("Something Caret must not or cannot do here: pay, give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.");
     // SC1 2c: the shape (privacy/shapes.ts) says where a request may carry text; Caret's wording is minted by own().
     expect(() => d.seal({ purpose: "intent.route", state: { task: d.own("t") }, questions: { scope: { type: "choice", instructions: d.own("Which?"), criteria: { refuse } } } })).not.toThrow();

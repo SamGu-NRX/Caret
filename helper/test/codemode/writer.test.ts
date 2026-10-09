@@ -65,11 +65,6 @@ describe("plan prompt", () => {
     expect(msg).not.toContain("digest");
   });
 
-  test("a window over the per-window budget is refused, not truncated", () => {
-    const big = { ...MAIL, values: Array.from({ length: 4 }, (_, i) => ({ ref: `v:big${i}`, display: "z".repeat(390), origin: MAIL.values[0]!.origin })) };
-    expect(() => planUserMessage({ goal: "x", snapshots: [FORM, big] })).toThrow(/per-window budget is 1200/);
-  });
-
   test("extractProgram takes the fenced function and refuses anything else", () => {
     expect(extractProgram("Here:\n```ts\nasync function main(caret) { return 1; }\n```\nDone")).toBe("async function main(caret) { return 1; }");
     expect(extractProgram("async function main(caret) {}")).toBe("async function main(caret) {}");
