@@ -134,6 +134,8 @@ final class RewriteOfferTests: XCTestCase {
         let offer = try XCTUnwrap(WritingOffer.rewrite(span: span, rewrites: ["Could you send me the numbers?"], live: live))
         let toast = try XCTUnwrap(WritingOffer.toast(after: offer.alternatives[0]))
         XCTAssertEqual(toast.lead, "Rewritten")
+        XCTAssertEqual(toast.text, "“Could you send me the numbers?”", "short enough to quote whole")
+        XCTAssertEqual(WritingCopy.rewrittenAs("I'm sorry for the delayed response; I was out of the office."), "“I'm sorry for the delayed…”")
         XCTAssertEqual(toast.hints.first?.key, "⌘Z")
     }
 }

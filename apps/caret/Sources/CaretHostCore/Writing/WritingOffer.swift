@@ -266,7 +266,7 @@ public struct WritingOffer: Equatable, Sendable {
             text = WritingCopy.fixedAll(alternative.diff.count)
         case .rewrite:
             return LineContent(
-                figure: .done, lead: WritingCopy.rewrittenLead, text: "“\(alternative.label)”", emphasis: .plain,
+                figure: .done, lead: WritingCopy.rewrittenLead, text: WritingCopy.rewrittenAs(alternative.label), emphasis: .plain,
                 hints: [Hint(key: "⌘Z", label: WritingCopy.undoHint)]
             )
         }

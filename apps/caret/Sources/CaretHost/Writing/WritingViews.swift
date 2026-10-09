@@ -125,8 +125,7 @@ struct WritingAlternativesView: View {
         .padding(.top, 4)
         .padding(.bottom, 8)
         .padding(.horizontal, 12)
-        .frame(minWidth: 240, maxWidth: rewrites ? 440 : 360, alignment: .leading)
-        .fixedSize()
+        .modifier(PanelWidth(rewrites: rewrites))
         .panelChrome(radius: 8)
     }
 }
@@ -141,7 +140,7 @@ private struct WritingAlternativeRow: View {
     var lines = 1
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: lines > 1 ? .firstTextBaseline : .center, spacing: 8) {
             Text(label).foregroundStyle(Color(token: Tokens.ink)).lineLimit(lines)
                 .fixedSize(horizontal: false, vertical: lines > 1)
             Spacer(minLength: 12)
@@ -155,7 +154,7 @@ private struct WritingAlternativeRow: View {
         .font(Tokens.Font.body)
         .padding(.leading, PopupView.indent)
         .padding(.vertical, lines > 1 ? 4 : 0)
-        .frame(minHeight: 24)
+        .frame(minHeight: 24, maxHeight: lines > 1 ? nil : 24)
         .padding(.horizontal, 12)
         .background {
             if highlighted {
@@ -193,6 +192,21 @@ private struct WritingAlternativeRow: View {
         case .fix, .rewrite: return alternative.label
         case .original: return "\(alternative.label), “\(alternative.detail ?? "")”"
         case .fixAll: return "\(alternative.label), \(alternative.detail ?? "")"
+        }
+    }
+}
+
+/// A fix's list sizes to its words, 240 to 360 wide. Rewrites take a fixed 440, so their rows can
+/// wrap and the list grows down to hold them: a list sized to its ideal width would measure each
+/// rewrite on one line and clip the wrapped rows, its first line and its hints.
+private struct PanelWidth: ViewModifier {
+    var rewrites: Bool
+
+    func body(content: Content) -> some View {
+        if rewrites {
+            content.frame(width: 440, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+        } else {
+            content.frame(minWidth: 240, maxWidth: 360, alignment: .leading).fixedSize()
         }
     }
 }

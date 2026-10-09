@@ -76,6 +76,16 @@ public enum WritingCopy {
     public static let rewriteNeedsModel = "Rewrites need the local model, and it isn't loaded."
     public static let rewriteNothingHere = "Select some text, or put the caret in a sentence, to rewrite it."
     public static let rewrittenLead = "Rewritten"
+
+    /// The toast's words after the lead: the new text's start, quoted, cut at a word within
+    /// `rewrittenPreview` characters. The whole of it is in the field already.
+    public static func rewrittenAs(_ text: String) -> String {
+        guard text.count > rewrittenPreview else { return "“\(text)”" }
+        var cut = String(text.prefix(rewrittenPreview))
+        if let space = cut.lastIndex(of: " ") { cut = String(cut[..<space]) }
+        return "“\(cut.trimmingCharacters(in: .punctuationCharacters))…”"
+    }
+    public static let rewrittenPreview = 28
     public static let rewriteUndone = "Your wording is back"
 
     public static func fixCount(_ n: Int) -> String { n == 1 ? "1 fix" : "\(n) fixes" }
