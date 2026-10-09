@@ -500,4 +500,31 @@ describe("reconciliation after Stop attributes only what Caret read while it hel
     expect(result.detail).not.toContain("Undo can put it back");
     expect(helper.executor.undoRefusal("t")).toContain("restarted");
   });
+  it("does not promise Undo for a recovered Yes/No press, which Caret cannot take back", async () => {
+    app.nodes = app.nodes.map((node) => node.key === NAME ? { ...node, role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup } : node);
+    app.timeoutAfterWrite = true;
+    app.afterVerb = (a, v) => {
+      if (v.kind !== "write" || v.key !== NAME) return;
+      a.afterVerb = null;
+      helper.executor.stop("t");
+    };
+    const result = await helper.executor.run("t", { ...plan, steps: [write(NAME, "Yes"), write(EMAIL, "d@example.com")] }, {}, undefined, { grant: true });
+    expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
+    expect(result.detail).toContain("Answered before stop");
+    expect(result.detail).not.toContain("Undo puts it back");
+  });
+
+  it("does not promise Undo for a Yes/No press whose recovery read failed", async () => {
+    app.nodes = app.nodes.map((node) => node.key === NAME ? { ...node, role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup } : node);
+    app.timeoutAfterWrite = true;
+    app.afterVerb = (a, v) => {
+      if (v.kind !== "write" || v.key !== NAME) return;
+      a.afterVerb = null;
+      a.failWalks = 6;
+      helper.executor.stop("t");
+    };
+    const result = await helper.executor.run("t", { ...plan, steps: [write(NAME, "Yes")] }, {}, undefined, { grant: true });
+    expect(result.detail).toContain("may have been pressed");
+    expect(result.detail).not.toContain("Undo can put it back");
+  });
 });

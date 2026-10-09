@@ -281,3 +281,43 @@ describe("one Stop deadline across the in-flight act and its recovery read", () 
     expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
   });
 });
+
+describe("no recovery read starts after Stop", () => {
+  it("stops retrying a run's recovery walk once Stop arrives", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-no-retry-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    // The answer is lost before any Stop, so the run starts its ordinary recovery walk, which may retry.
+    app.timeoutAfterWrite = true;
+    let wrote = false;
+    let reads = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "walk" && wrote) {
+          // Each read takes most of the reader's own five seconds, then fails; Stop arrives during the first.
+          if (++reads === 1) setTimeout(() => helper.executor.stop("t"), 40);
+          return new Promise<VerbResult>((resolve) => setTimeout(() => resolve({ type: "verbResult", v: 1, id: "read", at: Date.now(), outcome: "axError", detail: "the walk was cut short" }), 4900));
+        }
+        if (verb.kind === "write" && verb.sameAs === undefined) wrote = true;
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
+    expect(reads).toBe(1);
+  });
+});
