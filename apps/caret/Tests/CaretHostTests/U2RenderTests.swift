@@ -108,13 +108,12 @@ final class U2RenderTests: XCTestCase {
                                                                    P(name: "Carrot, the problem's edge", token: Tokens.carrot, minimum: mark)]),
             ("Knows, permissions", memory["memory-permissions"]!, [P(name: "Ink, rule names, pop-up values", token: Tokens.ink, minimum: text),
                                                                    P(name: "Ink 2, what each rule means, the ceiling", token: Tokens.ink2, minimum: text)]),
-            ("Onboarding, welcome", onboarding["onboarding-welcome"]!, [P(name: "Ink, headline", token: Tokens.ink, minimum: text),
-                                                                       P(name: "Ink 2, body", token: Tokens.ink2, minimum: text),
-                                                                       P(name: "Carrot, current dot", token: Tokens.carrot, minimum: mark),
-                                                                       P(name: "Ink 3, other dots", token: Tokens.ink3, minimum: mark),
-                                                                       P(name: "On ink, Continue", token: Tokens.onInk, minimum: text)]),
-            ("Onboarding, work", onboarding["onboarding-work"]!, [P(name: "Ink 2, group heads and details, Back", token: Tokens.ink2, minimum: text),
-                                                                 P(name: "On ink, the ticked box's check", token: Tokens.onInk, minimum: mark)]),
+            // v2/access replaced the welcome and work screens with Hello and the switch (merge into v2/next); their text is
+            // measured here, Ink and Ink 2 only. The footer's dots and primary are the step's own (ShipsRenderTests).
+            ("Onboarding, hello", onboarding["onboarding-hello-typing"]!, [P(name: "Ink, headline", token: Tokens.ink, minimum: text),
+                                                                   P(name: "Ink 2, body", token: Tokens.ink2, minimum: text)]),
+            ("Onboarding, switch", onboarding["onboarding-switch-off"]!, [P(name: "Ink, headline", token: Tokens.ink, minimum: text),
+                                                                         P(name: "Ink 2, body", token: Tokens.ink2, minimum: text)]),
         ]
     }
 
