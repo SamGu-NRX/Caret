@@ -273,6 +273,8 @@ interface Task {
   journaled: boolean;
   /** Keep the reconciliation warning when a goal converts an input pause to Stop. */
   recoveryDetail?: string;
+  /** When reconciliation must end: STOP_RECONCILE_MS after the first pause or stop of this run reached it. */
+  reconcileBy?: number;
 }
 
 /**
@@ -453,6 +455,7 @@ export class Executor {
     if (no !== null) throw new PlanError(no);
     const task = this.need(taskId);
     task.interrupt = null;
+    delete task.reconcileBy;
     task.finished = null;
     task.expected.clear();
     return this.loop(task);
@@ -732,6 +735,7 @@ export class Executor {
     }
     // The run is over; a stop or pause still pending from it (a write that ended in axError) is not this undo's.
     task.interrupt = null;
+    delete task.reconcileBy;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
     const remaining: LedgerEntry[] = [];
     // Entries whose undo ended for good: restored, never landed, or refused for a reason that will not pass (the field
@@ -840,6 +844,7 @@ export class Executor {
       const it = task.interrupt;
       if (e instanceof Interrupted && it !== null) {
         task.interrupt = null;
+        delete task.reconcileBy;
         const at = this.stepAt(task);
         if (e.message !== "") task.recoveryDetail = e.message;
         else delete task.recoveryDetail;
@@ -905,7 +910,7 @@ export class Executor {
     const w = await this.refresh(task, end.window);
     // A pick this run made but could not verify (readUnconfirmed) shows the option's name whether or not the option was
     // pressed, so the control cannot show the step already holds (PR #21 review). Checking it is the user's.
-    if (end.kind === "valueEquals" && task.ledger.some((e) => e.kind === "write" && e.step === i && e.unconfirmed === true && e.role === "AXComboBox")) {
+    if (end.kind === "valueEquals" && task.ledger.some((e) => e.kind === "write" && e.step === i && e.unconfirmed === true && pageCombobox(e.role, e.windowId))) {
       throw StepStop.handoff(`Caret cannot tell whether '${end.value}' was picked for '${step.says}', so checking it is yours`);
     }
     if (await this.holds(task, i, w, end)) {
@@ -1352,20 +1357,20 @@ export class Executor {
   }
 
   /**
-   * `work`, or a rejection with `timedOut` STOP_RECONCILE_MS after a pause or stop reaches the task: from the moment
-   * one is already pending, else from when revokeGrant reports it. Stop's bound holds however long `work` began to run.
+   * `work`, or a rejection with `timedOut` at the task's reconcileBy, which revokeGrant sets when the first pause or
+   * stop reaches it. The in-flight act and its recovery read share that one deadline, however long either began before.
    */
   private async untilInterruptDeadline<T>(task: Task, work: Promise<T>, timedOut: string): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let start = (): void => {};
     const deadline = new Promise<never>((_, reject) => {
       start = () => {
-        if (timer !== undefined) return;
-        timer = setTimeout(() => reject(new Error(timedOut)), STOP_RECONCILE_MS);
+        if (timer !== undefined || task.reconcileBy === undefined) return;
+        timer = setTimeout(() => reject(new Error(timedOut)), Math.max(0, task.reconcileBy - Date.now()));
       };
     });
     this.interruptDeadlines.set(task.id, start);
-    if (task.interrupt !== null) start();
+    start();
     try {
       return await Promise.race([work, deadline]);
     } finally {
@@ -1486,7 +1491,10 @@ export class Executor {
 
   /** Ends both of the task's grants with one revoke. */
   private revokeGrant(task: Task): void {
-    if (task.interrupt !== null) this.interruptDeadlines.get(task.id)?.();
+    if (task.interrupt !== null) {
+      task.reconcileBy ??= Date.now() + STOP_RECONCILE_MS;
+      this.interruptDeadlines.get(task.id)?.();
+    }
     if (task.grant === null && !task.calendarGranted) return;
     task.grant = null;
     task.calendarGranted = false;
@@ -1691,6 +1699,8 @@ export class Executor {
       await this.untilInterruptDeadline(task, read, "the recovery read timed out");
       this.checkSession(task);
     } catch (error) {
+      // Undo is refused under a reader launched since (undoRefusal), so this outcome promises none.
+      if (task.session !== this.session) return { state: "unknown", detail: `The field may have been written. The reader restarted before Caret could read it back; before the write it held ${JSON.stringify(e.before)}` };
       return { state: "unknown", detail: `The field may have been written. Undo can put it back. Caret could not read the field after writing it; before the write it held ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}` };
     }
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
@@ -1700,7 +1710,7 @@ export class Executor {
     if (sameValue(field, held, e.after)) {
       // A combobox shows the filter text Caret types before it presses the option, and a walk carries no sign of the
       // pick: only the content script's own answer does (content/combobox.ts), and that answer is what was lost.
-      if (field.role === "AXComboBox") return { state: "unknown", detail: `Caret cannot tell whether the option was picked; ${fieldContents(e.before, held)}` };
+      if (pageCombobox(field.role, e.windowId)) return { state: "unknown", detail: `Caret cannot tell whether the option was picked; ${fieldContents(e.before, held)}` };
       return { state: "landed", detail: null };
     }
     if (partialReplacement(e.before, e.after, held)) {
@@ -1986,6 +1996,14 @@ export function canonicalDecimal(s: string): string | null {
   digits = digits.slice(0, digits.length - trailing);
   exp += trailing;
   return `${m[1] === "-" ? "-" : ""}${digits}e${exp}`;
+}
+
+/**
+ * A page's custom combobox, whose walk shows the filter text Caret typed and a picked option alike (content/combobox.ts).
+ * A native AXComboBox write sets the value itself, so its read-back is its end state.
+ */
+function pageCombobox(role: string, windowId: string): boolean {
+  return role === "AXComboBox" && windowId.startsWith("page:");
 }
 
 /** S1's whole-field replacement rule. An unchanged original takes precedence, even if it is a prefix. */

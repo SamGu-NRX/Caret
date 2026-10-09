@@ -471,4 +471,33 @@ describe("reconciliation after Stop attributes only what Caret read while it hel
     expect(await helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
     expect(app.node(NAME)?.value ?? "").toBe("");
   });
+  it("verifies a native combo box write whose answer was lost: its value is the end state", async () => {
+    app.nodes = app.nodes.map((node) => node.key === NAME ? { ...node, role: "AXComboBox" } : node);
+    app.timeoutAfterWrite = true;
+    app.afterVerb = (a, v) => {
+      if (v.kind !== "write" || v.key !== NAME) return;
+      a.afterVerb = null;
+      helper.executor.stop("t");
+    };
+    const result = await helper.executor.run("t", plan, {}, undefined, { grant: true });
+    expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
+    expect(result.detail).toContain("Written before stop");
+    expect(helper.executor.ledger("t")[0]).not.toHaveProperty("unconfirmed");
+  });
+
+  it("does not promise Undo when the reader restarted during the recovery read", async () => {
+    app.timeoutAfterWrite = true;
+    let wrote = false;
+    const run = app.run.bind(app);
+    app.run = async (verb) => {
+      if (verb.kind === "write" && verb.sameAs === undefined) wrote = true;
+      if (verb.kind === "walk" && wrote) helper.executor.readerRestarted("another-reader");
+      return run(verb);
+    };
+    const result = await helper.executor.run("t", plan, {}, undefined, { grant: true });
+    expect(result.outcome).toBe("stopped");
+    expect(result.detail).toContain("reader restarted");
+    expect(result.detail).not.toContain("Undo can put it back");
+    expect(helper.executor.undoRefusal("t")).toContain("restarted");
+  });
 });

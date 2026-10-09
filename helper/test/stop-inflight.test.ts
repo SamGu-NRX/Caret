@@ -235,3 +235,49 @@ describe("Stop during a recovery read that began before it", () => {
     expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
   });
 });
+
+describe("one Stop deadline across the in-flight act and its recovery read", () => {
+  it("ends five seconds after Stop when neither the write nor the read ever answers", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-one-deadline-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    let wrote = false;
+    let stoppedAt = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "write" && verb.sameAs === undefined) {
+          wrote = true;
+          setTimeout(() => { stoppedAt = Date.now(); helper.executor.stop("t"); }, 40);
+          return new Promise<VerbResult>(() => {});
+        }
+        if (verb.kind === "walk" && wrote) return new Promise<VerbResult>(() => {});
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    let settled = false;
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true }).finally(() => { settled = true; });
+    // Preparation and dispatch, then Stop 40 ms later.
+    while (stoppedAt === 0) await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(4999 - (Date.now() - stoppedAt));
+    expect(settled).toBe(false);
+    // The recovery read's remaining wait is zero; its timer fires a tick after the act's. Without the shared deadline
+    // the read would start a second five seconds.
+    await vi.advanceTimersByTimeAsync(11);
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+  });
+});
