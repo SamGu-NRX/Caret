@@ -11,7 +11,7 @@
 // offers shown, offers per hour of replayed time, and which wanted offers were shown.
 //
 //   node apps/caret/scripts/offers_routing_measure.ts --out DIR [--runs 3] [--settle-ms 6000]
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -20,12 +20,18 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
+import { newLaunchSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
 import { Store } from "../../../helper/src/store.ts";
 import type { AskJev } from "../../../helper/src/fill/jev.ts";
 import type { HelperMessage } from "../../../helper/src/protocol.ts";
 import { jevPickingText } from "../../../helper/test/builders.ts";
 import { SocketReader, loadRecording } from "../../../helper/test/socket-reader.ts";
 import { routedJev, routingHarness } from "./routing_option.ts";
+
+// The in-process server's launch secret. Caret gets the host key derived from it (spawnCaret), so the server admits it
+// as the host (helper/src/host-auth.ts).
+const launchSecret = newLaunchSecret();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -99,10 +105,10 @@ async function until<T>(what: string, f: () => Promise<T | null | undefined | fa
   }
 }
 
-const host: ChildProcess = spawn(CARET, [
+const host: ChildProcess = spawnCaret(CARET, [
   "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden", "--surfaces", "headless", "--test-hooks",
   "--allow-pids", PIDS.join(","), "--status-item", "off", "--settings", join(mkdtempSync(join(tmpdir(), "caret-h6-offers-")), "settings.json"),
-]);
+], launchSecret);
 host.stderr?.setEncoding("utf8");
 host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));
 process.on("exit", () => host.kill("SIGTERM"));
@@ -136,7 +142,7 @@ async function replay(mode: "off" | "live", file: string, wanted: string, routed
     sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
     warn: (l) => log.push(`helper: ${l}`),
   });
-  server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`));
+  server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`), launchSecret);
   await server.listen();
   const reader = await SocketReader.connect(HELPER_SOCK);
   await until("the host on the helper", async () => ((await state()).helper?.connected ? true : null), 8000);

@@ -55,6 +55,10 @@ public final class HostRuntime {
         /// on the pasteboard after the field settles, so an acceptance run can copy in the middle of a
         /// paste on cue. Ignored in normal use.
         public var pasteRestoreDelay: TimeInterval
+        /// The key this Caret proves to the helper it is the host with (`HostAuth`), from `CaretServices.hostKey`: in
+        /// memory, never on argv or in a file. Nil connects as a plain consumer, which the helper sends no page text,
+        /// saved answer, route decision or goal to.
+        public var hostKey: Data?
 
         public init(
             socketPath: String = HostRuntime.defaultSocketPath,
@@ -384,7 +388,7 @@ public final class HostRuntime {
                     }
                 }
             }
-        }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } }, goalFiles: { filesWired })
+        }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } }, goalFiles: { filesWired }, hostKey: configuration.hostKey)
         linkedClient.client = helper
         let routeClient = helper
         routeLink.send = { routeClient.send($0) }
@@ -966,6 +970,10 @@ public final class HostRuntime {
         await engine.shutdown()
         socket.stop()
     }
+
+    /// The menu's status line while the helper refuses this Caret as its host, which then says why in place of the engine's
+    /// state (`HostRetry.statusLine`); nil once the helper accepts it, and for a Caret with no host key.
+    public var helperRefusalLine: String? { helper.snapshot().hostRefused }
 
     public var engineSummary: String {
         switch engine.state {

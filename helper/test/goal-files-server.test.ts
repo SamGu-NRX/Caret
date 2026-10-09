@@ -10,6 +10,7 @@ import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { HelperMessage, PROTOCOL_VERSION } from "../src/protocol.ts";
+import { authenticateRawHost, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const golden = readFileSync(new URL("../fixtures/golden/goal-files.ndjson", import.meta.url), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
 
@@ -47,7 +48,7 @@ describe("files in goal plans on the socket (P3)", () => {
     store = new Store(join(dir, "data"));
     let s: HelperServer | null = null;
     helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => s?.publish(m) });
-    server = new HelperServer(path, () => helper, () => {});
+    server = new HelperServer(path, () => helper, () => {}, TEST_LAUNCH_SECRET);
     s = server;
     await server.listen();
   });
@@ -64,6 +65,8 @@ describe("files in goal plans on the socket (P3)", () => {
     const plain = await connect(path);
     send(files.s, hello(1, ["goalPlans", "goalFiles"]));
     send(plain.s, hello(2, ["goalPlans"]));
+    await authenticateRawHost(files.s, files.lines);
+    await authenticateRawHost(plain.s, plain.lines);
     await tick();
     const withAttach = HelperMessage.parse(golden[2]);
     const withoutAttach = HelperMessage.parse({ ...golden[20], steps: (golden[20]?.steps as { kind: string }[]).filter((x) => x.kind !== "attach") });
@@ -81,6 +84,7 @@ describe("files in goal plans on the socket (P3)", () => {
   it("refuses confirmedFile and fileSave from a host that did not declare goalFiles", async () => {
     const plain = await connect(path);
     send(plain.s, hello(2, ["goalPlans"]));
+    await authenticateRawHost(plain.s, plain.lines);
     await tick();
     send(plain.s, golden[3]);
     send(plain.s, golden[16]);

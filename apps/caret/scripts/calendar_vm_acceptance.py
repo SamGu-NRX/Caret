@@ -96,7 +96,10 @@ def host_pid():
 
 
 def start_host(app, settings, fixture_pid, out_dir):
-    """Caret as a launchd job of its own, attached to this run's helper."""
+    """Caret as a launchd job of its own, attached to this run's helper.
+
+    launchd hands a job no descriptor of ours, so this Caret gets no host key (launch_secret.popen_caret) and the helper
+    serves it as a plain consumer, without the capabilities only the host is granted."""
     caret = os.path.join(app, "Contents", "MacOS", "Caret")
     plist = os.path.join(SOCKS, f"{LABEL}.plist")
     with open(plist, "wb") as f:
@@ -138,11 +141,8 @@ def run(app, out_dir):
     results["toolAccess"] = tool("status")
     node = os.path.join(app, "Contents", "Helpers", "node")
     reader = os.path.join(app, "Contents", "Helpers", "caret-screen")
-    secret = os.urandom(32)
-    helper = sa.start("helper", [node, os.path.join(HERE, "acceptance_helper.ts"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--state", STATE,
-                                 "--calendar", "reader"], out_dir, stdin=subprocess.PIPE)
-    helper.stdin.write(secret)
-    helper.stdin.close()
+    sa.start_with_secret("helper", [node, os.path.join(HERE, "acceptance_helper.ts"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--state", STATE,
+                                    "--calendar", "reader"], out_dir)
     if not sa.wait_for(lambda: os.path.exists(HELPER_SOCK), 30, 0.1):
         raise SystemExit("helper did not open its socket")
     fx = sa.start("fixture", fixture_app.args("--windows", "executor", "--duration", "900"), out_dir, stdin=subprocess.PIPE)
@@ -154,10 +154,8 @@ def run(app, out_dir):
     settings = os.path.join(out_dir, "settings.json")
     with open(settings, "w") as f:
         json.dump({"version": 2, "roles": ["calendar"], "level": "balanced", "character": "pebble", "paused": False, "onboarded": True, "memory": []}, f)
-    rd = sa.start("reader", [reader, "--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", str(fx.pid), "--event-pids", str(fx.pid),
-                             "--calendar-user", settings], out_dir, stdin=subprocess.PIPE)
-    rd.stdin.write(secret)
-    rd.stdin.close()
+    sa.start_with_secret("reader", [reader, "--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", str(fx.pid), "--event-pids", str(fx.pid),
+                                    "--calendar-user", settings], out_dir)
     hpid = start_host(app, settings, fx.pid, out_dir)
     time.sleep(1.5)
     pid = fx.pid

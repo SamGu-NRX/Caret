@@ -10,7 +10,7 @@ import { ConsumerMessage, GOAL_PLANS_CAPABILITY, HelperMessage, PROTOCOL_VERSION
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
-import { LineClient, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, TEST_LAUNCH_SECRET, until } from "./socket-reader.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { areaKey, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, type CannedStep, type GoalScene } from "./goal-desk.ts";
 import { scopeLabel } from "./builders.ts";
@@ -132,7 +132,7 @@ describe("goalEdit on the socket", () => {
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "caret-goal-edit-"));
     store = new Store(join(dir, "data"));
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => own.publish(m) });
     helper = mine;
     server = own;
@@ -150,14 +150,17 @@ describe("goalEdit on the socket", () => {
   it("is refused by name from a host without goalPlans, and answered to the asker alone when it names no goal", async () => {
     const old = await LineClient.connect(join(dir, "screen.sock"));
     old.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "old-host", host: true });
+    await authenticateHost(old);
     old.send(goalEdit);
     const e = await old.waitFor((m) => m.type === "error");
     expect(e.message).toBe(`goalEdit needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities`);
     old.close();
     const host = await LineClient.connect(join(dir, "screen.sock"));
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "caret-host", host: true, capabilities: [GOAL_PLANS_CAPABILITY] });
+    await authenticateHost(host);
     const other = await LineClient.connect(join(dir, "screen.sock"));
     other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 3, version: "caret-host-2", host: true, capabilities: [GOAL_PLANS_CAPABILITY] });
+    await authenticateHost(other);
     await until(() => helper.hostPresent);
     host.send(goalEdit);
     await host.waitFor((m) => m.type === "error" && m.message === "goalEdit refused: no goal goal-1-r1");

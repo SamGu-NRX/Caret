@@ -46,8 +46,10 @@ import { parseArgs, promisify } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
 import { newLaunchSecret, sendSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
 // B23: caret-screen accepts only a helper that proves it holds this launch's secret, which both get
-// here: the reader on its standard input (--auth-fd 0), the in-process server as an argument.
+// here: the reader on its standard input (--auth-fd 0), the in-process server as an argument. Caret gets the host key
+// derived from it, so the server admits it as the host (spawnCaret).
 const launchSecret = newLaunchSecret();
 import { Store } from "../../../helper/src/store.ts";
 import type { Plan, Step, WindowSel } from "../../../helper/src/executor/schema.ts";
@@ -636,10 +638,10 @@ try {
   reader.stderr.setEncoding("utf8");
   reader.stderr.on("data", (d: string) => (readerLog += d));
   const settings = join(sockDir, "settings.json");
-  const host = spawn(CARET, [
+  const host = spawnCaret(CARET, [
     "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", PERCH, "--allow-pids", String(t.pid),
     "--test-hooks", "--status-item", "off", "--onboarding", "off", "--settings", settings,
-  ]);
+  ], launchSecret);
   started("caret host", host);
   host.stderr?.setEncoding("utf8");
   host.stderr?.on("data", (d: string) => (hostLog += d));

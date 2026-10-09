@@ -1,0 +1,1 @@
+Host auth: a host: true hello gets hostChallenge and nothing else until a valid hostProof (key = HMAC(launch secret,'caret-host-key')); helper tests give HelperServer a secret and call authenticateHost (test/socket-reader.ts); attached Caret is host only via CARET_HOST_KEY_FD.

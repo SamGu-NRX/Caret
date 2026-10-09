@@ -6,18 +6,30 @@
 // B23 (CodeRabbit on PR #4): the reader authenticates the helper before it sends a snapshot or acts on a line.
 // Its hello carries a challenge; the helper answers helperAuth, an HMAC of it under the launch secret both got
 // on an inherited descriptor (src/launch.ts). The socket's directory is the user's own, mode 0700.
+//
+// The host authenticates the other way (src/host-auth.ts): a consumer hello with `host: true` is answered with
+// hostChallenge, and the connection gets nothing (no host capability, no published message) until its hostProof checks
+// out under the host key derived from the same launch secret. Same-user processes can reach this socket, and what a host
+// is sent is what Caret's Accessibility grant reads.
 import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ASK_SCOPE_CAPABILITY, ASK_VALUES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, VALUE_CHECKS_CAPABILITY, type AnswerSaveReply, type FillProposal, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ASK_SCOPE_CAPABILITY, ASK_VALUES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, HostProof, type HostAuthenticated, type HostChallenge, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, VALUE_CHECKS_CAPABILITY, type AnswerSaveReply, type FillProposal, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
 import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
 import { planError } from "./planner/proposal.ts";
+import { hostKey, hostProofMatches, newHostNonce } from "./host-auth.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
 const MAX_LINE_CHARS = 32 * 1024 * 1024;
+
+/**
+ * How long a host hello waits for its hostProof before the connection is closed. The value is the host-auth design's,
+ * not a measurement: Caret answers the moment it reads the challenge, so this only bounds a connection that never does.
+ */
+export const HOST_PROOF_TIMEOUT_MS = 5000;
 
 export class HelperServer {
   private readonly consumers = new Set<Socket>();
@@ -77,12 +89,17 @@ export class HelperServer {
   private readonly warn: (line: string) => void;
   /** The launch secret the reader's challenge is answered with; null answers none, so an authenticating reader refuses this helper. */
   private readonly secret: Buffer | null;
+  /** hostKey(secret), which a host's proof is checked under; null refuses every host hello. */
+  private readonly hostKey: Buffer | null;
+  /** How long a host hello waits for its proof; tests shorten it. */
+  hostProofTimeoutMs = HOST_PROOF_TIMEOUT_MS;
 
   constructor(path: string, helper: () => Helper, warn: (line: string) => void, secret: Buffer | null = null, localModel: HostLocalModel | null = null) {
     this.path = path;
     this.helper = helper;
     this.warn = warn;
     this.secret = secret;
+    this.hostKey = secret === null ? null : hostKey(secret);
     this.localModel = localModel;
   }
 
@@ -183,6 +200,8 @@ export class HelperServer {
     /** This consumer's host session: the work it accepts is bound to it and revoked when it closes (S1 audit #5). */
     let session: string | null = null;
     let replaced = false;
+    /** A host hello waiting for its proof: nothing is granted and nothing published to this connection meanwhile. */
+    let pendingHost: { hello: Hello; nonce: string; key: Buffer; timer: NodeJS.Timeout } | null = null;
     let buf = "";
     s.setEncoding("utf8");
     s.on("data", (chunk: string) => {
@@ -201,6 +220,11 @@ export class HelperServer {
         try {
           json = JSON.parse(line);
         } catch {
+          if (pendingHost !== null) {
+            this.reject(s, "a host's next line after hello must be hostProof, not invalid JSON; closing");
+            s.destroy();
+            return;
+          }
           this.reject(s, "invalid JSON line");
           continue;
         }
@@ -213,34 +237,24 @@ export class HelperServer {
           }
           role = hello.data.role;
           if (role === "consumer") {
-            this.consumers.add(s);
-            if (hello.data.capabilities?.includes(MEMORY_DOCUMENTS_CAPABILITY) === true) this.memoryDocuments.add(s);
-            session = `consumer-${++this.sessions}`;
-            // Only the host's hello says so; any other consumer binds its own work but never counts as the host (B23).
-            // Routing is the host's: a decision tells its writing help when it may run, so only the host may take one.
-            const routing = hello.data.host === true && hello.data.capabilities?.includes(ROUTING_CAPABILITY) === true;
-            if (routing) this.routing.add(s);
-            if (hello.data.host === true) this.hosts.add(s);
-            if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
-            if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
-            if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true && hello.data.capabilities.includes(ASK_VALUES_CAPABILITY)) this.askValues.add(s);
-            if (hello.data.capabilities?.includes(VALUE_CHECKS_CAPABILITY) === true) this.valueChecks.add(s);
-            if (hello.data.capabilities?.includes(ASK_SCOPE_CAPABILITY) === true) this.askScope.add(s);
-            if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
-            if (hello.data.capabilities?.includes(SPEND_CAPABILITY) === true) {
-              this.spend.add(s);
-              if (this.spendNow !== null) s.write(JSON.stringify(this.spendNow()) + "\n");
+            if (hello.data.host !== true) session = this.admitConsumer(s, hello.data);
+            else {
+              // Refused by name rather than taken as a plain consumer: a host that silently lost its capabilities
+              // would look connected and show nothing.
+              if (this.hostKey === null) {
+                this.reject(s, "this helper has no launch secret, so no host can authenticate (start it with --auth-fd, as src/launch.ts does); closing");
+                s.destroy();
+                return;
+              }
+              const nonce = newHostNonce();
+              const timer = setTimeout(() => {
+                if (s.destroyed) return;
+                this.reject(s, `no hostProof within ${this.hostProofTimeoutMs} ms of the host's hello; closing`);
+                s.destroy();
+              }, this.hostProofTimeoutMs);
+              pendingHost = { hello: hello.data, nonce, key: this.hostKey, timer };
+              s.write(JSON.stringify({ type: "hostChallenge", v: PROTOCOL_VERSION, nonce } satisfies HostChallenge) + "\n");
             }
-            const files = hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true && hello.data.capabilities.includes(GOAL_FILES_CAPABILITY);
-            if (files) this.goalFiles.add(s);
-            if (hello.data.host === true && hello.data.capabilities?.includes(LOCAL_MODEL_CAPABILITY) === true) this.localModelHost = s;
-            if (hello.data.host === true && hello.data.capabilities?.includes(PAGE_TEXT_CAPABILITY) === true) this.pageText.add(s);
-            if (hello.data.host === true && hello.data.capabilities?.includes(SAVED_ANSWERS_CAPABILITY) === true) {
-              this.savedAnswers.add(s);
-              this.helper().setAnswerHosts(this.savedAnswers.size);
-            }
-            if (hello.data.host === true) this.helper().hostConnected(session, routing, files);
-            else this.helper().consumerConnected(session);
           } else {
             // The proof goes first, before any command or grant this connection could carry.
             if (hello.data.challenge !== undefined) {
@@ -255,6 +269,27 @@ export class HelperServer {
             this.reader = s;
             void this.helper().handleReader(hello.data);
           }
+          continue;
+        }
+        if (pendingHost !== null) {
+          const pending = pendingHost;
+          // A nonce answers one proof, right or wrong.
+          pendingHost = null;
+          clearTimeout(pending.timer);
+          const proof = HostProof.safeParse(json);
+          if (!proof.success) {
+            const type = (json as { type?: unknown } | null)?.type;
+            this.reject(s, `a host's next line after hello must be hostProof, not ${typeof type === "string" ? JSON.stringify(type.slice(0, 64)) : "a line without a type"}; closing`);
+            s.destroy();
+            return;
+          }
+          if (!hostProofMatches(pending.key, pending.nonce, proof.data.proof)) {
+            this.reject(s, "the host's proof does not match this connection's challenge under the launch secret's host key; closing");
+            s.destroy();
+            return;
+          }
+          s.write(JSON.stringify({ type: "hostAuthenticated", v: PROTOCOL_VERSION } satisfies HostAuthenticated) + "\n");
+          session = this.admitConsumer(s, pending.hello);
           continue;
         }
         if (role === "reader") {
@@ -322,6 +357,8 @@ export class HelperServer {
             else if (this.localModel?.reply(m.data) !== true) this.warn(`localTextReply ${m.data.id}: no request waits for it`);
           }
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
+          // Only the line right after a host hello is a proof; anywhere else it answers nothing.
+          else if (m.data.type === "hostProof") this.reject(s, "hostProof answers a hostChallenge, and this connection has none outstanding");
           // H13: inline text the user accepted with Tab in a page field. Only a host that declared pageText.
           else if (m.data.type === "pageInsert") {
             if (!this.pageText.has(s)) this.reject(s, `pageInsert needs a host hello with "${PAGE_TEXT_CAPABILITY}" in its capabilities`);
@@ -475,6 +512,7 @@ export class HelperServer {
       }
     });
     s.on("close", () => {
+      if (pendingHost !== null) clearTimeout(pendingHost.timer);
       this.consumers.delete(s);
       this.memoryDocuments.delete(s);
       this.routing.delete(s);
@@ -503,6 +541,42 @@ export class HelperServer {
       this.sockets.delete(s);
     });
     s.on("error", (e) => this.warn(`socket error: ${e.message}`));
+  }
+
+  /**
+   * Adds a consumer to the sets its hello asks for and opens its session. A hello with `host: true` reaches here only
+   * after its hostProof checked out.
+   */
+  private admitConsumer(s: Socket, hello: Hello): string {
+    this.consumers.add(s);
+    if (hello.capabilities?.includes(MEMORY_DOCUMENTS_CAPABILITY) === true) this.memoryDocuments.add(s);
+    const session = `consumer-${++this.sessions}`;
+    // Only a host hello whose proof checked out says so; any other consumer binds its own work but never counts as the host (B23).
+    // Routing is the host's: a decision tells its writing help when it may run, so only the host may take one.
+    const routing = hello.host === true && hello.capabilities?.includes(ROUTING_CAPABILITY) === true;
+    if (routing) this.routing.add(s);
+    if (hello.host === true) this.hosts.add(s);
+    if (hello.host === true && hello.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
+    if (hello.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
+    if (hello.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true && hello.capabilities.includes(ASK_VALUES_CAPABILITY)) this.askValues.add(s);
+    if (hello.capabilities?.includes(VALUE_CHECKS_CAPABILITY) === true) this.valueChecks.add(s);
+    if (hello.capabilities?.includes(ASK_SCOPE_CAPABILITY) === true) this.askScope.add(s);
+    if (hello.host === true && hello.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
+    if (hello.capabilities?.includes(SPEND_CAPABILITY) === true) {
+      this.spend.add(s);
+      if (this.spendNow !== null) s.write(JSON.stringify(this.spendNow()) + "\n");
+    }
+    const files = hello.host === true && hello.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true && hello.capabilities.includes(GOAL_FILES_CAPABILITY);
+    if (files) this.goalFiles.add(s);
+    if (hello.host === true && hello.capabilities?.includes(LOCAL_MODEL_CAPABILITY) === true) this.localModelHost = s;
+    if (hello.host === true && hello.capabilities?.includes(PAGE_TEXT_CAPABILITY) === true) this.pageText.add(s);
+    if (hello.host === true && hello.capabilities?.includes(SAVED_ANSWERS_CAPABILITY) === true) {
+      this.savedAnswers.add(s);
+      this.helper().setAnswerHosts(this.savedAnswers.size);
+    }
+    if (hello.host === true) this.helper().hostConnected(session, routing, files);
+    else this.helper().consumerConnected(session);
+    return session;
   }
 
   /**

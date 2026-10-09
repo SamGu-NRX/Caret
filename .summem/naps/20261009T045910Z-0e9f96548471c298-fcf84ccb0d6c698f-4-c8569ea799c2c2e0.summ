@@ -1,0 +1,1 @@
+DF1: acceptance builds answer all debug-socket commands only with --test-hooks or CARET_DEBUG_SOCKET=full; uninstall.sh leaves a Metal cache. Store build strips the manifest key, so its ID differs from EXTENSION_ID. FigureView freezes when rendersOffscreen.
