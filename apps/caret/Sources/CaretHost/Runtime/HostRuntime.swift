@@ -151,6 +151,7 @@ public final class HostRuntime {
     /// activity record arrives. Assumed: activity follows an accept within a second on this Mac.
     static let rehelloAcceptGrace: TimeInterval = 30
     private var engineTask: Task<Void, Never>?
+    private var trustPoll: Timer?
     private let servicesBox = ServicesBox()
     private var sessionLock: SessionLockWatch?
 
@@ -590,7 +591,8 @@ public final class HostRuntime {
         let tap = self.tap
         // Accessibility granted in onboarding: a key tap the system refused at launch is made now.
         onboarding.onPermissionsChanged = { granted in
-            if granted.accessibility, !tap.restartIfRefused() { status.increment("tap.createFailed") }
+            // Never before the grant: an active tap asked for without it raises macOS's alert (startTapWhenTrusted).
+            if granted.accessibility, AXIsProcessTrusted(), !tap.restartIfRefused() { status.increment("tap.createFailed") }
         }
         let helper = self.helper
         let writeMethods = executor.writeMethods
@@ -791,10 +793,30 @@ public final class HostRuntime {
     /// The menu's What Caret Knows: the memory window.
     public func openMemory() { memory.open() }
 
+    /// The key tap is made only once Caret has Accessibility. Asking macOS for an active keyboard tap without it raises
+    /// the "would like to control this computer" alert by itself, before onboarding has said a word (PX1's VM baseline,
+    /// ~/.caret-run/evidence/access/p1-run/out/shots/009-stuck-welcome.png). Until then a once-a-second
+    /// `AXIsProcessTrusted` read waits for the switch, whether or not onboarding is open.
+    private func startTapWhenTrusted() {
+        guard AXIsProcessTrusted() else {
+            guard trustPoll == nil else { return }
+            trustPoll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, AXIsProcessTrusted() else { return }
+                    self.trustPoll?.invalidate()
+                    self.trustPoll = nil
+                    self.startTapWhenTrusted()
+                }
+            }
+            return
+        }
+        if !tap.restartIfRefused() { status.increment("tap.createFailed") }
+    }
+
     public func start() throws {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
-        if !tap.start() { status.increment("tap.createFailed") }
+        startTapWhenTrusted()
         InputMethodState.shared.start()
         // The perch no longer follows focus: it sits on the task's window (v3 rim and perch).
         focus.onChange = { [coordinator, writing] change in
