@@ -1,0 +1,1 @@
+Required app exclusions live in CaretScreenCore/ExcludedApps.swift and helper/privacy/read-policy.ts; sc1-exclusions.test.ts checks parity, and DenyList.init/ScreenModel.setAppsOff union user additions without rewriting existing files.
