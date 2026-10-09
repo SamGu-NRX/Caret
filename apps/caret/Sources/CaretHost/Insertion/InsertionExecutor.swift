@@ -661,11 +661,20 @@ final class InsertionExecutor: @unchecked Sendable {
         // 4. Exactly the range replaced, or taken back.
         switch FixPaste.afterPaste(value: FieldReader.read(element)?.value, before: before.value, expected: approved.resultingValue) {
         case .applied:
+            // The user's caret back, read back as such before the undo is built from it: Electron
+            // shows a selection change a moment late, and an undo bound to the earlier caret was
+            // refused as `selectionMoved` (run 20261009T121350Z-39994).
             let caret = approved.resultingSelection
             if stillTarget() {
                 AXRead.setRange(kAXSelectedTextRangeAttribute, location: caret.start, length: caret.end - caret.start, on: element)
             }
-            guard let after = FieldReader.read(element) else { return .failed("fieldUnreadable") }
+            let moved = Date()
+            var after = FieldReader.read(element)
+            while after?.selection != caret, Date().timeIntervalSince(moved) <= FixPaste.selectionTimeout {
+                Thread.sleep(forTimeInterval: 0.01)
+                after = FieldReader.read(element)
+            }
+            guard let after else { return .failed("fieldUnreadable") }
             switch edit.verify(after: Self.rangeLive(after), approved: approved) {
             case .failure(let refusal): return .failed(refusal.code)
             case .success(let undo): return .applied(AppliedRange(value: approved.resultingValue, undo: undo))
