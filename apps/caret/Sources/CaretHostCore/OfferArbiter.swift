@@ -41,6 +41,9 @@ public final class OfferArbiter: @unchecked Sendable {
         case closed
         /// A modifier key alone. Never dismisses anything (`SURFACES.md` section 8).
         case modifierOnly
+        /// ⌥Tab under Cotypist's keys while ghost text shows: the offer was removed, and the tap must
+        /// pass the key on as a plain Tab, without the Option flag.
+        case realTab
     }
 
     public enum Decision: Equatable, Sendable {
@@ -128,6 +131,8 @@ public final class OfferArbiter: @unchecked Sendable {
         /// H13: browsers whose focused page field shows the page's own suggestions, which Tab accepts there
         /// (`OtherTabOwners.pages`), by pid, with the page's name.
         var pageTabOwners: [Int32: String] = [:]
+        /// Which keys take ghost text (`GhostKeys`), from the settings.
+        var ghostKeys = GhostKeys.caret
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -140,7 +145,17 @@ public final class OfferArbiter: @unchecked Sendable {
     /// key would claim a page's inline text, so Tab reaches the input method. Set once, before keys flow.
     public var composing: @Sendable () -> Bool = { false }
 
-    public init() {}
+    /// The key code of the key above Tab on this Mac's keyboard, for Cotypist's keys (`KeyClass.aboveTab`).
+    public let aboveTabKeyCode: Int64
+
+    public init(aboveTabKeyCode: Int64 = KeyStroke.graveKeyCode) {
+        self.aboveTabKeyCode = aboveTabKeyCode
+    }
+
+    /// Which keys take ghost text from now on. Main thread, on launch and on each settings change.
+    public func setGhostKeys(_ keys: GhostKeys) {
+        state.withLock { $0.ghostKeys = keys }
+    }
 
     // MARK: - Main thread
 
@@ -284,7 +299,7 @@ public final class OfferArbiter: @unchecked Sendable {
     /// Decides one key-down. Constant time apart from a prefix check on the offer text.
     public func handleKeyDown(_ key: KeyStroke, now: Date = Date()) -> Decision {
         if KeyStroke.modifierKeyCodes.contains(key.keyCode) { return .pass(.modifierOnly) }
-        let keyClass = KeyClass(key)
+        let keyClass = KeyClass(key, aboveTab: aboveTabKeyCode)
         return state.withLock { s in
             var dismissedLine: PassReason?
             if let toast = s.toast {
@@ -362,7 +377,7 @@ public final class OfferArbiter: @unchecked Sendable {
             // H13 review: nor a page's inline text, which a held Tab would otherwise take one offer after another.
             if key.isRepeat, key.isPlainTab, Self.isPageTask(offer) || (offer.source == .page && offer.kind.name == "ghost") { return .navigate(offerID: offer.id, ui: s.ui) }
             let surface = Self.surface(of: offer, ui: s.ui, typed: s.typedSinceOffer)
-            guard KeyOwnership.owns(surface, keyClass) else {
+            guard KeyOwnership.owns(surface, keyClass, keys: s.ghostKeys) else {
                 // Typing the head of ghost text keeps the rest on offer. Everything else that passes
                 // through dismisses: a fill value is all or nothing (SURFACES.md section 5), open
                 // alternatives close on typing, and a Command-digit with nothing numbered visible
@@ -429,12 +444,17 @@ public final class OfferArbiter: @unchecked Sendable {
         }
 
         switch (key, surface) {
-        case (.tab, .ghost), (.tab, .alternatives), (.tab, .ghostFill):
+        case (.tab, .ghost) where s.ghostKeys == .cotypist:
+            return take(Choice(candidate: s.ui.candidate, wordOnly: true))
+        case (.tab, .ghost), (.tab, .alternatives), (.tab, .ghostFill), (.aboveTab, .ghost), (.aboveTab, .alternatives):
             return take(Choice(candidate: s.ui.candidate))
         case (.tab, _):
             return takeAction(spec?.actions.first { $0.key == .tab } ?? offer.kind.actionLine?.primary)
         case (.optionRight, _):
             return take(Choice(candidate: s.ui.candidate, wordOnly: true))
+        case (.optionTab, _):
+            clearOffer(&s)
+            return .pass(.realTab)
 
         case (.escape, .alternatives):
             // Back to the first candidate, list closed; the ghost stays (SURFACES.md section 2).

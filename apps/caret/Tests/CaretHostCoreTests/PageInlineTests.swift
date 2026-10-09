@@ -136,6 +136,106 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(r.machine.lastOutcome, "noRoom")
     }
 
+    /// Brief item 6: with Cotypist's keys, Tab takes a word; once the page reads the word in, the rest of the same
+    /// suggestion is offered at once, so Tab, Tab, Tab walks it as in a native field. Nothing is generated again.
+    func testAfterAWordTheRestIsOfferedWithoutGeneratingAgain() throws {
+        let r = Rig()
+        r.arbiter.setGhostKeys(.cotypist)
+        let f = try Self.field(1)
+        r.field(f)
+        r.suggest("Field Robotics Technician role")
+        guard case .consume = r.press(.tab(to: Self.chrome)) else { return XCTFail("Tab took nothing") }
+        let sent = try XCTUnwrap(r.inserts.last)
+        XCTAssertEqual(sent.text, "Field")
+        r.machine.replied(PageInsertReply(requestId: sent.requestId, outcome: .inserted, says: "inserted", at: 0))
+        let asked = r.requests.count
+        var after = f
+        after.text?.before = "I am writing to apply for the Field"
+        r.field(after)
+        XCTAssertEqual(r.requests.count, asked, "the rest of the suggestion, not a new one")
+        XCTAssertEqual(r.ghosts.last?.0, " Robotics Technician role")
+        XCTAssertEqual(r.arbiter.snapshot().current?.text, " Robotics Technician role")
+    }
+
+    func testTheRestIsDroppedWhenThePageReadsOtherwise() throws {
+        let r = Rig()
+        r.arbiter.setGhostKeys(.cotypist)
+        let f = try Self.field(1)
+        r.field(f)
+        r.suggest("Field Robotics Technician role")
+        _ = r.press(.tab(to: Self.chrome))
+        let asked = r.requests.count
+        var other = f
+        other.text?.before = "I am writing to apply for the Fieldx"
+        r.field(other)
+        XCTAssertEqual(r.requests.count, asked + 1, "the field moved on: a fresh suggestion")
+    }
+
+    // MARK: - After a paste, drop, undo or redo in a rich editor (item 3)
+
+    func editor(_ quiet: Int?) throws -> PageField {
+        var f = try Self.field(1)
+        f.fieldKind = .contenteditable
+        f.text?.quietMs = quiet
+        return f
+    }
+
+    func testNoOfferInARichEditorRightAfterANonTypingEdit() throws {
+        let r = Rig()
+        r.field(try editor(100))
+        XCTAssertTrue(r.requests.isEmpty, "the editor's own undo would group our insert with the paste")
+        XCTAssertEqual(r.machine.lastOutcome, "afterEdit")
+        r.clock.advance(by: 0.45)
+        XCTAssertTrue(r.requests.isEmpty)
+        r.clock.advance(by: 0.1)
+        XCTAssertEqual(r.requests.count, 1, "offered once \(PageInlineMachine.editQuietMs) ms have passed since the edit")
+    }
+
+    func testAnEditLongEnoughAgoOrInAPlainFieldDoesNotHoldTheOffer() throws {
+        let r = Rig()
+        r.field(try editor(PageInlineMachine.editQuietMs))
+        XCTAssertEqual(r.requests.count, 1)
+        let plain = Rig()
+        var f = try Self.field(1)
+        f.text?.quietMs = 50
+        plain.field(f)
+        XCTAssertEqual(plain.requests.count, 1, "a textarea's undo is the browser's, which our insert already separates")
+    }
+
+    func testAFieldThatMovedOnBeforeTheWaitEndsIsNotOfferedLate() throws {
+        let r = Rig()
+        r.field(try editor(100))
+        r.field(nil)
+        r.clock.advance(by: 1)
+        XCTAssertTrue(r.requests.isEmpty)
+    }
+
+    /// Audit finding b: a password input comes without its text (extension walker.ts), so nothing is generated there.
+    func testNoGenerationForAFieldReportedWithoutText() throws {
+        let r = Rig()
+        var f = try Self.field(1)
+        f.text = nil
+        r.field(f)
+        XCTAssertTrue(r.requests.isEmpty)
+        XCTAssertNil(r.arbiter.snapshot().current)
+        XCTAssertEqual(r.machine.lastOutcome, "noText")
+    }
+
+    /// Brief item 1: a suggestion that runs to the end of the sentence is often wider than the room left. The words that
+    /// fit are offered, and Tab takes exactly those.
+    func testALongSuggestionOffersTheWordsThatFit() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        let long = "Field Robotics Technician role" + String(repeating: " and", count: 40)
+        r.suggest(long)
+        let shown = try XCTUnwrap(r.ghosts.last?.0)
+        XCTAssertTrue(long.hasPrefix(shown) && shown.count < long.count, shown)
+        XCTAssertTrue(shown.hasPrefix("Field Robotics Technician role and"), shown)
+        XCTAssertTrue(shown.hasSuffix(" and"), "cut at a word end: \(shown)")
+        XCTAssertEqual(r.arbiter.snapshot().current?.text, shown, "the offer is what is drawn")
+        XCTAssertEqual(r.machine.lastOutcome, "shown")
+    }
+
     // MARK: - Accept through pageInsert, guarded by the text before the caret
 
     func testTabInsertsThroughPageInsertGuardedByTheTextBeforeTheCaret() throws {

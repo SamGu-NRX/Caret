@@ -1233,10 +1233,19 @@ export const FIELD_SELECTION_MAX = 2000;
  * card, one-time-code or hidden field, a self-identification question, or a frame on a site Caret is off for. Kept
  * only in the tab's latest snapshot in memory; never logged or stored.
  */
+/** How long after a non-typing edit the page still reports it (PageFocusText.quietMs). */
+export const QUIET_REPORT_MS = 2000;
+
 export const PageFocusText = z.object({
   before: z.string().max(FIELD_BEFORE_MAX),
   after: z.string().max(FIELD_AFTER_MAX),
   selection: z.string().max(FIELD_SELECTION_MAX),
+  /**
+   * v2/inline item 3: milliseconds since the last paste, drop, undo or redo in the field's document, when under
+   * QUIET_REPORT_MS; absent otherwise. A rich editor groups changes made close together into one undo step, so the host
+   * waits before offering there (CaretHostCore PageInlineMachine.editQuietMs).
+   */
+  quietMs: z.number().int().min(0).max(QUIET_REPORT_MS).optional(),
 });
 export type PageFocusText = z.infer<typeof PageFocusText>;
 
@@ -1291,10 +1300,12 @@ export const PageInsert = z.object({
   key: z.string().min(1),
   expect: z.string().max(FIELD_BEFORE_MAX),
   text: z.string().min(1).max(FIELD_BEFORE_MAX),
+  /** UTF-16 units immediately before the caret to replace. `expect` still includes the replaced text. Absent or zero inserts only. */
+  replace: z.number().int().min(0).max(FIELD_BEFORE_MAX).optional(),
   /** The element the offer was made for, as pageField.token named it; the page engine refuses any other (H13 review). */
   token: z.string().min(1).max(300),
   at: ms,
-});
+}).refine((m) => (m.replace ?? 0) <= m.expect.length, { message: "replace exceeds the text before the caret", path: ["replace"] });
 export type PageInsert = z.infer<typeof PageInsert>;
 /**
  * The hello capability for saved answers (S1). A consumer that lists it promises to show a saved answer's whole text
@@ -2354,6 +2365,10 @@ export type FieldLook = z.infer<typeof FieldLook>;
  * viewport is. The browser is `app`, the process the bridge was launched by, never one the page names. No value, no
  * label: `empty` says only whether the control holds any text.
  */
+/** PageField.nearby: how far above or below the field, in screen points, and at most how many frames. */
+export const NEARBY_RANGE = 160;
+export const NEARBY_MAX = 40;
+
 /** H13: the kinds of page field whose text a pageField carries (PageField.fieldKind). */
 export const PageFieldKind = z.enum(["input", "textarea", "contenteditable"]);
 export type PageFieldKind = z.infer<typeof PageFieldKind>;
@@ -2387,6 +2402,13 @@ export const PageField = z.object({
    * key is a label and an ordinal, which a replacement field of the same label keeps; an insert names this token.
    */
   token: z.string().min(1).max(300).optional(),
+  /**
+   * v2/inline: screen frames of what lies near the field in the page's top frame, other controls and every label's text
+   * (the field's own label included), within NEARBY_RANGE points above or below it. No text: the host keeps its slips off
+   * them, which hit-testing cannot do in a page Chrome shows Accessibility nothing of. Absent for a field in a child
+   * frame, which has no screen frame, and from a helper before it.
+   */
+  nearby: z.array(Frame).max(NEARBY_MAX).optional(),
   /**
    * H13 review: false when the field's document has lost focus (the user clicked the address bar): the host offers no
    * inline text there, since Tab would go to the browser. With `text`, to the same hosts only; absent before H13.
@@ -2807,6 +2829,8 @@ export const PageControl = z.object({
   /** The form identity the strong key uses; null outside a form. */
   form: z.string().nullable(),
   rect: PageRect,
+  /** v2/inline: the label's text, in the same viewport pixels as `rect` (extension walker.ts labelRectOf); absent when none is drawn. */
+  labelRect: PageRect.optional(),
   required: z.literal(true).optional(),
   disabled: z.literal(true).optional(),
   invalid: z.literal(true).optional(),
@@ -3018,9 +3042,11 @@ export const PageVerb = z.discriminatedUnion("kind", [
   /**
    * P4 item 8: `text` at the caret of the focused field `id` names, by document.execCommand("insertText"), so the page's
    * own Undo takes it back. Only while that very element (no strong-key rebind) still has focus, holds no selection and
-   * reads exactly `expect` before its caret (PageFocusText.before); read back afterwards.
+   * reads exactly `expect` before its caret (PageFocusText.before); read back afterwards. `replace` names the UTF-16
+   * units immediately before the caret to replace; absent or zero inserts only. `expect` includes the replaced text.
    */
-  z.object({ kind: z.literal("pageInsertText"), ...PageTarget, expect: z.string().max(FIELD_BEFORE_MAX), text: z.string().min(1).max(FIELD_BEFORE_MAX) }),
+  z.object({ kind: z.literal("pageInsertText"), ...PageTarget, expect: z.string().max(FIELD_BEFORE_MAX), text: z.string().min(1).max(FIELD_BEFORE_MAX), replace: z.number().int().min(0).max(FIELD_BEFORE_MAX).optional() })
+    .refine((m) => (m.replace ?? 0) <= m.expect.length, { message: "replace exceeds the text before the caret", path: ["replace"] }),
   z.object({ kind: z.literal("pageWrite"), ...PageTarget, expect: z.string(), value: z.string() }),
   z.object({ kind: z.literal("pagePress"), ...PageTarget }),
   z.object({ kind: z.literal("pageSelect"), ...PageTarget, expect: z.string(), value: z.string() }),

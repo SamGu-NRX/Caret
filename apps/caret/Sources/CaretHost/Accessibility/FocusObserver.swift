@@ -21,6 +21,7 @@ final class FocusObserver {
     var onChange: ((Change) -> Void)?
 
     private let reader = FocusedFieldReader()
+    private let electron = ElectronAccess()
     private let ownPID = ProcessInfo.processInfo.processIdentifier
     private let coalesceInterval: TimeInterval
     private var observer: AXObserver?
@@ -89,6 +90,24 @@ final class FocusObserver {
         observer = created
         observedPID = pid
         observeFocusedElement()
+        if electron.ask(pid: pid, bundleURL: app.bundleURL) { settle(pid) }
+    }
+
+    /// An Electron app just asked for its tree builds it after this read. A field that already had
+    /// focus posts no focus change when the tree appears, so look again a few times. The delays are
+    /// assumed, not measured: a first guess at how long Electron takes, checked in the VM (brief item 2).
+    static let settleDelays: [TimeInterval] = [0.15, 0.5, 1.5]
+
+    private func settle(_ pid: pid_t) {
+        for delay in Self.settleDelays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.running, self.observedPID == pid else { return }
+                    self.observeFocusedElement()
+                    self.scheduleRead()
+                }
+            }
+        }
     }
 
     /// Moves the per-element value and selection subscriptions to the currently focused element.

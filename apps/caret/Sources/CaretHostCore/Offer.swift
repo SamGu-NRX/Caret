@@ -122,7 +122,8 @@ public struct Claim: Equatable, Sendable {
         switch offer.kind {
         case .ghost: return !choice.fillAll && !PageWindow.isPage(offer.target.windowID)
         case .fill(let origin): return !choice.fillAll && !PageWindow.isPage(origin.windowID)
-        case .writing: return rangeEdit != nil
+        // A writing fix in a page field goes in through the page (`PageWritingMachine`), not Accessibility.
+        case .writing: return rangeEdit != nil && !PageWindow.isPage(offer.target.windowID)
         case .action, .popup: return false
         }
     }
@@ -182,6 +183,10 @@ public struct KeyStroke: Equatable, Sendable {
     public static let returnKeyCode: Int64 = 36
     public static let deleteKeyCode: Int64 = 51
     public static let spaceKeyCode: Int64 = 49
+    /// The key above Tab on an ANSI keyboard (` and ~). On an ISO keyboard this code is the key beside
+    /// the left Shift, and the key above Tab is `isoSectionKeyCode` (§).
+    public static let graveKeyCode: Int64 = 50
+    public static let isoSectionKeyCode: Int64 = 10
     /// Shift, Command, Option, Control, Caps Lock and Fn, left and right. They arrive as
     /// flags-changed events, not key-downs; listed so a stray one can never dismiss anything.
     public static let modifierKeyCodes: Set<Int64> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]

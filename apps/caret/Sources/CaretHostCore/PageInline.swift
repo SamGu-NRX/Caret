@@ -31,12 +31,16 @@ public struct PageInsert: Codable, Equatable, Sendable {
     /// The element the offer was made for (`PageField.token`); the page refuses an insert into any other.
     public var token: String
     public var at: Int64
+    /// Brief item 5: how many UTF-16 units just before the caret the text replaces (a writing fix: "teh " with
+    /// "the "). Nil inserts at the caret. Never more than `expect` holds; written only when set.
+    public var replace: Int?
 
-    public init(requestId: String, windowId: String, key: String, expect: String, text: String, token: String, at: Int64) {
+    public init(requestId: String, windowId: String, key: String, expect: String, text: String, token: String, at: Int64, replace: Int? = nil) {
         self.requestId = requestId; self.windowId = windowId; self.key = key; self.expect = expect; self.text = text; self.token = token; self.at = at
+        self.replace = replace
     }
 
-    enum CodingKeys: String, CodingKey { case type, v, requestId, windowId, key, expect, text, token, at }
+    enum CodingKeys: String, CodingKey { case type, v, requestId, windowId, key, expect, text, token, at, replace }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -44,6 +48,10 @@ public struct PageInsert: Codable, Equatable, Sendable {
         requestId = try c.decode(String.self, forKey: .requestId); windowId = try c.decode(String.self, forKey: .windowId)
         key = try c.decode(String.self, forKey: .key); expect = try c.decode(String.self, forKey: .expect)
         text = try c.decode(String.self, forKey: .text); token = try c.decode(String.self, forKey: .token); at = try c.decode(Int64.self, forKey: .at)
+        replace = try c.decodeIfPresent(Int.self, forKey: .replace)
+        if let replace, replace < 0 || replace > UTF16Text.length(expect) {
+            throw DecodingError.dataCorruptedError(forKey: .replace, in: c, debugDescription: "replace \(replace) is outside the \(UTF16Text.length(expect)) units before the caret")
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -51,6 +59,7 @@ public struct PageInsert: Codable, Equatable, Sendable {
         try c.encode(Self.type, forKey: .type); try c.encode(Proto.version, forKey: .v)
         try c.encode(requestId, forKey: .requestId); try c.encode(windowId, forKey: .windowId); try c.encode(key, forKey: .key)
         try c.encode(expect, forKey: .expect); try c.encode(text, forKey: .text); try c.encode(token, forKey: .token); try c.encode(at, forKey: .at)
+        if let replace, replace > 0 { try c.encode(replace, forKey: .replace) }
     }
 }
 
@@ -283,6 +292,11 @@ public final class PageInlineMachine {
 
     /// How long an offer waits for Tab. Native ghost text uses the arbiter's default (30 s); a page's is the same.
     public static let offerAge: Double = 30
+    /// Item 3: in a contenteditable, no offer until this long after a paste, drop, undo or redo. A rich editor keeps its
+    /// own undo history and groups changes made close together: ProseMirror's default newGroupDelay is 500 ms, and in
+    /// the VM (run 20261009T060212Z-70419) one ⌘Z after a paste and Tab took both. 600 ms is chosen above that
+    /// default, not measured; typed text needs no wait, since the insert already ends the typing step.
+    public static let editQuietMs = 600
     /// How long the quiet line stays if nobody answers it. A guess, not measured: long enough to read two sentences.
     public static let noticeLifetime: Double = 20
     /// An insert the helper never answers stops being awaited.
@@ -325,6 +339,11 @@ public final class PageInlineMachine {
     /// An insert on its way: until the page answers, a report of the field as it was before the insert offers nothing,
     /// so a stale offer is never drawn over text that is going in (H13 review).
     private var awaiting: Awaiting?
+    /// Brief item 6: Tab took one word (Cotypist's keys). Once the page reads that word in, the rest of the same
+    /// suggestion is offered at once, as a native field's anchor does, instead of generating again.
+    private var carry: (before: String, after: String, text: String, token: String, key: String, windowId: String)?
+    /// The re-check once `editQuietMs` has passed since a non-typing edit (item 3).
+    private var quietTimer: SurfaceTimer?
     private struct Awaiting {
         var requestId: String
         var before: String
@@ -395,6 +414,19 @@ public final class PageInlineMachine {
         if f.pageFocused == false { return clear("pageUnfocused") }
         guard let text = f.text, text.selection.isEmpty, let caretFrame = f.caret, f.frame != nil else { return clear("noText") }
         if PageInline.midLine(text.after) { return clear("midLine") }
+        quietTimer?.cancel()
+        quietTimer = nil
+        if f.fieldKind == .contenteditable, let quiet = text.quietMs, quiet < Self.editQuietMs {
+            let focus = Self.focusKey(f)
+            quietTimer = clock.schedule(after: Double(Self.editQuietMs - quiet) / 1000, repeats: false) { [weak self] in
+                guard let self, let now = self.current, Self.focusKey(now) == focus else { return }
+                self.quietTimer = nil
+                var settled = now
+                settled.text?.quietMs = nil
+                self.field(settled, gate: self.gate)
+            }
+            return clear("afterEdit")
+        }
         let caret = Self.rect(caretFrame)
         if let a = awaiting, text.before == a.before, text.after == a.after { return clear("insertPending") }
         if let s = shown {
@@ -415,6 +447,12 @@ public final class PageInlineMachine {
             }
             clear("textChanged")
         }
+        if let c = carry {
+            carry = nil
+            if text.before == c.before, text.after == c.after, f.token == c.token, key == c.key, f.windowId == c.windowId {
+                return offer(c.text, before: text.before, after: text.after)
+            }
+        }
         if let p = pending, p.before == text.before, p.after == text.after { return }
         requests &+= 1
         let r = Request(id: requests, before: text.before, after: text.after, bundleID: f.app.bundleId, appName: f.app.name)
@@ -427,19 +465,27 @@ public final class PageInlineMachine {
         guard let r = pending, r.id == id else { return output(.count("pageInline.stale")) }
         pending = nil
         guard let text, !text.isEmpty else { return note(why.map { "suppressed.\($0)" } ?? "nothing") }
-        guard let f = current, let t = PageInline.target(f), let fieldText = f.text, fieldText.before == r.before, fieldText.after == r.after,
-              let caretFrame = f.caret, let frame = f.frame else { return note("stale") }
+        guard let fieldText = current?.text, fieldText.before == r.before, fieldText.after == r.after else { return note("stale") }
+        offer(text, before: r.before, after: r.after)
+    }
+
+    /// Offers `text` at the caret of the current field, whose text reads `before` and `after`: published unshown,
+    /// drawn, then revealed.
+    private func offer(_ text: String, before: String, after: String) {
+        guard let f = current, let t = PageInline.target(f), let caretFrame = f.caret, let frame = f.frame else { return note("stale") }
         guard let token = f.token else { return note("noToken") }
         let caret = Self.rect(caretFrame)
         let box = Self.rect(frame)
-        // The ghost stays inside the field, short of its right padding (the left inset stands in for it).
-        let width = measure(text, CGFloat(f.look?.fontSize ?? 13))
-        guard caret.maxX + width <= box.maxX - CGFloat(f.look?.inset ?? 4) else { return note("noRoom") }
-        let offer = Offer(text: text, source: .page, kind: .ghost, target: t, fieldValue: r.before + r.after,
-                          caretUTF16: UTF16Text.length(r.before), createdAt: clock.now, maxAgeSeconds: Self.offerAge)
+        // The ghost stays inside the field, short of its right padding (the left inset stands in for it). A suggestion
+        // wider than that offers the whole words that fit (`GhostFit.wordsThatFit`); none fitting is no room.
+        let size = CGFloat(f.look?.fontSize ?? 13)
+        let room = box.maxX - CGFloat(f.look?.inset ?? 4) - caret.maxX
+        guard let text = GhostFit.wordsThatFit(text, fits: { measure($0, size) <= room }) else { return note("noRoom") }
+        let offer = Offer(text: text, source: .page, kind: .ghost, target: t, fieldValue: before + after,
+                          caretUTF16: UTF16Text.length(before), createdAt: clock.now, maxAgeSeconds: Self.offerAge)
         // Published unshown, drawn, then revealed: Tab takes only text that is on screen.
         guard let id = arbiter.publish(offer, shown: false) else { return note("refused") }
-        shown = Shown(offerID: id, text: text, before: r.before, after: r.after, target: t, token: token, caret: caret, reflected: "", look: f.look,
+        shown = Shown(offerID: id, text: text, before: before, after: after, target: t, token: token, caret: caret, reflected: "", look: f.look,
                       frame: box, page: f.ownSuggestions)
         output(.drawGhost(text, caret: caret, look: f.look))
         guard arbiter.reveal(offerID: id) else {
@@ -521,6 +567,13 @@ public final class PageInlineMachine {
                                 expect: expect, text: claim.insertionText, token: s.token,
                                 at: Int64(clock.now.timeIntervalSince1970 * 1000))))
         note("insert.sent")
+        carry = nil
+        if claim.choice.wordOnly {
+            let rest = String(s.text.dropFirst(claim.typedSinceOffer.count + claim.insertionText.count))
+            if !rest.isEmpty {
+                carry = (expect + claim.insertionText, s.after, rest, s.token, s.target.elementID, s.target.windowID)
+            }
+        }
         awaiting?.timer.cancel()
         let timer = clock.schedule(after: Self.insertWait, repeats: false) { [weak self] in
             guard let self, let a = self.awaiting, a.requestId == requestId else { return }

@@ -83,9 +83,12 @@ Launch by direct exec so the process inherits the launching app's Accessibility 
 CARET_ALLOW_BUNDLES=com.apple.TextEdit .build/Caret.app/Contents/MacOS/Caret
 ```
 
-- The model is Cotypist's Gemma 4 E2B GGUF, read in place
-  (`~/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf`);
-  override with `--model` or `CARET_MODEL_PATH`. The first launch builds an ACPF profile
+- The model is Caret's own copy of Gemma 4 E2B
+  (`~/Library/Application Support/Caret/v2-host/Models/gemma-4-E2B.i1-Q4_K_M.gguf`), else Cotypist's file read in
+  place (`~/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf`); override with
+  `--model` or `CARET_MODEL_PATH`. "Download Caret's Model" in the menu, or the Writing tab's button, fetches the public
+  quant (mradermacher/gemma-4-E2B-i1-GGUF, Apache-2.0), checks its sha256 and writes its license beside it. It never
+  starts by itself, and the copy is used from the next launch. The first launch builds an ACPF profile
   (about 25 MB) under `~/Library/Application Support/Caret/v2-host/Profiles`.
 - `CARET_ALLOW_BUNDLES` (or `--allow`) limits offers to the listed apps, and `CARET_ALLOW_PIDS`
   (or `--allow-pids`) to the listed processes. Use them for test runs on a Mac someone else is

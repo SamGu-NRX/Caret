@@ -51,6 +51,8 @@ final class HostCoordinator {
     /// Every generation task that may still be inside the model, including cancelled ones:
     /// cancellation is a request, and shutdown must not free llama while one is running.
     private var inFlight: [UInt64: Task<Void, Never>] = [:]
+    /// The one extension of the shown suggestion (`GhostExtend`), cancelled with the generation.
+    private var extending: Task<Void, Never>?
     private var isShuttingDown = false
     /// The key-down whose paint was last measured, so one keystroke yields at most one sample.
     private var measuredKeySequence: UInt64 = 0
@@ -95,7 +97,8 @@ final class HostCoordinator {
         }
         guard engine.state == .ready, wordsAllowed(),
               policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
-              !field.secure, !context.traits.isSecureTextEntry, !context.traits.isPasswordField,
+              !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
+              !SecretField.holdsSecret(field, traits: context.traits),
               field.selection.isEmpty
         else { return reset() }
         guard Self.fieldAgrees(field, with: context) else {
@@ -165,7 +168,7 @@ final class HostCoordinator {
             if let shown = overlay.shownText, shown != remainder, shown.hasSuffix(remainder) {
                 overlay.advance(typed: String(shown.dropLast(remainder.count)), remainder: remainder)
             }
-        case .dismissed, .expired, .closed:
+        case .dismissed, .expired, .closed, .realTab:
             guard current == nil else { return }
             cancelGeneration()
             overlay.hide()
@@ -230,6 +233,7 @@ final class HostCoordinator {
         for task in Array(inFlight.values) {
             await task.value
         }
+        await extending?.value
     }
 
     private func finishGeneration(
@@ -297,6 +301,44 @@ final class HostCoordinator {
         anchor = held.suggestion
         guard present(held.suggestion.text, snapshot: held.snapshot, element: held.element, field: fresh, keyStamp: held.keyStamp) else { return }
         recordPaintLatency(held.keyStamp, finishedText: held.finishedText)
+        extend(held)
+    }
+
+    /// Brief item 1 (`GhostExtend`): the 4-token suggestion just drawn is extended once from its end, toward the
+    /// sentence end, and appended in place with no motion, only while the offer is untouched. Tab takes what is
+    /// drawn at the moment it is pressed: a claim removes the offer, and the extension then finds it gone.
+    private func extend(_ held: Held) {
+        guard !isShuttingDown, let offer = arbiter.snapshot().current, offer.source == .engine, case .ghost = offer.kind,
+              offer.text == held.suggestion.text,  // the words that fit a narrow field were all it had room for
+              GhostExtend.shouldExtend(offer.text, afterCursor: held.snapshot.context.afterCursor)
+        else { return }
+        let context = held.snapshot.context.replacingBeforeCursor(held.snapshot.context.beforeCursor + offer.text)
+        let engine = self.engine
+        extending?.cancel()
+        extending = Task { [weak self] in
+            let outcome = try? await engine.suggest(for: context, tokens: GhostExtend.tokens)
+            guard let self, !Task.isCancelled else { return }
+            guard case .suggestion(let more)? = outcome else { return self.status.increment("ghost.extend.none") }
+            let snap = self.arbiter.snapshot()
+            let fresh = FieldReader.readFocused()
+            let same = fresh.map { $0.identity == held.field.identity && $0.selection == held.field.selection } ?? false
+            if let why = GhostExtend.refusal(askedFor: offer.id, current: snap.current?.id, typedSinceOffer: snap.typedSinceOffer,
+                                             keyedSince: self.status.lastKeyDown().sequence != held.keyStamp.sequence,
+                                             sameField: same, more: more.text) {
+                return self.status.increment("ghost.extend.\(why)")
+            }
+            guard self.route?.gate().allows ?? true, let fresh else { return self.status.increment("ghost.extend.gated") }
+            let full = offer.text + more.text
+            // Publishing the longer offer displaces the shorter one (which takes its text down) and draws the whole
+            // in the same turn of the main thread, so the words already shown stay where they were.
+            guard self.present(full, snapshot: held.snapshot, element: held.element, field: fresh, keyStamp: held.keyStamp) else {
+                // Never leave an offer on the arbiter that is not drawn.
+                self.clearOffer()
+                return self.status.increment("ghost.extend.notDrawn")
+            }
+            self.anchor = GhostSuggestion(text: full, context: held.suggestion.context, generationMs: held.suggestion.generationMs)
+            self.status.increment("ghost.extended")
+        }
     }
 
     /// Records which window held a ghost as covered, in the debug state, and logs it when the
@@ -331,6 +373,9 @@ final class HostCoordinator {
             overlay.hide()
             return false
         }
+        // A suggestion wider than a single-line field's room offers the words that fit; the rest stays in
+        // `anchor` and comes back as the user types or takes these (`SuggestionAnchor.remaining`).
+        let text = overlay.inlineText(text, at: snapshot, style: style)
         let offer = Offer(text: text, target: field.identity, fieldValue: field.value, caretUTF16: field.selection.start)
         guard let offerID = arbiter.publish(offer, shown: false) else {
             status.increment("offer.refused")
@@ -406,6 +451,8 @@ final class HostCoordinator {
 
     private func cancelGeneration() {
         held = nil
+        extending?.cancel()
+        extending = nil
         generation?.cancel()
         generation = nil
         generationSerial &+= 1

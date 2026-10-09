@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, PageFieldText, PageSnapshot, type PageControl } from "../src/protocol.ts";
-import { fieldKind, ownSuggestions, pageFieldText } from "../src/engines/field-text.ts";
+import { fieldKind, nearbyFrames, ownSuggestions, pageFieldText } from "../src/engines/field-text.ts";
 
 const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/page-field-text.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as unknown);
 
@@ -71,5 +71,29 @@ describe("pageField's fieldKind (H13)", () => {
     expect(fieldKind(snapAt("https://example.test", "/", [ctl("e1", "checkbox", "F")], focus))).toBeNull();
     expect(fieldKind(snapAt("https://example.test", "/", [], null))).toBeNull();
     expect(fieldKind(snapAt("https://docs.google.com", "/document/d/abc/edit", [], null, { kind: "document", text: "on", field: { before: "a", after: "", selection: "" } }))).toBeNull();
+  });
+});
+
+describe("pageField's nearby frames (v2/inline)", () => {
+  // The DF1 form: 680-wide fields every 70 px, each label's text 21 px over its field, at zoom 1 in a window at the origin.
+  const row = (i: number, name: string): PageControl => ({ ...ctl(`e${i}`, "text", name), rect: [10, 100 + i * 70, 680, 32], labelRect: [10, 79 + i * 70, 90, 15] });
+  const toScreen = (r: readonly [number, number, number, number]): [number, number, number, number] => [r[0], r[1], r[2], r[3]];
+  const form = [row(0, "First Name"), row(1, "Last Name"), row(2, "Email"), row(3, "Phone"), row(4, "Resume")];
+
+  it("names the other fields and every label near the focused one, its own label included, nearest first", () => {
+    const s = snapAt("https://jobs.example.test", "/apply", form, { frameId: 0, id: "e0", selection: [0, 0], text: { before: "", after: "", selection: "" } });
+    const near = nearbyFrames(s, toScreen);
+    expect(near).not.toBeNull();
+    expect(near).toContainEqual([10, 79, 90, 15]);
+    expect(near).toContainEqual([10, 149, 90, 15]);
+    expect(near).toContainEqual([10, 170, 680, 32]);
+    expect(near).not.toContainEqual([10, 100, 680, 32]);
+    expect(near?.[0]).toEqual([10, 79, 90, 15]);
+  });
+
+  it("leaves out what is further than its range and needs a screen position", () => {
+    const s = snapAt("https://jobs.example.test", "/apply", form, { frameId: 0, id: "e0", selection: [0, 0], text: { before: "", after: "", selection: "" } });
+    expect(nearbyFrames(s, toScreen)).not.toContainEqual([10, 380, 680, 32]);
+    expect(nearbyFrames(s, null)).toBeNull();
   });
 });

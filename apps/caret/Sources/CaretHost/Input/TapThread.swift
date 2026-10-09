@@ -251,9 +251,23 @@ public final class TapThread: @unchecked Sendable {
         // time the key is delivered. Such a key takes nothing; the counter says how often it happens.
         let key = KeyStroke(event: event)
         stats.withLock { key.targetPID == nil ? ($0.targetMissing &+= 1) : ($0.targetFromEvent &+= 1) }
-        let consumed = route(key, stampedAt: started)
+        let disposition = routeKey(key, stampedAt: started)
         record(started: started)
-        return consumed ? nil : Unmanaged.passUnretained(event)
+        switch disposition {
+        case .consume: return nil
+        case .pass: return Unmanaged.passUnretained(event)
+        case .passAsPlainTab:
+            // Cotypist's ⌥Tab: the app receives the Tab the user meant, without Option.
+            event.flags.remove(.maskAlternate)
+            return Unmanaged.passUnretained(event)
+        }
+    }
+
+    /// What the tap does with a key-down.
+    enum Disposition: Equatable {
+        case consume, pass
+        /// Pass it on with the Option flag cleared (`OfferArbiter.PassReason.realTab`).
+        case passAsPlainTab
     }
 
     /// Decides one key and hands the result on. True when the key is Caret's and must not reach
@@ -264,7 +278,12 @@ public final class TapThread: @unchecked Sendable {
     /// through the hook reads the same counters as one driven by real keys (A18, bug 18).
     @discardableResult
     public func route(_ key: KeyStroke, stampedAt uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds, fromHook: Bool = false) -> Bool {
-        let consumed = decide(key, stampedAt: uptimeNanos)
+        routeKey(key, stampedAt: uptimeNanos, fromHook: fromHook) == .consume
+    }
+
+    func routeKey(_ key: KeyStroke, stampedAt uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds, fromHook: Bool = false) -> Disposition {
+        let disposition = decide(key, stampedAt: uptimeNanos)
+        let consumed = disposition == .consume
         stats.withLock { s in
             s.keyDowns &+= 1
             if consumed { s.consumed &+= 1 }
@@ -274,40 +293,43 @@ public final class TapThread: @unchecked Sendable {
                 if !consumed { s.tabsPassed &+= 1 }
             }
         }
-        return consumed
+        return disposition
     }
 
-    private func decide(_ key: KeyStroke, stampedAt uptimeNanos: UInt64) -> Bool {
+    private func decide(_ key: KeyStroke, stampedAt uptimeNanos: UInt64) -> Disposition {
         callbacks.keyDown(uptimeNanos)
         if let pid = key.targetPID { callbacks.realKey(pid) }
         switch arbiter.handleKeyDown(key) {
         case .consume(let claim):
             callbacks.claimed(claim)
-            return true
+            return .consume
         case .undo(let grant):
             callbacks.undo(grant)
-            return true
+            return .consume
         case .closeToast:
             callbacks.offerChanged(.toastDismissed, key)
-            return true
+            return .consume
         case .navigate(let offerID, let ui):
             callbacks.navigated(offerID, ui)
-            return true
+            return .consume
         case .closeOffer(let offerID):
             callbacks.closedOffer(offerID)
             callbacks.offerChanged(.closed, key)
-            return true
+            return .consume
         case .stopWork(let line):
             callbacks.stopWork(line)
-            return true
+            return .consume
         case .closeStatus:
             callbacks.offerChanged(.statusDismissed, key)
-            return true
+            return .consume
         case .pass(.noOffer), .pass(.otherApp), .pass(.modifierOnly):
-            return false
+            return .pass
+        case .pass(.realTab):
+            callbacks.offerChanged(.realTab, key)
+            return .passAsPlainTab
         case .pass(let reason):
             callbacks.offerChanged(reason, key)
-            return false
+            return .pass
         }
     }
 

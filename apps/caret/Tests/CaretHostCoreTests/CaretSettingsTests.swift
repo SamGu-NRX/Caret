@@ -186,4 +186,36 @@ final class CaretSettingsTests: XCTestCase {
             XCTAssertNotEqual(line, line.uppercased(), line)
         }
     }
+
+    // MARK: - Apps Caret is off in (brief item 7)
+
+    func testAnAppTurnedOffIsKeptOnceAndSorted() {
+        var s = CaretSettings()
+        XCTAssertFalse(s.isOff("com.tinyspeck.slackmacgap"))
+        s.setApp("com.tinyspeck.slackmacgap", off: true)
+        s.setApp("com.apple.mail", off: true)
+        s.setApp("com.tinyspeck.slackmacgap", off: true)
+        XCTAssertEqual(s.appsOff, ["com.apple.mail", "com.tinyspeck.slackmacgap"])
+        XCTAssertTrue(s.isOff("com.apple.mail"))
+        XCTAssertFalse(s.isOff(nil), "an app without a bundle identifier is never off")
+        s.setApp("com.apple.mail", off: false)
+        XCTAssertEqual(s.appsOff, ["com.tinyspeck.slackmacgap"])
+    }
+
+    func testABundleIdentifierWithSpaceOrNothingIsNotAnApp() {
+        var s = CaretSettings()
+        s.setApp("", off: true)
+        s.setApp("com.example app", off: true)
+        XCTAssertEqual(s.appsOff, [])
+    }
+
+    func testAppsOffAreWrittenOnlyWhenThereAreSomeAndRefusedWhenMalformed() throws {
+        var s = CaretSettings()
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(s), as: UTF8.self).contains("appsOff"))
+        s.setApp("com.apple.mail", off: true)
+        XCTAssertEqual(try JSONDecoder().decode(CaretSettings.self, from: JSONEncoder().encode(s)).appsOff, ["com.apple.mail"])
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(CaretSettings())) as! [String: Any]
+        object["appsOff"] = ["com.apple.mail", ""]
+        XCTAssertThrowsError(try JSONDecoder().decode(CaretSettings.self, from: JSONSerialization.data(withJSONObject: object)))
+    }
 }

@@ -90,7 +90,8 @@ public final class SettingsStore {
     /// `settings set <name> <value>` on the debug socket, the menu bar's choices by name:
     ///   role fill|repeat|watch|calendar|words on|off, level quiet|balanced|eager,
     ///   character pebble|seed|wren, paused on|off, routing on|off (H6: "Caret decides when to help"),
-    ///   calendar <EventKit calendar id>|default (H8: where accepted events go).
+    ///   calendar <EventKit calendar id>|default (H8: where accepted events go), keys caret|cotypist
+    ///   (which keys take ghost text), app <bundle id> on|off (Caret in one app).
     public func set(_ words: [String]) -> String? {
         func onOff(_ word: String) -> Bool? { word == "on" ? true : (word == "off" ? false : nil) }
         switch (words.first, words.count) {
@@ -118,8 +119,14 @@ public final class SettingsStore {
         case ("pageInlineContentEditable", 2):
             guard let on = onOff(words[1]) else { return "usage: settings set pageInlineContentEditable on|off" }
             update(source: .socket) { $0.pageInlineContentEditable = on }
+        case ("app", 3):
+            guard let on = onOff(words[2]), CaretSettings.isBundleID(words[1]) else { return "usage: settings set app <bundle id> on|off" }
+            update(source: .socket) { $0.setApp(words[1], off: !on) }
+        case ("keys", 2):
+            guard let keys = GhostKeys(rawValue: words[1]) else { return "usage: settings set keys caret|cotypist" }
+            update(source: .socket) { $0.ghostKeys = keys }
         default:
-            return "usage: settings set role|level|character|paused|routing|calendar|pageInlineText|pageInlineContentEditable ..."
+            return "usage: settings set role|level|character|paused|routing|calendar|pageInlineText|pageInlineContentEditable|keys|app ..."
         }
         return nil
     }

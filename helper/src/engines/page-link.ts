@@ -640,7 +640,7 @@ export class PageEngineLink implements ReaderLink {
    * reads exactly `expect` before its caret, by execCommand("insertText"), so the page's own Undo takes it back. Under
    * the task's grant, as every act. Only an accepted inline offer on a page calls this (the host's half, H13).
    */
-  async insertText(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string): Promise<VerbResult> {
+  async insertText(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string, replace?: number): Promise<VerbResult> {
     const w = parsePageWindow(windowId);
     if (w === null || w.engine !== this.session.info.engine) return verbResult("noWindow", `${windowId} is not a window of engine ${this.session.info.engine}`);
     const snap = this.session.tabs.get(w.tabId);
@@ -651,7 +651,8 @@ export class PageEngineLink implements ReaderLink {
     if (snap?.focused?.frameId !== t.frameId || snap.focused.id !== t.id) return verbResult("changed", `'${t.control.name}' is not the field that has focus`);
     // H13 review: the key may name another element now (the page replaced the field with one of the same label).
     if (token !== undefined && elementToken(t) !== token) return verbResult("changed", `'${t.control.name}' is not the element the offer was made for`);
-    return this.act({ kind: "pageInsertText", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, expect, text }, w.tabId);
+    if ((replace ?? 0) > expect.length) return verbResult("changed", "replace exceeds the text before the caret");
+    return this.act({ kind: "pageInsertText", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, expect, text, ...(replace === undefined ? {} : { replace }) }, w.tabId);
   }
 
   private remember(mark: string, e: MarkedElement): void {

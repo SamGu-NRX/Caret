@@ -101,12 +101,14 @@ final class WritingCoordinator {
         }
         if sameElement, field.role == nil { return status.increment("writing.readFailed") }
         guard policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
-              !field.secure, Self.isProse(element, field: field)
+              !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
+              !SecretField.holdsSecret(field, traits: change.snapshot?.context.traits), Self.isProse(element, field: field)
         else { return leaveField() }
         if marks.observe(field: field.identity, value: field.value) {
             previousValue = nil
             takeLineDown(exit: 0)
             checkTask?.cancel()
+            sentenceCheck = nil
             // A result reports on the field it came from; its ⌘Z goes with it.
             endResult(exit: 0)
             ownWrite = nil
@@ -132,6 +134,9 @@ final class WritingCoordinator {
             }
         } else if let sentence = WritingMarks.boundary(previous: previous, value: field.value, selection: field.selection) {
             check(sentence, in: field)
+        } else if let word = WordFix.closedWord(previous: previous, value: field.value, selection: field.selection),
+                  WordFix.eligible(word, in: field.value) {
+            checkWord(word, in: field)
         }
         drawMarks()
     }
@@ -153,6 +158,7 @@ final class WritingCoordinator {
     private func leaveField() {
         offerWhenRouted = false
         checkTask?.cancel()
+        sentenceCheck = nil
         takeLineDown(exit: 0)
         endResult(exit: 0)
         ownWrite = nil
@@ -187,12 +193,41 @@ final class WritingCoordinator {
             return finishCheck(rules, sentence: sentence, value: value, offering: offering)
         }
         let key = NativeChecker.FieldKey(field.identity)
+        let token = checks
+        sentenceCheck = token
         checkTask = Task { [weak self, checker] in
             let outcome = await checker.check(value, sentence: sentence, language: language, field: key)
+            if self?.sentenceCheck == token { self?.sentenceCheck = nil }
             guard let self, !Task.isCancelled else { return }
             guard case .corrections(let found) = outcome else { return self.noteCheck("stale") }
             self.noteCheck("checked")
             self.finishCheck(WritingCheck.merged(rules, found), sentence: sentence, value: value, offering: offering)
+        }
+    }
+
+    /// The sentence check waiting for the system checker, by its number in `checks`. A word check
+    /// started now would make its answer stale (`NativeChecker` keeps only a field's newest check), so
+    /// none starts. Cleared when that check answers or is cancelled.
+    private var sentenceCheck: Int?
+
+    /// Brief item 5: the word just closed, checked for spelling alone. Only a fix `WordFix.offersLive`
+    /// accepts becomes a mark, bound to the word's own span so typing on after it keeps it
+    /// (`WritingMarks.rebase`); the sentence check later replaces it with what it finds there.
+    private func checkWord(_ word: UTF16Span, in field: FieldState) {
+        guard sentenceCheck == nil else { return noteCheck("wordSkippedForSentence") }
+        if InputMethodState.shared.composes { return noteCheck("skippedComposing") }
+        guard let language, NativeChecker.supports(language) else { return }
+        let value = field.value
+        let key = NativeChecker.FieldKey(field.identity)
+        checkTask?.cancel()
+        checkTask = Task { [weak self, checker] in
+            let outcome = await checker.check(value, sentence: word, language: language, field: key)
+            guard let self, !Task.isCancelled else { return }
+            guard case .corrections(let found) = outcome else { return self.noteCheck("wordStale") }
+            let live = found.filter { word.contains($0.span) && WordFix.offersLive($0) }
+            self.noteCheck(live.isEmpty ? "wordClean" : "wordFix")
+            guard !live.isEmpty else { return }
+            self.finishCheck(live, sentence: word, value: value, offering: true)
         }
     }
 

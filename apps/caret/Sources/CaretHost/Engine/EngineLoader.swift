@@ -1,5 +1,6 @@
 import AppCompatibility
 import AutocompleteCore
+import CaretHostCore
 import ConstrainedGeneration
 import Foundation
 import LlamaModelRuntime
@@ -11,8 +12,9 @@ import TokenProfiles
 /// Builds KeyType's constrained-generation engine over a GGUF read in place.
 ///
 /// KeyType's own loader (`CompletionController.buildEngine`) resolves the model and profile inside
-/// `~/Library/Application Support/KeyType`. The host reads the model by path instead, so the
-/// Cotypist file is used without copying 3.4 GB, and keeps its ACPF profile in its own directory.
+/// `~/Library/Application Support/KeyType`. The host reads the model by path instead (`ModelFiles`): Caret's own copy
+/// when the user downloaded one, else Cotypist's file in place, without copying 3.4 GB. It keeps its ACPF profile in
+/// its own directory.
 public enum EngineLoader {
     enum LoadError: Error, CustomStringConvertible {
         case modelMissing(String)
@@ -40,13 +42,13 @@ public enum EngineLoader {
         family.lowercased().hasPrefix("gemma")
     }
 
-    /// The dev model: Cotypist's Gemma 4 E2B base quant, read by path and never copied.
+    /// The model to load (brief item 8, `ModelFiles.find`): `CARET_MODEL_PATH` when set, else Caret's own copy, else
+    /// Cotypist's file read in place. With neither, Caret's path, so the engine says that file is missing.
     public static var defaultModelURL: URL {
-        if let override = ProcessInfo.processInfo.environment["CARET_MODEL_PATH"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf")
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let found = ModelFiles.find(home: home, named: ProcessInfo.processInfo.environment["CARET_MODEL_PATH"],
+                                    exists: { FileManager.default.fileExists(atPath: $0.path) })
+        return found?.url ?? ModelFiles.caretFile(home: home)
     }
 
     static var profileDirectory: URL {

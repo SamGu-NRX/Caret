@@ -38,6 +38,17 @@ final class GhostTextEngine {
 
     static let maxCompletionTokens = 4
     static let maxDisplayWidth = 60
+    /// The caps this engine requests with. `Caret --probe-length` varies them to time longer
+    /// suggestions; a normal run keeps the defaults above.
+    var completionTokens = GhostTextEngine.maxCompletionTokens
+    /// Probe only (`Caret --probe-length`, mode `norm-4`): order the beam's candidates by mean log probability per
+    /// token instead of KeyType's cumulative score, which favors short candidates. A re-rank of what the beam returned,
+    /// not a different beam: KeyType's search and early stop (pinned upstream) still decide which candidates exist.
+    var normalizesLength = false
+    var displayWidth = GhostTextEngine.maxDisplayWidth
+    /// The user's personal instructions for a field (brief item 4, `PersonalInstructions.lines`). They replace KeyType's
+    /// `policy.customInstructions`, which nothing in Caret sets.
+    var instructions: (TextFieldContext) -> [String] = { _ in [] }
     /// Candidates looked at, best first, when the better ones are refused at the seam or do not
     /// fit the text after the caret. KeyType's own filter still decides about the first.
     static let candidatesTried = 3
@@ -112,7 +123,8 @@ final class GhostTextEngine {
     }
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
-    func suggest(for context: TextFieldContext) async throws -> Outcome {
+    /// `tokens` overrides `completionTokens` for this one request (the extension after the first paint).
+    func suggest(for context: TextFieldContext, tokens: Int? = nil) async throws -> Outcome {
         if let replay {
             switch replay.outcome(before: context.beforeCursor, after: context.afterCursor) {
             case .text(let text)?: return .suggestion(GhostSuggestion(text: text, context: context, generationMs: 0))
@@ -134,9 +146,16 @@ final class GhostTextEngine {
             return .suppressed("numericMidWordStem")
         }
 
-        let request = makeRequest(for: context, policy: policy)
+        let request = makeRequest(for: context, policy: policy, tokens: tokens)
         let started = DispatchTime.now().uptimeNanoseconds
-        let candidates = try await engine.completions(for: request)
+        var candidates = try await engine.completions(for: request)
+        if normalizesLength {
+            candidates = candidates.enumerated().sorted { a, b in
+                let ma = a.element.logProbability / Double(max(1, a.element.tokenIDs.count))
+                let mb = b.element.logProbability / Double(max(1, b.element.tokenIDs.count))
+                return ma != mb ? ma > mb : a.offset < b.offset
+            }.map(\.element)
+        }
         try Task.checkCancellation()
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
         lastGenerationMs = elapsed
@@ -200,28 +219,28 @@ final class GhostTextEngine {
         makeRequest(for: context, policy: compatibilityStore.policy(for: context))
     }
 
-    private func makeRequest(for context: TextFieldContext, policy: CompletionPolicy) -> CompletionRequest {
+    private func makeRequest(for context: TextFieldContext, policy: CompletionPolicy, tokens override: Int? = nil) -> CompletionRequest {
         // Token healing: prompt from the last clean token boundary and force the typed stem back
         // out, so the model can reach the whole-word token (ADR-019).
         let heal = MidWordHealing.plan(for: context)
         let promptContext = heal.map { context.replacingBeforeCursor($0.head) } ?? context
         let prompt = promptBuilder.buildPrompt(
             context: promptContext,
-            customInstructions: policy.customInstructions,
+            customInstructions: instructions(context),
             includeEnvironmentContext: policy.includesEnvironmentContext
         ).prompt
         let healSlack = heal?.heal.count ?? 0
         let healTokens = healSlack > 0 ? 1 : 0
         let tokens = Self.shouldUseCapsule(for: context)
-            ? min(Self.maxCompletionTokens, 3) + healTokens
-            : Self.maxCompletionTokens + healTokens
+            ? min(override ?? completionTokens, 3) + healTokens
+            : (override ?? completionTokens) + healTokens
         return CompletionRequest(
             context: context,
             prompt: prompt,
             requiredPrefixBytes: heal.map { Array($0.heal.utf8) } ?? [],
             mode: policy.completionMode,
             maxCompletionTokens: tokens,
-            maxDisplayWidth: Self.maxDisplayWidth + healSlack
+            maxDisplayWidth: displayWidth + healSlack
         )
     }
 

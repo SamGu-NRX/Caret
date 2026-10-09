@@ -115,7 +115,7 @@ public final class HostRuntime {
     }
 
     private let configuration: Configuration
-    private let arbiter = OfferArbiter()
+    private let arbiter = OfferArbiter(aboveTabKeyCode: KeyboardLayout.aboveTabKeyCode())
     private let status = HostStatus()
     private let compatibilityStore = AppCompatibilityStore()
     private let engine: GhostTextEngine
@@ -141,6 +141,8 @@ public final class HostRuntime {
     private let socket: DebugStateSocket
     private let onboarding: OnboardingController
     private let memory: MemoryController
+    /// Brief item 8: the model file in use and Caret's own copy's download.
+    private let modelKeeper: ModelKeeper
     private let pageSight: PageSightCoordinator
     /// H6: the helper's router, as ghost text and the writing line follow it.
     private let routeLink: RouteLink
@@ -185,6 +187,11 @@ public final class HostRuntime {
         let pageInline = PageInlineCoordinator(arbiter: arbiter, status: status, engine: engine, policy: policy, drawsOnScreen: !configuration.surfacesHeadless)
         self.pageInline = pageInline
         pageInline.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
+        // Brief item 4: the user's personal instructions in every completion prompt; a page's site from the page path.
+        engine.instructions = { [weak pageInline] context in
+            let id = context.target.bundleIdentifier
+            return SettingsStore.shared.settings.instructions.lines(bundleID: id, origin: pageInline?.origin(forBundleID: id))
+        }
         let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
         self.writing = writing
         let routeLink = RouteLink(status: status, enabled: SettingsStore.shared.settings.routing)
@@ -244,6 +251,14 @@ public final class HostRuntime {
         let activity = ActivityCenter()
         self.activity = activity
         let memory = MemoryController(testHooks: configuration.testHooks)
+        let modelKeeper = ModelKeeper(configured: configuration.modelURL)
+        self.modelKeeper = modelKeeper
+        let showModel: () -> Void = { [weak memory, unowned modelKeeper] in
+            memory?.showModel(WritingPage.ModelPanel(line: modelKeeper.line, action: modelKeeper.action(menu: false), status: modelKeeper.status))
+        }
+        modelKeeper.observe(showModel)
+        showModel()
+        memory.onModel = { [unowned modelKeeper] in modelKeeper.toggle() }
         self.memory = memory
         let perch = PerchController(center: activity, drawsOnScreen: configuration.perchDrawsOnScreen)
         self.perch = perch
@@ -440,10 +455,24 @@ public final class HostRuntime {
         // every change (B10). The client drops a change that leaves all three as they were.
         let gateClient = helper
         gateClient.update(HostSettings(SettingsStore.shared.settings, at: Self.nowMs()))
+        arbiter.setGhostKeys(SettingsStore.shared.settings.ghostKeys)
+        AppSwitch.shared.update(SettingsStore.shared.settings)
+        var appsOff = SettingsStore.shared.settings.appsOff
         // A setting that closes the gate takes down what it no longer allows at once, not only
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in
             gateClient.update(HostSettings(settings, at: Self.nowMs()))
+            arbiter.setGhostKeys(settings.ghostKeys)
+            AppSwitch.shared.update(settings)
+            // An app just turned off: what Caret shows there goes now, not at the next keystroke.
+            if settings.appsOff != appsOff {
+                appsOff = settings.appsOff
+                coordinator.gateClosed()
+                writing.gateClosed()
+                pageInline.gateClosed()
+                fill.gateClosed()
+                surface.gateClosed()
+            }
             if !HostGate.allowsGhostText(settings) {
                 coordinator.gateClosed()
                 writing.gateClosed()
@@ -540,6 +569,7 @@ public final class HostRuntime {
                     MainActor.assumeIsolated {
                         surface.navigated(offerID: offerID, ui: ui)
                         writing.navigated(offerID: offerID, ui: ui)
+                        pageInline.navigated(offerID: offerID, ui: ui)
                     }
                 }
             },
@@ -770,6 +800,14 @@ public final class HostRuntime {
 
     /// The menu's What Caret Knows: the memory window.
     public func openMemory() { memory.open() }
+
+    /// Brief item 8, for the menu: the line naming the model file in use, the download's item (nil when there is
+    /// nothing to offer) and its status.
+    public var modelLine: String { modelKeeper.line }
+    public var modelAction: String? { modelKeeper.action(menu: true) }
+    public var modelStatus: String? { modelKeeper.status }
+    /// Starts Caret's model download, or stops the one running. Only ever from a user's choice.
+    public func toggleModelDownload() { modelKeeper.toggle() }
 
     public func start() throws {
         try socket.start()
@@ -1070,10 +1108,11 @@ public final class HostRuntime {
             guard words.count == 3, let pid = Int32(words[2]), let key = TestKeys.key(words[1], pid: pid) else {
                 return Data("{\"error\":\"usage: key \(TestKeys.names) <pid>\"}\n".utf8)
             }
-            let consumed = tap.route(key, fromHook: true)
+            let disposition = tap.routeKey(key, fromHook: true)
             // The tap's callbacks post to main; wait for them, so the next read sees their effect.
             DispatchQueue.main.sync {}
-            return Data("{\"ok\":true,\"consumed\":\(consumed)}\n".utf8)
+            // plainTab: the tap would pass this key on as a plain Tab (Cotypist's ⌥Tab).
+            return Data("{\"ok\":true,\"consumed\":\(disposition == .consume),\"plainTab\":\(disposition == .passAsPlainTab)}\n".utf8)
         case "writemethod":
             // Test hook: `writemethod <pid> pastePid|axSelectedText` sets how that app takes writes,
             // so an acceptance run can drive the pasteboard route in an app that takes AX writes.
@@ -1230,13 +1269,16 @@ private final class ClientBox: @unchecked Sendable {
 
 /// Keys the debug socket's test hook can route.
 enum TestKeys {
-    static let names = "tab|shift-tab|opt-right|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:<c>"
+    static let names = "tab|shift-tab|opt-right|opt-tab|above-tab|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:<c>"
 
     static func key(_ name: String, pid: Int32) -> KeyStroke? {
         switch name {
         case "tab": return .tab(to: pid)
         case "shift-tab": return KeyStroke(keyCode: KeyStroke.tabKeyCode, shift: true, targetPID: pid)
         case "opt-right": return KeyStroke(keyCode: KeyStroke.rightKeyCode, option: true, targetPID: pid)
+        case "opt-tab": return KeyStroke(keyCode: KeyStroke.tabKeyCode, option: true, targetPID: pid)
+        // The ANSI key above Tab; the hook does not ask which keyboard this Mac has.
+        case "above-tab": return KeyStroke(keyCode: KeyStroke.graveKeyCode, text: "`", targetPID: pid)
         case "up": return KeyStroke(keyCode: KeyStroke.upKeyCode, targetPID: pid)
         case "down": return KeyStroke(keyCode: KeyStroke.downKeyCode, targetPID: pid)
         case "left": return KeyStroke(keyCode: KeyStroke.leftKeyCode, targetPID: pid)
