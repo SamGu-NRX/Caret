@@ -4,7 +4,7 @@ import CaretHostCore
 
 /// A minimal menu-bar shell: the figure as the status item (Carrot while work runs), the engine
 /// state, pause, the activity list, the perch toggle, the settings (what Caret helps with, how
-/// often it speaks up, the character), and Quit.
+/// often it speaks up), and Quit.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let runtime: HostRuntime
@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let home: CaretHome
     /// `--nmh-dir`: where Add to Chrome writes in a run with its own home.
     private let manifestDirectory: String?
+    private var browserInstallResult: ChromeBridgeInstaller.Result?
     private var statusItem: NSStatusItem?
     private let stateItem = NSMenuItem(title: "Starting", action: nil, keyEquivalent: "")
     /// Shown only after the helper or the reader crashed past the restart rule; choosing it starts both again.
@@ -23,7 +24,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var signalSources: [DispatchSourceSignal] = []
     private var isTerminating = false
     private var working = false
-    private var characterItems: [NSMenuItem] = []
     private let perchItem = NSMenuItem(title: "Show Perch", action: nil, keyEquivalent: "")
     private let pauseItem = NSMenuItem(title: "Pause Caret", action: nil, keyEquivalent: "")
     private var roleItems: [NSMenuItem] = []
@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runtime.useJevKeys(services)
         runtime.onAddToChrome = { [weak self] in
             guard let self else { return }
-            ChromeBridgeInstaller.run(home: self.home, manifestOverride: self.manifestDirectory)
+            self.addToBrowser()
         }
         services.onChange = { [weak self] in self?.refreshStopped() }
         do {
@@ -99,16 +99,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        stateItem.title = runtime.engineSummary
+        stateItem.title = browserInstallResult?.message ?? runtime.engineSummary
+        // Show the install result on one menu opening, then resume reporting the engine state.
+        browserInstallResult = nil
         let notice = OtherTabOwners.notice(OtherTabOwners.running(in: NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)))
         tabOwnerItem.title = notice ?? ""
         tabOwnerItem.isHidden = notice == nil
         jevOffItem.isHidden = !services.jevOff
         perchItem.state = runtime.perchHidden ? .off : .on
-        let current = FigureSettings.shared.character
-        for item in characterItems {
-            item.state = item.representedObject as? String == current.rawValue ? .on : .off
-        }
         let settings = SettingsStore.shared.settings
         pauseItem.title = settings.paused ? "Resume Caret" : "Pause Caret"
         for item in roleItems {
@@ -129,7 +127,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func addToChrome(_ sender: NSMenuItem) {
-        ChromeBridgeInstaller.run(home: home, manifestOverride: manifestDirectory)
+        addToBrowser()
+    }
+
+    private func addToBrowser() {
+        let result = ChromeBridgeInstaller.run(home: home, manifestOverride: manifestDirectory)
+        browserInstallResult = result
+        stateItem.title = result.message
+        stateItem.toolTip = ([result.detail].filter { !$0.isEmpty } + result.manualSteps.enumerated().map { "\($0.offset + 1). \($0.element)" }).joined(separator: "\n")
     }
 
     @objc private func addJevKey(_ sender: NSMenuItem) {
@@ -178,12 +183,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refreshGlyph() {
         statusItem?.button?.image = FigureGlyph.image(FigureSettings.shared.character, working: working)
-    }
-
-    @objc private func chooseCharacter(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let character = FigureCharacter(rawValue: raw) else { return }
-        FigureSettings.shared.character = character
-        refreshGlyph()
     }
 
     @objc private func showActivity(_ sender: NSMenuItem) {
@@ -249,15 +248,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         perchItem.target = self
         menu.addItem(perchItem)
         menu.addItem(.separator())
-        // The pebble is the default (Sam, 2026-10-02); seed and wren stay as choices.
-        let characterMenu = NSMenu()
-        for character in FigureCharacter.allCases {
-            let choice = NSMenuItem(title: character.displayName, action: #selector(chooseCharacter(_:)), keyEquivalent: "")
-            choice.target = self
-            choice.representedObject = character.rawValue
-            characterMenu.addItem(choice)
-            characterItems.append(choice)
-        }
         // The same choices onboarding asks for, here to change later.
         let roleMenu = NSMenu()
         for role in CaretRole.allCases {
@@ -283,9 +273,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let levelItem = NSMenuItem(title: CaretLevel.question.capitalized, action: nil, keyEquivalent: "")
         levelItem.submenu = levelMenu
         menu.addItem(levelItem)
-        let characterItem = NSMenuItem(title: "Character", action: nil, keyEquivalent: "")
-        characterItem.submenu = characterMenu
-        menu.addItem(characterItem)
         menu.addItem(.separator())
         // Only the launchd agent is a login item to remove; a development or test run never offers it (and must not
         // unregister the developer's own Caret).

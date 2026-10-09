@@ -18,7 +18,6 @@ final class CaretSettingsTests: XCTestCase {
         var s = CaretSettings()
         s.roles = [.words, .fill]
         s.level = .eager
-        s.character = .wren
         s.recordPreferences(source: .onboarding, at: 5)
         let data = try JSONEncoder().encode(s)
         XCTAssertTrue(String(decoding: data, as: UTF8.self).contains(#""roles":["fill","words"]"#))
@@ -37,6 +36,25 @@ final class CaretSettingsTests: XCTestCase {
         ] {
             XCTAssertThrowsError(try JSONDecoder().decode(CaretSettings.self, from: Data(bad.utf8)), bad)
         }
+    }
+
+    /// Seed and wren were retired on 2026-10-09 (Sam). A file that chose one loads whole, as the
+    /// pebble; a name no host ever wrote is still refused with the file.
+    func testARetiredCharacterReadsAsThePebbleAndAnUnknownOneIsAnError() throws {
+        let file = #"{"version":2,"roles":["fill"],"level":"quiet","character":"NAME","paused":true,"onboarded":true,"memory":[]}"#
+        for name in ["pebble", "seed", "wren"] {
+            let s = try JSONDecoder().decode(CaretSettings.self, from: Data(file.replacingOccurrences(of: "NAME", with: name).utf8))
+            XCTAssertEqual(s.character, .pebble, name)
+            XCTAssertEqual(s.roles, [.fill], "\(name): the other choices are kept")
+            XCTAssertTrue(s.paused, name)
+            XCTAssertTrue(s.onboarded, name)
+            let saved = try XCTUnwrap(try JSONSerialization.jsonObject(with: JSONEncoder().encode(s)) as? [String: Any])
+            XCTAssertEqual(saved["character"] as? String, "pebble", "\(name) saves as pebble")
+        }
+        for bad in ["blob", "Pebble", ""] {
+            XCTAssertThrowsError(try JSONDecoder().decode(CaretSettings.self, from: Data(file.replacingOccurrences(of: "NAME", with: bad).utf8)), bad)
+        }
+        XCTAssertThrowsError(try JSONDecoder().decode(CaretSettings.self, from: Data(file.replacingOccurrences(of: #""character":"NAME","#, with: "").utf8)), "missing")
     }
 
     /// H6, lead decision: "Always suggest as I type" is the default and a file from before H6 reads
@@ -175,7 +193,7 @@ final class CaretSettingsTests: XCTestCase {
         XCTAssertEqual(CaretSettings().roles, [.fill, .repeats, .watch, .calendar, .words])
         XCTAssertTrue(CaretSettings().gate.allows(family: "pending"))
         let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: true, inputMonitoring: true), clock: ManualClock())
-        XCTAssertTrue(flow.state.roles.contains(.watch), "the work screen opens with Watch agent threads checked")
+        XCTAssertTrue(flow.state.roles.contains(.watch), "onboarding no longer asks; the first look runs with every role on")
     }
 
     func testRoleCopyHasNoDashesOrShouting() {

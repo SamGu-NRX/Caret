@@ -23,7 +23,7 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
   `SurfaceCommand`, so `SurfaceRig` tests every transition without a screen. `FillMachine` does
   the same for grounded fill (`FillRig`; `SharedToastSlotTests` runs both machines on one
   arbiter, as they share its one toast slot). `CaretSettings` holds what Caret helps with, how
-  often it speaks up, the character and pause, and `GatePolicy` the rules they make. `OnboardingFlow`
+  often it speaks up, the pause, and `GatePolicy` the rules they make. `OnboardingFlow`
   is onboarding's five screens as a state machine, `FirstLook` the `firstLook` request and
   reply (contract fixture: `Tests/CaretHostCoreTests/Fixtures/first-look.ndjson`), and
   `FirstLookRun` the found offer taken from onboarding. `WorkLines` are the working, result and
@@ -38,8 +38,8 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
   - `Helper/HelperClient`: the consumer connection to the helper's socket.
   - `Fill/`: proposals and form focus in, fill offers and the result toast out.
   - `Overlay/FillOverlay`: the ghost value, the source line and the toast (`SURFACES.md` 3, 5, 6).
-  - `Design/`: tokens, the figure (pebble, seed, wren; `CARET_FIGURE` or the menu's Character),
-    the pop-up blocks, the line, and `Gallery`, the off-screen renders the snapshot tests compare.
+  - `Design/`: tokens, the figure (Pebble, the only one), the pop-up blocks, the line, and
+    `Gallery`, the off-screen renders the snapshot tests compare.
   - `Runtime/SurfaceCoordinator`: `SurfaceMachine`'s adapter. It answers the machine's reads
     from NSWorkspace, Accessibility and the window server, and draws its commands.
   - `Onboarding/`: the onboarding window (`OnboardingController`, the one Caret window that may
@@ -166,8 +166,8 @@ typed text, field digests, captions or paths (`ReleaseState`), and `spend`, unle
   Injected offers are never reported to the helper.
 - `progress done|error` ends the work an accepted action line or pop-up started.
 - `settings` reads the settings file, the choices and the gate they make; `settings set role
-  fill|repeat|watch|calendar|words on|off`, `level quiet|balanced|eager`, `character pebble|seed|wren`,
-  `paused on|off`, `routing on|off` and `calendar <EventKit calendar id>|default` change one as the menu bar
+  fill|repeat|watch|calendar|words on|off`, `level quiet|balanced|eager`, `paused on|off`,
+  `routing on|off` and `calendar <EventKit calendar id>|default` change one as the menu bar
   and What Caret knows do.
 - `state` carries `calendar`: Calendar access, the event card's line ("Adding to Work") and the calendar's id.
 - `activity open|close|more` opens or closes the activity list, or shows the next five Done rows.
