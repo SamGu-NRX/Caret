@@ -1,5 +1,5 @@
-// Work the ledger repeated on large forms, removed without changing an answer: each test holds a shortcut to the
-// answer of the work it replaced. Every text is invented.
+// Work a large form's preview repeated, removed without changing an answer: each test holds a shortcut to the answer of
+// the work it replaced. Every text is invented.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { Disclosure } from "../src/privacy/disclosure.ts";
@@ -8,6 +8,7 @@ import { spansOf, type ViewSpan } from "../src/privacy.ts";
 import { inventoryOf, reveal, spanKey, UnitIndex, UnitProbe } from "../src/privacy/ledger/measure.ts";
 import { normalizedUnits } from "../src/privacy/ledger/account.ts";
 import { ledgerNormalizeV1 } from "../src/privacy/ledger/normalize.ts";
+import { windowProvenance, type DigestMemo } from "../src/fill/contract.ts";
 import { snap, text } from "./builders.ts";
 
 afterEach(() => vi.restoreAllMocks());
@@ -89,5 +90,28 @@ describe("Disclosure.verify outside a first look", () => {
     const spans = vi.spyOn(d, "spansOfText");
     withFirstLookAllowList(list, () => d.verify("fill.values", body));
     expect(spans).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("windowProvenance with a digest memo", () => {
+  const note = "Name: Dana\nCity: Lisbon. Moved there in May.\nNote: Dana prefers email";
+  const at = (span: string) => ({ text: span, context: null, source: { windowId: "note", nodeKey: "te/note", appName: "TextEdit", windowTitle: "Notes" } });
+
+  it("gives what it gives without one, taking each text and span's digests once", () => {
+    const memo: DigestMemo = new Map();
+    for (const span of ["Dana", "Lisbon", "Dana", "Lisbon", "Dana"]) expect(windowProvenance(undefined, at(span), note, memo)).toEqual(windowProvenance(undefined, at(span), note));
+    expect(memo.size).toBe(2);
+    // The same span in another text is another entry.
+    windowProvenance(undefined, at("Dana"), "Name: Dana", memo);
+    expect(memo.size).toBe(3);
+  });
+
+  it("gives each provenance its own digest lists", () => {
+    const memo: DigestMemo = new Map();
+    const [a, b] = [windowProvenance(undefined, at("Dana"), note, memo), windowProvenance(undefined, at("Dana"), note, memo)];
+    if (a.kind !== "window" || b.kind !== "window") throw new Error("not a window provenance");
+    expect(a.lines.length).toBeGreaterThan(0);
+    expect(a.lines).not.toBe(b.lines);
+    expect(a.sentences).not.toBe(b.sentences);
   });
 });
