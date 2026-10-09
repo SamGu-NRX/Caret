@@ -196,10 +196,13 @@ export interface AskQuestionDraft {
  * What question memory knows a question by (memory/questions.ts AskedKey): its form, as the first question of the Ask
  * saw its title (a digest), its part, and the fingerprints of the fields it offers.
  */
-export function askedKeyOf(q: AskQuestionDraft): AskedKey {
+export function askedKeyOf(q: AskQuestionDraft, site: string | null = null): AskedKey {
   const keys = q.options.flatMap((c) => c.fixes.fields ?? []);
-  // The app is part of the form, so two apps' forms of one title and the same fields don't share what was put away.
-  return { form: `${q.window.appName}\u0000${q.resume.seen.title}`, part: q.part, fields: keys.map((k) => q.resume.seen.fields[k] ?? k) };
+  // The app is part of the form, so two apps' forms of one title and the same fields don't share what was put away; so is
+  // a page's site, its top frame's origin and path (engines/registry.ts contextOf), which stays the same from visit to
+  // visit, so two sites' "Application" forms of the same fields don't either (Codex review on #22). A page load's
+  // document id changes on every visit, and two dismissals keyed by it could never add up.
+  return { form: `${q.window.appName}\u0000${site ?? ""}\u0000${q.resume.seen.title}`, part: q.part, fields: keys.map((k) => q.resume.seen.fields[k] ?? k) };
 }
 
 /** The wire options of a question: what the host shows, never a key or window id. */

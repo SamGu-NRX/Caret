@@ -1811,7 +1811,7 @@ export class Helper {
           // Question memory: a fields question the user put away twice in a week proceeds as an empty answer would,
           // filling only what Caret settled beside it, and says it left the rest to them as before.
           const q = e.question;
-          if (q.part === "fields" && this.memory.questions.quiet(askedKeyOf(q), this.now())) {
+          if (q.part === "fields" && this.memory.questions.quiet(askedKeyOf(q, this.opts.pageContext?.(q.window.windowId)?.site ?? null), this.now())) {
             this.opts.store.count("plan.askQuiet", 1);
             const labels = q.options.flatMap((c) => (c.option.kind === "field" ? [c.option] : []));
             // Two fields of one label are told apart by their sections, as the question listed them.
@@ -1914,7 +1914,7 @@ export class Helper {
     const questionId = `ask-${++this.askSeq}-${requestId}`.slice(0, 240);
     const msg = AskQuestion.safeParse({ type: "askQuestion", v: PROTOCOL_VERSION, requestId, at, questionId, part: q.part, text: q.text, pick: q.pick, options: wireOptions(q), ...(q.filling.length === 0 ? {} : { filling: q.filling }), window: q.window, expires: at + ASK_QUESTION_MS });
     if (!msg.success) return this.planFailed(requestId, "schema", `the question failed the protocol check: ${msg.error.issues[0]?.message ?? "invalid"}`);
-    this.askQuestions.set(questionId, { session: from, expires: msg.data.expires, draft: q, asked: askedKeyOf(q) });
+    this.askQuestions.set(questionId, { session: from, expires: msg.data.expires, draft: q, asked: askedKeyOf(q, this.opts.pageContext?.(q.window.windowId)?.site ?? null) });
     this.opts.store.count(`plan.asked_${q.part}`, 1);
     return msg.data;
   }

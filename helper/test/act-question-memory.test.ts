@@ -144,6 +144,25 @@ describe("question memory in the helper", () => {
     expect(app.node(K("group:billing/textfield:city~0"))?.value).toBeUndefined();
   });
 
+  it("keeps two sites' forms of one title and the same fields apart", async () => {
+    // Codex review on #22: the key held the app and the title only, so two dismissals on one site's "Application" quieted
+    // another site's. A page's site (engines/registry.ts contextOf) is now part of it.
+    let site = "https://one.example/apply";
+    helper.shutdown();
+    helper = new Helper({ store, memory, askJev: jev, shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "heads" }, pageContext: () => ({ site, headings: [], excluded: {} }) });
+    app.helper = helper;
+    app.show();
+    void helper.handleReader(mailWindow());
+    expect(AskQuestion.parse(await helper.handlePlanRequest(request(1), "s1", true))).toMatchObject({ part: "fields" });
+    expect(AskQuestion.parse(await helper.handlePlanRequest(request(2), "s1", true))).toMatchObject({ part: "fields" });
+    clock += 11 * 60 * 1000;
+    helper.tick(clock);
+    site = "https://two.example/apply";
+    expect(AskQuestion.parse(await helper.handlePlanRequest(request(3), "s1", true)), "another site asks").toMatchObject({ part: "fields" });
+    site = "https://one.example/apply";
+    expect(PlanProposal.parse(await helper.handlePlanRequest(request(4), "s1", true)), "the first site stays quiet").toMatchObject({ outcome: "proposed" });
+  });
+
   it("asks again after the user answered it", async () => {
     const q1 = AskQuestion.parse(await helper.handlePlanRequest(request(1), "s1", true));
     await helper.handleAskAnswer({ type: "askAnswer", v: PROTOCOL_VERSION, requestId: "a1", at: 2, questionId: q1.questionId, picks: [] }, "s1");
