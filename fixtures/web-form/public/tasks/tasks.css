@@ -1,0 +1,23 @@
+/* The task pages' look: plain, so layout never decides what a walk sees. Replicas carry their own styles. */
+body { font: 15px/1.45 system-ui, sans-serif; margin: 24px auto; max-width: 720px; padding: 0 16px; color: #1d1d1f; }
+h1 { font-size: 24px; margin: 0 0 4px; }
+.step { color: #555; margin: 0 0 16px; }
+fieldset { border: 1px solid #ccc; border-radius: 6px; margin: 14px 0; padding: 8px 14px 12px; }
+legend { font-weight: 600; padding: 0 4px; }
+.row { margin: 10px 0; }
+.row > label, .row > .label { display: block; font-weight: 500; margin-bottom: 3px; }
+input:not([type=checkbox]):not([type=radio]):not([type=file]), select, textarea { font: inherit; padding: 6px 8px; width: 100%; box-sizing: border-box; }
+textarea { min-height: 90px; }
+.inline label { display: inline-flex; gap: 6px; margin-right: 16px; font-weight: normal; }
+.yesno { display: inline-flex; }
+.yesno button { width: 80px; height: 36px; border: 1px solid #999; background: #fff; font: inherit; }
+.yesno button[aria-pressed="true"] { background: #1d1d1f; color: #fff; }
+.picker { position: relative; }
+.portal-listbox { position: absolute; z-index: 10; list-style: none; margin: 0; padding: 4px 0; background: #fff; border: 1px solid #888; max-height: 220px; overflow: auto; box-sizing: border-box; }
+.portal-listbox li { padding: 4px 10px; cursor: default; }
+.portal-listbox li[aria-selected="true"] { background: #e6eefc; }
+.portal-listbox li.empty { color: #777; }
+.dropzone { border: 2px dashed #888; border-radius: 6px; padding: 14px; display: flex; gap: 12px; align-items: center; }
+.dropzone.over { background: #f2f6ff; }
+.actions { margin-top: 20px; display: flex; gap: 12px; }
+.actions button { font: inherit; padding: 8px 20px; }

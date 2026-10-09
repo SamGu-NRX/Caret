@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en" data-oracle-page="greenhouse">
+<head>
+<meta charset="utf-8">
+<title>Job Application for Embedded Firmware Engineer at Kestrel Robotics</title>
+<!-- F1 Greenhouse look-alike, the embedded form. Structure from W4's saved Greenhouse pages (2026-10-04): field-wrapper
+     rows, selects that are react-select with classNamePrefix "select" (an input role=combobox inside .select__control,
+     labelled by its label's id), the Resume/CV group whose file input is visually hidden beside an Attach button, and
+     the Voluntary Self-Identification (EEO) section, where Race shows only after "Are you Hispanic/Latino?" is
+     answered No. The saved pages had no education section; this one follows Greenhouse's education fields (School,
+     loaded as you type, Degree, Discipline, start and end month and year) in the same select markup.
+     Every name and value is invented. -->
+<link rel="stylesheet" href="/tasks/tasks.css">
+<style>
+  body { max-width: 680px; }
+  .field-wrapper { margin: 14px 0; }
+  .label { display: block; font-weight: 500; margin-bottom: 3px; }
+  .visually-hidden { border: 0; clip: rect(0 0 0 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; white-space: nowrap; }
+  .btn { display: block; width: 260px; height: 38px; margin: 4px 0; font: inherit; }
+  .education--container, .eeoc__container { border-top: 1px solid #ccc; margin-top: 24px; padding-top: 8px; }
+  .date-pair { display: flex; gap: 8px; }
+  .date-pair > * { flex: 1; }
+</style>
+</head>
+<body>
+<h2 class="section-header">Apply for this job</h2>
+<p><span aria-hidden="true">*</span> indicates a required field</p>
+<form id="application-form" action="/tasks/submit?page=greenhouse&amp;via=native" method="post" data-task-submit>
+  <div class="field-wrapper"><label for="first_name" class="label">First Name<span aria-hidden="true">*</span></label><input id="first_name" name="first_name" type="text" aria-required="true" data-oracle="first_name" data-oracle-kind="text"></div>
+  <div class="field-wrapper"><label for="last_name" class="label">Last Name<span aria-hidden="true">*</span></label><input id="last_name" name="last_name" type="text" aria-required="true" data-oracle="last_name" data-oracle-kind="text"></div>
+  <div class="field-wrapper"><label for="preferred_name" class="label">Preferred First Name</label><input id="preferred_name" name="preferred_name" type="text" data-oracle="preferred_name" data-oracle-kind="text"></div>
+  <div class="field-wrapper"><label for="email" class="label">Email<span aria-hidden="true">*</span></label><input id="email" name="email" type="text" aria-required="true" data-oracle="email" data-oracle-kind="text"></div>
+  <div class="field-wrapper"><div class="select"><div class="select__container"><label id="country-label" for="country" class="label select__label">Country<span aria-hidden="true">*</span></label>
+    <div class="select-shell" data-react-select="countries" data-input-id="country" data-labelledby="country-label" data-oracle="country" data-oracle-kind="react-select"></div></div></div></div>
+  <div class="field-wrapper"><label for="phone" class="label">Phone<span aria-hidden="true">*</span></label><input id="phone" name="phone" type="tel" aria-required="true" data-oracle="phone" data-oracle-kind="text"></div>
+  <div class="field-wrapper"><div class="select"><div class="select__container"><label id="candidate-location-label" for="candidate-location" class="label select__label">Location (City)<span aria-hidden="true">*</span></label>
+    <div class="select-shell" data-react-select="" data-async="/tasks/api/places" data-input-id="candidate-location" data-labelledby="candidate-location-label" data-placeholder="" data-oracle="location" data-oracle-kind="react-select"></div></div></div>
+    <button type="button" class="btn--tertiary" data-oracle-press="locate-me">Locate me</button></div>
+
+  <div class="field-wrapper"><div role="group" aria-labelledby="upload-label-resume" aria-required="true" class="file-upload">
+    <div id="upload-label-resume" class="label upload-label">Resume/CV<span class="required">*</span></div>
+    <div class="file-upload__wrapper"><div class="button-container">
+      <div class="secondary-button"><div><button type="button" class="btn" data-opens="resume" data-oracle-press="attach-resume">Attach</button><label class="visually-hidden" for="resume">Attach</label><input id="resume" class="visually-hidden" type="file" accept=".pdf,.doc,.docx,.txt,.rtf" data-shows="resume-filename" data-oracle="resume" data-oracle-kind="file"></div></div>
+      <div class="secondary-button"><button type="button" class="btn" data-oracle-press="dropbox">Dropbox</button></div>
+      <div class="secondary-button"><button type="button" class="btn" data-oracle-press="google-drive">Google Drive</button></div>
+      <div class="secondary-button"><button type="button" class="btn" data-oracle-press="enter-manually">Enter manually</button></div>
+      <p class="file-upload__filetypes">Accepted file types: pdf, doc, docx, txt, rtf</p>
+    </div><div class="file-upload__filename" id="resume-filename"></div></div></div></div>
+
+  <div class="field-wrapper"><label for="linkedin" class="label">LinkedIn Profile</label><input id="linkedin" name="question_4011" type="text" data-oracle="linkedin" data-oracle-kind="text"></div>
+  <div class="field-wrapper"><label for="website" class="label">Website</label><input id="website" name="question_4012" type="text" data-oracle="website" data-oracle-kind="text"></div>
+
+  <div class="education--container">
+    <h3 class="section-header">Education</h3>
+    <div class="field-wrapper"><div class="select"><div class="select__container"><label id="school--0-label" for="school--0" class="label select__label">School<span aria-hidden="true">*</span></label>
+      <div class="select-shell" data-react-select="" data-async="/tasks/api/schools" data-input-id="school--0" data-labelledby="school--0-label" data-oracle="school" data-oracle-kind="react-select"></div></div></div></div>
+    <div class="field-wrapper"><div class="select"><div class="select__container"><label id="degree--0-label" for="degree--0" class="label select__label">Degree<span aria-hidden="true">*</span></label>
+      <div class="select-shell" data-react-select="degrees" data-input-id="degree--0" data-labelledby="degree--0-label" data-oracle="degree" data-oracle-kind="react-select"></div></div></div></div>
+    <div class="field-wrapper"><div class="select"><div class="select__container"><label id="discipline--0-label" for="discipline--0" class="label select__label">Discipline</label>
+      <div class="select-shell" data-react-select="disciplines" data-input-id="discipline--0" data-labelledby="discipline--0-label" data-oracle="discipline" data-oracle-kind="react-select"></div></div></div></div>
+    <div class="field-wrapper"><span class="label" id="start-date-label">Start date</span><div class="date-pair">
+      <select id="start-month--0" name="start_month" aria-label="Start date month" data-options="months" data-oracle="edu_start_month" data-oracle-kind="select"><option value="">Month</option></select>
+      <input id="start-year--0" name="start_year" type="text" inputmode="numeric" placeholder="Year" aria-label="Start date year" data-oracle="edu_start_year" data-oracle-kind="text"></div></div>
+    <div class="field-wrapper"><span class="label" id="end-date-label">End date (or expected)</span><div class="date-pair">
+      <select id="end-month--0" name="end_month" aria-label="End date month" data-options="months" data-oracle="edu_end_month" data-oracle-kind="select"><option value="">Month</option></select>
+      <input id="end-year--0" name="end_year" type="text" inputmode="numeric" placeholder="Year" aria-label="End date year" data-oracle="edu_end_year" data-oracle-kind="text"></div></div>
+  </div>
+
+  <div class="field-wrapper"><div class="select"><div class="select__container"><label id="q-auth-label" for="q-auth" class="label select__label">Are you legally authorized to work in the United States?<span aria-hidden="true">*</span></label>
+    <div class="select-shell" data-react-select="yesNo" data-input-id="q-auth" data-labelledby="q-auth-label" data-oracle="authorized" data-oracle-kind="react-select"></div></div></div></div>
+  <div class="field-wrapper"><div class="select"><div class="select__container"><label id="q-sponsor-label" for="q-sponsor" class="label select__label">Will you now or in the future require sponsorship for employment visa status?<span aria-hidden="true">*</span></label>
+    <div class="select-shell" data-react-select="yesNo" data-input-id="q-sponsor" data-labelledby="q-sponsor-label" data-oracle="sponsorship" data-oracle-kind="react-select"></div></div></div></div>
+  <div class="field-wrapper"><label for="q-why" class="label">Why do you want to work at Kestrel Robotics?<span aria-hidden="true">*</span></label><textarea id="q-why" name="question_4015" data-oracle="why_us" data-oracle-kind="text"></textarea></div>
+  <div class="field-wrapper"><label for="q-heard" class="label">How did you hear about this job?</label><input id="q-heard" name="question_4016" type="text" data-oracle="heard" data-oracle-kind="text"></div>
+
+  <div class="eeoc__container">
+    <h3 class="section-header">Voluntary Self-Identification</h3>
+    <p>For government reporting purposes, we ask candidates to respond to the below self-identification survey.
+       Completion of the form is entirely voluntary. Whatever your decision, it will not be considered in the hiring
+       process or thereafter.</p>
+    <div class="eeoc__question__wrapper"><div class="select"><div class="select__container"><label id="gender-label" for="gender" class="label select__label">Gender</label>
+      <div class="select-shell" data-react-select="eeoGender" data-input-id="gender" data-labelledby="gender-label" data-oracle="eeo_gender" data-oracle-kind="react-select"></div></div></div></div>
+    <div class="eeoc__question__wrapper"><div class="select"><div class="select__container"><label id="hispanic_ethnicity-label" for="hispanic_ethnicity" class="label select__label">Are you Hispanic/Latino?</label>
+      <div class="select-shell" id="hispanic-box" data-react-select="eeoHispanic" data-input-id="hispanic_ethnicity" data-labelledby="hispanic_ethnicity-label" data-oracle="eeo_hispanic" data-oracle-kind="react-select"></div></div></div></div>
+    <div class="eeoc__question__wrapper" id="race-row"><div class="select"><div class="select__container"><label id="race-label" for="race" class="label select__label">Please identify your race</label>
+      <div class="select-shell" data-react-select="eeoRace" data-input-id="race" data-labelledby="race-label" data-oracle="eeo_race" data-oracle-kind="react-select"></div></div></div></div>
+    <div class="eeoc__question__wrapper"><div class="select"><div class="select__container"><label id="veteran_status-label" for="veteran_status" class="label select__label">Veteran Status</label>
+      <div class="select-shell" data-react-select="eeoVeteran" data-input-id="veteran_status" data-labelledby="veteran_status-label" data-oracle="eeo_veteran" data-oracle-kind="react-select"></div></div></div></div>
+    <div class="eeoc__question__wrapper"><div class="select"><div class="select__container"><label id="disability_status-label" for="disability_status" class="label select__label">Disability Status</label>
+      <div class="select-shell" data-react-select="eeoDisability" data-input-id="disability_status" data-labelledby="disability_status-label" data-oracle="eeo_disability" data-oracle-kind="react-select"></div></div></div></div>
+  </div>
+
+  <div class="field-wrapper"><button type="submit" class="btn btn--pill" data-oracle-press="submit">Submit application</button></div>
+</form>
+<script src="/tasks/options.js"></script>
+<script src="/tasks/pages.js"></script>
+<script src="/tasks/tasks.bundle.js"></script>
+<script>
+  // Greenhouse asks for race only after "Are you Hispanic/Latino?" is answered No.
+  document.getElementById("hispanic-box").addEventListener("task-select", (e) => TaskPage.reveal("race-row", e.detail.value === "No"));
+  TaskPage.reveal("race-row", false);
+</script>
+<script src="/tasks/probe.js"></script>
+</body>
+</html>

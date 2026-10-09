@@ -1,0 +1,20 @@
+{"type":"hello","v":1,"role":"consumer","mode":"live","pid":5151,"version":"caret-host 0.3.0","host":true,"capabilities":["memoryDocuments","routing"]}
+{"type":"routingContext","v":1,"at":1790000000000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"caret","composing":false,"textRevision":"r17","breakpoint":null}
+{"type":"routeDecision","v":1,"at":1790000000180,"context":12,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r17","outcome":"write","route":null,"expires":1790001800180}
+{"type":"routingContext","v":1,"at":1790000004000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"caret","composing":false,"textRevision":"r31","breakpoint":"sentence"}
+{"type":"routeDecision","v":1,"at":1790000004001,"context":13,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r31","outcome":null,"route":null,"expires":1790001804001}
+{"type":"routeDecision","v":1,"at":1790000004170,"context":13,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r31","outcome":"act","route":"workflow:event","expires":1790001804170}
+{"type":"routingContext","v":1,"at":1790000009000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"caret","composing":true,"textRevision":"r33","breakpoint":null}
+{"type":"routeDecision","v":1,"at":1790000009001,"context":14,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r33","outcome":"abstain","route":null,"expires":1790001809001}
+{"type":"routingContext","v":1,"at":1790000012000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"range","composing":false,"textRevision":"r34","breakpoint":null}
+{"type":"routeDecision","v":1,"at":1790000012001,"context":15,"windowId":"5150-7","key":"dev.caret.fixture/standard/textfield:email~0","textRevision":"9f2c0a6b1d4e7f80","outcome":"act","route":"fillAll","expires":1790001812001}
+{"type":"routeDecision","v":1,"at":1790000015001,"context":16,"windowId":"5150-7","key":null,"textRevision":"e3b0c44298fc1c14","outcome":"abstain","route":null,"expires":1790001815001}
+{"type":"routingContext","v":1,"at":1790000020000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"caret","composing":false,"textRevision":"r40","breakpoint":null}
+{"type":"routeDecision","v":1,"at":1790000030001,"context":17,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r40","outcome":"error","route":null,"failure":"timeout","expires":1790001830001}
+{"type":"routingContext","v":1,"at":1790000034000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"caret","composing":false,"textRevision":"r44","breakpoint":"sentence"}
+{"type":"routeDecision","v":1,"at":1790000034160,"context":18,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r44","outcome":"write","route":null,"expires":1790001834160}
+{"type":"routingContext","v":1,"at":1790000041000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"caret","composing":false,"textRevision":"r52","breakpoint":"sentence"}
+{"type":"routeDecision","v":1,"at":1790000041001,"context":19,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r52","outcome":"write","route":null,"expires":1790001841001}
+{"type":"routingContext","v":1,"at":1790000046000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"range","composing":false,"textRevision":"r57","breakpoint":null}
+{"type":"routeDecision","v":1,"at":1790000046001,"context":20,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r57","outcome":null,"route":null,"expires":1790001846001}
+{"type":"routeDecision","v":1,"at":1790000046400,"context":20,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r57","outcome":"error","route":null,"failure":"stale","expires":1790001846400}

@@ -1,0 +1,23 @@
+{
+  "_note": "SCP1: how a section name is read for every comparison, exclusion and match: NFKC, case folded, whitespace collapsed. Read by extension/test/sections.test.ts (extension/src/content/sections.ts sectionName) and helper/test/scp1-section-scope.test.ts (helper/src/fill/ask-scope.ts sectionName), so the two copies agree. `excluded`: names the self-identification exclusion matches once normalized.",
+  "names": [
+    ["Equipment details", "equipment details"],
+    ["  Equipment\n\tdetails  ", "equipment details"],
+    ["ＥＱＵＩＰＭＥＮＴ ＤＥＴＡＩＬＳ", "equipment details"],
+    ["Ｖｏｌｕｎｔａｒｙ ｓｅｌｆ－ｉｄｅｎｔｉｆｉｃａｔｉｏｎ", "voluntary self-identification"],
+    ["Straße", "strasse"],
+    ["Ⅳ. Contact", "iv. contact"],
+    ["Service contact", "service contact"]
+  ],
+  "excluded": [
+    "Voluntary self-identification",
+    "Ｖｏｌｕｎｔａｒｙ ｓｅｌｆ－ｉｄｅｎｔｉｆｉｃａｔｉｏｎ",
+    "ＧＥＮＤＥＲ ＩＤＥＮＴＩＴＹ",
+    "Veteran status"
+  ],
+  "kept": [
+    "Equipment details",
+    "ＥＱＵＩＰＭＥＮＴ ＤＥＴＡＩＬＳ",
+    "Service contact"
+  ]
+}

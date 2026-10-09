@@ -1,0 +1,25 @@
+{
+  "_note": "SCP1: section and heading texts the page walk's self-identification exclusion matches, and texts it keeps. Read by extension/test/sections.test.ts (extension/src/content/walker.ts SELF_IDENTIFICATION) and helper/test/scp1-section-scope.test.ts (helper/src/engines/page-exclusions.ts), so the two copies agree.",
+  "excluded": [
+    "Voluntary Self-Identification",
+    "Self-identification survey",
+    "Gender identity",
+    "Race and ethnicity",
+    "Veteran status",
+    "Disability status",
+    "Your pronouns",
+    "Consent",
+    "Terms of service",
+    "Signature"
+  ],
+  "kept": [
+    "Equipment details",
+    "Service contact",
+    "Current residence",
+    "Current landlord",
+    "Professional reference",
+    "Emergency contact",
+    "Contact information",
+    "Delivery"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@caret/web-form-fixture",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Synthetic web form for the page engine (browser layer W1) and its one-command acceptance run.",
+  "type": "module",
+  "scripts": {
+    "serve": "node server.ts",
+    "vendor": "node build-vendor.mjs",
+    "accept": "node accept.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test --test-concurrency=1 'tests/*.test.ts'",
+    "tasks:bundle": "node tasks/build-bundle.mjs"
+  },
+  "devDependencies": {
+    "@puppeteer/browsers": "3.2.3",
+    "@types/node": "26.6.4",
+    "esbuild": "0.28.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-select": "5.10.2",
+    "typescript": "7.0.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

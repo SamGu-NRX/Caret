@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The reader, Contents/Helpers/caret-screen (dev.caret.screen), under the hardened runtime (build-app.sh).
+
+  Granted:
+  - com.apple.security.personal-information.calendars: H8. With the flag calendar-user the reader adds the events the user
+    accepts to their calendars through EventKit. It never asks for access; as Caret's child it has Caret's answer.
+
+  Evidence: as for caret.entitlements, unmeasured on this Mac (SIP off); the VM run is the check.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
+</dict>
+</plist>

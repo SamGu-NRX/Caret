@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>New Patient Registration | Harbor Family Clinic</title>
+<style>
+body{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;max-width:700px;margin:24px auto;color:#1d2a35}
+header{border-bottom:3px solid #1f7a8c;margin-bottom:18px} h1{font-size:23px;color:#1f7a8c;margin:0 0 6px}
+h2{font-size:16px;text-transform:uppercase;letter-spacing:.04em;color:#45606e;margin-top:28px}
+label,legend{display:block;font-size:14px;margin:12px 0 4px}
+.row{display:flex;gap:14px} .row>div{flex:1}
+input[type=text],input[type=email],input[type=tel],input[type=date],select{width:100%;padding:9px;font-size:15px;box-sizing:border-box;border:1px solid #9fb3bf;border-radius:6px}
+fieldset{border:0;padding:0;margin:12px 0} fieldset label{display:block;margin:6px 0}
+.opt{color:#6b7c87;font-weight:400} .note{font-size:13px;color:#56656f}
+.check{margin:10px 0} .check label{display:inline}
+button{margin-top:22px;padding:12px 24px;font-size:16px;background:#1f7a8c;color:#fff;border:0;border-radius:6px}
+</style></head><body>
+<!-- Invented clinic registration form (B24 corpus). No insurance or health questions by design. Submit is inert. -->
+<header><h1>Harbor Family Clinic</h1><p class="note">New patient registration. Please complete before your first visit. (required) marks required fields.</p></header>
+<form onsubmit="event.preventDefault()">
+<h2>Patient information</h2>
+<label for="pname">Patient full name (legal) (required)</label><input type="text" id="pname" autocomplete="off">
+<div class="row">
+ <div><label for="pref">Preferred name <span class="opt">(optional)</span></label><input type="text" id="pref" autocomplete="off"></div>
+ <div><label for="dob">Date of birth (required)</label><input type="date" id="dob"></div>
+</div>
+<label for="lang">Preferred language (required)</label>
+<select id="lang"><option value="">Select...</option><option>English</option><option>Spanish</option><option>Portuguese</option><option>Haitian Creole</option><option>Chinese (Mandarin)</option><option>Vietnamese</option><option>Other</option></select>
+
+<h2>Contact details</h2>
+<label for="email">Email (required)</label><input type="email" id="email" autocomplete="off">
+<div class="row">
+ <div><label for="mobile">Mobile phone (required)</label><input type="tel" id="mobile" autocomplete="off"></div>
+ <div><label for="home">Home phone <span class="opt">(optional)</span></label><input type="tel" id="home" autocomplete="off"></div>
+</div>
+<div class="row">
+ <div style="flex:2"><label for="street">Street address (required)</label><input type="text" id="street" autocomplete="off"></div>
+ <div><label for="apt">Apartment or unit <span class="opt">(optional)</span></label><input type="text" id="apt" autocomplete="off"></div>
+</div>
+<div class="row">
+ <div style="flex:2"><label for="city">City (required)</label><input type="text" id="city" autocomplete="off"></div>
+ <div><label for="state">State (required)</label><select id="state"><option value="">Select...</option><option>AL</option><option>AK</option><option>AZ</option><option>AR</option><option>CA</option><option>CO</option><option>CT</option><option>DE</option><option>DC</option><option>FL</option><option>GA</option><option>HI</option><option>ID</option><option>IL</option><option>IN</option><option>IA</option><option>KS</option><option>KY</option><option>LA</option><option>ME</option><option>MD</option><option>MA</option><option>MI</option><option>MN</option><option>MS</option><option>MO</option><option>MT</option><option>NE</option><option>NV</option><option>NH</option><option>NJ</option><option>NM</option><option>NY</option><option>NC</option><option>ND</option><option>OH</option><option>OK</option><option>OR</option><option>PA</option><option>RI</option><option>SC</option><option>SD</option><option>TN</option><option>TX</option><option>UT</option><option>VT</option><option>VA</option><option>WA</option><option>WV</option><option>WI</option><option>WY</option></select></div>
+ <div><label for="zip">ZIP code (required)</label><input type="text" id="zip" inputmode="numeric" autocomplete="off"></div>
+</div>
+<fieldset><legend>How should we contact you? (required)</legend>
+<label><input type="radio" name="contact" value="call"> Phone call</label>
+<label><input type="radio" name="contact" value="text"> Text message</label>
+<label><input type="radio" name="contact" value="email"> Email</label>
+</fieldset>
+
+<h2>Emergency contact</h2>
+<div class="row">
+ <div><label for="ecname">Emergency contact name (required)</label><input type="text" id="ecname" autocomplete="off"></div>
+ <div><label for="ecrel">Relationship to patient (required)</label>
+  <select id="ecrel"><option value="">Select...</option><option>Spouse or partner</option><option>Parent</option><option>Child</option><option>Sibling</option><option>Friend</option><option>Other</option></select></div>
+</div>
+<label for="ecphone">Emergency contact phone (required)</label><input type="tel" id="ecphone" autocomplete="off">
+
+<h2>Acknowledgements</h2>
+<div class="check"><input type="checkbox" id="privacy"> <label for="privacy">I have read the Notice of Privacy Practices.</label></div>
+<div class="check"><input type="checkbox" id="newsletter"> <label for="newsletter">Sign me up for the Harbor Health newsletter.</label></div>
+<button type="submit">Save and continue</button>
+</form>
+</body></html>

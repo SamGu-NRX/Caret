@@ -1,0 +1,7 @@
+{
+  "id": "r1",
+  "prefix": "Synthetic prefix\n",
+  "prompt": "Synthetic prompt",
+  "grammar": "root ::= \"fixture\"",
+  "maxTokens": 8
+}

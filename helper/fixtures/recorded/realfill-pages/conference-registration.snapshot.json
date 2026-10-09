@@ -1,0 +1,605 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "5c748872-1a0d-4acf-b3de-e61c470a7ac6",
+ "at": 1791185536166,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Register | DevHarbor Summit 2026",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "589E72511B0AA52EE6BD843C28B1072C",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/conference-registration.html",
+   "navGen": 8,
+   "title": "Register | DevHarbor Summit 2026",
+   "headings": [
+    "DevHarbor Summit 2026",
+    "About you",
+    "Your ticket",
+    "On-site details"
+   ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "DevHarbor Summit 2026",
+     "name": "1bd42876691ef52fe4030f497aa5cb147ca37541cb040cd19c01f084118d8ffd"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "About you",
+     "name": "85b4b2578e1039da87ef991ac87b8c7b6efcdaa4de546990c03e7ff742b70415"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Your ticket",
+     "name": "2528b954a2aa9ff8bd65992cdcdffe0b00c2c61e008a9a56ad26add62dd0b038"
+    },
+    {
+     "id": "o4",
+     "heading": false,
+     "text": "Ticket type*",
+     "name": "2619414d26ee4e44b15ed63ed051145148b5f203f5a5225ee2f50a5bf2db797a"
+    },
+    {
+     "id": "o5",
+     "heading": false,
+     "text": "Workshops (choose any)",
+     "name": "9f295485c7fe368a3e9d600d220bdebf1815b8e9b9ca466c0d1c95aae9baafde"
+    },
+    {
+     "id": "o6",
+     "heading": true,
+     "text": "On-site details",
+     "name": "3a381c7e17364b030042e27dc0033016e7eddf0542cac59bca5bf8e6d02952a7"
+    }
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:first name*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=fn\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "First name*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      300,
+      169.4,
+      333,
+      39
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:last name*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ln\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Last name*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      647,
+      169.4,
+      333,
+      39
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:email address*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=em\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email address*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      300,
+      240.4,
+      680,
+      39
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/textbox:job title*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=jt\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Job title*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      300,
+      311.4,
+      333,
+      39
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/textbox:company or organization*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=co\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Company or organization*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      647,
+      311.4,
+      333,
+      39
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/combobox:country*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=country\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Country*",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select country",
+       "selected": true
+      },
+      {
+       "value": "United States",
+       "label": "United States",
+       "selected": false
+      },
+      {
+       "value": "Canada",
+       "label": "Canada",
+       "selected": false
+      },
+      {
+       "value": "Mexico",
+       "label": "Mexico",
+       "selected": false
+      },
+      {
+       "value": "United Kingdom",
+       "label": "United Kingdom",
+       "selected": false
+      },
+      {
+       "value": "Germany",
+       "label": "Germany",
+       "selected": false
+      },
+      {
+       "value": "Japan",
+       "label": "Japan",
+       "selected": false
+      },
+      {
+       "value": "India",
+       "label": "India",
+       "selected": false
+      },
+      {
+       "value": "Brazil",
+       "label": "Brazil",
+       "selected": false
+      },
+      {
+       "value": "Australia",
+       "label": "Australia",
+       "selected": false
+      },
+      {
+       "value": "Other",
+       "label": "Other",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      300,
+      382.4,
+      680,
+      41
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/radio:in-person: full conference~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=ticket\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "In-person: Full conference",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      320,
+      525.4,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e7",
+      "name": "Ticket type*"
+     },
+     "sections": [
+      "o1",
+      "o3",
+      "o4"
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/radio:in-person: workshop day only~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=ticket\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "In-person: Workshop day only",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      320,
+      552.4,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e7",
+      "name": "Ticket type*"
+     },
+     "sections": [
+      "o1",
+      "o3",
+      "o4"
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/radio:virtual pass~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=ticket\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Virtual pass",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      320,
+      579.4,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e7",
+      "name": "Ticket type*"
+     },
+     "sections": [
+      "o1",
+      "o3",
+      "o4"
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/checkbox:intro to rust~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=ws\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Intro to Rust",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      319,
+      669.4,
+      13,
+      13
+     ],
+     "sections": [
+      "o1",
+      "o3",
+      "o5"
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/checkbox:observability with opentelemetry~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=ws\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Observability with OpenTelemetry",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      319,
+      696.4,
+      13,
+      13
+     ],
+     "sections": [
+      "o1",
+      "o3",
+      "o5"
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/checkbox:accessible front-end patterns~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=ws\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Accessible front-end patterns",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      319,
+      723.4,
+      13,
+      13
+     ],
+     "sections": [
+      "o1",
+      "o3",
+      "o5"
+     ]
+    },
+    {
+     "id": "e13",
+     "key": "form@0/combobox:dietary requirements~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=diet\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Dietary requirements",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select...",
+       "selected": true
+      },
+      {
+       "value": "No dietary requirements",
+       "label": "No dietary requirements",
+       "selected": false
+      },
+      {
+       "value": "Vegetarian",
+       "label": "Vegetarian",
+       "selected": false
+      },
+      {
+       "value": "Vegan",
+       "label": "Vegan",
+       "selected": false
+      },
+      {
+       "value": "Gluten-free",
+       "label": "Gluten-free",
+       "selected": false
+      },
+      {
+       "value": "Halal",
+       "label": "Halal",
+       "selected": false
+      },
+      {
+       "value": "Kosher",
+       "label": "Kosher",
+       "selected": false
+      },
+      {
+       "value": "Other",
+       "label": "Other",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      300,
+      849.9,
+      333,
+      41
+     ],
+     "sections": [
+      "o1",
+      "o6"
+     ]
+    },
+    {
+     "id": "e14",
+     "key": "form@0/combobox:t-shirt size~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=shirt\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "T-shirt size",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select size",
+       "selected": true
+      },
+      {
+       "value": "XS",
+       "label": "XS",
+       "selected": false
+      },
+      {
+       "value": "S",
+       "label": "S",
+       "selected": false
+      },
+      {
+       "value": "M",
+       "label": "M",
+       "selected": false
+      },
+      {
+       "value": "L",
+       "label": "L",
+       "selected": false
+      },
+      {
+       "value": "XL",
+       "label": "XL",
+       "selected": false
+      },
+      {
+       "value": "XXL",
+       "label": "XXL",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      647,
+      849.9,
+      333,
+      41
+     ],
+     "sections": [
+      "o1",
+      "o6"
+     ]
+    },
+    {
+     "id": "e15",
+     "key": "form@0/combobox:how did you hear about us?~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=heard\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "How did you hear about us?",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select...",
+       "selected": true
+      },
+      {
+       "value": "Colleague or friend",
+       "label": "Colleague or friend",
+       "selected": false
+      },
+      {
+       "value": "Social media",
+       "label": "Social media",
+       "selected": false
+      },
+      {
+       "value": "Newsletter",
+       "label": "Newsletter",
+       "selected": false
+      },
+      {
+       "value": "Meetup or user group",
+       "label": "Meetup or user group",
+       "selected": false
+      },
+      {
+       "value": "Search engine",
+       "label": "Search engine",
+       "selected": false
+      },
+      {
+       "value": "Other",
+       "label": "Other",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      300,
+      922.9,
+      680,
+      41
+     ],
+     "sections": [
+      "o1",
+      "o6"
+     ]
+    },
+    {
+     "id": "e16",
+     "key": "form@0/checkbox:send me news about future devharbor events.~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=news\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Send me news about future DevHarbor events.",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      304,
+      1005.9,
+      13,
+      13
+     ],
+     "sections": [
+      "o1",
+      "o6"
+     ]
+    },
+    {
+     "id": "e17",
+     "key": "form@0/button:continue to review~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Continue to review",
+     "form": "form@0",
+     "rect": [
+      300,
+      1053.9,
+      188.5,
+      44
+     ],
+     "sections": [
+      "o1",
+      "o6"
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {
+    "selfIdentification": 1
+   },
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

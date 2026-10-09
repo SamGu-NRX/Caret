@@ -1,0 +1,105 @@
+{
+ "mode": "scope",
+ "windows": [
+  {
+   "windowId": "chat-1",
+   "title": "Priya",
+   "app": {
+    "pid": 7373,
+    "bundleId": "com.apple.MobileSMS",
+    "name": "Messages"
+   },
+   "nodes": [
+    {
+     "key": "chat-1-m2",
+     "parent": null,
+     "role": "AXStaticText",
+     "label": "Ref: AT30-1749",
+     "frame": [
+      20,
+      108,
+      600,
+      20
+     ]
+    }
+   ],
+   "values": [],
+   "at": 100
+  },
+  {
+   "windowId": "note-1",
+   "title": "Untitled",
+   "app": {
+    "pid": 6161,
+    "bundleId": "com.apple.TextEdit",
+    "name": "TextEdit"
+   },
+   "nodes": [
+    {
+     "key": "note-1/text",
+     "parent": null,
+     "role": "AXTextArea",
+     "editable": true,
+     "value": "orbit glacier saffron summit pixel copper harbor harbor signal meadow maple harbor summit tidal orbit river summit glacier saffron meadow harbor AT30-1749 velvet glacier copper tidal quiet\nRef: AT30-1749\npixel saffron saffron summit glacier pixel river",
+     "frame": [
+      10,
+      40,
+      600,
+      400
+     ]
+    }
+   ],
+   "values": [],
+   "at": 200
+  },
+  {
+   "windowId": "5150-7",
+   "title": "ZIP code",
+   "app": {
+    "pid": 5150,
+    "bundleId": "dev.caret.fixture",
+    "name": "Fixture"
+   },
+   "nodes": [
+    {
+     "key": "dev.caret.fixture/standard/textfield:city~0",
+     "parent": null,
+     "role": "AXTextField",
+     "editable": true,
+     "label": "City",
+     "frame": [
+      100,
+      80,
+      300,
+      24
+     ]
+    }
+   ],
+   "values": [],
+   "at": 1300,
+   "focused": true
+  }
+ ],
+ "form": {
+  "windowId": "5150-7",
+  "keys": [
+   "dev.caret.fixture/standard/textfield:city~0"
+  ],
+  "labels": [
+   "City"
+  ]
+ },
+ "event": {
+  "before": 0,
+  "ev": {
+   "type": "close",
+   "windowId": "chat-1"
+  }
+ },
+ "tab": null,
+ "whose": false,
+ "answerSeed": 518272413,
+ "disagree": 0.5,
+ "lowVerify": 0.3,
+ "instruction": "fill the form"
+}

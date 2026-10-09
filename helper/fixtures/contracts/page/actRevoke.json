@@ -1,0 +1,6 @@
+{
+  "type": "actRevoke",
+  "v": 1,
+  "taskId": "fixture-task",
+  "at": 20
+}
