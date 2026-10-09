@@ -292,6 +292,11 @@ public final class PageInlineMachine {
 
     /// How long an offer waits for Tab. Native ghost text uses the arbiter's default (30 s); a page's is the same.
     public static let offerAge: Double = 30
+    /// Item 3: in a contenteditable, no offer until this long after a paste, drop, undo or redo. A rich editor keeps its
+    /// own undo history and groups changes made close together: ProseMirror's default newGroupDelay is 500 ms, and in
+    /// the VM (run 20261009T060212Z-70419) one ⌘Z after a paste and Tab took both. 600 ms is chosen above that
+    /// default, not measured; typed text needs no wait, since the insert already ends the typing step.
+    public static let editQuietMs = 600
     /// How long the quiet line stays if nobody answers it. A guess, not measured: long enough to read two sentences.
     public static let noticeLifetime: Double = 20
     /// An insert the helper never answers stops being awaited.
@@ -337,6 +342,8 @@ public final class PageInlineMachine {
     /// Brief item 6: Tab took one word (Cotypist's keys). Once the page reads that word in, the rest of the same
     /// suggestion is offered at once, as a native field's anchor does, instead of generating again.
     private var carry: (before: String, after: String, text: String, token: String, key: String, windowId: String)?
+    /// The re-check once `editQuietMs` has passed since a non-typing edit (item 3).
+    private var quietTimer: SurfaceTimer?
     private struct Awaiting {
         var requestId: String
         var before: String
@@ -407,6 +414,19 @@ public final class PageInlineMachine {
         if f.pageFocused == false { return clear("pageUnfocused") }
         guard let text = f.text, text.selection.isEmpty, let caretFrame = f.caret, f.frame != nil else { return clear("noText") }
         if PageInline.midLine(text.after) { return clear("midLine") }
+        quietTimer?.cancel()
+        quietTimer = nil
+        if f.fieldKind == .contenteditable, let quiet = text.quietMs, quiet < Self.editQuietMs {
+            let focus = Self.focusKey(f)
+            quietTimer = clock.schedule(after: Double(Self.editQuietMs - quiet) / 1000, repeats: false) { [weak self] in
+                guard let self, let now = self.current, Self.focusKey(now) == focus else { return }
+                self.quietTimer = nil
+                var settled = now
+                settled.text?.quietMs = nil
+                self.field(settled, gate: self.gate)
+            }
+            return clear("afterEdit")
+        }
         let caret = Self.rect(caretFrame)
         if let a = awaiting, text.before == a.before, text.after == a.after { return clear("insertPending") }
         if let s = shown {

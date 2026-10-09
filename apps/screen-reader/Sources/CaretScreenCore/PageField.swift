@@ -40,8 +40,11 @@ public struct PageField: Codable, Equatable, Sendable {
         public var before: String
         public var after: String
         public var selection: String
-        public init(before: String, after: String, selection: String) {
-            self.before = before; self.after = after; self.selection = selection
+        /// Item 3 (protocol.ts PageFocusText.quietMs): milliseconds since the last paste, drop, undo or redo in the
+        /// field's document, when under 2 s; nil otherwise or from an extension before it.
+        public var quietMs: Int?
+        public init(before: String, after: String, selection: String, quietMs: Int? = nil) {
+            self.before = before; self.after = after; self.selection = selection; self.quietMs = quietMs
         }
     }
 

@@ -28,7 +28,7 @@ import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
 import { EntryTracker } from "./content/entry.ts";
 import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 import { docsKind, readFrameText } from "./content/text.ts";
-import { docsFocus, fieldText } from "./content/field-text.ts";
+import { docsFocus, fieldText, trackEdits } from "./content/field-text.ts";
 import { caretRect } from "./content/caret-rect.ts";
 import { trackComposition } from "./content/insert.ts";
 
@@ -197,6 +197,7 @@ if (globalThis.__caretContent === undefined) {
 
   // H13 review: an inline insert never lands inside an input method's composition (content/insert.ts).
   trackComposition();
+  trackEdits();
 
   const focus = new FocusReporter({
     inFront: () => document.visibilityState === "visible" && document.hasFocus(),

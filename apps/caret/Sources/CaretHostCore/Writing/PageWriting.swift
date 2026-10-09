@@ -124,6 +124,8 @@ public final class PageWritingMachine {
         let last = previous?.focus == focus ? previous?.value : nil
         previous = (focus, value)
         guard let last else { return }
+        // Item 3: right after a paste, drop, undo or redo in a rich editor, its undo would group our fix with that edit.
+        if f.fieldKind == .contenteditable, let quiet = text.quietMs, quiet < PageInlineMachine.editQuietMs { return note("afterEdit") }
         let caret = UTF16Selection.caret(UTF16Text.length(text.before))
         if let sentence = WritingMarks.boundary(previous: last, value: value, selection: caret) {
             ask(Check(id: next(), value: value, span: sentence, word: false), focus: focus)

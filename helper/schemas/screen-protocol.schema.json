@@ -9563,6 +9563,11 @@
                     "selection": {
                       "type": "string",
                       "maxLength": 2000
+                    },
+                    "quietMs": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
                     }
                   },
                   "required": [
@@ -11311,6 +11316,11 @@
                 "selection": {
                   "type": "string",
                   "maxLength": 2000
+                },
+                "quietMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 2000
                 }
               },
               "required": [

@@ -171,6 +171,45 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(r.requests.count, asked + 1, "the field moved on: a fresh suggestion")
     }
 
+    // MARK: - After a paste, drop, undo or redo in a rich editor (item 3)
+
+    func editor(_ quiet: Int?) throws -> PageField {
+        var f = try Self.field(1)
+        f.fieldKind = .contenteditable
+        f.text?.quietMs = quiet
+        return f
+    }
+
+    func testNoOfferInARichEditorRightAfterANonTypingEdit() throws {
+        let r = Rig()
+        r.field(try editor(100))
+        XCTAssertTrue(r.requests.isEmpty, "the editor's own undo would group our insert with the paste")
+        XCTAssertEqual(r.machine.lastOutcome, "afterEdit")
+        r.clock.advance(by: 0.45)
+        XCTAssertTrue(r.requests.isEmpty)
+        r.clock.advance(by: 0.1)
+        XCTAssertEqual(r.requests.count, 1, "offered once \(PageInlineMachine.editQuietMs) ms have passed since the edit")
+    }
+
+    func testAnEditLongEnoughAgoOrInAPlainFieldDoesNotHoldTheOffer() throws {
+        let r = Rig()
+        r.field(try editor(PageInlineMachine.editQuietMs))
+        XCTAssertEqual(r.requests.count, 1)
+        let plain = Rig()
+        var f = try Self.field(1)
+        f.text?.quietMs = 50
+        plain.field(f)
+        XCTAssertEqual(plain.requests.count, 1, "a textarea's undo is the browser's, which our insert already separates")
+    }
+
+    func testAFieldThatMovedOnBeforeTheWaitEndsIsNotOfferedLate() throws {
+        let r = Rig()
+        r.field(try editor(100))
+        r.field(nil)
+        r.clock.advance(by: 1)
+        XCTAssertTrue(r.requests.isEmpty)
+    }
+
     /// Audit finding b: a password input comes without its text (extension walker.ts), so nothing is generated there.
     func testNoGenerationForAFieldReportedWithoutText() throws {
         let r = Rig()

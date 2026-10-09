@@ -223,6 +223,8 @@ export interface FieldText {
   before: string;
   after: string;
   selection: string;
+  /** Milliseconds since the last paste, drop, undo or redo in this document, when under 2 s (content/field-text.ts). */
+  quietMs?: number;
 }
 
 /**

@@ -239,4 +239,15 @@ final class PageWritingTests: XCTestCase {
         r.machine.displaced(offer)
         XCTAssertTrue(r.lineHidden)
     }
+
+    func testNoCheckInARichEditorRightAfterANonTypingEdit() {
+        let r = Rig()
+        r.gate = PageWritingMachine.Gate(allowed: true, contentEditable: true, settings: PageInlineSettings(), language: "en")
+        r.field(Self.field("I like teh", kind: .contenteditable))
+        var f = Self.field("I like teh ", kind: .contenteditable)
+        f.text?.quietMs = 200
+        r.field(f)
+        XCTAssertTrue(r.checks.isEmpty)
+        XCTAssertEqual(r.machine.lastOutcome, "afterEdit")
+    }
 }

@@ -1233,10 +1233,19 @@ export const FIELD_SELECTION_MAX = 2000;
  * card, one-time-code or hidden field, a self-identification question, or a frame on a site Caret is off for. Kept
  * only in the tab's latest snapshot in memory; never logged or stored.
  */
+/** How long after a non-typing edit the page still reports it (PageFocusText.quietMs). */
+export const QUIET_REPORT_MS = 2000;
+
 export const PageFocusText = z.object({
   before: z.string().max(FIELD_BEFORE_MAX),
   after: z.string().max(FIELD_AFTER_MAX),
   selection: z.string().max(FIELD_SELECTION_MAX),
+  /**
+   * v2/inline item 3: milliseconds since the last paste, drop, undo or redo in the field's document, when under
+   * QUIET_REPORT_MS; absent otherwise. A rich editor groups changes made close together into one undo step, so the host
+   * waits before offering there (CaretHostCore PageInlineMachine.editQuietMs).
+   */
+  quietMs: z.number().int().min(0).max(QUIET_REPORT_MS).optional(),
 });
 export type PageFocusText = z.infer<typeof PageFocusText>;
 
