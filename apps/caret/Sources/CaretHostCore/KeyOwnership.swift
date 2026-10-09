@@ -52,10 +52,18 @@ public enum GhostKeysCopy {
         }
     }
 
+    /// The settings pop-up's shorter names.
+    public static func choice(_ keys: GhostKeys) -> String {
+        switch keys {
+        case .caret: return "Tab takes all"
+        case .cotypist: return "Tab takes a word"
+        }
+    }
+
     public static func detail(_ keys: GhostKeys) -> String {
         switch keys {
-        case .caret: return "Caret's keys. Esc dismisses."
-        case .cotypist: return "Cotypist's keys. ⌥Tab types a real Tab, and Esc dismisses."
+        case .caret: return "Tab takes the whole suggestion, ⌥→ the next word, and Esc closes it."
+        case .cotypist: return "As in Cotypist: Tab takes the next word, ` the whole suggestion, ⌥Tab types a Tab, and Esc closes it."
         }
     }
 }

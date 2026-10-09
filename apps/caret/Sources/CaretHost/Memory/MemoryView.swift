@@ -51,6 +51,19 @@ enum MemoryAction: Equatable {
     case routing(Bool)
     /// H8: the calendar accepted events go to; nil for the default.
     case calendar(String?)
+    // Brief items 4, 6 and 7, the Writing tab: About you's text, Save and Import from Cotypist; an entry opened
+    // (by id), its text, Save, Cancel and Remove; the accept keys; an app turned off or back on.
+    case aboutText(String)
+    case saveAbout
+    case importCotypist
+    case editEntry(String)
+    case entryText(String)
+    case saveEntry
+    case cancelEntry
+    case removeEntry(String)
+    case keys(GhostKeys)
+    case appOff(String)
+    case appOn(String)
 }
 
 /// "What Caret knows" (DIRECTION.md 5.8): what Caret remembers, in groups, and what it may do per
@@ -68,7 +81,7 @@ enum MemoryAction: Equatable {
 /// motion, since each follows a key or a click the user is watching. Under Reduce Motion only the
 /// wash (a color change) and the fades remain.
 struct MemoryView: View {
-    enum Tab: String, CaseIterable, Codable { case memory, permissions, sites }
+    enum Tab: String, CaseIterable, Codable { case memory, permissions, sites, writing }
 
     /// DIRECTION.md's 620 wide. 600 tall rather than 560: with the permissions footer fixed under the
     /// list, 560 left the table scrolling after its fourth rule in the gallery's state.
@@ -93,6 +106,8 @@ struct MemoryView: View {
     var routing = false
     /// Permissions: "Calendar for new events" (H8); nil draws no row.
     var calendarRow: CalendarChoiceRow?
+    /// The Writing tab (brief items 4, 6 and 7).
+    var writing = WritingPage.State()
     var animated = true
     var now = Date()
     /// A row drawn as if the pointer were on it, for renders (hover does not exist off screen).
@@ -118,7 +133,7 @@ struct MemoryView: View {
                 .padding(.horizontal, 32)
                 .padding(.top, 34)
                 .layoutPriority(1)
-            TextTabs(tabs: [(Tab.memory, "Memory"), (.permissions, "Permissions"), (.sites, "Sites")], current: tab) { send(.tab($0)) }
+            TextTabs(tabs: [(Tab.memory, "Memory"), (.permissions, "Permissions"), (.sites, "Sites"), (.writing, WritingPageCopy.tab)], current: tab) { send(.tab($0)) }
                 .padding(.horizontal, 32)
                 .padding(.top, 18)
                 .layoutPriority(1)
@@ -129,6 +144,7 @@ struct MemoryView: View {
                     case .memory: memory
                     case .permissions: permissions
                     case .sites: sitesList
+                    case .writing: WritingTabView(state: writing, animated: animated, send: send)
                     }
                 }
                 .padding(.horizontal, 32)
