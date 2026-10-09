@@ -115,7 +115,7 @@ public final class HostRuntime {
     }
 
     private let configuration: Configuration
-    private let arbiter = OfferArbiter()
+    private let arbiter = OfferArbiter(aboveTabKeyCode: KeyboardLayout.aboveTabKeyCode())
     private let status = HostStatus()
     private let compatibilityStore = AppCompatibilityStore()
     private let engine: GhostTextEngine
@@ -440,10 +440,12 @@ public final class HostRuntime {
         // every change (B10). The client drops a change that leaves all three as they were.
         let gateClient = helper
         gateClient.update(HostSettings(SettingsStore.shared.settings, at: Self.nowMs()))
+        arbiter.setGhostKeys(SettingsStore.shared.settings.ghostKeys)
         // A setting that closes the gate takes down what it no longer allows at once, not only
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in
             gateClient.update(HostSettings(settings, at: Self.nowMs()))
+            arbiter.setGhostKeys(settings.ghostKeys)
             if !HostGate.allowsGhostText(settings) {
                 coordinator.gateClosed()
                 writing.gateClosed()
@@ -1070,10 +1072,11 @@ public final class HostRuntime {
             guard words.count == 3, let pid = Int32(words[2]), let key = TestKeys.key(words[1], pid: pid) else {
                 return Data("{\"error\":\"usage: key \(TestKeys.names) <pid>\"}\n".utf8)
             }
-            let consumed = tap.route(key, fromHook: true)
+            let disposition = tap.routeKey(key, fromHook: true)
             // The tap's callbacks post to main; wait for them, so the next read sees their effect.
             DispatchQueue.main.sync {}
-            return Data("{\"ok\":true,\"consumed\":\(consumed)}\n".utf8)
+            // plainTab: the tap would pass this key on as a plain Tab (Cotypist's ⌥Tab).
+            return Data("{\"ok\":true,\"consumed\":\(disposition == .consume),\"plainTab\":\(disposition == .passAsPlainTab)}\n".utf8)
         case "writemethod":
             // Test hook: `writemethod <pid> pastePid|axSelectedText` sets how that app takes writes,
             // so an acceptance run can drive the pasteboard route in an app that takes AX writes.
@@ -1230,13 +1233,16 @@ private final class ClientBox: @unchecked Sendable {
 
 /// Keys the debug socket's test hook can route.
 enum TestKeys {
-    static let names = "tab|shift-tab|opt-right|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:<c>"
+    static let names = "tab|shift-tab|opt-right|opt-tab|above-tab|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:<c>"
 
     static func key(_ name: String, pid: Int32) -> KeyStroke? {
         switch name {
         case "tab": return .tab(to: pid)
         case "shift-tab": return KeyStroke(keyCode: KeyStroke.tabKeyCode, shift: true, targetPID: pid)
         case "opt-right": return KeyStroke(keyCode: KeyStroke.rightKeyCode, option: true, targetPID: pid)
+        case "opt-tab": return KeyStroke(keyCode: KeyStroke.tabKeyCode, option: true, targetPID: pid)
+        // The ANSI key above Tab; the hook does not ask which keyboard this Mac has.
+        case "above-tab": return KeyStroke(keyCode: KeyStroke.graveKeyCode, text: "`", targetPID: pid)
         case "up": return KeyStroke(keyCode: KeyStroke.upKeyCode, targetPID: pid)
         case "down": return KeyStroke(keyCode: KeyStroke.downKeyCode, targetPID: pid)
         case "left": return KeyStroke(keyCode: KeyStroke.leftKeyCode, targetPID: pid)

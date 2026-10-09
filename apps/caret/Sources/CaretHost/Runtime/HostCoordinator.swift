@@ -165,7 +165,7 @@ final class HostCoordinator {
             if let shown = overlay.shownText, shown != remainder, shown.hasSuffix(remainder) {
                 overlay.advance(typed: String(shown.dropLast(remainder.count)), remainder: remainder)
             }
-        case .dismissed, .expired, .closed:
+        case .dismissed, .expired, .closed, .realTab:
             guard current == nil else { return }
             cancelGeneration()
             overlay.hide()

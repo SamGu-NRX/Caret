@@ -118,6 +118,9 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// Draft.js, Notion) keeps its own undo history, whose groups that does not close, so its ⌘Z may still take the
     /// user's typing with the insert. The user can turn it on.
     public var pageInlineContentEditable = false
+    /// Which keys take ghost text (brief item 6). Caret's own until Sam picks a default; Cotypist's is
+    /// the other preset.
+    public var ghostKeys = GhostKeys.caret
 
     public init() {}
 
@@ -129,7 +132,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = set.sorted()
     }
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable }
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable, ghostKeys }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -167,6 +170,8 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         // Absent: the defaults, as for a new user.
         pageInlineText = try c.decodeIfPresent(Bool.self, forKey: .pageInlineText) ?? true
         pageInlineContentEditable = try c.decodeIfPresent(Bool.self, forKey: .pageInlineContentEditable) ?? false
+        // Absent: the default. A scheme this host does not know is refused with the file.
+        ghostKeys = try c.decodeIfPresent(GhostKeys.self, forKey: .ghostKeys) ?? .caret
         let pages = Set(PageField.OwnSuggestions.allCases.map(\.rawValue))
         if let bad = (pageInline.on + pageInline.quiet).first(where: { !pages.contains($0) }) {
             throw DecodingError.dataCorruptedError(forKey: .pageInline, in: c, debugDescription: "\(bad) is not a page with its own suggestions")
@@ -190,6 +195,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         // Written only when the user changed them, so a later default reaches a user who never did.
         if !pageInlineText { try c.encode(pageInlineText, forKey: .pageInlineText) }
         if pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
+        if ghostKeys != .caret { try c.encode(ghostKeys, forKey: .ghostKeys) }
     }
 
     public var gate: GatePolicy { GatePolicy(self) }
