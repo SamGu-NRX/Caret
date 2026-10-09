@@ -1,1 +1,0 @@
-The privacy gate parses apps/caret/Bundle/Info.plist as XML, so a double hyphen inside an XML comment refuses every build-app.sh mode (v2/onboard-privacy ccff2558 rewords it; HI2).
