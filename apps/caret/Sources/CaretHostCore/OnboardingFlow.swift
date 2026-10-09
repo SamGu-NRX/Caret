@@ -443,7 +443,8 @@ public final class OnboardingFlow {
         /// The host read the installed Chromium browsers: those the bridge trusts and those it does not.
         case browsers(trusted: [String], untrusted: [String])
         /// The extension's engine said hello through the bridge (the helper's `pageEngine` connected).
-        case browserConnected
+        /// A Caret page engine said hello from this browser (its display name; nil when the helper named none).
+        case browserConnected(String?)
         /// Add to <browser> installed nothing (the installer's message), so the step offers Add again.
         case browserAddFailed(String)
         /// The host found Caret's grant stale (`AccessibilityAccess.isStale`), or no longer.
@@ -644,8 +645,9 @@ public final class OnboardingFlow {
             guard state.step == .browser, !state.browser.connected else { break }
             state.browser.opened = false
             state.browser.failure = why
-        case .browserConnected:
-            guard !state.browser.connected else { break }
+        case .browserConnected(let name):
+            // Only the browser the step adds Caret to: Helium connecting says nothing about Chrome's extension.
+            guard !state.browser.connected, name == nil || name == state.browser.target else { break }
             state.browser.connected = true
             guard state.step == .browser, landingTimer == nil else { break }
             // As the switch lands: "Caret is in Chrome." for a moment, then on by itself.

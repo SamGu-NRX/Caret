@@ -267,7 +267,7 @@ final class OnboardingController {
     func receive(_ reply: FirstLookReply) { flow?.send(.firstLookReply(reply)) }
 
     /// The helper heard a page engine say hello: the extension is connected through the bridge.
-    func browserConnected() { flow?.send(.browserConnected) }
+    func browserConnected(_ name: String?) { flow?.send(.browserConnected(name)) }
 
     /// What Add to <browser> did: a failure goes back to the step, which says why and offers Add again.
     func browserAddFinished(ok: Bool, message: String) {
@@ -317,7 +317,13 @@ final class OnboardingController {
             followFrame()
         case .finished:
             store.update(source: .onboarding) { $0.onboarded = true }
-            if drawsWindow, registersLoginItemLater() { onLoginItemDue() }
+            // The login item's copy reads `onboarded` from disk: if the write failed it would open onboarding again and
+            // hand off again. This copy keeps running instead, and says why in the host log.
+            if store.lastWriteFailed {
+                FileHandle.standardError.write(Data("caret: onboarding finished but settings were not saved (\(store.loadError ?? "unknown")); the login item waits\n".utf8))
+            } else if drawsWindow, registersLoginItemLater() {
+                onLoginItemDue()
+            }
         case .saveProgress(let step):
             saveProgress(step)
         case .addToBrowser:
@@ -761,7 +767,7 @@ final class OnboardingController {
     ///   onboarding key tab|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other
     ///   onboarding permissions on|off on|off      (Accessibility, Input Monitoring)
     ///   onboarding model ready|loading|unavailable
-    ///   onboarding browsers none|<name...>       onboarding browser-connected    onboarding skip-browser
+    ///   onboarding browsers none|<name...>       onboarding browser-connected [<name...>]    onboarding skip-browser
     ///   onboarding preview empty|fail|<n windows>  (a stand-in preview for the open request)
     ///   onboarding tab-owners none|<name...>      onboarding reply <firstLookReply json>
     ///   onboarding jev-key <text>
@@ -794,7 +800,7 @@ final class OnboardingController {
         case ("keep", 1): flow.send(.keep)
         case ("help", 1): flow.send(.toggleHelp)
         case ("skip-browser", 1): flow.send(.skipBrowser)
-        case ("browser-connected", 1): flow.send(.browserConnected)
+        case ("browser-connected", _): flow.send(.browserConnected(rest.count > 1 ? rest.dropFirst().joined(separator: " ") : nil))
         case ("browsers", _) where rest.count >= 2:
             flow.send(.browsers(trusted: rest[1] == "none" ? [] : Array(rest.dropFirst()), untrusted: []))
         case ("accept", 1): flow.send(.accept)

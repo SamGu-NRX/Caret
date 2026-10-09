@@ -123,9 +123,11 @@ final class HelperClient: @unchecked Sendable {
     /// True when written.
     @discardableResult
     func send(_ accept: OfferAccept) -> Bool {
+        // Recorded before the write: the reader thread can apply the helper's answer before sendLine returns.
+        work.withLock { $0.accepted(accept.offerId) }
         let sent = sendLine(try? NDJSON.line(accept))
+        if !sent { work.withLock { $0.unsent(accept.offerId) } }
         if sent {
-            work.withLock { $0.accepted(accept.offerId) }
             stats.withLock { $0.accepts &+= 1 }
             lastAccept.withLock { $0 = Date() }
         }
@@ -209,7 +211,10 @@ final class HelperClient: @unchecked Sendable {
     /// D2-04: ⌘1 on a field's fill, for the whole form. True when written.
     @discardableResult
     func send(_ fillAll: FillAllRequest) -> Bool {
+        // A fill-all runs as a task the helper reports by `taskID`, so the hand-off waits for it as for an accept.
+        work.withLock { $0.accepted(fillAll.taskID) }
         let sent = sendLine(try? NDJSON.line(fillAll))
+        if !sent { work.withLock { $0.unsent(fillAll.taskID) } }
         if sent {
             stats.withLock { $0.accepts &+= 1 }
             lastAccept.withLock { $0 = Date() }

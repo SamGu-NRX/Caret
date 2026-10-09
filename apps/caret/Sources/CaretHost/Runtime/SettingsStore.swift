@@ -25,6 +25,8 @@ public final class SettingsStore {
     public private(set) var loadError: String?
     /// The file existed and could not be decoded, and has not been kept aside yet.
     private var unreadable: Bool
+    /// The last write failed (a full disk, a folder that turned read-only): what is in memory is not on disk.
+    public private(set) var lastWriteFailed = false
     private var observers: [UUID: (CaretSettings) -> Void] = [:]
 
     init(path: String = SettingsStore.path) {
@@ -88,7 +90,9 @@ public final class SettingsStore {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(settings).write(to: url, options: .atomic)
+            lastWriteFailed = false
         } catch {
+            lastWriteFailed = true
             loadError = "\(path): could not write: \(error)"
             FileHandle.standardError.write(Data("caret: \(loadError!)\n".utf8))
         }

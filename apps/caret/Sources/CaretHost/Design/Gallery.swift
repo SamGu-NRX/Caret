@@ -245,7 +245,7 @@ extension Gallery {
             ("switch-relaunch-off", flow(at: .init(step: .access, reopened: true), [])),
             ("browser", flow(at: .init(step: .browser), ax: true, [.browsers(trusted: ["Google Chrome", "Helium"], untrusted: ["Brave"])])),
             ("browser-waiting", flow(at: .init(step: .browser), ax: true, [.browsers(trusted: ["Google Chrome"], untrusted: []), .next])),
-            ("browser-connected", flow(at: .init(step: .browser), ax: true, [.browsers(trusted: ["Google Chrome"], untrusted: []), .next, .browserConnected])),
+            ("browser-connected", flow(at: .init(step: .browser), ax: true, [.browsers(trusted: ["Google Chrome"], untrusted: []), .next, .browserConnected("Google Chrome")])),
             ("browser-none", flow(at: .init(step: .browser), ax: true, [.browsers(trusted: [], untrusted: [])])),
             ("can-building", flow(at: on, ax: true, [])),
             ("can-preview", flow(at: on, ax: true, ready)),

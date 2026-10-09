@@ -55,6 +55,20 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNotNil(store.debugInfo().error)
     }
 
+    func testAFailedWriteIsReportedUntilAWriteSucceeds() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // The settings path's folder is a file: nothing can be written under it.
+        let blocked = dir.appendingPathComponent("not-a-folder")
+        try Data("x".utf8).write(to: blocked)
+        let store = SettingsStore(path: blocked.appendingPathComponent("settings.json").path)
+        store.update(source: .onboarding) { $0.onboarded = true }
+        XCTAssertTrue(store.lastWriteFailed, "onboarding's completion is in memory only; the hand-off must not go")
+        XCTAssertTrue(store.settings.onboarded)
+        let fine = SettingsStore(path: path)
+        fine.update(source: .onboarding) { $0.onboarded = true }
+        XCTAssertFalse(fine.lastWriteFailed)
+    }
+
     func testTheFirstWriteAfterAnUnreadableFileKeepsThatFileAside() throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try Data(#"{"version":9}"#.utf8).write(to: URL(fileURLWithPath: path))

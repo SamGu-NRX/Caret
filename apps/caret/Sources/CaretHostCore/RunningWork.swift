@@ -16,9 +16,15 @@ public struct RunningWork: Equatable, Sendable {
 
     public var isEmpty: Bool { offers.isEmpty }
 
-    /// An `offerAccept` for `offerId` was written to the helper.
+    /// An `offerAccept` (or a `fillAll`, by its task id) for `offerId` is about to be written to the helper. Recorded
+    /// before the write: the helper's answer is read on another thread and can arrive before the writer returns.
     public mutating func accepted(_ offerId: String) {
         offers.insert(offerId)
+    }
+
+    /// The write recorded by `accepted` failed: nothing reached the helper.
+    public mutating func unsent(_ offerId: String) {
+        offers.remove(offerId)
     }
 
     public mutating func progress(_ progress: TaskProgress) {

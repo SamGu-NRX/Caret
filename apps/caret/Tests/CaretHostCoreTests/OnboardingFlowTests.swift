@@ -266,7 +266,9 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(rig.take(), [.addToBrowser], "the native host is written and the extension's page opened")
         XCTAssertTrue(rig.state.browser.opened)
         XCTAssertEqual(rig.step, .browser, "it waits for the extension")
-        rig.send(.browserConnected)
+        rig.send(.browserConnected("Helium"))
+        XCTAssertFalse(rig.state.browser.connected, "another browser's extension says nothing about Chrome's")
+        rig.send(.browserConnected("Google Chrome"))
         XCTAssertTrue(rig.state.browser.connected)
         rig.clock.advance(by: OnboardingFlow.grantLanding)
         XCTAssertEqual(rig.step, .on, "the first connection moves on by itself")
@@ -310,7 +312,7 @@ final class OnboardingFlowTests: XCTestCase {
 
     func testAnExtensionConnectedEarlierNeedsNoClick() {
         let rig = Rig(opening: .init(step: .access), ax: false)
-        rig.send(.browsers(trusted: ["Google Chrome"], untrusted: []), .browserConnected)
+        rig.send(.browsers(trusted: ["Google Chrome"], untrusted: []), .browserConnected("Google Chrome"))
         rig.grant()
         rig.clock.advance(by: OnboardingFlow.grantLanding)
         XCTAssertEqual(rig.step, .browser)

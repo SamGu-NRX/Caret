@@ -340,7 +340,10 @@ public final class HostRuntime {
                 perch.ask.provenance(provenance)
             // W2: whether Caret can see the front browser's pages.
             case .pageEngine(let m):
-                if m.state == .connected { onboarding.browserConnected() }
+                if m.state == .connected {
+                    let known = BridgeBrowser.allCases.first { $0.bundleIdentifier == m.browser.bundleId }
+                    onboarding.browserConnected(known?.displayName ?? m.browser.name)
+                }
                 pageSight.receive(m)
                 status.update { $0.pageSight = pageSight.sight.debugInfo }
             default: break

@@ -24,6 +24,21 @@ final class RunningWorkTests: XCTestCase {
         XCTAssertTrue(work.isEmpty)
     }
 
+    func testAnAcceptThatCouldNotBeWrittenIsNotRunning() {
+        var work = RunningWork()
+        work.accepted("fill-1")
+        work.unsent("fill-1")
+        XCTAssertTrue(work.isEmpty)
+    }
+
+    func testAnAnswerReadBeforeTheWriterReturnsStillEndsTheRun() {
+        // HelperClient records the accept before writing, so a quick refusal read on the reader thread finds it.
+        var work = RunningWork()
+        work.accepted("fill-1")
+        work.progress(progress("fill-1", .stopped))
+        XCTAssertTrue(work.isEmpty, "not left running for the session")
+    }
+
     func testEveryEndingEndsItAndPausedDoesNot() {
         for ending in [TaskProgress.Phase.done, .stopped, .handoff, .undone] {
             var work = RunningWork()
