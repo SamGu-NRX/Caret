@@ -33,6 +33,7 @@ final class FocusObserver {
     private var pendingSince: UInt64?
     private var running = false
     private(set) var notificationCount: UInt64 = 0
+    private var lastNotifiedAt: UInt64 = 0
 
     init(coalesceInterval: TimeInterval = 0.008) {
         self.coalesceInterval = coalesceInterval
@@ -57,6 +58,28 @@ final class FocusObserver {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         tearDown()
     }
+
+    /// A key that types text went to `pid`. If the app is the one observed and nothing was heard
+    /// from it within `silenceAfterKey`, the subscriptions are on an element that no longer reports:
+    /// a Mac Catalyst text view that had focus while its app launched posted nothing to Caret while
+    /// it took a typed sentence, though a fresh subscription to it hears every key (VM run
+    /// 20261009T111919Z-40847). So they move to the focused element again, and it is read.
+    func keyTyped(pid: pid_t) {
+        guard running, pid == observedPID else { return }
+        let typedAt = DispatchTime.now().uptimeNanoseconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.silenceAfterKey) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.running, self.observedPID == pid, self.lastNotifiedAt < typedAt else { return }
+                self.onNote?("focus.observe.silentKey")
+                self.observeFocusedElement()
+                self.scheduleRead()
+            }
+        }
+    }
+
+    /// Assumed, not measured: long enough for a value notification to follow a key in the apps
+    /// sampled, short enough that the first ghost is not much later than it would have been.
+    static let silenceAfterKey: TimeInterval = 0.2
 
     /// Re-read now, for example after the host inserted text.
     func requestRead() { scheduleRead() }
@@ -186,6 +209,7 @@ final class FocusObserver {
 
     private func handle(_ notification: String) {
         notificationCount &+= 1
+        lastNotifiedAt = DispatchTime.now().uptimeNanoseconds
         if notification == kAXFocusedUIElementChangedNotification
             || notification == kAXFocusedWindowChangedNotification
             || notification == kAXUIElementDestroyedNotification {

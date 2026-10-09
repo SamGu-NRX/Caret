@@ -34,6 +34,8 @@ public final class TapThread: @unchecked Sendable {
         /// Esc closed this offer, called before `offerChanged(.closed)`: a question Esc declined is
         /// answered by its id, even if main has since drawn something else. Tap thread; enqueue.
         public var closedOffer: @Sendable (UInt64) -> Void
+        /// A user key that types text (no ⌘ or ⌃), with the pid it goes to. Tap thread; enqueue.
+        public var typed: @Sendable (Int32) -> Void
 
         public init(
             claimed: @escaping @Sendable (Claim) -> Void,
@@ -44,9 +46,11 @@ public final class TapThread: @unchecked Sendable {
             stopWork: @escaping @Sendable (StatusLine) -> Void = { _ in },
             realKey: @escaping @Sendable (Int32) -> Void = { _ in },
             mouseDown: @escaping @Sendable (CGPoint) -> Void = { _ in },
-            closedOffer: @escaping @Sendable (UInt64) -> Void = { _ in }
+            closedOffer: @escaping @Sendable (UInt64) -> Void = { _ in },
+            typed: @escaping @Sendable (Int32) -> Void = { _ in }
         ) {
             self.closedOffer = closedOffer
+            self.typed = typed
             self.claimed = claimed
             self.offerChanged = offerChanged
             self.undo = undo
@@ -298,7 +302,10 @@ public final class TapThread: @unchecked Sendable {
 
     private func decide(_ key: KeyStroke, stampedAt uptimeNanos: UInt64) -> Disposition {
         callbacks.keyDown(uptimeNanos)
-        if let pid = key.targetPID { callbacks.realKey(pid) }
+        if let pid = key.targetPID {
+            callbacks.realKey(pid)
+            if key.text != nil, !key.command, !key.control { callbacks.typed(pid) }
+        }
         switch arbiter.handleKeyDown(key) {
         case .consume(let claim):
             callbacks.claimed(claim)

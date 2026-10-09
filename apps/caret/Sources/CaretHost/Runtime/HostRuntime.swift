@@ -534,6 +534,7 @@ public final class HostRuntime {
             for control in InputPause.controls(for: taskIds) { pauseClient.send(control) }
             activity.notePause(taskIds, kind: kind)
         }
+        let focusObserver = focus
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
                 if claim.insertsText {
@@ -617,6 +618,9 @@ public final class HostRuntime {
                         pageInline.offerChanged(.closed)
                     }
                 }
+            },
+            typed: { pid in
+                DispatchQueue.main.async { MainActor.assumeIsolated { focusObserver.keyTyped(pid: pid) } }
             }
         ))
         let tap = self.tap
