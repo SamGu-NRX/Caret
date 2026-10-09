@@ -235,26 +235,32 @@ struct SettingsDragPanelView: View {
 }
 
 /// The row: Caret's icon (Pebble) and name. Dragging it drags Caret.app; a click shows Caret.app in Finder.
-struct DragRow: NSViewRepresentable {
+///
+/// SwiftUI draws the row; the drag source is a transparent AppKit view laid over it. An off-screen render (snapshots)
+/// leaves the overlay out, because ImageRenderer draws any NSView as a placeholder box, and that box replaced the
+/// whole row in the CI references (run 37906770746) while it was an NSView hosting the drawing.
+struct DragRow: View {
+    @Environment(\.rendersOffscreen) private var offscreen
+
+    var body: some View {
+        DragRowContent().overlay {
+            if !offscreen { DragSource() }
+        }
+    }
+}
+
+/// The row's mouse and VoiceOver behaviour, drawing nothing.
+struct DragSource: NSViewRepresentable {
     func makeNSView(context: Context) -> DragRowView { DragRowView() }
-    func updateNSView(_ view: DragRowView, context: Context) { view.needsDisplay = true }
+    func updateNSView(_ view: DragRowView, context: Context) {}
 }
 
 final class DragRowView: NSView, NSDraggingSource {
     private var downAt: NSPoint?
     private var dragging = false
-    private var hosting: NSHostingView<DragRowContent>?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        let content = NSHostingView(rootView: DragRowContent())
-        content.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(content)
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor),
-            content.topAnchor.constraint(equalTo: topAnchor), content.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-        hosting = content
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel(OnboardingCopy.Drag.voiceOver)
