@@ -4,7 +4,7 @@ on:
   push:
     branches: ['v2/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'v2/next']
 
 permissions:
   contents: read
@@ -104,6 +104,8 @@ jobs:
           python-version: '3.11'
       - run: python3 -m unittest discover -s tests
       - run: python3 scripts/check_sources.py
+      # Preserve the legacy Core checks CLI smoke test alongside its unittest suite.
+      - run: python3 -m caret preview --fixture fixtures/meeting.json
 
   screen-reader:
     name: screen-reader
