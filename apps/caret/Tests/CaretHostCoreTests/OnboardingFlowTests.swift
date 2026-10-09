@@ -524,4 +524,14 @@ final class OnboardingFlowTests: XCTestCase {
         let bare = HelloApps.pick(defaultMail: nil, defaultBrowser: nil, running: [], installed: [], excluded: { _ in false })
         XCTAssertEqual(bare.map(\.name), ["Notes", "Mail", "Safari"], "never fewer than three names")
     }
+
+    func testHelloNamesOnlyAppsAPersonTypesIn() {
+        XCTAssertTrue(HelloApps.isPersonApp(path: "/Applications/Slack.app", home: "/Users/a"))
+        XCTAssertTrue(HelloApps.isPersonApp(path: "/System/Applications/Notes.app", home: "/Users/a"))
+        XCTAssertTrue(HelloApps.isPersonApp(path: "/Users/a/Applications/Arc.app", home: "/Users/a"))
+        XCTAssertFalse(HelloApps.isPersonApp(path: "/System/Library/CoreServices/Setup Assistant.app", home: "/Users/a"), "the VM's Hello named it")
+        XCTAssertFalse(HelloApps.isPersonApp(path: "/System/Library/CoreServices/Finder.app", home: "/Users/a"))
+        XCTAssertFalse(HelloApps.isPersonApp(path: "/Users/a/Downloads/Tool.app", home: "/Users/a"))
+        XCTAssertFalse(HelloApps.isPersonApp(path: nil, home: "/Users/a"))
+    }
 }

@@ -1064,6 +1064,14 @@ public enum HelloApps {
         return out
     }
 
+    /// Whether a running app at `path` is one a person types in: an app in an Applications folder. macOS's own system UI
+    /// lives under /System/Library (Setup Assistant, Finder, the login window), and a fresh Mac in the VM named Setup
+    /// Assistant on the Hello line.
+    public static func isPersonApp(path: String?, home: String = NSHomeDirectory()) -> Bool {
+        guard let path else { return false }
+        return ["/Applications/", "/System/Applications/", home + "/Applications/"].contains { path.hasPrefix($0) }
+    }
+
     /// "Mail, Slack, Notes and Chrome".
     public static func list(_ apps: [HelloApp]) -> String {
         let names = apps.map(\.name)

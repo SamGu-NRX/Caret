@@ -330,8 +330,12 @@ final class OnboardingController {
             // macOS's alert is what first puts Caret in the list; after that it shows nothing, so only the pane opens.
             if AccessibilityAccess.shouldPrompt(asked: progress?.axAsked == true, trusted: AXIsProcessTrusted()) {
                 updateProgress { $0.axAsked = true }
+                // Caret in front first: from the login item or a launch behind another app, macOS's alert otherwise
+                // opened behind the front app, where a person can miss it (after-run 263afe5, stale leg).
+                NSApp.activate(ignoringOtherApps: true)
                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(options)
+                bringAlertForward()
             }
             openedSettingsAt = Date()
             Self.openAccessibilityPane()
@@ -432,6 +436,20 @@ final class OnboardingController {
         guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
               let dict = info as? [String: Any], let unique = dict[kSecCodeInfoUnique as String] as? Data else { return nil }
         return unique.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// macOS's Accessibility alert belongs to its own process (universalAccessAuthWarn), which can open behind the front
+    /// app. Brings that process forward once its window is up: checked every 0.1 s for up to 2 s after the ask.
+    private func bringAlertForward(attempt: Int = 0) {
+        let alert = NSWorkspace.shared.runningApplications.first { $0.executableURL?.lastPathComponent == "universalAccessAuthWarn" }
+        if let alert, !alert.isTerminated {
+            alert.activate()
+            return
+        }
+        guard attempt < 20 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            MainActor.assumeIsolated { self?.bringAlertForward(attempt: attempt + 1) }
+        }
     }
 
     /// Removes Caret's own Accessibility entry (never another app's: `AccessibilityAccess.resetArguments`), forgets
@@ -739,6 +757,7 @@ final class OnboardingController {
     ///   onboarding tab-owners none|<name...>      onboarding reply <firstLookReply json>
     ///   onboarding jev-key <text>
     ///   onboarding trust-probe                    (this host's AXIsProcessTrusted beside a fresh `Caret --trust-probe`'s)
+    ///   onboarding reset-probe                    (`tccutil reset Accessibility dev.caret.host` from this process: exit, output)
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -750,6 +769,7 @@ final class OnboardingController {
         guard testHooks else { return #"{"error":"onboarding commands are test hooks: start the host with --test-hooks"}"# }
         let rest = Array(words.dropFirst())
         if rest == ["trust-probe"] { return Self.trustProbe() }
+        if rest == ["reset-probe"] { return Self.resetProbe() }
         if rest.first == "open" {
             let step = rest.count > 1 ? OnboardingStep(rawValue: rest[1]) : nil
             if rest.count > 1, step == nil { return #"{"error":"usage: onboarding open [hello|access|on|first]"}"# }
@@ -827,6 +847,27 @@ final class OnboardingController {
 }
 
 extension OnboardingController {
+    /// Runs Caret's own reset from this process, as `resetOwnEntries` does, and returns its exit status and output with
+    /// this process's pid and parent (launchd's 1 for the login item). A test hook for finding where the reset takes:
+    /// in the VM it exited 0 from the app and left the entry.
+    static func resetProbe() -> String {
+        guard let args = try? AccessibilityAccess.resetArguments(service: "Accessibility", bundleID: Bundle.main.bundleIdentifier) else {
+            return #"{"error":"not dev.caret.host"}"#
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch {
+            return "{\"error\":\(HostRuntime.jsonString(String(describing: error)))}"
+        }
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        return "{\"exit\":\(p.terminationStatus),\"out\":\(HostRuntime.jsonString(out)),\"pid\":\(getpid()),\"ppid\":\(getppid())}"
+    }
+
     /// This process's Accessibility answer and a fresh child's (`Caret --trust-probe`), as JSON. A test hook: it blocks
     /// the main thread for the child's run, about a tenth of a second.
     static func trustProbe() -> String {
@@ -910,7 +951,7 @@ enum HelloAppsReader {
             guard let url, let bundle = Bundle(url: url), let id = bundle.bundleIdentifier else { return nil }
             return HelloApp(bundleId: id, name: FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: ""))
         }
-        let running = ws.runningApplications.filter { $0.activationPolicy == .regular }.compactMap { r -> HelloApp? in
+        let running = ws.runningApplications.filter { $0.activationPolicy == .regular && HelloApps.isPersonApp(path: $0.bundleURL?.path) }.compactMap { r -> HelloApp? in
             guard let id = r.bundleIdentifier, let name = r.localizedName else { return nil }
             return HelloApp(bundleId: id, name: name)
         }
