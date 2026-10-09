@@ -16,14 +16,15 @@ final class ModelKeeper {
     private let folder: URL
     private let makeDownload: (URL) -> ModelDownload
 
-    init(configured: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser,
+    /// `downloadFolder`: where a download goes; nil is Caret's own models folder in `home`.
+    init(configured: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser, downloadFolder: URL? = nil,
          exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) },
          makeDownload: @escaping (URL) -> ModelDownload = { ModelDownload(folder: $0) }) {
         let caret = ModelFiles.caretFile(home: home)
         let cotypist = home.appendingPathComponent(ModelFiles.cotypistFile)
         let source: ModelFiles.Source = configured.path == caret.path ? .caret : configured.path == cotypist.path ? .cotypist : .named
         inUse = source != .named && !exists(configured) ? nil : ModelFiles.Found(url: configured, source: source)
-        folder = caret.deletingLastPathComponent()
+        folder = downloadFolder ?? caret.deletingLastPathComponent()
         self.makeDownload = makeDownload
     }
 

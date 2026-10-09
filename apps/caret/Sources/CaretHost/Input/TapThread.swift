@@ -38,6 +38,8 @@ public final class TapThread: @unchecked Sendable {
         public var typed: @Sendable (Int32) -> Void
         /// The rewrite key (`KeyStroke.isRewriteRequest`), with the pid it went to. Tap thread; enqueue.
         public var rewrite: @Sendable (Int32) -> Void
+        /// Whether the rewrite key is Caret's for that pid; when not, the app gets it. Tap thread; a lock and a lookup.
+        public var takesRewrite: @Sendable (Int32) -> Bool
 
         public init(
             claimed: @escaping @Sendable (Claim) -> Void,
@@ -50,8 +52,10 @@ public final class TapThread: @unchecked Sendable {
             mouseDown: @escaping @Sendable (CGPoint) -> Void = { _ in },
             closedOffer: @escaping @Sendable (UInt64) -> Void = { _ in },
             typed: @escaping @Sendable (Int32) -> Void = { _ in },
-            rewrite: @escaping @Sendable (Int32) -> Void = { _ in }
+            rewrite: @escaping @Sendable (Int32) -> Void = { _ in },
+            takesRewrite: @escaping @Sendable (Int32) -> Bool = { _ in true }
         ) {
+            self.takesRewrite = takesRewrite
             self.closedOffer = closedOffer
             self.typed = typed
             self.rewrite = rewrite
@@ -317,8 +321,9 @@ public final class TapThread: @unchecked Sendable {
         if let pid = key.targetPID {
             callbacks.realKey(pid)
             if key.text != nil, !key.command, !key.control { callbacks.typed(pid) }
-            // Caret's own key: it never reaches the app, whatever is showing.
-            if key.isRewriteRequest {
+            // Caret's own key where writing help is on in that app: it never reaches the app, whatever is showing.
+            // Paused, or off in that app, the chord is the app's.
+            if key.isRewriteRequest, callbacks.takesRewrite(pid) {
                 callbacks.rewrite(pid)
                 return .consume
             }

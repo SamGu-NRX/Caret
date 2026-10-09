@@ -217,11 +217,11 @@ final class InsertionExecutor: @unchecked Sendable {
         // since a pid-posted ⌘V goes to whichever field of the app has focus.
         let inputs = self.status
         let stillTarget = { [policy] in
-            live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid)
+            live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid) && !AppSwitch.shared.isOff(pid: pid)
                 && WriteRecheck.input(atKey: mark, now: inputs.inputMark()) == nil
                 && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
         }
-        let refusal = { Self.refusal(live: live(), mark: mark, now: inputs.inputMark()) }
+        let refusal = { Self.refusal(live: live(), mark: mark, now: inputs.inputMark(), appOff: AppSwitch.shared.isOff(pid: pid)) }
         // A clipboard Caret cannot restore exactly refuses the paste route for this insert
         // (`WriteFallback.firstRoute`, `afterAXRefused`). The check's snapshot is the only one a paste
         // may write over and restore (`ReconcilingClipboard.arm`).
@@ -283,8 +283,11 @@ final class InsertionExecutor: @unchecked Sendable {
         let verified = step == .verified
         var error: String?
         if case .failed(let code) = step { error = code }
-        if !verified, stray == nil, Self.reportIfMisplaced(FieldReader.read(element)?.value, before: before.value, expected: approved.resultingValue,
-                                                            bundleID: claim.offer.target.bundleID, what: "insert", status: status) {
+        // Only a write that was made and settled wrong can be Caret's misplaced edit; a refusal before any write (the
+        // field changed, input since the key) left the field to whoever changed it (PR #16 review).
+        if Self.mayHaveMisplaced(error), stray == nil,
+           Self.reportIfMisplaced(FieldReader.read(element)?.value, before: before.value, expected: approved.resultingValue,
+                                  bundleID: claim.offer.target.bundleID, what: "insert", status: status) {
             error = "misplaced"
         }
         arbiter.finishInsertion(claimID: claim.claimID, error: error)
@@ -520,14 +523,20 @@ final class InsertionExecutor: @unchecked Sendable {
     }
 
     /// Why a write stopped before it was made: input since the key first, then the claim's authorization.
-    static func refusal(live: Bool, mark: HostStatus.InputMark, now: HostStatus.InputMark) -> String {
+    static func refusal(live: Bool, mark: HostStatus.InputMark, now: HostStatus.InputMark, appOff: Bool = false) -> String {
         guard live else { return "revoked" }
+        // Turned off in that app after the key (PR #16 review): nothing more is written there.
+        if appOff { return "appOff" }
         return WriteRecheck.input(atKey: mark, now: now)?.rawValue ?? "targetNotAllowed"
     }
 
     /// A write that left neither the value before it nor the predicted one changed the field in a way nobody
     /// approved. It is counted and logged loudly (lengths and the app only, never the text), and the caller
     /// reports it as `misplaced`. True when it was.
+    /// Whether a failed write is one to look at for a misplaced edit: only `writeMismatch`, which follows a write
+    /// that settled to something else. Every other failure stopped before Caret wrote.
+    static func mayHaveMisplaced(_ error: String?) -> Bool { error == "writeMismatch" }
+
     static func reportIfMisplaced(_ value: String?, before: String, expected: String, bundleID: String, what: String, status: HostStatus) -> Bool {
         guard WriteRecheck.landed(value: value, before: before, expected: expected) == .misplaced else { return false }
         status.increment("\(what).misplaced")
@@ -589,7 +598,7 @@ final class InsertionExecutor: @unchecked Sendable {
         }
         let inputs = self.status
         let stillTarget = { [policy] in
-            live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid)
+            live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid) && !AppSwitch.shared.isOff(pid: pid)
                 && WriteRecheck.input(atKey: mark, now: inputs.inputMark()) == nil
                 && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
         }
@@ -602,7 +611,7 @@ final class InsertionExecutor: @unchecked Sendable {
             electron: writeMethods.isElectron(pid: pid)
         )
         if pastes { method = .pastePid }
-        let refusal = { Self.refusal(live: live(), mark: mark, now: inputs.inputMark()) }
+        let refusal = { Self.refusal(live: live(), mark: mark, now: inputs.inputMark(), appOff: AppSwitch.shared.isOff(pid: pid)) }
         let outcome = pastes
             ? pasteRange(claim, edit, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
             : applyRange(edit, element: element, before: before, stillTarget: stillTarget, refusal: refusal)

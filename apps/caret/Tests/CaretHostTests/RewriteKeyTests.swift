@@ -19,6 +19,18 @@ final class RewriteKeyTests: XCTestCase {
         XCTAssertFalse(KeyStroke(keyCode: 15, control: true, option: true, shift: true).isRewriteRequest)
     }
 
+    /// PR #16 review: paused, or with Caret off in the app, the chord is the app's.
+    func testTheAppKeepsTheChordWhenCaretWillNotRewriteThere() {
+        let asked = Pids()
+        let tap = TapThread(arbiter: OfferArbiter(), callbacks: .init(
+            claimed: { _ in }, offerChanged: { _, _ in }, undo: { _ in }, keyDown: { _ in }, rewrite: { asked.add($0) },
+            takesRewrite: { $0 != 9 }
+        ))
+        XCTAssertFalse(tap.route(KeyStroke(keyCode: 15, control: true, option: true, targetPID: 9)), "passed to the app")
+        XCTAssertTrue(tap.route(KeyStroke(keyCode: 15, control: true, option: true, targetPID: 7)))
+        XCTAssertEqual(asked.value, [7])
+    }
+
     func testTheTapTakesItAndNamesTheApp() {
         let asked = Pids()
         let tap = TapThread(arbiter: OfferArbiter(), callbacks: .init(
