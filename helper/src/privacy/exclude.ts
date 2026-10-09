@@ -9,6 +9,7 @@
 import type { Node, NodeExclusion, PageExclusion, TypedValue } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import { API_KEY_SHAPES, labelKind, luhn } from "../memory/sensitive.ts";
+import { TextMemo } from "./text-memo.ts";
 
 /** Why a node's content (protocol.ts NodeExclusion) or a value in a known format is never carried. */
 export type Exclusion = NodeExclusion | "privateKey" | "highEntropy";
@@ -106,23 +107,23 @@ function spans(text: string): Span[] {
   return merged;
 }
 
-/** Answers by text: a window's nodes repeat from snapshot to snapshot. Bounded; the bound is not measured. */
-const MEMO = new Map<string, { kind: Exclusion | null; kept: string }>();
-const MEMO_MAX = 8000;
+/**
+ * Answers by text: a window's nodes repeat from snapshot to snapshot. Keyed by a keyed hash and holding offsets, never
+ * the text (privacy/text-memo.ts). Bounded; the bound is not measured.
+ */
+const MEMO = new TextMemo<{ kind: Exclusion | null; spans: readonly (readonly [number, number])[] }>(8000);
 
 function scan(text: string): { kind: Exclusion | null; kept: string } {
-  const hit = MEMO.get(text);
-  if (hit !== undefined) return hit;
-  const found = spans(text);
+  const hit = MEMO.get(text, () => {
+    const found = spans(text);
+    return { kind: found[0]?.kind ?? null, spans: found.map((s) => [s.at, s.end] as const) };
+  });
   let kept = text;
-  for (let i = found.length - 1; i >= 0; i--) {
-    const s = found[i] as Span;
-    kept = kept.slice(0, s.at) + WITHHELD + kept.slice(s.end);
+  for (let i = hit.spans.length - 1; i >= 0; i--) {
+    const [at, end] = hit.spans[i] as readonly [number, number];
+    kept = kept.slice(0, at) + WITHHELD + kept.slice(end);
   }
-  const r = { kind: found[0]?.kind ?? null, kept };
-  if (MEMO.size >= MEMO_MAX) MEMO.clear();
-  MEMO.set(text, r);
-  return r;
+  return { kind: hit.kind, kept };
 }
 
 /** A value Caret never carries, whatever node or window it is in: formats only, never words. Null when `text` holds none. */
