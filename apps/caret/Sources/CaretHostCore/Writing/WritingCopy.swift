@@ -85,7 +85,7 @@ public enum WritingCopy {
         if let space = cut.lastIndex(of: " ") { cut = String(cut[..<space]) }
         return "“\(cut.trimmingCharacters(in: .punctuationCharacters))…”"
     }
-    public static let rewrittenPreview = 28
+    public static let rewrittenPreview = 32
     public static let rewriteUndone = "Your wording is back"
 
     public static func fixCount(_ n: Int) -> String { n == 1 ? "1 fix" : "\(n) fixes" }

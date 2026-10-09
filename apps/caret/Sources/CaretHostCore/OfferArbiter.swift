@@ -169,8 +169,11 @@ public final class OfferArbiter: @unchecked Sendable {
     /// have taken text nobody saw). Any key headed for its app meanwhile passes through and
     /// dismisses it, as typing dismisses a shown one.
     public func publish(_ offer: Offer, compact: Bool = false, shown: Bool = true) -> UInt64? {
+        // A key the user pressed for this offer (the rewrite key) is not a stale snapshot: it may
+        // offer on the state an insertion consumed, as after ⌘Z took a rewrite back.
+        let asked = Self.producer(of: offer) == .explicitRequest
         let (id, displaced): (UInt64?, Offer?) = state.withLock { s in
-            guard s.insertingClaimID == nil, offer.target != s.consumedTarget,
+            guard s.insertingClaimID == nil, asked || offer.target != s.consumedTarget,
                   s.current.map({ Self.mayReplace($0, ui: s.ui, with: offer) }) ?? true
             else {
                 s.refusedPublishCount &+= 1
