@@ -1,0 +1,1 @@
+Generation stops at MAX_GENERATOR_VISITS, not time; no generator clock/budget override. stats.ms is diagnostic; visit caps mark partial cuts. Close page sessions before Helper.shutdown and Store.close or a trailing walk reaches the closed store.
