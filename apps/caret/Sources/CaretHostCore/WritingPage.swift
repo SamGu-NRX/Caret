@@ -85,6 +85,8 @@ public enum WritingPage {
 /// The Writing tab's words.
 public enum WritingPageCopy {
     public static let tab = "Writing"
+    /// The window's line under its title on this tab.
+    public static let intro = "How Caret writes with you: what it knows about you, its keys, and where it stays out."
     public static let aboutHead = "About you"
     public static let aboutIntro = "Caret's suggestions follow this in every app. Only the model on this Mac reads it."
     public static let aboutPlaceholder = "Who you are and how you write. For example: I'm a student. I write short, plain sentences."

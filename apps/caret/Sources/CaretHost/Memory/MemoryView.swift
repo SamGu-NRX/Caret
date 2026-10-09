@@ -94,6 +94,16 @@ struct MemoryView: View {
     static let reading = "Reading Caret's memory"
     static let permissionsIntro = "What Caret may do on its own, by kind of action."
 
+    /// The line under the title, for the tab shown.
+    static func intro(_ tab: Tab) -> String {
+        switch tab {
+        case .memory: return subtitle
+        case .permissions: return permissionsIntro
+        case .sites: return SitesPage.intro
+        case .writing: return WritingPageCopy.intro
+        }
+    }
+
     var state: MemoryBook.State
     var files = MemoryFiles.State()
     /// H14: the files the user kept for a question.
@@ -173,7 +183,7 @@ struct MemoryView: View {
                     .tracking(-0.3)
                     .foregroundStyle(Color(token: Tokens.ink))
                     .accessibilityAddTraits(.isHeader)
-                Text(tab == .memory ? Self.subtitle : tab == .permissions ? Self.permissionsIntro : SitesPage.intro)
+                Text(Self.intro(tab))
                     .font(Tokens.Font.chrome)
                     .foregroundStyle(Color(token: Tokens.ink2))
                     .fixedSize(horizontal: false, vertical: true)
