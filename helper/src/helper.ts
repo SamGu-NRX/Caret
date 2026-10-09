@@ -946,6 +946,8 @@ export class Helper {
         }
         const leftField = m.window.kind === "page" ? (this.model.windows.get(m.window.windowId)?.focusedKey ?? null) : null;
         const changes = this.model.apply(m);
+        // Every walk, including one that changes no text: a kept write's field may show the user's input (onWindowRead).
+        this.executor.onWindowRead(m.window.windowId);
         if (changes.length > 0) for (const l of this.changeListeners) l(changes);
         // S1: focus left a field on a page form: what the user typed there may be worth keeping as their answer.
         if (leftField !== null && this.model.windows.get(m.window.windowId)?.focusedKey !== leftField) this.offerAnswerSave(m.window.windowId, leftField);

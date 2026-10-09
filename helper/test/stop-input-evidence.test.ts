@@ -317,6 +317,19 @@ describe("page: the walk's record of the user's input", () => {
     expect(r.held()).toBe(INTENDED);
   });
 
+  it("keeps Undo off a reconciled write the user retyped with the same text, which changes only inputAt (PR #33 review)", async () => {
+    const r = rig("page", { landed: true });
+    expect(await run(r)).toMatchObject({ acted: 1, detail: expect.stringContaining("Written before stop") });
+    // The user selects the field's text and types the same value: the walk shows no change of text, only the input time.
+    r.type(INTENDED);
+    await r.walk();
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ mayIncludeInput: true }]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    r.forget();
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("may hold your typing") }] });
+    expect(r.held()).toBe(INTENDED);
+  });
+
   it("does not count input from before the write was sent, such as the key that accepted the fill", async () => {
     const r = rig("page", { landed: true, inputBefore: 1000 });
     expect(await run(r)).toMatchObject({ outcome: "stopped", acted: 1, detail: expect.stringContaining("Written before stop") });

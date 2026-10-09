@@ -370,8 +370,6 @@ export class Executor {
   private readonly inputWatches = new Set<InputWatch>();
   /** When each watched write was sent, for Undo's check of a page field's input time (PageControl.inputAt). */
   private readonly sentAt = new WeakMap<LedgerEntry, number>();
-  /** Ends the subscription that reads a page field's inputAt from every later walk (keepWatch); null before the first. */
-  private offInputAt: (() => void) | null = null;
   /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
   readonly targetChoices: { taskId: string; step: number; chose: string | null; jev: JevTrace }[] = [];
   /** Bumped on every reader connection: a running task stops at its next act when it changes. */
@@ -580,24 +578,27 @@ export class Executor {
   }
 
   /**
-   * Keeps a watch with the ledger entry its write left, until the entry leaves the ledger. A page keeps its record of
-   * the user's input for only 30 s (PageControl.inputAt), so every later walk that changes the field is read for it
-   * too: what a failed recovery read could not see stays with the entry for Undo, however late Undo comes (PR #33
-   * review).
+   * Keeps a watch with the ledger entry its write left, until the entry leaves the ledger (onWindowRead). A page keeps its
+   * record of the user's input for only 30 s (PageControl.inputAt), so every later read of the field is checked too:
+   * what a failed recovery read could not see stays with the entry for Undo, however late Undo comes (PR #33 review).
    */
   private keepWatch(watch: InputWatch, entry: Extract<LedgerEntry, { kind: "write" }>): void {
     watch.entry = entry;
     this.sentAt.set(entry, watch.since);
     this.inputWatches.add(watch);
-    this.offInputAt ??= this.deps.onChanges((cs) => {
-      for (const c of cs) {
-        for (const w of this.inputWatches) {
-          if (w.entry === null || c.windowId !== w.windowId || c.key !== w.key) continue;
-          const at = this.deps.model.windows.get(w.windowId)?.nodes.get(w.key)?.inputAt;
-          if (at !== undefined && at >= w.since) this.inputSeen(w, "you typed in it");
-        }
-      }
-    });
+  }
+
+  /**
+   * A reader or page walk of this window reached the model: a kept watch's field that shows the user's input since its
+   * write was sent marks the entry for good. Every walk, not only one that changes the text: the user may type the
+   * value the field already shows (PR #33 review).
+   */
+  onWindowRead(windowId: string): void {
+    for (const w of this.inputWatches) {
+      if (w.entry === null || w.windowId !== windowId) continue;
+      const at = this.deps.model.windows.get(windowId)?.nodes.get(w.key)?.inputAt;
+      if (at !== undefined && at >= w.since) this.inputSeen(w, "you typed in it");
+    }
   }
 
   /** Input on a watched write's field: noted for its recovery read, and an entry already in the ledger is kept from Undo. */
