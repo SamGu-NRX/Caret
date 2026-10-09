@@ -46,10 +46,14 @@ enum OnboardingCopy {
 
     enum On {
         static let title = "Caret is on."
-        static func nextWords(_ apps: String) -> String { "As you type, in \(apps). Tab takes them." }
-        static let rows: [(title: String, state: String)] = [("Next words", "On"), ("Fixes", "On in Mac apps"), ("The next step", "Needs the cloud model")]
+        /// `apps` is HelloApps.list of the apps found; with none found, the line names no app rather than an empty one.
+        static func nextWords(_ apps: String) -> String {
+            apps.isEmpty ? "As you type, in any app. Tab takes them." : "As you type, in \(apps). Tab takes them."
+        }
         static let fixesDetail = "A quiet underline under a slip or a broken sentence. Tab fixes it."
-        static let fixesWeb = "Web pages soon"
+        /// Where fixes run, from what this build has: Mac apps always, web pages when it has the page writing path
+        /// (`PageWritingMachine.webFields`).
+        static func fixesState(webPages: Bool) -> String { webPages ? "On in Mac apps\nand web pages" : "On in Mac apps" }
         static let stepDetail = "A form from your notes, or a mail into Calendar. Shown first; written on Tab."
         static let stepSent = "On"
         static let stepKept = "Off"

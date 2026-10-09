@@ -20,8 +20,9 @@ final class ShipsRenderTests: XCTestCase {
             ("Key, as it opens", "onboarding-key", [P(name: "Ink, title", token: Tokens.ink, minimum: text),
                                                     P(name: "Ink 2, detail, label, placeholder, footnote, Back, Skip", token: Tokens.ink2, minimum: text),
                                                     P(name: "Carrot, the field's focus ring and the current dot", token: Tokens.carrot, minimum: mark),
-                                                    P(name: "Ink 3, the other dots", token: Tokens.ink3, minimum: mark),
-                                                    P(name: "On ink, Continue", token: Tokens.onInk, minimum: text)]),
+                                                    P(name: "Ink 3, the other dots and the hatched lines", token: Tokens.ink3, minimum: mark)]),
+            // No On ink probe as it opens: with no key yet, Send these and look is disabled, and WCAG 1.4.3 exempts
+            // inactive components (it measured 1.49:1 drawn disabled, CI run 37906771739).
             ("Key, pasted", "onboarding-key-typed", [P(name: "Ink, the key's dots", token: Tokens.ink, minimum: text)]),
             // No probe on the checking screen: Back, Skip and Continue are disabled there, and WCAG 1.4.3 exempts inactive
             // controls; the checking line is Ink 2 on the same window, measured on the screen as it opens.

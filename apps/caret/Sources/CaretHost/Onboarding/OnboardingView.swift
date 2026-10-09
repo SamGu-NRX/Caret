@@ -169,8 +169,10 @@ struct StepDots: View {
         HStack(spacing: 8) {
             ForEach(0..<count, id: \.self) { i in
                 Circle()
+                    // Ink 3 is 3.4:1 light and 3.1:1 dark (Tokens); at 6 pt the dot keeps solid pixels of it inside its
+                    // antialiased edge, so it holds the 3:1 a step indicator needs (WCAG 1.4.11).
                     .fill(Color(token: i == current ? Tokens.carrot : Tokens.ink3))
-                    .frame(width: i == current ? 7 : 5, height: i == current ? 7 : 5)
+                    .frame(width: i == current ? 7 : 6, height: i == current ? 7 : 6)
             }
         }
         .accessibilityElement()
@@ -617,7 +619,7 @@ struct OnPane: View {
             ScreenTitle(title: OnboardingCopy.On.title)
             VStack(spacing: 0) {
                 CapabilityRow(title: "Next words", detail: OnboardingCopy.On.nextWords(HelloApps.list(state.hello.apps)), state: "On", on: true)
-                CapabilityRow(title: "Fixes", detail: OnboardingCopy.On.fixesDetail, state: "On in Mac apps\n\(OnboardingCopy.On.fixesWeb)", on: true)
+                CapabilityRow(title: "Fixes", detail: OnboardingCopy.On.fixesDetail, state: OnboardingCopy.On.fixesState(webPages: PageWritingMachine.webFields), on: true)
                 CapabilityRow(title: "The next step", detail: OnboardingCopy.On.stepDetail, state: stepState, on: state.on.decision == .sent, last: true)
             }
             .padding(.top, 12)
@@ -775,7 +777,9 @@ struct Hatch: View {
                 var p = Path()
                 p.move(to: CGPoint(x: x, y: size.height))
                 p.addLine(to: CGPoint(x: x + size.height, y: 0))
-                ctx.stroke(p, with: .color(Color(token: Tokens.ink3).opacity(0.5)), lineWidth: 1)
+                // Full Ink 3: hatching says a line stays, a state mark, so it needs 3:1 (WCAG 1.4.11). At half opacity
+                // it measured 1.45:1 (CI run 37906771739).
+                ctx.stroke(p, with: .color(Color(token: Tokens.ink3)), lineWidth: 1)
                 x += 4
             }
         }

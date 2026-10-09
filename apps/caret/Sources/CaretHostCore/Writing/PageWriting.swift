@@ -17,6 +17,10 @@ import Foundation
 /// (`PageInline.takes`): inputs and textareas, contenteditables with that setting, never a page with its own
 /// suggestions. The coordinator checks (`NativeChecker`) and draws; every decision is here (`PageWritingTests`).
 public final class PageWritingMachine {
+    /// This build fixes spelling in web page fields: the machine below and the extension's `replace` page insert ship
+    /// together. Onboarding's Fixes row reads it, so the row cannot say "soon" for what already runs.
+    public static let webFields = true
+
     public enum Command: Equatable {
         /// Check `span` of `value` with the system checker and answer `checked(id, …)`.
         case check(Check)
