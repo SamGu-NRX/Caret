@@ -334,6 +334,9 @@ public final class PageInlineMachine {
     /// An insert on its way: until the page answers, a report of the field as it was before the insert offers nothing,
     /// so a stale offer is never drawn over text that is going in (H13 review).
     private var awaiting: Awaiting?
+    /// Brief item 6: Tab took one word (Cotypist's keys). Once the page reads that word in, the rest of the same
+    /// suggestion is offered at once, as a native field's anchor does, instead of generating again.
+    private var carry: (before: String, after: String, text: String, token: String, key: String, windowId: String)?
     private struct Awaiting {
         var requestId: String
         var before: String
@@ -424,6 +427,12 @@ public final class PageInlineMachine {
             }
             clear("textChanged")
         }
+        if let c = carry {
+            carry = nil
+            if text.before == c.before, text.after == c.after, f.token == c.token, key == c.key, f.windowId == c.windowId {
+                return offer(c.text, before: text.before, after: text.after)
+            }
+        }
         if let p = pending, p.before == text.before, p.after == text.after { return }
         requests &+= 1
         let r = Request(id: requests, before: text.before, after: text.after, bundleID: f.app.bundleId, appName: f.app.name)
@@ -436,8 +445,14 @@ public final class PageInlineMachine {
         guard let r = pending, r.id == id else { return output(.count("pageInline.stale")) }
         pending = nil
         guard let text, !text.isEmpty else { return note(why.map { "suppressed.\($0)" } ?? "nothing") }
-        guard let f = current, let t = PageInline.target(f), let fieldText = f.text, fieldText.before == r.before, fieldText.after == r.after,
-              let caretFrame = f.caret, let frame = f.frame else { return note("stale") }
+        guard let fieldText = current?.text, fieldText.before == r.before, fieldText.after == r.after else { return note("stale") }
+        offer(text, before: r.before, after: r.after)
+    }
+
+    /// Offers `text` at the caret of the current field, whose text reads `before` and `after`: published unshown,
+    /// drawn, then revealed.
+    private func offer(_ text: String, before: String, after: String) {
+        guard let f = current, let t = PageInline.target(f), let caretFrame = f.caret, let frame = f.frame else { return note("stale") }
         guard let token = f.token else { return note("noToken") }
         let caret = Self.rect(caretFrame)
         let box = Self.rect(frame)
@@ -446,11 +461,11 @@ public final class PageInlineMachine {
         let size = CGFloat(f.look?.fontSize ?? 13)
         let room = box.maxX - CGFloat(f.look?.inset ?? 4) - caret.maxX
         guard let text = GhostFit.wordsThatFit(text, fits: { measure($0, size) <= room }) else { return note("noRoom") }
-        let offer = Offer(text: text, source: .page, kind: .ghost, target: t, fieldValue: r.before + r.after,
-                          caretUTF16: UTF16Text.length(r.before), createdAt: clock.now, maxAgeSeconds: Self.offerAge)
+        let offer = Offer(text: text, source: .page, kind: .ghost, target: t, fieldValue: before + after,
+                          caretUTF16: UTF16Text.length(before), createdAt: clock.now, maxAgeSeconds: Self.offerAge)
         // Published unshown, drawn, then revealed: Tab takes only text that is on screen.
         guard let id = arbiter.publish(offer, shown: false) else { return note("refused") }
-        shown = Shown(offerID: id, text: text, before: r.before, after: r.after, target: t, token: token, caret: caret, reflected: "", look: f.look,
+        shown = Shown(offerID: id, text: text, before: before, after: after, target: t, token: token, caret: caret, reflected: "", look: f.look,
                       frame: box, page: f.ownSuggestions)
         output(.drawGhost(text, caret: caret, look: f.look))
         guard arbiter.reveal(offerID: id) else {
@@ -532,6 +547,13 @@ public final class PageInlineMachine {
                                 expect: expect, text: claim.insertionText, token: s.token,
                                 at: Int64(clock.now.timeIntervalSince1970 * 1000))))
         note("insert.sent")
+        carry = nil
+        if claim.choice.wordOnly {
+            let rest = String(s.text.dropFirst(claim.typedSinceOffer.count + claim.insertionText.count))
+            if !rest.isEmpty {
+                carry = (expect + claim.insertionText, s.after, rest, s.token, s.target.elementID, s.target.windowID)
+            }
+        }
         awaiting?.timer.cancel()
         let timer = clock.schedule(after: Self.insertWait, repeats: false) { [weak self] in
             guard let self, let a = self.awaiting, a.requestId == requestId else { return }

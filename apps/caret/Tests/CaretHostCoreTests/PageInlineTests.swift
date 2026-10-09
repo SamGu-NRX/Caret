@@ -136,6 +136,41 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(r.machine.lastOutcome, "noRoom")
     }
 
+    /// Brief item 6: with Cotypist's keys, Tab takes a word; once the page reads the word in, the rest of the same
+    /// suggestion is offered at once, so Tab, Tab, Tab walks it as in a native field. Nothing is generated again.
+    func testAfterAWordTheRestIsOfferedWithoutGeneratingAgain() throws {
+        let r = Rig()
+        r.arbiter.setGhostKeys(.cotypist)
+        let f = try Self.field(1)
+        r.field(f)
+        r.suggest("Field Robotics Technician role")
+        guard case .consume = r.press(.tab(to: Self.chrome)) else { return XCTFail("Tab took nothing") }
+        let sent = try XCTUnwrap(r.inserts.last)
+        XCTAssertEqual(sent.text, "Field")
+        r.machine.replied(PageInsertReply(requestId: sent.requestId, outcome: .inserted, says: "inserted", at: 0))
+        let asked = r.requests.count
+        var after = f
+        after.text?.before = "I am writing to apply for the Field"
+        r.field(after)
+        XCTAssertEqual(r.requests.count, asked, "the rest of the suggestion, not a new one")
+        XCTAssertEqual(r.ghosts.last?.0, " Robotics Technician role")
+        XCTAssertEqual(r.arbiter.snapshot().current?.text, " Robotics Technician role")
+    }
+
+    func testTheRestIsDroppedWhenThePageReadsOtherwise() throws {
+        let r = Rig()
+        r.arbiter.setGhostKeys(.cotypist)
+        let f = try Self.field(1)
+        r.field(f)
+        r.suggest("Field Robotics Technician role")
+        _ = r.press(.tab(to: Self.chrome))
+        let asked = r.requests.count
+        var other = f
+        other.text?.before = "I am writing to apply for the Fieldx"
+        r.field(other)
+        XCTAssertEqual(r.requests.count, asked + 1, "the field moved on: a fresh suggestion")
+    }
+
     /// Audit finding b: a password input comes without its text (extension walker.ts), so nothing is generated there.
     func testNoGenerationForAFieldReportedWithoutText() throws {
         let r = Rig()
