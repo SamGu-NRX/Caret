@@ -253,24 +253,33 @@ describe("event cards through the helper", () => {
 
   const spansOf = (s: Golden["sentences"][number]): TypedValue[] => s.spans.map((x) => ({ kind: x.kind, text: x.text, nodeKey: BODY }));
 
-  it("offers the 15 events whose time can be settled on the card, asks only where code found a person and a time ahead, and offers none of the 20 distractors", async () => {
+  // The 40 independent scenes took 5.424 s under full-suite CPU stress when batched in one 5 s test.
+  // Each scene gets its own test and the existing fresh-store hooks; the aggregate checks still cover every scene.
+  describe("the golden event sentences", () => {
     const results: { id: string; got: Record<string, unknown> | null }[] = [];
     const asked: string[] = [];
-    for (const s of GOLDEN.sentences) {
-      close();
-      await fresh();
+
+    it.each(GOLDEN.sentences)("$id: $sentence", async (s) => {
       await type(s.sentence, spansOf(s));
       const o = offers();
       expect(o.length, s.id).toBeLessThanOrEqual(1);
       const shown = helper.events.shown().find((e) => e.offerKey === o[0]?.offerKey);
-      results.push({ id: s.id, got: shown === undefined ? null : { title: shown.title, ...shown.when } });
+      const got = shown === undefined ? null : { title: shown.title, ...shown.when };
+      expect(got, s.id).toEqual(s.expect);
+      results.push({ id: s.id, got });
       asked.push(...jev.asked);
-    }
-    expect(results).toEqual(GOLDEN.sentences.map((s) => ({ id: s.id, got: s.expect })));
-    expect(asked.sort()).toEqual(GOLDEN.sentences.filter((s) => s.attend !== null).flatMap((s) => [s.sentence, s.sentence]).sort());
-    // s01, s07, s13, s15 and s19 give no AM or PM and no end: four possible times, more than the card's picker holds.
-    expect(results.filter((r) => r.id.startsWith("s") && r.got !== null)).toHaveLength(15);
-    expect(results.filter((r) => r.id.startsWith("d") && r.got !== null)).toHaveLength(0);
+    });
+
+    afterAll(() => {
+      // Shuffled tests finish in a different order; compare the same complete set in fixture order.
+      const order = GOLDEN.sentences.map((s) => s.id);
+      results.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+      expect(results).toEqual(GOLDEN.sentences.map((s) => ({ id: s.id, got: s.expect })));
+      expect(asked.sort()).toEqual(GOLDEN.sentences.filter((s) => s.attend !== null).flatMap((s) => [s.sentence, s.sentence]).sort());
+      // s01, s07, s13, s15 and s19 give no AM or PM and no end: four possible times, more than the card's picker holds.
+      expect(results.filter((r) => r.id.startsWith("s") && r.got !== null)).toHaveLength(15);
+      expect(results.filter((r) => r.id.startsWith("d") && r.got !== null)).toHaveLength(0);
+    });
   });
 
   it("shows the offer as a Calendar line with the card behind it, and adds the event when taken", async () => {
