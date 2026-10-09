@@ -4,6 +4,7 @@
 // the engine refuses to act after the helper stopped waiting. Closing ends every pending command; the worker drops
 // every grant when its port closes, so a new session starts with none.
 import { randomUUID } from "node:crypto";
+import { deniedOrigin } from "../privacy/denied-origins.ts";
 import { PROTOCOL_VERSION, type AppRef, type EngineMessage, type HelperToEngine, type PageFocusMoved, type PageHello, type PageInput, type PagePong, type PageResult, type PageSnapshot, type PageVerb, type ScopedActGrant } from "../protocol.ts";
 
 export interface EngineInfo {
@@ -145,10 +146,19 @@ export class EngineSession {
       case "pageSnapshot": {
         const p = this.pending.get(m.id);
         if (p === undefined) return `a snapshot for command ${m.id}, which nobody is waiting for`;
-        p.snapshot = m;
+        // The deny list, before anything reads the snapshot: a tab on it answers siteOff and is not kept, as the
+        // extension's worker answers; a frame on it is dropped from the rest.
+        const screened = withoutDeniedFrames(m);
+        if (screened === null) {
+          this.pending.delete(m.id);
+          clearTimeout(p.timer);
+          p.resolve({ result: { type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: Date.now(), outcome: "siteOff", detail: "Caret never reads this site" }, snapshot: null });
+          return `a snapshot of tab ${m.tabId}, on a site Caret never reads; dropped`;
+        }
+        p.snapshot = screened;
         // P4 item 7: the text around the caret goes to the one waiting for this walk only; the tab's kept snapshot holds
         // none of it, so the field's text is not kept past the walk that read it (P4 review).
-        const kept = withoutFieldText(m);
+        const kept = withoutFieldText(screened);
         this.tabs.set(m.tabId, kept);
         this.onSnapshot?.(kept, this);
         return null;
@@ -158,7 +168,9 @@ export class EngineSession {
         if (p === undefined) return `a result for command ${m.id}, which nobody is waiting for`;
         this.pending.delete(m.id);
         clearTimeout(p.timer);
-        p.resolve({ result: m, snapshot: p.snapshot });
+        // The deny list again: the text of a tab with a frame on it is never handed on.
+        const denied = m.text !== undefined && m.text.frames.some((f) => deniedOrigin(f.origin));
+        p.resolve({ result: denied ? { type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: m.at, outcome: "siteOff", detail: "Caret never reads this site" } : m, snapshot: p.snapshot });
         return null;
       }
       case "pageFocus": {
@@ -193,6 +205,24 @@ export class EngineSession {
     this.pongs.clear();
     for (const w of this.helloWaiters.splice(0)) w(null);
   }
+}
+
+/**
+ * A snapshot without its frames on the deny list (privacy/denied-origins.ts), or null when its top frame is on it or no
+ * frame is left. A dropped frame is listed as missing, and focus in it is no focus.
+ */
+export function withoutDeniedFrames(s: PageSnapshot): PageSnapshot | null {
+  const denied = s.frames.filter((f) => deniedOrigin(f.origin));
+  if (denied.length === 0) return s;
+  const frames = s.frames.filter((f) => !deniedOrigin(f.origin));
+  if (frames.length === 0 || denied.some((f) => f.frameId === 0)) return null;
+  const gone = new Set(denied.map((f) => f.frameId));
+  return {
+    ...s,
+    frames,
+    missing: [...s.missing, ...denied.map((f) => ({ frameId: f.frameId, reason: "Caret never reads this site" }))].sort((a, b) => a.frameId - b.frameId),
+    focused: s.focused !== null && gone.has(s.focused.frameId) ? null : s.focused,
+  };
 }
 
 /**

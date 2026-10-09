@@ -107,8 +107,9 @@ export class LeftTab {
  * Sites whose pages Caret never reads text from, whatever the user's "Not on this site" list says: the web side of the
  * reader's deny list (apps/screen-reader DenyList, ~/.caret-run/deny-apps.txt), which keeps password managers and the
  * system's password store out of every read. A vault's page shows passwords and recovery codes as ordinary text.
+ * The helper keeps a copy (helper/src/privacy/denied-origins.ts), checked equal to this one by its test.
  */
-const DENIED_HOSTS: readonly RegExp[] = [
+export const DENIED_HOSTS: readonly RegExp[] = [
   /(^|\.)1password\.(com|eu|ca)$/,
   /(^|\.)bitwarden\.(com|eu)$/,
   /(^|\.)lastpass\.com$/,

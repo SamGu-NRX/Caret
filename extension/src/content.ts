@@ -98,7 +98,7 @@ function textOf(until: number): FrameTextAnswer {
   return { selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText };
 }
 
-function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): FrameReport {
+function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
   const t0 = performance.now();
   const href = location.href;
   const nav = navigationEntry();
@@ -119,11 +119,12 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
       } catch {
         selection = null;
       }
-      // H13: the caret's rect with its text, for the host's inline text; neither on a site on the deny list. SC1 2a: a
-      // marked secret field says only that it has focus, never its text, selection, caret or whether it is empty.
+      // H13: the caret's rect with its text, for the host's inline text. A site on the deny list is never walked
+      // (worker.ts). SC1 2a: a marked secret field says only that it has focus, never its text, selection, caret or
+      // whether it is empty.
       focused = c.excluded !== undefined
         ? { id: c.id, selection: null, text: null, caret: null }
-        : { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null, caret: caretText ? caretRect(active) : null };
+        : { id: c.id, selection, look: lookOf(active), text: fieldText(active), caret: caretRect(active) };
     }
   }
   const docs = window.self === window.top ? docsKind(self.origin, location.pathname) : null;
@@ -237,7 +238,7 @@ if (globalThis.__caretContent === undefined) {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
-      reply(walk(reg, entries, m.caretText !== false));
+      reply(walk(reg, entries));
       return false;
     }
     if (m.op === "frame") {

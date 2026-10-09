@@ -204,8 +204,7 @@ export interface FrameReport {
  * ends (W3). An act arms its document too, until `guardUntil` (its grant's end), so no act runs unarmed.
  */
 export type ToContent =
-  /** `caretText: false` (P4): a frame on a site on the deny list reports no text around the caret. */
-  | { caret: 1; op: "walk"; caretText?: false }
+  | { caret: 1; op: "walk" }
   /** P4: about the frame itself, no text (FrameSelfAnswer), so the worker knows it is visible before it asks for text. */
   | { caret: 1; op: "frame" }
   /**

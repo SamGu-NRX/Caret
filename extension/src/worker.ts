@@ -219,6 +219,9 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   const frames = (await chrome.webNavigation.getAllFrames({ tabId: tab.id })) ?? [];
   const top = frameOrigin(frames, 0);
   if (top !== null && sitesOff.has(top)) return result(id, { outcome: "siteOff", detail: `Caret is off on ${top}` });
+  // A tab whose page is on the deny list (password managers, account pages) is not walked at all: no frame of it is
+  // asked, so no title, heading, label or value of it leaves the page.
+  if (top !== null && deniedOrigin(top)) return result(id, { outcome: "siteOff", detail: "Caret never reads this site" });
   const missing: { frameId: number; reason: string }[] = [];
   const captchas: CaptchaFrame[] = [];
   const reports = await Promise.all(
@@ -233,6 +236,10 @@ async function walk(id: string, tabId: number | null): Promise<void> {
         missing.push({ frameId: f.frameId, reason: "Caret is off on this site" });
         return null;
       }
+      if (deniedOrigin(origin)) {
+        missing.push({ frameId: f.frameId, reason: "Caret never reads this site" });
+        return null;
+      }
       // A captcha frame is never walked; only its viewport is asked, for the frame count (compose.ts, W4).
       if (isCaptchaUrl(f.url)) {
         const msg: ToContent = { caret: 1, op: "viewport" };
@@ -242,9 +249,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
         return null;
       }
       try {
-        // P4: the text around the caret is never taken on a site on the deny list, as no text read is; the frame is
-        // told before it walks, so it never reads it there (P4 review).
-        const msg: ToContent = deniedOrigin(origin) || (top !== null && deniedOrigin(top)) ? { caret: 1, op: "walk", caretText: false } : { caret: 1, op: "walk" };
+        const msg: ToContent = { caret: 1, op: "walk" };
         const r = (await withTimeout(chrome.tabs.sendMessage(tab.id as number, msg, { frameId: f.frameId, documentId: f.documentId }), FRAME_WALK_MS, `frame ${f.frameId}`)) as FrameReport | undefined;
         if (r === undefined || typeof r !== "object" || !Array.isArray(r.controls)) throw new Error("no report");
         // The worker's own view of the frame wins over what its script says: origin from the URL Chrome reports.
@@ -302,7 +307,6 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       ...(typeof r.walkMs === "number" ? { walkMs: r.walkMs } : {}),
     })),
     missing: missing.sort((a, b) => a.frameId - b.frameId),
-    // P4: and stripped here too, should a frame not have heeded it.
     focused:
       focusedFrame?.r.focused === undefined || focusedFrame.r.focused === null
         ? null
@@ -312,7 +316,6 @@ async function walk(id: string, tabId: number | null): Promise<void> {
             // H13 review: whether that frame's document has focus now; after a click in the address bar none does, and
             // the host takes its inline text down rather than let Tab take it.
             hasFocus: focusedFrame.r.hasFocus === true,
-            ...(deniedOrigin(focusedFrame.origin) || (top !== null && deniedOrigin(top)) ? { text: null, caret: null } : {}),
           },
     view,
     walkMs: Math.round((performance.now() - t0) * 10) / 10,
@@ -512,7 +515,8 @@ chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
  * is the active tab of the last focused browser window, its site and its frame's site are not off, and an engine is
  * connected; at most one per FOCUS_EVERY_MS per tab. One that comes sooner is held and sent when that time is up, the
  * latest frame's, so the last keystroke of a burst is never lost: the host's inline text would stay on the text before
- * it. Nothing about the element travels.
+ * it. Nothing about the element travels. A page on the deny list reports too, with the same three numbers: the walk
+ * the helper then asks for is refused (siteOff), which tells the host no field of Caret's has focus there.
  */
 const heldFocus = new Map<number, { frameId: number; timer: ReturnType<typeof setTimeout> }>();
 function forwardFocus(tabId: number, frameId: number): void {

@@ -1,6 +1,6 @@
 // P4: the worker's read of the tab the user just left, driven through its real listeners with a fake `chrome`: which
 // tab it reads, which frames it asks for text (never a hidden one, never one on an excluded site), what it rechecks
-// before asking, and that a walk on a denied site asks for no caret text. The content scripts' halves run in a real
+// before asking, and that a tab on the deny list is never walked. The content scripts' halves run in a real
 // browser in fixtures/web-form/tests/tab-text.test.ts and the journey (tab-source-journey.ts).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sha256Hex } from "../src/shared/sha256.ts";
@@ -127,14 +127,36 @@ describe("the worker's read of the tab the user just left", () => {
     expect(f.asked).toEqual([]);
   });
 
-  it("tells a frame on a site on the deny list not to report the text around the caret in a walk (P4 second review)", async () => {
-    await start([{ frameId: 0, parentFrameId: -1, documentId: "V0", url: "https://accounts.google.com/signin" }]);
-    f.answers.set("1:0:walk", { origin: "https://accounts.google.com", path: "/signin", title: "t", headings: [], controls: [], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: { id: "e1", selection: [0, 0], text: { before: "a", after: "", selection: "" } }, hasFocus: true, walkMs: 1 });
+  it("refuses a walk of a tab on the deny list with siteOff, asking no frame and sending no page text, label or value", async () => {
+    await start([
+      { frameId: 0, parentFrameId: -1, documentId: "V0", url: "https://accounts.google.com/signin" },
+      { frameId: 3, parentFrameId: 0, documentId: "V3", url: "https://forms.example.test/embed" },
+    ]);
+    f.answers.set("1:0:walk", { origin: "https://accounts.google.com", path: "/signin", title: "Sign in - Synthetic", headings: ["Choose an account"], controls: [{ id: "e1", key: "k", strongKey: null, kind: "email", role: "textbox", name: "Email or phone", value: "ines@example.test", form: null, rect: [0, 0, 10, 10] }], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: { id: "e1", selection: [0, 0], text: { before: "ines@", after: "", selection: "" }, caret: [10, 10, 1, 16] }, hasFocus: true, walkMs: 1 });
     await f.fire("port.message", { type: "pageCommand", v: 1, id: "w1", expires: Date.now() + 5000, verb: { kind: "pageWalk", tabId: 1 } });
+    for (let i = 0; i < 20 && !f.sentToHelper.some((m) => m.type === "pageResult"); i++) await settle();
+    const r = f.sentToHelper.find((m) => m.type === "pageResult" && m.id === "w1");
+    expect(r?.outcome).toBe("siteOff");
+    expect(f.asked).toEqual([]);
+    expect(f.sentToHelper.some((m) => m.type === "pageSnapshot")).toBe(false);
+    const sent = JSON.stringify(f.sentToHelper);
+    for (const planted of ["Sign in - Synthetic", "Choose an account", "Email or phone", "ines@example.test", "ines@"]) expect(sent).not.toContain(planted);
+  });
+
+  it("never asks a child frame on the deny list, and walks the rest of the tab", async () => {
+    await start([
+      { frameId: 0, parentFrameId: -1, documentId: "P0", url: "https://shop.example.test/checkout" },
+      { frameId: 2, parentFrameId: 0, documentId: "P2", url: "https://vault.bitwarden.com/#/vault" },
+    ]);
+    f.answers.set("1:0:walk", { origin: "https://shop.example.test", path: "/checkout", title: "Checkout", headings: [], controls: [], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: null, hasFocus: true, walkMs: 1 });
+    f.answers.set("1:2:walk", { origin: "https://vault.bitwarden.com", path: "/", title: "Vault", headings: ["Logins"], controls: [], iframes: [], viewport: [400, 300], excluded: {}, truncated: false, focused: null, hasFocus: false, walkMs: 1 });
+    await f.fire("port.message", { type: "pageCommand", v: 1, id: "w2", expires: Date.now() + 5000, verb: { kind: "pageWalk", tabId: 1 } });
     for (let i = 0; i < 20 && !f.sentToHelper.some((m) => m.type === "pageSnapshot"); i++) await settle();
-    expect(f.asked.find((a) => a.op === "walk")?.msg.caretText).toBe(false);
-    const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { focused: { text: unknown } } | undefined;
-    expect(snap?.focused.text).toBeNull();
+    expect(f.asked.map((a) => a.frameId)).toEqual([0]);
+    const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { frames: { frameId: number }[]; missing: { frameId: number; reason: string }[] } | undefined;
+    expect(snap?.frames.map((x) => x.frameId)).toEqual([0]);
+    expect(snap?.missing).toContainEqual({ frameId: 2, reason: "Caret never reads this site" });
+    expect(JSON.stringify(f.sentToHelper)).not.toContain("Logins");
   });
 });
 
@@ -174,14 +196,23 @@ describe("focus and typing reports to the helper (H13)", () => {
     expect(focusReports()).toHaveLength(2);
   });
 
-  it("reports the caret with the text on a page, and neither on a site on the deny list", async () => {
-    await start([{ frameId: 0, parentFrameId: -1, documentId: "V0", url: "https://accounts.google.com/signin" }]);
-    f.answers.set("1:0:walk", { origin: "https://accounts.google.com", path: "/signin", title: "t", headings: [], controls: [], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: { id: "e1", selection: [0, 0], text: { before: "a", after: "", selection: "" }, caret: [10, 10, 1, 16] }, hasFocus: true, walkMs: 1 });
+  it("reports the caret with the text on a page, and whether the field's document has focus", async () => {
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "D0", url: "http://127.0.0.1:4310/apply" }]);
+    f.answers.set("1:0:walk", { origin: "http://127.0.0.1:4310", path: "/apply", title: "t", headings: [], controls: [], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: { id: "e1", selection: [1, 1], text: { before: "a", after: "", selection: "" }, caret: [10, 10, 1, 16] }, hasFocus: true, walkMs: 1 });
     await f.fire("port.message", { type: "pageCommand", v: 1, id: "w1", expires: Date.now() + 5000, verb: { kind: "pageWalk", tabId: 1 } });
     for (let i = 0; i < 20 && !f.sentToHelper.some((m) => m.type === "pageSnapshot"); i++) await settle();
     const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { focused: { text: unknown; caret: unknown; hasFocus: unknown } } | undefined;
-    expect(snap?.focused.caret).toBeNull();
+    expect(snap?.focused.caret).toEqual([10, 10, 1, 16]);
+    expect(snap?.focused.text).toEqual({ before: "a", after: "", selection: "" });
     // H13 review: whether the field's document has focus travels with it.
     expect(snap?.focused.hasFocus).toBe(true);
+  });
+
+  it("sends a focus report from a page on the deny list with nothing but where it came from", async () => {
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "V0", url: "https://accounts.google.com/signin" }]);
+    await typed();
+    for (let i = 0; i < 5; i++) await settle();
+    expect(focusReports()).toHaveLength(1);
+    expect(Object.keys(focusReports()[0] ?? {}).sort()).toEqual(["at", "frameId", "tabId", "type", "v"]);
   });
 });
