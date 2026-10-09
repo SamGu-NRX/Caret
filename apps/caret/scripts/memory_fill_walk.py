@@ -148,10 +148,10 @@ def walk(out_dir):
     reader_at = time.time()
     fa.start_with_secret("reader", [os.path.join(fa.SCREEN_BIN, "caret-screen"), "--auth-fd", "0", "--socket", fa.HELPER_SOCK, "--only-pids", pid_list,
                                     "--event-pids", pid_list], out_dir)
-    fa.start("host", [fa.CARET, "--socket", fa.HOST_SOCK, "--helper-socket", fa.HELPER_SOCK, "--allow-pids", pid_list,
-                      "--settings", os.path.join(out_dir, "settings.json"), "--onboarding", "hidden", "--test-hooks",
-                      "--status-item", "off", "--perch", "hidden", "--no-ghost"], out_dir,
-             env=dict(os.environ, CARET_FILL_ADVANCE="off"))
+    fa.start_caret("host", [fa.CARET, "--socket", fa.HOST_SOCK, "--helper-socket", fa.HELPER_SOCK, "--allow-pids", pid_list,
+                            "--settings", os.path.join(out_dir, "settings.json"), "--onboarding", "hidden", "--test-hooks",
+                            "--status-item", "off", "--perch", "hidden", "--no-ghost"], out_dir,
+                   env=dict(os.environ, CARET_FILL_ADVANCE="off"))
     if not fa.wait_for(lambda: os.path.exists(fa.HOST_SOCK), 15, 0.1):
         raise SystemExit("host did not open its socket")
     if not fa.wait_for(lambda: fa.host().get("helper", {}).get("connected"), 15, 0.2):

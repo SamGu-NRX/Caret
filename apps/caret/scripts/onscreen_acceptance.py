@@ -120,12 +120,10 @@ def rig(out_dir, appearance, calendar):
         raise SystemExit(why)
     sa.RUN_START = time.time()
     before = sa.front_pid()
-    # B23: the reader accepts only a helper holding this run's launch secret; both get it on stdin.
-    secret = os.urandom(32)
-    helper = sa.start("helper", ["node", os.path.join(HERE, "acceptance_helper.ts"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--state", STATE,
-                                 "--calendar", "reader" if calendar == "reader" else "fake"], out_dir, stdin=subprocess.PIPE)
-    helper.stdin.write(secret)
-    helper.stdin.close()
+    # B23: the reader accepts only a helper holding this run's launch secret; both get it on stdin, and Caret gets the
+    # host key derived from it (launch_secret.py).
+    sa.start_with_secret("helper", ["node", os.path.join(HERE, "acceptance_helper.ts"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--state", STATE,
+                                    "--calendar", "reader" if calendar == "reader" else "fake"], out_dir)
     if not sa.wait_for(lambda: os.path.exists(HELPER_SOCK), 20, 0.1):
         raise SystemExit("helper did not open its socket")
     fx = sa.start("fixture", fixture_app.args("--windows", "executor", "--duration", "900", "--appearance", appearance), out_dir, stdin=subprocess.PIPE)
@@ -138,14 +136,12 @@ def rig(out_dir, appearance, calendar):
     reader_args = [os.path.join(SCREEN_BIN, "caret-screen"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", str(fx.pid), "--event-pids", str(fx.pid)]
     if calendar == "reader":
         reader_args.append("--calendar-test")
-    reader = sa.start("reader", reader_args, out_dir, stdin=subprocess.PIPE)
-    reader.stdin.write(secret)
-    reader.stdin.close()
+    sa.start_with_secret("reader", reader_args, out_dir)
     # The run's own settings: every role off but the calendar, so no other offer competes.
     settings = os.path.join(out_dir, "settings.json")
     with open(settings, "w") as f:
         json.dump({"version": 2, "roles": ["calendar"], "level": "balanced", "character": "pebble", "paused": False, "onboarded": True, "memory": []}, f)
-    h = sa.start("host", [sa.CARET, "--socket", sa.HOST_SOCK, "--helper-socket", HELPER_SOCK, "--allow-pids", str(fx.pid), "--no-ghost",
+    h = sa.start_caret("host", [sa.CARET, "--socket", sa.HOST_SOCK, "--helper-socket", HELPER_SOCK, "--allow-pids", str(fx.pid), "--no-ghost",
                           "--test-hooks", "--appearance", appearance, "--settings", settings, "--status-item", "off"], out_dir)
     if not sa.wait_for(lambda: os.path.exists(sa.HOST_SOCK), 15, 0.1):
         raise SystemExit("host did not open its socket")

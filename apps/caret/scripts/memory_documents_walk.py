@@ -35,6 +35,8 @@ import sys
 import tempfile
 import time
 
+import launch_secret
+
 SOCKETS = os.path.expanduser("~/.caret-run/sockets")
 NOTICED_AT = "2026-10-02T15:05:00.000Z"
 
@@ -148,15 +150,17 @@ def main() -> int:
     host_log = open(os.path.join(a.out, "host.log"), "w")
     disk = lambda name: open(os.path.join(memory, name)).read()
     try:
-        helper = subprocess.Popen(
-            ["node", os.path.join(a.helper, "src", "main.ts"), "--data-dir", data, "--socket", helper_sock, "--no-jev", "--no-page"],
+        # One launch secret: the helper gets it on stdin, Caret the host key derived from it (launch_secret.py), so the
+        # helper takes this Caret as its host.
+        helper = launch_secret.popen_with_secret(
+            ["node", os.path.join(a.helper, "src", "main.ts"), "--auth-fd", "0", "--data-dir", data, "--socket", helper_sock, "--no-jev", "--no-page"],
             cwd=a.helper, env=env, stdout=helper_log, stderr=subprocess.STDOUT,
         )
         procs.append(helper)
         if not wait(lambda: os.path.exists(helper_sock), 20):
             walk.check("helper listens", False)
             return 1
-        host = subprocess.Popen(
+        host = launch_secret.popen_caret(
             [a.caret, "--helper-socket", helper_sock, "--socket", host_sock, "--no-ghost", "--perch", "hidden", "--surfaces", "headless",
              "--status-item", "off", "--onboarding", "off", "--allow-pids", "1", "--settings", os.path.join(home, "settings.json"), "--test-hooks"],
             env=env, stdout=host_log, stderr=subprocess.STDOUT,

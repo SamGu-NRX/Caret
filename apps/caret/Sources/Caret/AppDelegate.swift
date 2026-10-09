@@ -154,8 +154,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        stateItem.title = browserInstallResult?.message ?? runtime.engineSummary
-        // Show the install result on one menu opening, then resume reporting the engine state.
+        stateItem.title = browserInstallResult?.message ?? runtime.helperRefusalLine ?? runtime.engineSummary
+        // Show the install result on one menu opening, then resume reporting the helper's refusal, if any, or the engine state.
         browserInstallResult = nil
         modelItem.title = runtime.modelLine
         modelItem.toolTip = runtime.modelStatus

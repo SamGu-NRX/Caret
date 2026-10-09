@@ -57,8 +57,11 @@ final class HostAuthClientTests: XCTestCase {
             return poll(&p, 1, Int32(seconds * 1000)) > 0
         }
 
+        /// Takes the client's next connection, closing the one before.
         func accept(within seconds: Double = 5) throws {
             guard ready(listener, within: seconds) else { throw Failure(description: "the client did not connect") }
+            if conn >= 0 { close(conn) }
+            buffer = Data()
             conn = Darwin.accept(listener, nil, nil)
         }
 
@@ -94,6 +97,13 @@ final class HostAuthClientTests: XCTestCase {
                 if read(conn, &chunk, chunk.count) <= 0 { return true }
             }
             return false
+        }
+
+        /// Closes the current connection without a word.
+        func drop() {
+            if conn >= 0 { close(conn) }
+            conn = -1
+            buffer = Data()
         }
 
         func send(_ line: String) {
@@ -162,19 +172,49 @@ final class HostAuthClientTests: XCTestCase {
         XCTAssertEqual(client.snapshot().lastError, "the helper refused this host: the host's proof does not match this connection's challenge under the launch secret's host key; closing".prefix(200).description)
         XCTAssertEqual(links.withLock { $0 }, [], "never linked, so never unlinked")
         XCTAssertEqual(client.snapshot().hostAuthenticated, false)
+        XCTAssertTrue(until { client.snapshot().hostRefused == "Caret can't reach its helper: the helper refused Caret's key" }, "the menu's line names the refusal")
+        XCTAssertEqual(client.snapshot().hostRetrySeconds, 2)
+    }
+
+    func testAfterARefusalTheClientWaitsTwoSecondsAndTheLineClearsOnceAccepted() throws {
+        let helper = try FakeHelper(path: "\(dir)/s.sock")
+        let links = OSAllocatedUnfairLock(initialState: [Bool]())
+        let client = HelperClient(path: helper.path, onMessage: { _ in }, onLink: { up in links.withLock { $0.append(up) } }, hostKey: key)
+        client.start()
+        defer { client.stop() }
+        try helper.accept()
+        _ = try helper.line()
+        // The helper closes during the handshake without a word: a refusal too.
+        helper.send(#"{"type":"hostChallenge","v":1,"nonce":"\#(nonce)"}"#)
+        _ = try helper.line()
+        let refusedAt = Date()
+        helper.drop()
+        XCTAssertTrue(until { client.snapshot().hostRefused == "Caret can't reach its helper: the helper closed the connection before accepting Caret's key" })
+
+        try helper.accept(within: 5)
+        XCTAssertGreaterThan(Date().timeIntervalSince(refusedAt), 1.5, "the first retry after a refusal waits 2 s, not the 0.25 s of an ordinary drop")
+        XCTAssertEqual(try helper.line()["host"] as? Bool, true)
+        helper.send(#"{"type":"hostChallenge","v":1,"nonce":"\#(nonce)"}"#)
+        _ = try helper.line()
+        helper.send(#"{"type":"hostAuthenticated","v":1}"#)
+        XCTAssertTrue(until { links.withLock { $0 } == [true] })
+        XCTAssertNil(client.snapshot().hostRefused, "the line clears once the helper accepts this host")
+        XCTAssertNil(client.snapshot().hostRetrySeconds)
     }
 
     func testACaretWithNoKeySaysNothingOfAHostAndIsLinkedAtOnce() throws {
         let helper = try FakeHelper(path: "\(dir)/s.sock")
         let links = OSAllocatedUnfairLock(initialState: [Bool]())
-        let client = HelperClient(path: helper.path, onMessage: { _ in }, onLink: { up in links.withLock { $0.append(up) } }, wantsRouting: { true }, hostKey: nil)
+        let client = HelperClient(path: helper.path, onMessage: { _ in }, onLink: { up in links.withLock { $0.append(up) } }, wantsRouting: { true }, goalFiles: { true }, hostKey: nil)
         client.update(HostSettings(CaretSettings(), at: 1))
         client.start()
         defer { client.stop() }
         try helper.accept()
         let hello = try helper.line()
         XCTAssertNil(hello["host"], "no host: true without a key")
-        XCTAssertFalse((hello["capabilities"] as? [String] ?? []).contains(Routing.capability), "a host-only capability is not claimed")
+        let claimed = Set(hello["capabilities"] as? [String] ?? [])
+        XCTAssertEqual(claimed.intersection(HostHello.hostOnlyCapabilities), [], "no host-only capability is claimed, though routing and goal files are wanted")
+        XCTAssertTrue(claimed.contains(MemoryDocs.capability), "what any consumer may have is still claimed")
         XCTAssertEqual(try helper.line()["type"] as? String, "settings")
         XCTAssertTrue(until { links.withLock { $0 } == [true] })
         XCTAssertNil(client.snapshot().hostAuthenticated)

@@ -7,7 +7,9 @@ import os
 /// The host's connection to the helper's socket, as a consumer.
 ///
 /// One thread connects, says hello, and reads NDJSON until the connection drops, then reconnects
-/// with backoff; a helper started after the host is picked up within `maxBackoff`. Decoded
+/// with backoff; a helper started after the host is picked up within `maxBackoff`. A helper that
+/// refuses this Caret as its host is tried again on `HostRetry`'s longer schedule, and the menu says
+/// why (`snapshot().hostRefused`). Decoded
 /// messages go to `onMessage` on that thread, which must only enqueue. `send` writes from any
 /// thread under a lock, so a `fillResult` line is never interleaved with another.
 ///
@@ -44,6 +46,8 @@ final class HelperClient: @unchecked Sendable {
         var routing = false
         /// This connection's hello named `goalFiles` (H14).
         var goalFiles = false
+        /// This Caret closed the connection itself (`dropSession`), so a handshake it cut short is no refusal.
+        var droppedHere = false
     }
     private let connection = OSAllocatedUnfairLock(initialState: Link())
     private let running = OSAllocatedUnfairLock(initialState: false)
@@ -116,7 +120,9 @@ final class HelperClient: @unchecked Sendable {
     /// was never answered still ends the run, if the helper is there to hear the close.
     func dropSession() {
         connection.withLock { link in
-            if link.fd >= 0 { shutdown(link.fd, SHUT_RDWR) }
+            guard link.fd >= 0 else { return }
+            link.droppedHere = true
+            shutdown(link.fd, SHUT_RDWR)
         }
     }
 
@@ -333,18 +339,22 @@ final class HelperClient: @unchecked Sendable {
 
     // MARK: - Client thread
 
+    /// Refusals so far and the wait before the next attempt. The client thread's alone.
+    private var retry = HostRetry()
+
     private func runLoop() {
         var backoff = minBackoff
         while running.withLock({ $0 }) {
+            var refusedWait: TimeInterval?
             if let fd = connect() {
                 backoff = minBackoff
                 var handshake = HostHandshake(hostKey: hostKey)
                 if handshake.isDone { becomeReady(fd) }
                 readUntilClosed(fd, &handshake)
-                let wasReady = connection.withLock { link -> Bool in
-                    guard link.fd == fd else { return false }
-                    defer { link.fd = -1; link.ready = false }
-                    return link.ready
+                let (wasReady, droppedHere) = connection.withLock { link -> (Bool, Bool) in
+                    guard link.fd == fd else { return (false, false) }
+                    defer { link.fd = -1; link.ready = false; link.droppedHere = false }
+                    return (link.ready, link.droppedHere)
                 }
                 close(fd)
                 stats.withLock {
@@ -353,10 +363,40 @@ final class HelperClient: @unchecked Sendable {
                 }
                 authority?.revokeAll("helperDisconnected")
                 if wasReady { onLink(false) }
+                if let refusal = handshake.refusal, !droppedHere, running.withLock({ $0 }) {
+                    refusedWait = refused(refusal)
+                }
             }
             guard running.withLock({ $0 }) else { break }
-            Thread.sleep(forTimeInterval: backoff)
-            backoff = min(maxBackoff, backoff * 2)
+            if let refusedWait {
+                pause(refusedWait)
+            } else {
+                pause(backoff)
+                backoff = min(maxBackoff, backoff * 2)
+            }
+        }
+    }
+
+    /// Counts a refusal toward `HostRetry`'s schedule, publishes the status line, and returns the wait before the next
+    /// attempt. The log says why each time; the menu reads `hostRefused`.
+    private func refused(_ refusal: HostRefusal) -> TimeInterval {
+        let wait = retry.refused(refusal)
+        let line = retry.statusLine
+        stats.withLock {
+            $0.hostRefused = line
+            $0.hostRetrySeconds = wait
+        }
+        FileHandle.standardError.write(Data("[caret-host \(ISO8601DateFormatter().string(from: Date()))] helper link: not the host (\(refusal.detail)); trying again in \(Int(wait)) s\n".utf8))
+        return wait
+    }
+
+    /// Sleeps `seconds` in short slices, so `stop` ends the thread within one slice even during a 60 s wait.
+    private func pause(_ seconds: TimeInterval) {
+        let until = Date().addingTimeInterval(seconds)
+        while running.withLock({ $0 }) {
+            let left = until.timeIntervalSinceNow
+            if left <= 0 { return }
+            Thread.sleep(forTimeInterval: min(left, minBackoff))
         }
     }
 
@@ -392,6 +432,7 @@ final class HelperClient: @unchecked Sendable {
         connection.withLock { link in
             link.fd = fd
             link.ready = false
+            link.droppedHere = false
             link.routing = routing
             link.goalFiles = files
         }
@@ -401,6 +442,7 @@ final class HelperClient: @unchecked Sendable {
     /// The connection now carries this host's messages. Settings go first, restamped now: the helper's gate applies
     /// them to its next decision, which may be the first thing it says to this connection.
     private func becomeReady(_ fd: Int32) {
+        if hostKey != nil { retry.authenticated() }
         let settingsSent = connection.withLock { link -> Bool? in
             guard link.fd == fd else { return false }
             link.ready = true
@@ -413,7 +455,11 @@ final class HelperClient: @unchecked Sendable {
         stats.withLock {
             $0.connected = true
             $0.connects &+= 1
-            if hostKey != nil { $0.hostAuthenticated = true }
+            if hostKey != nil {
+                $0.hostAuthenticated = true
+                $0.hostRefused = nil
+                $0.hostRetrySeconds = nil
+            }
             if settingsSent == true { $0.settingsSent &+= 1 }
         }
         onLink(true)
@@ -489,13 +535,15 @@ final class HelperClient: @unchecked Sendable {
             if !Self.writeAll(fd, proof) { fail("could not write the host proof", fd) }
         case .authenticated:
             becomeReady(fd)
-        case .fail(let why):
-            fail(why, fd)
+        case .fail(let refusal):
+            fail(refusal.detail, fd)
+        case .discard:
+            break
         }
     }
 
     /// Ends a connection whose handshake failed, and says why in the log and on the debug socket. The run loop then
-    /// reconnects with backoff.
+    /// reconnects on `HostRetry`'s schedule.
     private func fail(_ why: String, _ fd: Int32) {
         stats.withLock { $0.lastError = String(why.prefix(200)) }
         FileHandle.standardError.write(Data("[caret-host \(ISO8601DateFormatter().string(from: Date()))] helper link: \(why); closing\n".utf8))

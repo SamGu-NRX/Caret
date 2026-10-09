@@ -971,6 +971,10 @@ public final class HostRuntime {
         socket.stop()
     }
 
+    /// The menu's status line while the helper refuses this Caret as its host, which then says why in place of the engine's
+    /// state (`HostRetry.statusLine`); nil once the helper accepts it, and for a Caret with no host key.
+    public var helperRefusalLine: String? { helper.snapshot().hostRefused }
+
     public var engineSummary: String {
         switch engine.state {
         case .loading: return "Loading model"

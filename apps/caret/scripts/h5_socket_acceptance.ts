@@ -13,7 +13,7 @@
 //      takes it down when an engine connects.
 //
 //   node apps/caret/scripts/h5_socket_acceptance.ts --out DIR
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -22,12 +22,18 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
+import { newLaunchSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
 import { Store } from "../../../helper/src/store.ts";
 import { BrowserPresence } from "../../../helper/src/engines/presence.ts";
 import type { HelperMessage, Node, ReaderMessage } from "../../../helper/src/protocol.ts";
 import type { WriterPort } from "../../../helper/src/writer/port.ts";
 import { field, jevPickingText, node, snap, text, value } from "../../../helper/test/builders.ts";
 import { SocketReader } from "../../../helper/test/socket-reader.ts";
+
+// The in-process server's launch secret. Caret gets the host key derived from it (spawnCaret), so the server admits it
+// as the host (helper/src/host-auth.ts).
+const launchSecret = newLaunchSecret();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -111,16 +117,16 @@ const helper = new Helper({
 const engines = new Set<number>();
 const presence = new BrowserPresence({ publish, hasEngine: (pid) => engines.has(pid) });
 helper.onReaderMessage((m) => presence.onReader(m));
-server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`));
+server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`), launchSecret);
 await server.listen();
 const reader = await SocketReader.connect(HELPER_SOCK);
 
 // MARK: - the host, headless
 
-const host: ChildProcess = spawn(CARET, [
+const host: ChildProcess = spawnCaret(CARET, [
   "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden", "--surfaces", "headless", "--test-hooks",
   "--allow-pids", `${NOTE_PID},${CHROME_PID}`, "--status-item", "off", "--settings", join(dir, "settings.json"),
-]);
+], launchSecret);
 host.stderr?.setEncoding("utf8");
 host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));
 process.on("exit", () => host.kill("SIGTERM"));

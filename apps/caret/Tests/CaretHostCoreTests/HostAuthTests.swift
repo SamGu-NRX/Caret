@@ -72,12 +72,36 @@ final class HostAuthTests: XCTestCase {
     func testTheClientClosesOnAnythingOutOfTurn() throws {
         let v = try Vector.load()
         var early = HostHandshake(hostKey: v.hostKey)
-        XCTAssertEqual(early.receive(.unknown(type: "spend")), .fail("the helper sent spend before its hostChallenge; it does not authenticate hosts"))
+        XCTAssertEqual(early.receive(.unknown(type: "spend")), .fail(HostRefusal(.notChallenged, "the helper sent spend before its hostChallenge; it does not authenticate hosts")))
         var refused = HostHandshake(hostKey: v.hostKey)
         _ = refused.receive(.hostChallenge(HostChallenge(nonce: v.nonce)))
-        XCTAssertEqual(refused.receive(.error(HelperError(at: 1, message: "the host's proof does not match"))), .fail("the helper refused this host: the host's proof does not match"))
+        XCTAssertEqual(refused.receive(.error(HelperError(at: 1, message: "the host's proof does not match"))), .fail(HostRefusal(.keyRefused, "the helper refused this host: the host's proof does not match")))
         var skipped = HostHandshake(hostKey: v.hostKey)
-        XCTAssertEqual(skipped.receive(.hostAuthenticated), .fail("the helper sent hostAuthenticated before its hostChallenge; it does not authenticate hosts"))
+        XCTAssertEqual(skipped.receive(.hostAuthenticated), .fail(HostRefusal(.notChallenged, "the helper sent hostAuthenticated before its hostChallenge; it does not authenticate hosts")))
+        var noSecret = HostHandshake(hostKey: v.hostKey)
+        XCTAssertEqual(noSecret.receive(.error(HelperError(at: 1, message: "this helper has no launch secret"))), .fail(HostRefusal(.helloRefused, "the helper refused this host: this helper has no launch secret")))
+    }
+
+    func testAFailedHandshakeKeepsItsRefusalAndDiscardsWhatFollows() throws {
+        let v = try Vector.load()
+        var h = HostHandshake(hostKey: v.hostKey)
+        _ = h.receive(.hostChallenge(HostChallenge(nonce: v.nonce)))
+        _ = h.receive(.error(HelperError(at: 1, message: "no")))
+        XCTAssertEqual(h.receive(.unknown(type: "spend")), .discard, "lines behind the refusal in the same read are dropped")
+        XCTAssertEqual(h.receive(.hostAuthenticated), .discard)
+        XCTAssertEqual(h.refusal?.reason, .keyRefused)
+        XCTAssertFalse(h.isDone)
+    }
+
+    func testAConnectionThatClosesBeforeAcceptanceIsARefusal() throws {
+        let v = try Vector.load()
+        XCTAssertEqual(HostHandshake(hostKey: v.hostKey).refusal?.reason, .closed, "closed before the challenge")
+        var proved = HostHandshake(hostKey: v.hostKey)
+        _ = proved.receive(.hostChallenge(HostChallenge(nonce: v.nonce)))
+        XCTAssertEqual(proved.refusal?.reason, .closed, "closed after the proof, before the acceptance")
+        _ = proved.receive(.hostAuthenticated)
+        XCTAssertNil(proved.refusal, "a drop after the acceptance is not a refusal")
+        XCTAssertNil(HostHandshake(hostKey: nil).refusal, "a Caret with no key has no handshake to refuse")
     }
 
     func testNoKeyMeansNoHostAndNoHandshake() throws {
@@ -88,6 +112,44 @@ final class HostAuthTests: XCTestCase {
         let hello = try object(NDJSON.line(HostHello.make(pid: 1, routing: false, host: false)))
         XCTAssertNil(hello["host"], "no host: true without a key")
         XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: 1, routing: false, host: true)))["host"] as? Bool, true)
+    }
+
+    /// helper/src/server.ts admitConsumer grants these only when the hello's host: true was proved.
+    func testTheHostOnlyCapabilitiesAreTheOnesTheHelperGrantsOnlyToTheHost() {
+        XCTAssertEqual(HostHello.hostOnlyCapabilities, ["routing", "fillAll", "goalPlans", "goalFiles", "localModel", "pageText", "savedAnswers"])
+    }
+
+    func testAHelloWithoutAKeyClaimsNoHostOnlyCapability() throws {
+        let plain = try object(NDJSON.line(HostHello.make(pid: 1, routing: true, goalFiles: true, host: false)))
+        let caps = try XCTUnwrap(plain["capabilities"] as? [String])
+        XCTAssertEqual(Set(caps).intersection(HostHello.hostOnlyCapabilities), [], "none of what only the host is granted")
+        XCTAssertEqual(Set(caps), [MemoryDocs.capability, HostHello.askChoicesCapability, HelperSpend.capability, HostHello.valueChecksCapability, HostHello.askScopeCapability],
+                       "what any consumer may have stays")
+        let host = try XCTUnwrap(try object(NDJSON.line(HostHello.make(pid: 1, routing: true, goalFiles: true, host: true)))["capabilities"] as? [String])
+        XCTAssertEqual(Set(host).intersection(HostHello.hostOnlyCapabilities), HostHello.hostOnlyCapabilities.subtracting([LocalText.capability]),
+                       "a host with the key claims every host-only capability it serves")
+    }
+
+    // MARK: - Refusals: retry schedule and the menu's status line
+
+    func testRefusalsBackOffFromTwoSecondsDoublingToSixtyAndStartOverAfterAcceptance() {
+        var retry = HostRetry()
+        let refusal = HostRefusal(.keyRefused, "the helper refused this host: no")
+        XCTAssertEqual((0..<7).map { _ in retry.refused(refusal) }, [2, 4, 8, 16, 32, 60, 60])
+        retry.authenticated()
+        XCTAssertEqual(retry.refused(refusal), 2, "the schedule starts over once the helper accepts this host")
+        XCTAssertEqual(retry.refused(refusal), 4)
+    }
+
+    func testTheStatusLineNamesTheRefusalInPlainWordsAndClearsAfterAcceptance() {
+        var retry = HostRetry()
+        XCTAssertNil(retry.statusLine, "nothing to say before any refusal")
+        _ = retry.refused(HostRefusal(.keyRefused, "the helper refused this host: the host's proof does not match this connection's challenge"))
+        XCTAssertEqual(retry.statusLine, "Caret can't reach its helper: the helper refused Caret's key")
+        _ = retry.refused(HostRefusal(.closed, "the helper closed the connection before it accepted this host"))
+        XCTAssertEqual(retry.statusLine, "Caret can't reach its helper: the helper closed the connection before accepting Caret's key", "the latest refusal")
+        retry.authenticated()
+        XCTAssertNil(retry.statusLine)
     }
 
     // MARK: - CARET_HOST_KEY_FD

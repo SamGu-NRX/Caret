@@ -3,7 +3,7 @@
 // what the run checks to --state every 200 ms: the fake calendar's events and calls, the task
 // progress it published, and its act and calendar grants and revokes.
 //
-//   node apps/caret/scripts/acceptance_helper.ts --socket PATH --state FILE --calendar fake|reader [--routing off|live]
+//   node apps/caret/scripts/acceptance_helper.ts --auth-fd 0 --socket PATH --state FILE --calendar fake|reader [--routing off|live]
 //
 // --routing live (H6, routing_option.ts): D2-02's router runs, its questions to live Jev; the state file
 // then carries the router's decisions and spend.
@@ -27,8 +27,10 @@ import { routedJev, routingHarness } from "./routing_option.ts";
 
 const { values: a } = parseArgs({ options: { socket: { type: "string" }, state: { type: "string" }, calendar: { type: "string", default: "fake" }, "auth-fd": { type: "string" }, routing: { type: "string", default: "off" } } });
 // B23: the launch secret caret-screen also gets, read to its end from the descriptor the caller names
-// (0: standard input), so the reader accepts this helper.
-const launchSecret = a["auth-fd"] === undefined ? null : readFileSync(Number(a["auth-fd"]));
+// (0: standard input), so the reader accepts this helper. The Caret the caller starts proves itself the host under the
+// key derived from the same secret (launch_secret.py popen_caret), so without it no host could authenticate.
+if (a["auth-fd"] === undefined) throw new Error("--auth-fd is required: the launch secret the reader and the host's key come from");
+const launchSecret = readFileSync(Number(a["auth-fd"]));
 if (a.socket === undefined || a.state === undefined) throw new Error("--socket and --state are required");
 if (a.calendar !== "fake" && a.calendar !== "reader") throw new Error("--calendar is fake or reader");
 

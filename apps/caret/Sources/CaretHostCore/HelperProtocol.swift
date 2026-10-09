@@ -350,10 +350,19 @@ public enum HostHello {
             + (routing ? [Routing.capability] : [])
     }
 
+    /// The capabilities helper/src/server.ts admitConsumer grants only to a connection whose host proof checked out.
+    /// `localModel` is among them though this host never claims it (`LocalText`).
+    public static let hostOnlyCapabilities: Set<String> = [
+        Routing.capability, fillAllCapability, GoalPlans.capability, GoalFiles.capability, LocalText.capability, PageInline.capability, SavedAnswers.capability,
+    ]
+
     /// `host`: this Caret holds a host key and will answer the helper's challenge. Without one the hello leaves `host`
-    /// out; the capabilities are listed either way, and the helper honors only those any consumer may have.
+    /// out and claims none of `hostOnlyCapabilities`: the helper would not honor them, and a hello should not say this
+    /// Caret takes what it will not be sent.
     public static func make(pid: Int, routing: Bool, goalFiles: Bool = false, host: Bool) -> Message {
-        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: host), capabilities: capabilities(routing: routing, goalFiles: goalFiles))
+        let all = capabilities(routing: routing, goalFiles: goalFiles)
+        return Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: host),
+                       capabilities: host ? all : all.filter { !hostOnlyCapabilities.contains($0) })
     }
 
     /// CaretScreenCore's `Hello` with the capabilities beside it; that mirror has no such key.
