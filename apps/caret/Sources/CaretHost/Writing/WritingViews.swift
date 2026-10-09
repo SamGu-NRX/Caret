@@ -118,7 +118,7 @@ struct WritingAlternativesView: View {
             Rectangle().fill(Color(token: Tokens.border)).frame(height: 1).padding(.vertical, 6)
             HStack(spacing: 12) {
                 HintView(hint: Hint(key: "Tab", label: WritingCopy.tabAction(highlighted.kind)))
-                HintView(hint: Hint(key: "Esc", label: nil))
+                HintView(hint: Hint(key: "Esc", label: WritingCopy.closeHint))
             }
             .padding(.leading, PopupView.indent)
         }

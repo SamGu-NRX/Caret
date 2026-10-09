@@ -46,6 +46,8 @@ public enum WritingCopy {
     /// The line's key hints: "Tab fix", "↓ more".
     public static let fixHint = "fix"
     public static let moreHint = "more"
+    /// Esc at the foot of the open list: it closes the list and changes nothing.
+    public static let closeHint = "close"
     /// The hint on a line whose two answers disagree: Tab fixes nothing until one is picked.
     public static let chooseHint = "choose"
 
