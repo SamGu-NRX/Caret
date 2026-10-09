@@ -33,6 +33,16 @@ case "${1:-release}" in
   debug | acceptance) export CARET_INTERNAL_BUILD=1 ;;
   *) unset CARET_INTERNAL_BUILD ;;
 esac
+# Node v26.5.0, the runtime the helper's tests pass on. The SHA-256 of node-v26.5.0-darwin-arm64.tar.gz is the one in
+# https://nodejs.org/dist/v26.5.0/SHASUMS256.txt, whose signature by release key
+# C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C (listed in that release's README) was checked on 2026-10-04.
+NODE_VERSION=26.5.0
+NODE_SHA256=ee920559aaa2391569cff4d737e3b83963430e3a14dedd91bfe0ff53171b5af9
+# The privacy gate is the first thing this script does, before any download, lock, build or file write
+# (tests/test_privacy_followup.py, tests/test_internal_build_gate.py). It needs Node 24 or newer: the pinned runtime
+# once a build has extracted it below, else the node on PATH. Naming that directory on PATH has no side effect.
+pinned_node_bin="$root/apps/caret/.build/node-dist/node-v$NODE_VERSION-darwin-arm64/bin"
+CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" PATH="$pinned_node_bin:$PATH" /bin/sh "$root/scripts/privacy_gate.sh"
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 mode="${1:-release}"
@@ -56,11 +66,6 @@ if [[ -z "${CARET_NO_LOCK:-}" ]]; then
   exec /usr/bin/lockf -k "$lock" env CARET_NO_LOCK=1 "$script" "$@"
 fi
 
-# Node v26.5.0, the runtime the helper's tests pass on. The SHA-256 of node-v26.5.0-darwin-arm64.tar.gz is the one in
-# https://nodejs.org/dist/v26.5.0/SHASUMS256.txt, whose signature by release key
-# C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C (listed in that release's README) was checked on 2026-10-04.
-NODE_VERSION=26.5.0
-NODE_SHA256=ee920559aaa2391569cff4d737e3b83963430e3a14dedd91bfe0ff53171b5af9
 node_dist=".build/node-dist"
 node_tar="$node_dist/node-v$NODE_VERSION-darwin-arm64.tar.gz"
 node="$node_dist/node-v$NODE_VERSION-darwin-arm64/bin/node"
@@ -75,9 +80,6 @@ echo "$NODE_SHA256  $node_tar" | shasum -a 256 -c - >/dev/null || {
 }
 [[ -x "$node" ]] || tar -xzf "$node_tar" -C "$node_dist"
 node="$PWD/$node"
-
-# The privacy gate runs on the pinned Node, put first on PATH, so a clean Mac with no node of its own can build.
-CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" PATH="$(dirname "$node"):$PATH" /bin/sh "$root/scripts/privacy_gate.sh"
 
 # Swift: the host, the reader and the bridge.
 swiftflags=()
@@ -125,7 +127,7 @@ elif [[ "$mode" == release ]]; then
 else
   echo "build-app.sh $mode: no build number (no CARET_BUILD_NUMBER, not a git checkout); CFBundleVersion stays 1" >&2
 fi
-CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" CARET_REQUIRE_PROCESSED_PLIST=1 CARET_BUILD_PLIST="$PWD/$contents/Info.plist" CARET_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt" /bin/sh "$root/scripts/privacy_gate.sh"
+CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" CARET_REQUIRE_PROCESSED_PLIST=1 CARET_BUILD_PLIST="$PWD/$contents/Info.plist" CARET_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt" PATH="$pinned_node_bin:$PATH" /bin/sh "$root/scripts/privacy_gate.sh"
 cp "$bin/Caret" "$contents/MacOS/Caret"
 # Only the acceptance build may carry the acceptance code (Sources/Caret/Acceptance.swift), and it must.
 if LC_ALL=C grep -q "ACCEPTANCE BUILD" "$contents/MacOS/Caret"; then has_acceptance=1; else has_acceptance=0; fi
