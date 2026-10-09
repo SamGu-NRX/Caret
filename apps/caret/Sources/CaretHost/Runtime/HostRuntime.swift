@@ -190,9 +190,8 @@ public final class HostRuntime {
         self.pageInline = pageInline
         pageInline.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
         // Brief item 4: the user's personal instructions in every completion prompt; a page's site from the page path.
-        engine.instructions = { [weak pageInline] context in
-            let id = context.target.bundleIdentifier
-            return SettingsStore.shared.settings.instructions.lines(bundleID: id, origin: pageInline?.origin(forBundleID: id))
+        engine.instructions = { context, origin in
+            SettingsStore.shared.settings.instructions.lines(bundleID: context.target.bundleIdentifier, origin: origin)
         }
         let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
         self.writing = writing

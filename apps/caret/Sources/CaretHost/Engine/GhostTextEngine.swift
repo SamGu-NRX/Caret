@@ -51,8 +51,10 @@ final class GhostTextEngine {
     var normalizesLength = false
     var displayWidth = GhostTextEngine.maxDisplayWidth
     /// The user's personal instructions for a field (brief item 4, `PersonalInstructions.lines`). They replace KeyType's
-    /// `policy.customInstructions`, which nothing in Caret sets.
-    var instructions: (TextFieldContext) -> [String] = { _ in [] }
+    /// `policy.customInstructions`, which nothing in Caret sets. The origin is the web page's, passed only by the page
+    /// path for its own field: a native field in the browser (its address bar) never gets a site's instructions
+    /// (PR #16 review).
+    var instructions: (TextFieldContext, _ origin: String?) -> [String] = { _, _ in [] }
     /// Candidates looked at, best first, when the better ones are refused at the seam or do not
     /// fit the text after the caret. KeyType's own filter still decides about the first.
     static let candidatesTried = 3
@@ -141,7 +143,7 @@ final class GhostTextEngine {
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
     /// `tokens` overrides `completionTokens` for this one request (the extension after the first paint).
-    func suggest(for context: TextFieldContext, tokens: Int? = nil) async throws -> Outcome {
+    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil) async throws -> Outcome {
         if let replay {
             switch replay.outcome(before: context.beforeCursor, after: context.afterCursor) {
             case .text(let text)?: return .suggestion(GhostSuggestion(text: text, context: context, generationMs: 0))
@@ -163,7 +165,7 @@ final class GhostTextEngine {
             return .suppressed("numericMidWordStem")
         }
 
-        let request = makeRequest(for: context, policy: policy, tokens: tokens)
+        let request = makeRequest(for: context, policy: policy, tokens: tokens, origin: origin)
         let started = DispatchTime.now().uptimeNanoseconds
         var candidates = try await engine.completions(for: request)
         if normalizesLength {
@@ -232,18 +234,20 @@ final class GhostTextEngine {
     }
 
     /// The request `suggest` sends for `context`, under the app's policy.
-    func request(for context: TextFieldContext) -> CompletionRequest {
-        makeRequest(for: context, policy: compatibilityStore.policy(for: context))
+    func request(for context: TextFieldContext, origin: String? = nil) -> CompletionRequest {
+        makeRequest(for: context, policy: compatibilityStore.policy(for: context), origin: origin)
     }
 
-    private func makeRequest(for context: TextFieldContext, policy: CompletionPolicy, tokens override: Int? = nil) -> CompletionRequest {
+    private func makeRequest(
+        for context: TextFieldContext, policy: CompletionPolicy, tokens override: Int? = nil, origin: String? = nil
+    ) -> CompletionRequest {
         // Token healing: prompt from the last clean token boundary and force the typed stem back
         // out, so the model can reach the whole-word token (ADR-019).
         let heal = MidWordHealing.plan(for: context)
         let promptContext = heal.map { context.replacingBeforeCursor($0.head) } ?? context
         let prompt = promptBuilder.buildPrompt(
             context: promptContext,
-            customInstructions: instructions(context),
+            customInstructions: instructions(context, origin),
             includeEnvironmentContext: policy.includesEnvironmentContext
         ).prompt
         let healSlack = heal?.heal.count ?? 0
