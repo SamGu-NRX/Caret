@@ -1,0 +1,1 @@
+Esc can reach the page reader as input before the host Stop: GoalRuns converts that executor pause to Stop, so in-flight write reconciliation must advance the step and preserve its warning across both boundaries.
