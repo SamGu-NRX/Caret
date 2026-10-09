@@ -14,15 +14,16 @@
 // whose exactness code settles (an option's own label, a resolved date, the user's saved answer, a user transfer, a
 // draft) are minted under a named exemption instead (ExemptRule); only the never-typed check runs on them.
 import { ENV, processEnv } from "../host-env.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import { Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
 import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { createHash } from "node:crypto";
 import { bareLine, LABELLED, lineDigests, logicalLines, sentenceAround } from "./line-values.ts";
-import { spanContexts } from "./candidates.ts";
+import { spanContexts, viewOf } from "./candidates.ts";
 import { redactWindow } from "./redact.ts";
 import { type SourceAt, splitLines, TITLE } from "../privacy/ledger/source.ts";
-import { describeControl, type Control, type FormControl } from "./controls.ts";
+import { describeControl, formControls, pickableOptions, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, PART_SAYS, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
 import { authorityRefusal, fieldFingerprint, scopeRefusal, type Authority, type DocumentReader, type Origin } from "./ask-scope.ts";
@@ -117,8 +118,10 @@ export function autocompletePart(token: AutocompleteToken | null | undefined): F
  * "boxTicked" is a checkbox's checked state from text that says to tick it (controls.ts statesFact, namedInList).
  * "sourceSupported" is a listed option or a service box's tick that code proposes for judgment against a whole source
  * unit, memory entry or the user's whole request, without having found the source naming it (design/ask/MISSING-CANDIDATES.md).
+ * "jevOption" is a page select's label settled by the bounded pair. Unlike a code-inferred mapping it has no stated
+ * assumption; optionLabel still requires exact membership in the current page control before minting and dispatch.
  */
-export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat" | "amountNumber" | "boxTicked" | "sourceSupported";
+export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat" | "amountNumber" | "boxTicked" | "sourceSupported" | "jevOption";
 
 /** Where a value came from, carried unchanged from the moment it was read to the step that writes it. */
 export type Provenance =
@@ -660,7 +663,7 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
   }
 }
 
-const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format", amountNumber: "the number of the amount", boxTicked: "the ticked state stated", sourceSupported: "a listed option or tick, proposed for judgment on the evidence" } as const satisfies Record<DeriveHow, string>;
+const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format", amountNumber: "the number of the amount", boxTicked: "the ticked state stated", sourceSupported: "a listed option or tick, proposed for judgment on the evidence", jevOption: "a listed page option selected by both value questions" } as const satisfies Record<DeriveHow, string>;
 
 /**
  * The proposed value as the verifier quotes it, minted from where it was read (READS): a window value at its recorded
@@ -808,6 +811,7 @@ const DERIVATION_SAYS = {
   amountNumber: "the amount's number without its currency sign",
   boxTicked: "the box ticked, as the supporting text says it should be",
   sourceSupported: "not copied from the source",
+  jevOption: "the page's listed option, selected by both value questions",
 } as const satisfies Record<DeriveHow, string>;
 
 /**
@@ -1099,7 +1103,14 @@ export function statedChoice(pr: Provenance): string | null {
   return pr.says ?? statedChoice(pr.base) ?? (pr.also === null ? null : statedChoice(pr.also));
 }
 
-export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction: string, authority: Authority, documentOf: DocumentReader | null = null): CheckedValue {
+/** A page select writes label bytes, never a guessed or normalized value. Read its options again after the asks. */
+function pageOptionRefusal(p: Proposed, w: WindowState | null | undefined): string | null {
+  if (w === undefined || w === null || w.window.windowId !== p.field.windowId || w.window.kind !== PAGE_WINDOW_KIND) return "the page select's current options are unavailable";
+  const control = formControls(w).find((c) => c.node.key === p.field.key && c.control === "select");
+  return control !== undefined && pickableOptions(w, control).includes(p.text) ? null : "the written value is not exactly one of the page select's current option labels";
+}
+
+export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction: string, authority: Authority, documentOf: DocumentReader | null = null, currentWindow: WindowState | null = null): CheckedValue {
   // Frozen before it is judged, as checkValues does: what is judged is what is minted (W2 review).
   const p = snapshot(proposed);
   const out = authorityScopeRefusal(p, authority, documentOf);
@@ -1108,6 +1119,10 @@ export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, in
   // the verifier, never minted as a plain conversion; reaching here is a bug in the caller.
   const chose = statedChoice(p.provenance);
   if (chose !== null) throw new ContractError("chosen", `'${clip(p.text)}' was derived by a choice code made (${clip(chose)}), so only the verifier may check it, not the ${rule} exemption`);
+  if (rule === "optionLabel" && p.field.control === "select" && (currentWindow !== null || (p.provenance.kind === "derived" && p.provenance.how === "jevOption"))) {
+    const option = pageOptionRefusal(p, currentWindow);
+    if (option !== null) throw new ContractError("shape", option);
+  }
   const why = exemptRefusal(p, rule, instruction);
   if (why !== null) throw new ContractError(neverTypedRefusal(p, instruction) === null ? "shape" : "neverTyped", why);
   return mint(p, { by: "exempt", rule }, now, authority);
@@ -1264,6 +1279,10 @@ export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, Ch
     // At dispatch the executor names the element it resolved: it must be the field checked, still asking the same (W2 review).
     if (target !== undefined && (target.node.key !== m.field.key || target.windowId !== m.field.windowId)) return "the field is not the one Caret checked the value for";
     if (target !== undefined && contractStale(target.node, m.field, value) !== null) return "the field now asks for something else than when its value was checked";
+    if (m.verdict.by === "exempt" && m.verdict.rule === "optionLabel" && m.field.control === "select") {
+      const option = pageOptionRefusal(m, target?.window ?? viewOf(model(), m.field.windowId));
+      if (option !== null) return option;
+    }
     // I2: a value minted under an Ask's scope is written only into a field that still reads as when the Ask was asked,
     // read from the window the executor resolved, right before the dispatch.
     if (m.authority.kind === "ask" && target !== undefined) {

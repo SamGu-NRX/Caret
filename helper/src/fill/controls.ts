@@ -7,7 +7,10 @@
 // (engines/page-link.ts), on stricter rules (fill.ts controlValue). Code checks every value: an option must be one the
 // control shows; a box is ticked only when the chosen source text says so; a date or time is read by the value
 // resolver.
-import { PAGE_SUBROLE, type Node } from "../protocol.ts";
+import { PAGE_SUBROLE, type Node, type ValueKind } from "../protocol.ts";
+import { dateParts, monthIndex, type FillPart } from "./derive.ts";
+import { textKind } from "./kinds.ts";
+import { clockTime } from "./when.ts";
 import type { WindowState } from "../model.ts";
 import { fieldLabelText } from "./descriptor.ts";
 import { classifyLabel } from "../executor/risk.ts";
@@ -171,6 +174,22 @@ const US_STATE_CODES: ReadonlyMap<string, string> = new Map([
   ["washington", "WA"], ["west virginia", "WV"], ["wisconsin", "WI"], ["wyoming", "WY"],
 ]);
 const US_STATE_NAMES: ReadonlyMap<string, string> = new Map([...US_STATE_CODES].map(([name, code]) => [code, name]));
+
+/** Kinds that can contain a menu's own labels. Unrelated typed-value cuts do not hide a page's choices. */
+export function optionKinds(options: readonly string[], part: FillPart | null = null): Set<ValueKind> {
+  const kinds = new Set<ValueKind>();
+  for (const option of options) {
+    if (PROMPT.test(option.trim())) continue;
+    const shape = textKind(option);
+    if (shape !== "text") kinds.add(shape === "street" ? "address" : shape);
+    if (monthIndex(option) !== null || dateParts(option) !== null || /^\d{4}$/u.test(option) || WEEKDAYS.some((names) => names.includes(norm(option)))) kinds.add("date");
+    // Numeric day/month labels are dates only in a date-part menu, not in a party-count menu.
+    if ((part === "day" || part === "month") && /^\d{1,2}$/u.test(option.trim()) && Number(option) >= 1 && Number(option) <= (part === "day" ? 31 : 12)) kinds.add("date");
+    if (clockTime(option) !== null) kinds.add("time");
+    if (US_STATE_CODES.has(norm(option)) || US_STATE_NAMES.has(option.trim())) kinds.add("address");
+  }
+  return kinds;
+}
 
 /** Options a source never names by its words: a fallback or a refusal to say ("Other", "Prefer not to say"). */
 const FALLBACK = /^(?:other|none|n\/?a|not applicable|unknown|prefer not to (?:say|answer)|decline to (?:state|answer))$/iu;

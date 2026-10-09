@@ -20,7 +20,7 @@ import { WINDOW_CHARS, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import { checkSealable, type AskJev, type JevRequest, type JevResult } from "./jev.ts";
-import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, pickableOptions, serviceBox, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, optionKinds, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, pickableOptions, serviceBox, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, PART_SAYS, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, type CheckOptions, CONTRACT_UNSTATED, contractSays, ContractError, isChecked, makeFieldContract, mintDerivation, mintExempt, neverTypedRefusal, provenanceStale, requireChecked, shapeRefusal, textShapeRefusal, VerifierUnavailable, windowProvenance, withReads, readsCopied, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance, type Refused } from "./contract.ts";
 import { type SourceAt, splitLines, TITLE, wholePart } from "../privacy/ledger/source.ts";
@@ -1533,8 +1533,14 @@ export async function proposeFill(
   // field takes; a name may have been kept out of a field that takes one; or the field names no kind and a cut took a
   // value of some kind, which may be the one it wants. A recognized field consulted only its kinds, so a note's closing
   // "Do not use any of the dates above" left Meeting date filled with the first of them.
-  const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean =>
-    opts.cutRule !== false && (isCut(f.kinds) || [...f.terms].some((t) => t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f)));
+  const pageSelect = (f: Field): f is Field & { form: FormControl & { options: string[] } } => pageOwned && f.control === "select" && f.form?.options != null;
+  const selectKinds = new Map(fields.filter(pageSelect).map((f) => [f.id, optionKinds(f.form.options, f.part)]));
+  const fieldCut = (f: Field): boolean =>
+    opts.cutRule !== false && (pageSelect(f)
+      // The menu supplies the answer vocabulary. A date/address cut can hide a month/state, not a meal.
+      // An unread remainder of unknown kinds (allCut) still cannot establish that the choice is safe.
+      ? isCut(selectKinds.get(f.id)!)
+      : (isCut(f.kinds) || [...f.terms].some((t) => t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f))));
   // A select whose options the app does not show cannot be matched to a value, so it is named and left (controls.ts).
   // A web dropdown's options are hidden too, but the page engine's handler picks the one option named exactly the
   // value and verifies it, so it is asked (B27).
@@ -2232,8 +2238,8 @@ export async function proposeFill(
   /**
    * A source-supported choice as its control takes it: the output only when it is still one of the control's pickable
    * options, or a service box's tick, frozen as proposed. It never passes statesFact or leavesChoiceOpen, which read
-   * literal wording and cannot judge a paraphrase; its derivation says that code proposes it for judgment, so it reaches
-   * both value questions and the verifier and is never minted under optionLabel or boxFromLabelledLine (`chose`).
+   * literal wording and cannot judge a paraphrase. A page select goes through both bounded value questions and exact
+   * optionLabel minting. Other controls keep the stated code choice and the verifier (`chose`).
    */
   const supportedValue = (f: Field, p: Extract<Pick, { from: "choice" }>): Read | { why: FillWithheld } => {
     const against = p.basis.from === "unit" ? "its whole source text" : p.basis.from === "memory" ? "the user's saved entry" : "the user's whole request";
@@ -2244,6 +2250,8 @@ export async function proposeFill(
       return { value: PAGE_CHECKED, display: "Ticked", writes: pageOwned && f.node.subrole !== PAGE_SUBROLE.switch, chose };
     }
     if ((f.control !== "select" && f.control !== "radio") || f.form === null || !pickableOptions(w, f.form).includes(p.text)) return { why: "ambiguous" };
+    // A page select is settled by the bounded pair, not a mapping code inferred. Native menus and radios keep the verifier.
+    if (pageSelect(f)) return { value: p.text, display: p.text, writes: true };
     const chose: Chosen = { says: `Caret proposes the listed option '${p.text}' for judgment against ${against}; code did not check that it names it`, also: null, how: "sourceSupported" };
     return { value: p.text, display: p.text, writes: pageOwned && f.node.subrole !== PAGE_SUBROLE.pressGroup, chose };
   };
@@ -2375,7 +2383,17 @@ export async function proposeFill(
         return { value: text, display: text, writes: true };
     }
   };
-  const sourceOf = (p: Pick): FillSource | null => windowOf(p)?.source ?? null;
+  const sourceOf = (p: Pick, f: Field): FillSource | null => {
+    if (pageSelect(f) && p.from === "choice" && p.basis.from === "unit") {
+      const b = p.basis;
+      // The source ref locates the evidence window for the existing write consumer. The mint's unit digest,
+      // not a claim that this node literally contains the option label, owns the source recheck.
+      const view = viewOf(model, b.unit.windowId);
+      const nodeKey = b.unit.nodeKey ?? view?.nodes.keys().next().value;
+      return nodeKey === undefined || view === undefined ? null : { windowId: b.unit.windowId, nodeKey, appName: b.app, windowTitle: b.title, pid: view.app.pid, bundleId: view.app.bundleId, kind: null };
+    }
+    return windowOf(p)?.source ?? null;
+  };
   const memoryRef = (p: Pick, f: Field): FillMemory | null => {
     // A choice judged against a memory entry names it, so the write is checked against the entry (memoryWrites), which
     // holds only while the entry still is the option: a paraphrase in memory is handed off, never written.
@@ -2508,7 +2526,7 @@ export async function proposeFill(
           if (pickText(pick) === literalOf(f)) unreadLiterals.add(f.node.key);
           return veto("conversion");
         }
-        const cut = anchored(f) && fromAnchor(f, pick) ? anchoredCut(pick) : fieldCut(f) || pickCut(pick);
+        const cut = pageSelect(f) ? fieldCut(f) : anchored(f) && fromAnchor(f, pick) ? anchoredCut(pick) : fieldCut(f) || pickCut(pick);
         if (cut) return veto("sourceCut");
         const unshown = noteUnshown(f, pick);
         if (unshown !== null && !privacyHeld.has(f.id)) privacyHeld.set(f.id, unshown);
@@ -2521,7 +2539,7 @@ export async function proposeFill(
         const verifier = f.control === "text" || f.control === "combobox" || chose !== undefined;
         if (neverTypedRefusal(proposed, scope.instruction) !== null) return veto("neverTyped");
         if (verifier && (shapeRefusal(proposed) ?? textShapeRefusal(proposed)) !== null) return veto("shape");
-        return [{ id, second, pick, read, proposed, output: read.value, owner: proposed.owner, assumptions: saysOf(proposed.provenance), verifier, ...evidenceOf(pick) }];
+        return [{ id, second, pick, read, proposed, output: read.value, owner: proposed.owner, assumptions: pick.from === "choice" && pageSelect(f) ? ["bounded Jev page option"] : saysOf(proposed.provenance), verifier, ...evidenceOf(pick) }];
       });
       optionsOf.set(f.id, groupOptions(members));
     }
@@ -2652,7 +2670,9 @@ export async function proposeFill(
     const output = f.control === "checkbox" ? m.own(PAGE_CHECKED) : m.descriptor(w, p.text);
     // mintDerivation leaves out a choice's sentence it cannot mint; here that sentence is mandatory.
     const says = proposed.provenance.kind === "derived" && proposed.provenance.says !== undefined ? m.heldText(proposed.provenance.says) : null;
-    const derivation = says === null ? null : mintDerivation(m, proposed, () => says);
+    const derivation = proposed.provenance.kind === "derived" && proposed.provenance.how === "jevOption"
+      ? m.own("not copied from the source; select one of the page's listed options only when its evidence supports it")
+      : says === null ? null : mintDerivation(m, proposed, () => says);
     if (output === null || derivation === null) return null;
     const b = p.basis;
     const units = new Set<string>();
@@ -2886,7 +2906,7 @@ export async function proposeFill(
     const handoff: FillHandoff | null =
       f.control === "text" || p === undefined || got === null
         ? null
-        : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f), ...(context === null ? {} : { context }), ...(got.writes ? { writes: true as const } : {}) };
+        : { value: got.value, display: got.display, source: sourceOf(p, f), memory: memoryRef(p, f), ...(context === null ? {} : { context }), ...(got.writes ? { writes: true as const } : {}) };
     const text = f.control === "text" && p !== undefined && got !== null;
     // V3: a choice code made (controlValue's, or a derived pick's) travels with the pick to the verifier.
     const chose = got?.chose ?? (p?.from === "derived" ? p.chose : undefined);
@@ -2908,7 +2928,7 @@ export async function proposeFill(
       choice: p === undefined ? NONE : asks[0].choice,
       confidence,
       value: text ? got.value : null,
-      source: text ? sourceOf(p) : null,
+      source: text ? sourceOf(p, f) : null,
       memory: text ? memoryRef(p, f) : null,
       withheld,
       asks,
@@ -2974,7 +2994,7 @@ export async function proposeFill(
     const fromMemory = picked !== undefined && memoryOf(picked) !== null;
     // An anchored field's pick from the anchor window is judged on its own; any other pick meets the cut rules.
     const anchoredPick = picked !== undefined && anchored(f) && fromAnchor(f, picked);
-    const cutOut = picked !== undefined && (anchoredPick ? anchoredCut(picked) : fieldCut(f) || pickCut(picked));
+    const cutOut = picked !== undefined && (pageSelect(f) ? fieldCut(f) : anchoredPick ? anchoredCut(picked) : fieldCut(f) || pickCut(picked));
     const read = picked === undefined ? null : controlValue(f, picked);
     const unshown = picked === undefined ? null : noteUnshown(f, picked);
     const withheld: FillWithheld | null =
@@ -3165,7 +3185,7 @@ export async function proposeFill(
     }
     // V3 review: a contract failure for one value withholds that value, said loudly; it never aborts the fill.
     try {
-      fieldMints.set(o, mintExempt(proposedExempt, exempt, now, scope?.instruction ?? "", authority, documentOf));
+      fieldMints.set(o, mintExempt(proposedExempt, exempt, now, scope?.instruction ?? "", authority, documentOf, viewOf(model, windowId) ?? null));
     } catch (e) {
       if (!(e instanceof ContractError)) throw e;
       console.error(`caret fill: the write contract refused field ${o.key} (${e.code}): ${e.message}`);
@@ -3299,7 +3319,7 @@ export async function proposeFill(
         }
       } else if (exempt !== null) {
         try {
-          fieldMints.set(field, mintExempt(frozen, exempt, now, scope?.instruction ?? "", authority, documentOf));
+          fieldMints.set(field, mintExempt(frozen, exempt, now, scope?.instruction ?? "", authority, documentOf, viewOf(at.model, windowId) ?? null));
         } catch (e) {
           if (!(e instanceof ContractError)) throw e;
           field = blank(e.code === "outOfScope" ? "outOfScope" : "wrongKind");
@@ -3477,11 +3497,13 @@ export function candidateProvenance(model: ScreenModel, c: Candidate, text?: str
  */
 function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, written: string, judged: (c: Candidate) => string | undefined, control: Control | null = null, chose?: Chosen): Provenance {
   if (p.from === "choice") {
-    // Its stated derivation is what keeps it from every exemption (contract.ts statedChoice), so it never goes without one.
-    if (chose === undefined) throw new Error(`a source-supported choice '${p.text}' reached provenance without its derivation`);
+    // Only a page select's bounded Jev choice has no code-inferred assumption. All other choices keep theirs.
+    if (chose === undefined && control !== "select") throw new Error(`a source-supported choice '${p.text}' reached provenance without its derivation`);
     const b = p.basis;
     const base: Provenance = b.from === "unit" ? { kind: "unit", windowId: b.unit.windowId, app: b.app, title: b.title, digest: b.unit.digest } : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
-    return { kind: "derived", how: "sourceSupported", base, also: null, says: chose.says };
+    return chose === undefined
+      ? { kind: "derived", how: "jevOption", base, also: null }
+      : { kind: "derived", how: "sourceSupported", base, also: null, says: chose.says };
   }
   if (chose !== undefined) {
     // V3: the value as derived, with the choice code made said, and the extra source it read (a send line) as `also`.
