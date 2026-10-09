@@ -1,0 +1,1 @@
+v2/access needs sam/v2/ci workflow carrier on v2/**. rig-run memory file: whole GiB 4-12, ops/heavy seals; 4 GiB cannot run 3.4 GB Gemma. Rig AX focus -25204: use app AX/frontmost fallback. caret-heavy prune deletes guest runs; copy evidence out before r2-vm pruning.
