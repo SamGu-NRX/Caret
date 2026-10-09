@@ -5,7 +5,7 @@
 //
 //   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker heads|jev|writer]
 //        [--spend-limit USD] [--gap S] [--writer-model provider:model] [--plan-writer provider:model]
-//        [--engine jev|llama|gemini] [--log-requests FILE] [--replay JEV_LOG] [--form-window page|reader]
+//        [--engine jev|canned|llama|gemini|decisions] [--log-requests FILE] [--replay JEV_LOG] [--form-window page|reader]
 // J1: --engine names the decision engine in Jev's place (engines/decide/harness.ts; llama's server and calibration come
 // from CARET_LLAMA_* and CARET_ENGINE_CALIBRATION), behind the record-and-replay cache (CARET_JEV_CACHE, replay-or-record
 // by default), so a rerun of unchanged asks costs nothing. Every window and memory entry here comes from fixture files.
@@ -95,6 +95,7 @@ const { values: a } = parseArgs({
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
+if (a.engine === "decisions" && a.replay !== undefined) throw new Error("--engine decisions cannot use --replay, which substitutes legacy Jev answers; use the engine-specific cache for Decisions replay");
 if (a["form-window"] !== "reader" && a["form-window"] !== "page") throw new Error("--form-window is reader or page");
 if (a.maker !== "writer" && a.maker !== "jev" && a.maker !== "heads") throw new Error("--maker is heads, jev or writer");
 const OUT = resolve(a.out);
@@ -118,7 +119,9 @@ const fixtureIds = new Set<string>();
  * model scores.
  */
 const oracle = realfillOracle({ asks, corpus, current: () => current, traces: () => traces, corpusLabel: () => corpusLabel });
-const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
+const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true },
+  logRequests: a["log-requests"] ?? (a.engine === "decisions" ? join(OUT, "requests.ndjson") : undefined),
+});
 /**
  * A2: answers an earlier live run recorded (its --log-jev file), for developing on its asks without paying for them again.
  * LV1's live runs had the decision cache off, so their log is the only record of what Jev answered. The log keeps each

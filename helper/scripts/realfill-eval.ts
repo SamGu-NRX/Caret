@@ -21,6 +21,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { proposeFill } from "../src/fill/fill.ts";
+import { harnessEngine } from "../src/engines/decide/harness.ts";
+import { engineName } from "../src/engines/decide/port.ts";
 import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
 import { heldAsConversation, windowBudget } from "../src/privacy.ts";
 import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
@@ -42,6 +44,8 @@ const { values: a } = parseArgs({
     forms: { type: "string" },
     "spend-limit": { type: "string", default: "0.30" },
     seed: { type: "string", default: "24" },
+    engine: { type: "string", default: "jev" },
+    "log-requests": { type: "string" },
     /** Writes every Jev question and answer to this NDJSON file (synthetic corpus text only), for reading the checks. */
     "log-jev": { type: "string" },
     page: { type: "string" },
@@ -57,7 +61,12 @@ const SPEND_LIMIT = Number(a["spend-limit"]);
 
 let spent = 0;
 let calls = 0;
-const live = makeJevClient(loadJevKey);
+const fixtureIds = new Set<string>();
+const live = a.engine === "jev" ? makeJevClient(loadJevKey) : harnessEngine({
+  name: engineName(a.engine), canned: null,
+  fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true },
+  logRequests: a["log-requests"] ?? join(OUT, "requests.ndjson"),
+}).ask;
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   // Sealed before it is sent: sent and logged from this frozen copy (PV2).
@@ -132,6 +141,7 @@ for (const [fi, form] of corpus.forms.entries()) {
   const page = pageWindow(form);
   if (a.page !== undefined && page === null) continue;
   const { model, form: w, source: sw, trigger, about } = buildDesk(corpus, snaps, form, page ?? undefined);
+  for (const window of model.windows.values()) fixtureIds.add(window.window.windowId);
   current = form.id;
   let proposal: FillProposal | null = null;
   let error: string | null = null;

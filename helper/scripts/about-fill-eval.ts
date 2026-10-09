@@ -25,6 +25,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { parseArgs } from "node:util";
+import { harnessEngine } from "../src/engines/decide/harness.ts";
+import { engineName } from "../src/engines/decide/port.ts";
 import { positiveNumber } from "./flags.ts";
 import { fileURLToPath } from "node:url";
 import { ScreenModel } from "../src/model.ts";
@@ -39,6 +41,8 @@ const { values: a } = parseArgs({
     forms: { type: "string" },
     out: { type: "string" },
     jev: { type: "string", default: "oracle" },
+    engine: { type: "string" },
+    "log-requests": { type: "string" },
     "max-usd": { type: "string", default: "0.05" },
     "memory-cutoff": { type: "string" },
     "no-whose": { type: "boolean", default: false },
@@ -213,7 +217,12 @@ const scripted =
   };
 let calls = 0;
 let cost = 0;
-const real = a.jev === "live" ? makeJevClient(loadJevKey) : null;
+const fixtureIds = new Set<string>();
+const real = a.engine === undefined ? (a.jev === "live" ? makeJevClient(loadJevKey) : null) : harnessEngine({
+  name: engineName(a.engine), canned: scripted(a.jev === "eager"),
+  fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: false },
+  logRequests: a["log-requests"] ?? join(OUT, "requests.ndjson"),
+}).ask;
 /** Each field's whose-details answers, in ask order, as Jev gave them. */
 const whoseOf = new Map<FormField, { choice: string; confidence: number }[]>();
 const ask: AskJev = async (req) => {
@@ -274,6 +283,7 @@ for (const f of forms) {
   const windowId = `9100-${++windowN}`;
   const { snap, keys } = formSnapshot(f, windowId, 2000);
   m.apply(snap);
+  for (const id of m.windows.keys()) fixtureIds.add(id);
   current = f;
   let p: FillProposal | null = null;
   try {
