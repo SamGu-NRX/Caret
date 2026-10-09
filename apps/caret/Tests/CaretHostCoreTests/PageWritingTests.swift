@@ -184,4 +184,16 @@ final class PageWritingTests: XCTestCase {
         bad.replace = 3
         XCTAssertThrowsError(try JSONDecoder().decode(PageInsert.self, from: try JSONEncoder().encode(bad)))
     }
+
+    /// Audit finding b: the page engine reports a password input without its text (walker.ts excludes it), so nothing
+    /// is checked or offered there.
+    func testAFieldReportedWithoutTextIsNeverChecked() {
+        let r = Rig()
+        var f = Self.field("hunter2")
+        f.text = nil
+        r.field(f)
+        r.field(f)
+        XCTAssertTrue(r.checks.isEmpty)
+        XCTAssertNil(r.arbiter.snapshot().current)
+    }
 }

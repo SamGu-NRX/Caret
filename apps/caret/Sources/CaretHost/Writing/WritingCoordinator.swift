@@ -102,7 +102,7 @@ final class WritingCoordinator {
         if sameElement, field.role == nil { return status.increment("writing.readFailed") }
         guard policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
               !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
-              !field.secure, Self.isProse(element, field: field)
+              !SecretField.holdsSecret(field, traits: change.snapshot?.context.traits), Self.isProse(element, field: field)
         else { return leaveField() }
         if marks.observe(field: field.identity, value: field.value) {
             previousValue = nil

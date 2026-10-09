@@ -136,6 +136,17 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(r.machine.lastOutcome, "noRoom")
     }
 
+    /// Audit finding b: a password input comes without its text (extension walker.ts), so nothing is generated there.
+    func testNoGenerationForAFieldReportedWithoutText() throws {
+        let r = Rig()
+        var f = try Self.field(1)
+        f.text = nil
+        r.field(f)
+        XCTAssertTrue(r.requests.isEmpty)
+        XCTAssertNil(r.arbiter.snapshot().current)
+        XCTAssertEqual(r.machine.lastOutcome, "noText")
+    }
+
     /// Brief item 1: a suggestion that runs to the end of the sentence is often wider than the room left. The words that
     /// fit are offered, and Tab takes exactly those.
     func testALongSuggestionOffersTheWordsThatFit() throws {
