@@ -1,4 +1,4 @@
-import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText, type ScreenRegistry } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
 // Naming a routine (B19, plan section 4: "When a routine crosses the threshold, a language model names it
 // in the background. The name is a label only."). Jev answers only choice questions, so the house rule
@@ -211,7 +211,7 @@ const WORDINGS = [
  * shows. A text the ledger refuses is left out, and so are the names that use it; null when no name or the question
  * itself cannot go.
  */
-export function namingRequest(f: RoutineFacts, windows: Iterable<WindowState>, wording: number, rand: (n: number) => number): { req: JevRequest; ids: Map<string, string> } | null {
+export function namingRequest(f: RoutineFacts, windows: ScreenRegistry, wording: number, rand: (n: number) => number): { req: JevRequest; ids: Map<string, string> } | null {
   const d = new Disclosure(windows);
   const dstView = f.dstWindow === null ? null : redactWindow(f.dstWindow);
   const dst = dstView === null ? [] : f.dstLabels.flatMap((l) => {
@@ -274,7 +274,7 @@ function listMinted(d: Disclosure, xs: readonly ModelText[]): ModelText {
  * Names a routine: Jev's pick of code's candidates, asked at most twice, else code's own name. With Jev
  * off it is code's name at once. Never throws for a failed request; the failure is in `failures`.
  */
-export async function nameRoutine(facts: RoutineFacts, ask: AskJev | null, windows: () => Iterable<WindowState>, rand: (n: number) => number = randomInt): Promise<NameResult> {
+export async function nameRoutine(facts: RoutineFacts, ask: AskJev | null, windows: () => ScreenRegistry, rand: (n: number) => number = randomInt): Promise<NameResult> {
   const f = safeFacts(facts);
   const out: NameResult = { name: null, by: null, asks: 0, costUsd: 0, failures: [], requests: [] };
   for (let attempt = 0; ask !== null && attempt < 2; attempt++) {

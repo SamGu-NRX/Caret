@@ -39,6 +39,8 @@ import {
   type FillRequest,
   type FirstLook,
   type FirstLookReply,
+  type FirstLookPreview,
+  type FirstLookPreviewRequest,
   type Focus,
   type MemoryDocument,
   type MemoryDocumentReply,
@@ -1273,6 +1275,10 @@ export class Helper {
   /** Binds an existing task to the session that resumes or undoes it, once the executor would accept the request. */
   private rebind(taskId: string, session: string | undefined, refusal: string | null): void {
     if (session !== undefined && refusal === null) this.taskHosts.set(taskId, new Set([session]));
+  }
+
+  handleFirstLookPreview(m: FirstLookPreviewRequest): FirstLookPreview {
+    return this.firstLookRunner.preview(m);
   }
 
   /** The host's first look: the best offer across the windows open now, answered to the asker only. */
@@ -3014,7 +3020,7 @@ export class Helper {
       if (ctx.sentences > 0 && this.gate.holds("event", now).length === 0) {
         const last = sentences(node.value ?? "", false).at(-1);
         // The event card asks Jev about the sentence through its window's budget; one that will not fit makes no card.
-        if (last !== undefined && !this.events.isJudged(w.window.windowId, last) && new Disclosure(this.model.windows.values()).cost(w, [last]) !== null) {
+        if (last !== undefined && !this.events.isJudged(w.window.windowId, last) && new Disclosure(this.model).cost(w, [last]) !== null) {
           const c = this.events.candidate(w, f.key, last, "typed");
           if (c !== null) {
             const key = f.key;
@@ -3048,7 +3054,7 @@ export class Helper {
           this.events.forgetHeard(l);
           continue;
         }
-        const c = new Disclosure(this.model.windows.values()).cost(l.w, [l.sentence]) === null ? null : this.events.candidate(l.w, l.key, l.sentence, "conversation");
+        const c = new Disclosure(this.model).cost(l.w, [l.sentence]) === null ? null : this.events.candidate(l.w, l.key, l.sentence, "conversation");
         if (c === null) {
           this.events.forgetHeard(l);
           continue;

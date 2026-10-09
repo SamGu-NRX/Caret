@@ -1,0 +1,1 @@
+v2/access (2026-10-09) has no .github/workflows/v2.yml or record-snapshots.yml; those live on sam/v2/ci with Swift 6.3 perch fixes, so CI for a branch off v2/access needs a carrier commit with them pushed to a v2/** branch (and snapshots/record).

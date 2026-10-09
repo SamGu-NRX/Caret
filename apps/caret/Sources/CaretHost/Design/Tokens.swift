@@ -248,7 +248,7 @@ enum TokenProbe {
 enum Motion {
     /// `ease-out`: every entrance, every exit, the step bar.
     static let easeOut = (0.23, 1.0, 0.32, 1.0)
-    /// `ease-in-out`: the figure's posture and squash, the slip's height.
+    /// `ease-in-out`: the figure's sag when the light goes out, Done's squint, the slip's height.
     static let easeInOut = (0.77, 0.0, 0.175, 1.0)
 
     /// Seconds.
@@ -275,15 +275,11 @@ enum Motion {
         /// The figure entering (opacity, 2 pt rise, scale 0.9) and leaving (4 pt rise, opacity).
         static let figureEnter: Double = 0.16
         static let figureLeave: Double = 0.16
-        /// The eyes turning toward something.
-        static let glance: Double = 0.14
-        /// Done: squash 260, squint 420, glow pulse 600.
-        static let squash: Double = 0.26
+        /// Done: squint 420, glow pulse 600. Its squash springs back on `Motion.Spring.relief`.
         static let squint: Double = 0.42
         static let glowPulse: Double = 0.60
-        /// Offering breathes on a 4 s loop and blinks every 5 s.
-        static let breath: Double = 4
-        static let blinkEvery: Double = 5
+        /// Error: the light going out (the Graphite crossfade) and the sag with it.
+        static let lightOut: Double = 0.24
         /// Needs you: two 600 ms bobs.
         static let bob: Double = 0.60
         /// Onboarding only.
@@ -295,6 +291,18 @@ enum Motion {
         static let move: Double = 0.14
         /// Under Reduce Motion every entrance and exit becomes this fade.
         static let reduced: Double = 0.12
+    }
+
+    /// The figure's springs, in SwiftUI's own terms so the prototype (design/character/prototype/
+    /// pebble.js, `SPRING`) uses the same two numbers. Chosen by eye on the prototype at 128 and
+    /// 16 pt; nothing measured them.
+    enum Spring {
+        /// Every change of the figure's posture (a glance, a lean, eyes narrowing or growing): there
+        /// in about 150 ms, past the mark by 4.6 percent, settled. The settle is the life; at 16 pt
+        /// the overshoot is under a tenth of a point, so small figures do not visibly wobble.
+        static let settle = SwiftUI.Spring(duration: 0.3, bounce: 0.3)
+        /// Done's squash springing back: its overshoot (about 0.98 by 1.02) is the relief.
+        static let relief = SwiftUI.Spring(duration: 0.4, bounce: 0.5)
     }
 
     static func curve(_ c: (Double, Double, Double, Double), _ duration: Double) -> Animation {

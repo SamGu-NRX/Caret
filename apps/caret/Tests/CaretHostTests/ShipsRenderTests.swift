@@ -20,13 +20,12 @@ final class ShipsRenderTests: XCTestCase {
             ("Key, as it opens", "onboarding-key", [P(name: "Ink, title", token: Tokens.ink, minimum: text),
                                                     P(name: "Ink 2, detail, label, placeholder, footnote, Back, Skip", token: Tokens.ink2, minimum: text),
                                                     P(name: "Carrot, the field's focus ring and the current dot", token: Tokens.carrot, minimum: mark),
-                                                    P(name: "Ink 3, the other dots", token: Tokens.ink3, minimum: mark),
-                                                    P(name: "On ink, Continue", token: Tokens.onInk, minimum: text)]),
+                                                    P(name: "Ink 3, the other dots and the hatched lines", token: Tokens.ink3, minimum: mark)]),
+            // No On ink probe as it opens: with no key yet, Send these and look is disabled, and WCAG 1.4.3 exempts
+            // inactive components (it measured 1.49:1 drawn disabled, CI run 37906771739).
             ("Key, pasted", "onboarding-key-typed", [P(name: "Ink, the key's dots", token: Tokens.ink, minimum: text)]),
             // No probe on the checking screen: Back, Skip and Continue are disabled there, and WCAG 1.4.3 exempts inactive
             // controls; the checking line is Ink 2 on the same window, measured on the screen as it opens.
-            ("Key, works", "onboarding-key-works", [P(name: "Ink fill, the check", token: Tokens.inkFill, minimum: mark),
-                                                    P(name: "Ink 2, the saved line", token: Tokens.ink2, minimum: text)]),
             ("Key, no credits", "onboarding-key-no-credits", [P(name: "Ink, what to do", token: Tokens.ink, minimum: text)]),
             ("Key, rejected", "onboarding-key-rejected", [P(name: "Ink, the problem", token: Tokens.ink, minimum: text)]),
             ("Key alone, a key saved", "onboarding-key-alone-stored", [P(name: "Ink 2, the saved line", token: Tokens.ink2, minimum: text),
@@ -57,23 +56,22 @@ final class ShipsRenderTests: XCTestCase {
         XCTAssertEqual(failures, [], table.joined(separator: "\n"))
     }
 
-    /// The key step's words, pinned like the know step's: what Jev is for, what happens to the key, and the coordinator's
-    /// sentence for a key whose account has no credits.
-    func testTheKeyStepsWordingIsPinned() {
-        XCTAssertEqual(JevKeyScreen.title, "Add your Jev key.")
-        XCTAssertEqual(JevKeyScreen.detail, "Jev is the cloud model that decides what Caret offers, like which value goes in a field. Paste your TypeSafe API key to turn it on.")
+    /// The key field's words: what happens to the key, and the coordinator's sentence for a key whose account has no
+    /// credits.
+    func testTheKeyFieldsWordingIsPinned() {
+        XCTAssertEqual(OnboardingCopy.On.keyNote, "For now the cloud model needs a key. Caret keeps it in your login keychain and checks it with one small request.")
         var draft = OnboardingFlow.JevKeyDraft()
         draft.phase = .checked(.noCredits, saved: true)
-        XCTAssertEqual(JevKeyScreen.line(draft)?.text, "This key works, but its account has no credits. Add credits at console.typesafe.ai.")
+        XCTAssertEqual(KeyBlock.line(draft)?.text, "This key works, but its account has no credits. Add credits at console.typesafe.ai.")
         draft.phase = .checked(.rejected, saved: false)
-        XCTAssertEqual(JevKeyScreen.line(draft)?.problem, true)
+        XCTAssertEqual(KeyBlock.line(draft)?.problem, true)
         draft.phase = .checked(.unreachable, saved: false)
-        XCTAssertTrue(JevKeyScreen.line(draft)?.text.contains("try again") ?? false)
-        var lines = [JevKeyScreen.title, JevKeyScreen.detail, JevKeyScreen.footnote, JevKeyScreen.storedLine]
+        XCTAssertTrue(KeyBlock.line(draft)?.text.contains("try again") ?? false)
+        var lines = [OnboardingCopy.On.keyNote, OnboardingCopy.On.keyPlaceholder]
         for phase in [OnboardingFlow.JevKeyDraft.Phase.malformed, .checking, .checked(.works, saved: true), .checked(.works, saved: false),
                       .checked(.unclear(status: 500), saved: false)] {
             draft.phase = phase
-            lines.append(JevKeyScreen.line(draft)?.text ?? "")
+            lines.append(KeyBlock.line(draft)?.text ?? "")
         }
         for line in lines {
             XCTAssertFalse(line.contains("\u{2014}") || line.contains("\u{2013}") || line.contains("!"), line)

@@ -14,7 +14,7 @@ const owner = ownerNoteGate();
 if (owner !== null) reasons.push(owner);
 const required = [
   ["pv2-sites-send", "PV2's Sites and send-boundary fixes aren't accepted yet; the promise's switched-off sentence isn't backed", "It sends nothing from an app or website you've switched off."],
-  ["ha2-copied-conversation", "HA2's copied-conversation fix isn't accepted yet", "No request carries more than half of a conversation."],
+  ["ha2-copied-conversation", "HA2's copied-conversation fix isn't accepted yet", "No request takes more than half of any one conversation."],
 ] as const;
 // Internal VM and test builds use synthetic data and are never distributed, so the release acceptance records don't
 // apply to them. build-app.sh sets this for debug and acceptance only and stamps their bundles CaretInternalBuild.
@@ -52,7 +52,7 @@ if (resource) {
   if (readFileSync(resource, "utf8") !== PRIVACY_PROMISE) throw new Error(`${resource}: generated privacy resource differs from PRIVACY_PROMISE`);
 }
 // The finished app's copy, checked after every step that could drop or replace it and before the app is signed or
-// handed on. Onboarding has no text of its own to show in its place (OnboardingView.swift, PermissionsScreen).
+// handed on. Onboarding has no text of its own to show in its place (OnboardingView.swift, PrivacyPromiseText).
 const shipped = env[ENV.caret_verify_privacy_resource];
 if (shipped) {
   const checked = shippedApp(shipped);

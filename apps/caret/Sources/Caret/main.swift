@@ -240,9 +240,15 @@ if !hostSocketNamed {
     configuration.socketPath = home.hostSocket
     configuration.socketInCaretsFolder = true
 }
-// A debug or acceptance build answers every command; a release build only `state` and `spend`, unless opened.
-#if DEBUG || CARET_ACCEPTANCE_HOST
+// A debug build answers every command; a release build only `state` and `spend`, unless opened. An acceptance build
+// answers every command only when started with test hooks, as every VM harness that builds one starts it (h11 q2.py,
+// h14.py) or with CARET_DEBUG_SOCKET=full (D1's d1.py). Otherwise it is someone's own Caret at login, the internal
+// dogfood build on Sam's Mac (DF1), and H12's rule for that holds: its state carries offer and typed text, which any
+// process of the user could otherwise read without Caret's Accessibility grant.
+#if DEBUG
 let developmentBuild = true
+#elseif CARET_ACCEPTANCE_HOST
+let developmentBuild = configuration.testHooks
 #else
 let developmentBuild = false
 #endif
@@ -266,7 +272,8 @@ acceptance.runIfAsked(home: home)
 
 let services: CaretServices
 switch CaretServices.plan(home: home, namedHelperSocket: namedHelperSocket, legacyHelperSocket: configuration.helperSocketPath,
-                          bundle: Bundle.main.bundleURL, environment: environment) {
+                          bundle: Bundle.main.bundleURL, environment: environment,
+                          onboarded: MainActor.assumeIsolated { SettingsStore.shared.settings.onboarded }) {
 case .exit(let why):
     FileHandle.standardError.write(Data("caret: \(why); this copy exits\n".utf8))
     exit(0)

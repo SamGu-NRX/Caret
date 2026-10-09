@@ -26,6 +26,7 @@ import type { AboutValue } from "./about.ts";
 import type { Candidate, CandidateIdentity, Placement } from "./candidates.ts";
 import { textKind } from "./kinds.ts";
 import { bareLine, LABELLED, lineValues, sentenceAround } from "./line-values.ts";
+import { lineEndAt, lineStartAt, splitLines } from "../privacy/ledger/source.ts";
 
 /** Memory kinds that are the user's identity: email, phone and (with two words or more) full name. */
 const IDENTITY_KINDS: ReadonlySet<string> = new Set(["email", "phone", "name"]);
@@ -83,7 +84,7 @@ const RELATION =
 function headers(w: WindowState): Map<string, string[]> {
   const out = new Map<string, string[]>();
   for (const n of w.nodes.values()) {
-    for (const raw of nodeText(n).split(/\r?\n/u)) {
+    for (const raw of splitLines(nodeText(n))) {
       const m = /^(from|to|cc|bcc):\s+(\S.*)$/iu.exec(bareLine(raw));
       if (m?.[1] === undefined || m[2] === undefined) continue;
       const k = m[1].toLowerCase();
@@ -110,8 +111,7 @@ export function placementsOf(model: ScreenModel, c: Candidate, userEmails: Reado
   const text = nodeText(node);
   const at = text.indexOf(c.text);
   if (at < 0) return [];
-  const nl = text.indexOf("\n", at);
-  const line = bareLine(text.slice(text.lastIndexOf("\n", at) + 1, nl < 0 ? text.length : nl));
+  const line = bareLine(text.slice(lineStartAt(text, at), lineEndAt(text, at)));
   const h = headers(w);
   const mail = h.has("from");
   const label = LABELLED.exec(line);

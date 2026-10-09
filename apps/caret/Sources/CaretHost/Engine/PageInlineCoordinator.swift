@@ -1,5 +1,6 @@
 import AppKit
 import AutocompleteCore
+import Carbon
 import CaretHostCore
 import CaretScreenCore
 import QuartzCore
@@ -222,7 +223,9 @@ final class PageInlineCoordinator {
     }
 
     private func gate(pid: Int32) -> PageInlineMachine.Gate {
-        let allowed = PageInline.allowed(SettingsStore.shared.settings, wordsAllowed: wordsAllowed(), engineReady: engine.state == .ready,
+        // Secure Event Input on anywhere (a password field focused, Terminal's Secure Keyboard Entry): no offers at all.
+        let secureOK = ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled())
+        let allowed = PageInline.allowed(SettingsStore.shared.settings, wordsAllowed: wordsAllowed() && secureOK, engineReady: engine.state == .ready,
                                          browserAllowed: (drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil)) && !AppSwitch.shared.isOff(pid: pid),
                                          composing: InputMethodState.shared.composes)
         let settings = SettingsStore.shared.settings
@@ -277,6 +280,10 @@ final class PageInlineCoordinator {
             // A key after the request: the field is moving, and its own report generates again.
             guard self.status.lastKeyDown().sequence == self.requestedAt[r.id]?.sequence else {
                 return self.machine.generated(r.id, text: nil, why: "keyAfter")
+            }
+            // Secure input may have come on while the engine worked: checked again just before drawing.
+            if case .suggestion = outcome, !ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) {
+                return self.machine.generated(r.id, text: nil, why: "secureInput")
             }
             switch outcome {
             case .suggestion(let s):

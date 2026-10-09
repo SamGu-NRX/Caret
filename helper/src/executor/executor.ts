@@ -1552,7 +1552,7 @@ export class Executor {
     // The window as it is now, or as the task found it once it has closed (B13 review: a closed source's
     // value went out as uncharged plan text).
     const sourced = task.sourced.map((v) => ({ text: v.text, window: this.deps.model.windows.get(v.windowId) ?? v.window }));
-    const r = await resolveTarget(w, this.deps.model.windows.values(), t, goal, this.deps.askJev, this.deps.rand ?? randomInt, this.deps.targetCutoff, sourced);
+    const r = await resolveTarget(w, this.deps.model, t, goal, this.deps.askJev, this.deps.rand ?? randomInt, this.deps.targetCutoff, sourced);
     if (r.jev !== null) {
       task.jevCalls += 2;
       this.targetChoices.push({ taskId: task.id, step: i, chose: r.ok ? r.node.key : null, jev: r.jev });

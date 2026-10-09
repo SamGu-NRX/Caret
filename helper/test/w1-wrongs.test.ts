@@ -175,7 +175,7 @@ describe("LV1 wrong 3: the Ashby task's incident question took a note-to-self in
 describe("W1 review: parts keep what their line says about them", () => {
   it("quotes the whole value beside a part, so a qualifier goes with it (review 1)", async () => {
     const value = "Junior Analyst at Ridgeline Outdoor Co (for my sister)";
-    expect(lineTexts(`Work: ${value}`).filter((t) => t.text === "Junior Analyst")).toEqual([{ text: "Junior Analyst", label: "Work", with: value, partOf: value }]);
+    expect(lineTexts(`Work: ${value}`).filter((t) => t.text === "Junior Analyst")).toEqual([{ text: "Junior Analyst", label: "Work", with: value, withAt: 6, partOf: value }]);
     const m = noteDesk(`Work: ${value}\n`, [field("form/job", "", { label: "Job title" })]);
     const seen: JevRequest[] = [];
     await proposeFill(m, picking("Job title", "none", seen), "form", "form/job", T0, { rand: () => 0 });
@@ -208,7 +208,7 @@ describe("W1 review: parts keep what their line says about them", () => {
 describe("W1 round-2 review: one span found twice keeps what both readings say", () => {
   it("keeps 'Reception Desk' a part, quoting its whole value, though the first-part reading found it bare", async () => {
     const value = "Reception Desk, ring twice";
-    expect(lineTexts(`Delivery instructions: ${value}`).find((t) => t.text === "Reception Desk")).toEqual({ text: "Reception Desk", label: "Delivery instructions", with: value, partOf: value });
+    expect(lineTexts(`Delivery instructions: ${value}`).find((t) => t.text === "Reception Desk")).toEqual({ text: "Reception Desk", label: "Delivery instructions", with: value, withAt: 23, partOf: value, at: 23 });
     const m = noteDesk(`Delivery instructions: ${value}\n`, [field("form/notes", "", { role: "AXTextArea", label: "Delivery instructions" })]);
     const p = await proposeFill(m, picking("Delivery instructions", "Reception Desk"), "form", "form/notes", T0, { rand: () => 0 });
     expect(fieldOf(p, "form/notes")).toMatchObject({ value: null, withheld: "notExact" });
@@ -217,7 +217,9 @@ describe("W1 round-2 review: one span found twice keeps what both readings say",
   it("keeps the qualifier beside 'Lumen Labs' from 'Lumen Labs, lab technician (for my sister)'", async () => {
     const value = "Lumen Labs, lab technician (for my sister)";
     const texts = lineTexts(`work: ${value}`);
-    for (const part of ["Lumen Labs", "lab technician"]) expect(texts.find((t) => t.text === part)).toEqual({ text: part, label: "work", with: value, partOf: value });
+    // "Lumen Labs" is also the first part, found at the value's start (6); a later part has no reading of its place.
+    expect(texts.find((t) => t.text === "Lumen Labs")).toEqual({ text: "Lumen Labs", label: "work", with: value, withAt: 6, partOf: value, at: 6 });
+    expect(texts.find((t) => t.text === "lab technician")).toEqual({ text: "lab technician", label: "work", with: value, withAt: 6, partOf: value });
     const m = noteDesk(`work: ${value}\n`, [field("form/company", "", { label: "Current employer" })]);
     const seen: JevRequest[] = [];
     await proposeFill(m, picking("Current employer", "none", seen), "form", "form/company", T0, { rand: () => 0 });
@@ -443,24 +445,11 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
       // desks: 175 class (a) attacks at the base (ec64f406), 186 here (88 vetoed before Jev is asked: shape 71, owner
       // evidence 15, source cut 2; 7 base attacks became the key's own option, "Large" for "Large, mushroom and onion").
       expect(r.attempts.filter((x) => x.cls === "a").length).toBeGreaterThan(100);
-      // W2: with every value check saying exact, class (a) measures code alone, which no longer reads text shapes (W1's
-      // families left the gate on the verifier's evidence, fill/writable.ts RETIRED_FAMILIES); the refuse-mode run below
-      // holds every class at 0. Canned right values measured on these desks when W1's review fixes landed (the corpus by the reader's windows, the Ask sets through
-      // planAsk): the guards must not cost one.
-      // HA2 (lead decision, cost accepted): a user's value admitted by owner questions counts only when both questions
-      // showed its whole source note. A fill on focus from a note the user did not name sends under half of the note's
-      // prose (privacy.ts prose share), so a note with any line over 80 characters never goes whole and its user values
-      // are withheld; an Ask that names the note keeps the full budget. Measured on these desks: 199 right at 68a7daa,
-      // 164 with HA2 (evidence/screen/ha2; all four sets 353 -> 283). Lead decision 2 then held every address part to the
-      // same rule (a lone city or ZIP line is asked whose it is too): 162 (all four sets 271). The review's fail-closed
-      // rules (fill/note-unit.ts) then showed every text that holds a value, (a), and a mail's or page's whole window, (c):
-      // 139 (all four sets 243; (a) alone cost 14 here, (c) 19, (b) none). The owner-note allotment (privacy.ts
-      // OWNER_NOTE_CHARS, 2,000, conversations kept out) then brought it to 160 (all four sets 306). The floor is the
-      // measured value, and the guards must not cost one more.
-      // TODO(INT1): the allotment is 0 until it is re-expressed on the output-based ledger (privacy.ts), so the floor is
-      // what v2/int1 measures with it off: 142 at a2062bc. v2/alt 74ae6e2 alone with the allotment set to 0 measures 139;
-      // the 3 more were not broken down (v2/fmt is merged before it). Restore 160 with the allotment.
-      expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(142);
+      // With every value check saying exact, class (a) measures code alone; the refuse-mode run below holds every class at
+      // 0. The floor is the canned right count measured on these desks with the committed ledger (the corpus by the
+      // reader's windows, the Ask sets through planAsk): the guards must not cost one. 143 measured; the verifier quotes a
+      // value's provenance where it was read, not as plan text (fill/contract.ts withReads).
+      expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(143);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

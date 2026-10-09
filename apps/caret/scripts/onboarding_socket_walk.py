@@ -401,9 +401,6 @@ def main():
         sent_before = len(helper.settings())
 
         for command, read in [
-            ("set character wren", lambda s: s["settings"]["character"] == "wren"),
-            ("set character seed", lambda s: s["settings"]["character"] == "seed"),
-            ("set character pebble", lambda s: s["settings"]["character"] == "pebble"),
             ("set role watch off", lambda s: "watch" not in s["settings"]["roles"]),
             ("set level quiet", lambda s: s["settings"]["level"] == "quiet" and s["gate"]["offersPerHour"] == 1),
             ("set paused on", lambda s: s["settings"]["paused"] and all(not r["on"] for r in s["gate"]["rules"])),
@@ -412,7 +409,7 @@ def main():
             check(f"settings {command} reads back", "error" not in s and read(s), s.get("settings", s))
         wait_for(lambda: len(helper.settings()) >= sent_before + 3, 2)
         changes = helper.settings()[sent_before:]
-        check("the helper hears role, level and pause changes, and not the character",
+        check("the helper hears role, level and pause changes",
               [(m["roles"], m["level"], m["paused"]) for m in changes]
               == [(["fill", "calendar", "words"], "eager", False), (["fill", "calendar", "words"], "quiet", False), (["fill", "calendar", "words"], "quiet", True)], changes)
         before = host.ask("state")["counters"].get("gate.refused.fillProposal", 0)

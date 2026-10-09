@@ -1,4 +1,5 @@
 import AppKit
+import CaretHostCore
 import Darwin
 import Foundation
 
@@ -31,6 +32,7 @@ struct TargetPolicy: Sendable {
 
     func allows(pid: Int32, bundleID: String?) -> Bool {
         if pid == Self.ownPID { return false }
+        if ExcludedApps.excludes(bundleID: bundleID) { return false }
         if let allowedPIDs, !allowedPIDs.contains(pid) { return false }
         if let allowedBundleIDs, !allowedBundleIDs.contains(bundleID ?? "pid:\(pid)") { return false }
         return true

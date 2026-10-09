@@ -1,1 +1,0 @@
-Candidate generation stops at MAX_GENERATOR_VISITS, not elapsed time; no setGeneratorClock, budgetMs or --generator-clock override remains. stats.ms is diagnostic, and a visit-cap stop still marks a partial window cut.

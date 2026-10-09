@@ -1,3 +1,5 @@
+// Builder-only: these tests' Jev answers the requests as built; none goes through the production transport (jev.ts
+// sealRequest, then send.ts sendable), as every request of the B31 kit (test/vs1-kit.ts) does.
 // Value settlement's admission rule, pinned at its boundaries: an Ask's value is admitted only when both value wordings
 // choose the same option at its cutoff (FILL_CUTOFF on the implied top probability for a screen value, VALUE_P below;
 // MEMORY_CUTOFF on Jev's confidence for the user's own, with

@@ -1,0 +1,182 @@
+{
+ "asks": [
+  {
+   "id": "lc-01",
+   "form": "httpbin-pizza",
+   "instruction": "fill this in from what I just texted Sam",
+   "expected": {
+    "Customer name": "Jordan Reyes",
+    "Telephone": "(512) 555-0147",
+    "E-mail address": "jordan.reyes@example.org",
+    "Preferred delivery time": "19:30",
+    "Delivery instructions": "side door, ring twice"
+   },
+   "kind": "chat150-recent"
+  },
+  {
+   "id": "lc-02",
+   "form": "greenhouse-apply",
+   "instruction": "fill in my details from my chat with Priya",
+   "expected": {
+    "First Name": "Jordan",
+    "Last Name": "Reyes",
+    "Email": "jordan.reyes@example.org",
+    "Phone": "(512) 555-0147",
+    "Graduation Date (MM/YYYY)": "05/2027",
+    "LinkedIn Profile": "https://www.linkedin.com/in/jordan-reyes-dev"
+   },
+   "kind": "chat300-recent"
+  },
+  {
+   "id": "lc-03",
+   "form": "event-rsvp",
+   "instruction": "RSVP using the details I sent Bea",
+   "expected": {
+    "Your full name": "Jordan Reyes",
+    "Email": "jordan.reyes@example.org",
+    "Phone": "(512) 555-0147",
+    "Approximate arrival time": "19:45",
+    "Dietary restrictions or allergies": "no shellfish"
+   },
+   "kind": "chat1000-recent"
+  },
+  {
+   "id": "lc-04",
+   "form": "checkout-shipping",
+   "instruction": "ship it to the address I gave Marcus a while back",
+   "expected": {
+    "First name": "Jordan",
+    "Last name": "Reyes",
+    "Address": "4410 Speedway",
+    "City": "Austin",
+    "ZIP code": "78751",
+    "Add a gift note": "Happy housewarming, Sam!"
+   },
+   "kind": "chat300-old"
+  },
+  {
+   "id": "lc-05",
+   "form": "job-application",
+   "instruction": "fill in my details from my old chat with Kofi",
+   "expected": {
+    "Full name": "Jordan Reyes",
+    "Email": "jordan.reyes@example.org",
+    "Phone": "(512) 555-0147",
+    "GitHub URL": "https://github.com/jordan-reyes-dev",
+    "Earliest start date": "2027-01-04",
+    "Desired salary": "$145,000"
+   },
+   "kind": "chat1000-old"
+  },
+  {
+   "id": "lc-06",
+   "form": "car-service-booking",
+   "instruction": "book the service with the car details I texted Dana",
+   "expected": {
+    "Full name": "Jordan Reyes",
+    "Email": "jordan.reyes@example.org",
+    "Mobile phone": "(512) 555-0147",
+    "VIN": "1HGCM82633A004352",
+    "Current mileage": "59,870",
+    "Comments for your service advisor": "the brakes squeal when cold"
+   },
+   "kind": "chat150-old"
+  },
+  {
+   "id": "lc-07",
+   "form": "rental-application",
+   "instruction": "fill out this application from my note",
+   "expected": {
+    "First name": "Jordan",
+    "Last name": "Reyes",
+    "Email address": "jordan.reyes@example.org",
+    "Mobile phone": "(512) 555-0147",
+    "Street address": "4410 Speedway",
+    "City": "Austin",
+    "ZIP code": "78751"
+   },
+   "kind": "note-beside-long-chats"
+  },
+  {
+   "id": "lc-08",
+   "form": "clinic-intake",
+   "instruction": "fill in my contact info from my note",
+   "expected": {
+    "Patient full name (legal)": "Jordan Reyes",
+    "Email": "jordan.reyes@example.org",
+    "Mobile phone": "(512) 555-0147",
+    "Street address": "4410 Speedway",
+    "City": "Austin",
+    "ZIP code": "78751"
+   },
+   "kind": "note-beside-long-chats"
+  },
+  {
+   "id": "lc-09",
+   "form": "course-enrollment",
+   "instruction": "enroll me with the details from the registrar thread",
+   "expected": {
+    "First name": "Jordan",
+    "Last name": "Reyes",
+    "Email": "jordan.reyes@example.org",
+    "Phone": "(512) 555-0147",
+    "Student ID (returning students)": "LC-204417"
+   },
+   "kind": "mail-thread-recent"
+  },
+  {
+   "id": "lc-10",
+   "form": "b2b-demo-request",
+   "instruction": "request the demo with my details from the vendor thread",
+   "expected": {
+    "First name": "Jordan",
+    "Last name": "Reyes",
+    "Work email": "jordan.reyes@example.org",
+    "Phone number": "(512) 555-0147",
+    "Company website": "https://lumenlabs.example.com",
+    "Anything else we should know?": "we run 40 entities across 3 currencies"
+   },
+   "kind": "mail-thread-old"
+  },
+  {
+   "id": "lc-11",
+   "form": "support-ticket",
+   "instruction": "file the ticket with my current email from my chat with Ines",
+   "expected": {
+    "Your name": "Jordan Reyes",
+    "Email address": "jordan.reyes@example.net",
+    "Workspace URL": "https://lumen.example.com",
+    "Subject": "CSV export fails over 10k rows"
+   },
+   "kind": "chat300-superseded"
+  },
+  {
+   "id": "lc-12",
+   "form": "conference-registration",
+   "instruction": "register me with the details I sent Marcus",
+   "expected": {
+    "First name": "Jordan",
+    "Last name": "Reyes",
+    "Email address": "jordan.reyes@example.org",
+    "Job title": "Senior Product Designer",
+    "Company or organization": "Lumen Labs"
+   },
+   "kind": "chat1000-recent-other-person-old"
+  },
+  {
+   "id": "lc-13",
+   "form": "hubspot-contact",
+   "instruction": "fill in the contact form from my thread with the Lumen team",
+   "expected": {
+    "First Name": "Jordan",
+    "Last Name": "Reyes",
+    "Email": "jordan.reyes@example.org",
+    "Phone number": "(512) 555-0147",
+    "Company name": "Lumen Labs",
+    "Website URL": "https://lumenlabs.example.com",
+    "How can we help?": "we need SSO for 300 seats by March"
+   },
+   "kind": "mail-thread-newest-first"
+  }
+ ]
+}

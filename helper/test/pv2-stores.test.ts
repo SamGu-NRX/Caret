@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cachedAsk } from "../src/engines/decide/cache.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { sealRequest, storedRecord, type AskJev, type JevRequest } from "../src/fill/jev.ts";
-import { Disclosure, OutOfShape, storable, UnmintedText } from "../src/privacy/disclosure.ts";
+import { Disclosure, OutOfShape, storable, UnmintedText, registryOf } from "../src/privacy/disclosure.ts";
 
 let dir = "";
 beforeEach(() => {
@@ -29,7 +29,7 @@ const answer: AskJev = async () => ({ model: "jev-test", answers: { f1: { choice
  * whatever reaches it.
  */
 function withCard(): JevRequest {
-  const d = new Disclosure([]);
+  const d = new Disclosure(registryOf([]));
   return { state: { task: d.own(`Order note: card 4111 1111 1111 1111`) }, questions: { f1: { type: "choice", instructions: d.own("Which?"), criteria: { none: d.own("None.") } } }, snippets: [], charged: {}, disclosure: d };
 }
 /** The same request with one string its Disclosure never minted. */
@@ -70,14 +70,14 @@ describe("PV2 Q2: what a store keeps of a request", () => {
     const r = withCard();
     expect(storedRecord(sealRequest(r), (f) => ({ state: f.state }))).toEqual({ state: { task: "Order note: card [withheld]" } });
     expect(() => sealRequest(unminted())).toThrow(UnmintedText);
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     expect(() => storable({ purpose: "route.judge", disclosure: d }, { state: { notes: d.own("x") } }, {})).toThrow(OutOfShape);
   });
 });
 
 describe("PV2: a store records the copy that was sent, never the live request", () => {
   it("records 'before' when the live state became 'after' while the request was pending", () => {
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const req: JevRequest = d.seal({ purpose: "route.judge" as const, state: { task: d.own("before") }, questions: {}, snippets: [], charged: {} });
     const sent = sealRequest(req);
     (req as { state: unknown }).state = { task: d.own("after") };
@@ -88,11 +88,11 @@ describe("PV2: a store records the copy that was sent, never the live request", 
 
 describe("PV2: a stored record is read from the sent bytes, never from an object", () => {
   it("stores what was sent although the exposed snapshot was changed while pending", () => {
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const req: JevRequest = d.seal({ purpose: "route.judge" as const, state: { task: d.own("before") }, questions: {}, snippets: [], charged: {} });
     const sent = sealRequest(req);
     const bytes = JSON.stringify({ state: sent.asked.state });
-    const foreign = new Disclosure([]).own("after, from another request");
+    const foreign = new Disclosure(registryOf([])).own("after, from another request");
     // The snapshot itself, as a caller holding it could change it (frozen now, so these throw; before, they did not).
     for (const change of [() => ((sent.asked as { state: unknown }).state = { task: foreign }), () => ((sent.asked.state as { task: unknown }).task = foreign)]) {
       try {

@@ -82,7 +82,7 @@ final class ShipsHostTests: XCTestCase {
         let store = SettingsStore(path: dir + "/settings.json")
         let controller = OnboardingController(mode: .auto, testHooks: false, store: store)
         controller.permissionsOverride = OnboardingPermissions(accessibility: true, inputMonitoring: true)
-        XCTAssertEqual(controller.launchOpening(), .all)
+        XCTAssertEqual(controller.launchOpening(), .init(step: .on), "Accessibility already on: no welcome, straight to what is on")
         store.update(source: .onboarding) { $0.onboarded = true }
         XCTAssertNil(controller.launchOpening())
         // Read back from the file, as the next launch reads it.
@@ -90,7 +90,7 @@ final class ShipsHostTests: XCTestCase {
         next.permissionsOverride = OnboardingPermissions(accessibility: true, inputMonitoring: true)
         XCTAssertNil(next.launchOpening())
         next.permissionsOverride = OnboardingPermissions(accessibility: false, inputMonitoring: true)
-        XCTAssertEqual(next.launchOpening(), .only(.permissions), "Accessibility taken away after onboarding: its step alone")
+        XCTAssertEqual(next.launchOpening(), .init(step: .access, alone: true), "Accessibility taken away after onboarding: the switch alone")
         XCTAssertNil(OnboardingController(mode: .off, testHooks: false, store: store).launchOpening())
     }
 
@@ -314,10 +314,11 @@ final class ShipsHostTests: XCTestCase {
             },
             save: { saved.append($0); return true }, saved: {}
         )
+        controller.sendPreview = { _, _, _ in true }
         func submit(_ key: String) {
-            _ = controller.command(["onboarding", "open"])
+            _ = controller.command(["onboarding", "open", "on"])
             _ = controller.command(["onboarding", "permissions", "on", "on"])
-            for _ in 0..<3 { _ = controller.command(["onboarding", "next"]) }
+            _ = controller.command(["onboarding", "preview", "1"])
             _ = controller.command(["onboarding", "jev-key", key])
             _ = controller.command(["onboarding", "next"])
         }
@@ -370,10 +371,11 @@ final class ShipsHostTests: XCTestCase {
                 available: { false }, stored: { false }, check: { await JevKeyCheck.check($0, transport: transport) },
                 save: { saved.append($0); return true }, saved: { restarts += 1 }
             )
-            _ = controller.command(["onboarding", "open"])
+            controller.sendPreview = { _, _, _ in true }
+            _ = controller.command(["onboarding", "open", "on"])
             _ = controller.command(["onboarding", "permissions", "on", "on"])
-            for _ in 0..<3 { _ = controller.command(["onboarding", "next"]) }
-            XCTAssertEqual(controller.debugInfo()?.step, "jevKey")
+            _ = controller.command(["onboarding", "preview", "1"])
+            XCTAssertEqual(controller.debugInfo()?.step, "on")
             _ = controller.command(["onboarding", "jev-key", seedKey])
             _ = controller.command(["onboarding", "next"])
             let deadline = Date().addingTimeInterval(5)

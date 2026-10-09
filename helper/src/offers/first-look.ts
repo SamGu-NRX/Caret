@@ -8,6 +8,9 @@
 // the host's offerAccept with that key runs it as the task with that id. Errors carry window ids, family
 // names and outcome codes only: never a reader detail, a Jev error body or an element key, all of which
 // can hold screen text.
+import { FirstLookPreviews } from "./first-look-preview.ts";
+import { withFirstLookAllowList, type FirstLookAllowList } from "../privacy/first-look-allow-list.ts";
+import type { FirstLookPreview, FirstLookPreviewRequest } from "../protocol.ts";
 import type { OwnerVerdicts } from "../fill/owner-cache.ts";
 import { performance } from "node:perf_hooks";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
@@ -106,12 +109,35 @@ type Settled = { family: Family; ok: true; found: Candidate[] } | { family: Fami
 
 export class FirstLookRunner {
   private readonly deps: FirstLookDeps;
+  private readonly previews = new FirstLookPreviews();
 
   constructor(deps: FirstLookDeps) {
     this.deps = deps;
   }
 
+  preview(req: FirstLookPreviewRequest): FirstLookPreview {
+    return this.previews.build(req, this.deps.model, this.deps.now());
+  }
+
   async run(req: FirstLook): Promise<FirstLookReply> {
+    if (req.previewId == null) return this.runLook(req);
+    const preview = this.previews.lookup(req.previewId, this.deps.now());
+    if ("error" in preview) return {
+      type: "firstLookReply", v: PROTOCOL_VERSION, requestId: req.requestId, at: this.deps.now(),
+      outcome: "error", found: null, scanned: null, error: preview.error,
+    };
+    const { list } = preview;
+    return withFirstLookAllowList(list, async () => {
+      try {
+        return await this.runLook(req, list);
+      } finally {
+        // Deadline losers still own their async context. They must not send later requests after the reply.
+        list.closed = true;
+      }
+    });
+  }
+
+  private async runLook(req: FirstLook, allowList?: FirstLookAllowList): Promise<FirstLookReply> {
     const t0 = performance.now();
     const deadlineAt = t0 + Math.max(0, req.deadlineMs - Math.min(REPLY_MARGIN_MS, req.deadlineMs / 10));
     const model = this.deps.model;
@@ -157,6 +183,7 @@ export class FirstLookRunner {
 
     // Whatever the generators found, a reply past the deadline is one the host ignores, and the user may
     // have paused Caret or the helper left live mode while Jev answered: nothing is recorded then.
+    if (allowList?.stale) return reply("error", null, "previewStale");
     if (late()) return reply("error", null, "the look did not finish before the deadline");
     if (!this.deps.live()) return reply("error", null, "the helper is in shadow mode");
     if (this.deps.paused()) return reply("error", null, "Caret is paused");
@@ -344,7 +371,7 @@ export class FirstLookRunner {
     }
     const answers = await Promise.allSettled(
       marked.map(async ({ w, markers }) => {
-        const { req, lines } = buildLookRequest(w, this.deps.model.windows.values(), markers);
+        const { req, lines } = buildLookRequest(w, this.deps.model, markers);
         const a = readPendingAnswer(await ask(req));
         return { asked: w, lines, state: stateFor(a.finished.choice, a.waiting.choice) };
       }),

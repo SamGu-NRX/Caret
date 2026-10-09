@@ -34,12 +34,7 @@ public final class SettingsStore {
 
     static func load(_ path: String) -> (settings: CaretSettings, error: String?) {
         guard let data = FileManager.default.contents(atPath: path) else {
-            var fresh = CaretSettings()
-            // The menu's Character choice before settings had a file.
-            if let stored = UserDefaults.standard.string(forKey: "figureCharacter"), let character = FigureCharacter(rawValue: stored) {
-                fresh.character = character
-            }
-            return (fresh, nil)
+            return (CaretSettings(), nil)
         }
         do {
             return (try JSONDecoder().decode(CaretSettings.self, from: data), nil)
@@ -89,7 +84,7 @@ public final class SettingsStore {
 
     /// `settings set <name> <value>` on the debug socket, the menu bar's choices by name:
     ///   role fill|repeat|watch|calendar|words on|off, level quiet|balanced|eager,
-    ///   character pebble|seed|wren, paused on|off, routing on|off (H6: "Caret decides when to help"),
+    ///   paused on|off, routing on|off (H6: "Caret decides when to help"),
     ///   calendar <EventKit calendar id>|default (H8: where accepted events go), keys caret|cotypist
     ///   (which keys take ghost text), app <bundle id> on|off (Caret in one app).
     public func set(_ words: [String]) -> String? {
@@ -101,9 +96,6 @@ public final class SettingsStore {
         case ("level", 2):
             guard let level = CaretLevel(rawValue: words[1]) else { return "usage: settings set level quiet|balanced|eager" }
             update(source: .socket) { $0.level = level }
-        case ("character", 2):
-            guard let character = FigureCharacter(rawValue: words[1]) else { return "usage: settings set character pebble|seed|wren" }
-            FigureSettings.shared.character = character
         case ("paused", 2):
             guard let on = onOff(words[1]) else { return "usage: settings set paused on|off" }
             update(source: .socket) { $0.paused = on }
@@ -126,7 +118,7 @@ public final class SettingsStore {
             guard let keys = GhostKeys(rawValue: words[1]) else { return "usage: settings set keys caret|cotypist" }
             update(source: .socket) { $0.ghostKeys = keys }
         default:
-            return "usage: settings set role|level|character|paused|routing|calendar|pageInlineText|pageInlineContentEditable|keys|app ..."
+            return "usage: settings set role|level|paused|routing|calendar|pageInlineText|pageInlineContentEditable|keys|app ..."
         }
         return nil
     }

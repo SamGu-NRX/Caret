@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Caret's app icon (Caret.app/Contents/Resources/AppIcon.icns, built by scripts/make-app-icon.sh).
+       The crest on warm paper, eyes on you, at 50 units per viewBox unit with its base on y 706. The
+       824 pt rounded square on the 1024 canvas and its drop shadow follow Apple's macOS icon grid. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFEFC"/>
+      <stop offset="1" stop-color="#F1EEE8"/>
+    </linearGradient>
+    <linearGradient id="skin" x1=".6" y1=".05" x2=".45" y2="1">
+      <stop offset="0" stop-color="#FFC98A"/>
+      <stop offset=".5" stop-color="#EE8238"/>
+      <stop offset="1" stop-color="#CC5A19"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-200%" width="160%" height="500%"><feGaussianBlur stdDeviation="22"/></filter>
+    <filter id="tight" x="-20%" y="-200%" width="140%" height="500%"><feGaussianBlur stdDeviation="7"/></filter>
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="10" stdDeviation="11" flood-color="#000" flood-opacity=".22"/></filter>
+    <clipPath id="sq"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)" filter="url(#drop)"/>
+  <g clip-path="url(#sq)">
+    <ellipse cx="512" cy="714" rx="270" ry="30" fill="#EC7E34" fill-opacity=".26" filter="url(#soft)"/>
+    <ellipse cx="512" cy="706" rx="225" ry="13" fill="#3C1E08" fill-opacity=".16" filter="url(#tight)"/>
+  </g>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="185.5" fill="none" stroke="#000" stroke-opacity=".07"/>
+  <g transform="translate(212 186) scale(50)">
+    <path d="M7.989 1.115 C8.99 1.756 11.6 3.902 11.6 6.7 C11.6 9.2 9.6 10.4 6.2 10.4 C2.8 10.4 0.4 9.2 0.4 6.9 C0.4 4.695 5.821 1.755 7.592 1.075 C7.724 1.025 7.872 1.039 7.989 1.115 Z" fill="url(#skin)"/>
+    <rect x="3.95" y="5.25" width="1.5" height="2.1" rx=".75" fill="#1D1D1F"/>
+    <rect x="7.75" y="5.25" width="1.5" height="2.1" rx=".75" fill="#1D1D1F"/>
+  </g>
+</svg>

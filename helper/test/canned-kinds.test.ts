@@ -102,7 +102,7 @@ describe("page-loop-eval's canned engine", () => {
         });
         // W2: the value question goes only with a calendar event now (goals/gates.ts jevGate); asked here so its rule is met.
         // The fill's descriptors and values stand in for a plan's minted texts here (fixture wording, test/minted.ts).
-        const d = new Disclosure(desk.model.windows.values());
+        const d = new Disclosure(desk.model);
         const writes = (p?.fields ?? []).filter((f) => f.value !== null).map((f, i) => ({ key: `s${i}`, field: { name: d.own(f.descriptor as never), label: f.descriptor }, value: { display: d.own(`"${f.value as string}"` as never), window: f.source?.windowId ?? null, owner: null, notes: f.source === null ? [] : sourceNotes(desk.model, { kind: "window", windowId: f.source.windowId, nodeKey: f.source.nodeKey, app: "", title: "", span: f.value as string, label: null, line: null, partOf: null, context: null, lines: [], sentences: [] }, desk.form.window.windowId) }, askValue: true }));
         if (writes.length > 0) await verifyWrites(instruction, writes, ask, d);
         for (const r of seen) for (const id of [...Object.keys(r.questions), ...Object.keys(r.nouls ?? {})]) kinds.add(questionKind(r, id));

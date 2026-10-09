@@ -16,7 +16,10 @@ import { Helper } from "../src/helper.ts";
 import { ScreenModel } from "../src/model.ts";
 import { Store } from "../src/store.ts";
 import { LEFT_TAB_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type HelperMessage, type HelperToEngine, type OfferPopup, type PageControl, type PageResult, type PageSnapshot, type PageTabText, type PageVerb } from "../src/protocol.ts";
-import { field, jevPickingText, snap } from "./builders.ts";
+import { field, jevPickingText, snap, text } from "./builders.ts";
+import { proposeFill } from "../src/fill/fill.ts";
+import { sealRequest } from "../src/fill/jev.ts";
+import { sendable } from "../src/privacy/send.ts";
 import { X, chrome, hello } from "./fake-page.ts";
 
 const MAIL = "page:eng1:3";
@@ -470,5 +473,39 @@ describe("pageTabReader", () => {
     expect(sent.map((m) => (m.type === "pageReadText" ? m.tabId : null))).toEqual([3]);
     // toWindowSnapshot is untouched by a read: a page window's nodes are its controls only.
     expect(toWindowSnapshot(tabSnap(3, "t", "https://x.test", [], null, true), s, 1).nodes.every((n) => n.subrole !== PAGE_SUBROLE.readOnDemand)).toBe(true);
+  });
+});
+
+describe("a tab-backed fill's requests are measured against the live screen", () => {
+  it("refuses a request that reveals a chat opened after the fill read the tab: Kofi's one line '555-0101' is 8 of a limit of 5", async () => {
+    // The note holds the phone; the user left a webmail tab for a form tab, and fill reads the left tab's text.
+    const m = new ScreenModel();
+    m.apply(snap([field("notes/text", "Phone: 555-0101", { role: "AXTextArea" })], { at: 500, windowId: NOTES, title: "Contact", app: NOTES_APP, focused: true }));
+    m.apply(snap([field(`${MAIL}/x`, "", { role: "AXTextField" })], { at: 1000, windowId: MAIL, focused: true, kind: "page" }));
+    m.apply(snap([field(`${FORM}/phone`, "", { label: "Phone", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, focused: true, kind: "page" }));
+    const s = new TabSource({ model: m, reader: fakeReader(() => ok({ leftAt: 2000 })), now: () => 3000, count: () => {}, dropped: () => {} });
+    expect(await s.readFor(FORM, "f1")).toEqual({ windowId: MAIL });
+    const view = s.viewFor("f1");
+    expect(view).not.toBe(m);
+    const refused: string[] = [];
+    let opened = false;
+    const pick = jevPickingText(() => "555-0101");
+    const ask = async (req: Parameters<typeof pick>[0]) => {
+      // A Messages window opens on the live screen while the fill is out: T = 4 + 8 = 12, limit 5.
+      if (!opened) {
+        opened = true;
+        m.apply(snap([text("k0", "555-0101")], { at: 2500, windowId: "kofi", title: "Kofi", app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" } }));
+      }
+      try {
+        sendable(sealRequest(req).sealed);
+      } catch (e) {
+        refused.push(e instanceof Error ? e.message : String(e));
+        throw e;
+      }
+      return pick(req);
+    };
+    // The client's seal refuses the request, and the fill fails as it does when Jev cannot be asked.
+    await proposeFill(view, ask, FORM, `${FORM}/phone`, 3000, { whose: false }).catch(() => undefined);
+    expect(refused[0]).toMatch(/reveals 8 characters of window kofi, over its limit of 5/u);
   });
 });

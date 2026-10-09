@@ -21,6 +21,7 @@
 #   Contents/Helpers/node                      Node, pinned below (dev.caret.node, Bundle/node.entitlements)
 #   Contents/Helpers/caret-screen              the reader (dev.caret.screen, Bundle/caret-screen.entitlements)
 #   Contents/Helpers/caret-bridge              the Native Messaging host Chrome starts (dev.caret.bridge)
+#   Contents/Resources/AppIcon.icns            the app icon (Bundle/AppIcon.icns, from scripts/make-app-icon.sh)
 #   Contents/Resources/helper/                 the helper, bundled (scripts/helper-bundle.config.mjs)
 #   Contents/Resources/Caret for Chrome/       the unpacked extension, for Add to Chrome
 #   Contents/Library/LaunchAgents/dev.caret.host.plist   the agent SMAppService registers
@@ -104,7 +105,26 @@ rm -rf "$app" "$other"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Frameworks" "$contents/Helpers" "$contents/Resources" "$contents/Library/LaunchAgents"
 cp Bundle/Info.plist "$contents/Info.plist"
+cp Bundle/AppIcon.icns "$contents/Resources/AppIcon.icns"
 if [[ -n "${CARET_INTERNAL_BUILD:-}" ]]; then /usr/libexec/PlistBuddy -c "Add :CaretInternalBuild bool true" "$contents/Info.plist"; fi
+# CFBundleVersion, the build number: it only grows, so macOS and the user can tell two builds of one version apart. It
+# is CARET_BUILD_NUMBER when the caller sets it (a builder working from a git archive, which has no history), else the
+# commit count of HEAD, `git rev-list --count HEAD`. A release build with neither stops; a debug or acceptance build
+# keeps the source plist's 1 and says so, so the VM harnesses that build from an export still build.
+build_number="${CARET_BUILD_NUMBER:-}"
+# Only this repository's own history counts: an export inside some other checkout must not borrow that one's count.
+if [[ -z "$build_number" ]] && [[ "$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" == "$root" ]]; then
+  build_number=$(git -C "$root" rev-list --count HEAD)
+fi
+if [[ -n "$build_number" ]]; then
+  [[ "$build_number" =~ ^[1-9][0-9]*$ ]] || { echo "build-app.sh: CARET_BUILD_NUMBER is '$build_number'; it must be a positive integer" >&2; exit 2; }
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$contents/Info.plist"
+elif [[ "$mode" == release ]]; then
+  echo "build-app.sh release: no build number. Set CARET_BUILD_NUMBER (for example git rev-list --count HEAD of the commit) or build from a git checkout." >&2
+  exit 2
+else
+  echo "build-app.sh $mode: no build number (no CARET_BUILD_NUMBER, not a git checkout); CFBundleVersion stays 1" >&2
+fi
 CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" CARET_REQUIRE_PROCESSED_PLIST=1 CARET_BUILD_PLIST="$PWD/$contents/Info.plist" CARET_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt" /bin/sh "$root/scripts/privacy_gate.sh"
 cp "$bin/Caret" "$contents/MacOS/Caret"
 # Only the acceptance build may carry the acceptance code (Sources/Caret/Acceptance.swift), and it must.

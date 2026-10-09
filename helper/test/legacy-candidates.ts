@@ -4,7 +4,8 @@
 // src/fill/descriptor.ts labelTexts); and C1's reading of a line, taken from the generator itself so the
 // two compare only rank and cap: the typed values code finds (windowValues), every span a line offers
 // (lineSpans), a label naming only the typed value it starts with or the only one of its kind, and the
-// clause a span's description quotes (lineFact).
+// clause a span's description quotes (lineFact); and each window read whole, typed values then lines, newest first,
+// where the old generator read every window's typed values before any window's lines.
 import type { Frame, Node, ValueKind } from "../src/protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../src/model.ts";
 import { isLabelLike } from "../src/fill/descriptor.ts";
@@ -61,8 +62,6 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
       if (node === undefined) continue;
       add(w, node, v.text, v.kind, contextFor(w, node, v.text));
     }
-  }
-  for (const w of windows) {
     for (const node of w.nodes.values()) {
       const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;

@@ -1,1 +1,0 @@
-Helper: new script env names go in privacy-gate.ts processEnv/HELPER_ONLY_ENV; tests await PageFocus.moved. Fill: diff guard-adversary accepts before loosening a guard. VS1: value questions need hello askValues and askChoices.

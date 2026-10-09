@@ -53,7 +53,7 @@ describe("a cut conversation's plain name never leaves a decoy name", () => {
 
   it("offers the conversation's names whole, so Jev can pick the right one", async () => {
     const m = screen(["Name"]);
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { candidates } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Name"])] });
     expect(candidates.map((c) => c.text)).toContain(RIGHT);
     const p = await proposeFill(screen(["Name"]), nameProneJev(), FORM, FORM_KEY("Name"), 3000);
@@ -127,7 +127,7 @@ describe("a name the shape test misses is still a name when it is cut (B14 revie
     const long = Array.from({ length: 12 }, (_, i) => `${"the printer queue log for the badge desk ".repeat(5)}${i}`);
     notes(m, [...long, DECOY, ...Array.from({ length: 90 }, (_, i) => `row ${i}`), RIGHT]);
     m.apply(scheduleForm(2000, ["Name"]));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { candidates, cut, cutAll } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Name"])] });
     expect({ n: candidates.length, cut, cutAll }).toEqual({ n: 80, cut: [NOTES], cutAll: false });
     const p = await proposeFill(m, nameProneJev(), FORM, FORM_KEY("Name"), 3000);

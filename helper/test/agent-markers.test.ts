@@ -2,6 +2,7 @@
 // (test/agent-fixtures.ts): the composer's stop button marks a running turn, sidebar statuses of other
 // threads do not, and B5's statusWord misfire is gone. Then the watcher end to end on a T3 window
 // whose composer sits past the first 400 lines.
+import { registryOf } from "../src/privacy/disclosure.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -161,7 +162,7 @@ describe("the watch's text for a long agent thread", () => {
   it("names at most four marker lines in a question, within the window's budget", () => {
     const many = Array.from({ length: 50 }, (_, i) => text(`s/statictext:${i}~0`, `Exporting part ${i} of 50`, [600, 20 * i, 300, 18]));
     const w = windowOf(BROWSER, many);
-    const req = buildPendingRequest(w, [w], watchLines(w), watchLines(w), windowMarkers(w), windowMarkers(w));
+    const req = buildPendingRequest(w, registryOf([w]), watchLines(w), watchLines(w), windowMarkers(w), windowMarkers(w));
     expect(String((req.state as Record<string, string>).signs_of_running_work_now).split("\n")).toHaveLength(4);
   });
 
@@ -169,7 +170,7 @@ describe("the watch's text for a long agent thread", () => {
     const running = windowOf(T3, t3Window({ running: true }));
     const done = windowOf(T3, t3Window({ running: false, last: ["All four seating files are updated."] }));
     // The signs from when the user left are minted from the window as it was then (SC1 2b), as the watcher keeps it.
-    const req = buildPendingRequest(done, [done], watchLines(running), watchLines(done), windowMarkers(running), windowMarkers(done), running);
+    const req = buildPendingRequest(done, registryOf([done]), watchLines(running), watchLines(done), windowMarkers(running), windowMarkers(done), running);
     const state = req.state as Record<string, string>;
     expect(state.signs_of_running_work_when_the_user_left).toBe("[button] Stop generation");
     expect(state.signs_of_running_work_now).toBe("none");

@@ -174,8 +174,8 @@ struct MemoryView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            // Still, looking down at the list: it is what the figure knows.
-            FigureView(character: character, state: .noticed, facing: .right, size: 20, animated: false, gaze: CGVector(dx: 0.2, dy: 0.8))
+            // Looking down at the list: it is what the figure knows. Alive at rest; references freeze it.
+            FigureView(character: character, state: .noticed, facing: .right, size: 20, gaze: CGVector(dx: 0.2, dy: 0.8))
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 6 }
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 5) {

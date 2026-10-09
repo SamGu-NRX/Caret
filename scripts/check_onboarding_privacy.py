@@ -12,6 +12,7 @@ RETIRED = (
     "To decide what to offer, Caret sends short snippets to a cloud model",
     "Never a whole document or conversation.",
     "The next words are written on this Mac.",
+    "No request carries more than half of a conversation.",
 )
 LOAD = ('Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt")', "String(contentsOf: url, encoding: .utf8)",
         "return PrivacyPromise(text)")
@@ -30,12 +31,12 @@ def promise_sentences(root: Path) -> list[str]:
 def refusals(root: Path) -> list[str]:
     reasons = []
     view = (root / VIEW).read_text()
-    binding = re.search(r"static let privacyLine\s*=\s*\{(.*?)\}\(\)", view, re.S)
+    binding = re.search(r"static let bundled\s*=\s*\{(.*?)\}\(\)", view, re.S)
     if binding is None or not all(token in binding.group(1) for token in LOAD):
-        reasons.append(f"{root / VIEW}: PermissionsScreen.privacyLine must load and parse the bundled PrivacyPromise.txt")
+        reasons.append(f"{root / VIEW}: PrivacyPromiseText.bundled must load and parse the bundled PrivacyPromise.txt")
     elif set(re.findall(r'"([^"]*)"', binding.group(1))) - {"PrivacyPromise", "txt"}:
-        reasons.append(f"{root / VIEW}: PermissionsScreen.privacyLine may contain no text but the resource's name")
-    if any("??" in line and re.search(r"promise|privacyLine", line, re.I) for line in view.splitlines()):
+        reasons.append(f"{root / VIEW}: PrivacyPromiseText.bundled may contain no text but the resource's name")
+    if any("??" in line and re.search(r"promise|privacyLine|bundled", line, re.I) for line in view.splitlines()):
         reasons.append(f"{root / VIEW}: nothing may stand in for a missing privacy promise (??)")
     sentences = promise_sentences(root)
     for swift in sorted(path for folder in ("apps/caret/Sources", "apps/mac/Sources") for path in (root / folder).rglob("*.swift")):

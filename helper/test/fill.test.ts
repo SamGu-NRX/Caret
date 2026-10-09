@@ -113,7 +113,7 @@ describe("form fields and the Jev request", () => {
   });
   it("asks one choice question per field, each with every candidate and none", () => {
     // The two fields are fixture wording (test/minted.ts); each candidate's line is minted as proposeFill mints it.
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const cands = generateCandidates(m, FORM, undefined, undefined, d);
     const fields = [{ id: "f1", descriptor: d.own("Text field. Label: 'Email'."), name: d.own("Email") }, { id: "f2", descriptor: d.own("Text field."), name: d.own("unnamed field") }];
     const described = new Map(cands.map((c) => [c.id, mintCandidate(d, m, c)!]));

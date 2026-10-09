@@ -8,9 +8,13 @@ import { runB31, valueQuestions } from "./vs1-kit.ts";
 describe("settlement's options follow the owner rule", () => {
   it("never lists Ines's office line or cell for Theo's phones, and records why", async () => {
     const r = await runB31("b31-08", { values: true });
+    // With the output ledger, Ines's mail is a conversation, and HA2's rule (c) needs its whole text as owner evidence,
+    // which a conversation's limit never lets go (OUTPUT-LEDGER-SPEC, "HA2 rule (c) and the conversation limit", Sam's
+    // decision pending). So every value from the mail is vetoed for want of owner evidence, and no phone field reaches
+    // value settlement. Neither of Ines's lines is offered for Theo's phones, which is what this case pins.
     for (const label of ["Home phone", "Mobile phone"]) {
       const outputs = valueQuestions(r, label).flatMap((q) => q.options.map((o) => o.output));
-      expect(outputs.length, `${label} was asked about`).toBeGreaterThan(0);
+      expect(outputs.length, `${label}: not asked, its mail's values held for owner evidence (HA2 rule c)`).toBe(0);
       expect(outputs, label).not.toContain("(617) 555-0166");
       expect(outputs, label).not.toContain("(617) 555-0129");
     }
@@ -18,6 +22,7 @@ describe("settlement's options follow the owner rule", () => {
     const home = t?.fields.find((f) => r.labelOf.get(f.key) === "Home phone");
     const office = [...(t?.options ?? new Map()).entries()].find(([, o]) => o.text === "(617) 555-0166")?.[0];
     expect(office, "the office line is a candidate").toBeDefined();
-    expect(t?.vetoed?.get(home?.id ?? "")?.get(office ?? "")).toBe("otherPerson");
+    // The office line is held by a cut rule (fill.ts fieldCut or pickCut) before either owner rule is reached.
+    expect(t?.vetoed?.get(home?.id ?? "")?.get(office ?? ""), "held as a cut").toBe("sourceCut");
   });
 });

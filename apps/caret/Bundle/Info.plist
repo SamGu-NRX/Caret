@@ -6,6 +6,9 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>Caret</string>
+	<!-- The crest app icon, AppIcon.icns in Contents/Resources (scripts/make-app-icon.sh builds it from Bundle/AppIcon/AppIcon.svg). -->
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.caret.host</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -14,8 +17,11 @@
 	<string>Caret</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<!-- Semantic version (major.minor.patch) of every build; a prerelease label such as beta.1 goes only in the DMG and
+	     tag names, since macOS reads this key as numbers. CFBundleVersion is the build number build-app.sh writes into
+	     the bundle's copy; the 1 here is the value for a build that has none. -->
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>2.0.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
