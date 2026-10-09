@@ -42,6 +42,9 @@ final class GhostTextEngine {
     /// suggestions; a normal run keeps the defaults above.
     var completionTokens = GhostTextEngine.maxCompletionTokens
     var displayWidth = GhostTextEngine.maxDisplayWidth
+    /// The user's personal instructions for a field (brief item 4, `PersonalInstructions.lines`). They replace KeyType's
+    /// `policy.customInstructions`, which nothing in Caret sets.
+    var instructions: (TextFieldContext) -> [String] = { _ in [] }
     /// Candidates looked at, best first, when the better ones are refused at the seam or do not
     /// fit the text after the caret. KeyType's own filter still decides about the first.
     static let candidatesTried = 3
@@ -211,7 +214,7 @@ final class GhostTextEngine {
         let promptContext = heal.map { context.replacingBeforeCursor($0.head) } ?? context
         let prompt = promptBuilder.buildPrompt(
             context: promptContext,
-            customInstructions: policy.customInstructions,
+            customInstructions: instructions(context),
             includeEnvironmentContext: policy.includesEnvironmentContext
         ).prompt
         let healSlack = heal?.heal.count ?? 0

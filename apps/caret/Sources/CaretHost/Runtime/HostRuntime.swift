@@ -185,6 +185,18 @@ public final class HostRuntime {
         let pageInline = PageInlineCoordinator(arbiter: arbiter, status: status, engine: engine, policy: policy, drawsOnScreen: !configuration.surfacesHeadless)
         self.pageInline = pageInline
         pageInline.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
+        // Brief item 4: the user's personal instructions in every completion prompt; a page's site from the page path.
+        engine.instructions = { [weak pageInline] context in
+            let id = context.target.bundleIdentifier
+            let origin = PageSight.isChrome(bundleID: id) ? pageInline?.origin : nil
+            return SettingsStore.shared.settings.instructions.lines(bundleID: id, origin: origin)
+        }
+        // First run: Sam's Cotypist instructions fill an empty "about me", read once from the one key (approved
+        // 2026-10-09). The text is never logged.
+        if !SettingsStore.shared.settings.instructions.cotypistChecked {
+            let imported = CotypistInstructions.read()
+            SettingsStore.shared.update(source: .menu) { $0.instructions.importCotypist(imported) }
+        }
         let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
         self.writing = writing
         let routeLink = RouteLink(status: status, enabled: SettingsStore.shared.settings.routing)

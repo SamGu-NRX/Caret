@@ -533,6 +533,19 @@ public struct DebugState: Codable, Equatable, Sendable {
             self.settings = settings
             self.gate = gate
         }
+
+        enum CodingKeys: String, CodingKey { case path, error, settings, gate }
+
+        /// The user's personal instructions go out as their lengths: the socket never carries their text (brief item 4).
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(path, forKey: .path)
+            try c.encodeIfPresent(error, forKey: .error)
+            var shown = settings
+            shown.instructions = settings.instructions.redacted
+            try c.encode(shown, forKey: .settings)
+            try c.encode(gate, forKey: .gate)
+        }
     }
 
     /// The debug socket's `onboarding` reply (`OnboardingFlow.debugInfo`).

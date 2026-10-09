@@ -124,6 +124,8 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// Brief item 7: apps where Caret shows nothing, by bundle identifier, sorted, each once. Ghost text, writing fixes,
     /// fills and Caret's lines stay out of them; the reader still reads their windows, as it does every app's.
     public private(set) var appsOff: [String] = []
+    /// Brief item 4: the user's own instructions for the completion prompt (`PersonalInstructions`).
+    public var instructions = PersonalInstructions()
 
     public init() {}
 
@@ -151,7 +153,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = set.sorted()
     }
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable, ghostKeys, appsOff }
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable, ghostKeys, appsOff, instructions }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -197,6 +199,8 @@ public struct CaretSettings: Codable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(forKey: .appsOff, in: c, debugDescription: "'\(bad)' is not a bundle identifier")
         }
         appsOff = Array(Set(apps)).sorted()
+        // Absent from a file written before item 4: none written, and Cotypist's not yet looked for.
+        instructions = try c.decodeIfPresent(PersonalInstructions.self, forKey: .instructions) ?? PersonalInstructions()
         let pages = Set(PageField.OwnSuggestions.allCases.map(\.rawValue))
         if let bad = (pageInline.on + pageInline.quiet).first(where: { !pages.contains($0) }) {
             throw DecodingError.dataCorruptedError(forKey: .pageInline, in: c, debugDescription: "\(bad) is not a page with its own suggestions")
@@ -222,6 +226,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         if pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
         if ghostKeys != .caret { try c.encode(ghostKeys, forKey: .ghostKeys) }
         if !appsOff.isEmpty { try c.encode(appsOff, forKey: .appsOff) }
+        if instructions != PersonalInstructions() { try c.encode(instructions, forKey: .instructions) }
     }
 
     public var gate: GatePolicy { GatePolicy(self) }

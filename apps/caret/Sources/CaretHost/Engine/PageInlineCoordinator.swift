@@ -33,6 +33,10 @@ final class PageInlineCoordinator {
     private let generationTimes = LatencyRecorder(capacity: 200)
     private var shownLength: Int?
     private var lastField: PageField?
+    /// The web origin of the page the user types in, read once per page field (`BrowserPage.frontOrigin` walks
+    /// Accessibility, too slow for every keystroke), for that site's personal instructions.
+    private(set) var origin: String?
+    private var originFocus: String?
     private var tabOwner: String?
     private var activation: NSObjectProtocol?
     private var inputMethod: NSObjectProtocol?
@@ -90,6 +94,11 @@ final class PageInlineCoordinator {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         lastField = field
         tabOwner = owner
+        let focus = "\(field.windowId)|\(field.key ?? "")"
+        if focus != originFocus {
+            originFocus = focus
+            origin = BrowserPage.frontOrigin()
+        }
         let current = PageFocusSource.current(pid: pid)
         machine.field(current, gate: gate(pid: pid))
         writing.field(current, gate: writingGate(pid: pid))
