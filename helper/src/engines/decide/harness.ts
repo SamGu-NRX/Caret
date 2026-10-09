@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { frozenRequest, HOIST_SHARED_OPTIONS, JEV_MODEL, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
 import { DailySpend } from "./daily-cap.ts";
-import { DECISIONS_MODEL, DecisionsAttemptError, DecisionsCredentialError, assertDecisionsCredentialAbsent, assertDecisionsResult, configuredDecisionsKey, makeDecisionsClient, refuseDecisionsApp } from "./decisions.ts";
+import { DECISIONS_MODEL, DECISIONS_POLICY_VERSION, DecisionsAttemptError, DecisionsCredentialError, assertDecisionsCredentialAbsent, assertDecisionsResult, configuredDecisionsKeys, makeDecisionsClient, refuseDecisionsApp, type DecisionsResult } from "./decisions.ts";
 import { DecisionsSpend } from "./decisions-spend.ts";
 import { cachedAsk, cacheFromEnv, canonicalRequest, checkFixture, refuseShipped, type FixtureSources } from "./cache.ts";
 import { DEFAULT_PACE_MS, DISK_FLOOR_GIB, fileFailures, fileLog, filePace, HOLD_FILE, PACE_FILE, REAL_CLOCK, runStop, slowAsk, terminateSelf } from "./slow.ts";
@@ -34,6 +34,10 @@ export interface HarnessEngineOptions {
   env?: HostEnv;
   /** Appends every request (fixture text only) to this file, with its size as sent and with shared options sent once. */
   logRequests?: string;
+  /** `--max-usd` for Decisions: this run's ceiling on reservations, retries and the key fallback included. */
+  decisionsMaxUsd?: number;
+  /** `--no-cache`: ask the engine every time, recording nothing. */
+  noCache?: boolean;
 }
 
 export interface HarnessEngine {
@@ -41,6 +45,10 @@ export interface HarnessEngine {
   ask: AskJev;
   /** One line for the report: the engine, model, cache and calibration. */
   says: string;
+  /** Decisions only: this run's ledger, for the report's spend. */
+  decisionsSpend?: DecisionsSpend;
+  /** Decisions only: Jev's recorded answer to the same frozen request, from the replay cache; never sends. */
+  jevRecorded?: AskJev;
 }
 
 /**
@@ -77,7 +85,7 @@ function layaState(ask: AskJev): AskJev {
   return (req) => ask(typeof req.state === "string" ? req : { ...req, state: req.disclosure.jsonText(req.state) });
 }
 
-function baseEngine(o: HarnessEngineOptions, env: HostEnv): DecideEngine {
+function baseEngine(o: HarnessEngineOptions, env: HostEnv, spend: DecisionsSpend | undefined): DecideEngine {
   if (o.name === "jev" || o.name.startsWith("gateway:")) {
     const providerEnv = o.name === "jev" ? env : { ...env, [ENV.caret_jev_provider]: "gateway", [ENV.caret_jev_model]: o.name.slice("gateway:".length) };
     const settings = jevSettings(providerEnv);
@@ -86,7 +94,7 @@ function baseEngine(o: HarnessEngineOptions, env: HostEnv): DecideEngine {
   }
   switch (o.name) {
     case "decisions": {
-      const spend = DecisionsSpend.fromEnv(env);
+      if (spend === undefined) throw new Error("the Decisions engine needs its spend ledger");
       return { name: "decisions", model: DECISIONS_MODEL, reach: "openai-decisions", ask: makeDecisionsClient({ fixture: o.fixture, env, spend }), close: () => spend.close() };
     }
     case "canned":
@@ -146,6 +154,13 @@ const LOG_RECORD: Omit<StoreRecord, "build"> = {
     refused: { kind: "scalar", types: ["boolean"] },
     status: { kind: "scalar", types: ["number", "null"] },
     retryAfterMs: { kind: "scalar", types: ["number", "null"] },
+    servedBy: { kind: "config", max: 20 },
+    "attempts[*].key": { kind: "config", max: 20 },
+    "attempts[*].status": { kind: "scalar", types: ["number", "null"] },
+    "attempts[*].code": { kind: "config", max: 64 },
+    "attempts[*].latencyMs": { kind: "scalar", types: ["number"] },
+    "attempts[*].costUsd": { kind: "scalar", types: ["number", "null"] },
+    "attempts[*].waitMs": { kind: "scalar", types: ["number"] },
     "answers.*.choice": { kind: "answer", max: 200 },
     "answers.*.confidence": { kind: "scalar", types: ["number"] },
     "nouls.*": { kind: "scalar", types: ["number"] },
@@ -159,9 +174,11 @@ const LOG_RECORD: Omit<StoreRecord, "build"> = {
 
 export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   const env = o.env ?? processEnv();
-  const engine = baseEngine(o, env);
-  const cache = engine.name === "canned" ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
-  const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}${engine.model === LAYA_FREE_MODEL ? ";state:json-text" : ""}` : engine.name === "llama" ? `prompt:${env[ENV.caret_llama_prompt] ?? "chat"};thinking:${env[ENV.caret_llama_thinking] ?? "default"};read:${LLAMA_READING}` : "";
+  const spend = o.name === "decisions" ? DecisionsSpend.fromEnv(env, o.decisionsMaxUsd) : undefined;
+  const engine = baseEngine(o, env, spend);
+  const cache = engine.name === "canned" || o.noCache === true ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
+  // Decisions: strict equality on model, input, questions and the body mapping's policy version (cache.ts key).
+  const variant = engine.name === "decisions" ? DECISIONS_POLICY_VERSION : engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}${engine.model === LAYA_FREE_MODEL ? ";state:json-text" : ""}` : engine.name === "llama" ? `prompt:${env[ENV.caret_llama_prompt] ?? "chat"};thinking:${env[ENV.caret_llama_thinking] ?? "default"};read:${LLAMA_READING}` : "";
   const sent = slowFromEnv(engine, env, cache?.dir ?? null, variant);
   let ask = cache === null ? sent : cachedAsk(sent, { ...cache, engine: engine.name, model: engine.model, variant, fixture: o.fixture, env });
   if (engine.name === "decisions" || engine.model === LAYA_FREE_MODEL) {
@@ -175,7 +192,7 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
       refuseShipped(processEnv());
       refuseShipped(env);
       checkFixture(req, o.fixture);
-      if (engine.name === "decisions") assertDecisionsCredentialAbsent(JSON.stringify(wireBody(req, DECISIONS_MODEL)), configuredDecisionsKey(env));
+      if (engine.name === "decisions") { const keys = configuredDecisionsKeys(env); assertDecisionsCredentialAbsent(JSON.stringify(wireBody(req, DECISIONS_MODEL)), keys.org, keys.personal); }
       const result = await fixtureAsk(req);
       if (engine.name === "decisions") assertDecisionsResult(req, result);
       return result;
@@ -186,7 +203,8 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   // Decisions always records its raw confidence and probabilities; they are not Jev-calibrated.
   const log = o.logRequests ?? (engine.name === "decisions" ? join(cache?.dir ?? HARNESS_CACHE_DIR, "decisions-requests.ndjson") : undefined);
   const jevReplay = engine.name === "decisions" ? cachedAsk(async () => { throw new Error("agreement lookup must never send a request"); }, {
-    dir: cache?.dir ?? HARNESS_CACHE_DIR, mode: "replay", engine: "jev", model: JEV_MODEL,
+    // --no-cache stops Decisions' own recording, not the lookup of Jev's recorded answers.
+    dir: cache?.dir ?? (o.noCache === true ? cacheFromEnv(env, HARNESS_CACHE_DIR)?.dir : undefined) ?? HARNESS_CACHE_DIR, mode: "replay", engine: "jev", model: JEV_MODEL,
     variant: `provider:typesafe;body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}`,
     fixture: o.fixture, env,
   }) : null;
@@ -209,7 +227,7 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
       } catch (e) {
         // A failed request is logged with its error, which the eval's report shows only as the user's sentence.
         const error = withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
-        const attempt = e instanceof DecisionsAttemptError ? { ...e.attempt, status: e.status, retryAfterMs: e.retryAfterMs } : {};
+        const attempt = e instanceof DecisionsAttemptError ? { ...e.attempt, status: e.status, retryAfterMs: e.retryAfterMs, attempts: e.attempts } : {};
         // An exact configured credential can have an unrecognized format; never persist its rejected request body.
         appendStoredLine(log, sealed, { ...LOG_RECORD, build: (w) => ({ ...(e instanceof DecisionsCredentialError ? {} : { body: w }), chars: JSON.stringify(w).length, error, afterMs: performance.now() - t0, ...attempt }) }, { mode: 0o600 });
         throw e;
@@ -223,10 +241,12 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
         // Predicate probabilities are not labels or truth keys. Only exact probability equality is agreement here.
         for (const [id, probability] of Object.entries(r.nouls ?? {})) agreement[id] = recorded?.nouls?.[id] === undefined ? null : recorded.nouls[id] === probability;
       }
-      appendStoredLine(log, sealed, { ...LOG_RECORD, build: (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens, costUsd: r.costUsd, answers: r.answers, nouls: r.nouls ?? {}, probabilities: r.probabilities ?? {}, agreement }) }, { mode: 0o600 });
+      // A cached answer has no key or attempts: it was not sent.
+      const live = engine.name === "decisions" && "servedBy" in r ? { servedBy: (r as DecisionsResult).servedBy, attempts: (r as DecisionsResult).attempts } : engine.name === "decisions" ? { servedBy: "cache" } : {};
+      appendStoredLine(log, sealed, { ...LOG_RECORD, build: (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens, costUsd: r.costUsd, answers: r.answers, nouls: r.nouls ?? {}, probabilities: r.probabilities ?? {}, agreement, ...live }) }, { mode: 0o600 });
       return r;
     };
   }
   const says = `engine ${engine.name} (${engine.model})${cache === null ? "" : `, cache ${cache.mode} in ${cache.dir}`}${engine.name === "llama" ? `, calibration choice T ${cal.choiceT}, yes/no T ${cal.noulT}` : ""}`;
-  return { engine, ask, says };
+  return { engine, ask, says, ...(spend === undefined ? {} : { decisionsSpend: spend }), ...(jevReplay === null ? {} : { jevRecorded: jevReplay }) };
 }

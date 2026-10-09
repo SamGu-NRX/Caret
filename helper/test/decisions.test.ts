@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { minted } from "./minted.ts";
-import { decisionsBody, loadDecisionsKey, makeDecisionsClient, DECISIONS_MODEL, DECISIONS_URL, DecisionsAttemptError, DecisionsHttpError } from "../src/engines/decide/decisions.ts";
+import { decisionsBody, loadDecisionsKey, makeDecisionsClient, DECISIONS_MODEL, DECISIONS_POLICY_VERSION, DECISIONS_URL, DecisionsAttemptError, DecisionsHttpError, MAX_ATTEMPTS, type DecisionsResult } from "../src/engines/decide/decisions.ts";
 import { DecisionsSpend, DECISIONS_USD_PER_TOKEN, DecisionsBudgetError } from "../src/engines/decide/decisions-spend.ts";
 import { wireBody, type JevRequest } from "../src/fill/jev.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
@@ -24,7 +24,7 @@ interface RecordedResponse {
 const dirs: string[] = [];
 const spends: DecisionsSpend[] = [];
 const folder = (): string => { const dir = mkdtempSync(join(tmpdir(), "caret-decisions-")); dirs.push(dir); return dir; };
-const spend = (dir = folder(), options: { totalCapUsd?: number; providerCapUsd?: number; probeCapUsd?: number } = {}): DecisionsSpend => {
+const spend = (dir = folder(), options: { totalCapUsd?: number; runCapUsd?: number; probeCapUsd?: number } = {}): DecisionsSpend => {
   const s = new DecisionsSpend({ dir, ...options }); spends.push(s); return s;
 };
 const fixture = { windows: (id: string) => id === "fixture", memory: true, plan: true };
@@ -62,7 +62,7 @@ describe("Decisions adapter, recorded official-schema responses, no network", ()
     expect(init?.headers).toEqual({ "Content-Type": "application/json", Authorization: `Bearer ${key}` });
     const sent = JSON.parse(init?.body as string);
     expect(sent).toEqual({ model: DECISIONS_MODEL, input: JSON.stringify(req.state), questions: [
-      { type: "choice", name: "f1", instructions: req.questions.f1!.instructions, choices: [{ value: "a", description: "Blue" }, { value: "none" }] },
+      { type: "choice", name: "f1", instructions: req.questions.f1!.instructions, choices: [{ value: "a", description: "Blue" }, { value: "leave_blank" }] },
       { type: "predicate", name: "verify", instructions: "Is the square blue?\nTrue: It is blue.\nFalse: It is not blue." },
     ] });
     expect(init?.body).not.toContain(key);
@@ -102,7 +102,8 @@ describe("Decisions adapter, recorded official-schema responses, no network", ()
     await expect(client(transport, s)(request())).rejects.toThrow(/network request failed/);
     const rows = readFileSync(join(dir, "comparison.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(rows).toHaveLength(2);
-    expect(rows.every((r) => r.type === "reserve" && r.usd === 0.02)).toBe(true);
+    // Unknown billing keeps each attempt's whole hold: the body's bytes plus the per-question framing allowance.
+    expect(rows.every((r) => r.type === "reserve" && r.usd === rows[0].usd && r.usd > 0 && r.usd < 0.02)).toBe(true);
     expect(JSON.stringify(rows)).not.toContain(key);
   });
   it.each([429, 500, 401, 403])("fails closed on HTTP %s and never retries", async (status) => {
@@ -115,7 +116,7 @@ describe("Decisions adapter, recorded official-schema responses, no network", ()
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
   it("marks a Decisions 503 unavailable rather than scoring it as a model refusal", async () => {
-    const error = new DecisionsAttemptError(new DecisionsHttpError(503, null), { latencyMs: 1, costUsd: null, inputTokens: null, refused: false }, key);
+    const error = new DecisionsAttemptError(new DecisionsHttpError(503, null), { latencyMs: 1, costUsd: null, inputTokens: null, refused: false }, [key]);
     expect(httpStatus(new Error("wrapper", { cause: error }))).toBe(503);
     const tracked = attributedJev(async () => { throw error; }, () => "fixture-ask", () => {});
     await expect(tracked.ask(request())).rejects.toThrow(/503/);
@@ -157,7 +158,7 @@ describe("Decisions adapter, recorded official-schema responses, no network", ()
       f1: { type: "choice", instructions: "First?", criteria: { a: "Blue", none: null } },
       f2: { type: "choice", instructions: "Second?", criteria: { b: "Red", none: null } },
     }, snippets: [], charged: {} });
-    const record = cachedAsk(async () => ({ model: DECISIONS_MODEL, answers: { f1: { choice: "b", confidence: 0.9 }, f2: { choice: "b", confidence: 0.9 } }, probabilities: { f1: { a: 0.1, none: 0.9 }, f2: { b: 0.9, none: 0.1 } }, inputTokens: 10, latencyMs: 1, costUsd: 0 }), { dir, mode: "record", engine: "decisions", model: DECISIONS_MODEL, fixture, env: {} });
+    const record = cachedAsk(async () => ({ model: DECISIONS_MODEL, answers: { f1: { choice: "b", confidence: 0.9 }, f2: { choice: "b", confidence: 0.9 } }, probabilities: { f1: { a: 0.1, none: 0.9 }, f2: { b: 0.9, none: 0.1 } }, inputTokens: 10, latencyMs: 1, costUsd: 0 }), { dir, mode: "record", engine: "decisions", model: DECISIONS_MODEL, variant: DECISIONS_POLICY_VERSION, fixture, env: {} });
     await record(req);
     const engine = harnessEngine({ name: "decisions", canned: null, fixture, env: { CARET_JEV_CACHE: dir, CARET_JEV_CACHE_MODE: "replay" } });
     await expect(engine.ask(req)).rejects.toThrow(/out-of-set/);
@@ -262,7 +263,7 @@ describe("Decisions adapter, recorded official-schema responses, no network", ()
 
 describe("Decisions lifetime comparison budget", () => {
   it("persists reservations before a request and blocks this process once a cap is reached", () => {
-    const dir = folder(); const s = spend(dir, { providerCapUsd: 0.03 });
+    const dir = folder(); const s = spend(dir, { runCapUsd: 0.03 });
     const first = s.reserve();
     expect(JSON.parse(readFileSync(join(dir, "comparison.ndjson"), "utf8")).type).toBe("reserve");
     expect(() => s.reserve()).toThrow(DecisionsBudgetError);
@@ -275,7 +276,7 @@ describe("Decisions lifetime comparison budget", () => {
     const second = spend(dir, { totalCapUsd: 0.03 });
     expect(() => second.reserve()).toThrow(/cap/);
   });
-  it("enforces the probe subcap and allows a separate eval within the provider cap", () => {
+  it("enforces the probe subcap and allows a separate eval within the lifetime cap", () => {
     const dir = folder(); const first = spend(dir, { probeCapUsd: 0.03 });
     first.reserve(true).settle(150_000); first.close();
     const second = spend(dir, { probeCapUsd: 0.03 });
@@ -296,12 +297,196 @@ describe("Decisions lifetime comparison budget", () => {
     // A completed child gives a known dead PID, rather than guessing a currently unused number.
     const child = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
     writeFileSync(join(dir, "run.lock"), JSON.stringify({ pid: Number(child.stdout.trim()), startedAt: "2026-10-07T00:00:00Z", id: "dead" }));
-    const second = spend(dir, { providerCapUsd: 0.03 });
+    const second = spend(dir, { totalCapUsd: 0.03 });
     expect(() => second.reserve()).toThrow(/cap/);
   });
   it("never raises the approved caps and fails closed on incomplete spend records", () => {
-    expect(() => spend(folder(), { providerCapUsd: 1 })).toThrow(/authorized/);
+    expect(() => spend(folder(), { runCapUsd: 1 })).toThrow(/authorized/);
     const dir = folder(); writeFileSync(join(dir, "comparison.ndjson"), '{"provider":');
     expect(() => spend(dir).reserve()).toThrow(/incomplete/);
+  });
+});
+
+describe("Decisions errors, retries, key fallback and the result cache (recorded replies only)", () => {
+  const errors = JSON.parse(readFileSync(new URL("../fixtures/recorded/decisions/errors.json", import.meta.url), "utf8")) as Record<string, { status: number; headers: Record<string, string>; body: unknown }>;
+  const reply = (name: string) => (): Response => { const e = errors[name]!; return new Response(JSON.stringify(e.body), { status: e.status, headers: e.headers }); };
+  const ok = () => (): Response => new Response(recorded(), { status: 200 });
+  const personal = "sk-proj-synthetic-personal-not-a-real-key";
+  const both = { OPENAI_API_KEY: key, OPENAI_API_KEY_PERSONAL: personal };
+  /** Answers each call from `replies` in order and records which key carried it. */
+  const scripted = (...replies: (() => Response)[]) => {
+    const keys: string[] = [];
+    const fn = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string>).Authorization;
+      keys.push(auth === `Bearer ${key}` ? "org" : auth === `Bearer ${personal}` ? "personal" : "other");
+      const next = replies[keys.length - 1];
+      if (next === undefined) throw new Error("unexpected extra call");
+      return next();
+    }) as unknown as typeof fetch;
+    return { fn, keys };
+  };
+  const waits: number[] = [];
+  const make = (env: Record<string, string>, fetchFn: typeof fetch, s = spend()) =>
+    makeDecisionsClient({ fixture, env, fetchFn, spend: s, sleep: async (ms) => { waits.push(ms); }, random: () => 0.5 });
+  const ledger = (dir: string) => readFileSync(join(dir, "comparison.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  afterEach(() => { waits.length = 0; });
+
+  it.each(["credit_balance_exhausted", "insufficient_quota", "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "organization_usage_limit_exceeded"])("%s with no personal key ends the run; later requests send nothing", async (name) => {
+    const dir = folder(); const t = scripted(reply(name));
+    const ask = make({ OPENAI_API_KEY: key }, t.fn, spend(dir));
+    const error = await ask(request()).catch((e) => e);
+    expect(error).toBeInstanceOf(DecisionsAttemptError);
+    expect(error.kind).toBe("stop");
+    expect(error.code).toBe(name);
+    await expect(ask(request())).rejects.toThrow(/stopped earlier/);
+    expect(t.fn).toHaveBeenCalledTimes(1);
+    expect(waits).toEqual([]);
+    // A documented error reply without usage settles its hold at $0.
+    expect(ledger(dir).map((r) => [r.type, r.key ?? null, r.usd === 0 ? 0 : "held", r.status ?? null])).toEqual([["reserve", "org", "held", null], ["settle", null, 0, 429]]);
+  });
+  it.each([
+    ["rate_limit_exceeded", 1500],
+    ["slow_down", 750],
+    ["server_is_overloaded", 2000],
+  ])("retries %s once the server delay or backoff passes", async (name, wait) => {
+    const t = scripted(reply(name), ok());
+    const r = await make({ OPENAI_API_KEY: key }, t.fn)(request()) as DecisionsResult;
+    expect(r.answers).toEqual({ f1: { choice: "a", confidence: 0.81 } });
+    expect(waits).toEqual([wait]);
+    expect(r.servedBy).toBe("org");
+    expect(r.attempts.map((x) => [x.key, x.status, x.code, x.waitMs])).toEqual([["org", errors[name]!.status, name, wait], ["org", 200, null, 0]]);
+  });
+  it("stops after MAX_ATTEMPTS attempts with doubling jittered waits", async () => {
+    const t = scripted(...Array.from({ length: MAX_ATTEMPTS }, () => reply("slow_down")));
+    const error = await make({ OPENAI_API_KEY: key }, t.fn)(request()).catch((e) => e);
+    expect(error.kind).toBe("rate");
+    expect(t.fn).toHaveBeenCalledTimes(MAX_ATTEMPTS);
+    expect(waits).toEqual([750, 1500, 3000]);
+    expect(error.attempts).toHaveLength(MAX_ATTEMPTS);
+  });
+  it("never waits past the 60 s request budget", async () => {
+    const t = scripted(() => new Response(JSON.stringify(errors.rate_limit_exceeded!.body), { status: 429, headers: { "retry-after": "70" } }));
+    await expect(make({ OPENAI_API_KEY: key }, t.fn)(request())).rejects.toThrow(/429/);
+    expect(t.fn).toHaveBeenCalledTimes(1);
+    expect(waits).toEqual([]);
+  });
+  it("does not retry an error outside the retry rule", async () => {
+    const t = scripted(reply("invalid_request"));
+    const error = await make({ OPENAI_API_KEY: key }, t.fn)(request()).catch((e) => e);
+    expect(error.status).toBe(400);
+    expect(t.fn).toHaveBeenCalledTimes(1);
+  });
+  it("switches from the org key to the personal key exactly once, and stays there", async () => {
+    const dir = folder(); const s = spend(dir);
+    const t = scripted(reply("credit_balance_exhausted"), ok(), ok());
+    const ask = make(both, t.fn, s);
+    const first = await ask(request()) as DecisionsResult;
+    expect(first.servedBy).toBe("personal");
+    expect(first.attempts.map((x) => x.key)).toEqual(["org", "personal"]);
+    const second = await ask(request()) as DecisionsResult;
+    expect(second.servedBy).toBe("personal");
+    expect(t.keys).toEqual(["org", "personal", "personal"]);
+    expect(waits).toEqual([]);
+    // Every attempt reserved under its key; the rejected one settled at $0, the answered ones at their usage.
+    expect(ledger(dir).map((r) => [r.type, r.key ?? r.usd])).toEqual([["reserve", "org"], ["settle", 0], ["reserve", "personal"], ["settle", 42 * DECISIONS_USD_PER_TOKEN], ["reserve", "personal"], ["settle", 42 * DECISIONS_USD_PER_TOKEN]]);
+    expect(s.run()).toEqual({ usd: 84 * DECISIONS_USD_PER_TOKEN, billedUsd: 84 * DECISIONS_USD_PER_TOKEN, unsettledUsd: 0, holds: 3 });
+  });
+  it("a stop on the personal key ends the run with no second switch", async () => {
+    const t = scripted(reply("credit_balance_exhausted"), reply("insufficient_quota"));
+    const ask = make(both, t.fn);
+    const error = await ask(request()).catch((e) => e);
+    expect(error.kind).toBe("stop");
+    expect(error.attempts.map((x: { key: string }) => x.key)).toEqual(["org", "personal"]);
+    await expect(ask(request())).rejects.toThrow(/stopped earlier \(insufficient_quota on the personal key\)/);
+    expect(t.keys).toEqual(["org", "personal"]);
+  });
+  it("requests already sent on the org key follow the one switch instead of ending the run", async () => {
+    const t = scripted(reply("credit_balance_exhausted"), reply("credit_balance_exhausted"), ok(), ok());
+    const ask = make(both, t.fn);
+    const rs = await Promise.all([ask(request()), ask(request())]) as DecisionsResult[];
+    expect(rs.map((r) => r.servedBy)).toEqual(["personal", "personal"]);
+    expect(t.keys).toEqual(["org", "org", "personal", "personal"]);
+  });
+  it("counts an unsettled hold against --max-usd and refuses the attempt that would pass it", async () => {
+    const dir = folder();
+    // One attempt's hold for this request, read from a separate ledger.
+    const d = folder();
+    await make({ OPENAI_API_KEY: key }, scripted(ok()).fn, spend(d))(request());
+    const hold = ledger(d)[0].usd as number;
+    const s = spend(dir, { runCapUsd: hold * 1.5 });
+    const t = scripted(() => { throw new Error("timeout"); }, ok());
+    const ask = make({ OPENAI_API_KEY: key }, t.fn, s);
+    await expect(ask(request())).rejects.toThrow(/network request failed/);
+    expect(s.run().unsettledUsd).toBe(hold);
+    const error = await ask(request()).catch((e) => e);
+    expect(error.kind).toBe("cap");
+    expect(t.fn).toHaveBeenCalledTimes(1);
+  });
+  it("a retry's reservation counts against --max-usd before it is sent", async () => {
+    const hold = await (async () => { const d = folder(); await make({ OPENAI_API_KEY: key }, scripted(ok()).fn, spend(d))(request()); return ledger(d)[0].usd as number; })();
+    // Room for one hold at a time: the rejected reply settles at $0, so its retry is admitted; a billed answer is not refunded.
+    const s = spend(folder(), { runCapUsd: hold + 42 * DECISIONS_USD_PER_TOKEN / 2 });
+    const t = scripted(reply("slow_down"), ok(), ok());
+    const ask = make({ OPENAI_API_KEY: key }, t.fn, s);
+    await ask(request());
+    await expect(ask(request())).rejects.toThrow(/per-run cap/);
+    expect(t.fn).toHaveBeenCalledTimes(2);
+  });
+  it("keeps both keys out of errors, the ledger and the harness log", async () => {
+    const dir = folder(); const spendDir = folder(); const log = join(dir, "requests.ndjson");
+    const echo = new Response(JSON.stringify({ error: { message: `${key} ${personal}`, type: key, code: personal } }), { status: 401 });
+    vi.stubGlobal("fetch", vi.fn(async () => echo));
+    const engine = harnessEngine({ name: "decisions", canned: null, fixture, env: { ...both, CARET_JEV_CACHE: "off", CARET_DECISIONS_SPEND_DIR: spendDir }, logRequests: log, decisionsMaxUsd: 0.01 });
+    try {
+      const error = await engine.ask(request()).catch((e) => e);
+      expect(error.status).toBe(401);
+      expect(error.code).toBeNull();
+      for (const text of [String(error), error.message, JSON.stringify(error), readFileSync(log, "utf8"), readFileSync(join(spendDir, "comparison.ndjson"), "utf8")]) {
+        expect(text).not.toContain(key);
+        expect(text).not.toContain(personal);
+      }
+      const thrown = await make(both, vi.fn(async () => { throw new Error(`${key} ${personal}`); }) as unknown as typeof fetch)(request()).catch((e) => e);
+      expect(String(thrown)).not.toMatch(/sk-proj/);
+    } finally { engine.engine.close?.(); }
+  });
+  it("a cache hit costs $0 and sends nothing; --no-cache sends again", async () => {
+    const cache = folder(); const spendDir = folder(); const log = join(folder(), "requests.ndjson");
+    const fetchFn = response(); vi.stubGlobal("fetch", fetchFn);
+    const env = { OPENAI_API_KEY: key, CARET_JEV_CACHE: cache, CARET_DECISIONS_SPEND_DIR: spendDir };
+    const engine = harnessEngine({ name: "decisions", canned: null, fixture, env, logRequests: log, decisionsMaxUsd: 0.01 });
+    try {
+      const live = await engine.ask(request());
+      const again = await engine.ask(request());
+      expect(live.costUsd).toBe(42 * DECISIONS_USD_PER_TOKEN);
+      expect(again.costUsd).toBe(0);
+      expect(again.answers).toEqual(live.answers);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(ledger(spendDir)).toHaveLength(2);
+      expect(readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l).servedBy)).toEqual(["org", "cache"]);
+    } finally { engine.engine.close?.(); }
+    const fresh = harnessEngine({ name: "decisions", canned: null, fixture, env, noCache: true, decisionsMaxUsd: 0.01 });
+    try {
+      await fresh.ask(request());
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+    } finally { fresh.engine.close?.(); }
+  });
+  it("never replays an answer cached under another body policy", async () => {
+    const dir = folder();
+    await cachedAsk(async () => ({ model: DECISIONS_MODEL, answers: { f1: { choice: "a", confidence: 0.81 } }, nouls: { verify: 0.93 }, probabilities: { f1: { a: 0.72, none: 0.28 } }, inputTokens: 42, latencyMs: 1, costUsd: 0 }), { dir, mode: "record", engine: "decisions", model: DECISIONS_MODEL, variant: "", fixture, env: {} })(request());
+    const engine = harnessEngine({ name: "decisions", canned: null, fixture, env: { CARET_JEV_CACHE: dir, CARET_JEV_CACHE_MODE: "replay" }, decisionsMaxUsd: 0.01 });
+    await expect(engine.ask(request())).rejects.toThrow(/nothing recorded/);
+  });
+  it("sends leave_blank only for Jev's none option and maps it back", async () => {
+    const t = scripted(ok());
+    const r = await make({ OPENAI_API_KEY: key }, t.fn)(request());
+    const sent = JSON.parse(vi.mocked(t.fn).mock.calls[0]![1]!.body as string);
+    expect(sent.questions[0].choices.map((c: { value: string }) => c.value)).toEqual(["a", "leave_blank"]);
+    expect(r.probabilities?.f1).toEqual({ a: 0.72, none: 0.28 });
+    const noNone = minted({ state: "Synthetic", questions: { f: { type: "choice", instructions: "Which?", criteria: { asks: "Asked.", not: "Not asked." } } }, snippets: [], charged: {} });
+    expect(decisionsBody(wireBody(noNone)).questions[0]).toEqual({ type: "choice", name: "f", instructions: "Which?", choices: [{ value: "asks", description: "Asked." }, { value: "not", description: "Not asked." }] });
+    for (const id of ["leave_blank", `c${"0".repeat(40)}`]) {
+      const clash = minted({ state: "Synthetic", questions: { f: { type: "choice", instructions: "Which?", criteria: { [id]: null, none: null } } }, snippets: [], charged: {} });
+      expect(() => decisionsBody(wireBody(clash))).toThrow(/short handles/);
+    }
   });
 });
