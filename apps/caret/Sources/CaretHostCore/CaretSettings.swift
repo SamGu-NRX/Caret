@@ -199,7 +199,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(forKey: .appsOff, in: c, debugDescription: "'\(bad)' is not a bundle identifier")
         }
         appsOff = Array(Set(apps)).sorted()
-        // Absent from a file written before item 4: none written, and Cotypist's not yet looked for.
+        // Absent from a file written before item 4: none written.
         instructions = try c.decodeIfPresent(PersonalInstructions.self, forKey: .instructions) ?? PersonalInstructions()
         let pages = Set(PageField.OwnSuggestions.allCases.map(\.rawValue))
         if let bad = (pageInline.on + pageInline.quiet).first(where: { !pages.contains($0) }) {

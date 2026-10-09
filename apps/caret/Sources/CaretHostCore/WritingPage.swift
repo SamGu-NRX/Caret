@@ -35,7 +35,7 @@ public enum WritingPage {
         public var hereApp: App?
         public var herePage: String?
         public var appsOff: [App] = []
-        /// A line under the How you write editor: an import that found nothing.
+        /// A line under the How you write editor: why Save refused the text.
         public var problem: String?
 
         public init() {}
@@ -91,8 +91,6 @@ public enum WritingPageCopy {
     public static let aboutHead = "How you write"
     public static let aboutIntro = "Caret's suggestions follow this in every app. Only the model on this Mac reads it."
     public static let aboutPlaceholder = "Who you are and how you write. For example: I'm a student. I write short, plain sentences."
-    public static let importCotypist = "Import from Cotypist"
-    public static let nothingToImport = "Cotypist has no instructions to import."
     public static let save = "Save"
     public static let entriesHead = "In one app or site"
     public static let entriesIntro = "Used with How you write, in that app or on that site."

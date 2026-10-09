@@ -51,11 +51,10 @@ enum MemoryAction: Equatable {
     case routing(Bool)
     /// H8: the calendar accepted events go to; nil for the default.
     case calendar(String?)
-    // Brief items 4, 6 and 7, the Writing tab: About you's text, Save and Import from Cotypist; an entry opened
+    // Brief items 4, 6 and 7, the Writing tab: How you write's text and Save; an entry opened
     // (by id), its text, Save, Cancel and Remove; the accept keys; an app turned off or back on.
     case aboutText(String)
     case saveAbout
-    case importCotypist
     case editEntry(String)
     case entryText(String)
     case saveEntry

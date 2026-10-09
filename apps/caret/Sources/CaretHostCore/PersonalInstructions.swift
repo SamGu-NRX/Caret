@@ -16,8 +16,6 @@ public struct PersonalInstructions: Codable, Equatable, Sendable {
     public private(set) var apps: [String: String] = [:]
     /// By web origin (`SiteOrigin`).
     public private(set) var sites: [String: String] = [:]
-    /// Cotypist's instructions were looked for once, at first run, so they are not read again unasked.
-    public var cotypistChecked = false
 
     public init() {}
 
@@ -32,16 +30,6 @@ public struct PersonalInstructions: Codable, Equatable, Sendable {
     public mutating func setSite(_ origin: String, _ text: String) {
         guard SiteOrigin.isOrigin(origin) else { return }
         sites[origin] = Self.kept(text)
-    }
-
-    /// First run: Cotypist's instructions fill an empty "about me". The user's own words are never replaced, and an
-    /// absent key leaves the field empty, as does text longer than `maxCharacters`, which the settings file would refuse
-    /// on the next launch (Import from Cotypist still shows it in the editor). Either way it is not looked for again.
-    public mutating func importCotypist(_ text: String?) {
-        cotypistChecked = true
-        guard aboutMe.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let text = text.flatMap(Self.kept),
-              text.count <= Self.maxCharacters else { return }
-        aboutMe = text
     }
 
     /// The prompt's lines for a field in `bundleID`, on `origin` when it is a web page: the site's, the app's, then
@@ -81,7 +69,7 @@ public struct PersonalInstructions: Codable, Equatable, Sendable {
         return String(head).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    enum CodingKeys: String, CodingKey { case aboutMe, apps, sites, cotypistChecked }
+    enum CodingKeys: String, CodingKey { case aboutMe, apps, sites }
 
     /// Strict, as the rest of the settings: an app that is not a bundle identifier, a site that is not an origin, or
     /// an entry over `maxCharacters` refuses the file.
@@ -90,7 +78,6 @@ public struct PersonalInstructions: Codable, Equatable, Sendable {
         aboutMe = try c.decodeIfPresent(String.self, forKey: .aboutMe) ?? ""
         apps = try c.decodeIfPresent([String: String].self, forKey: .apps) ?? [:]
         sites = try c.decodeIfPresent([String: String].self, forKey: .sites) ?? [:]
-        cotypistChecked = try c.decodeIfPresent(Bool.self, forKey: .cotypistChecked) ?? false
         if let bad = apps.keys.first(where: { !CaretSettings.isBundleID($0) }) {
             throw DecodingError.dataCorruptedError(forKey: .apps, in: c, debugDescription: "'\(bad)' is not a bundle identifier")
         }
@@ -110,28 +97,5 @@ public struct PersonalInstructions: Codable, Equatable, Sendable {
         r.apps = apps.mapValues(length)
         r.sites = sites.mapValues(length)
         return r
-    }
-}
-
-/// Reads Sam's Cotypist instructions (brief item 4, Sam's approval of 2026-10-09): the one key
-/// `CompletionManager_userPrompt` from Cotypist's preferences (`app.cotypist.*.plist`), and nothing else from them.
-/// The text is never logged or printed.
-public enum CotypistInstructions {
-    public static let key = "CompletionManager_userPrompt"
-
-    public static var preferencesDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Preferences", isDirectory: true)
-    }
-
-    /// The instructions, trimmed, or nil when no Cotypist preferences file holds a non-blank one.
-    public static func read(preferencesDirectory dir: URL = preferencesDirectory) -> String? {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        for name in names.sorted() where name.hasPrefix("app.cotypist.") && name.hasSuffix(".plist") {
-            guard let data = try? Data(contentsOf: dir.appendingPathComponent(name)),
-                  let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-                  let text = (plist[key] as? String).flatMap(PersonalInstructions.kept) else { continue }
-            return text
-        }
-        return nil
     }
 }

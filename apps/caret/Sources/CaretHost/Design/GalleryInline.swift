@@ -22,7 +22,6 @@ extension Gallery {
         keys.editing = nil
         keys.keys = .cotypist
         keys.appsOff = [WritingPage.App(bundleID: "com.apple.Terminal", name: "Terminal")]
-        keys.problem = WritingPageCopy.nothingToImport
 
         return [
             Item(name: "writing-empty", view: tab(empty)),

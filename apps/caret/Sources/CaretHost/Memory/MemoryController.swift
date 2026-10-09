@@ -135,14 +135,6 @@ final class MemoryController {
                 return
             }
             SettingsStore.shared.update(source: .menu) { $0.instructions.aboutMe = text.trimmingCharacters(in: .whitespacesAndNewlines) }
-        case .importCotypist:
-            // A user action: read the one key now (Sam's approval, 2026-10-09). It fills the editor; Save keeps it.
-            if let text = CotypistInstructions.read() {
-                model.writing.aboutDraft = text
-                model.writing.problem = nil
-            } else {
-                model.writing.problem = WritingPageCopy.nothingToImport
-            }
         case .editEntry(let id):
             let entry = (model.writing.entries + model.writing.addable).first { $0.id == id }
             model.writing.editing = entry.map { ($0.id, $0.text) }
@@ -353,7 +345,7 @@ final class MemoryController {
         case .routing(let on): SettingsStore.shared.update(source: .menu) { $0.routing = on }
         case .calendar(let id): SettingsStore.shared.update(source: .menu) { $0.eventCalendar = id }
         case .pageInlineText, .pageInlineContentEditable: break
-        case .aboutText, .saveAbout, .importCotypist, .editEntry, .entryText, .saveEntry, .cancelEntry, .removeEntry, .keys, .appOff, .appOn:
+        case .aboutText, .saveAbout, .editEntry, .entryText, .saveEntry, .cancelEntry, .removeEntry, .keys, .appOff, .appOn:
             performWriting(action)
         case .fileForget(let id):
             book.keep()

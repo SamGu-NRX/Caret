@@ -13,7 +13,7 @@ final class InlineRenderTests: XCTestCase {
 
     func testTheWordsUseNoDashes() {
         let words = [WritingPageCopy.intro, WritingPageCopy.aboutIntro, WritingPageCopy.aboutPlaceholder, WritingPageCopy.entriesIntro, WritingPageCopy.entriesEmpty,
-                     WritingPageCopy.nothingToImport, WritingPageCopy.offEmpty] + GhostKeys.allCases.map(GhostKeysCopy.detail)
+                     WritingPageCopy.offEmpty] + GhostKeys.allCases.map(GhostKeysCopy.detail)
         for w in words { XCTAssertFalse(w.contains("—") || w.contains("–"), w) }
     }
 }

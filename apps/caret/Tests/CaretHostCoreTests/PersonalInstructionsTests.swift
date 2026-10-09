@@ -3,7 +3,7 @@ import XCTest
 @testable import CaretHostCore
 
 /// Brief item 4: personal instructions for the completion prompt: one "about me" for everywhere, and more for one app
-/// or one site. Sam's Cotypist instructions are imported once, read from one key of Cotypist's preferences.
+/// or one site.
 final class PersonalInstructionsTests: XCTestCase {
     // MARK: - What the prompt gets
 
@@ -63,7 +63,7 @@ final class PersonalInstructionsTests: XCTestCase {
 
     func testAMalformedEntryRefusesTheFile() throws {
         var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(CaretSettings())) as! [String: Any]
-        object["instructions"] = ["aboutMe": "", "apps": ["bad id": "x"], "sites": [:] as [String: String], "cotypistChecked": false]
+        object["instructions"] = ["aboutMe": "", "apps": ["bad id": "x"], "sites": [:] as [String: String]]
         XCTAssertThrowsError(try JSONDecoder().decode(CaretSettings.self, from: JSONSerialization.data(withJSONObject: object)))
     }
 
@@ -78,49 +78,5 @@ final class PersonalInstructionsTests: XCTestCase {
         XCTAssertFalse(json.contains("Private words"))
         XCTAssertFalse(json.contains("More private words"))
         XCTAssertTrue(json.contains("13 characters"), json)
-    }
-
-    // MARK: - Cotypist's instructions
-
-    func plistDirectory(_ files: [String: [String: Any]]) throws -> URL {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cotypist-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
-        for (name, object) in files {
-            try PropertyListSerialization.data(fromPropertyList: object, format: .binary, options: 0).write(to: dir.appendingPathComponent(name))
-        }
-        return dir
-    }
-
-    func testTheUserPromptIsReadFromCotypistsPreferences() throws {
-        let dir = try plistDirectory([
-            "app.cotypist.Cotypist.plist": ["CompletionManager_userPrompt": "  Fixture: write like me.\n", "SomethingElse": "not read"],
-            "com.other.app.plist": ["CompletionManager_userPrompt": "not Cotypist"],
-        ])
-        XCTAssertEqual(CotypistInstructions.read(preferencesDirectory: dir), "Fixture: write like me.")
-    }
-
-    func testNothingWhenTheKeyOrTheFileIsAbsent() throws {
-        XCTAssertNil(CotypistInstructions.read(preferencesDirectory: try plistDirectory(["app.cotypist.Cotypist.plist": ["Other": 1]])))
-        XCTAssertNil(CotypistInstructions.read(preferencesDirectory: try plistDirectory([:])))
-        XCTAssertNil(CotypistInstructions.read(preferencesDirectory: try plistDirectory(["app.cotypist.Cotypist.plist": ["CompletionManager_userPrompt": "   "]])))
-    }
-
-    func testImportFillsAnEmptyAboutMeOnceAndNeverOverwrites() {
-        var i = PersonalInstructions()
-        i.importCotypist("From Cotypist.")
-        XCTAssertEqual(i.aboutMe, "From Cotypist.")
-        XCTAssertTrue(i.cotypistChecked)
-        i.aboutMe = "Mine."
-        i.importCotypist("From Cotypist again.")
-        XCTAssertEqual(i.aboutMe, "Mine.", "the user's own words stay")
-        var long = PersonalInstructions()
-        long.importCotypist(String(repeating: "a", count: PersonalInstructions.maxCharacters + 1))
-        XCTAssertEqual(long.aboutMe, "", "too long for the settings file: not saved unseen")
-        XCTAssertTrue(long.cotypistChecked)
-        var none = PersonalInstructions()
-        none.importCotypist(nil)
-        XCTAssertTrue(none.cotypistChecked, "an absent key is checked once and offers an empty field")
-        XCTAssertEqual(none.aboutMe, "")
     }
 }

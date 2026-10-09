@@ -47,8 +47,6 @@ struct WritingTabView: View {
                     .foregroundStyle(Color(token: state.problem == nil ? Tokens.ink2 : Tokens.ink))
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Button(WritingPageCopy.importCotypist) { send(.importCotypist) }
-                    .buttonStyle(QuietButtonStyle())
                 Button(WritingPageCopy.save) { send(.saveAbout) }
                     .buttonStyle(WindowButtonStyle(kind: .ink, small: true))
                     .keyboardShortcut("s", modifiers: .command)
