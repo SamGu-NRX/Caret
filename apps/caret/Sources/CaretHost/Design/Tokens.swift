@@ -7,10 +7,25 @@ import SwiftUI
 /// The figure is the only colored thing Caret draws, rendered as light; everything around it is
 /// uncolored glass. Where a value differs from DIRECTION.md, the reason is at the value.
 enum Tokens {
-    static func dynamic(light: UInt32, dark: UInt32, alpha: CGFloat = 1, darkAlpha: CGFloat? = nil) -> NSColor {
+    static func dynamic(
+        light: UInt32, dark: UInt32, alpha: CGFloat = 1, darkAlpha: CGFloat? = nil,
+        contrastLight: UInt32? = nil, contrastDark: UInt32? = nil,
+        contrastAlpha: CGFloat? = nil, contrastDarkAlpha: CGFloat? = nil
+    ) -> NSColor {
         NSColor(name: nil) { appearance in
             let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            return srgb(isDark ? dark : light, alpha: isDark ? (darkAlpha ?? alpha) : alpha)
+            let raised = (contrastLight != nil || contrastDark != nil || contrastAlpha != nil || contrastDarkAlpha != nil)
+                && contrastRaised()
+            let hex = isDark
+                ? (raised ? (contrastDark ?? dark) : dark)
+                : (raised ? (contrastLight ?? light) : light)
+            let a: CGFloat
+            if isDark {
+                a = raised ? (contrastDarkAlpha ?? darkAlpha ?? alpha) : (darkAlpha ?? alpha)
+            } else {
+                a = raised ? (contrastAlpha ?? alpha) : alpha
+            }
+            return srgb(hex, alpha: a)
         }
     }
 
@@ -23,6 +38,53 @@ enum Tokens {
         )
     }
 
+    // MARK: Increase Contrast
+
+    /// Whether the user turned on Increase Contrast (System Settings > Accessibility > Display).
+    /// False until a contrast variant's first resolve installs the observation below, which reads
+    /// the workspace once and keeps the value current. Tests set it directly.
+    @MainActor static var increaseContrast: Bool {
+        get { raiseContrast ?? false }
+        set { raiseContrast = newValue }
+    }
+
+    /// Nil until synced from the workspace once.
+    @MainActor private static var raiseContrast: Bool?
+
+    @MainActor private static var contrastObservation: NSObjectProtocol?
+
+    /// One-time: reads the setting, then keeps `increaseContrast` in step with it and marks every
+    /// visible window for display, so drawn panels re-resolve their colors — a dynamic provider
+    /// otherwise re-runs only on an appearance change. Idempotent.
+    @MainActor static func installContrastObservation() {
+        guard contrastObservation == nil else { return }
+        if raiseContrast == nil {
+            raiseContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        }
+        contrastObservation = NotificationCenter.default.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: NSWorkspace.shared,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                raiseContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+                for window in NSApp?.windows ?? [] where window.isVisible {
+                    window.contentView?.needsDisplay = true
+                }
+            }
+        }
+    }
+
+    /// Only a token with a variant asks. Off the main thread — where off-screen renders resolve —
+    /// the plain value holds, the same rule `TokenProbe` follows for `hidden`.
+    private static func contrastRaised() -> Bool {
+        guard Thread.isMainThread else { return false }
+        return MainActor.assumeIsolated {
+            installContrastObservation()
+            return increaseContrast
+        }
+    }
+
     // MARK: Ink
 
     // Contrast below is the WCAG ratio against the glass composited over the opposite theme's
@@ -32,23 +94,27 @@ enum Tokens {
     /// Panel text. 14.6:1 light, 10.6:1 dark, worst case.
     static let ink = dynamic(light: 0x1C1B19, dark: 0xF2EFEA)
     /// Secondary text, hints, glyphs. DIRECTION.md has `#6B6864` / `#A39F98`, which fall to 4.2:1
-    /// and 3.8:1 over the opposite theme's document; these reach 5.4:1 and 5.1:1.
-    static let ink2 = dynamic(light: 0x625F5B, dark: 0xABA7A0)
+    /// and 3.8:1 over the opposite theme's document; these reach 5.4:1 and 5.1:1. Increase
+    /// Contrast: `#54514E` / `#BFBCB6`, 7.1:1 and 7.0:1 over the same worst case.
+    static let ink2 = dynamic(light: 0x625F5B, dark: 0xABA7A0, contrastLight: 0x54514E, contrastDark: 0xBFBCB6)
     /// Marks only, never text: idle ticks, idle dots, placeholders' rules. DIRECTION.md has
     /// `#A39F98` / `#6F6B65`, 2.0:1 and 1.9:1 worst case, under the 3:1 a mark that carries a
-    /// count needs (WCAG 1.4.11); these are 3.4:1 and 3.1:1.
-    static let ink3 = dynamic(light: 0x857F79, dark: 0x85817A)
+    /// count needs (WCAG 1.4.11); these are 3.4:1 and 3.1:1. Increase Contrast: `#746E69` /
+    /// `#999690`, 4.5:1 over the same worst case — it carries counts.
+    static let ink3 = dynamic(light: 0x857F79, dark: 0x85817A, contrastLight: 0x746E69, contrastDark: 0x999690)
 
     // MARK: The light
 
     /// The underline, the ticks, the lit step, the step bar, the chosen row's edge. DIRECTION.md's
     /// light `#D9641E` measured 2.96:1 as the step bar over light glass on a dark editor (rendered
     /// pixels, `ContrastRenderTests`), under the 3:1 a mark that carries progress needs; `#D35E19`
-    /// is 3.3:1 there with almost no change of hue.
-    static let carrot = dynamic(light: 0xD35E19, dark: 0xF49A5B)
+    /// is 3.3:1 there with almost no change of hue. Increase Contrast: `#B65116`, 4.5:1 there;
+    /// the dark value already clears it (6.1:1).
+    static let carrot = dynamic(light: 0xD35E19, dark: 0xF49A5B, contrastLight: 0xB65116)
     /// The first word of a result ("Added", "Filled"), "On its own:". DIRECTION.md's light
-    /// `#B24F12` is 4.4:1 over light glass on a dark document; `#A9490F` is 4.9:1.
-    static let carrotText = dynamic(light: 0xA9490F, dark: 0xF8A86D)
+    /// `#B24F12` is 4.4:1 over light glass on a dark document; `#A9490F` is 4.9:1. Increase
+    /// Contrast: `#99420E`, 6.0:1 there; the dark value already clears 6:1 (6.9:1).
+    static let carrotText = dynamic(light: 0xA9490F, dark: 0xF8A86D, contrastLight: 0x99420E)
     /// The 400 ms flash on a filled field. Never a row background: T1 measured Ink 2 on it at
     /// 4.47:1 light and 4.20:1 dark.
     static let carrotWash = dynamic(light: 0xD9641E, dark: 0xF49A5B, alpha: 0.09, darkAlpha: 0.12)
@@ -69,7 +135,9 @@ enum Tokens {
     /// section 7) and drawn alone in off-screen renders. DIRECTION.md's 0.88 / 0.86 let a document
     /// of the opposite theme pull Ink 2 under 4.5:1; 0.94 / 0.92 keep every text token above it.
     /// Because the tint covers the material, the rendered-pixel contrast holds over any backdrop.
-    static let glass = dynamic(light: 0xFAF9F7, dark: 0x262422, alpha: 0.94, darkAlpha: 0.92)
+    /// Increase Contrast: 0.97 / 0.95, lifting Ink 2 on the worst case to 5.7:1 and 5.6:1.
+    static let glass = dynamic(light: 0xFAF9F7, dark: 0x262422, alpha: 0.94, darkAlpha: 0.92,
+                               contrastAlpha: 0.97, contrastDarkAlpha: 0.95)
     /// 1 pt ring on every panel.
     static let glassEdge = dynamic(light: 0x000000, dark: 0xFFFFFF, alpha: 0.10, darkAlpha: 0.12)
     /// 1 pt inset line along the top edge.
@@ -100,7 +168,8 @@ enum Tokens {
     /// The ink button (DIRECTION.md 5.9: Carrot stays the figure's), and the text on it.
     static let inkFill = dynamic(light: 0x1C1B19, dark: 0xF2EFEA)
     static let onInk = dynamic(light: 0xFCFBF9, dark: 0x1C1B19)
-    /// The check inside a ticked box, on the Carrot fill.
+    /// The check inside a ticked box, on the Carrot fill: 3.9:1 light, 7.7:1 dark — a state needs
+    /// 3:1 (WCAG 1.4.11), and Increase Contrast's darkened Carrot carries the light check to 5.0:1.
     static let onCarrot = dynamic(light: 0xFFFFFF, dark: 0x1D1D1F)
 
     // MARK: Type
@@ -221,8 +290,10 @@ enum Tokens {
         static let draw: Double = 0.24
     }
 
-    /// Ghost text and ghost fill: the host's color at this opacity.
-    static func ghostOpacity(dark: Bool) -> Double { dark ? 0.50 : 0.45 }
+    /// Ghost text and ghost fill: the host's color at this opacity, 0.65 in both themes — black
+    /// ghost on a white field reaches 7.0:1 (0.45 was 3.4:1), white ghost on a #1E1E1E field
+    /// 7.7:1 (0.50 was 5.1:1).
+    static func ghostOpacity(dark: Bool) -> Double { 0.65 }
 }
 
 extension Color {
