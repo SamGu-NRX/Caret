@@ -348,7 +348,8 @@ export function makeDecisionsClient(o: DecisionsOptions): AskJev {
     const attempts: DecisionsAttemptRecord[] = [];
     const summary = (refused: boolean): DecisionsAttempt => {
       const known = attempts.filter((a) => a.costUsd !== null);
-      const cost = known.length === 0 ? null : known.reduce((s, a) => s + (a.costUsd as number), 0);
+      // A billed prefix is not a complete total when a later attempt's reservation remains unsettled.
+      const cost = known.length === 0 || known.length !== attempts.length ? null : known.reduce((s, a) => s + (a.costUsd as number), 0);
       return { latencyMs: performance.now() - started, costUsd: cost, inputTokens: cost === null ? null : Math.round(cost / DECISIONS_USD_PER_TOKEN), refused };
     };
     if (stopped !== null) throw new DecisionsAttemptError(new Error(`Decisions run stopped earlier (${stopped}); no request was sent`), summary(false), secrets, attempts, true);
