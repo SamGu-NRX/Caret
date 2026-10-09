@@ -1,0 +1,452 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Helper } from "../src/helper.ts";
+import { Store } from "../src/store.ts";
+import { PageEngineLink } from "../src/engines/page-link.ts";
+import type { ReaderLink } from "../src/executor/means.ts";
+import { PAGE_CHECKED, type HelperMessage, type VerbResult } from "../src/protocol.ts";
+import type { Plan } from "../src/executor/schema.ts";
+import { executorWindow, FakeApp, K, TITLE as AX_TITLE } from "./fake-app.ts";
+import { FakePage, KEY, TITLE as PAGE_TITLE, WIN as PAGE_WIN } from "./fake-page.ts";
+
+// The injected timer scheduler holds each forward answer until 250 ms. Stop is scheduled relative to dispatch,
+// not to plan preparation. The target changes independently of its acknowledgement, as an AX call or page setter can.
+const ORIGINAL = "Original name";
+const INTENDED = "Dana";
+type Answer = "refused" | "ok" | "lost";
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  for (const close of cleanups.splice(0)) close();
+  vi.useRealTimers();
+});
+
+function rig(mean: "AX" | "page", stopAfter: number, answer: Answer, landed = true, failRead = false, pauseFirst = false) {
+  vi.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), "caret-stop-flight-"));
+  const store = new Store(join(dir, "data"));
+  const published: HelperMessage[] = [];
+  let helper: Helper;
+  let dispatched = false;
+  let recoveryReads = 0;
+  let dispatchAt = 0;
+  let recover = failRead;
+  const key = mean === "AX" ? K("textfield:name~0") : KEY("e1");
+  const title = mean === "AX" ? AX_TITLE : PAGE_TITLE;
+  const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+    { says: "First Name", end: { kind: "valueEquals", window: { title }, target: { key, describe: "First Name" }, value: INTENDED } },
+    { says: "Another field", end: { kind: "valueEquals", window: { title }, target: { key, describe: "First Name" }, value: "Must not run" } },
+  ] };
+  const dispatch = () => {
+    dispatched = true;
+    dispatchAt = Date.now();
+    // This row must already exist when the writer receives the command. Its original must precede the setter.
+    expect(helper.journal.load(Date.now()).records[0]?.pending).toMatchObject({ kind: "write", before: ORIGINAL, value: INTENDED });
+    setTimeout(() => pauseFirst ? helper.executor.pause("t", false, "input") : helper.executor.stop("t"), stopAfter);
+  };
+  let link: ReaderLink;
+  let held: () => string;
+  let show: () => void | Promise<unknown>;
+  if (mean === "AX") {
+    const app = new FakeApp(executorWindow());
+    app.setValue(key, ORIGINAL);
+    const run = app.run.bind(app);
+    link = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      async run(verb) {
+        if (verb.kind === "walk" && dispatched) {
+          recoveryReads++;
+          if (recover) return { type: "verbResult", v: 1, id: "read", at: Date.now(), outcome: "axError", detail: "injected read failure" };
+        }
+        if (verb.kind !== "write" || verb.sameAs !== undefined) return run(verb);
+        dispatch();
+        app.dropWrites = !landed;
+        const r = await run(verb);
+        app.dropWrites = false;
+        return new Promise<VerbResult>((resolve) => {
+          if (answer !== "lost") setTimeout(() => resolve({ ...r, outcome: answer === "ok" ? "ok" : "notAllowed" }), 250);
+        });
+      },
+    };
+    held = () => app.node(key)?.value ?? "";
+    show = () => { app.helper = helper; app.show(); };
+  } else {
+    const page = new FakePage();
+    page.find("e1").value = ORIGINAL;
+    const receive = page.session.receive.bind(page.session);
+    const command = page.session.command.bind(page.session);
+    page.session.command = (verb, timeout) => {
+      if (verb.kind === "pageWalk" && dispatched) recoveryReads++;
+      return command(verb, timeout);
+    };
+    page.onAct = (verb) => {
+      if (verb.kind !== "pageWrite" || verb.sameAs !== undefined) return null;
+      dispatch();
+      if (landed) page.find("e1").value = verb.value;
+      return { outcome: answer === "ok" ? "ok" : "notAllowed", detail: "answer after Stop" };
+    };
+    page.session.receive = (m) => {
+      if (m.type === "pageResult") {
+        const command = page.sent.find((s) => s.type === "pageCommand" && s.id === m.id);
+        if (command?.type === "pageCommand" && command.verb.kind === "pageWrite" && command.verb.sameAs === undefined) {
+          if (answer !== "lost") setTimeout(() => receive(m), 250);
+          return null;
+        }
+      }
+      return receive(m);
+    };
+    const engine = new PageEngineLink(page.session, (s) => { void helper.handleReader(s); });
+    link = {
+      grant: (m) => engine.grant(m),
+      run(verb) {
+        if (verb.kind === "watchInput") return Promise.resolve({ type: "verbResult", v: 1, id: "watch", at: Date.now(), outcome: "ok", detail: null });
+        if (verb.kind === "walk" && dispatched) {
+          if (recover) {
+            recoveryReads++;
+            return Promise.resolve({ type: "verbResult", v: 1, id: "read", at: Date.now(), outcome: "axError", detail: "injected read failure" });
+          }
+        }
+        return engine.run(verb);
+      },
+    };
+    held = () => page.find("e1").value ?? "";
+    show = () => engine.run({ kind: "walk", pid: 4100, windowId: PAGE_WIN });
+    cleanups.push(() => { engine.cancelTrailingWalks(); page.session.close(); });
+  }
+  helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => {
+    published.push(m);
+    // GoalRuns performs this conversion when the reader reports Esc as input before the host's Stop arrives.
+    if (pauseFirst && m.type === "taskProgress" && m.phase === "paused") queueMicrotask(() => helper.executor.stop("t"));
+  } });
+  const ready = Promise.resolve(show());
+  cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  return { helper, plan, key, held, published, ready, dispatched: () => dispatched, dispatchAt: () => dispatchAt, recoveryReads: () => recoveryReads, allowReads: () => { recover = false; } };
+}
+
+async function complete(r: ReturnType<typeof rig>, wait: number) {
+  await r.ready;
+  const result = r.helper.executor.run("t", r.plan, {}, undefined, { grant: true });
+  // Zero-time advancement drains preparation and the dispatch microtasks, then fires Stop at 0 ms if requested.
+  await vi.advanceTimersByTimeAsync(0);
+  expect(r.dispatched()).toBe(true);
+  await vi.advanceTimersByTimeAsync(wait);
+  return result;
+}
+
+describe.each(["AX", "page"] as const)("%s in-flight reconciliation", (mean) => {
+  it.each([0, 10, 40, 200])("Stop %i ms after dispatch reconciles a landed write despite a refused answer", async (ms) => {
+    const r = rig(mean, ms, "refused");
+    const result = await complete(r, 300);
+    expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
+    expect(result.detail).toContain(`Written before stop: ${mean === "AX" ? "Name" : "Full name"}`);
+    expect(result.detail).toContain("Undo puts it back");
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ kind: "write", before: ORIGINAL, after: INTENDED, step: 0 }]);
+    expect(r.helper.executor.ledger("t")).toHaveLength(1);
+    expect(r.recoveryReads()).toBe(1);
+    expect(r.held()).toBe(INTENDED);
+    expect(r.published.filter((m) => m.type === "taskProgress").map((m) => m.phase)).toEqual(["started", "acting", "verified", "stopped"]);
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
+    expect(r.held()).toBe(ORIGINAL);
+  });
+
+  it.each([false, true])("preserves reconciliation when input pauses first and the goal then stops, read failure %s", async (failRead) => {
+    const r = rig(mean, 40, "refused", true, failRead, true);
+    await complete(r, 300);
+    const stopped = r.published.find((m) => m.type === "taskProgress" && m.phase === "stopped");
+    expect(stopped).toMatchObject({ step: failRead ? 0 : 1, detail: expect.stringContaining(failRead ? "may have been written" : "Written before pause") });
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED }]);
+    expect(r.helper.executor.ledger("t")).toHaveLength(1);
+    r.allowReads();
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
+    expect(r.held()).toBe(ORIGINAL);
+  });
+
+  it("reports an untouched refused write as not run and removes its undo entry", async () => {
+    const r = rig(mean, 40, "refused", false);
+    expect(await complete(r, 300)).toMatchObject({ outcome: "stopped", acted: 0, step: 0, detail: expect.stringContaining("before step 1") });
+    expect(r.helper.executor.ledger("t")).toEqual([]);
+    expect(r.recoveryReads()).toBe(1);
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [] });
+    expect(r.held()).toBe(ORIGINAL);
+  });
+
+  it("retains the original for guarded undo when the single recovery read fails", async () => {
+    const r = rig(mean, 40, "refused", true, true);
+    expect(await complete(r, 300)).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+    expect(r.recoveryReads()).toBe(1);
+    r.allowReads();
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
+    expect(r.held()).toBe(ORIGINAL);
+  });
+
+  it("bounds the wait for a lost answer and reads only if time remains; Undo restores either way", async () => {
+    const r = rig(mean, 40, "lost");
+    const result = await complete(r, 5100);
+    expect(Date.now() - r.dispatchAt()).toBe(5100);
+    if (mean === "AX") {
+      // No answer at all uses Stop's whole wait, so a read now would be abandoned and queue ahead of an Undo (PR #21 review).
+      expect(result).toMatchObject({ outcome: "stopped", acted: 0, step: 0, detail: expect.stringContaining("may have been written") });
+      expect(r.recoveryReads()).toBe(0);
+      expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+    } else {
+      // The page link gives up at its own 5 s from dispatch, 40 ms before Stop's deadline, so the one read still starts.
+      expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
+      expect(r.recoveryReads()).toBe(1);
+      expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED }]);
+    }
+    // Undo reads first, and restores only while the field holds exactly what Caret was writing.
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
+    expect(r.held()).toBe(ORIGINAL);
+  });
+});
+
+describe("Stop during a recovery read that began before it", () => {
+  it("ends the wait five seconds after Stop, keeping the original for guarded undo", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-recovery-read-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    // The write lands but its answer is lost, with no Stop yet, so the executor starts its ordinary recovery walk.
+    app.timeoutAfterWrite = true;
+    let wrote = false;
+    let stoppedAt = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "walk" && wrote) {
+          // The read hangs; the user presses Stop while it is on its way.
+          setTimeout(() => { stoppedAt = Date.now(); helper.executor.stop("t"); }, 40);
+          return new Promise<VerbResult>(() => {});
+        }
+        if (verb.kind === "write" && verb.sameAs === undefined) wrote = true;
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    let settled = false;
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true }).finally(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(40 + 5000);
+    expect(stoppedAt).toBeGreaterThan(0);
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+  });
+});
+
+describe("one Stop deadline across the in-flight act and its recovery read", () => {
+  it("ends five seconds after Stop when neither the write nor the read ever answers", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-one-deadline-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    let wrote = false;
+    let stoppedAt = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "write" && verb.sameAs === undefined) {
+          wrote = true;
+          setTimeout(() => { stoppedAt = Date.now(); helper.executor.stop("t"); }, 40);
+          return new Promise<VerbResult>(() => {});
+        }
+        if (verb.kind === "walk" && wrote) return new Promise<VerbResult>(() => {});
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    let settled = false;
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true }).finally(() => { settled = true; });
+    // Preparation and dispatch, then Stop 40 ms later.
+    while (stoppedAt === 0) await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(4999 - (Date.now() - stoppedAt));
+    expect(settled).toBe(false);
+    // The recovery read's remaining wait is zero; its timer fires a tick after the act's. Without the shared deadline
+    // the read would start a second five seconds.
+    await vi.advanceTimersByTimeAsync(11);
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+  });
+});
+
+describe("no recovery read starts after Stop", () => {
+  it("stops retrying a run's recovery walk once Stop arrives", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-no-retry-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    // The answer is lost before any Stop, so the run starts its ordinary recovery walk, which may retry.
+    app.timeoutAfterWrite = true;
+    let wrote = false;
+    let reads = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "walk" && wrote) {
+          // Each read takes most of the reader's own five seconds, then fails; Stop arrives during the first.
+          if (++reads === 1) setTimeout(() => helper.executor.stop("t"), 40);
+          return new Promise<VerbResult>((resolve) => setTimeout(() => resolve({ type: "verbResult", v: 1, id: "read", at: Date.now(), outcome: "axError", detail: "the walk was cut short" }), 4900));
+        }
+        if (verb.kind === "write" && verb.sameAs === undefined) wrote = true;
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
+    expect(reads).toBe(1);
+  });
+});
+
+describe("the read-back after an ok write with no change", () => {
+  it("ends five seconds after Stop arrives during it, with no retry", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-readback-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    let wrote = false;
+    let reads = 0;
+    let stoppedAt = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "write" && verb.sameAs === undefined) {
+          // The app accepts the setter, but the answer carries no read-back of the field.
+          wrote = true;
+          return Promise.resolve({ type: "verbResult", v: 1, id: "w", at: Date.now(), outcome: "ok", detail: null });
+        }
+        if (verb.kind === "walk" && wrote) {
+          if (++reads === 1) setTimeout(() => { stoppedAt = Date.now(); helper.executor.stop("t"); }, 40);
+          return new Promise<VerbResult>((resolve) => setTimeout(() => resolve({ type: "verbResult", v: 1, id: "read", at: Date.now(), outcome: "axError", detail: "the walk was cut short" }), 4900));
+        }
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    let settled = false;
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true }).finally(() => { settled = true; });
+    while (stoppedAt === 0) await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(5011 - (Date.now() - stoppedAt));
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0 });
+    // The read-back, then Stop's one recovery read; neither retries.
+    expect(reads).toBe(2);
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+  });
+});
+
+describe("a read still on its way when Stop's wait ends", () => {
+  it("starts no retry after the run has stopped", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-late-retry-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    app.timeoutAfterWrite = true;
+    let wrote = false;
+    let reads = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "walk" && wrote) {
+          // The read outlasts Stop's wait, then fails, after the run has already returned stopped.
+          if (++reads === 1) setTimeout(() => helper.executor.stop("t"), 40);
+          return new Promise<VerbResult>((resolve) => setTimeout(() => resolve({ type: "verbResult", v: 1, id: "read", at: Date.now(), outcome: "axError", detail: "the walk was cut short" }), 6000));
+        }
+        if (verb.kind === "write" && verb.sameAs === undefined) wrote = true;
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0 });
+    expect(reads).toBe(1);
+  });
+});
+
+describe("a refusal that says Caret wrote nothing", () => {
+  it("leaves the user's own tick alone when they tick the box during Stop", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-own-tick-"));
+    const store = new Store(join(dir, "data"));
+    const page = new FakePage();
+    let helper: Helper;
+    // The user ticks the box and presses Stop while Caret's tick is on its way: the page finds it already ticked.
+    page.onAct = (v, p) => {
+      if (v.kind !== "pageSetChecked" || v.sameAs !== undefined) return null;
+      p.find("e6").checked = true;
+      helper.executor.stop("t");
+      return { outcome: "alreadyTrue", detail: null };
+    };
+    const engine = new PageEngineLink(page.session, (snap) => { void helper.handleReader(snap); });
+    const link: ReaderLink = {
+      grant: (m) => engine.grant(m),
+      run: (verb) => verb.kind === "watchInput" ? Promise.resolve({ type: "verbResult", v: 1, id: "watch", at: Date.now(), outcome: "ok", detail: null }) : engine.run(verb),
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { engine.cancelTrailingWalks(); page.session.close(); helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    await engine.run({ kind: "walk", pid: 4100, windowId: PAGE_WIN });
+    const key = KEY("e6");
+    const plan: Plan = { id: "tick", title: "Tick", slots: {}, steps: [
+      { says: "Driving license", end: { kind: "valueEquals", window: { title: PAGE_TITLE }, target: { key, describe: "Driving license" }, value: PAGE_CHECKED } },
+    ] };
+    const result = await helper.executor.run("t", plan, {}, undefined, { grant: true });
+    expect(result).toMatchObject({ outcome: "stopped", acted: 0, step: 0 });
+    expect(result.detail).not.toContain("Written before stop");
+    expect(helper.executor.ledger("t")).toEqual([]);
+    expect(await helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [] });
+    expect(page.find("e6").checked).toBe(true);
+  });
+});

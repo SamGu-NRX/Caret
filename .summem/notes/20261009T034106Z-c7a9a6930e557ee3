@@ -1,1 +1,0 @@
-Ghost text offers are fitted before publish (GhostOverlay.inlineText, PageInlineMachine.offer via GhostFit.wordsThatFit), so Tab takes exactly what is drawn; a page fix replaces before the caret with pageInsert.replace (units), never via AX.
