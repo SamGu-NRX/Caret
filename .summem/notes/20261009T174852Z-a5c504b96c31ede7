@@ -1,0 +1,1 @@
+build-app.sh's first privacy gate must stay before mode=, the lock and any mkdir (test_privacy_followup, test_internal_build_gate prelude); moving it after the Node download (0e02442a) broke the python job. Gate calls prepend the pinned Node dir to PATH instead.

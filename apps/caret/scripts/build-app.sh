@@ -34,6 +34,16 @@ case "${1:-release}" in
   debug | acceptance) export CARET_INTERNAL_BUILD=1 ;;
   *) unset CARET_INTERNAL_BUILD ;;
 esac
+# Node v26.5.0, the runtime the helper's tests pass on. The SHA-256 of node-v26.5.0-darwin-arm64.tar.gz is the one in
+# https://nodejs.org/dist/v26.5.0/SHASUMS256.txt, whose signature by release key
+# C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C (listed in that release's README) was checked on 2026-10-04.
+NODE_VERSION=26.5.0
+NODE_SHA256=ee920559aaa2391569cff4d737e3b83963430e3a14dedd91bfe0ff53171b5af9
+# The privacy gate is the first thing this script does, before any download, lock, build or file write
+# (tests/test_privacy_followup.py, tests/test_internal_build_gate.py). It needs Node 24 or newer: the pinned runtime
+# once a build has extracted it below, else the node on PATH. Naming that directory on PATH has no side effect. It is
+# exported so that every gate run sees it: the three here and the one helper-bundle.config.mjs starts (Greptile, #13).
+export PATH="$root/apps/caret/.build/node-dist/node-v$NODE_VERSION-darwin-arm64/bin:$PATH"
 CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" /bin/sh "$root/scripts/privacy_gate.sh"
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
@@ -58,11 +68,6 @@ if [[ -z "${CARET_NO_LOCK:-}" ]]; then
   exec /usr/bin/lockf -k "$lock" env CARET_NO_LOCK=1 "$script" "$@"
 fi
 
-# Node v26.5.0, the runtime the helper's tests pass on. The SHA-256 of node-v26.5.0-darwin-arm64.tar.gz is the one in
-# https://nodejs.org/dist/v26.5.0/SHASUMS256.txt, whose signature by release key
-# C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C (listed in that release's README) was checked on 2026-10-04.
-NODE_VERSION=26.5.0
-NODE_SHA256=ee920559aaa2391569cff4d737e3b83963430e3a14dedd91bfe0ff53171b5af9
 node_dist=".build/node-dist"
 node_tar="$node_dist/node-v$NODE_VERSION-darwin-arm64.tar.gz"
 node="$node_dist/node-v$NODE_VERSION-darwin-arm64/bin/node"

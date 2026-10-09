@@ -57,6 +57,28 @@ class InternalBuildGateTests(unittest.TestCase):
                 if status:
                     self.assertIn("pv2-sites-send", result.stderr)
 
+    def test_bundler_gate_prefers_the_pinned_node(self):
+        # A Mac whose PATH has no node, or an older one, still gates on the pinned runtime once a build has extracted it.
+        root = self.tree(accepted=False)
+        script = bundler_prelude(root)
+        version = re.search(r"^NODE_VERSION=(\S+)$", script.read_text(), re.M).group(1)
+        pinned = root / f"apps/caret/.build/node-dist/node-v{version}-darwin-arm64/bin"
+        pinned.mkdir(parents=True)
+        marker = root / "pinned-node-ran"
+        (pinned / "node").write_text(f'#!/bin/sh\ntouch "{marker}"\nexec "{shutil.which("node")}" "$@"\n')
+        (pinned / "node").chmod(0o755)
+        result = subprocess.run(["/bin/bash", str(script), "debug"], capture_output=True, text=True, env=clean_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists(), "the gate ran on a node other than the pinned one")
+        # The later gate runs, and the one helper-bundle.config.mjs starts, inherit that PATH: it is exported before
+        # the first gate, and no gate line sets PATH for itself.
+        text = (ROOT / "apps/caret/scripts/build-app.sh").read_text()
+        gate_lines = [line for line in text.splitlines() if "privacy_gate.sh" in line and not line.lstrip().startswith("#")]
+        self.assertEqual(len(gate_lines), 3)
+        self.assertLess(text.index('export PATH="$root/apps/caret/.build/node-dist/'), text.index(gate_lines[0]))
+        for line in gate_lines:
+            self.assertNotIn("PATH=", line)
+
     def run_mac(self, root: Path) -> list:
         """run_mac.py from the tree, up to its first command after the gate, which is recorded and not run."""
         (root / "scripts/run_mac.py").write_text((ROOT / "scripts/run_mac.py").read_text())
