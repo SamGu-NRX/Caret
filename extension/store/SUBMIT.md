@@ -20,11 +20,13 @@ Upload
    - Single purpose: the "Single purpose" section.
    - Each permission box: the matching row of the permission table (first text column only).
    - Remote code: No.
-   - Data usage: tick the five types listed under "Privacy practices form", then the three certifications.
+   - Data usage: tick the eight types listed under "Privacy practices form", then the three certifications.
    - Privacy policy: https://github.com/SamGu-NRX/Caret/blob/main/docs/privacy/chrome-extension.md
 4. Distribution tab: Visibility **Unlisted**. Free, all regions.
-5. Submit for review.
+5. Click Submit for review. In the confirmation dialog, **uncheck** the box that publishes the item automatically after review, so it waits for you ([deferred publishing](https://developer.chrome.com/docs/webstore/publish)). If you already submitted with it checked, choose Defer publish from the item's menu.
 
-After the first upload (before or after review)
+After the first upload
 
-On the item's Package tab, click View public key. Send the lead two things: the item ID (the 32 letters in the dashboard URL) and that public key. The store ID differs from today's unpacked ID (`idbkbnaepbamcdecogahbinlcodkbmmj`). The lead then puts the store's key in the dev manifest and switches every `allowed_origins` and hard-coded ID to the store ID, so the unpacked build and the store build are one extension again.
+On the item's Package tab, click View public key. Send the lead two things: the item ID (the 32 letters in the dashboard URL) and that public key. The store ID differs from today's unpacked ID (`idbkbnaepbamcdecogahbinlcodkbmmj`). The lead then puts the store's key in the dev manifest and switches every `allowed_origins` and hard-coded ID to the store ID (`apps/caret/Sources/CaretHostCore/Services/NativeMessagingManifest.swift` `extensionId`), so the unpacked build and the store build are one extension again.
+
+Publish only after a Caret build with the store ID in `allowed_origins` is out. Until then Chrome refuses the store extension's `connectNative` call, because its origin isn't listed ([native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)), and the extension does nothing. After review you have 30 days to publish; then the submission returns to draft and needs review again.
