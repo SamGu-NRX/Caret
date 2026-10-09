@@ -192,3 +192,46 @@ describe.each(["AX", "page"] as const)("%s in-flight reconciliation", (mean) => 
     expect(r.held()).toBe(ORIGINAL);
   });
 });
+
+describe("Stop during a recovery read that began before it", () => {
+  it("ends the wait five seconds after Stop, keeping the original for guarded undo", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-recovery-read-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    // The write lands but its answer is lost, with no Stop yet, so the executor starts its ordinary recovery walk.
+    app.timeoutAfterWrite = true;
+    let wrote = false;
+    let stoppedAt = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "walk" && wrote) {
+          // The read hangs; the user presses Stop while it is on its way.
+          setTimeout(() => { stoppedAt = Date.now(); helper.executor.stop("t"); }, 40);
+          return new Promise<VerbResult>(() => {});
+        }
+        if (verb.kind === "write" && verb.sameAs === undefined) wrote = true;
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    let settled = false;
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true }).finally(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(40 + 5000);
+    expect(stoppedAt).toBeGreaterThan(0);
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+  });
+});

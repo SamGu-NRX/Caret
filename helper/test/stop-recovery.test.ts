@@ -78,8 +78,9 @@ describe("E1 stop at the reader's last grant check", () => {
     expect(app.node(EMAIL)?.value).toBe("old@example.com");
   });
 
-  it("a partial write with a lost acknowledgement is read before stop and restored by undo", async () => {
-    // Fault injection, not runtime evidence: the app takes only a prefix before its reader times out.
+  it("a prefix first read after Stop is unknown: reported, kept for the user, not put back by undo", async () => {
+    // Fault injection, not runtime evidence: the app takes only a prefix before its reader times out. Caret first reads
+    // it after Stop, when the user could have typed the same two letters, so it cannot claim them (PR #21 review).
     app.normalize = (value) => value.slice(0, 2);
     app.timeoutAfterWrite = true;
     app.afterVerb = (a, v) => {
@@ -89,17 +90,20 @@ describe("E1 stop at the reader's last grant check", () => {
     };
     const result = await helper.executor.run("t", plan, {}, undefined, { grant: true });
     expect(result.outcome).toBe("stopped");
+    expect(result.detail).toContain("may be part of Caret's write or your typing");
     expect(app.node(NAME)?.value).toBe("Da");
     expect(app.node(EMAIL)?.value).toBe("old@example.com");
     expect(helper.model.windows.get(WIN)?.nodes.get(NAME)?.value).toBe("Da");
-    expect(helper.executor.ledger("t")).toMatchObject([{ kind: "write", key: NAME, before: "", after: "Dana", unconfirmed: true, partialWrite: true }]);
-    expect(helper.executor.ledger("t")).toHaveLength(1);
+    expect(helper.executor.ledger("t")).toMatchObject([{ kind: "write", key: NAME, before: "", after: "Dana", unconfirmed: true }]);
+    expect(helper.executor.ledger("t")[0]).not.toHaveProperty("partialWrite");
     app.timeoutAfterWrite = false;
     app.normalize = null;
     const beforeUndo = app.verbs.filter((v) => v.kind === "write").length;
-    expect(await helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
-    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(beforeUndo + 1);
-    expect(app.node(NAME)?.value ?? "").toBe("");
+    const undo = await helper.executor.undo("t");
+    expect(undo.restored).toBe(0);
+    expect(undo.notRestored[0]?.reason).toContain("may be your typing");
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(beforeUndo);
+    expect(app.node(NAME)?.value).toBe("Da");
     expect(app.node(EMAIL)?.value).toBe("old@example.com");
   });
 
@@ -126,7 +130,7 @@ describe("E1 stop at the reader's last grant check", () => {
     };
     const result = await helper.executor.run("t", plan, {}, undefined, { grant: true });
     expect(result.outcome).toBe("stopped");
-    expect(helper.executor.ledger("t")).toMatchObject([{ before: "Original name", after: "Dana", partialWrite: true }]);
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: "Original name", after: "Dana", partialWrite: "Da" }]);
     app.normalize = null;
     expect(await helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
     expect(app.node(NAME)?.value).toBe("Original name");
@@ -164,7 +168,7 @@ describe("E1 stop at the reader's last grant check", () => {
     const result = await helper.executor.run("t", plan, {}, undefined, { grant: true });
     expect(result).toMatchObject({ outcome: "stopped" });
     expect(helper.model.windows.get(WIN)?.nodes.get(NAME)?.value).toBe("Da");
-    expect(helper.executor.ledger("t")).toMatchObject([{ before: "Original name", after: "Dana", unconfirmed: true, partialWrite: true }]);
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: "Original name", after: "Dana", unconfirmed: true, partialWrite: "Da" }]);
     app.run = run;
     app.normalize = null;
     app.timeoutAfterWrite = false;
@@ -172,7 +176,7 @@ describe("E1 stop at the reader's last grant check", () => {
     expect(app.node(NAME)?.value).toBe("Original name");
   });
 
-  it("retains undo if both read-back and recovery reads fail, then classifies at undo", async () => {
+  it("retains undo if both read-back and recovery reads fail, and leaves a prefix first read at undo", async () => {
     app.setValue(NAME, "Original name");
     app.normalize = () => "Da";
     const show = app.show.bind(app);
@@ -195,9 +199,14 @@ describe("E1 stop at the reader's last grant check", () => {
     const entry = helper.executor.ledger("t")[0];
     app.failWalks = 0;
     app.normalize = null;
-    expect(await helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
-    expect(entry).toHaveProperty("partialWrite", true);
-    expect(app.node(NAME)?.value).toBe("Original name");
+    // Undo reads "Da" after the run ended: it may be the user's typing, so undo neither claims nor restores it.
+    const writes = app.verbs.filter((v) => v.kind === "write").length;
+    const undo = await helper.executor.undo("t");
+    expect(undo.restored).toBe(0);
+    expect(undo.notRestored[0]?.reason).toContain('the field now holds "Da"');
+    expect(entry).not.toHaveProperty("partialWrite");
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(writes);
+    expect(app.node(NAME)?.value).toBe("Da");
   });
 
   it("recognizes the original before treating it as a proper prefix", async () => {
@@ -374,5 +383,92 @@ describe("E1 stop at the reader's last grant check", () => {
     expect(await helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
     expect(app.node(NAME)?.value ?? "").toBe("");
     expect(app.node(EMAIL)?.value).toBe("old@example.com");
+  });
+});
+
+// PR #21 review: what reconciliation may attribute to Caret, and what it compares with.
+describe("reconciliation after Stop attributes only what Caret read while it held the window", () => {
+  let dir: string;
+  let store: Store;
+  let helper: Helper;
+  let app: FakeApp;
+  let published: HelperMessage[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "caret-reconcile-"));
+    store = new Store(join(dir, "data"));
+    app = new FakeApp(executorWindow());
+    app.enforceGrants = true;
+    published = [];
+    helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, readerLink: app, publish: (m) => published.push(m) });
+    app.helper = helper;
+    app.show();
+  });
+  afterEach(() => {
+    helper.shutdown();
+    helper.memory.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a prefix the user types after Stop, before the recovery read, is unknown and Undo leaves it", async () => {
+    // Caret's write never lands and its answer is lost; the user stops the run and types the first two letters.
+    app.dropWrites = true;
+    app.timeoutAfterWrite = true;
+    app.afterVerb = (a, v) => {
+      if (v.kind !== "write" || v.key !== NAME) return;
+      a.afterVerb = null;
+      helper.executor.stop("t");
+      a.setValue(NAME, "Da");
+    };
+    const result = await helper.executor.run("t", plan, {}, undefined, { grant: true });
+    expect(result).toMatchObject({ outcome: "stopped", acted: 0 });
+    expect(result.detail).toContain('the field now holds "Da"');
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: "", after: "Dana", unconfirmed: true }]);
+    expect(helper.executor.ledger("t")[0]).not.toHaveProperty("partialWrite");
+    app.dropWrites = false;
+    app.timeoutAfterWrite = false;
+    const writes = app.verbs.filter((v) => v.kind === "write").length;
+    const undo = await helper.executor.undo("t");
+    expect(undo.restored).toBe(0);
+    expect(undo.notRestored[0]?.reason).toContain('the field now holds "Da"');
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(writes);
+    expect(app.node(NAME)?.value).toBe("Da");
+  });
+
+  it("puts back a recorded partial write only while the field holds that same prefix", async () => {
+    // No Stop: the reader fails after the app took a prefix, and the run's own recovery read records it.
+    app.normalize = () => "Da";
+    app.timeoutAfterWrite = true;
+    await helper.executor.run("t", plan, {}, undefined, { grant: true });
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: "", after: "Dana", unconfirmed: true, partialWrite: "Da" }]);
+    app.normalize = null;
+    app.timeoutAfterWrite = false;
+    // The user types on after the run ended. "Dan" is still a prefix of "Dana", but not the one Caret read.
+    app.setValue(NAME, "Dan");
+    const writes = app.verbs.filter((v) => v.kind === "write").length;
+    expect(await helper.executor.undo("t")).toMatchObject({ restored: 0 });
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(writes);
+    expect(app.node(NAME)?.value).toBe("Dan");
+  });
+
+  it("verifies a number field the app reformats when Stop arrives during the write", async () => {
+    app.nodes = app.nodes.map((node) => node.key === NAME ? { ...node, subrole: PAGE_SUBROLE.number } : node);
+    app.normalize = (value) => value === "1.00" ? "1" : value;
+    app.timeoutAfterWrite = true;
+    app.afterVerb = (a, v) => {
+      if (v.kind !== "write" || v.key !== NAME) return;
+      a.afterVerb = null;
+      helper.executor.stop("t");
+    };
+    const result = await helper.executor.run("t", { ...plan, steps: [write(NAME, "1.00"), write(EMAIL, "d@example.com")] }, {}, undefined, { grant: true });
+    expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
+    expect(result.detail).toContain("Written before stop");
+    expect(helper.executor.ledger("t")[0]).not.toHaveProperty("unconfirmed");
+    expect(helper.executor.ledger("t")[0]).not.toHaveProperty("partialWrite");
+    expect(published.some((m) => m.type === "taskProgress" && m.taskId === "t" && m.phase === "verified")).toBe(true);
+    app.timeoutAfterWrite = false;
+    expect(await helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
+    expect(app.node(NAME)?.value ?? "").toBe("");
   });
 });

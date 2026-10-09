@@ -188,7 +188,7 @@ describe("W3 page findings, helper side", () => {
   });
 
   describe("1d: a pick a revoke cut short still goes into undo", () => {
-    it("reconciles the pick by read-back before pausing; undo restores it", async () => {
+    it("records the pick, unconfirmed, before any verify; the run ends paused; undo restores it", async () => {
       page.onAct = (v, p) => {
         if (v.kind !== "pageChooseOption" || v.rebind === false) return null;
         // The pick lands, then the user's click revokes the grant before blur: the content script stops with no readings.
@@ -198,13 +198,30 @@ describe("W3 page findings, helper side", () => {
       };
       const r = await helper.executor.run("t1", plan([step(KEY.dept, "Research")]), {}, undefined, { grant: true });
       expect(r.outcome).toBe("paused");
-      expect(r).toMatchObject({ acted: 1, step: null });
-      expect(helper.executor.ledger("t1")).toEqual([expect.objectContaining({ kind: "write", key: KEY.dept, before: "", after: "Research" })]);
-      expect(helper.executor.ledger("t1")[0]).not.toHaveProperty("unconfirmed");
+      // The walk shows the option's name either way; only the lost answer could say it was picked (PR #21 review).
+      expect(r).toMatchObject({ acted: 0, detail: expect.stringContaining("cannot tell whether the option was picked") });
+      expect(helper.executor.ledger("t1")).toEqual([expect.objectContaining({ kind: "write", key: KEY.dept, before: "", after: "Research", unconfirmed: true })]);
       const u = await helper.executor.undo("t1");
       expect(u).toMatchObject({ restored: 1, notRestored: [] });
       expect(page.shown("e3")).toBe("");
       expect(page.verbs.filter((v) => v.kind === "pageChooseOption").at(-1)).toMatchObject({ rebind: false, expect: "Research", value: "" });
+    });
+  });
+
+  describe("PR #21 review: a combobox's filter text is not a pick", () => {
+    it("a Stop after the filter was typed, before the option was pressed, leaves the step unverified", async () => {
+      page.onAct = (v, p) => {
+        if (v.kind !== "pageChooseOption" || v.rebind === false) return null;
+        // The handler typed the filter, so the control shows the value, and the list is still open: no option was pressed.
+        p.set(v.id, v.value);
+        helper.executor.stop("t1");
+        return { outcome: "failed", detail: "the task's grant ended (picking the option); Caret stopped without touching the control again", choice: { flavor: "aria", matches: [v.value], expanded: true, hiddenInput: "none" } };
+      };
+      const result = await helper.executor.run("t1", plan([step(KEY.dept, "Research"), step(KEY.first, "Ada")]), {}, undefined, { grant: true });
+      expect(result).toMatchObject({ outcome: "stopped", acted: 0, step: 0 });
+      expect(result.detail).not.toContain("Written before stop");
+      expect(result.detail).toContain("cannot tell whether the option was picked");
+      expect(helper.executor.ledger("t1")).toEqual([expect.objectContaining({ kind: "write", key: KEY.dept, before: "", after: "Research", unconfirmed: true })]);
     });
   });
 
