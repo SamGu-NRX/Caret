@@ -42,6 +42,14 @@ it("replays partial values and focus visits in event order, using the last event
   expect(now).toBe(6);
   expect(fake.close).toHaveBeenCalledOnce();
 });
+it("attributes fixture reports to Decisions rather than live Jev", async () => {
+  await import("../scripts/fill-eval.ts");
+  const report = JSON.parse(readFileSync(join(dir, "fill-eval.json"), "utf8"));
+  expect(report.engine).toBe("engine decisions (gpt-6-luna), cache off");
+  const md = readFileSync(join(dir, "fill-eval.md"), "utf8");
+  expect(md).toContain(report.engine);
+  expect(md).not.toContain("live Jev");
+});
 it("records a failed form and continues to write a partial report", async () => {
   fake.propose.mockRejectedValueOnce(new Error("synthetic refusal"));
   await import("../scripts/fill-eval.ts");
