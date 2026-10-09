@@ -2,6 +2,9 @@ name: Record host snapshots
 
 on:
   workflow_dispatch:
+  # A single temporary branch can bootstrap recording before this workflow lands on main.
+  push:
+    branches: [snapshots/record]
 
 permissions:
   contents: read
