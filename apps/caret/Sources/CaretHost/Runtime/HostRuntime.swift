@@ -963,6 +963,7 @@ public final class HostRuntime {
                 await self.engine.load(modelURL: modelURL)
                 self.publishEngineState()
                 self.focus.requestRead()
+                self.pageInline.modelLoaded()
             },
             release: { [weak self] in
                 guard let self else { return }

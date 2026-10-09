@@ -168,6 +168,10 @@ final class PageInlineCoordinator {
         writingLine.hideAll()
     }
 
+    /// The model finished loading (Complete words turned on): the field is decided again. The settings change that
+    /// asked for the load was decided while the model was still off (Greptile on #30).
+    func modelLoaded() { reconsider() }
+
     /// A settings change (pause, the words role, Caret turned on or off for a page): the field is decided again.
     private func reconsider() {
         guard let f = lastField, let pid = Int32(exactly: f.app.pid) else { return }

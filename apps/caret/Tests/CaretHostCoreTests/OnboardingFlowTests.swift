@@ -158,6 +158,26 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertTrue(rig.take().isEmpty)
     }
 
+    /// Codex on #30: text typed while ready stays in the field when Complete words goes off; turning it back on loads
+    /// the model, and the field asks about that text without another edit.
+    func testTextLeftInTheFieldIsAskedAboutWhenTheModelComesBack() {
+        let rig = Rig()
+        rig.send(.typed("Hi Dana, thanks"))
+        rig.send(.model(.off))
+        rig.clock.advance(by: 2)
+        rig.take()
+        rig.send(.model(.loading(nil)))
+        rig.clock.advance(by: 2)
+        XCTAssertTrue(rig.take().isEmpty, "nothing asked while it loads")
+        rig.send(.model(.ready))
+        rig.clock.advance(by: OnboardingFlow.completionIdle + 0.01)
+        guard case .complete(_, let text)? = rig.take().first else { return XCTFail("no completion asked") }
+        XCTAssertEqual(text, "Hi Dana, thanks")
+        rig.send(.model(.ready))
+        rig.clock.advance(by: 2)
+        XCTAssertTrue(rig.take().isEmpty, "ready again asks nothing new")
+    }
+
     func testTabTakesTheGhostOnlyWhileShown() {
         let rig = Rig()
         rig.send(.key(.tab))

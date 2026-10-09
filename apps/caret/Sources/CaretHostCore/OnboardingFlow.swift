@@ -572,8 +572,12 @@ public final class OnboardingFlow {
             state.hello.asking = nil
             state.hello.ghost = text.flatMap { $0.isEmpty ? nil : $0 }
         case .model(let readiness):
+            let was = state.hello.model
             state.hello.model = readiness
             if readiness != .ready { state.hello.ghost = nil }
+            // Text left in the field while the model was off or loading (Complete words turned back on) is asked
+            // about as if just typed, so the field doesn't stay quiet until the next edit (Codex on #30).
+            else if was != .ready, state.step == .hello { typed(state.hello.text) }
         case .apps(let apps): state.hello.apps = apps
         case .key(let key): self.key(key)
         case .permissions(let p): permissionsChanged(p)

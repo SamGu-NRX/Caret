@@ -13,7 +13,7 @@ final class ModelResidency {
     /// Whether the last finished step was a load.
     private(set) var loaded = false
     private var wanted = false
-    private var stopped = false
+    private(set) var stopped = false
     private var work: Task<Void, Never>?
     private let load: @MainActor () async -> Void
     private let release: @MainActor () async -> Void
@@ -67,6 +67,8 @@ final class ModelResidency {
 final class InFlight {
     private(set) var count = 0
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    /// Callers waiting in `drained`.
+    var waiting: Int { waiters.count }
 
     func enter() { count += 1 }
 

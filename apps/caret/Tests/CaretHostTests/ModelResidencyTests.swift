@@ -157,6 +157,7 @@ final class ModelResidencyTests: XCTestCase {
         await model.untilHeld()
         model.residency.want(false)
         let stopping = Task { await model.residency.stop() }
+        await until { model.residency.stopped }
         model.finish()
         await stopping.value
         XCTAssertEqual(model.log, ["load"], "quit frees through the engine's shutdown, not a second step")
@@ -179,10 +180,10 @@ final class ModelResidencyTests: XCTestCase {
         calls.enter()
         let done = Flag()
         let waiting = Task { await calls.drained(); done.on = true }
-        await yields()
+        await until { calls.waiting == 1 }
         calls.leave()
-        await yields()
-        XCTAssertFalse(done.on, "one call is still inside")
+        XCTAssertEqual(calls.waiting, 1, "one call is still inside")
+        XCTAssertFalse(done.on)
         calls.leave()
         await waiting.value
         XCTAssertTrue(done.on)
@@ -196,7 +197,7 @@ final class ModelResidencyTests: XCTestCase {
         engine.adoptForTesting(runtime: runtime)
         engine.calls.enter()
         let releasing = Task { await engine.release() }
-        await yields()
+        await until { engine.calls.waiting == 1 }
         XCTAssertEqual(engine.state, .off, "a call that starts now finds no model")
         XCTAssertEqual(runtime.shutdowns, 0, "llama is not freed under a call inside it")
         engine.calls.leave()
@@ -232,8 +233,14 @@ final class ModelResidencyTests: XCTestCase {
         XCTAssertEqual(engine.state, .unavailable("shut down"))
     }
 
-    private func yields() async {
-        for _ in 0..<20 { await Task.yield() }
+    /// Returns once `condition` holds; fails the test if it doesn't within 1,000 yields.
+    private func until(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        var tries = 0
+        while !condition(), tries < 1_000 {
+            await Task.yield()
+            tries += 1
+        }
+        if !condition() { XCTFail("condition never held", file: file, line: line) }
     }
 }
 
