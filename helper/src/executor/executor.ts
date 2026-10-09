@@ -987,7 +987,8 @@ export class Executor {
         // judging it or trying another means; a stop revokes writes, not this read-only recovery check.
         const readBack = changes.some((c) => c.key === node.key && (c.kind === "value" || c.kind === "added"));
         if (attribute === "value" && (!readBack || !this.window(w.window.windowId).nodes.has(node.key))) {
-          const read = await this.walk(this.window(w.window.windowId));
+          // Bounded by Stop's deadline like the act itself; a timeout here goes on to reconciliation (Greptile review).
+          const read = await this.untilInterruptDeadline(task, this.walk(this.window(w.window.windowId), task), "no read-back after interruption");
           // Which of the walk's changes came before a pause or stop arrived during it is unknown, so none counts as before.
           if (task.interrupt !== null) for (const c of read) this.heardAfterInterrupt.add(c);
           return [...changes, ...read];
@@ -1565,7 +1566,8 @@ export class Executor {
     return fresh;
   }
 
-  private async walk(w: WindowState): Promise<Change[]> {
+  /** Reads the window. With `task`, no retry starts once a pause or stop is pending: Stop gets one read. */
+  private async walk(w: WindowState, task?: Task): Promise<Change[]> {
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === w.window.windowId) seen.push(c);
@@ -1574,7 +1576,7 @@ export class Executor {
       // A walk only reads, so one that fails (a busy app cuts a walk short past its deadline) is tried
       // again before the step stops. Writes and presses are never retried.
       let r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
-      for (let n = 0; n < WALK_RETRIES && r.outcome === "axError"; n++) {
+      for (let n = 0; n < WALK_RETRIES && r.outcome === "axError" && (task?.interrupt ?? null) === null; n++) {
         r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
       }
       if (r.outcome !== "ok") throw StepStop.stop("reader", `cannot re-read '${w.window.title}': ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
@@ -1693,15 +1695,9 @@ export class Executor {
     try {
       this.checkSession(task);
       const w = this.window(e.windowId);
-      // A walk cut short is tried again, as walk() does, but no read starts once a pause or stop is pending: Stop gets
-      // one read, without a new grant. The wait ends at the task's Stop deadline, even for a read already on its way.
-      const verb: ReaderVerb = { kind: "walk", pid: e.pid, windowId: e.windowId };
-      const read = (async () => {
-        let r = await this.deps.reader.run(verb);
-        for (let n = 0; n < WALK_RETRIES && r.outcome === "axError" && task.interrupt === null; n++) r = await this.deps.reader.run(verb);
-        if (r.outcome !== "ok") throw new Error(`cannot re-read '${w.window.title}': ${r.outcome}`);
-      })();
-      await this.untilInterruptDeadline(task, read, "the recovery read timed out");
+      // No retry starts once a pause or stop is pending, and no new grant: Stop gets one read. The wait ends at the
+      // task's Stop deadline, even for a read already on its way; a reader that answers at once still counts.
+      await this.untilInterruptDeadline(task, this.walk(w, task), "the recovery read timed out");
       this.checkSession(task);
     } catch (error) {
       // Undo is refused under a reader launched since (undoRefusal), so this outcome promises none.

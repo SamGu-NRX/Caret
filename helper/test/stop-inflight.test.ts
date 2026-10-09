@@ -321,3 +321,50 @@ describe("no recovery read starts after Stop", () => {
     expect(reads).toBe(1);
   });
 });
+
+describe("the read-back after an ok write with no change", () => {
+  it("ends five seconds after Stop arrives during it, with no retry", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-readback-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    let wrote = false;
+    let reads = 0;
+    let stoppedAt = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "write" && verb.sameAs === undefined) {
+          // The app accepts the setter, but the answer carries no read-back of the field.
+          wrote = true;
+          return Promise.resolve({ type: "verbResult", v: 1, id: "w", at: Date.now(), outcome: "ok", detail: null });
+        }
+        if (verb.kind === "walk" && wrote) {
+          if (++reads === 1) setTimeout(() => { stoppedAt = Date.now(); helper.executor.stop("t"); }, 40);
+          return new Promise<VerbResult>((resolve) => setTimeout(() => resolve({ type: "verbResult", v: 1, id: "read", at: Date.now(), outcome: "axError", detail: "the walk was cut short" }), 4900));
+        }
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    let settled = false;
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true }).finally(() => { settled = true; });
+    while (stoppedAt === 0) await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(5011 - (Date.now() - stoppedAt));
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0 });
+    // The read-back, then Stop's one recovery read; neither retries.
+    expect(reads).toBe(2);
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+  });
+});
