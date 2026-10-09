@@ -20,6 +20,8 @@ export const HOST_ENV = [
 export const HELPER_ONLY_ENV = [
   { key: "caret_writer_spend_dir", name: "CARET_WRITER_SPEND_DIR", reason: "Harness writer spend-file directory; the host uses helper defaults." },
   { key: "openai_api_key_personal", name: "OPENAI_API_KEY_PERSONAL", reason: "Developer/harness writer credential; the host does not forward it by default." },
+  { key: "openai_api_key", name: "OPENAI_API_KEY", reason: "Eval-only Decisions credential; never forwarded by an app launcher." },
+  { key: "caret_decisions_spend_dir", name: "CARET_DECISIONS_SPEND_DIR", reason: "Eval-only lifetime Decisions spend ledger and exclusive run lock." },
   { key: "caret_jev_spend_dir", name: "CARET_JEV_SPEND_DIR", reason: "Harness spend-file directory; the host uses helper defaults." },
   { key: "caret_jev_cache", name: "CARET_JEV_CACHE", reason: "Harness-only decision cache; the real helper refuses it." },
   { key: "caret_jev_cache_mode", name: "CARET_JEV_CACHE_MODE", reason: "Harness-only cache mode; the host never enables caching." },
