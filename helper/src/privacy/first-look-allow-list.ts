@@ -1,14 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Span } from "../privacy.ts";
+import { flat, type ViewSpan } from "../privacy.ts";
+import { viewInventory } from "./ledger/account.ts";
+import { partsOf, sourceLines, sourcePieces } from "./ledger/source.ts";
 
-/** Per-look state follows awaited generators, not unrelated work using the same provider. */
+/**
+ * What a first look may send, from the preview the person consented to: per window id, the stretches of its lines the
+ * preview showed as sent. Per-look state follows awaited generators, not unrelated work using the same provider.
+ */
 export class FirstLookAllowList {
   stale = false;
   closed = false;
-  private readonly spans: readonly Span[];
+  private readonly allowed: ReadonlyMap<string, readonly string[]>;
 
-  constructor(spans: readonly Span[]) {
-    this.spans = spans.map((s) => ({ ...s }));
+  constructor(allowed: ReadonlyMap<string, readonly string[]>) {
+    this.allowed = new Map([...allowed].map(([id, texts]) => [id, texts.map(flat)]));
   }
 
   refuse(): never {
@@ -20,18 +25,37 @@ export class FirstLookAllowList {
     if (this.stale || this.closed) this.refuse();
   }
 
-  check(spans: readonly Span[], reasons: ReadonlySet<string> | null, text: string, origins: readonly string[] = []): void {
+  /** Whether `piece`, a line of text a request reveals, stands inside a stretch the preview showed for window `id`. */
+  private shown(id: string | null, piece: string): boolean {
+    const p = flat(piece);
+    if (p === "") return true;
+    const windows = id === null ? [...this.allowed.values()] : [this.allowed.get(id) ?? []];
+    return windows.some((texts) => texts.some((t) => t.includes(p)));
+  }
+
+  /**
+   * Refuses (and ends the look) when a request text reveals a line the preview did not show: each declared span's lines
+   * in its own window; each saved value or user instruction it carries, line by line, in any window (a saved value the
+   * screen never showed was never previewed); and window text with no declared span at all.
+   */
+  check(spans: readonly ViewSpan[], reasons: ReadonlySet<string> | null, text: string, origins: readonly string[] = []): void {
     this.checkOpen();
-    for (const s of spans) {
-      const piece = s.line.slice(s.at, s.at + s.len);
-      if (!this.spans.some((a) => a.windowId === s.windowId && a.line.slice(a.at, a.at + a.len).includes(piece))) this.refuse();
+    for (const sp of spans) {
+      const id = sp.view.window.windowId;
+      if ("text" in sp) {
+        // A span declared by its text reveals each line of the view that holds a line of it, whole, as the ledger charges
+        // it (privacy/ledger/measure.ts placeSpan); Caret's own wording around it stands in no line and reveals nothing.
+        const pieces = new Set([...sourceLines(sp.text), ...sourcePieces(sp.text)]);
+        for (const line of viewInventory(sp.view).lines) if ([...pieces].some((p) => line.includes(p)) && !this.shown(id, line)) this.refuse();
+        continue;
+      }
+      const raw = partsOf(sp.view).find((p) => p.id === sp.at.part)?.raw.slice(sp.at.start, sp.at.end);
+      if (raw === undefined) this.refuse();
+      for (const line of sourcePieces(raw)) if (!this.shown(id, line)) this.refuse();
     }
     if (text === "") return;
-    // Saved values and user instructions may contain words no open window shows. They were not previewed.
     const originals = origins.length > 0 ? origins : reasons?.has("memory") || reasons?.has("instruction") ? [text] : [];
-    for (const origin of originals) {
-      if (!origin.split(/\r?\n/u).every((line) => this.spans.some((s) => s.line.slice(s.at, s.at + s.len).includes(line)))) this.refuse();
-    }
+    for (const origin of originals) for (const line of sourcePieces(origin)) if (!this.shown(null, line)) this.refuse();
     if (spans.length === 0 && ["candidate", "held", "plan", "drafted"].some((r) => reasons?.has(r))) this.refuse();
   }
 }
@@ -50,6 +74,6 @@ export function withFirstLookAllowList<T>(list: FirstLookAllowList, run: () => T
 export function checkFirstLookOpen(): void {
   active.getStore()?.checkOpen();
 }
-export function checkFirstLookText(spans: readonly Span[], reasons: ReadonlySet<string> | null, text: string, origins: readonly string[]): void {
+export function checkFirstLookText(spans: readonly ViewSpan[], reasons: ReadonlySet<string> | null, text: string, origins: readonly string[]): void {
   active.getStore()?.check(spans, reasons, text, origins);
 }

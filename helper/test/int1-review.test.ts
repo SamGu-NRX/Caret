@@ -34,7 +34,7 @@ describe("INT1 review P1: a secret in a page's section text never reaches plan, 
       const view = redactWindow(m.windows.get("page") as WindowState);
       // Redaction removes the secret section line.
       expect(JSON.stringify([...view.nodes.values()])).not.toContain("Zq7x");
-      const d = new Disclosure(m.windows.values());
+      const d = new Disclosure(m);
       expect(d.planText("Open Zq7x")).toBeNull();
       expect(d.heldText("Open Zq7x")).toBeNull();
       expect(d.draftedText("Open Zq7x")).toBeNull();
@@ -107,7 +107,7 @@ describe("INT1 review 2 P1: a container labelled for a secret takes everything u
     try {
       const m2 = new ScreenModel();
       m2.apply(snap([group("Password"), child({ label: SECRET })], { at: 1000, windowId: "w2", title: "Notes" }));
-      const d = new Disclosure(m2.windows.values());
+      const d = new Disclosure(m2);
       expect(d.candidate(redactWindow(m2.windows.get("w2") as WindowState), SECRET)).toBeNull();
     } finally {
       if (was === undefined) delete process.env.CARET_TEST_MARKERS_OFF;

@@ -7,7 +7,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { Basis, Disclosure, UnmintedText, verifySent, verifyWriterInput, type ModelText } from "../src/privacy/disclosure.ts";
+import { Basis, Disclosure, UnmintedText, verifySent, verifyWriterInput, type ModelText, registryOf } from "../src/privacy/disclosure.ts";
 import type { ChoiceQuestion, JevRequest } from "../src/fill/jev.ts";
 import type { WriterRequest } from "../src/writer/port.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -68,11 +68,11 @@ describe("the I/O boundary: every POST body and every request store is checked a
   const helperRoot = fileURLToPath(new URL("../", import.meta.url));
   const tsFiles = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "node_modules" ? [] : tsFiles(join(dir, e.name))) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
   const read = (dirs: readonly string[]): Map<string, string> => new Map(dirs.flatMap((d) => tsFiles(join(helperRoot, d))).map((f) => [relative(helperRoot, f), readFileSync(f, "utf8")]));
-  /** A POST's body that is not sealedBody(...), or a write of request text that is not storedLine(...) or storableRequest(...). */
+  /** A POST's body that is not sendable(...), or a write of request text that is not storedLine(...) or storableRequest(...). */
   const breaks = (sources: Map<string, string>): string[] =>
     [...sources].flatMap(([file, src]) => {
       const out: string[] = [];
-      for (const m of src.matchAll(/method:\s*"POST"[\s\S]{0,400}?\bbody:\s*([A-Za-z_]+)/gu)) if (m[1] !== "sealedBody") out.push(`${file}: a POST body that is not sealedBody`);
+      for (const m of src.matchAll(/method:\s*"POST"[\s\S]{0,400}?\bbody:\s*([A-Za-z_]+)/gu)) if (m[1] !== "sendable") out.push(`${file}: a POST body that is not sendable`);
       for (const line of src.split("\n")) {
         if (!/\b(?:append|write)FileSync\(/u.test(line) || !/\breq\b|\.questions\b|\.state\b|\bwire\b/u.test(line)) continue;
         if (!/\b(?:storedLine|storableRequest)\(/u.test(line)) out.push(`${file}: a store of request text that is not storedLine or storableRequest`);
@@ -98,8 +98,9 @@ describe("the I/O boundary: every POST body and every request store is checked a
   // Also a file handed to a child as its output (openSync, a file descriptor in stdio), a reader's --record, and a shell
   // script's redirect to a file (anything but /dev/null).
   // A code generator writes source files from pinned public data, never model or screen text, so it writes them as they
-  // are: withholding could corrupt a generated table.
-  const CODEGEN: ReadonlySet<string> = new Set(["scripts/gen-ledger-unicode.ts"]);
+  // are: withholding could corrupt a generated table. A fixture generator writes invented text from its own tables
+  // (scripts/longchat-fixtures.ts), likewise.
+  const CODEGEN: ReadonlySet<string> = new Set(["scripts/gen-ledger-unicode.ts", "scripts/longchat-fixtures.ts"]);
   const rawScriptWrites = (sources: Map<string, string>): string[] =>
     [...sources].filter(([file]) => !CODEGEN.has(file)).filter(([file]) => file.startsWith("scripts/") || /fixtures\/web-form\/(?:page-loop-eval|tab-source-journey)\.ts$/u.test(file)).flatMap(([file, src]) => {
       // A redirect may stand only with a "# store: <why>" note on its line saying it keeps no model text.
@@ -163,7 +164,7 @@ describe("the I/O boundary: every POST body and every request store is checked a
 
   it("catches a transport or a store that skips them", () => {
     const s = all();
-    expect(breaks(new Map([...s, ["src/new-transport.ts", 'await f(url, { method: "POST", headers: {}, body: JSON.stringify(wire) });']]))).toEqual(["src/new-transport.ts: a POST body that is not sealedBody"]);
+    expect(breaks(new Map([...s, ["src/new-transport.ts", 'await f(url, { method: "POST", headers: {}, body: JSON.stringify(wire) });']]))).toEqual(["src/new-transport.ts: a POST body that is not sendable"]);
     expect(breaks(new Map([...s, ["src/new-store.ts", "appendFileSync(log, JSON.stringify({ state: req.state }));"]]))).toEqual(["src/new-store.ts: a store of request text that is not storedLine or storableRequest"]);
     expect(breaks(new Map([...s, ["src/new-store.ts", "appendFileSync(log, storedLine(sealed, (w) => ({ body: w })));"]]))).toEqual(["src/new-store.ts: a request store whose path is not checked"]);
   });
@@ -180,7 +181,7 @@ describe("the minting primitives", () => {
     const m = model();
     const raw = m.windows.get("note") as WindowState;
     const view = redactWindow(raw);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     expect(d.candidate(view, "Elena Vance")).toBe("Elena Vance");
     expect(d.candidate(view, "violet-orchard-seven")).toBeNull();
     expect(d.held(view, "Email")).toBe("Email");
@@ -195,7 +196,7 @@ describe("the minting primitives", () => {
   it("composes only minted text, keeps the reasons, and refuses a raw hole", () => {
     const m = model();
     const view = redactWindow(m.windows.get("note") as WindowState);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const name = d.candidate(view, "Elena Vance") as ModelText;
     const said = d.t`The value is "${name}".`;
     expect(said).toBe('The value is "Elena Vance".');
@@ -210,7 +211,7 @@ describe("the minting primitives", () => {
   });
 
   it("verifies a body: every string minted, every key an identifier, the client's own paths by value", () => {
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const ok = d.own("Which one?");
     expect(() => d.verify("probe.latency", { state: { task: ok }, questions: { q: { type: "choice", instructions: ok, criteria: { a: ok } } }, model: "jev-latest" })).not.toThrow();
     expect(() => d.verify("probe.latency", { state: { task: "raw" } })).toThrow(/state\.task carries text that was not minted/u);
@@ -227,6 +228,6 @@ describe("the minting primitives", () => {
   it("refuses a request with no Disclosure at the client and at the writer port, and a Basis made by hand", () => {
     expect(() => verifySent({ purpose: "probe.latency" }, { state: {} })).toThrow(/has no Disclosure/u);
     expect(() => verifyWriterInput({ kind: "plan", input: {} })).toThrow(/has no Disclosure/u);
-    expect(() => new Basis(Symbol("basis"), new Disclosure([]), "raw")).toThrow(UnmintedText);
+    expect(() => new Basis(Symbol("basis"), new Disclosure(registryOf([])), "raw")).toThrow(UnmintedText);
   });
 });

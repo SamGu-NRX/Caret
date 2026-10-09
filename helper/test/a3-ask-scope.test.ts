@@ -169,7 +169,8 @@ describe("which fields: Jev's, never code's", () => {
   });
 
   // The design property, on random answers over every corpus form: no field reaches the fill's scope unless both wordings
-  // answered "asks" at the cutoff, and an "unclear" never reaches a fill.
+  // answered "asks" at the cutoff, and an "unclear" never reaches a fill. About 2.7 s alone; under the full suite at the
+  // default worker count it ran past the 5-second default, so it has 30.
   it("never adds a field Jev did not choose, and never fills past an unclear (random answers, every corpus form)", () => {
     const r = rng(31);
     const choices = ["asks", "not", "unclear"];
@@ -211,7 +212,7 @@ describe("which fields: Jev's, never code's", () => {
     }
     expect(fills).toBeGreaterThan(50);
     expect(asks).toBeGreaterThan(50);
-  });
+  }, 30_000);
 });
 
 describe("the vetoes", () => {
@@ -331,17 +332,18 @@ describe("through planAsk", () => {
 
   // I3 lead ruling: the field Jev chose is filled whatever the pick; the question offers only the unclear ones.
   it("asks on unclear with exactly Jev's unclear fields offered, and a pick adds to the chosen one", async () => {
-    const jev = jevFor(["Emergency contact name"], { "Emergency contact name": "Ines Lindqvist" }, ["Relationship to patient", "Emergency contact phone"]);
-    const e = await run("clinic-intake", "use Ines for the emergency contact", jev).catch((x: unknown) => x);
+    // Not the clinic intake's emergency contact: it sits in a mail, a conversation, which an owner question can never
+    // show whole, so its value is withheld before anything is asked (OUTPUT-LEDGER-SPEC section 5).
+    const jev = jevFor(["First name"], { "First name": "Kenji", "Last name": "Watanabe" }, ["Last name", "Email address"]);
+    const e = await run("conference-registration", "my name please", jev).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(AskAsks);
     const q = (e as AskAsks).question;
     expect(q.part).toBe("fields");
-    expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Relationship to patient", "Emergency contact phone"]);
-    const relation = q.options[0];
-    if (relation === undefined) throw new Error("no option");
-    const after = await run("clinic-intake", "use Ines for the emergency contact", jev, { ...q.resume, fixed: { ...q.resume.fixed, ...relation.fixes } });
-    // Only the name has a value in this stand-in: the picked relationship is asked and finds none.
-    expect(after.checked.writes.map((w) => w.value)).toEqual(["Ines Lindqvist"]);
+    expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Last name", "Email address"]);
+    const last = q.options[0];
+    if (last === undefined) throw new Error("no option");
+    const after = await run("conference-registration", "my name please", jev, { ...q.resume, fixed: { ...q.resume.fixed, ...last.fixes } });
+    expect(after.checked.writes.map((w) => w.value)).toEqual(["Kenji", "Watanabe"]);
   });
 
   it("fills only Jev's fields, or asks, when a page host fills a plan's form (A3 review 1)", async () => {

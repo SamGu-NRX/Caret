@@ -10,6 +10,7 @@
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import { fieldLabelText } from "./descriptor.ts";
+import { classifyLabel } from "../executor/risk.ts";
 import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 
 export type Control = "text" | "date" | "time" | "select" | "radio" | "checkbox" | "combobox";
@@ -54,14 +55,17 @@ export function consentLike(label: string): boolean {
 }
 
 /**
- * Labels of boxes that sign the user up to hear from someone or share their data, beyond CONSENT's words: never
- * ticked or offered (D2-04 review: "Receive product announcements" was written). Boxes only: a menu labelled
- * "Preferred contact method" is a plain choice.
+ * Labels of boxes that sign the user up to hear from someone or share their data, or commit them to an order, a plan or
+ * membership, an agreement or a signature, beyond CONSENT's words and the risk table's: never ticked or offered. Boxes
+ * only: a menu labelled "Preferred contact method" or "Plan" is a plain choice.
  */
-const SIGN_UP = /\b(?:receive|announcements?|communications?|contact(?:ed)?|call me|calls|sms|texts?|messages|alerts|reminders|digest|mailing|partners?|third[- ]part(?:y|ies)|shar(?:e|ing)|sell|ads|advertis\w*|personali[sz]\w*|tracking|cookies?|surveys?|research|feedback|deals|discounts|hear (?:about|from)|interested in|learn (?:about|more)|verif(?:y|ies|ied|ication))\b/i;
-/** Whether a box is one Caret never ticks or offers: a consent or a sign-up. */
+const SIGN_UP = /\b(?:order|orders|membership|plan|plans|agreement|agreements|sign|signed|signing|receive|announcements?|communications?|contact(?:ed)?|call me|calls|sms|texts?|messages|alerts|reminders|digest|mailing|partners?|third[- ]part(?:y|ies)|shar(?:e|ing)|sell|ads|advertis\w*|personali[sz]\w*|tracking|cookies?|surveys?|research|feedback|deals|discounts|hear (?:about|from)|interested in|learn (?:about|more)|verif(?:y|ies|ied|ication))\b/i;
+/**
+ * Whether a box is one Caret never ticks or offers: a consent, a sign-up or a commitment, or one whose label the press
+ * risk table reads as paying, sending, deleting or granting (executor/risk.ts: "Buy now", "Authorize").
+ */
 export function boxNeverTicked(label: string): boolean {
-  return CONSENT.test(label) || SIGN_UP.test(label);
+  return CONSENT.test(label) || SIGN_UP.test(label) || classifyLabel(label) !== "safe";
 }
 
 /** A select's value that is a prompt, not a choice: nothing is picked yet. */
@@ -378,6 +382,39 @@ export function boxKind(label: string): "question" | "statement" | "other" {
   if (/^(?:are you|do you have|do you|have you|can you|is your|are your|will you be|did you|were you)\b/u.test(t)) return "question";
   if (/^(?:i|i'm|i've|i'd|i'll|me|my|we|we're|our|us)\b/u.test(t)) return "statement";
   return "other";
+}
+
+/**
+ * First-person words, read before an apostrophe ("we've", "I'm"): a box whose label holds one is the user speaking ("This
+ * is my first class", "a service we've requested"), whatever it opens with.
+ */
+const FIRST_PERSON: ReadonlySet<string> = new Set(["i", "me", "my", "mine", "myself", "we", "us", "our", "ours", "ourselves"]);
+/** A bare phrase that no rule refuses and in which nobody speaks ("Tire rotation", but also "Over 18"). */
+const barePhrase = (label: string): boolean => boxKind(label) === "other" && !boxNeverTicked(label) && !tokens(label).some((w) => FIRST_PERSON.has(w.split("'")[0] ?? w));
+/** A box's group: its innermost page section, else its parent node. */
+const groupOf = (n: Node): string | null => n.sections?.at(-1) ?? n.parent;
+
+/**
+ * Whether a box may take a source-supported tick (fill.ts, both where its candidate is built and where it is converted):
+ * one item of a list to pick from ("Tire rotation" among "Services requested"), a bare phrase that boxNeverTicked does not
+ * refuse and in which nobody speaks, beside at least one other such box in the same group. A sibling only narrows: a
+ * refused label is refused whatever its siblings. A box that stands alone ("Over 18") or asks or states a fact about the
+ * user keeps statesFact's literal rule alone.
+ */
+export function serviceBox(w: WindowState, c: FormControl): boolean {
+  if (c.control !== "checkbox" || c.label === null || !barePhrase(c.label)) return false;
+  const group = groupOf(c.node);
+  return [...w.nodes.values()].some((n) => n.key !== c.node.key && n.role === "AXCheckBox" && groupOf(n) === group && barePhrase(label(n) ?? ""));
+}
+
+/**
+ * The options of a select or radio group the user can pick: listed, not a select's prompt ("Select..."), and not marked
+ * disabled. A page's native select does not carry its options' disabled state, so there this is no proof of it.
+ */
+export function pickableOptions(w: WindowState, c: FormControl): string[] {
+  if (c.options === null || (c.control !== "select" && c.control !== "radio")) return [];
+  const off = new Set([...w.nodes.values()].filter((m) => m.parent === c.node.key && m.states?.includes("disabled") === true).map((m) => (m.label ?? m.value ?? "").trim()));
+  return c.options.filter((o) => !(c.control === "select" && PROMPT.test(o.trim())) && !off.has(o));
 }
 
 /**

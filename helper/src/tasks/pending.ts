@@ -1,4 +1,4 @@
-import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText, type ScreenRegistry } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
 // Pending-state watch (deep plan section 6.4). When the user leaves a window that shows unfinished
 // work, code (no model) finds the markers: a progress or busy indicator, an enabled Stop button by
@@ -295,7 +295,7 @@ const WAITING_CRITERIA = {
  */
 export function buildPendingRequest(
   w: WindowState,
-  screen: Iterable<WindowState>,
+  screen: ScreenRegistry,
   then: readonly string[],
   now: readonly string[],
   thenMarkers: readonly Marker[] = [],
@@ -392,7 +392,7 @@ function isIndicatorLine(w: WindowState, line: string): boolean {
  * markers and its last few lines, as snippets within the window's budget; `lines` is that tail, so the
  * caller can quote it.
  */
-export function buildLookRequest(w: WindowState, screen: Iterable<WindowState>, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
+export function buildLookRequest(w: WindowState, screen: ScreenRegistry, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
   w = redactWindow(w);
   const d = new Disclosure(screen);
   const title = d.descriptor(w, w.window.title);
@@ -761,7 +761,7 @@ export class PendingWatcher {
     let answer: ReturnType<typeof readPendingAnswer>;
     let latencyMs: number;
     try {
-      const r = await askJev(buildPendingRequest(w, this.deps.model.windows.values(), watch.then, watchLines(w), watch.thenMarkers, windowMarkers(w), watch.thenView));
+      const r = await askJev(buildPendingRequest(w, this.deps.model, watch.then, watchLines(w), watch.thenMarkers, windowMarkers(w), watch.thenView));
       latencyMs = r.latencyMs;
       answer = readPendingAnswer(r);
     } catch (e) {

@@ -110,7 +110,7 @@ export class PrivacyRefusal extends Error {}
 function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly RouteCandidate[], form = true): Taken {
   const w = viewOf(model, ctx.windowId);
   if (w === undefined) throw new PrivacyRefusal(`window ${ctx.windowId} left the model`);
-  const d = new Disclosure(model.windows.values());
+  const d = new Disclosure(model);
   const state: Record<string, ModelValue> = {
     task: d.own("Caret is a helper on this Mac. It is deciding, once for this moment, what to do for the person using it."),
     app: d.app(w),

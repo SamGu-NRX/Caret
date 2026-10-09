@@ -371,7 +371,7 @@ export class FirstLookRunner {
     }
     const answers = await Promise.allSettled(
       marked.map(async ({ w, markers }) => {
-        const { req, lines } = buildLookRequest(w, this.deps.model.windows.values(), markers);
+        const { req, lines } = buildLookRequest(w, this.deps.model, markers);
         const a = readPendingAnswer(await ask(req));
         return { asked: w, lines, state: stateFor(a.finished.choice, a.waiting.choice) };
       }),

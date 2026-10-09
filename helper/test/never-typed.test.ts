@@ -81,7 +81,7 @@ describe("fill and the planner agree on what is never typed", () => {
 
   it("never offers such a value as a candidate, from a line or from a field labelled as one", () => {
     const m = desk();
-    const c = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m.windows.values()) }).candidates.map((x) => x.text);
+    const c = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m) }).candidates.map((x) => x.text);
     expect(c).toContain("(737) 555-0112");
     expect(c).toContain("elena.v");
     for (const secret of [...SECRETS, "card 4242 4242 4242 4242"]) expect(c).not.toContain(secret);

@@ -27,7 +27,20 @@ const page = (extra: Node[] = []): Node[] => [
   ...extra,
 ];
 const NOTE = ["Rental notes", "Name: Elena Vance", "Email: elena.vance@example.com", "Landlord: Gary Pruitt", "Landlord phone: (512) 555-0193"].join("\n");
-const MAIL = ["From: Gary Pruitt <gary@example.net>", "Subject: Lease", "Name: Gary Pruitt", "Cell: (512) 555-0177", "Office: Pruitt Rentals", "Hours: weekdays"].join("\n");
+/**
+ * A mail is a conversation, so a request may carry under half of it; its body, which no request here needs, keeps the
+ * header lines that name Gary under that half, as in a real mail.
+ */
+const MAIL = [
+  "From: Gary Pruitt <gary@example.net>",
+  "Subject: Lease",
+  "Name: Gary Pruitt",
+  "Cell: (512) 555-0177",
+  "Office: Pruitt Rentals",
+  "Hours: weekdays",
+  "Thanks for sending the signed pages back so quickly, everything looks in order on our side.",
+  "The keys will be ready at the front desk the morning you move in, so stop by whenever suits you.",
+].join("\n");
 const TE = (pid: number) => ({ pid, bundleId: "com.apple.TextEdit", name: "TextEdit" });
 
 function desk(o: { mail?: boolean; extra?: Node[] } = {}): ScreenModel {

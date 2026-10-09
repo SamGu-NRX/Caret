@@ -20,9 +20,11 @@ public final class SettingsStore {
     public let path: String
     public private(set) var settings: CaretSettings
     /// Why the file could not be read, when it exists but is not settings this host understands.
-    /// The defaults are used meanwhile, and the file is not overwritten until the user changes a
-    /// setting.
+    /// The defaults are used meanwhile. The first write afterwards keeps the unreadable file beside it
+    /// (`keepUnreadable`), since onboarding writes without the user changing a setting.
     public private(set) var loadError: String?
+    /// The file existed and could not be decoded, and has not been kept aside yet.
+    private var unreadable: Bool
     private var observers: [UUID: (CaretSettings) -> Void] = [:]
 
     init(path: String = SettingsStore.path) {
@@ -30,6 +32,7 @@ public final class SettingsStore {
         let loaded = Self.load(path)
         settings = loaded.settings
         loadError = loaded.error
+        unreadable = loaded.error != nil
     }
 
     static func load(_ path: String) -> (settings: CaretSettings, error: String?) {
@@ -53,6 +56,7 @@ public final class SettingsStore {
         guard next != settings else { return }
         settings = next
         loadError = nil
+        if unreadable { keepUnreadable() }
         save()
         for observer in observers.values { observer(next) }
     }
@@ -62,6 +66,19 @@ public final class SettingsStore {
         let id = UUID()
         observers[id] = body
         return id
+    }
+
+    /// Moves the file this host could not read to `<path>.unreadable-<ms>` before the first write replaces it: a newer
+    /// Caret's settings, say, after a downgrade. Nothing is deleted; the move failing only logs, and the write goes on.
+    private func keepUnreadable() {
+        unreadable = false
+        let kept = path + ".unreadable-\(Int64((Date().timeIntervalSince1970 * 1000).rounded()))"
+        do {
+            try FileManager.default.moveItem(atPath: path, toPath: kept)
+            FileHandle.standardError.write(Data("caret: kept the unreadable settings file at \(kept)\n".utf8))
+        } catch {
+            FileHandle.standardError.write(Data("caret: could not keep the unreadable settings file: \(error.localizedDescription)\n".utf8))
+        }
     }
 
     private func save() {

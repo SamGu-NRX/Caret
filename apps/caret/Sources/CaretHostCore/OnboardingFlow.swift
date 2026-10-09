@@ -293,6 +293,11 @@ public final class OnboardingFlow {
         /// macOS shows Caret's switch on but no longer trusts this build (an update re-signed it): one button resets
         /// Caret's own entry.
         public var stale = false
+        /// Other apps on this Mac that System Settings also lists as "Caret".
+        public var otherCarets: [OtherCaret] = []
+        /// macOS said an entry changed but this Caret is still not trusted, and another Caret exists: most likely the
+        /// other one was turned on (`OtherCarets.wrongOneTurnedOn`).
+        public var wrongCaret = false
     }
 
     public enum PreviewState: Equatable, Sendable {
@@ -337,6 +342,8 @@ public final class OnboardingFlow {
         public var untrusted: [String] = []
         public var opened = false
         public var connected = false
+        /// Why the last Add installed nothing (`browserAddFailed`); Add stays the primary so the person can retry.
+        public var failure: String?
 
         public var target: String? { trusted.first }
     }
@@ -437,10 +444,16 @@ public final class OnboardingFlow {
         case browsers(trusted: [String], untrusted: [String])
         /// The extension's engine said hello through the bridge (the helper's `pageEngine` connected).
         case browserConnected
+        /// Add to <browser> installed nothing (the installer's message), so the step offers Add again.
+        case browserAddFailed(String)
         /// The host found Caret's grant stale (`AccessibilityAccess.isStale`), or no longer.
         case staleGrant(Bool)
         /// "Reset Caret's entry" on the switch step.
         case resetGrant
+        /// The host found these other copies of Caret on this Mac.
+        case otherCarets([OtherCaret])
+        /// macOS said an Accessibility entry changed, and this Caret read itself still untrusted.
+        case accessChangedStillUntrusted
         /// Skip on the browser step.
         case skipBrowser
     }
@@ -627,6 +640,10 @@ public final class OnboardingFlow {
         case .browsers(let trusted, let untrusted):
             state.browser.trusted = trusted
             state.browser.untrusted = untrusted
+        case .browserAddFailed(let why):
+            guard state.step == .browser, !state.browser.connected else { break }
+            state.browser.opened = false
+            state.browser.failure = why
         case .browserConnected:
             guard !state.browser.connected else { break }
             state.browser.connected = true
@@ -645,6 +662,15 @@ public final class OnboardingFlow {
             go(to: .on)
         case .staleGrant(let stale):
             state.access.stale = stale
+        case .otherCarets(let others):
+            state.access.otherCarets = others
+        case .accessChangedStillUntrusted:
+            guard state.step == .access, !state.permissions.accessibility else { break }
+            state.access.wrongCaret = OtherCarets.wrongOneTurnedOn(changeNoticed: true, trusted: state.permissions.accessibility,
+                                                                   others: state.access.otherCarets)
+            // No other Caret installed: the entry turned on is this bundle id's, from an earlier copy signed differently
+            // (the rig VM's golden image had one; very likely Sam's beta.1 too). Offer to reset it.
+            if !state.access.wrongCaret { state.access.stale = true }
         case .resetGrant:
             guard state.step == .access, state.access.stale else { break }
             state.access.stale = false
@@ -666,6 +692,7 @@ public final class OnboardingFlow {
             // The first press adds Caret to the browser; after that (or with no browser to add to) it goes on.
             if state.browser.target != nil, !state.browser.opened, !state.browser.connected {
                 state.browser.opened = true
+                state.browser.failure = nil
                 output(.addToBrowser)
             } else {
                 go(to: .on)
@@ -679,7 +706,13 @@ public final class OnboardingFlow {
             switch (state.on.decision, state.on.preview) {
             case (.pending, .ready(let preview)): send(preview: preview)
             case (.pending, .building), (.pending, .idle), (.sent, _): break
-            case (.pending, .empty), (.pending, .failed), (.kept, _): finish()
+            case (.pending, .empty), (.pending, .failed):
+                // Nothing was shown to send, so nothing was agreed to: Done keeps everything on the Mac, which also
+                // lets the controller drop its held-roles snapshot (a stale one could later overwrite newer roles).
+                state.on.decision = .kept
+                output(.consent(sent: false))
+                finish()
+            case (.kept, _): finish()
             }
         case .first:
             // The primary is the offer's own button while it can be taken (Add to Calendar, Fill 4 fields).
@@ -801,6 +834,7 @@ public final class OnboardingFlow {
             state.access.granted = false
             return
         }
+        state.access.wrongCaret = false
         guard !before.accessibility || !state.access.granted else { return }
         land()
     }
@@ -974,6 +1008,8 @@ public final class OnboardingFlow {
         info.browsers = state.browser.trusted
         info.browserOpened = state.browser.opened
         info.browserConnected = state.browser.connected
+        info.otherCarets = state.access.otherCarets.isEmpty ? nil : state.access.otherCarets.map(\.path)
+        info.wrongCaret = state.access.wrongCaret ? true : nil
         if state.on.needsKey {
             info.jevKey = state.on.jevKey.phase.name
             info.jevKeyLength = state.on.jevKey.text.utf16Count
@@ -1026,6 +1062,14 @@ public enum HelloApps {
             out.append(app)
         }
         return out
+    }
+
+    /// Whether a running app at `path` is one a person types in: an app in an Applications folder. macOS's own system UI
+    /// lives under /System/Library (Setup Assistant, Finder, the login window), and a fresh Mac in the VM named Setup
+    /// Assistant on the Hello line.
+    public static func isPersonApp(path: String?, home: String = NSHomeDirectory()) -> Bool {
+        guard let path else { return false }
+        return ["/Applications/", "/System/Applications/", home + "/Applications/"].contains { path.hasPrefix($0) }
     }
 
     /// "Mail, Slack, Notes and Chrome".

@@ -654,7 +654,9 @@ describe("executor", () => {
       });
 
       it("charges the window as the task found it once it has closed", async () => {
-        showSource(["Ship to Austin", "Order ORD-2026-48213", "Placed September 28, 2026", "Total $1,315.50"]);
+        // Austin is a whole line, so quoting it charges the chat; cut from a longer line, under 12 characters, it would
+        // not be (OUTPUT-LEDGER-SPEC section 4, residuals).
+        showSource(["Ship to:", "Austin", "Order ORD-2026-48213", "Placed September 28, 2026", "Total $1,315.50"]);
         const asked: Parameters<AskJev>[0][] = [];
         const pick = jev("shipping");
         askJev = (req) => (asked.push(req), pick(req));

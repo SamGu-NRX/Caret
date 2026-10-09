@@ -8,13 +8,16 @@ import SwiftUI
 /// Dropping the app there adds it with its switch on; macOS asks for the password or Touch ID itself.
 ///
 /// The panel never takes focus (non-activating, `orderFrontRegardless`), floats above System Settings, follows its
-/// window (polled every 0.5 s while System Settings is in front, 1 s otherwise), hides while System Settings is not in
-/// front, and reports when System Settings closes after it was found. Window bounds and owners come from
-/// `CGWindowListCopyWindowInfo`, which needs no permission for them. Placement is `SettingsDragPanelPlacement`.
+/// window (polled every 0.15 s while System Settings is in front, 1 s otherwise), hides while System Settings is not in
+/// front or while a sheet or password dialog sits over it (`SettingsDragPanelPlacement.somethingAsks`), and reports
+/// when System Settings closes after it was found. Window bounds and owners come from `CGWindowListCopyWindowInfo`,
+/// which needs no permission for them. Placement is `SettingsDragPanelPlacement`.
 @MainActor
 final class SettingsDragPanel {
     /// System Settings closed after the panel had found it: the caller falls back to its own window.
     var onSettingsClosed: () -> Void = {}
+    /// The person closed the panel: the caller brings its own window back, or onboarding would show nothing.
+    var onDismissed: () -> Void = {}
 
     private var panel: DragPanelWindow?
     private var model = SettingsDragPanelModel()
@@ -60,7 +63,8 @@ final class SettingsDragPanel {
     private func track() {
         let settingsApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences").first
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.systempreferences"
-        guard let settingsApp, let frame = Self.settingsFrame(pid: settingsApp.processIdentifier) else {
+        let windows = Self.windows()
+        guard let settingsApp, let frame = SettingsDragPanelPlacement.settingsWindow(in: windows, settingsPid: settingsApp.processIdentifier) else {
             hide()
             if found {
                 stop()
@@ -69,19 +73,21 @@ final class SettingsDragPanel {
             return schedule(1)
         }
         found = true
-        if frontmost { show(at: SettingsDragPanelPlacement.frame(settings: frame)) } else { hide() }
+        let asks = SettingsDragPanelPlacement.somethingAsks(in: windows, settingsPid: settingsApp.processIdentifier, settings: frame)
+        if frontmost, !asks { show(at: SettingsDragPanelPlacement.frame(settings: frame)) } else { hide() }
         // Kept on System Settings' window while it is moved: a short interval while it is in front (Permiso uses 0.15 s).
         schedule(frontmost ? 0.15 : 1)
     }
 
-    private static func settingsFrame(pid: pid_t) -> CGRect? {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        let windows = list.compactMap { info -> SettingsDragPanelPlacement.Window? in
+    private static func windows() -> [SettingsDragPanelPlacement.Window] {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+        return list.compactMap { info -> SettingsDragPanelPlacement.Window? in
             guard let owner = info[kCGWindowOwnerPID as String] as? pid_t, let layer = info[kCGWindowLayer as String] as? Int,
                   let b = info[kCGWindowBounds as String] as? [String: CGFloat] else { return nil }
-            return .init(ownerPid: owner, layer: layer, bounds: CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0))
+            return .init(ownerPid: owner, layer: layer, bounds: CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0),
+                         ownerName: info[kCGWindowOwnerName as String] as? String ?? "",
+                         alpha: (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1)
         }
-        return SettingsDragPanelPlacement.settingsWindow(in: windows, settingsPid: pid)
     }
 
     private func show(at topLeft: CGRect) {
@@ -179,11 +185,13 @@ final class SettingsDragPanel {
     }
 
     private func dismissed() {
-        // The close button: the panel goes for this visit to System Settings; the onboarding window still waits.
+        // The close button: the panel goes for this visit to System Settings, and Caret's own window comes back as the
+        // guide (onDismissed); without it, onboarding would show nothing until the grant.
         timer?.invalidate()
         timer = nil
         panel?.orderOut(nil)
         isShown = false
+        onDismissed()
     }
 }
 
@@ -235,26 +243,32 @@ struct SettingsDragPanelView: View {
 }
 
 /// The row: Caret's icon (Pebble) and name. Dragging it drags Caret.app; a click shows Caret.app in Finder.
-struct DragRow: NSViewRepresentable {
+///
+/// SwiftUI draws the row; the drag source is a transparent AppKit view laid over it. An off-screen render (snapshots)
+/// leaves the overlay out, because ImageRenderer draws any NSView as a placeholder box, and that box replaced the
+/// whole row in the CI references (run 37906770746) while it was an NSView hosting the drawing.
+struct DragRow: View {
+    @Environment(\.rendersOffscreen) private var offscreen
+
+    var body: some View {
+        DragRowContent().overlay {
+            if !offscreen { DragSource() }
+        }
+    }
+}
+
+/// The row's mouse and VoiceOver behaviour, drawing nothing.
+struct DragSource: NSViewRepresentable {
     func makeNSView(context: Context) -> DragRowView { DragRowView() }
-    func updateNSView(_ view: DragRowView, context: Context) { view.needsDisplay = true }
+    func updateNSView(_ view: DragRowView, context: Context) {}
 }
 
 final class DragRowView: NSView, NSDraggingSource {
     private var downAt: NSPoint?
     private var dragging = false
-    private var hosting: NSHostingView<DragRowContent>?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        let content = NSHostingView(rootView: DragRowContent())
-        content.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(content)
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor),
-            content.topAnchor.constraint(equalTo: topAnchor), content.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-        hosting = content
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel(OnboardingCopy.Drag.voiceOver)
@@ -304,10 +318,30 @@ final class DragRowView: NSView, NSDraggingSource {
 }
 
 struct DragRowContent: View {
+    @Environment(\.rendersOffscreen) private var offscreen
+
+    /// This bundle's name and folder; an off-screen render shows the installed app's, since the bundle there is the
+    /// test runner (CI run 37911637796 drew "bin in /Applications/Xcode…/usr").
+    private var name: String {
+        offscreen ? "Caret" : FileManager.default.displayName(atPath: Bundle.main.bundlePath).replacingOccurrences(of: ".app", with: "")
+    }
+    private var folder: String { offscreen ? "/Applications" : Bundle.main.bundleURL.deletingLastPathComponent().path }
+
     var body: some View {
         HStack(spacing: 10) {
-            Image(nsImage: NSApp.applicationIconImage ?? NSImage()).resizable().frame(width: 32, height: 32)
-            Text("Caret").font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink))
+            // This exact bundle, by its icon, name and folder, so it can't be mistaken for another Caret in the list.
+            Group {
+                // Off screen, AppIcon's stand-in for an app it cannot find: the runner's icon is not Caret's.
+                if offscreen { RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color(token: Tokens.rule)) }
+                else { Image(nsImage: NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)).resizable() }
+            }
+            .frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name)
+                    .font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink))
+                Text("in \(folder)")
+                    .font(.system(size: 11)).foregroundStyle(Color(token: Tokens.ink2)).lineLimit(1).truncationMode(.middle)
+            }
             Spacer()
             Image(systemName: "hand.draw").font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink2))
         }

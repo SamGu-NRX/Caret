@@ -149,7 +149,7 @@ export class SavedFiles {
 
     // The control's label and the page's title are screen text, held to the window's budget; a saved file's question
     // and name are memory, declared as memory and charged to any window that shows them (privacy.ts).
-    const ledger = new Disclosure(this.deps.model.windows.values());
+    const ledger = new Disclosure(this.deps.model);
     const field = ledger.descriptor(w, questionExcerpt(question));
     if (field === null) return null;
     const d = ledger.t`"${field}"`;

@@ -160,7 +160,7 @@ function run(mode: Mode): Row {
     const states = new Map([...model.windows].map(([id, w]) => [id, w] as const));
     const c0 = process.threadCpuUsage();
     const t0 = performance.now();
-    const ledger = new Disclosure(model.windows.values());
+    const ledger = new Disclosure(model);
     let ok = 0;
     for (let k = 0; k < texts.length; k++) {
       const { w, t } = texts[k] as { w: number; t: string };

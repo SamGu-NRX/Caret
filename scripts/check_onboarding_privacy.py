@@ -12,6 +12,7 @@ RETIRED = (
     "To decide what to offer, Caret sends short snippets to a cloud model",
     "Never a whole document or conversation.",
     "The next words are written on this Mac.",
+    "No request carries more than half of a conversation.",
 )
 LOAD = ('Bundle.main.url(forResource: "PrivacyPromise", withExtension: "txt")', "String(contentsOf: url, encoding: .utf8)",
         "return PrivacyPromise(text)")

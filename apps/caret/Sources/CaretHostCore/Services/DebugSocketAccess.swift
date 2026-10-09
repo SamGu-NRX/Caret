@@ -8,14 +8,14 @@ import Foundation
 /// `inject` and the rest) needs a development build or the explicit opt-in `CARET_DEBUG_SOCKET=full`, which is how the
 /// test Mac's harnesses keep driving a release build.
 public enum DebugSocketAccess: String, Sendable, Equatable {
-    /// Every command, as before H12: development and acceptance builds, or `CARET_DEBUG_SOCKET=full`.
+    /// Every command, as before H12: debug builds, acceptance builds with test hooks, or `CARET_DEBUG_SOCKET=full`.
     case full
     /// `state` (as `ReleaseState`) and `spend` only.
     case release
 
     public static let environmentKey = "CARET_DEBUG_SOCKET"
 
-    /// `developmentBuild`: a debug or acceptance build (main.swift decides by compile flags). `CARET_DEBUG_SOCKET=full`
+    /// `developmentBuild`: a debug build, or an acceptance build started with test hooks (main.swift). `CARET_DEBUG_SOCKET=full`
     /// opens a release build; `CARET_DEBUG_SOCKET=release` restricts a development one, so the release rules can be
     /// tried on a debug build. Any other value is refused by name rather than read as either.
     public static func resolve(developmentBuild: Bool, environment: [String: String]) throws -> DebugSocketAccess {

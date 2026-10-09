@@ -497,6 +497,8 @@ public struct DenyList: Sendable {
     }
 
     /// Reads the file, creating it with the defaults when it does not exist. An unreadable file is an error, not an empty list.
+    /// The defaults always apply on top of the file: they mirror CaretHostCore's ExcludedApps, which the host refuses
+    /// anyway, and a file written by an older Caret lacks the entries added since (terminals, System Settings, Caret).
     public static func load(path: String) throws -> DenyList {
         let fm = FileManager.default
         if !fm.fileExists(atPath: path) {
@@ -506,6 +508,7 @@ public struct DenyList: Sendable {
         }
         let text = try String(contentsOfFile: path, encoding: .utf8)
         let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-        return DenyList(prefixes: lines.filter { !$0.isEmpty && !$0.hasPrefix("#") })
+        let listed = lines.filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        return DenyList(prefixes: listed + defaults.filter { !listed.contains($0) })
     }
 }

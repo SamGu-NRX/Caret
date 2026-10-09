@@ -205,6 +205,7 @@ final class OnboardingController {
         flow.send(.apps(HelloAppsReader.read()))
         flow.send(.otherTabOwners(readTabOwners()))
         flow.send(Self.readBrowsers())
+        flow.send(.otherCarets(Self.readOtherCarets()))
         flow.send(.staleGrant(AccessibilityAccess.isStale(grantedSignature: progress?.grantedSignature,
                                                           currentSignature: Self.ownSignature(), trusted: permissions.accessibility)))
         flow.start()
@@ -217,6 +218,12 @@ final class OnboardingController {
         startPolling()
         guard drawsWindow else { return }
         showWindow()
+    }
+
+    /// The menu's "Caret can't see your apps": the switch step alone, which finishes when the grant lands.
+    func openAccess() {
+        open(drawing: true, opening: OnboardingLaunch.Opening(step: .access, alone: true))
+        perform(.openSystemSettings)
     }
 
     /// The menu's "Jev is off": the `on` step alone, which carries the key field.
@@ -252,6 +259,11 @@ final class OnboardingController {
 
     /// The helper heard a page engine say hello: the extension is connected through the bridge.
     func browserConnected() { flow?.send(.browserConnected) }
+
+    /// What Add to <browser> did: a failure goes back to the step, which says why and offers Add again.
+    func browserAddFinished(ok: Bool, message: String) {
+        if !ok { flow?.send(.browserAddFailed(message)) }
+    }
 
     /// Installed Chromium browsers, the default one first: those Caret's bridge trusts and those it does not yet.
     static func readBrowsers() -> OnboardingFlow.Event {
@@ -309,12 +321,23 @@ final class OnboardingController {
             onAddToBrowser()
         case .openSystemSettings:
             guard drawsWindow else { return suppressed.append("openSystemSettings") }
+            // An entry this build isn't trusted under is another copy's or none: reset it first, so the drag adds one
+            // bound to this build (AccessibilityAccess.resetsBeforeAsking). Then macOS's alert puts Caret in the list.
+            if resetOwnEntries(AccessibilityAccess.resetsBeforeAsking(accessibility: AXIsProcessTrusted(), listenEvents: CGPreflightListenEventAccess(),
+                                                                       postEvents: CGPreflightPostEventAccess()), why: "before asking") {
+                updateProgress { $0.axAsked = nil; $0.grantedSignature = nil }
+            }
             // macOS's alert is what first puts Caret in the list; after that it shows nothing, so only the pane opens.
             if AccessibilityAccess.shouldPrompt(asked: progress?.axAsked == true, trusted: AXIsProcessTrusted()) {
                 updateProgress { $0.axAsked = true }
+                // Caret in front first: from the login item or a launch behind another app, macOS's alert otherwise
+                // opened behind the front app, where a person can miss it (after-run 263afe5, stale leg).
+                NSApp.activate(ignoringOtherApps: true)
                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(options)
+                bringAlertForward()
             }
+            openedSettingsAt = Date()
             Self.openAccessibilityPane()
             startDragPanel()
         case .resetGrant:
@@ -415,29 +438,58 @@ final class OnboardingController {
         return unique.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// macOS's Accessibility alert belongs to its own process (universalAccessAuthWarn), which can open behind the front
+    /// app. Brings that process forward once its window is up: checked every 0.1 s for up to 2 s after the ask.
+    private func bringAlertForward(attempt: Int = 0) {
+        let alert = NSWorkspace.shared.runningApplications.first { $0.executableURL?.lastPathComponent == "universalAccessAuthWarn" }
+        if let alert, !alert.isTerminated {
+            alert.activate()
+            return
+        }
+        guard attempt < 20 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            MainActor.assumeIsolated { self?.bringAlertForward(attempt: attempt + 1) }
+        }
+    }
+
     /// Removes Caret's own Accessibility entry (never another app's: `AccessibilityAccess.resetArguments`), forgets
     /// that macOS was asked, and opens the pane again, alert first, so Caret goes back into the list.
     private func resetOwnGrant() {
-        guard let args = try? AccessibilityAccess.resetArguments(bundleID: Bundle.main.bundleIdentifier) else { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        p.arguments = args
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        do {
-            try p.run()
-            p.waitUntilExit()
-        } catch {
-            FileHandle.standardError.write(Data("caret: tccutil reset failed: \(error.localizedDescription)\n".utf8))
-        }
+        _ = resetOwnEntries(AccessibilityAccess.ownServices, why: "stale entry")
         updateProgress { $0.axAsked = nil; $0.grantedSignature = nil }
         perform(.openSystemSettings)
+    }
+
+    /// `tccutil reset SERVICE dev.caret.host` for each service (Caret's own entries only:
+    /// `AccessibilityAccess.resetArguments`), each exit status in the host log. True when one ran and exited 0. A
+    /// failure only logs: the flow carries on as before.
+    @discardableResult
+    private func resetOwnEntries(_ services: [String], why: String) -> Bool {
+        var any = false
+        for service in services {
+            guard let args = try? AccessibilityAccess.resetArguments(service: service, bundleID: Bundle.main.bundleIdentifier) else { continue }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            p.arguments = args
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            do {
+                try p.run()
+                p.waitUntilExit()
+                FileHandle.standardError.write(Data("caret: tccutil reset \(service) (\(why)) exited \(p.terminationStatus)\n".utf8))
+                if p.terminationStatus == 0 { any = true }
+            } catch {
+                FileHandle.standardError.write(Data("caret: tccutil reset \(service) (\(why)) failed: \(error.localizedDescription)\n".utf8))
+            }
+        }
+        return any
     }
 
     /// Hands the switch step to the panel inside System Settings: Caret's own window steps out of the way. If System
     /// Settings has not shown its window within 6 s, or closes before the switch, the window comes back as the guide.
     private func startDragPanel() {
         dragPanel.onSettingsClosed = { [weak self] in self?.showGuideWindow() }
+        dragPanel.onDismissed = { [weak self] in self?.showGuideWindow() }
         // The panel's first appearance travels from where Caret's window was.
         dragPanel.start(from: window?.isVisible == true ? window?.frame : nil)
         window?.orderOut(nil)
@@ -490,6 +542,15 @@ final class OnboardingController {
     // MARK: - Instant grant detection
 
     private var detection: GrantDetection?
+    private var openedSettingsAt = Date.distantPast
+
+    /// Every other installed copy of Caret, from LaunchServices: they all show in System Settings as "Caret".
+    static func readOtherCarets() -> [OtherCaret] {
+        let installed = OtherCarets.knownIDs.flatMap { id in
+            NSWorkspace.shared.urlsForApplications(withBundleIdentifier: id).map { OtherCaret(bundleID: id, path: $0.path) }
+        }
+        return OtherCarets.others(installed: installed, runningPath: Bundle.main.bundlePath)
+    }
     private var axObserver: NSObjectProtocol?
     private var tccToken: Int32 = NOTIFY_TOKEN_INVALID
 
@@ -499,7 +560,24 @@ final class OnboardingController {
     /// stays as the backup. No private TCC call is made.
     private func startGrantDetection() {
         stopGrantDetection()
-        let detection = GrantDetection(clock: RunLoopClock()) { [weak self] in MainActor.assumeIsolated { self?.poll() } }
+        let detection = GrantDetection(clock: RunLoopClock()) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.poll()
+                // A change macOS announced that did not make this Caret trusted: if another Caret is installed, its
+                // switch was the one turned on. Not in the first seconds after Caret asked, when its own entry is added.
+                // Still untrusted 2 s after the notice (AccessibilityAccess.staleAfterNotice): the entry that changed is
+                // another Caret's, or an older copy of this one.
+                guard let flow = self.flow, flow.state.step == .access, !flow.state.permissions.accessibility,
+                      Date().timeIntervalSince(self.openedSettingsAt) > 3 else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + AccessibilityAccess.staleAfterNotice) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, let flow = self.flow, flow.state.step == .access, !AXIsProcessTrusted() else { return }
+                        flow.send(.accessChangedStillUntrusted)
+                    }
+                }
+            }
+        }
         self.detection = detection
         axObserver = DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { detection.changed() }
@@ -678,6 +756,8 @@ final class OnboardingController {
     ///   onboarding preview empty|fail|<n windows>  (a stand-in preview for the open request)
     ///   onboarding tab-owners none|<name...>      onboarding reply <firstLookReply json>
     ///   onboarding jev-key <text>
+    ///   onboarding trust-probe                    (this host's AXIsProcessTrusted beside a fresh `Caret --trust-probe`'s)
+    ///   onboarding reset-probe                    (`tccutil reset Accessibility dev.caret.host` from this process: exit, output)
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -688,6 +768,8 @@ final class OnboardingController {
         guard words.count > 1 else { return reply() }
         guard testHooks else { return #"{"error":"onboarding commands are test hooks: start the host with --test-hooks"}"# }
         let rest = Array(words.dropFirst())
+        if rest == ["trust-probe"] { return Self.trustProbe() }
+        if rest == ["reset-probe"] { return Self.resetProbe() }
         if rest.first == "open" {
             let step = rest.count > 1 ? OnboardingStep(rawValue: rest[1]) : nil
             if rest.count > 1, step == nil { return #"{"error":"usage: onboarding open [hello|access|on|first]"}"# }
@@ -764,6 +846,49 @@ final class OnboardingController {
     }
 }
 
+extension OnboardingController {
+    /// Runs Caret's own reset from this process, as `resetOwnEntries` does, and returns its exit status and output with
+    /// this process's pid and parent (launchd's 1 for the login item). A test hook for finding where the reset takes:
+    /// in the VM it exited 0 from the app and left the entry.
+    static func resetProbe() -> String {
+        guard let args = try? AccessibilityAccess.resetArguments(service: "Accessibility", bundleID: Bundle.main.bundleIdentifier) else {
+            return #"{"error":"not dev.caret.host"}"#
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch {
+            return "{\"error\":\(HostRuntime.jsonString(String(describing: error)))}"
+        }
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        return "{\"exit\":\(p.terminationStatus),\"out\":\(HostRuntime.jsonString(out)),\"pid\":\(getpid()),\"ppid\":\(getppid())}"
+    }
+
+    /// This process's Accessibility answer and a fresh child's (`Caret --trust-probe`), as JSON. A test hook: it blocks
+    /// the main thread for the child's run, about a tenth of a second.
+    static func trustProbe() -> String {
+        let own = AXIsProcessTrusted()
+        guard let exe = Bundle.main.executableURL else { return #"{"error":"no executable"}"# }
+        let child = Process()
+        child.executableURL = exe
+        child.arguments = ["--trust-probe"]
+        let pipe = Pipe()
+        child.standardOutput = pipe
+        child.standardError = FileHandle.nullDevice
+        do { try child.run() } catch {
+            return "{\"error\":\(HostRuntime.jsonString(String(describing: error)))}"
+        }
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        child.waitUntilExit()
+        let answer = out == "true" ? "true" : (out == "false" ? "false" : "null")
+        return "{\"own\":\(own),\"child\":\(answer)}"
+    }
+}
+
 /// Where the guide sits while System Settings is open: beside its window, on the side with room, vertically aligned to
 /// its top; at the left of the screen when System Settings has no window on screen. Window bounds and owner come from
 /// `CGWindowListCopyWindowInfo`, which needs no permission for them.
@@ -826,7 +951,7 @@ enum HelloAppsReader {
             guard let url, let bundle = Bundle(url: url), let id = bundle.bundleIdentifier else { return nil }
             return HelloApp(bundleId: id, name: FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: ""))
         }
-        let running = ws.runningApplications.filter { $0.activationPolicy == .regular }.compactMap { r -> HelloApp? in
+        let running = ws.runningApplications.filter { $0.activationPolicy == .regular && HelloApps.isPersonApp(path: $0.bundleURL?.path) }.compactMap { r -> HelloApp? in
             guard let id = r.bundleIdentifier, let name = r.localizedName else { return nil }
             return HelloApp(bundleId: id, name: name)
         }

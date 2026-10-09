@@ -169,8 +169,10 @@ struct StepDots: View {
         HStack(spacing: 8) {
             ForEach(0..<count, id: \.self) { i in
                 Circle()
+                    // Ink 3 is 3.4:1 light and 3.1:1 dark (Tokens); at 6 pt the dot keeps solid pixels of it inside its
+                    // antialiased edge, so it holds the 3:1 a step indicator needs (WCAG 1.4.11).
                     .fill(Color(token: i == current ? Tokens.carrot : Tokens.ink3))
-                    .frame(width: i == current ? 7 : 5, height: i == current ? 7 : 5)
+                    .frame(width: i == current ? 7 : 6, height: i == current ? 7 : 6)
             }
         }
         .accessibilityElement()
@@ -401,10 +403,13 @@ struct AccessPane: View {
         let granted = state.access.granted
         VStack(alignment: .leading, spacing: 0) {
             let stale = state.access.stale && !granted
-            SwappingLine(key: granted ? OnboardingCopy.Access.landedTitle : (stale ? OnboardingCopy.Access.staleTitle : OnboardingCopy.Access.title), animated: animated) {
-                ScreenTitle(title: granted ? OnboardingCopy.Access.landedTitle : (stale ? OnboardingCopy.Access.staleTitle : OnboardingCopy.Access.title))
-            }
+            let wrong = state.access.wrongCaret && !granted
+            let title = granted ? OnboardingCopy.Access.landedTitle
+                : wrong ? OnboardingCopy.Access.wrongTitle
+                : stale ? OnboardingCopy.Access.staleTitle : OnboardingCopy.Access.title
+            SwappingLine(key: title, animated: animated) { ScreenTitle(title: title) }
             Text(granted ? OnboardingCopy.Access.landedLine
+                 : wrong ? OnboardingCopy.Access.wrongLine(state.access.otherCarets)
                  : stale ? OnboardingCopy.Access.staleLine
                  : (state.access.reopened ? OnboardingCopy.Access.reopened : OnboardingCopy.Access.line))
                 .font(.system(size: 13))
@@ -425,6 +430,11 @@ struct AccessPane: View {
             }
             .padding(.top, 14)
             // The same row as the panel inside System Settings: drag it into the list there.
+            if !granted, !wrong, !state.access.otherCarets.isEmpty {
+                Text(OnboardingCopy.Access.several(state.access.otherCarets))
+                    .font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink))
+                    .fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+            }
             if stale {
                 Button(OnboardingCopy.Access.reset) { send(.resetGrant) }
                     .buttonStyle(OnboardingButtonStyle(kind: .secondary))
@@ -576,6 +586,11 @@ struct BrowserPane: View {
                     }
                 }
                 .padding(.top, 20)
+                if let failure = b.failure, !b.opened {
+                    // Add installed nothing: say why, and Add stays the primary to try again.
+                    Text(OnboardingCopy.Browser.failed(failure)).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink))
+                        .fixedSize(horizontal: false, vertical: true).padding(.top, 10)
+                }
                 // Until the store listing exists: the three steps of loading the extension from the folder Caret shows.
                 if b.opened, !b.connected, BrowserExtension.storeURL == nil {
                     VStack(alignment: .leading, spacing: 6) {
@@ -617,7 +632,9 @@ struct OnPane: View {
             ScreenTitle(title: OnboardingCopy.On.title)
             VStack(spacing: 0) {
                 CapabilityRow(title: "Next words", detail: OnboardingCopy.On.nextWords(HelloApps.list(state.hello.apps)), state: "On", on: true)
-                CapabilityRow(title: "Fixes", detail: OnboardingCopy.On.fixesDetail, state: "On in Mac apps\n\(OnboardingCopy.On.fixesWeb)", on: true)
+                // v2/access has no page writing path, so fixes run in Mac apps only. v2/next reads
+                // PageWritingMachine.webFields here; take its line when merging.
+                CapabilityRow(title: "Fixes", detail: OnboardingCopy.On.fixesDetail, state: OnboardingCopy.On.fixesState(webPages: false), on: true)
                 CapabilityRow(title: "The next step", detail: OnboardingCopy.On.stepDetail, state: stepState, on: state.on.decision == .sent, last: true)
             }
             .padding(.top, 12)
@@ -775,8 +792,12 @@ struct Hatch: View {
                 var p = Path()
                 p.move(to: CGPoint(x: x, y: size.height))
                 p.addLine(to: CGPoint(x: x + size.height, y: 0))
-                ctx.stroke(p, with: .color(Color(token: Tokens.ink3).opacity(0.5)), lineWidth: 1)
-                x += 4
+                // Ink 3 at 2 pt: hatching says a line stays, a state mark, so it needs 3:1 (WCAG 1.4.11). A 1 pt
+                // diagonal never shows its color solid: half-opacity Ink 3 measured 1.45:1 (CI run 37906771739), full
+                // Ink 3 2.23:1 (run 37911638733). At 2 pt its core is solid Ink 3, 3.4:1 light and 3.1:1 dark. (Ink 2
+                // would pass but is the text color, so the text probe measured the thin lines as text: 2.84:1.)
+                ctx.stroke(p, with: .color(Color(token: Tokens.ink3)), lineWidth: 2)
+                x += 6
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 2))
@@ -951,14 +972,7 @@ struct FirstPane: View {
     }
 
     private var trust: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(OnboardingCopy.First.trust)
-            Text(OnboardingCopy.First.soon)
-                .font(.system(size: 11))
-                .padding(.horizontal, 5)
-                .overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(Color(token: Tokens.rule), lineWidth: 1) }
-            Text(OnboardingCopy.First.undo)
-        }
+        Text(OnboardingCopy.First.trust)
         .font(.system(size: 13))
         .foregroundStyle(Color(token: Tokens.ink))
         .fixedSize(horizontal: false, vertical: true)

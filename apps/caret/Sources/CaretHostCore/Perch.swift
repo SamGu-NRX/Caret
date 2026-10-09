@@ -73,8 +73,8 @@ public enum Perch {
     /// only within their hold. `acknowledgedAt` is when the activity list was last opened, in ms.
     public static func subject(_ records: [TaskRecord], now: Date, acknowledgedAt: Int64 = 0) -> Subject? {
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
-        let candidates = records.compactMap { r -> (TaskRecord, Mood)? in
-            guard let mood = mood(for: r.state) else { return nil }
+        let candidates: [(TaskRecord, Mood)] = records.compactMap { r -> (TaskRecord, Mood)? in
+            guard let mood: Mood = Perch.mood(for: r.state) else { return nil }
             // Done by the user's own hand (a prepared offer they typed out, a watched window they
             // closed): no gesture of relief for work Caret did not do.
             if r.state == .done, r.cause == .you { return nil }
@@ -91,9 +91,9 @@ public enum Perch {
         let newest: ((TaskRecord, Mood), (TaskRecord, Mood)) -> Bool = {
             $0.0.updatedAt != $1.0.updatedAt ? $0.0.updatedAt > $1.0.updatedAt : $0.0.id < $1.0.id
         }
-        let urgent = candidates.filter { $0.1 == .needsYou }.sorted(by: newest).first
-        guard let pick = urgent ?? candidates.sorted(by: newest).first else { return nil }
-        let (record, mood) = pick
+        let urgent: (TaskRecord, Mood)? = candidates.filter { $0.1 == Mood.needsYou }.sorted(by: newest).first
+        guard let pick: (TaskRecord, Mood) = urgent ?? candidates.sorted(by: newest).first else { return nil }
+        let (record, mood): (TaskRecord, Mood) = pick
         return Subject(
             taskId: record.id, mood: mood, pid: record.app.map { Int32(truncatingIfNeeded: $0.pid) },
             windowId: record.windowId, windowTitle: record.windowTitle,
