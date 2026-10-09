@@ -28,4 +28,5 @@ jobs:
       - name: Build the packaged app in internal mode
         env:
           CARET_INTERNAL_BUILD: '1'
-        run: xcodebuild -quiet -project Caret.xcodeproj -scheme Caret -configuration Debug -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
+        # The local-store gate refuses Xcode's default ~/Library/Developer output root.
+        run: xcodebuild -quiet -project Caret.xcodeproj -scheme Caret -configuration Debug -derivedDataPath .local/xcode-ci -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
