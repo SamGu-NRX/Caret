@@ -51,6 +51,7 @@ public enum EngineLoader {
         return found?.url ?? ModelFiles.caretFile(home: home)
     }
 
+    /// The user's own Caret's profile folder; a run with its own home passes its own (`CaretHome.profilesDirectory`).
     static var profileDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Caret/v2-host/Profiles", isDirectory: true)
@@ -59,7 +60,9 @@ public enum EngineLoader {
     /// Heavy: maps the model, creates the llama context and, the first time, classifies the whole
     /// vocabulary into an ACPF profile. Call off the main actor.
     /// `prependBOS` overrides the family rule; the dev probe uses it to compare both.
-    static func load(modelURL: URL, compatibilityStore: AppCompatibilityStore, prependBOS: Bool? = nil) throws -> Loaded {
+    static func load(
+        modelURL: URL, compatibilityStore: AppCompatibilityStore, prependBOS: Bool? = nil, profileDirectory: URL = EngineLoader.profileDirectory
+    ) throws -> Loaded {
         guard ModelContainer.modelExists(at: modelURL) else {
             throw LoadError.modelMissing(modelURL.path)
         }
