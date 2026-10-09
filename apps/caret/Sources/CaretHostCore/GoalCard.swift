@@ -124,11 +124,16 @@ public struct GoalCard: Equatable, Sendable {
     /// Steps Caret makes in this segment.
     public var caretSteps: Int { rows.filter(\.caretDoes).count }
 
+    /// A segment of hand-off rows only: what is left is the user's.
+    public var handOffOnly: Bool { !rows.isEmpty && rows.allSatisfy { $0.kind == .handoff } }
+
     // MARK: - Keys
 
-    /// Tab: the acceptance of the segment as previewed. Nil unless it waits for Tab and has not expired.
+    /// Tab: the acceptance of the segment as previewed. Nil unless it waits for Tab and has not expired. A segment that is
+    /// only the hand-off (the goal's last step in another window, helper goals/lower.ts cut) is accepted too: Caret does
+    /// nothing in it, and the acceptance lets the helper end the goal with what the user does (Codex review on #22).
     public mutating func accept(nowMs: Int64) -> GoalAccept? {
-        guard stage == .preview, expires > nowMs, caretSteps > 0 else { return nil }
+        guard stage == .preview, expires > nowMs, caretSteps > 0 || handOffOnly else { return nil }
         stage = .running
         note = nil
         if let first = rows.firstIndex(where: \.caretDoes) { rows[first].state = .running }
@@ -257,6 +262,14 @@ public struct GoalCard: Equatable, Sendable {
             return .applied
         case .stopped(let s):
             if case .ended = stage { return .ignored }
+            // A stop at a writing step may follow a write that landed but did not read back: the executor keeps it for
+            // undo, and no verified receipt named its task (Greptile review on #22). The segment's task is the helper's
+            // `goalId:s<segment>` (goals/runs.ts segmentTaskId), so ⌘Z offers it too.
+            if stage == .running || stage == .stopping, let seg = s.segment, seg == segment, let at = s.step,
+               rows.contains(where: { $0.step == at && ($0.kind == .write || $0.kind == .attach || $0.kind == .calendar) }) {
+                let id = taskId ?? "\(goalId):s\(seg)"
+                if !tasks.contains(id) { tasks.append(id) }
+            }
             for k in rows.indices where rows[k].state == .running { rows[k].state = s.reason == .you ? .pending : .failed }
             stage = .ended(Ending(kind: s.segment == nil || stage == .preview ? .notRun : .stopped, line: GoalCopy.stopped(s, place: place)))
             return .applied
@@ -360,6 +373,7 @@ public enum GoalCopy {
     public static func action(_ card: GoalCard) -> String {
         let does = card.rows.filter(\.caretDoes)
         let n = does.count
+        if n == 0 { return "Finish" }
         if does.allSatisfy({ $0.kind == .calendar }) { return n == 1 ? "Add the event" : "Add \(n) events" }
         if does.allSatisfy({ $0.kind == .write }) { return n == 1 ? "Fill 1 field" : "Fill \(n) fields" }
         return n == 1 ? "Do 1 step" : "Do \(n) steps"

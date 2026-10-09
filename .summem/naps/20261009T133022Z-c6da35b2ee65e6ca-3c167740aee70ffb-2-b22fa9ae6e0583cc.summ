@@ -1,1 +1,0 @@
-kinds.ts readerValue and TypedValues.swift membershipNumber share word lists (membership digit runs are ids): change both. VERIFY_CUTOFF stays 0.75: lowering needs ~100 labelled wrong answers in the band; W2 had 32 in 0.65-0.75.

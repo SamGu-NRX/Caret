@@ -29,17 +29,25 @@ private final class UserCalendars: CalendarBackend, @unchecked Sendable {
         if readFails { throw ReadError() }
         return events.values.filter { $0.calendarID == calendarID && $0.start < to && $0.end > from }
     }
-    func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> String {
+    func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> BackendEvent {
         calls.append("save \(calendarID)"); n += 1
         events["ev-\(n)"] = BackendEvent(id: "ev-\(n)", calendarID: calendarID, title: title, start: start, end: end)
-        return "ev-\(n)"
+        return events["ev-\(n)"]!
     }
     func event(id: String) throws -> BackendEvent? {
         calls.append("event \(id)")
         if readFails { throw ReadError() }
         return events[id]
     }
-    func removeEvent(id: String) throws { calls.append("remove \(id)"); events.removeValue(forKey: id) }
+    func removeEvent(id: String, ifStill saved: BackendEvent) throws {
+        calls.append("remove \(id)")
+        // As EventKitBackend: the fresh read and the removal together, so an edit made after the adapter's checks stops it.
+        duringRemove?()
+        if let now = events[id], !saved.unchanged(in: now) { throw CalendarEventChanged() }
+        events.removeValue(forKey: id)
+    }
+    /// Called inside a removal before its fresh read, as the user's edit landing during an undo.
+    var duringRemove: (() -> Void)?
     func defaultCalendarID() -> String? { calls.append("default"); return defaultID.flatMap { calendars[$0] == true ? $0 : nil } }
     func isWritable(calendarID: String) -> Bool { calls.append("writable \(calendarID)"); return calendars[calendarID] == true }
 }

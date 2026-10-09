@@ -1,0 +1,1 @@
+On B24-B31 the per-request reveal caps (measure.ts WINDOW_CHARS/CONVERSATION_CHARS) never bind: the half-of-a-conversation rule in limitOfTotal does (limits 342-560). Raising the caps alone changes no request.

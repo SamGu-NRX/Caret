@@ -622,7 +622,10 @@ public final class AskCaret {
         // A fresh plan after the card's goal stopped (GoalRuns.stopAndReplan): a new goal that replaces it, previewed on
         // the card for its own Tab. Its first segment names the goal it replaces.
         if case .goal(let card) = phase, case .segment(let p) = goal.event, p.replaces == card.goalId, goal.goalId != card.goalId,
-           let fresh = GoalCard(preview: p, goalId: goal.goalId, instruction: card.instruction) {
+           var fresh = GoalCard(preview: p, goalId: goal.goalId, instruction: card.instruction) {
+            // ⌘Z undoes the whole goal the user asked for: the stopped goal's writes stay with the card that replaces it
+            // (Codex review on #22).
+            fresh.tasks = card.tasks
             showGoal(fresh)
             return true
         }

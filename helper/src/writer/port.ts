@@ -108,6 +108,9 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
       ];
       const sealed = seal({ writer: req }, chatSink(route, messages, [system, ...PLAN_WORDING], req.maxOutputTokens));
       const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);
+      // The key is read before anything is reserved: a key that can't be read sends nothing, so it may charge nothing
+      // (Codex review on #22: a missing key once charged the full estimate, and repeats could use up the day's cap).
+      const apiKey = key();
       let hold;
       let estimate = 0;
       try {
@@ -121,7 +124,7 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
       }
       let r;
       try {
-        r = await chat(route, key(), sealed, signal, opts.fetchFn);
+        r = await chat(route, apiKey, sealed, signal, opts.fetchFn);
       } catch (e) {
         // Only a provider's 4xx refusal is known unbilled. A timeout, a network error, a 5xx or an unreadable answer may
         // have been processed and billed, so it counts at its reservation, and repeated failures still reach the cap.

@@ -128,6 +128,11 @@ describe("writer's local-day cap", () => {
     const refused = makeWriterPort(route, { evaluation: true, key: () => KEY, fetchFn: async () => new Response(JSON.stringify({ error: { type: "invalid_request_error", message: "bad" } }), { status: 400 }), spend: refusedLedger });
     await expect(refused.write(request())).rejects.toThrow(/HTTP 400/);
     expect(refusedLedger.spent()).toBe(0);
+    // A key that can't be read sends nothing and reserves nothing.
+    const keyless = spend();
+    const noKey = makeWriterPort(route, { evaluation: true, key: () => { throw new Error("no writer key"); }, fetchFn: vi.fn(fake([])), spend: keyless });
+    await expect(noKey.write(request())).rejects.toThrow("no writer key");
+    expect(keyless.spent()).toBe(0);
   });
 
   it("shares landed spend across ports and resets on the next local day", async () => {
