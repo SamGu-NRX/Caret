@@ -1,0 +1,1 @@
+Helper tests: generation stops at MAX_GENERATOR_VISITS, not time; close page sessions before Helper.shutdown. Oracle: realfill-asks seals requests first, so keep oracle rules off FillTrace. Unit-based choices only for Asks naming the source window.

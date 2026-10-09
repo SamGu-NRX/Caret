@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { proposeFill } from "../src/fill/fill.ts";
 import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
-import { heldAsConversation, heldToHalf, windowBudget } from "../src/privacy.ts";
+import { heldAsConversation, windowBudget } from "../src/privacy.ts";
 import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
 import { formInputs } from "../src/fill/fill.ts";
 import { describeField } from "../src/fill/descriptor.ts";
@@ -102,7 +102,7 @@ function score(f: CorpusField, nodes: Node[], fields: readonly FillField[]): Sco
   return { ...base, verdict: "missed", why: x.withheld ?? (x.asks.length === 0 ? (x.control === "select" ? "noOptions" : "notAsked") : "none") };
 }
 
-/** How the privacy budget treated the form's source window: its budget, whether it was held to half, and whether a span of it did not fit. */
+/** How the privacy budget treated the form's source window: its budget, whether it was held to under half (a conversation), and whether a span of it did not fit. */
 interface SourceCut {
   budget: number | null;
   half: boolean;
@@ -147,10 +147,10 @@ for (const [fi, form] of corpus.forms.entries()) {
     const d = describeField(w, x.node);
     return fieldTerms([d.label, d.nearest, d.placeholder]);
   });
-  const gen = collectCandidates(model, w.window.windowId, { now: T0, ledger: new Disclosure(model.windows.values()), fields: terms });
+  const gen = collectCandidates(model, w.window.windowId, { now: T0, ledger: new Disclosure(model), fields: terms });
   const source: SourceCut = {
     budget: sw === null ? null : windowBudget(sw),
-    half: sw !== null && (heldToHalf(sw) || heldAsConversation(sw)),
+    half: sw !== null && heldAsConversation(sw),
     cut: sw !== null && gen.cut.includes(sw.window.windowId),
     removedKinds: [...cutKinds(model, gen.cut, gen.candidates)],
   };

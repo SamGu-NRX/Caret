@@ -23,7 +23,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MEMORY_SNIPPETS } from "../../privacy.ts";
 import { frozenRequest, wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
-import { seal, writeStoredLine } from "../../privacy/send.ts";
+import { seal, writeStoredLine, type StoreRecord } from "../../privacy/send.ts";
 import { renameLocal } from "../../privacy/store-path.ts";
 
 export type CacheMode = "record" | "replay" | "replay-or-record";
@@ -201,6 +201,31 @@ export function checkFixture(req: JevRequest, fixture: FixtureSources): void {
   }
 }
 
+/**
+ * A cache entry (privacy/send.ts StoreRecord): the request's state and its questions with their options renamed by rank
+ * (canonicalRequest), and what the engine answered.
+ */
+const ENTRY_RECORD: Omit<StoreRecord, "build"> = {
+  name: "decision cache",
+  envelope: {
+    v: { kind: "scalar", types: ["number"] },
+    engine: { kind: "config", max: 100 },
+    model: { kind: "config", max: 200 },
+    "canonical.exact": { kind: "scalar", types: ["boolean"] },
+    "canonical.state": { kind: "rendered", max: 400_000 },
+    "canonical.questions": { kind: "rendered", max: 400_000 },
+    answeredBy: { kind: "answer", max: 200 },
+    "answers.*.choice": { kind: "answer", max: 200 },
+    "answers.*.confidence": { kind: "scalar", types: ["number"] },
+    "nouls.*": { kind: "scalar", types: ["number"] },
+    "probabilities.*.*": { kind: "scalar", types: ["number"] },
+    inputTokens: { kind: "scalar", types: ["number"] },
+    latencyMs: { kind: "scalar", types: ["number"] },
+    recordedAt: { kind: "config", max: 40 },
+  },
+  wording: ["choice noul"],
+};
+
 /** `ask` with the cache in front of it (see the file's header). */
 export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
   refuseShipped(opts.env ?? processEnv());
@@ -210,7 +235,7 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
     checkFixture(req, opts.fixture);
     // Sealed once (privacy/send.ts): the key, the engine's request and the record all come from this frozen copy.
     const sealed = seal({ req, wire: wireBody(req, opts.model) });
-    const asked = frozenRequest(req, sealed.wire);
+    const asked = frozenRequest(req, sealed.wire, sealed.charged);
     const c = canonicalRequest(asked, opts.engine, opts.model, opts.variant ?? "");
     const path = join(opts.dir, c.key.slice(0, 2), `${c.key}.json`);
     if (opts.mode !== "record") {
@@ -253,7 +278,7 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
     mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
     const tmp = `${path}.${process.pid}.tmp`;
     // Checked as it is written, after the answer came back (privacy/send.ts storedLine).
-    writeStoredLine(tmp, sealed, entry, { mode: 0o600 });
+    writeStoredLine(tmp, sealed, { ...ENTRY_RECORD, build: entry }, { mode: 0o600 });
     renameLocal(tmp, path);
     return r;
   };

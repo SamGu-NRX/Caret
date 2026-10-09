@@ -63,15 +63,13 @@ describe("privacy build gate", () => {
     const result = gate(path);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("ha2-copied-conversation");
-    expect(result.stderr).toContain("No request carries more than half of a conversation.");
+    expect(result.stderr).toContain("No request takes more than half of any one conversation.");
     expect(result.stderr).not.toContain("pv2-sites-send");
   });
   it("refuses the owner-note disclosure independently of PV2", () => {
     const path = fixture(); acceptAll(path);
     const file = join(path, "helper/src/privacy.ts");
-    // TODO(INT1): the allotment is 0 until re-expressed on the output-based ledger, and at 0 no disclosure is needed;
-    // the gate is checked at the 2,000 Sam approved.
-    writeFileSync(file, readFileSync(file, "utf8").replace(/export const OWNER_NOTE_DISCLOSURE: string \| null = "[^"\n]*";/, "export const OWNER_NOTE_DISCLOSURE: string | null = null;").replace("export const OWNER_NOTE_CHARS = 0;", "export const OWNER_NOTE_CHARS = 2000;"));
+    writeFileSync(file, readFileSync(file, "utf8").replace(/export const OWNER_NOTE_DISCLOSURE: string \| null = "[^"\n]*";/, "export const OWNER_NOTE_DISCLOSURE: string | null = null;"));
     expect(readFileSync(file, "utf8")).toContain("export const OWNER_NOTE_CHARS = 2000;");
     expect(gate(path).stderr).toContain("OWNER_NOTE_DISCLOSURE");
     expect(gate(path).status).toBe(1);

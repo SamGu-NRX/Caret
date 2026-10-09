@@ -20,7 +20,9 @@
 // test/g2-ownership.test.ts "the redacted view's cost"; W4's note, 15 lines, outside the repository): 1 line, Ashby's
 // "Incident question: use the token-leak story, write it fresh.", whose key is none: 0 right values lost.
 import { ENV, processEnv } from "../host-env.ts";
+import { LINE_BREAK, splitLines } from "../privacy/ledger/source.ts";
 import type { WindowState } from "../model.ts";
+import { isConversation } from "../conversation.ts";
 import type { Node, TypedValue } from "../protocol.ts";
 import { markerAcross, markerEnds, PEM_BEGIN, PEM_END, secretText } from "../memory/sensitive.ts";
 import { nodesLabelledBy } from "./descriptor.ts";
@@ -84,12 +86,13 @@ function droppedLines(lines: readonly string[], continues: readonly boolean[] = 
 }
 
 function keptText(text: string): { kept: string; dropped: Set<number> } {
-  const dropped = droppedLines(text.split(/\r?\n/u));
+  // Lines as the inventory splits them (source.ts splitLines): a line a bare CR ends is a line here too.
+  const dropped = droppedLines(splitLines(text));
   if (dropped.size === 0) return { kept: text, dropped };
-  const parts = text.split(/(\r?\n)/u);
+  const parts = text.split(new RegExp(`(${LINE_BREAK.source})`, "u"));
   const out: string[] = [];
   for (let k = 0; k < parts.length; k += 2) if (!dropped.has(k / 2)) out.push(parts[k] as string, parts[k + 1] ?? "");
-  return { kept: out.join("").replace(/\r?\n$/u, ""), dropped };
+  return { kept: out.join("").replace(new RegExp(`(?:${LINE_BREAK.source})$`, "u"), ""), dropped };
 }
 
 const WITHHELD_INSTRUCTION = "[a field Caret leaves to you]";
@@ -114,16 +117,16 @@ export function instructionView(text: string): { text: string; retained: string[
       continue;
     }
     // Match the planner's assignment-clause heads, not every "and" inside an unquoted value.
-    const separator = /^(?:\r?\n|;|\s+(?:and|then)\s+(?=(?:the|my|our|set|put|write|enter|type|change|make|fill|add|use|copy|paste|insert|attach|upload|send|submit|press|click|open)\b))/iu.exec(text.slice(i))?.[0];
+    const separator = /^(?:\r\n|\r|\n|;|\s+(?:and|then)\s+(?=(?:the|my|our|set|put|write|enter|type|change|make|fill|add|use|copy|paste|insert|attach|upload|send|submit|press|click|open)\b))/iu.exec(text.slice(i))?.[0];
     if (separator === undefined) continue;
     units.push({ text: text.slice(start, i), separator, line });
-    if (/\r?\n/u.test(separator)) line++;
+    if (LINE_BREAK.test(separator)) line++;
     i += separator.length - 1;
     start = i + 1;
   }
   units.push({ text: text.slice(start), separator: "", line });
   // A real line break lets an opener take its next value. An explicit new clause does not.
-  const dropped = droppedLines(units.map((u) => u.text), units.map((u) => /\r?\n/u.test(u.separator)), units.map((u) => u.line));
+  const dropped = droppedLines(units.map((u) => u.text), units.map((u) => LINE_BREAK.test(u.separator)), units.map((u) => u.line));
   if (dropped.size === 0) return { text, retained: [text] };
   const retained: string[] = [];
   let span = "";
@@ -160,14 +163,14 @@ export function instructionForModel(text: string): string {
  */
 function valueGoes(texts: readonly { text: string; dropped: ReadonlySet<number> }[], value: string): boolean {
   if (value === "" || texts.every((x) => x.dropped.size === 0)) return false;
-  const v = value.replace(/\r\n/gu, "\n");
+  const v = splitLines(value).join("\n");
   let found = false;
   for (const x of texts) {
-    const t = x.text.replace(/\r\n/gu, "\n");
+    const t = splitLines(x.text).join("\n");
     for (let at = t.indexOf(v); at >= 0; at = t.indexOf(v, at + 1)) {
       found = true;
-      const first = t.slice(0, at).split("\n").length - 1;
-      const last = first + v.split("\n").length - 1;
+      const first = splitLines(t.slice(0, at)).length - 1;
+      const last = first + splitLines(v).length - 1;
       let covered = false;
       for (let i = first; i <= last && !covered; i++) covered = x.dropped.has(i);
       if (!covered) return false;
@@ -206,12 +209,26 @@ export const SECTION_BOUNDARY_ROLES: ReadonlySet<string> = new Set(["AXGroup", "
  * snapshot to the next while what labels it changes.
  */
 export function redactWindow(w: WindowState): WindowState {
+  // A view is already the window as fill may read it: redacted again, it is itself, its class (builtFromConversation)
+  // and its identity kept. Rebuilt from a view, a mail whose Subject redaction removed was classified as a page.
+  if (REDACTED.has(w)) return w;
   const hit = views.get(w);
   if (hit !== undefined && hit.at === w.updatedAt) return hit.view;
   const view = build(w);
   views.set(w, { at: w.updatedAt, view });
   REDACTED.add(view);
+  RAW_CONVERSATION.set(view, isConversation(w));
   return view;
+}
+
+/**
+ * Whether the raw window a view was built from is a conversation (conversation.ts), decided when the view is built and
+ * carried by the view wherever it is kept: a basis, a recorded source, a held state. Redaction can remove the evidence
+ * (a mail's Subject line naming a password), and a view kept after its window closed was read as a page at 1,200.
+ */
+const RAW_CONVERSATION = new WeakMap<WindowState, boolean>();
+export function builtFromConversation(view: WindowState): boolean {
+  return RAW_CONVERSATION.get(view) === true;
 }
 
 /** Marker halves can be separate AX text nodes. Join only consecutive document text with adjacent positions. */
@@ -229,8 +246,8 @@ function splitTextNodes(w: WindowState): Set<string> {
         (Math.abs(a[1] + a[3] / 2 - (b[1] + b[3] / 2)) <= Math.max(a[3], b[3]) / 2 && b[0] >= a[0] && b[0] - (a[0] + a[2]) <= 260) ||
         (b[1] >= a[1] + a[3] && b[1] - (a[1] + a[3]) <= 48 && a[0] <= b[0] + b[2] && b[0] <= a[0] + a[2])
       );
-      const first = (previous.value ?? previous.label ?? "").split(/\r?\n/u).at(-1)!;
-      const second = (n.value ?? n.label ?? "").split(/\r?\n/u)[0]!;
+      const first = splitLines(previous.value ?? previous.label ?? "").at(-1)!;
+      const second = splitLines(n.value ?? n.label ?? "")[0]!;
       if (nearby && markerAcross(first, second)) { out.add(previous.key); out.add(n.key); }
     }
     previous = n;

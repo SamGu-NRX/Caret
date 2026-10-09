@@ -11,7 +11,8 @@ import { redactWindow } from "../src/fill/redact.ts";
 import { ConsumerMessage, FirstLookPreview, FirstLookPreviewRequest, FirstLookReply, HelperMessage, PROTOCOL_VERSION } from "../src/protocol.ts";
 import { windowBudget } from "../src/privacy.ts";
 import { sealRequest } from "../src/fill/jev.ts";
-import { sealedBody } from "../src/privacy/send.ts";
+import { sendable } from "../src/privacy/send.ts";
+import { partsOf } from "../src/privacy/ledger/source.ts";
 import { buildLookRequest } from "../src/tasks/pending.ts";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
@@ -75,7 +76,10 @@ describe("first-look preview allow-list", () => {
 
   it("keeps the window budget and conversation-half rule, including partial-line placeholders", () => {
     const model = new ScreenModel();
-    model.apply(snap([text("body", "A conversation sentence about ordinary travel plans. ".repeat(60))], { at: 1, windowId: "mail", title: "Thursday", app: { pid: 2, bundleId: "com.apple.mail", name: "Mail" } }));
+    // Words that never repeat: the output ledger charges every place a repeated run of 12 or more characters stands,
+    // so a sentence said 60 times could not be sent in part at all.
+    const body = Array.from({ length: 500 }, (_, i) => ((i + 1) * 2654435761 % 2176782336).toString(36).padStart(6, "a")).join(" ");
+    model.apply(snap([text("body", body)], { at: 1, windowId: "mail", title: "Thursday", app: { pid: 2, bundleId: "com.apple.mail", name: "Mail" } }));
     const w = model.windows.get("mail")!;
     const p = new FirstLookPreviews().build(request, model, 1000);
     expect(p.windows[0]?.charsSent).toBeLessThanOrEqual(windowBudget(w));
@@ -102,33 +106,27 @@ describe("first-look preview allow-list", () => {
     const provider = vi.fn();
     await withFirstLookAllowList(approved.list, async () => {
       const w = model.windows.get("note")!;
-      provider(buildLookRequest(w, model.windows.values(), []).req);
+      provider(buildLookRequest(w, model, []).req);
       model.apply(snap([text("name", "Name: Changed after preview")], { at: 2, windowId: "note", title: "About me" }));
-      expect(() => provider(buildLookRequest(model.windows.get("note")!, model.windows.values(), []).req)).toThrow(PreviewStale);
+      expect(() => provider(buildLookRequest(model.windows.get("note")!, model, []).req)).toThrow(PreviewStale);
       expect(approved.list.stale).toBe(true);
       // Even a previously allowed request is refused after the first violation.
-      expect(() => provider(buildLookRequest(w, [w], []).req)).toThrow(PreviewStale);
+      expect(() => provider(buildLookRequest(w, { windows: new Map([[w.window.windowId, w]]) }, []).req)).toThrow(PreviewStale);
     });
     expect(provider).toHaveBeenCalledTimes(1);
     // Unrelated async work is not held to this look's preview.
-    expect(() => buildLookRequest(model.windows.get("note")!, model.windows.values(), [])).not.toThrow();
+    expect(() => buildLookRequest(model.windows.get("note")!, model, [])).not.toThrow();
   });
 
-  it("tracks plan/memory spans and refuses unpreviewed saved values", () => {
-    const model = desk();
-    const w = redactWindow(model.windows.get("note")!);
-    const d = new Disclosure(model.windows.values());
-    const plan = d.planText("Name: Dana");
-    const memory = d.memoryText(null, "Name: Dana");
-    expect(plan).not.toBeNull();
-    expect(memory).not.toBeNull();
-    expect(d.spansOfText(plan!)).not.toHaveLength(0);
-    expect(d.spansOfText(memory!)).not.toHaveLength(0);
-    const list = new FirstLookAllowList(d.spansOfText(d.candidate(w, "Name: Dana")!));
-    expect(() => list.check(d.spansOfText(memory!), d.reasonsOf(memory!), memory!)).not.toThrow();
-    const unpreviewed = d.memoryText(null, "An unpreviewed saved answer");
-    expect(unpreviewed).not.toBeNull();
-    expect(() => list.check(d.spansOfText(unpreviewed!), d.reasonsOf(unpreviewed!), unpreviewed!)).toThrow(PreviewStale);
+  it("checks each declared span in its own window, saved values anywhere, and refuses window text with no span", () => {
+    const view = redactWindow(desk().windows.get("note")!);
+    const list = new FirstLookAllowList(new Map([["note", ["Name: Dana"]]]));
+    expect(() => list.check([{ view, text: "Name: Dana" }], new Set(["candidate"]), "Name: Dana")).not.toThrow();
+    expect(() => list.check([], new Set(["memory"]), "Name: Dana")).not.toThrow();
+    expect(() => new FirstLookAllowList(new Map([["note", ["Name: Dana"]]])).check([{ view, text: "About me" }], new Set(["candidate"]), "About me")).toThrow(PreviewStale);
+    expect(() => new FirstLookAllowList(new Map([["other", ["Name: Dana"]]])).check([{ view, text: "Name: Dana" }], new Set(["candidate"]), "Name: Dana")).toThrow(PreviewStale);
+    expect(() => new FirstLookAllowList(new Map([["note", ["Name: Dana"]]])).check([], new Set(["memory"]), "An unpreviewed saved answer")).toThrow(PreviewStale);
+    expect(() => new FirstLookAllowList(new Map([["note", ["Name: Dana"]]])).check([], new Set(["candidate"]), "Name: Dana")).toThrow(PreviewStale);
   });
 
   it("checks original saved text even when a template surrounds it with Caret wording", () => {
@@ -138,7 +136,7 @@ describe("first-look preview allow-list", () => {
     const approved = previews.lookup(p.previewId, 1000);
     if ("error" in approved) throw new Error(approved.error);
     withFirstLookAllowList(approved.list, () => {
-      const d = new Disclosure(model.windows.values());
+      const d = new Disclosure(model);
       const value = d.memoryText(null, "Name: Dana")!;
       expect(() => d.verify("fill.values", { questions: { q: { instructions: d.t`Saved value: ${value}` } } })).not.toThrow();
       const extra = d.memoryText(null, "Name: Dana with an unpreviewed private detail")!;
@@ -154,27 +152,31 @@ describe("first-look preview allow-list", () => {
     const approved = previews.lookup(p.previewId, 1000);
     if ("error" in approved) throw new Error(approved.error);
     await withFirstLookAllowList(approved.list, async () => {
-      const sealed = sealRequest(buildLookRequest(model.windows.get("note")!, model.windows.values(), []).req).sealed;
+      const sealed = sealRequest(buildLookRequest(model.windows.get("note")!, model, []).req).sealed;
       await Promise.resolve();
-      expect(() => sealedBody(sealed)).not.toThrow();
+      expect(() => sendable(sealed)).not.toThrow();
       approved.list.closed = true;
-      expect(() => sealedBody(sealed)).toThrow(PreviewStale);
+      expect(() => sendable(sealed)).toThrow(PreviewStale);
     });
   });
 
   it("allows the approved excerpt when only an untransmitted part of its line changes", () => {
-    const list = new FirstLookAllowList([{ windowId: "w", line: "Dana, old details", at: 0, len: 4 }]);
-    expect(() => list.check([{ windowId: "w", line: "Dana, new details", at: 0, len: 4 }], new Set(["candidate"]), "Dana")).not.toThrow();
-    expect(() => list.check([{ windowId: "w", line: "Dana, new details", at: 0, len: 17 }], new Set(["candidate"]), "Dana, new details")).toThrow(PreviewStale);
+    const model = new ScreenModel();
+    model.apply(snap([text("line", "Dana, new details")], { at: 1, windowId: "w", title: "T" }));
+    const view = redactWindow(model.windows.get("w")!);
+    const part = partsOf(view).find((p) => p.raw === "Dana, new details")!;
+    const list = new FirstLookAllowList(new Map([["w", ["Dana"]]]));
+    expect(() => list.check([{ view, at: { part: part.id, start: 0, end: 4 } }], new Set(["candidate"]), "Dana")).not.toThrow();
+    expect(() => list.check([{ view, at: { part: part.id, start: 0, end: 17 } }], new Set(["candidate"]), "Dana, new details")).toThrow(PreviewStale);
   });
 
   it("holds a late generator after the first look's reply closes its scope", async () => {
-    const list = new FirstLookAllowList([]);
+    const list = new FirstLookAllowList(new Map());
     let continueWork!: () => void;
     const wait = new Promise<void>((resolve) => { continueWork = resolve; });
     const late = withFirstLookAllowList(list, async () => {
       await wait;
-      return buildLookRequest(desk().windows.get("note")!, desk().windows.values(), []);
+      return buildLookRequest(desk().windows.get("note")!, desk(), []);
     });
     list.closed = true;
     continueWork();

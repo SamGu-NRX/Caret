@@ -138,7 +138,7 @@ export class Skills {
       if (r === null || r.namingAsked || r.name !== null || !offerable(r, sightings)) continue;
       this.deps.memory.markNamingAsked(r.id);
       const facts = this.facts(r, s.cells);
-      const p = nameRoutine(facts, this.deps.askJev, () => this.deps.model.windows.values(), this.deps.rand)
+      const p = nameRoutine(facts, this.deps.askJev, () => this.deps.model, this.deps.rand)
         .then((result) => {
           if (result.name !== null && result.by !== null) this.deps.memory.setRoutineName(r.id, result.name, result.by);
           const { requests: _r, ...kept } = result;

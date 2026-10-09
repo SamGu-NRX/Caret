@@ -82,9 +82,12 @@ describe("a cut conversation never leaves a decoy", () => {
     expect(byLabel.get("Meeting date")?.value).not.toBe("September 28, 2026");
   });
 
-  it("the B11 case gives B11's wrong fill with both of B12's changes off, so the test above can fail", async () => {
+  // The control for the test above: with both of B12's changes off, B11's wrong fill happens. Each value is charged where
+  // it was read (OUTPUT-LEDGER-SPEC section 4, recorded ranges), so screen order no longer spends the chat's limit on the
+  // order block before its Placed date, and the decoy is offered and taken: only B12's changes keep it out.
+  it("the B11 case with both of B12's changes off: the decoy date is filled, so B12's changes are what keep it out", async () => {
     const p = await proposeFill(model(), decoyProneJev(), FORM, FORM_KEY("Meeting date"), 3000, { cutRule: false, relevance: false });
-    expect(p.fields.find((f) => f.key === FORM_KEY("Meeting date"))?.value).toBe("September 28, 2026");
+    expect(p.fields.find((f) => f.key === FORM_KEY("Meeting date"))?.value, "the control: B11's decoy with B12 off").toBe("September 28, 2026");
   });
 
   it("does not ask a field whose kind lost a value to the cut, and marks it sourceCut", async () => {
@@ -92,7 +95,7 @@ describe("a cut conversation never leaves a decoy", () => {
     // and here not at all.
     const m = datedChat(["Date", "Notes"]);
     const asked: JevRequest[] = [];
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Date"]), fieldTerms(["Notes"])] });
     expect(cut).toEqual([CHAT]);
     expect(candidates.some((c) => /September|October/.test(c.text))).toBe(false);
@@ -173,7 +176,7 @@ function decoyPicksAnyDate(asked: JevRequest[] = []): AskJev {
 describe("cut kinds", () => {
   it("counts a cut window's typed values that no taken text holds, and nothing from an uncut window", () => {
     const m = model();
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger });
     const kinds = cutKinds(m, cut, candidates);
     const offered = new Set(candidates.map((c) => c.text));
@@ -186,7 +189,7 @@ describe("cut kinds", () => {
     const m = new ScreenModel();
     const filler = ["See you there", "Bring the deck", "Room is booked"].map((t, i) => text(`f${i}`, t));
     m.apply(snap([text("a", "3:00 PM to 3:45 PM"), ...filler], { at: 1, windowId: REF, app: MESSAGES, values: [value("time", "3:45 PM", "a")] }));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     expect(ledger.take(m.windows.get(REF)!, "candidate", ["3:00 PM to 3:45 PM"])).toBe(true);
     expect(cutKinds(m, [REF], [{ text: "3:00 PM to 3:45 PM" }]).size).toBe(0);
   });
@@ -216,10 +219,10 @@ describe("a conversation's budget goes to the lines nearest each field first", (
   it("takes the meeting block for the Schedule follow-up form, under the same budget", () => {
     const m = model();
     const budget = windowBudget(m.windows.get(REF)!);
-    const ranked = new Disclosure(m.windows.values());
+    const ranked = new Disclosure(m);
     // B12's order of kinds; by cost per field (the default) see the test below.
     const byRelevance = collectCandidates(m, FORM, { now: 3000, ledger: ranked, fields: terms, kindsByCost: false }).candidates.map((c) => c.text);
-    const plain = new Disclosure(m.windows.values());
+    const plain = new Disclosure(m);
     const inOrder = collectCandidates(m, FORM, { now: 3000, ledger: plain }).candidates.map((c) => c.text);
     for (const want of ["Thursday, October 8, 2026", "3:00 PM"]) expect(byRelevance, want).toContain(want);
     // In screen order the order block came first and the meeting date did not fit.
@@ -242,24 +245,28 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     for (const [l, v] of [...byCost, ...b12, ...inOrder, ...b14]) expect(v === null || v === GOLD[l as string], `${l}: ${v}`).toBe(true);
     const filled = (m: Map<unknown, string | null>) => [...m.values()].filter((v) => v !== null).length;
     expect(filled(b12)).toBeGreaterThan(filled(inOrder));
-    expect(b12.get("Meeting date")).toBe("Thursday, October 8, 2026");
+    // Withheld rather than filled: what the chat's budget left out says "meeting" (its meeting block's lines), one of
+    // Meeting date's label terms, and one withholding rule holds every field to the words a cut left out (fill.ts fieldCut).
+    expect(b12.get("Meeting date"), "a left-out line names a meeting").toBeNull();
     expect(b12.get("Start time")).toBe("3:00 PM");
-    // By cost per field the budget serves three fields where B12's order served two: the two dates cost
-    // more than a time, an email and the links together.
+    // By cost per field the budget serves more fields than B12's order: the two dates cost more than a time, an email and
+    // the links together.
     expect(filled(byCost)).toBeGreaterThan(filled(b12));
     expect(byCost.get("Start time")).toBe("3:00 PM");
-    expect(byCost.get("Attendee email")).toBe(GOLD["Attendee email"]);
+    // Withheld rather than filled, by the same rule: what was left out says "email" (the Email signature block).
+    expect(byCost.get("Attendee email"), "a left-out line names an email").toBeNull();
     expect(byCost.get("Video link")).toBe(GOLD["Video link"]);
     expect(byCost.get("Meeting date")).toBeNull();
-    // With the names' group (B14) the chat's names are cheaper per field served than the links, so they go
-    // in instead, and every name the chat holds is offered: Attendee job title is filled, Video link not.
-    expect(b14.get("Video link")).toBeNull();
+    // With the names' group (B14) every name the chat holds is offered as well. A time is now charged its own text with
+    // its facts where it was read (7 more each), so the links no longer fit beside the names: Attendee job title is
+    // filled, Video link is not.
     expect(b14.get("Attendee job title")).toBe(GOLD["Attendee job title"]);
+    expect(b14.get("Video link"), "a time's own text is charged with its facts, and the links do not fit beside the names").toBeNull();
   });
 
   it("offers a kind the form takes whole, every value with its facts, or not at all", () => {
     const m = model();
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger, fields: terms });
     expect(cut).toEqual([REF]);
     expect(ledger.chars(REF)).toBeLessThanOrEqual(windowBudget(m.windows.get(REF)!));
@@ -273,9 +280,11 @@ describe("a conversation's budget goes to the lines nearest each field first", (
       // A value offered carries the facts a window that is not a conversation would give it.
       for (const c of of) if (c !== undefined) expect(c.section, c.text).not.toBeNull();
     }
-    // The cheapest groups per field get in whole: a time, an email and the names, not the dates or links.
-    for (const k of ["date", "url"] as const) expect(removed.has(k), k).toBe(true);
+    // The cheapest groups per field get in whole: a time, an email and the names, not the dates. Each candidate goes in
+    // with all its facts at their ranges, a time's own text included, so the links no longer fit beside them.
+    expect(removed.has("date")).toBe(true);
     for (const k of ["time", "email"] as const) expect(removed.has(k), k).toBe(false);
+    expect(removed.has("url"), "the links do not fit once each value is charged with its facts").toBe(true);
     for (const n of ["Dana Whitfield", "Senior Product Designer", "Lumen Labs"]) expect(candidates.map((c) => c.text)).toContain(n);
   });
 
@@ -285,7 +294,7 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     const lines = ["Gate closes at ten", "Parking is free after six", "Parking spot: level two", "Gate: north entrance", ...filler];
     m.apply(snap(lines.map((l, i) => text(`c${i}`, l)), { at: 1000, windowId: CHAT, app: MESSAGES, title: "Kofi" }));
     m.apply(scheduleForm(2000, ["Parking spot", "Gate"]));
-    const cands = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()), fields: [fieldTerms(["Parking spot"]), fieldTerms(["Gate"])] }).candidates;
+    const cands = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [fieldTerms(["Parking spot"]), fieldTerms(["Gate"])] }).candidates;
     // Parking's best (two shared words), the gate's first, parking's second, the gate's second; then the rest.
     expect(cands.map((c) => c.text).slice(0, 4)).toEqual(["level two", "Gate closes at ten", "Parking is free after six", "north entrance"]);
   });
@@ -305,11 +314,11 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     );
     m.apply(scheduleForm(2000, ["Parking total", "Gate code"]));
     const fields = [fieldTerms(["Parking total"]), fieldTerms(["Gate code"])];
-    const b12 = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()), fields, kindsByCost: false }).candidates;
+    const b12 = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields, kindsByCost: false }).candidates;
     // Amounts first, Parking's best leading, both together; then the gate code.
     expect(b12.map((c) => c.text).slice(0, 3)).toEqual(["$15.00", "$120.00", "4417"]);
     // By cost: the gate code is one short value for one field, the amounts two for one.
-    const byCost = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()), fields }).candidates;
+    const byCost = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields }).candidates;
     expect(byCost.map((c) => c.text).slice(0, 3)).toEqual(["4417", "$15.00", "$120.00"]);
   });
 
@@ -317,8 +326,8 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     const m = new ScreenModel();
     m.apply({ ...reference(1000), app: { pid: 6161, bundleId: "dev.caret.notes", name: "Notes" } });
     m.apply(scheduleForm(2000, SCHEDULE));
-    const a = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()), fields: terms }).candidates;
-    const b = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()) }).candidates;
+    const a = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: terms }).candidates;
+    const b = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m) }).candidates;
     expect(a).toEqual(b);
   });
 });

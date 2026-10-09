@@ -940,7 +940,8 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   };
   // Value clarification (design/ask/VALUE-SETTLEMENT.md), for a caller that can ask: the fields whose values did not
   // settle, within its bounds (choices.ts valueQueue), one question at a time in form order.
-  const queue = o.values === true && settlement !== undefined ? valueQueue(settlement.unresolved) : [];
+  // Within the bounds, each field offers only the values whose pick can be sent (ValueSettlement sendable).
+  const queue = o.values === true && settlement !== undefined ? valueQueue(settlement.unresolved).flatMap((u) => settlement.sendable(u) ?? []) : [];
   if (settlement !== undefined && queue.length > 0) {
     const step: ValueStep = { settlement, proposal: p, queue, names: new Map(checked.fields.map((f) => [f.key, f.name])), seenKeys: [...checked.fields, ...checked.leftToYou].map((f) => f.key), finish, intent, maker: use };
     return valueQuestion(step, resumeFor(scopeKeys), { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title });

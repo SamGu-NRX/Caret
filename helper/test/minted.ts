@@ -1,7 +1,7 @@
 // Hand-built requests in tests and evaluation scripts carry fixture wording, not screen text a builder read. They mint
 // every string as Caret's own wording and are sealed (privacy/disclosure.ts), so they reach the clients' minting check
 // as a builder's request would. Production code mints through a builder's own Disclosure instead.
-import { Disclosure, type Minted } from "../src/privacy/disclosure.ts";
+import { Disclosure, type Minted, registryOf } from "../src/privacy/disclosure.ts";
 import type { MintedSay, RouteCandidate } from "../src/routing/routes.ts";
 import type { GoalInventory } from "../src/goals/plan.ts";
 
@@ -10,7 +10,7 @@ type Body = "state" | "questions" | "nouls" | "input";
 export type MintedRequest<R> = Omit<R, Body> & { [K in keyof R & Body]: Minted<R[K]> } & { disclosure: Disclosure };
 
 export function minted<const R extends object>(req: R): MintedRequest<R> {
-  const d = new Disclosure([]);
+  const d = new Disclosure(registryOf([]));
   const walk = (v: unknown): void => {
     if (typeof v === "string") d.own(v as never);
     else if (Array.isArray(v)) v.forEach(walk);
@@ -39,7 +39,7 @@ export function fixtureSay(c: Pick<RouteCandidate, "says" | "plain" | "question"
  * fixture wording, as buildInventory mints them from the views (goals/inventory.ts).
  */
 export function inventoryLedger(inv: GoalInventory): Disclosure {
-  const d = new Disclosure([]);
+  const d = new Disclosure(registryOf([]));
   for (const t of inv.targets.values()) d.own(t.label as never);
   for (const v of inv.values.values()) {
     d.own(v.text as never);

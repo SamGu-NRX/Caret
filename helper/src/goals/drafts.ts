@@ -1,4 +1,4 @@
-import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText, type ScreenRegistry } from "../privacy/disclosure.ts";
 // Text a goal plan writes in Caret's own words (B30): a short reply, message or description. The writer composes it;
 // code decides whether it may be offered. A draft must add no fact: every number, date, time, money amount, email
 // address, phone, URL, code and name in it must be one the instruction, a window the plan names as the draft's
@@ -738,12 +738,12 @@ const CONFIRM_WORDS = [
  * confirm at NOUL_FLOOR, or when Jev is not there or fails (refused on doubt). `snippets` are the ledger's
  * declarations; a request carries those its text holds.
  */
-export async function confirmClaims(instruction: string, drafts: readonly { text: string; basis: DraftBasis }[], askJev: AskJev | null, snippets: readonly Snippet[]): Promise<{ calls: number; costUsd: number }> {
+export async function confirmClaims(instruction: string, drafts: readonly { text: string; basis: DraftBasis }[], askJev: AskJev | null, snippets: readonly Snippet[], registry: ScreenRegistry | null = null): Promise<{ calls: number; costUsd: number }> {
   const claims = [...new Set(drafts.flatMap((d) => sentencesOf(d.text).filter((s) => !noClaim(s, d.basis) && !restates(s, instruction, d.basis))))];
   if (claims.length === 0) return { calls: 0, costUsd: 0 };
   if (askJev === null) throw new DraftRefused("unchecked", `Caret can't check the draft's sentence ${q(claims[0] as string)} right now`, claims[0] as string);
   // The claims are the local model's draft (MintReason drafted); what they carry of windows is declared by `snippets`.
-  const d = new Disclosure([]);
+  const d = new Disclosure(registry);
   const safeInstruction = d.instruction(instruction);
   const minted: ModelText[] = [];
   for (const s of claims) {

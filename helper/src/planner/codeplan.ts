@@ -21,7 +21,6 @@ import { asksCountry, fieldPart, namePart, splitAddress, splitName } from "../fi
 import { fieldKinds, isNameLike } from "../fill/kinds.ts";
 import { candidateProvenance, OWNER_CRITERIA, WHOSE_CRITERIA, WHOSE_CUTOFF } from "../fill/fill.ts";
 import type { CheckedValue, Provenance } from "../fill/contract.ts";
-import { WINDOW_CHARS } from "../privacy.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { runCodePlan } from "../codemode/sandbox.ts";
@@ -96,26 +95,21 @@ export interface Value {
  * The values a program may write: the instruction's own spans and memory (with a remembered name's parts),
  * listed with the form; then each other window's candidates and the parts code splits from a person's name or
  * an address, by window, most recent first, in at most MAX_SOURCE_WINDOWS windows, as the plan API's
- * readWindow(windowRef) shapes it. Each window's list is held to the writer's per-window budget (plan-prompt.ts).
+ * readWindow(windowRef) shapes it. A value whose display the ledger refuses is left out.
  */
-export function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: Disclosure, now: number, formRoom: number): Value[] {
+export function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: Disclosure, now: number): Value[] {
   const d = ledger;
   const out: Value[] = [];
   const retainedValues = new Set(instructionView(instruction).retained.flatMap(instructionValues));
-  const used = new Map<WindowState | null, number>();
   const LEFT = "[a field Caret leaves to you]";
   /** `said` mints the display; what the display was before SC1 is the oracle, so a display redaction changes is not listed. */
   const add = (text: string, said: () => ModelText | null, display: string, win: WindowState | null, owner: Value["owner"], provenance: Provenance, key: string | null = null, memoryRef: string | null = null): void => {
     // Preserve the local value ref for refusal, but disclose no span removed with a forbidden clause.
     const withheld = provenance.kind === "instruction" && !retainedValues.has(text);
     const safe = withheld ? LEFT : instructionForModel(display);
-    const shown = safe.length <= 400 ? safe : `${safe.slice(0, 399)}…`;
-    const room = win === null ? formRoom : WINDOW_CHARS - win.window.title.length;
-    const u = used.get(win) ?? 0;
-    if (out.length >= MAX_VALUES || out.some((v) => v.text === text) || u + shown.length > room) return;
+    if (out.length >= MAX_VALUES || out.some((v) => v.text === text)) return;
     const m = withheld ? d.own(LEFT) : safe === display ? said() : null;
     if (m === null) return;
-    used.set(win, u + shown.length);
     out.push({ text, display: d.cut(m, 400), window: win, owner, key, memory: memoryRef, provenance });
   };
   const spans = instructionValues(instruction);
@@ -184,7 +178,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   if (w === undefined) throw new PlannerError("unseenWindow", `window ${o.windowId} is not open`);
   const all = writableFields(w).filter((f) => o.fields === undefined || o.fields.includes(f.node.key));
   if (all.length === 0) throw new PlannerError("nothingToDo", `'${w.window.title}' has no field Caret can write`);
-  const ledger = new Disclosure(model.windows.values());
+  const ledger = new Disclosure(model);
   if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", "your instruction quotes more of an open window than one request may carry");
   // The title as the writer sees it, cut to the snapshot's 200 characters, is what the ledger declares (fix-check review).
   const title = w.window.title.slice(0, 200);
@@ -200,9 +194,8 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
     return label === null || label === undefined ? [] : [{ ref: d.id(`t${i + 1}`), label, kind: d.id(fieldPart(f.label) ?? "textField"), canFill: true, options: [], allowedPressEffects: [] }];
   });
   const titleText = d.descriptor(w, title) ?? d.own("");
-  const room = WINDOW_CHARS - title.length - targets.reduce((n, t) => n + t.label.length, 0);
   const memoryValues = memory.values();
-  const values = valueList(instruction, model, w, memoryValues, ledger, now, room);
+  const values = valueList(instruction, model, w, memoryValues, ledger, now);
   if (values.length === 0) throw new PlannerError("nothingToDo", "nothing on screen, in memory or in your instruction could go in a field");
   // The form's snapshot holds its fields with the instruction's and memory's values; each source window is a
   // snapshot of its own, read by readWindow(window). Value refs are numbered across them.
@@ -489,7 +482,7 @@ export async function verifyWrites(raw: string, writes: readonly WriteToVerify[]
   // W2: nothing to ask when no write asks its value and none takes a person's details.
   if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return { dropped: new Set(), jev: { calls: 0, costUsd: 0, latencyMs: 0 } };
   // HA2 (lead decision 3): fill's rule on this path. Both owner questions about a window value name the whole notes it
-  // was read from, sent once in the state (source_notes) and charged to their windows' unchanged budgets; a value whose
+  // was read from, sent once in the state (source_notes) and charged to their windows' owner-note allotments; a value whose
   // notes do not fit, or could not be read, is dropped below when its field wants the user's details.
   const notes = new Map<string, ModelText>();
   /** Each note's id ("note_1") as this request's Disclosure minted it. */
@@ -497,24 +490,19 @@ export async function verifyWrites(raw: string, writes: readonly WriteToVerify[]
   const noteIds = writes.map((x): string[] | null => {
     if (!personalField(x.field.label) || x.value.window === null) return [];
     if (x.value.notes === null || x.value.notes.length === 0) return null;
-    const ids: string[] = [];
-    for (const n of x.value.notes) {
-      let id = [...notes].find(([, t]) => t === n.text)?.[0];
-      if (id === undefined) {
-        // INT1: minted through this request's Disclosure as text a window it was built over shows in its redacted view
-        // (Disclosure.onScreen), within that window's own budget, or not at all: a frozen note no window still shows
-        // whole is never sent. HA2's allotment past the budget waits for the output-based ledger (privacy.ts
-        // OWNER_NOTE_CHARS, TODO(INT1)).
-        const said = d.onScreen(n.text);
-        if (said === null) return null;
-        // The id is a key of the request's state, which PV2 holds to identifiers (disclosure.ts KEY): "note_1", not "note 1".
-        id = `note_${notes.size + 1}`;
-        notes.set(id, said);
-        noteSaid.set(id, d.id(id));
-      }
-      ids.push(id);
-    }
-    return ids;
+    const idOf = (text: string): string | undefined => [...notes].find(([, t]) => t === text)?.[0];
+    // Minted as owner notes of windows this request was built over that still show them whole in their redacted views
+    // (OUTPUT-LEDGER-SPEC section 8), all of a value's notes or none: a frozen note no window still shows is never sent.
+    const fresh = [...new Set(x.value.notes.map((n) => n.text).filter((t) => idOf(t) === undefined))];
+    const said = d.ownerNotesOnScreen(fresh);
+    if (said === null) return null;
+    said.forEach((s) => {
+      // The id is a key of the request's state, which PV2 holds to identifiers (disclosure.ts KEY): "note_1", not "note 1".
+      const id = `note_${notes.size + 1}`;
+      notes.set(id, s);
+      noteSaid.set(id, d.id(id));
+    });
+    return x.value.notes.map((n) => idOf(n.text)!);
   });
   const noteSays = (i: number): ModelText => {
     const ids = noteIds[i];

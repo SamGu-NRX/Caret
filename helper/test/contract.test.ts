@@ -3,7 +3,7 @@
 import { TEST_AUTHORITY } from "./mint.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { checkValues, ContractError, fieldContract, isChecked, makeFieldContract, mintExempt, provenanceSays, requireChecked, setTestVerifier, takesSays, shapeRefusal, sourceLabel, VERDICTS, VerifierUnavailable, VERIFY_BATCH, type FieldContract, type Proposed, type Provenance } from "../src/fill/contract.ts";
+import { checkValues, ContractError, fieldContract, isChecked, makeFieldContract, mintExempt, requireChecked, setTestVerifier, takesSays, shapeRefusal, sourceLabel, VERDICTS, VerifierUnavailable, VERIFY_BATCH, type FieldContract, type Proposed, type Provenance } from "../src/fill/contract.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { fieldKinds } from "../src/fill/kinds.ts";
 import { fieldPart } from "../src/fill/derive.ts";
@@ -223,10 +223,6 @@ describe("the verifier (AC1 section 4)", () => {
   it("quotes the line, the label or the span by what the ledger admits, and declares only what it sends", async () => {
     const pr = win("lab technician", "Work", "Lumen Labs, lab technician (for my sister)");
     const line: Provenance = { ...pr, line: "Work: Lumen Labs, lab technician (for my sister)" } as Provenance;
-    expect(provenanceSays(line, () => true)).toBe(`the line "Work: Lumen Labs, lab technician (for my sister)" in TextEdit 'notes.txt', which is part of "Lumen Labs, lab technician (for my sister)"`);
-    expect(provenanceSays(line, (t) => !t.startsWith("Work:"))).toBe(`"lab technician" labelled 'Work' in TextEdit 'notes.txt', which is part of "Lumen Labs, lab technician (for my sister)"`);
-    expect(provenanceSays(line, (t) => t === "lab technician")).toBe(`"lab technician" in TextEdit`);
-    expect(provenanceSays({ kind: "derived", how: "namePart", base: { kind: "memory", id: "a", label: "Name", part: null, whose: "user" }, also: null }, () => true)).toBe("a part of the name in what the user told Caret as 'Name'");
     const v = verifier(() => ({ choice: "exact", confidence: 0.9 }));
     await checkValues([prop(job, "lab technician", line)], { ...opts, askJev: v.ask, instruction: "fill in my job" });
     for (const q of v.requests) {

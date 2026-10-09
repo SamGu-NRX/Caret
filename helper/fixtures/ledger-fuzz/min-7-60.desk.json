@@ -1,0 +1,129 @@
+{
+ "mode": "scope",
+ "windows": [
+  {
+   "windowId": "chat-1",
+   "title": "Ines",
+   "app": {
+    "pid": 7373,
+    "bundleId": "com.apple.MobileSMS",
+    "name": "Messages"
+   },
+   "nodes": [
+    {
+     "key": "chat-1-m1",
+     "parent": null,
+     "role": "AXStaticText",
+     "label": "orbit glacier tidal river orbit ember pixel glacier signal meadow river signal velvet pixel meadow pixel harbor lantern quiet ember quiet river lantern ember glacier tidal harbor signal velvet GI57-8109 summit ember tidal saffron glacier",
+     "frame": [
+      20,
+      84,
+      600,
+      20
+     ]
+    }
+   ],
+   "values": [],
+   "at": 100
+  },
+  {
+   "windowId": "note-1",
+   "title": "Untitled",
+   "app": {
+    "pid": 6161,
+    "bundleId": "com.apple.TextEdit",
+    "name": "TextEdit"
+   },
+   "nodes": [
+    {
+     "key": "note-1/text",
+     "parent": null,
+     "role": "AXTextArea",
+     "editable": true,
+     "value": "orbit glacier tidal river orbit ember pixel glacier signal meadow river signal velvet pixel meadow pixel harbor lantern quiet ember quiet river lantern ember glacier tidal harbor signal velvet GI57-8109 summit ember tidal saffron glacier",
+     "frame": [
+      10,
+      40,
+      600,
+      400
+     ]
+    }
+   ],
+   "values": [],
+   "at": 200
+  },
+  {
+   "windowId": "5150-7",
+   "title": "Registration",
+   "app": {
+    "pid": 5150,
+    "bundleId": "dev.caret.fixture",
+    "name": "Fixture"
+   },
+   "nodes": [
+    {
+     "key": "dev.caret.fixture/standard/popup:meal~0",
+     "parent": null,
+     "role": "AXPopUpButton",
+     "label": "Meal",
+     "editable": true,
+     "frame": [
+      100,
+      280,
+      300,
+      24
+     ]
+    },
+    {
+     "key": "dev.caret.fixture/standard/popup:meal~0/item0",
+     "parent": "dev.caret.fixture/standard/popup:meal~0",
+     "role": "AXMenuItem",
+     "label": "Select a meal"
+    },
+    {
+     "key": "dev.caret.fixture/standard/popup:meal~0/item1",
+     "parent": "dev.caret.fixture/standard/popup:meal~0",
+     "role": "AXMenuItem",
+     "label": "Braised short rib"
+    },
+    {
+     "key": "dev.caret.fixture/standard/popup:meal~0/item2",
+     "parent": "dev.caret.fixture/standard/popup:meal~0",
+     "role": "AXMenuItem",
+     "label": "Herb-roasted salmon"
+    },
+    {
+     "key": "dev.caret.fixture/standard/popup:meal~0/item3",
+     "parent": "dev.caret.fixture/standard/popup:meal~0",
+     "role": "AXMenuItem",
+     "label": "Wild mushroom risotto (vegetarian)"
+    }
+   ],
+   "values": [],
+   "at": 1400,
+   "focused": true
+  }
+ ],
+ "form": {
+  "windowId": "5150-7",
+  "keys": [
+   "dev.caret.fixture/standard/popup:meal~0"
+  ],
+  "labels": [
+   "Meal"
+  ]
+ },
+ "event": {
+  "before": 0,
+  "ev": {
+   "type": "close",
+   "windowId": "chat-1"
+  }
+ },
+ "tab": null,
+ "whose": false,
+ "answerSeed": 78288585,
+ "disagree": 0.5,
+ "lowVerify": 0.3,
+ "instruction": "fill the form"
+}
