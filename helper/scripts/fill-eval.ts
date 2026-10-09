@@ -1,9 +1,10 @@
 // Grounded-fill evaluation against caret-fixture with live Jev.
 //
 //   node scripts/fill-eval.ts --gold GOLD.json --record READER_RECORDING.ndjson --rounds N --out DIR --host-key-fd N
+//   node scripts/fill-eval.ts --engine decisions --gold GOLD.json --record READER_RECORDING.ndjson --rounds N --out DIR
 //
-// The helper sends proposals only to the host (src/send-gate.ts), so this script proves the host key, which it reads
-// once from descriptor N, a pipe and never a regular file. apps/screen-reader/experiments/run-fill-eval.sh passes it
+// With --engine jev (the default) the helper sends proposals only to the host (src/send-gate.ts), so this script
+// proves the host key, which it reads once from descriptor N, a pipe and never a regular file. apps/screen-reader/experiments/run-fill-eval.sh passes it
 // as `--host-key-fd 3 3< <(host_key_bytes)` (launch-secret.sh); with src/launch.ts, its --host-key-fd writes the key.
 //
 // Needs a running helper (with Jev) and a caret-screen started with --only-pids <fixture pid>
@@ -18,6 +19,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { positiveInt } from "./flags.ts";
+import { ScreenModel } from "../src/model.ts";
+import { proposeFill } from "../src/fill/fill.ts";
+import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { FillProposal, PROTOCOL_VERSION, Snapshot, type Frame } from "../src/protocol.ts";
 import { hostProof } from "../src/host-auth.ts";
 
@@ -26,6 +30,8 @@ const { values: a } = parseArgs({
     gold: { type: "string" },
     record: { type: "string" },
     rounds: { type: "string", default: "3" },
+    engine: { type: "string", default: "jev" },
+    "log-requests": { type: "string" },
     out: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "screen.sock") },
     "wait-focus": { type: "string", default: "0" },
@@ -33,8 +39,14 @@ const { values: a } = parseArgs({
   },
 });
 if (a.gold === undefined || a.record === undefined || a.out === undefined) throw new Error("--gold, --record and --out are required");
-if (a["host-key-fd"] === undefined) throw new Error("--host-key-fd is required: the helper sends a fillProposal only to a consumer that proves the host key (src/launch.ts --host-key-fd)");
-const hostKey = readHostKey(a["host-key-fd"]);
+if (a.engine !== "jev" && a.engine !== "decisions") throw new Error("--engine is jev or decisions for this fixture evaluation");
+// Only the Jev path talks to the helper, which sends a fillProposal only to a consumer that proves the host key.
+// Decisions runs in this process on the recording and never opens the socket, so it has no key to prove.
+let hostKey: Buffer | null = null;
+if (a.engine === "jev") {
+  if (a["host-key-fd"] === undefined) throw new Error("--host-key-fd is required with --engine jev: the helper sends a fillProposal only to a consumer that proves the host key (src/launch.ts --host-key-fd)");
+  hostKey = readHostKey(a["host-key-fd"]);
+}
 const rounds = positiveInt("rounds", a.rounds);
 // Before any request: a missing directory would otherwise throw at the first write, after Jev was paid.
 mkdirSync(a.out, { recursive: true });
@@ -72,68 +84,91 @@ const targets: Target[] = gold.forms.map((form) => {
   return { windowId: s.window.windowId, title: form.window, trigger: first, goldByKey };
 });
 
-const sock = createConnection(a.socket);
-let authenticated: () => void = () => undefined;
-const isHost = new Promise<void>((resolve, reject) => {
-  authenticated = resolve;
-  // A wrong key is refused by the helper with an error line naming why, and the socket closes.
-  sock.once("close", () => reject(new Error(`the helper closed the connection before it took this script as the host: ${errors.join("; ") || "no reason given"}`)));
-});
 const proposals: FillProposal[] = [];
 const errors: string[] = [];
-let waiter: ((p: FillProposal | null) => void) | null = null;
-let buf = "";
-sock.setEncoding("utf8");
-sock.on("data", (d: string) => {
-  buf += d;
-  let nl: number;
-  while ((nl = buf.indexOf("\n")) >= 0) {
-    const m = JSON.parse(buf.slice(0, nl)) as { type: string; message?: string; nonce?: string };
-    buf = buf.slice(nl + 1);
-    if (m.type === "hostChallenge") sock.write(JSON.stringify({ type: "hostProof", v: PROTOCOL_VERSION, proof: hostProof(hostKey, String(m.nonce)) }) + "\n");
-    else if (m.type === "hostAuthenticated") authenticated();
-    else if (m.type === "error") {
-      errors.push(m.message ?? "");
-      const w = waiter;
-      waiter = null;
-      w?.(null);
-    } else if (m.type === "fillProposal") {
-      const p = FillProposal.parse(m);
-      proposals.push(p);
-      const w = waiter;
-      waiter = null;
-      w?.(p);
+let fromFocus = 0;
+if (a.engine === "decisions") {
+  // Decisions never runs in the helper that reads live screens. Replay only the declared synthetic fixture recording
+  // locally and score proposals without sending a write to the reader. The default Jev/socket path stays unchanged.
+  const model = new ScreenModel();
+  for (const snapshot of latest.values()) model.apply(snapshot);
+  const ids = new Set([...latest.values()].map((s) => s.window.windowId));
+  const decide = harnessEngine({ name: "decisions", canned: null,
+    fixture: { windows: (id) => ids.has(id), memory: false, plan: false },
+    logRequests: a["log-requests"] ?? join(a.out, "requests.ndjson"),
+  });
+  const now = Math.max(...[...latest.values()].map((s) => s.at)) + 1;
+  try {
+    for (let r = 0; r < rounds; r++) for (const target of targets) {
+      const proposal = await proposeFill(model, decide.ask, target.windowId, target.trigger, now);
+      proposals.push(proposal);
+    }
+  } finally { decide.engine.close?.(); }
+} else {
+  const key = hostKey;
+  if (key === null) throw new Error("--engine jev has no host key; it is read above, before any request");
+  const sock = createConnection(a.socket);
+  let authenticated: () => void = () => undefined;
+  const isHost = new Promise<void>((resolve, reject) => {
+    authenticated = resolve;
+    // A wrong key is refused by the helper with an error line naming why, and the socket closes.
+    sock.once("close", () => reject(new Error(`the helper closed the connection before it took this script as the host: ${errors.join("; ") || "no reason given"}`)));
+  });
+  let waiter: ((p: FillProposal | null) => void) | null = null;
+  let buf = "";
+  sock.setEncoding("utf8");
+  sock.on("data", (d: string) => {
+    buf += d;
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const m = JSON.parse(buf.slice(0, nl)) as { type: string; message?: string; nonce?: string };
+      buf = buf.slice(nl + 1);
+      if (m.type === "hostChallenge") sock.write(JSON.stringify({ type: "hostProof", v: PROTOCOL_VERSION, proof: hostProof(key, String(m.nonce)) }) + "\n");
+      else if (m.type === "hostAuthenticated") authenticated();
+      else if (m.type === "error") {
+        errors.push(m.message ?? "");
+        const w = waiter;
+        waiter = null;
+        w?.(null);
+      } else if (m.type === "fillProposal") {
+        const p = FillProposal.parse(m);
+        proposals.push(p);
+        const w = waiter;
+        waiter = null;
+        w?.(p);
+      }
+    }
+  });
+  await new Promise<void>((r) => sock.once("connect", () => r()));
+  sock.write(JSON.stringify({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: process.pid, version: "fill-eval", host: true }) + "\n");
+  await isHost;
+
+  // Proposals that arrive from focus events before the explicit requests start.
+  const waitFocusMs = Number(a["wait-focus"]) * 1000;
+  if (waitFocusMs > 0) await new Promise((r) => setTimeout(r, waitFocusMs));
+  fromFocus = proposals.length;
+
+  const ask = (t: Target): Promise<FillProposal | null> =>
+    new Promise((resolve) => {
+      waiter = resolve;
+      sock.write(JSON.stringify({ type: "fillRequest", v: PROTOCOL_VERSION, windowId: t.windowId, fieldKey: t.trigger }) + "\n");
+      setTimeout(() => {
+        if (waiter === resolve) {
+          waiter = null;
+          resolve(null);
+        }
+      }, 20_000);
+    });
+
+  for (let r = 0; r < rounds; r++) {
+    for (const t of targets) {
+      const p = await ask(t);
+      if (p === null) errors.push(`round ${r} ${t.title}: no proposal`);
     }
   }
-});
-await new Promise<void>((r) => sock.once("connect", () => r()));
-sock.write(JSON.stringify({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: process.pid, version: "fill-eval", host: true }) + "\n");
-await isHost;
+  sock.destroy();
 
-// Proposals that arrive from focus events before the explicit requests start.
-const waitFocusMs = Number(a["wait-focus"]) * 1000;
-if (waitFocusMs > 0) await new Promise((r) => setTimeout(r, waitFocusMs));
-const fromFocus = proposals.length;
-
-const ask = (t: Target): Promise<FillProposal | null> =>
-  new Promise((resolve) => {
-    waiter = resolve;
-    sock.write(JSON.stringify({ type: "fillRequest", v: PROTOCOL_VERSION, windowId: t.windowId, fieldKey: t.trigger }) + "\n");
-    setTimeout(() => {
-      if (waiter === resolve) {
-        waiter = null;
-        resolve(null);
-      }
-    }, 20_000);
-  });
-
-for (let r = 0; r < rounds; r++) {
-  for (const t of targets) {
-    const p = await ask(t);
-    if (p === null) errors.push(`round ${r} ${t.title}: no proposal`);
-  }
 }
-sock.destroy();
 
 interface Row {
   form: string;
