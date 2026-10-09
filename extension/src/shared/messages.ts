@@ -22,6 +22,11 @@ export interface PageControl {
   options?: { value: string; label: string; selected: boolean }[];
   form: string | null;
   rect: Rect;
+  /**
+   * v2/inline: where the control's label text is, in the same viewport pixels as `rect` (walker.ts labelRectOf): a Range
+   * over the label's text, not the label element's box, which often spans the row. Absent when no label is drawn.
+   */
+  labelRect?: Rect;
   required?: true;
   disabled?: true;
   invalid?: true;

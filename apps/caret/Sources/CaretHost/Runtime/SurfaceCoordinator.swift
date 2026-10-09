@@ -641,13 +641,27 @@ final class SurfaceCoordinator {
         }
         let narrow = narrows && size.width > PopupView.minWidth ? panel.measure(view(PopupView.minWidth)) : nil
         let probe = ObstacleProbe.Session(pid: pid, until: started + Self.probeBudget)
+        // A web page's field: hit-testing finds nothing in a page Chrome shows Accessibility nothing of, so the page's own
+        // controls and labels near the field count as what the slip must not cover (the DF1 run's slip over Last Name).
+        let nearby = Self.pageNearby(pid: pid, field: field)
         let choice = FieldPanelPlacement.choose(
-            field: field, caret: caret, size: size, narrow: narrow, bounds: bounds(around: field),
-            obstacles: { probe.under([$0]) }
+            field: field, caret: caret, size: size, narrow: narrow, bounds: bounds(around: field), sideFirst: nearby != nil,
+            obstacles: { frame in
+                guard let nearby else { return probe.under([frame]) }
+                return (probe.under([frame]) ?? []) + nearby.filter { $0.intersects(frame) }
+            }
         )
         if counts { countPlacement(choice) }
         let ms = Double(DispatchTime.now().uptimeNanoseconds &- started) / 1_000_000
         return Placed(choice: choice, field: field, caret: caret, pid: pid, milliseconds: ms)
+    }
+
+    /// The page's frames near `field` (PageField.nearby), when `field` is the page field the helper last reported for
+    /// `pid`; nil for a native field.
+    static func pageNearby(pid: Int32, field: CGRect) -> [CGRect]? {
+        guard let page = PageFocusSource.current(pid: pid), let frame = page.frame, let near = page.nearby else { return nil }
+        guard abs(frame.x - field.minX) < 2, abs(frame.y - field.minY) < 2, abs(frame.width - field.width) < 2 else { return nil }
+        return near.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
     }
 
     /// A placement that is drawn, counted by spot; one covering something is counted apart (after

@@ -2365,6 +2365,10 @@ export type FieldLook = z.infer<typeof FieldLook>;
  * viewport is. The browser is `app`, the process the bridge was launched by, never one the page names. No value, no
  * label: `empty` says only whether the control holds any text.
  */
+/** PageField.nearby: how far above or below the field, in screen points, and at most how many frames. */
+export const NEARBY_RANGE = 160;
+export const NEARBY_MAX = 40;
+
 /** H13: the kinds of page field whose text a pageField carries (PageField.fieldKind). */
 export const PageFieldKind = z.enum(["input", "textarea", "contenteditable"]);
 export type PageFieldKind = z.infer<typeof PageFieldKind>;
@@ -2398,6 +2402,13 @@ export const PageField = z.object({
    * key is a label and an ordinal, which a replacement field of the same label keeps; an insert names this token.
    */
   token: z.string().min(1).max(300).optional(),
+  /**
+   * v2/inline: screen frames of what lies near the field in the page's top frame, other controls and every label's text
+   * (the field's own label included), within NEARBY_RANGE points above or below it. No text: the host keeps its slips off
+   * them, which hit-testing cannot do in a page Chrome shows Accessibility nothing of. Absent for a field in a child
+   * frame, which has no screen frame, and from a helper before it.
+   */
+  nearby: z.array(Frame).max(NEARBY_MAX).optional(),
   /**
    * H13 review: false when the field's document has lost focus (the user clicked the address bar): the host offers no
    * inline text there, since Tab would go to the browser. With `text`, to the same hosts only; absent before H13.
@@ -2818,6 +2829,8 @@ export const PageControl = z.object({
   /** The form identity the strong key uses; null outside a form. */
   form: z.string().nullable(),
   rect: PageRect,
+  /** v2/inline: the label's text, in the same viewport pixels as `rect` (extension walker.ts labelRectOf); absent when none is drawn. */
+  labelRect: PageRect.optional(),
   required: z.literal(true).optional(),
   disabled: z.literal(true).optional(),
   invalid: z.literal(true).optional(),

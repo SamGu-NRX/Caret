@@ -226,6 +226,29 @@ function rectOf(el: Element): Rect {
   return [k(r.x), k(r.y), k(r.width), k(r.height)];
 }
 
+/**
+ * v2/inline: the text of the label a person reads for `el` (aria-labelledby's first element, else its first <label>),
+ * measured as a Range over the label's text, so the host can keep its slips off other fields' labels. The control's own
+ * box is left out when the label wraps it. Undefined when there is no label or it draws nothing.
+ */
+function labelRectOf(el: Element): Rect | undefined {
+  const ids = el.getAttribute("aria-labelledby");
+  const label = (ids !== null ? labelledBy(el, ids)[0] : undefined)
+    ?? (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement ? el.labels?.[0] : undefined);
+  if (label === undefined) return undefined;
+  const range = el.ownerDocument.createRange();
+  range.selectNodeContents(label);
+  let box = range.getBoundingClientRect();
+  if (label.contains(el)) {
+    // A wrapping label: its text alone, before the control.
+    range.setEndBefore(el);
+    box = range.getBoundingClientRect();
+  }
+  if (box.width <= 0 || box.height <= 0) return undefined;
+  const k = (n: number): number => Math.round(n * 10) / 10;
+  return [k(box.x), k(box.y), k(box.width), k(box.height)];
+}
+
 /** The form identity a strong key uses: its author id or name, else its ordinal among the frame's forms. */
 export function formIdentity(el: Element, forms: HTMLFormElement[] = [...document.forms]): string | null {
   const f = el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement || el instanceof HTMLButtonElement ? el.form : el.closest("form");
@@ -349,6 +372,8 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       // An owned file input is where its owner is (W4).
       rect: rectOf(f.el instanceof HTMLInputElement && f.kind === "file" && !visible(f.el) ? (fileOwner(f.el) ?? f.el) : f.el),
     };
+    const labelRect = labelRectOf(f.el);
+    if (labelRect !== undefined) c.labelRect = labelRect;
     if (f.kind === "radio") {
       const peers = f.el instanceof HTMLInputElement ? radioPeers(f.el) : [f.el];
       const name = radioQuestion(f.el);

@@ -9642,6 +9642,30 @@
               "minLength": 1,
               "maxLength": 300
             },
+            "nearby": {
+              "maxItems": 40,
+              "type": "array",
+              "items": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "items": false,
+                "minItems": 4,
+                "maxItems": 4
+              }
+            },
             "pageFocused": {
               "type": "boolean"
             },
