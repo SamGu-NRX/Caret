@@ -15,7 +15,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, describeCandidate, labelledCandidate, labelledLines, MAX_LINE, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, CANDIDATE_WORDING, candidateSpans, clauseSpans, sourceOf as readOf, associationOf, type Candidate } from "./candidates.ts";
-import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
+import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, unwrapValue, words } from "./kinds.ts";
 import { WINDOW_CHARS, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
@@ -2391,9 +2391,13 @@ export async function proposeFill(
         const placed = asksPlace(f.name) ? placeWithCountry(text) : null;
         if (placed !== null) return { value: placed, display: placed, writes: page };
         return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
-      case "text":
-        // W2: the write contract (checkValues, below) decides whether it may be written.
-        return { value: text, display: text, writes: true };
+      case "text": {
+        // W2: the write contract (checkValues, below) decides whether it may be written. A value in quotes, brackets or
+        // with sentence punctuation after it, for a field of an email, URL, phone or ID kind, is typed without them, as
+        // the page would read it; the verifier still judges it against its source (kinds.ts unwrapValue).
+        const core = unwrapValue(text, f.kinds);
+        return core === null ? { value: text, display: text, writes: true } : { value: core, display: core, writes: true };
+      }
     }
   };
   const sourceOf = (p: Pick, f: Field): FillSource | null => {

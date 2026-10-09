@@ -56,6 +56,59 @@ export function readerValue(v: TypedValue, texts: readonly (string | null | unde
   return v;
 }
 
+/** The kinds whose values are one token-like string that never starts or ends with quotes, brackets or sentence punctuation. */
+const WRAPPABLE: readonly ValueKind[] = ["email", "url", "phone", "id"];
+const PAIRS: Readonly<Record<string, string>> = { '"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019", "\u00ab": "\u00bb", "<": ">", "(": ")", "[": "]" };
+const TRAILING = /[.,;:!?\u3002]+$/u;
+/** Whether a text is a whole value of the kind, nothing around it. */
+const WHOLE: Readonly<Record<string, RegExp>> = {
+  email: /^[^\s@<>()"'\[\],;:]+@[^\s@<>()"'\[\],;:]+\.[\p{L}]{2,}$/u,
+  url: /^(?:https?:\/\/)?[^\s<>()"'\[\]]+\.[^\s<>"'\[\]]*[^\s<>"'\[\].,;:!?)]$/u,
+  phone: /^\+?[\d(][\d ().-]{5,}\d$/u,
+  id: /^[\p{L}\p{N}#][\p{L}\p{N}#\-_/.]*[\p{L}\p{N}]$/u,
+};
+
+/**
+ * The value inside a text a field of an email, URL, phone or ID kind would take, when the text is that value wrapped in
+ * quotes, angle brackets, parentheses or square brackets, or followed by sentence punctuation: '"123456796"' gives
+ * 123456796, "<https://x.example>" and "https://x.example." give the link. Null when the text is not wrapped, or what it
+ * wraps is not a whole value of one of those kinds. The verifier answered "exact" twice for such texts at 0.75 to 0.92
+ * (slice 2's labelled set, ~/.caret-run/evidence/act/slice3/sweep.txt), so code reads them, not the floor. A field
+ * whose label names no kind ("LinkedIn Profile") is held to the kind of what the marks wrap, when that is a whole email,
+ * link or phone number.
+ */
+export function unwrapValue(text: string, kinds: ReadonlySet<ValueKind>): string | null {
+  const core = stripMarks(text);
+  if (core === text.trim()) return null;
+  const wants = kinds.size === 0 ? (["email", "url", "phone"] as const) : WRAPPABLE.filter((k) => kinds.has(k));
+  return wants.some((k) => WHOLE[k]?.test(core) === true) ? core : null;
+}
+
+/** The text without the quotes, brackets and trailing sentence punctuation around it, however deep. */
+function stripMarks(text: string): string {
+  let core = text.trim();
+  for (let changed = true; changed; ) {
+    changed = false;
+    const close = PAIRS[core[0] ?? ""];
+    if (close !== undefined && core.length > 2 && core.endsWith(close)) ((core = core.slice(1, -1).trim()), (changed = true));
+    const bare = core.replace(TRAILING, "");
+    if (bare !== core && bare.length > 0) ((core = bare), (changed = true));
+  }
+  return core;
+}
+
+/**
+ * Whether a text for a field of an email, URL, phone or ID kind carries quotes, brackets or punctuation around its value;
+ * for a field that names no kind, whether it is a whole email, link or phone number with marks around it (unwrapValue).
+ */
+export function wrappedValue(text: string, kinds: ReadonlySet<ValueKind>): boolean {
+  if (kinds.size === 0) return unwrapValue(text, kinds) !== null;
+  if (!WRAPPABLE.some((k) => kinds.has(k))) return false;
+  const t = text.trim();
+  const close = PAIRS[t[0] ?? ""];
+  return (close !== undefined && t.length > 2 && t.endsWith(close)) || TRAILING.test(t);
+}
+
 /** A clock time inside a value: "3:00 PM", "15:00", "3 PM". */
 const CLOCK = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b(?:1[0-2]|0?[1-9])\s?[ap]\.?m\b\.?/iu;
 

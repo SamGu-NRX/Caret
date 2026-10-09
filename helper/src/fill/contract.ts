@@ -28,7 +28,7 @@ import { asksCountry, datePart, fieldPart, PART_SAYS, partFits, type FillPart } 
 import { describeField } from "./descriptor.ts";
 import { authorityRefusal, fieldFingerprint, scopeRefusal, type Authority, type DocumentReader, type Origin } from "./ask-scope.ts";
 import { sentLineFor } from "./when.ts";
-import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
+import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind, wrappedValue } from "./kinds.ts";
 import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
@@ -512,6 +512,10 @@ export function shapeRefusal(p: Proposed): string | null {
   // "08:45" as plain text): c2-page's month from "Aug '22" was refused here once V3 sent it to the verifier.
   const kind = chosen ? null : misfit(v, p.field.labelWords);
   if (kind !== null) return kind;
+  // A field of an email, URL, phone or ID kind takes the value alone: the verifier answered "exact" twice at 0.75 to 0.92
+  // for one in quotes, in angle brackets or with a trailing period (kinds.ts unwrapValue). Fill types the value inside
+  // instead where it can; any other path that proposes it wrapped is refused here.
+  if (wrappedValue(p.text, p.field.kinds)) return `'${clip(v)}' has marks around the value; the field takes the value alone`;
   if (p.field.part !== null && !partFits(p.field.part, v)) return `'${clip(v)}' is not the ${p.field.part} the field takes`;
   if (p.field.maxLength !== null && p.text.length > p.field.maxLength) return `'${clip(v)}' is longer than the ${p.field.maxLength} characters the field takes`;
   return null;
