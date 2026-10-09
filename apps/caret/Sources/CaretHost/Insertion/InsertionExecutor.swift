@@ -651,12 +651,18 @@ final class InsertionExecutor: @unchecked Sendable {
         /// Accessibility's system-wide focused application, read live. Not
         /// `NSRunningApplication.isActive`: its time-varying properties change only as the main run
         /// loop runs (NSRunningApplication.h), and this runs on the insertion queue.
+        /// When the system-wide element cannot answer (kAXErrorCannotComplete in the macOS 26 rig guest, as for
+        /// AXRead.focusedElement), the target app's own AXFrontmost, also read live.
         func isFrontmost() -> Bool {
             var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value) == .success,
-                  let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
-            var focused: pid_t = 0
-            return AXUIElementGetPid(value as! AXUIElement, &focused) == .success && focused == pid
+            if AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value) == .success,
+               let value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+                var focused: pid_t = 0
+                return AXUIElementGetPid(value as! AXUIElement, &focused) == .success && focused == pid
+            }
+            var front: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFrontmostAttribute as CFString, &front) == .success else { return false }
+            return (front as? Bool) == true
         }
 
         func read() -> RangeEdit.Live? { FieldReader.read(element).map(InsertionExecutor.rangeLive) }
