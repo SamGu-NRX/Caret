@@ -162,11 +162,11 @@ final class ServiceLauncherTests: XCTestCase {
         let reader = try script("reader.sh", "cat > /dev/null\nexec sleep 60\n")
         let home = try CaretHome.resolve(override: "\(dir)/home", userHome: "/nonexistent")
         var lines: [String] = []
-        var sent: [Int32] = []
+        var sent: [(pid_t, Int32)] = []
         let launcher = try ServiceLauncher(
             programs: .init(node: "/bin/sh", helperEntry: helper, reader: reader), home: home, log: { lines.append($0) },
             sendSignal: { pid, sig in
-                sent.append(sig)
+                sent.append((pid, sig))
                 if sig != SIGKILL { kill(pid, sig) }
             }
         )
@@ -179,7 +179,8 @@ final class ServiceLauncherTests: XCTestCase {
         let took = Date().timeIntervalSince(started)
         XCTAssertLessThan(took, 2, "stop() waited past its deadlines")
         XCTAssertGreaterThanOrEqual(took, 0.8)
-        XCTAssertEqual(sent, [SIGTERM, SIGKILL])
+        // The reader, when this machine lets it start, stops on its SIGTERM; the helper needs the SIGKILL.
+        XCTAssertEqual(sent.filter { $0.0 == pid }.map(\.1), [SIGTERM, SIGKILL])
         XCTAssertEqual(launcher.helper.status, .stopped)
         XCTAssertTrue(lines.contains("process \(pid) was killed but had not exited 0.4 s later; Caret stops waiting for it"), "\(lines)")
         XCTAssertNotNil(ServiceLauncher.childRecord(pid), "the stand-in should still run until the test kills it")
