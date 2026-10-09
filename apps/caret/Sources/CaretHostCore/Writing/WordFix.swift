@@ -6,8 +6,9 @@ import Foundation
 /// A finding it refuses waits for the sentence check, which sees the whole sentence.
 public enum WordFix {
     /// The word the user just closed, or nil. The field grew since the last read, the caret is a plain
-    /// caret, and right before it sit a space, a line break or closing punctuation (`,;:)]}"'` and
-    /// curly quotes), then one or more word characters. A ".", "!" or "?" among them is a sentence end,
+    /// caret, and right before it sit a space, a line break or closing punctuation (`,;:)]}"` and the
+    /// curly closing double quote), then one or more word characters. Single quotes at the word's edges
+    /// are left out of it; one inside is an apostrophe. A ".", "!" or "?" among them is a sentence end,
     /// which `WritingMarks.boundary` checks whole, so it gives nil here.
     public static func closedWord(previous: String?, value: String, selection: UTF16Selection) -> UTF16Span? {
         guard let previous, selection.isEmpty, UTF16Text.length(value) > UTF16Text.length(previous) else { return nil }
@@ -20,11 +21,17 @@ public enum WordFix {
             if [0x2E, 0x21, 0x3F].contains(units[i]) { return nil }
             i -= 1
         }
-        let end = i + 1
+        var end = i + 1
         while i >= 0, isWordUnit(units[i]) { i -= 1 }
-        let start = i + 1
+        var start = i + 1
+        // A quote at either edge closes or opens a quotation ('teh', ‘teh’); only one inside the word
+        // is an apostrophe ("dosen't").
+        while end > start, isQuote(units[end - 1]) { end -= 1 }
+        while start < end, isQuote(units[start]) { start += 1 }
         return end > start ? UTF16Span(start: start, end: end) : nil
     }
+
+    private static func isQuote(_ unit: UInt16) -> Bool { unit == 0x27 || unit == 0x2018 || unit == 0x2019 }
 
     /// Whether a word check's finding gets its line as the user types: a spelling fix the checker is
     /// sure of (`needsChoice` false), within KeyType's edit cap (ADR-108: two edits up to eight letters,
