@@ -939,8 +939,9 @@ export class GoalRuns {
   private async segmentStopped(run: Run, seg: GoalSegment, m: Pick<Extract<TaskProgress, { phase: "stopped" }>, "step" | "stopReason" | "detail">): Promise<void> {
     const why = run.cause ?? this.classify(run, seg, m.stopReason, m.detail ?? "");
     const at = m.step === null ? null : (stepOf(run, seg, m.step)?.index ?? null);
+    const ran = run.task?.id ?? null;
     this.endTask(run);
-    await this.stopAndReplan(run, why.reason, at, why.says);
+    await this.stopAndReplan(run, why.reason, at, why.says, "freshPlan", ran);
   }
 
   /** The executor's stop, in the goal's words. A page whose document changed reloaded, whatever the executor saw first. */
@@ -968,7 +969,7 @@ export class GoalRuns {
     }
   }
 
-  private async stopAndReplan(run: Run, reason: GoalStopReason, step: number | null, says: string, fresh: "afterReveal" | "freshPlan" = "freshPlan"): Promise<void> {
+  private async stopAndReplan(run: Run, reason: GoalStopReason, step: number | null, says: string, fresh: "afterReveal" | "freshPlan" = "freshPlan", taskId: string | null = null): Promise<void> {
     if (run.state === "stopped") return;
     run.state = "stopped";
     this.deps.ended?.(run.plan.goalId);
@@ -976,7 +977,7 @@ export class GoalRuns {
     const total = run.plan.segments.reduce((n, x) => n + x.steps.filter((y) => y.row !== true).length, 0);
     const sentence = `${says.charAt(0).toUpperCase()}${says.slice(1)}, so Caret stopped after ${done} of ${total} steps.`;
     const next = REPLANNABLE.has(reason) ? await this.fresh(run, reason, fresh) : null;
-    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: run.cursor.segment, step, reason, says: next === null ? sentence : `${sentence} A fresh plan from the screen as it is now is ready for you to check.`, freshPlan: next?.event === "segment" ? next.goalId : null });
+    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: run.cursor.segment, step, reason, says: next === null ? sentence : `${sentence} A fresh plan from the screen as it is now is ready for you to check.`, freshPlan: next?.event === "segment" ? next.goalId : null, ...(taskId === null ? {} : { taskId }) });
     if (next !== null) this.deps.publish(next);
   }
 

@@ -263,12 +263,12 @@ public struct GoalCard: Equatable, Sendable {
         case .stopped(let s):
             if case .ended = stage { return .ignored }
             // A stop at a writing step may follow a write that landed but did not read back: the executor keeps it for
-            // undo, and no verified receipt named its task (Greptile review on #22). The segment's task is the helper's
-            // `goalId:s<segment>` (goals/runs.ts segmentTaskId), so ⌘Z offers it too.
-            if stage == .running || stage == .stopping, let seg = s.segment, seg == segment, let at = s.step,
-               rows.contains(where: { $0.step == at && ($0.kind == .write || $0.kind == .attach || $0.kind == .calendar) }) {
-                let id = taskId ?? "\(goalId):s\(seg)"
-                if !tasks.contains(id) { tasks.append(id) }
+            // undo, and no verified receipt named its task (Greptile review on #22). The stop names the task that ran, and
+            // only one that ran: a stop at acceptance's precheck names none, so no undo is offered for it (Codex review).
+            if let id = s.taskId, let seg = s.segment, seg == segment, let at = s.step,
+               rows.contains(where: { $0.step == at && ($0.kind == .write || $0.kind == .attach || $0.kind == .calendar) }),
+               !tasks.contains(id) {
+                tasks.append(id)
             }
             for k in rows.indices where rows[k].state == .running { rows[k].state = s.reason == .you ? .pending : .failed }
             stage = .ended(Ending(kind: s.segment == nil || stage == .preview ? .notRun : .stopped, line: GoalCopy.stopped(s, place: place)))

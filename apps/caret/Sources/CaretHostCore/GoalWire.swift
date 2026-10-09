@@ -381,13 +381,17 @@ public struct GoalProgress: Codable, Equatable, Sendable {
         public var says: String
         /// The goal id of the fresh plan offered in its place, which the next message previews.
         public var freshPlan: String?
+        /// The executor task that ran in the stopped segment, when one did (helper protocol.ts): what ⌘Z undoes for a
+        /// write that landed but never read back. Nil when the stop came before any task ran.
+        public var taskId: String?
 
-        public init(segment: Int?, step: Int?, reason: StopReason, says: String, freshPlan: String?) {
+        public init(segment: Int?, step: Int?, reason: StopReason, says: String, freshPlan: String?, taskId: String? = nil) {
             self.segment = segment
             self.step = step
             self.reason = reason
             self.says = says
             self.freshPlan = freshPlan
+            self.taskId = taskId
         }
     }
 
@@ -509,7 +513,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
         case "stopped":
             event = .stopped(Stop(segment: try GoalPlans.nullable(Int.self, c, .segment), step: try GoalPlans.nullable(Int.self, c, .step),
                                   reason: try c.decode(StopReason.self, forKey: .reason), says: try c.decode(String.self, forKey: .says),
-                                  freshPlan: try GoalPlans.nullable(String.self, c, .freshPlan)))
+                                  freshPlan: try GoalPlans.nullable(String.self, c, .freshPlan), taskId: try c.decodeIfPresent(String.self, forKey: .taskId)))
         case "finished":
             let end = End(outcome: try c.decode(End.Outcome.self, forKey: .outcome), verified: try c.decode(Int.self, forKey: .verified),
                           skipped: try c.decode(Int.self, forKey: .skipped), left: try c.decode([String].self, forKey: .left),
@@ -555,7 +559,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
         case .stopped(let s):
             try c.encode("stopped", forKey: .event)
             try c.encode(s.segment, forKey: .segment); try c.encode(s.step, forKey: .step); try c.encode(s.reason, forKey: .reason)
-            try c.encode(s.says, forKey: .says); try c.encode(s.freshPlan, forKey: .freshPlan)
+            try c.encode(s.says, forKey: .says); try c.encode(s.freshPlan, forKey: .freshPlan); try c.encodeIfPresent(s.taskId, forKey: .taskId)
         case .finished(let e):
             try c.encode("finished", forKey: .event)
             try c.encode(e.outcome, forKey: .outcome); try c.encode(e.verified, forKey: .verified); try c.encode(e.skipped, forKey: .skipped)

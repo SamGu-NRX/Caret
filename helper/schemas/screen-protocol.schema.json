@@ -9404,6 +9404,11 @@
                       "type": "null"
                     }
                   ]
+                },
+                "taskId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
                 }
               },
               "required": [

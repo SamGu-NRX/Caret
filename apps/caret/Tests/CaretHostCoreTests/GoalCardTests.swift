@@ -223,9 +223,11 @@ final class GoalCardTests: XCTestCase {
         XCTAssertTrue(ask.ownsUndo("goal-4-ask-32:s1"), "the calendar event's task is undone too")
         let before = sent().count
         XCTAssertTrue(ask.undo())
-        let undos = sent().dropFirst(before).compactMap { m -> TaskControl? in if case .control(let c) = m { return c } else { return nil } }
-        XCTAssertEqual(undos, [TaskControl(taskId: "goal-4-ask-32:s1", action: .undo), TaskControl(taskId: "goal-4-ask-32:s0", action: .undo)], "newest first")
+        let controls = { sent().dropFirst(before).compactMap { m -> TaskControl? in if case .control(let c) = m { return c } else { return nil } } }
+        // Codex review on #22: one undo at a time, newest first; the next goes only once the one before answered.
+        XCTAssertEqual(controls(), [TaskControl(taskId: "goal-4-ask-32:s1", action: .undo)])
         ask.receive(try Self.undone("goal-4-ask-32:s1", restored: 1, notRestored: 0))
+        XCTAssertEqual(controls(), [TaskControl(taskId: "goal-4-ask-32:s1", action: .undo), TaskControl(taskId: "goal-4-ask-32:s0", action: .undo)])
         XCTAssertEqual(try card(ask).stage.kind, .undoing, "one of two answered")
         ask.receive(try Self.undone("goal-4-ask-32:s0", restored: 1, notRestored: 1))
         XCTAssertEqual(try card(ask).stage.kind, .partial, "a change the helper could not put back is said, not hidden")
@@ -319,7 +321,7 @@ final class GoalCardTests: XCTestCase {
     func testAStopAtAWriteThatNeverVerifiedStillOffersItsUndo() throws {
         let (ask, _, sent) = try showing()
         XCTAssertTrue(ask.tab())
-        XCTAssertTrue(ask.receive(GoalProgress(at: 2, goalId: "goal-4-ask-32", requestId: nil, event: .stopped(.init(segment: 0, step: 0, reason: .targetChanged, says: "Caret couldn't read the To field back, so it stopped.", freshPlan: nil))), toForm: { _ in false }))
+        XCTAssertTrue(ask.receive(GoalProgress(at: 2, goalId: "goal-4-ask-32", requestId: nil, event: .stopped(.init(segment: 0, step: 0, reason: .targetChanged, says: "Caret couldn't read the To field back, so it stopped.", freshPlan: nil, taskId: "goal-4-ask-32:s0"))), toForm: { _ in false }))
         let c = try card(ask)
         XCTAssertEqual(c.tasks, ["goal-4-ask-32:s0"])
         XCTAssertTrue(c.undoable)
@@ -327,6 +329,28 @@ final class GoalCardTests: XCTestCase {
         XCTAssertTrue(ask.undo())
         let undos = sent().dropFirst(before).compactMap { m -> TaskControl? in if case .control(let c) = m { return c } else { return nil } }
         XCTAssertEqual(undos, [TaskControl(taskId: "goal-4-ask-32:s0", action: .undo)])
+    }
+
+    /// Codex review on #22: Tab on a preview whose deadline passed before its timer ran ends it, as the timer would have,
+    /// and accepts nothing; the card then shows it ended rather than a stale preview.
+    func testTabOnAPreviewPastItsDeadlineEndsIt() throws {
+        let (ask, clock, sent) = try showing()
+        let c = try card(ask)
+        clock.skip(by: Double(c.expires) / 1000 - clock.now.timeIntervalSince1970 + 1)
+        let before = sent().count
+        XCTAssertTrue(ask.tab(), "taken as by an ended card (testThePreviewExpiresWithNoTab)")
+        XCTAssertEqual(sent().count, before, "nothing accepted")
+        XCTAssertEqual(try card(ask).stage, .ended(.init(kind: .notRun, line: PageTaskCopy.expired)))
+    }
+
+    /// Codex review on #22: a stop at acceptance's precheck, before any task ran, names no task, so nothing is offered to
+    /// undo though the card was already running and the stop names a writing step.
+    func testAStopAtAcceptancesPrecheckOffersNoUndo() throws {
+        let (ask, _, _) = try showing()
+        XCTAssertTrue(ask.tab())
+        XCTAssertTrue(ask.receive(GoalProgress(at: 2, goalId: "goal-4-ask-32", requestId: nil, event: .stopped(.init(segment: 0, step: 0, reason: .targetChanged, says: "The To field changed before Caret reached it.", freshPlan: nil))), toForm: { _ in false }))
+        XCTAssertEqual(try card(ask).tasks, [])
+        XCTAssertFalse(try card(ask).undoable)
     }
 
     /// A stop before Caret ran anything, or one that names no step, offers nothing to undo.

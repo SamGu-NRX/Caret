@@ -204,6 +204,10 @@ public final class AskCaret {
     /// The ended run's writes ⌘Z may undo; nil once undone, asked or put away.
     public private(set) var undoOffer: UndoOffer?
     private var undoTimer: SurfaceTimer?
+    /// A goal card's undos still to send, newest first: one at a time, each after the one before it answered `undone`.
+    /// The helper runs each control as its own task, so sent together they would race over a field two tasks wrote
+    /// (Codex review on #22).
+    private var undoQueue: [TaskControl] = []
     /// A failed ask is showing: the next keys typed start a new instruction (`edit`).
     public private(set) var replacesOnType = false
     /// The task Tab started, followed while its card is up: a paused run resumed from the activity
@@ -313,7 +317,15 @@ public final class AskCaret {
         if case .goal(var card) = phase {
             switch card.stage {
             case .preview:
-                guard let accept = card.accept(nowMs: nowMs) else { return true }
+                // A preview past its deadline whose timer hasn't run yet (a busy run loop, just after wake) ends now, as the
+                // timer would have ended it, and shows so (Codex review on #22); any other preview that can't be accepted
+                // keeps no key.
+                guard let accept = card.accept(nowMs: nowMs) else {
+                    guard card.expires <= nowMs else { return false }
+                    card.expired()
+                    settle(.goal(card))
+                    return true
+                }
                 guard send(.goalAccept(accept)) else {
                     card.stage = .ended(GoalCard.Ending(kind: .notRun, line: AskCopy.helperDown))
                     settle(.goal(card))
@@ -672,7 +684,11 @@ public final class AskCaret {
             // A goal's stop is answered by its own `stopped` message; an undo by each task's `undone`.
             // An undo that says nothing of what it put back is not taken as all of it.
             let left = progress.notRestored ?? (progress.restored == nil ? 1 : 0)
-            if progress.phase == .undone, card.undone(taskId: progress.taskId, restored: progress.restored ?? 0, notRestored: left) { settle(.goal(card)) }
+            if progress.phase == .undone, card.undone(taskId: progress.taskId, restored: progress.restored ?? 0, notRestored: left) {
+                // The next undo goes only now that this one answered.
+                if case .ended(let e) = card.stage, e.kind == .undoing, !undoQueue.isEmpty { sendNextUndo(&card, undoQueue.removeFirst()) }
+                settle(.goal(card))
+            }
             return
         }
         guard let tracking, progress.taskId == tracking else { return }
@@ -832,20 +848,12 @@ public final class AskCaret {
     @discardableResult
     public func undo() -> Bool {
         if case .goal(var card) = phase {
-            let controls = card.undo()
+            var controls = card.undo()
             guard !controls.isEmpty else { return false }
-            for c in controls where !send(.control(c)) {
-                card.stage = .ended(GoalCard.Ending(kind: .stopped, line: WorkLines.undoUnsent.text))
-                settle(.goal(card))
-                return true
-            }
+            undoQueue = Array(controls.dropFirst())
+            controls = Array(controls.prefix(1))
+            sendNextUndo(&card, controls[0])
             settle(.goal(card))
-            let goalId = card.goalId
-            undoTimer = clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
-                guard let self, case .goal(var c) = self.phase, c.goalId == goalId, case .ended(let e) = c.stage, e.kind == .undoing else { return }
-                c.lostTouch()
-                self.settle(.goal(c))
-            }
             return true
         }
         guard let offer = undoOffer, case .ended(let card, _) = phase else { return false }
@@ -860,6 +868,22 @@ public final class AskCaret {
             self.settle(.ended(card, AskCopy.undoUnanswered))
         }
         return true
+    }
+
+    /// Sends one of the goal card's undos and waits for its answer: an unsent one ends the undo, said as unsent.
+    private func sendNextUndo(_ card: inout GoalCard, _ control: TaskControl) {
+        guard send(.control(control)) else {
+            undoQueue = []
+            card.stage = .ended(GoalCard.Ending(kind: .stopped, line: WorkLines.undoUnsent.text))
+            return
+        }
+        let goalId = card.goalId
+        undoTimer = clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
+            guard let self, case .goal(var c) = self.phase, c.goalId == goalId, case .ended(let e) = c.stage, e.kind == .undoing else { return }
+            self.undoQueue = []
+            c.lostTouch()
+            self.settle(.goal(c))
+        }
     }
 
     /// Whether the arbiter's toast for this task is this card's.

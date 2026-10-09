@@ -2630,6 +2630,12 @@ export const GoalProgress = z.discriminatedUnion("event", [
     reason: GoalStopReason,
     says: z.string().min(1).max(600),
     freshPlan: z.string().min(1).max(240).nullable(),
+    /**
+     * The executor task that ran in the stopped segment, when one did: its writes are in that task's undo ledger, though a
+     * write that landed and never read back has no verified receipt to name it (Codex review on #22). Absent when the stop
+     * came before any task ran (a precheck at acceptance, a reload), so a host never offers an undo of a task that isn't.
+     */
+    taskId: z.string().min(1).max(240).optional(),
   }),
   z
     .object({
