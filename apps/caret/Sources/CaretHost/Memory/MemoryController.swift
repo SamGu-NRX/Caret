@@ -136,21 +136,28 @@ final class MemoryController {
             model.writing.problem = nil
         case .saveAbout:
             let text = model.writing.aboutDraft
-            guard text.count <= PersonalInstructions.maxCharacters else {
-                model.writing.problem = "Keep it under \(PersonalInstructions.maxCharacters) characters."
+            if let problem = WritingPage.saveProblem(text) {
+                model.writing.problem = problem
                 return
             }
             SettingsStore.shared.update(source: .menu) { $0.instructions.aboutMe = text.trimmingCharacters(in: .whitespacesAndNewlines) }
         case .editEntry(let id):
             let entry = (model.writing.entries + model.writing.addable).first { $0.id == id }
             model.writing.editing = entry.map { ($0.id, $0.text) }
+            model.writing.entryProblem = nil
         case .entryText(let text):
             if let id = model.writing.editing?.id { model.writing.editing = (id, text) }
+            model.writing.entryProblem = nil
         case .saveEntry:
             guard let editing = model.writing.editing,
                   let entry = (model.writing.entries + model.writing.addable).first(where: { $0.id == editing.id }) else { return }
-            let text = String(editing.draft.prefix(PersonalInstructions.maxCharacters))
+            if let problem = WritingPage.saveProblem(editing.draft) {
+                model.writing.entryProblem = problem
+                return
+            }
+            let text = editing.draft
             model.writing.editing = nil
+            model.writing.entryProblem = nil
             SettingsStore.shared.update(source: .menu) { s in
                 switch entry.kind {
                 case .app: s.instructions.setApp(entry.key, text)
@@ -159,6 +166,7 @@ final class MemoryController {
             }
         case .cancelEntry:
             model.writing.editing = nil
+            model.writing.entryProblem = nil
         case .removeEntry(let id):
             guard let entry = model.writing.entries.first(where: { $0.id == id }) else { return }
             if model.writing.editing?.id == id { model.writing.editing = nil }
