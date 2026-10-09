@@ -16,7 +16,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { PROTOCOL_VERSION, ReaderMessage, type Node, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
 import { excludedValue, HIGH_ENTROPY_BITS, HIGH_ENTROPY_CHARS, WITHHELD, withholdValues } from "../src/privacy/exclude.ts";
-import { DEFAULT_APPS_OFF } from "../src/privacy/read-policy.ts";
+import { DEFAULT_APPS_OFF, readAppsOff } from "../src/privacy/read-policy.ts";
+import { writeFileSync } from "node:fs";
 import { jevPolicy, writerPolicy } from "../src/privacy/providers.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
@@ -288,6 +289,21 @@ describe("T-E5: apps and sites switched off", () => {
   });
 
   const line = "Vault item: Lumen staging, user dana";
+  it("a deny file an older Caret wrote still gets every default, and keeps the user's own lines", () => {
+    const dir = mkdtempSync(join(tmpdir(), "deny-"));
+    try {
+      const path = join(dir, "deny-apps.txt");
+      writeFileSync(path, "# old\ncom.apple.keychainaccess\ncom.example.private\n");
+      const got = readAppsOff(path)!;
+      expect(got).toContain("com.example.private");
+      for (const d of DEFAULT_APPS_OFF) expect(got).toContain(d);
+      expect(new Set(got).size).toBe(got.length);
+      expect(readAppsOff(join(dir, "absent.txt"))).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("a window of an app switched off never enters the model, and one already there closes", () => {
     const m = new ScreenModel();
     const vault = { pid: 8100, bundleId: "com.1password.1password", name: "1Password" };

@@ -55,6 +55,20 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNotNil(store.debugInfo().error)
     }
 
+    func testTheFirstWriteAfterAnUnreadableFileKeepsThatFileAside() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(#"{"version":9}"#.utf8).write(to: URL(fileURLWithPath: path))
+        let store = SettingsStore(path: path)
+        // Onboarding holds the cloud roles without the person changing anything.
+        store.update(source: .onboarding) { $0.roles = [.words] }
+        let kept = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("settings.json.unreadable-") }
+        XCTAssertEqual(kept.count, 1)
+        XCTAssertEqual(try String(contentsOfFile: dir.appendingPathComponent(kept[0]).path, encoding: .utf8), #"{"version":9}"#)
+        XCTAssertNil(SettingsStore(path: path).loadError, "the new file is readable")
+        store.update(source: .onboarding) { $0.roles = [.words, .fill] }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("settings.json.unreadable-") }.count, 1, "kept once")
+    }
+
     func testTheSocketsSetCommandTakesTheMenusChoicesByName() {
         let store = SettingsStore(path: path)
         XCTAssertNil(store.set(["role", "watch", "off"]))

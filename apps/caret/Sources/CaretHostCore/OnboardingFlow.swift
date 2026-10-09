@@ -342,6 +342,8 @@ public final class OnboardingFlow {
         public var untrusted: [String] = []
         public var opened = false
         public var connected = false
+        /// Why the last Add installed nothing (`browserAddFailed`); Add stays the primary so the person can retry.
+        public var failure: String?
 
         public var target: String? { trusted.first }
     }
@@ -442,6 +444,8 @@ public final class OnboardingFlow {
         case browsers(trusted: [String], untrusted: [String])
         /// The extension's engine said hello through the bridge (the helper's `pageEngine` connected).
         case browserConnected
+        /// Add to <browser> installed nothing (the installer's message), so the step offers Add again.
+        case browserAddFailed(String)
         /// The host found Caret's grant stale (`AccessibilityAccess.isStale`), or no longer.
         case staleGrant(Bool)
         /// "Reset Caret's entry" on the switch step.
@@ -636,6 +640,10 @@ public final class OnboardingFlow {
         case .browsers(let trusted, let untrusted):
             state.browser.trusted = trusted
             state.browser.untrusted = untrusted
+        case .browserAddFailed(let why):
+            guard state.step == .browser, !state.browser.connected else { break }
+            state.browser.opened = false
+            state.browser.failure = why
         case .browserConnected:
             guard !state.browser.connected else { break }
             state.browser.connected = true
@@ -684,6 +692,7 @@ public final class OnboardingFlow {
             // The first press adds Caret to the browser; after that (or with no browser to add to) it goes on.
             if state.browser.target != nil, !state.browser.opened, !state.browser.connected {
                 state.browser.opened = true
+                state.browser.failure = nil
                 output(.addToBrowser)
             } else {
                 go(to: .on)
@@ -697,7 +706,13 @@ public final class OnboardingFlow {
             switch (state.on.decision, state.on.preview) {
             case (.pending, .ready(let preview)): send(preview: preview)
             case (.pending, .building), (.pending, .idle), (.sent, _): break
-            case (.pending, .empty), (.pending, .failed), (.kept, _): finish()
+            case (.pending, .empty), (.pending, .failed):
+                // Nothing was shown to send, so nothing was agreed to: Done keeps everything on the Mac, which also
+                // lets the controller drop its held-roles snapshot (a stale one could later overwrite newer roles).
+                state.on.decision = .kept
+                output(.consent(sent: false))
+                finish()
+            case (.kept, _): finish()
             }
         case .first:
             // The primary is the offer's own button while it can be taken (Add to Calendar, Fill 4 fields).

@@ -762,6 +762,9 @@ public final class HostRuntime {
     /// The menu's "Turn on Accessibility…": the switch step on its own, with the panel in System Settings.
     public func openAccessSwitch() { onboarding.openAccess() }
 
+    /// Add to <browser>'s outcome, for onboarding's browser step (`ChromeBridgeInstaller.Result.ok`).
+    public func browserAddFinished(ok: Bool, message: String) { onboarding.browserAddFinished(ok: ok, message: message) }
+
     /// The menu's "Jev is off. Add a key…": the key step on its own.
     public func openJevKeyStep() { onboarding.openKey() }
 

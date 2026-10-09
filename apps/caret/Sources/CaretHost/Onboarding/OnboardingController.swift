@@ -260,6 +260,11 @@ final class OnboardingController {
     /// The helper heard a page engine say hello: the extension is connected through the bridge.
     func browserConnected() { flow?.send(.browserConnected) }
 
+    /// What Add to <browser> did: a failure goes back to the step, which says why and offers Add again.
+    func browserAddFinished(ok: Bool, message: String) {
+        if !ok { flow?.send(.browserAddFailed(message)) }
+    }
+
     /// Installed Chromium browsers, the default one first: those Caret's bridge trusts and those it does not yet.
     static func readBrowsers() -> OnboardingFlow.Event {
         let ws = NSWorkspace.shared
@@ -466,6 +471,7 @@ final class OnboardingController {
     /// Settings has not shown its window within 6 s, or closes before the switch, the window comes back as the guide.
     private func startDragPanel() {
         dragPanel.onSettingsClosed = { [weak self] in self?.showGuideWindow() }
+        dragPanel.onDismissed = { [weak self] in self?.showGuideWindow() }
         // The panel's first appearance travels from where Caret's window was.
         dragPanel.start(from: window?.isVisible == true ? window?.frame : nil)
         window?.orderOut(nil)

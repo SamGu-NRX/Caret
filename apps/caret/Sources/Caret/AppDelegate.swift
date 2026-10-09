@@ -188,6 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         browserInstallResult = result
         stateItem.title = result.message
         stateItem.toolTip = ([result.detail].filter { !$0.isEmpty } + result.manualSteps.enumerated().map { "\($0.offset + 1). \($0.element)" }).joined(separator: "\n")
+        runtime.browserAddFinished(ok: result.ok, message: result.message)
     }
 
     @objc private func addJevKey(_ sender: NSMenuItem) {

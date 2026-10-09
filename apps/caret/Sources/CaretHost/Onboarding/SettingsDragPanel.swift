@@ -16,6 +16,8 @@ import SwiftUI
 final class SettingsDragPanel {
     /// System Settings closed after the panel had found it: the caller falls back to its own window.
     var onSettingsClosed: () -> Void = {}
+    /// The person closed the panel: the caller brings its own window back, or onboarding would show nothing.
+    var onDismissed: () -> Void = {}
 
     private var panel: DragPanelWindow?
     private var model = SettingsDragPanelModel()
@@ -183,11 +185,13 @@ final class SettingsDragPanel {
     }
 
     private func dismissed() {
-        // The close button: the panel goes for this visit to System Settings; the onboarding window still waits.
+        // The close button: the panel goes for this visit to System Settings, and Caret's own window comes back as the
+        // guide (onDismissed); without it, onboarding would show nothing until the grant.
         timer?.invalidate()
         timer = nil
         panel?.orderOut(nil)
         isShown = false
+        onDismissed()
     }
 }
 

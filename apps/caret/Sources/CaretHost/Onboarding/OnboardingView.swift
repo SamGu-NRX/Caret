@@ -586,6 +586,11 @@ struct BrowserPane: View {
                     }
                 }
                 .padding(.top, 20)
+                if let failure = b.failure, !b.opened {
+                    // Add installed nothing: say why, and Add stays the primary to try again.
+                    Text(OnboardingCopy.Browser.failed(failure)).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink))
+                        .fixedSize(horizontal: false, vertical: true).padding(.top, 10)
+                }
                 // Until the store listing exists: the three steps of loading the extension from the folder Caret shows.
                 if b.opened, !b.connected, BrowserExtension.storeURL == nil {
                     VStack(alignment: .leading, spacing: 6) {

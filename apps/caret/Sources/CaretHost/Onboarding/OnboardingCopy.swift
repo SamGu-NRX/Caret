@@ -116,6 +116,8 @@ enum OnboardingCopy {
         static func connected(_ name: String) -> String { "Caret is in \(name)." }
         static func add(_ name: String) -> String { "Add to \(name)" }
         static func untrusted(_ name: String) -> String { "Caret can't connect to \(name) yet." }
+        /// `why` is the installer's own sentence (ChromeBridgeInstaller.Result.message).
+        static func failed(_ why: String) -> String { "\(why) Try Add again, or skip and add it later from the menu bar." }
         static let stepsHead = "In the Extensions page:"
         /// What Skip costs, said before the person chooses (AltTab states each optional permission's cost).
         static func cost(_ name: String) -> String { "Without it, Caret can't read or fill web pages in \(name). You can add it later from the menu bar." }

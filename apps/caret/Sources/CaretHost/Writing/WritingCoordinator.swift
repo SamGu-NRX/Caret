@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import CaretHostCore
 import Foundation
 
@@ -220,6 +221,10 @@ final class WritingCoordinator {
             return status.increment("routing.writingHeld")
         case .quiet(let why):
             return status.increment("routing.writingQuiet.\(why.rawValue)")
+        }
+        // Secure Event Input silences offers in every app (ExcludedApps.allowsOffers), fixes included.
+        guard ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) else {
+            return status.increment("held.writing.secureInput")
         }
         guard let element, let field = FieldReader.read(element), field.identity == self.field?.identity,
               field.value.utf16.elementsEqual(marks.value.utf16)
