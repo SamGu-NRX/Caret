@@ -337,8 +337,12 @@ final class OnboardingController {
             let complete = self.complete
             completion = Task { @MainActor [weak self] in
                 let ghost = await complete(text)
-                guard !Task.isCancelled else { return }
-                self?.flow?.send(.ghost(requestId: id, text: ghost))
+                guard !Task.isCancelled, let self else { return }
+                // Complete words may have gone off while the model answered, and the flow hears that only at the next
+                // poll. Telling it first drops the request, so the answer can't show or be taken (Codex on #30).
+                let readiness = self.readModel()
+                if readiness != self.flow?.state.hello.model { self.flow?.send(.model(readiness)) }
+                self.flow?.send(.ghost(requestId: id, text: ghost))
             }
         case .askPreview(let id, let families, let level):
             if !sendPreview(id, families, level) { flow?.send(.previewFailed(requestId: id, "helperNotConnected")) }
@@ -701,7 +705,7 @@ final class OnboardingController {
     ///   onboarding type <text...>                  (the Hello field's whole text)
     ///   onboarding key tab|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other
     ///   onboarding permissions on|off on|off      (Accessibility, Input Monitoring)
-    ///   onboarding model ready|loading|unavailable
+    ///   onboarding model ready|loading|unavailable|off
     ///   onboarding browsers none|<name...>       onboarding browser-connected    onboarding skip-browser
     ///   onboarding preview empty|fail|<n windows>  (a stand-in preview for the open request)
     ///   onboarding tab-owners none|<name...>      onboarding reply <firstLookReply json>
@@ -759,7 +763,8 @@ final class OnboardingController {
             case "ready": modelOverride = .ready
             case "loading": modelOverride = .loading(nil)
             case "unavailable": modelOverride = .unavailable
-            default: return #"{"error":"usage: onboarding model ready|loading|unavailable"}"#
+            case "off": modelOverride = .off
+            default: return #"{"error":"usage: onboarding model ready|loading|unavailable|off"}"#
             }
             poll()
         case ("preview", 2):

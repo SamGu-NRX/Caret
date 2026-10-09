@@ -158,6 +158,43 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertTrue(rig.take().isEmpty)
     }
 
+    /// Codex on #30: text typed while ready stays in the field when Complete words goes off; turning it back on loads
+    /// the model, and the field asks about that text without another edit.
+    func testTextLeftInTheFieldIsAskedAboutWhenTheModelComesBack() {
+        let rig = Rig()
+        rig.send(.typed("Hi Dana, thanks"))
+        rig.send(.model(.off))
+        rig.clock.advance(by: 2)
+        rig.take()
+        rig.send(.model(.loading(nil)))
+        rig.clock.advance(by: 2)
+        XCTAssertTrue(rig.take().isEmpty, "nothing asked while it loads")
+        rig.send(.model(.ready))
+        rig.clock.advance(by: OnboardingFlow.completionIdle + 0.01)
+        guard case .complete(_, let text)? = rig.take().first else { return XCTFail("no completion asked") }
+        XCTAssertEqual(text, "Hi Dana, thanks")
+        rig.send(.model(.ready))
+        rig.clock.advance(by: 2)
+        XCTAssertTrue(rig.take().isEmpty, "ready again asks nothing new")
+    }
+
+    /// Greptile on #30: Complete words switched off while a completion is out drops it, and one waiting to be asked.
+    func testAnAnswerThatArrivesAfterTheModelWentOffIsDropped() {
+        let rig = Rig()
+        rig.send(.typed("Hi Dana, thanks"))
+        rig.clock.advance(by: 1)
+        guard case .complete(let id, _)? = rig.take().first else { return XCTFail("no completion asked") }
+        rig.send(.model(.off))
+        rig.send(.ghost(requestId: id, text: " for that."))
+        XCTAssertNil(rig.state.hello.ghost, "the answer came after the model went off")
+        rig.send(.model(.ready))
+        rig.take()
+        rig.send(.typed("Hi Dana, thanks again"))
+        rig.send(.model(.off))
+        rig.clock.advance(by: 2)
+        XCTAssertTrue(rig.take().isEmpty, "the ask waiting for quiet went with the model")
+    }
+
     func testTabTakesTheGhostOnlyWhileShown() {
         let rig = Rig()
         rig.send(.key(.tab))

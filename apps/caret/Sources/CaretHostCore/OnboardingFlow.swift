@@ -133,12 +133,16 @@ public enum ModelReadiness: Equatable, Sendable {
     case loading(Double?)
     /// No model on this Mac, or it failed to load: the field is off and says so.
     case unavailable
+    /// Not loaded because the user turned Complete words off (`ModelNeed`): the field is off and says why. Turning
+    /// it back on in the menu loads the model, and the field follows.
+    case off
 
     public var name: String {
         switch self {
         case .ready: return "ready"
         case .loading: return "loading"
         case .unavailable: return "unavailable"
+        case .off: return "off"
         }
     }
 }
@@ -568,8 +572,19 @@ public final class OnboardingFlow {
             state.hello.asking = nil
             state.hello.ghost = text.flatMap { $0.isEmpty ? nil : $0 }
         case .model(let readiness):
+            let was = state.hello.model
             state.hello.model = readiness
-            if readiness != .ready { state.hello.ghost = nil }
+            if readiness != .ready {
+                // A request still out, or one about to go, is dropped with the model: its answer would show beside
+                // the line saying the field is quiet (Greptile on #30).
+                state.hello.ghost = nil
+                state.hello.asking = nil
+                idleTimer?.cancel()
+                idleTimer = nil
+            }
+            // Text left in the field while the model was off or loading (Complete words turned back on) is asked
+            // about as if just typed, so the field doesn't stay quiet until the next edit (Codex on #30).
+            else if was != .ready, state.step == .hello { typed(state.hello.text) }
         case .apps(let apps): state.hello.apps = apps
         case .key(let key): self.key(key)
         case .permissions(let p): permissionsChanged(p)
