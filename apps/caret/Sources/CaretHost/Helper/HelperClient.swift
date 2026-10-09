@@ -74,7 +74,10 @@ final class HelperClient: @unchecked Sendable {
     private let work = OSAllocatedUnfairLock(initialState: RunningWork())
 
     /// Whether an offer this copy accepted is still running in the helper: the login-item hand-off waits for it.
-    var hasRunningWork: Bool { !work.withLock { $0.isEmpty } }
+    var hasRunningWork: Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        return !work.withLock { $0.isEmpty(at: now) }
+    }
     var lastAcceptAt: Date? { lastAccept.withLock { $0 } }
 
     /// The connection is up and its hello named `routing`, so the helper sends it route decisions.
@@ -124,7 +127,7 @@ final class HelperClient: @unchecked Sendable {
     @discardableResult
     func send(_ accept: OfferAccept) -> Bool {
         // Recorded before the write: the reader thread can apply the helper's answer before sendLine returns.
-        work.withLock { $0.accepted(accept.offerId) }
+        work.withLock { $0.accepted(accept.offerId, at: ProcessInfo.processInfo.systemUptime) }
         let sent = sendLine(try? NDJSON.line(accept))
         if !sent { work.withLock { $0.unsent(accept.offerId) } }
         if sent {
@@ -212,7 +215,7 @@ final class HelperClient: @unchecked Sendable {
     @discardableResult
     func send(_ fillAll: FillAllRequest) -> Bool {
         // A fill-all runs as a task the helper reports by `taskID`, so the hand-off waits for it as for an accept.
-        work.withLock { $0.accepted(fillAll.taskID) }
+        work.withLock { $0.accepted(fillAll.taskID, at: ProcessInfo.processInfo.systemUptime) }
         let sent = sendLine(try? NDJSON.line(fillAll))
         if !sent { work.withLock { $0.unsent(fillAll.taskID) } }
         if sent {
@@ -231,7 +234,10 @@ final class HelperClient: @unchecked Sendable {
     /// H11: Tab on the page task panel: the segment it previewed, under that preview's digest. True when written.
     @discardableResult
     func send(_ accept: GoalAccept) -> Bool {
+        // A page task's segment runs as a task the helper reports by `taskID`: the hand-off waits for it too.
+        work.withLock { $0.accepted(accept.taskID, at: ProcessInfo.processInfo.systemUptime) }
         let sent = sendLine(try? NDJSON.line(accept))
+        if !sent { work.withLock { $0.unsent(accept.taskID) } }
         if sent {
             stats.withLock { $0.accepts &+= 1 }
             lastAccept.withLock { $0 = Date() }
