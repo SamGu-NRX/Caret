@@ -586,6 +586,11 @@ export class PatternEngine {
   windowExpired(windowId: string): void {
     this.loops.sourceClosed(windowId);
     this.withdrawOffersFrom(windowId);
+    // An offer held for the router reads the window too: it goes unshown, as one whose ground changed.
+    for (const [id, { o }] of [...this.held]) {
+      const reads = o.msg.windowId === windowId || o.cells.some((c) => c.srcWindowId === windowId) || o.alts.some((a) => a.candidates.some((x) => x.sources.some((s) => s.srcWindowId === windowId)));
+      if (reads) this.dropHeld(id, ["ungrounded"]);
+    }
   }
 
   /** Offers made in the window are withdrawn; offers with a value from it lose it as a source, or are withdrawn. */

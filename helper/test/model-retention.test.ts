@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { releaseSources } from "../src/executor/executor.ts";
 import { provenanceWindows, type Provenance } from "../src/fill/contract.ts";
-import { notifyExpiry, WINDOW_STATE_HOLDERS, type ExpiryList } from "../src/expiry.ts";
+import { askWindows, notifyExpiry, planWindows, WINDOW_STATE_HOLDERS, type ExpiryList } from "../src/expiry.ts";
 import { OFFER_LIFETIMES } from "../src/offers/lifetimes.ts";
 import { Helper } from "../src/helper.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -185,8 +185,8 @@ describe("the helper's copies of a window's text", () => {
 
   it("are listed in one place, every offer family included, which a new family can't be left out of", () => {
     expect(Object.keys(h.onExpiry).sort()).toEqual([...Object.keys(OFFER_LIFETIMES), ...WINDOW_STATE_HOLDERS].sort());
-    // A skill's keep or promote question is the one holder with nothing read from a window.
-    expect(Object.entries(h.onExpiry).flatMap(([k, f]) => (f === null ? [k] : []))).toEqual(["skill"]);
+    // Holders that let go of nothing, each for the reason given beside it in the list.
+    expect(Object.entries(h.onExpiry).flatMap(([k, f]) => (f === null ? [k] : [])).sort()).toEqual(["caretWrites", "pendingWatches", "skill"]);
   });
 
   it("drop it from the model at once when its window closes", () => {
@@ -246,5 +246,21 @@ describe("provenanceWindows", () => {
     expect(provenanceWindows({ kind: "derived", how: "namePart", base: unit, also: transfer })).toEqual(["w1", "w2"]);
     expect(provenanceWindows({ kind: "derived", how: "namePart", base: memory, also: null })).toEqual([]);
     expect(provenanceWindows({ kind: "instruction", span: "Dana" })).toEqual([]);
+  });
+});
+
+describe("the windows an offer depends on", () => {
+  const unit = (windowId: string): { provenance: Provenance } => ({ provenance: { kind: "unit", windowId, app: "Notes", title: "T", digest: "d" } });
+
+  it("planWindows: a planned task's target, and every window a value it writes or attaches came from", () => {
+    const checked = { window: { window: { windowId: "form" } }, mints: new Map([["name", unit("note")]]), writes: [{ checked: unit("mail") }], attach: { checked: unit("files") } };
+    expect([...planWindows({ checked })].sort()).toEqual(["files", "form", "mail", "note"]);
+    expect([...planWindows({ checked: { ...checked, mints: new Map(), writes: [], attach: null } })]).toEqual(["form"]);
+  });
+
+  it("askWindows: an Ask question's form, and every window a value its fill proposed was read from", () => {
+    const fields = [{ source: { windowId: "note" } }, { source: null }];
+    expect([...askWindows({ window: { windowId: "form" }, resume: { windowId: "form", values: { proposal: { fields } } } })].sort()).toEqual(["form", "note"]);
+    expect([...askWindows({ window: { windowId: "form" }, resume: { windowId: "form" } })]).toEqual(["form"]);
   });
 });

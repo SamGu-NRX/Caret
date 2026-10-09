@@ -10,7 +10,7 @@ import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScop
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
 import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
-import { notifyExpiry, type ExpiryList } from "./expiry.ts";
+import { askWindows, notifyExpiry, planWindows, type ExpiryList } from "./expiry.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
@@ -86,7 +86,7 @@ import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
-import { guardFor, provenanceWindows, type CheckedValue } from "./fill/contract.ts";
+import { guardFor, type CheckedValue } from "./fill/contract.ts";
 import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFields, recheckFill, valueStale, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
@@ -332,14 +332,6 @@ interface CaretFill {
 
 const fieldId = (windowId: string, key: string): string => `${windowId}\u0000${key}`;
 
-/** The windows a planned task acts in or copies from: its target, and each window a value it writes or attaches was read from. */
-function planWindows(d: PlanDraft): Set<string> {
-  const out = new Set([d.checked.window.window.windowId]);
-  const mints = [...d.checked.mints.values(), ...d.checked.writes.map((w) => w.checked), ...(d.checked.attach === null ? [] : [d.checked.attach.checked])];
-  for (const m of mints) for (const id of provenanceWindows(m.provenance)) out.add(id);
-  return out;
-}
-
 /** How long an offer to save an answer can be taken (S1). Assumed: as long as a fill proposal is kept. */
 const ANSWER_OFFER_KEEP_MS = PROPOSAL_KEEP_MS;
 /** Values Caret's executor wrote into one field that capture remembers, newest last. Assumed: a form is written a few times at most. */
@@ -503,7 +495,7 @@ export class Helper {
   /** Answers the host's firstLook. */
   readonly firstLookRunner: FirstLookRunner;
   /** Offers a first look found and recorded, by key, until taken, expired or withdrawn, with the engine offer each reports, if any. */
-  private readonly firstLooks = new Map<string, { at: number; family: Family; underlying: string | null; windowId: string }>();
+  private readonly firstLooks = new Map<string, { at: number; family: Family; underlying: string | null; windows: ReadonlySet<string> }>();
   /**
    * Planned tasks on offer, by offerKey: the draft, when it was proposed, and what each field it writes
    * held then, so a field the user changes before the run's first read stops it.
@@ -793,9 +785,9 @@ export class Helper {
       // A first look's offer runs only from the host's offerAccept.
       // The family is recorded when the offer is withdrawn as taken, just before this (withdrawFirstLook).
       run: (taskId, plan, slots, expect, guard) => this.executor.run(taskId, plan, slots, expect, { grant: true, ...(guard === undefined ? {} : { guard }) }),
-      record: (msg, family, accept, underlying) => {
+      record: (msg, family, accept, underlying, windows) => {
         this.offers.record(msg, accept);
-        this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying, windowId: msg.field.windowId });
+        this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying, windows: new Set(windows) });
       },
       withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
       about: () => this.aboutValues(),
@@ -3377,12 +3369,19 @@ export class Helper {
     preFocus: (id) => {
       if (this.preFocus?.windowId === id) this.preFocus = null;
     },
+    // Kept: answer capture reads it so a value Caret wrote is never saved as the user's own answer (S1), and dropping it
+    // would let one through once its window returned. It holds what Caret put in the field, at most MAX_WRITES_KEPT per
+    // field of MAX_FIELDS_WRITTEN. Listed under t1-retention (privacy-gate.ts).
+    caretWrites: null,
     answerOffers: (id) => {
       for (const [k, o] of this.answerOffers) if (o.windowId === id) this.answerOffers.delete(k);
     },
     askQuestions: (id) => {
-      for (const [k, q] of this.askQuestions) if (q.draft.window.windowId === id) this.askQuestions.delete(k);
+      for (const [k, q] of this.askQuestions) if (askWindows(q.draft).has(id)) this.askQuestions.delete(k);
     },
+    // A watch waits on work in a window that can sit unchanged for long, and keeps the lines it compares against until it
+    // ends. Its window returns with the next change, which the watch then judges. Listed under t1-retention (privacy-gate.ts).
+    pendingWatches: null,
     fill: (id) => this.checkFills(id),
     open: (id) => this.openApp.onWindowClosed(id),
     event: (id) => this.events.windowExpired(id),
@@ -3392,7 +3391,7 @@ export class Helper {
     // A keep or promote question asks about a run that just ended and quotes only the routine's own name.
     skill: null,
     firstLook: (id) => {
-      for (const [k, f] of [...this.firstLooks]) if (f.windowId === id) this.withdrawFirstLook(k, "stale");
+      for (const [k, f] of [...this.firstLooks]) if (f.windows.has(id)) this.withdrawFirstLook(k, "stale");
     },
     plan: (id) => {
       for (const [k, p] of [...this.planOffers]) if (planWindows(p.draft).has(id)) this.withdrawPlan(k, "stale");
