@@ -7,6 +7,10 @@ DMG and the git tag. The app's own version (CFBundleShortVersionString) carries 
 
 ### Setting up
 
+- **The right Caret.** Setup shows exactly which Caret to turn on, by its name and folder, and lists any other copy
+  (September's hackathon Caret, an older Caret 2). If macOS turns on a different one, setup says so and which. While
+  Caret can't see your apps, the menu says "Caret can't see your apps. Turn on Accessibility…" and takes you there;
+  when the switch lands, Tab starts working without a restart. Beta.1 could sit untrusted with no sign of it.
 - **Four steps, one permission.** Setup asks only for Accessibility. First you type a sentence in Caret's own window
   and take the next words with Tab, before granting anything. Turn on Caret opens System Settings at Accessibility
   with a small panel inside it: turn Caret on in the list, or drag it in if it isn't there. Setup moves on by itself
@@ -28,8 +32,15 @@ DMG and the git tag. The app's own version (CFBundleShortVersionString) carries 
 - **Caret's own model copy.** The menu offers Download Caret's Model (3.4 GB) so Caret keeps working without
   Cotypist. Until then it reads Cotypist's file in place.
 
+### Pebble, the crest
+
+- Caret's figure is now a crest: pointed but rounded, with springy motion and small beats at rest. It is also the app
+  icon.
+
 ### Fixes
 
+- Caret finds the field you're typing in even when macOS can't name the focused element system-wide, as happened in
+  every test VM: before, it then offered nothing at all.
 - The fill pop-up keeps clear of a web form's other fields and labels.
 - Secure input anywhere (a password field, Terminal's Secure Keyboard Entry) stops every offer.
 - Caret never reads or offers in Terminal, System Settings or Caret itself.
