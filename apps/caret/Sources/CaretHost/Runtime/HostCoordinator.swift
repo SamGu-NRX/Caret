@@ -1,6 +1,7 @@
 import ApplicationServices
 import AutocompleteCore
 import CaretHostCore
+import Carbon
 import Foundation
 import MacContextCapture
 import QuartzCore
@@ -95,7 +96,7 @@ final class HostCoordinator {
         }
         guard engine.state == .ready, wordsAllowed(),
               policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
-              !field.secure, !context.traits.isSecureTextEntry, !context.traits.isPasswordField,
+              !field.secure, ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()), !context.traits.isSecureTextEntry, !context.traits.isPasswordField,
               field.selection.isEmpty
         else { return reset() }
         guard Self.fieldAgrees(field, with: context) else {
