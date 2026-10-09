@@ -98,7 +98,13 @@ export class UnitIndex {
 
   constructor(units: readonly Normalized[]) {
     let first = true;
+    const seen = new Set<string>();
     for (const u of units) {
+      // A 20-question preview request indexed 105k scalars but only 11k distinct-unit scalars. Repeated normalized
+      // units add no substring matches; retain the original units outside this index for owner-note positions.
+      const key = u.cps.join(",");
+      if (seen.has(key)) continue;
+      seen.add(key);
       if (!first) this.add(BOUNDARY);
       first = false;
       for (const cp of u.cps) this.add(cp);

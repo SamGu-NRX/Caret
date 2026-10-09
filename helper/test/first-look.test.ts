@@ -97,6 +97,8 @@ describe("the first look over the socket", () => {
   };
 
   beforeEach(async () => {
+    // Each test owns a fresh host and server; its request IDs must not depend on shuffled test order.
+    n = 0;
     dir = mkdtempSync(join(tmpdir(), "caret-first-look-"));
     store = new Store(join(dir, "data"));
     asked = 0;

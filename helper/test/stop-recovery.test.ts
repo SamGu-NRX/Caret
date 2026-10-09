@@ -1,12 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { PAGE_SUBROLE, type HelperMessage } from "../src/protocol.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN } from "./fake-app.ts";
+import { everyCaseSelected } from "./case-selection.ts";
 
 const NAME = K("textfield:name~0");
 const EMAIL = K("textfield:email~0");
@@ -325,32 +326,45 @@ describe("E1 stop at the reader's last grant check", () => {
     expect(app.node(NAME)?.value).toBe(typing);
   });
 
-  it("undo never changes unrecognized content over an exhaustive small-string domain", async () => {
-    const strings = ["", " ", "\n", "\"", "😀", "Da", "Danas"];
-    const generate = (prefix: string, depth: number): void => {
-      strings.push(prefix);
-      if (depth > 0) for (const character of ["a", "b", "c"]) generate(prefix + character, depth - 1);
-    };
-    generate("", 3);
-    let cases = 0;
-    for (const [original, intended] of [["c", "ab"], ["a", "abc"], ["", "Dana"]] as const) {
-      for (const held of new Set(strings)) {
-        if (held === original || held === intended || (held.length > 0 && held.length < intended.length && intended.startsWith(held))) continue;
-        const taskId = `property-${cases++}`;
-        app.setValue(NAME, original);
-        app.normalize = () => held;
-        app.timeoutAfterWrite = true;
-        await helper.executor.run(taskId, { ...plan, steps: [write(NAME, intended)] }, {}, undefined, { grant: true });
-        app.normalize = null;
-        app.timeoutAfterWrite = false;
-        const writes = app.verbs.filter((v) => v.kind === "write").length;
-        const undo = await helper.executor.undo(taskId);
-        expect(undo.restored, JSON.stringify({ original, intended, held })).toBe(0);
-        expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(writes);
-        expect(app.node(NAME)?.value ?? "").toBe(held);
+  // The independent domain cases took 6.058 s inside one 5 s test in a shuffled full-suite run.
+  describe("undo never changes unrecognized content over an exhaustive small-string domain", () => {
+    const generated = (() => {
+      const strings = ["", " ", "\n", "\"", "😀", "Da", "Danas"];
+      const generate = (prefix: string, depth: number): void => {
+        strings.push(prefix);
+        if (depth > 0) for (const character of ["a", "b", "c"]) generate(prefix + character, depth - 1);
+      };
+      generate("", 3);
+      const cases: { taskId: string; original: string; intended: string; held: string }[] = [];
+      for (const [original, intended] of [["c", "ab"], ["a", "abc"], ["", "Dana"]] as const) {
+        for (const held of new Set(strings)) {
+          if (held === original || held === intended || (held.length > 0 && held.length < intended.length && intended.startsWith(held))) continue;
+          cases.push({ taskId: `property-${cases.length}`, original, intended, held });
+        }
       }
-    }
-    expect(cases).toBeGreaterThan(100);
+      return cases;
+    })();
+    let cases = 0;
+
+    it.each(generated)("$taskId: undo leaves unrecognized content alone", async ({ taskId, original, intended, held }) => {
+      cases++;
+      app.setValue(NAME, original);
+      app.normalize = () => held;
+      app.timeoutAfterWrite = true;
+      await helper.executor.run(taskId, { ...plan, steps: [write(NAME, intended)] }, {}, undefined, { grant: true });
+      app.normalize = null;
+      app.timeoutAfterWrite = false;
+      const writes = app.verbs.filter((v) => v.kind === "write").length;
+      const undo = await helper.executor.undo(taskId);
+      expect(undo.restored, JSON.stringify({ original, intended, held })).toBe(0);
+      expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(writes);
+      expect(app.node(NAME)?.value ?? "").toBe(held);
+    });
+
+    afterAll(({}, suite) => {
+      if (!everyCaseSelected(suite)) return;
+      expect(cases).toBeGreaterThan(100);
+    });
   });
 
   it("a dispatched write with a lost acknowledgement remains undoable, not falsely verified", async () => {
