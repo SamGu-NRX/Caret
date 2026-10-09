@@ -1566,7 +1566,10 @@ export class Executor {
     return fresh;
   }
 
-  /** Reads the window. With `task`, no retry starts once a pause or stop is pending: Stop gets one read. */
+  /**
+   * Reads the window. With `task`, no retry starts once a pause or stop is pending, nor once the run has ended: a read
+   * Stop's deadline cut off can answer after the run cleared its interrupt (Greptile review).
+   */
   private async walk(w: WindowState, task?: Task): Promise<Change[]> {
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
@@ -1576,7 +1579,7 @@ export class Executor {
       // A walk only reads, so one that fails (a busy app cuts a walk short past its deadline) is tried
       // again before the step stops. Writes and presses are never retried.
       let r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
-      for (let n = 0; n < WALK_RETRIES && r.outcome === "axError" && (task?.interrupt ?? null) === null; n++) {
+      for (let n = 0; n < WALK_RETRIES && r.outcome === "axError" && (task === undefined || (task.interrupt === null && task.finished === null)); n++) {
         r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
       }
       if (r.outcome !== "ok") throw StepStop.stop("reader", `cannot re-read '${w.window.title}': ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
@@ -1695,8 +1698,11 @@ export class Executor {
     try {
       this.checkSession(task);
       const w = this.window(e.windowId);
-      // No retry starts once a pause or stop is pending, and no new grant: Stop gets one read. The wait ends at the
-      // task's Stop deadline, even for a read already on its way; a reader that answers at once still counts.
+      // No retry starts once a pause or stop is pending, and no new grant: Stop gets one read, and none once its deadline
+      // has passed. A read started then would be abandoned at once and could queue ahead of an Undo in the reader,
+      // which serializes work per app (PR #21 review). The entry stays unconfirmed: Undo restores it only while the
+      // field holds exactly what Caret was writing.
+      if (task.reconcileBy !== undefined && Date.now() >= task.reconcileBy) throw new Error("Stop's wait ended before Caret could read the field");
       await this.untilInterruptDeadline(task, this.walk(w, task), "the recovery read timed out");
       this.checkSession(task);
     } catch (error) {

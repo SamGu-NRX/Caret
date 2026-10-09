@@ -181,13 +181,22 @@ describe.each(["AX", "page"] as const)("%s in-flight reconciliation", (mean) => 
     expect(r.held()).toBe(ORIGINAL);
   });
 
-  it("bounds the wait for a lost answer and reconciles once before returning", async () => {
+  it("bounds the wait for a lost answer and reads only if time remains; Undo restores either way", async () => {
     const r = rig(mean, 40, "lost");
     const result = await complete(r, 5100);
     expect(Date.now() - r.dispatchAt()).toBe(5100);
-    expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
-    expect(r.recoveryReads()).toBe(1);
-    expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED }]);
+    if (mean === "AX") {
+      // No answer at all uses Stop's whole wait, so a read now would be abandoned and queue ahead of an Undo (PR #21 review).
+      expect(result).toMatchObject({ outcome: "stopped", acted: 0, step: 0, detail: expect.stringContaining("may have been written") });
+      expect(r.recoveryReads()).toBe(0);
+      expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+    } else {
+      // The page link gives up at its own 5 s from dispatch, 40 ms before Stop's deadline, so the one read still starts.
+      expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
+      expect(r.recoveryReads()).toBe(1);
+      expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED }]);
+    }
+    // Undo reads first, and restores only while the field holds exactly what Caret was writing.
     expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
     expect(r.held()).toBe(ORIGINAL);
   });
@@ -366,5 +375,44 @@ describe("the read-back after an ok write with no change", () => {
     // The read-back, then Stop's one recovery read; neither retries.
     expect(reads).toBe(2);
     expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+  });
+});
+
+describe("a read still on its way when Stop's wait ends", () => {
+  it("starts no retry after the run has stopped", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-late-retry-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const key = K("textfield:name~0");
+    app.setValue(key, ORIGINAL);
+    app.timeoutAfterWrite = true;
+    let wrote = false;
+    let reads = 0;
+    const run = app.run.bind(app);
+    let helper: Helper;
+    const link: ReaderLink = {
+      grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
+      run(verb) {
+        if (verb.kind === "walk" && wrote) {
+          // The read outlasts Stop's wait, then fails, after the run has already returned stopped.
+          if (++reads === 1) setTimeout(() => helper.executor.stop("t"), 40);
+          return new Promise<VerbResult>((resolve) => setTimeout(() => resolve({ type: "verbResult", v: 1, id: "read", at: Date.now(), outcome: "axError", detail: "the walk was cut short" }), 6000));
+        }
+        if (verb.kind === "write" && verb.sameAs === undefined) wrote = true;
+        return run(verb);
+      },
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    app.helper = helper;
+    app.show();
+    const plan: Plan = { id: "stop", title: "Fill names", slots: {}, steps: [
+      { says: "First Name", end: { kind: "valueEquals", window: { title: AX_TITLE }, target: { key, describe: "First Name" }, value: INTENDED } },
+    ] };
+    const result = helper.executor.run("t", plan, {}, undefined, { grant: true });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await result).toMatchObject({ outcome: "stopped", acted: 0 });
+    expect(reads).toBe(1);
   });
 });
