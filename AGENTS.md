@@ -36,12 +36,12 @@ When the task needs project, architecture, or stack context, read the relevant p
 
 # Caret contributor instructions
 
-- Start with README.md. v2 is the reader in `apps/screen-reader/`, the helper in `helper/` and the host app on the `v2/host` branch. `helper/src/protocol.ts` is the wire contract; both sides test it against `helper/fixtures/golden/`. docs/input-pipeline.md, docs/integrations.md and `memory-bank/` describe the v1 hackathon starter still in the tree.
+- Start with README.md. v2 is the reader in `apps/screen-reader/`, the helper in `helper/`, the host app in `apps/caret/`, and the browser layer in `extension/` and `bridge/`. `helper/src/protocol.ts` is the wire contract; both sides test it against `helper/fixtures/golden/`. docs/input-pipeline.md, docs/integrations.md and `memory-bank/` describe the v1 hackathon starter still in the tree.
 - The rule of exactly five pinned upstreams is retired. v2 is made of:
   - a Swift Accessibility reader (`apps/screen-reader/`) that reads every window and acts only under a live grant from the helper, rechecking its target right before each call;
   - a TypeScript helper (`helper/`) with the screen model, the planner, fill and the executor, which checks each step's end state and keeps undo;
-  - a Swift host app that owns input and acceptance: the key tap, Tab, the overlay and insertion;
-  - browser control as its own layer, still being decided; an extension with a native-messaging bridge is being built on `v2/browser`;
+  - a Swift host app (`apps/caret/`) that owns input and acceptance: the key tap, Tab, the overlay and insertion;
+  - browser control as its own layer: Caret for Chrome (`extension/`) and its native-messaging host (`bridge/`);
   - no Screenpipe. v2 does not use it; only the v1 Python path (`caret/screenpipe.py`) pins Screenpipe 0.4.50.
 - Merge KeyType/GhostType components into one Caret app with one input/acceptance owner. GhostType mode means Teddy's action hoverable, not a second running autocomplete app.
 - One shared Jev judge chooses ABSTAIN/INLINE/ACTION at most once per two seconds of changed active context, then selects a workflow/task only for ACTION. A fast Groq-hosted model generates inline text. Discard stale results; never execute from ambient classification alone.
