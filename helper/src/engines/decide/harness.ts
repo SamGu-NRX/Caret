@@ -12,7 +12,8 @@ import { verifySent } from "../../privacy/disclosure.ts";
 import { appendStoredLine, seal, type StoreRecord } from "../../privacy/send.ts";
 import { withholdValues } from "../../privacy/exclude.ts";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { accessSync, constants, mkdirSync } from "node:fs";
 import { frozenRequest, HOIST_SHARED_OPTIONS, JEV_MODEL, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
 import { DailySpend } from "./daily-cap.ts";
 import { DECISIONS_MODEL, DECISIONS_POLICY_VERSION, DecisionsAttemptError, DecisionsCredentialError, assertDecisionsCredentialAbsent, assertDecisionsResult, configuredDecisionsKeys, makeDecisionsClient, refuseDecisionsApp, type DecisionsResult } from "./decisions.ts";
@@ -212,6 +213,16 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   if (log !== undefined) {
     // The log stores request text as the cache does, so it refuses the shipped app too, with the cache off as well.
     refuseShipped(env);
+    if (engine.name === "decisions") {
+      // A first failure or a cache-off success must not lose billed telemetry to a missing log parent.
+      try {
+        mkdirSync(dirname(log), { recursive: true, mode: 0o700 });
+        accessSync(dirname(log), constants.W_OK);
+      } catch (e) {
+        engine.close?.();
+        throw e;
+      }
+    }
     ask = async (req) => {
       // The log holds request text, so it takes what the cache takes: fixture text only.
       checkFixture(req, o.fixture);
