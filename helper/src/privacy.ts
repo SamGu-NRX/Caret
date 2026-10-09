@@ -348,10 +348,19 @@ const EMPTY_REGISTRY: ScreenRegistry = { windows: new Map() };
 /** Declared spans grouped by the view they were read from (privacy/ledger/account.ts DeclaredSpans), each once. */
 export function spansOf(spans: Iterable<ViewSpan>): DeclaredSpans {
   const out = new Map<WindowState, DeclaredSpan[]>();
+  // Each view's span keys, so a span is checked once: comparing each against every kept one built a key per pair, 8% of
+  // a 50-field preview's CPU, since a fallback span's key holds its whole text.
+  const keys = new Map<WindowState, Set<string>>();
   for (const { view, ...span } of spans) {
-    const l = out.get(view);
-    if (l === undefined) out.set(view, [span]);
-    else if (!l.some((x) => spanKey(x) === spanKey(span))) l.push(span);
+    const key = spanKey(span);
+    const seen = keys.get(view);
+    if (seen === undefined) {
+      keys.set(view, new Set([key]));
+      out.set(view, [span]);
+    } else if (!seen.has(key)) {
+      seen.add(key);
+      out.get(view)!.push(span);
+    }
   }
   return out;
 }

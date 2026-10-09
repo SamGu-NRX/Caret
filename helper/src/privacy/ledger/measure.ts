@@ -304,8 +304,10 @@ export class UnitProbe {
   private readonly grams = new Set<number>();
 
   constructor(units: readonly Normalized[]) {
-    this.index = new UnitIndex(units);
-    for (const u of units) {
+    // A repeated unit adds no run or line match, so each object is indexed once (normalizedUnits shares repeats').
+    const distinct = [...new Set(units)];
+    this.index = new UnitIndex(distinct);
+    for (const u of distinct) {
       const c = u.cps;
       for (let i = 0; i + RUN_MIN <= c.length; i++) this.grams.add(gramKey(c, i));
     }

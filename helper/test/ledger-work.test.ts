@@ -28,8 +28,8 @@ describe("repeated immutable ledger inputs", () => {
     const disclosure = new Disclosure(model);
     vi.mocked(sourcePieces).mockClear();
     for (let i = 0; i < count; i++) expect(disclosure.candidate(view, note)).toBe(note);
-    // Each mint still checks membership; fallback span lookup and placement each read the note just once.
-    expect(sourcePieces).toHaveBeenCalledTimes(count + 2);
+    // Membership (Disclosure.viewHolds), fallback span lookup and placement each read the note just once.
+    expect(sourcePieces).toHaveBeenCalledTimes(3);
     expect(disclosure.charges()).toEqual({ note: note.replaceAll("\n", "").length });
   });
 
