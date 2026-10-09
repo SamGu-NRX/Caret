@@ -28,6 +28,8 @@ final class GhostTextEngine {
         case loading
         case ready
         case unavailable(String)
+        /// Released, or never loaded, because no feature that uses the model is on (`ModelNeed`).
+        case off
     }
 
     enum Outcome: Equatable {
@@ -89,6 +91,10 @@ final class GhostTextEngine {
     private let compatibilityStore: AppCompatibilityStore
     private let filter: DefaultCandidateFilter
     private let promptBuilder = PromptBuilder()
+    /// Calls inside the model now: a suggestion, a rewrite or the warm-up. `release` frees llama's memory only when
+    /// none is left, since the runtime is inert once freed and a call between two of its awaits would decode on freed
+    /// memory (KeyType ADR-021).
+    let calls = InFlight()
 
     init(compatibilityStore: AppCompatibilityStore) {
         self.compatibilityStore = compatibilityStore
@@ -107,7 +113,9 @@ final class GhostTextEngine {
             scorer = SuffixScorer(runtime: loaded.runtime)
             runtime = loaded.runtime
             state = .ready
+            calls.enter()
             await warmUp(loaded.engine)
+            calls.leave()
         case .failure(let error):
             state = .unavailable(String(describing: error))
         }
@@ -124,21 +132,50 @@ final class GhostTextEngine {
         state = .unavailable("disabled")
     }
 
+    /// No feature needs the model at launch (`ModelNeed`): it stays unloaded until one does.
+    func stayOff() {
+        precondition(engine == nil, "stayOff with a model loaded; release it instead")
+        state = .off
+    }
+
     /// Rewrites of `sentence` with the same model (`RewriteGenerator`); nil when it isn't loaded.
     func rewrites(of sentence: String, mode: RewriteGenerator.Mode) async throws -> RewriteGenerator.Output? {
         if let replay {
             return replay.rewrites?[sentence].map { RewriteGenerator.Output(rewrites: $0, firstMs: 0, totalMs: 0, tokens: 0) }
         }
         guard let runtime else { return nil }
+        calls.enter()
+        defer { calls.leave() }
         return try await RewriteGenerator(runtime: runtime).rewrites(of: sentence, mode: mode)
     }
 
-    func shutdown() async {
+    /// Frees the model and leaves `state` at `next`. A call that starts from now on finds no model; one already inside
+    /// it finishes first, and then llama's context and weights are freed. `load` may run again afterwards.
+    func release(to next: State = .off) async {
         let engine = self.engine
+        let runtime = self.runtime
         self.engine = nil
-        runtime = nil
-        state = .unavailable("shut down")
+        scorer = nil
+        self.runtime = nil
+        state = next
+        await calls.drained()
+        // The decoder runs on `runtime` (`EngineLoader.Loaded`), so either call frees llama. Both, because a runtime's
+        // shutdown is idempotent (`LocalModelRuntime.shutdown`) and one left unfreed aborts the process at exit.
         await engine?.shutdown()
+        await runtime?.shutdown()
+    }
+
+    /// Tests only: a runtime in place as `load` leaves one, with no decoder over it, so `release` can be watched
+    /// without llama.
+    func adoptForTesting(runtime: LocalModelRuntime) {
+        self.runtime = runtime
+        state = .ready
+    }
+
+    /// Before the process exits: every call already inside the model, page inline text's and rewrites' included,
+    /// leaves before llama is freed (ggml-metal aborts at exit otherwise).
+    func shutdown() async {
+        await release(to: .unavailable("shut down"))
     }
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
@@ -154,6 +191,8 @@ final class GhostTextEngine {
         lastNotes = []
         lastFitMs = nil
         guard let engine else { return .suppressed("engineNotReady") }
+        calls.enter()
+        defer { calls.leave() }
         let policy = compatibilityStore.policy(for: context)
         guard policy.isCompletionEnabled else { return .suppressed("completionsDisabled") }
         guard policy.allowsMidLineCompletion || context.afterCursor.isEmpty else { return .suppressed("midLineDisabled") }

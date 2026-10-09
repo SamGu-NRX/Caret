@@ -133,12 +133,16 @@ public enum ModelReadiness: Equatable, Sendable {
     case loading(Double?)
     /// No model on this Mac, or it failed to load: the field is off and says so.
     case unavailable
+    /// Not loaded because the user turned Complete words off (`ModelNeed`): the field is off and says why. Turning
+    /// it back on in the menu loads the model, and the field follows.
+    case off
 
     public var name: String {
         switch self {
         case .ready: return "ready"
         case .loading: return "loading"
         case .unavailable: return "unavailable"
+        case .off: return "off"
         }
     }
 }

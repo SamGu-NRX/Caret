@@ -48,7 +48,8 @@ public struct DebugState: Codable, Equatable, Sendable {
     }
 
     public struct Engine: Codable, Equatable, Sendable {
-        /// `loading`, `ready` or `unavailable`.
+        /// `loading`, `ready`, `unavailable`, or `off` (Complete words is off, so the model is not loaded); `disabled`,
+        /// `replay` or `replayUnreadable` in test runs.
         public var state: String
         public var detail: String?
         public var modelFile: String?

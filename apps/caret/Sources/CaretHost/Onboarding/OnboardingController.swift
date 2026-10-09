@@ -701,7 +701,7 @@ final class OnboardingController {
     ///   onboarding type <text...>                  (the Hello field's whole text)
     ///   onboarding key tab|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other
     ///   onboarding permissions on|off on|off      (Accessibility, Input Monitoring)
-    ///   onboarding model ready|loading|unavailable
+    ///   onboarding model ready|loading|unavailable|off
     ///   onboarding browsers none|<name...>       onboarding browser-connected    onboarding skip-browser
     ///   onboarding preview empty|fail|<n windows>  (a stand-in preview for the open request)
     ///   onboarding tab-owners none|<name...>      onboarding reply <firstLookReply json>
@@ -759,7 +759,8 @@ final class OnboardingController {
             case "ready": modelOverride = .ready
             case "loading": modelOverride = .loading(nil)
             case "unavailable": modelOverride = .unavailable
-            default: return #"{"error":"usage: onboarding model ready|loading|unavailable"}"#
+            case "off": modelOverride = .off
+            default: return #"{"error":"usage: onboarding model ready|loading|unavailable|off"}"#
             }
             poll()
         case ("preview", 2):

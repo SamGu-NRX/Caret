@@ -152,7 +152,8 @@ public final class HostRuntime {
     /// How long after this host sent an accept the session counts as owning a run, before the run's
     /// activity record arrives. Assumed: activity follows an accept within a second on this Mac.
     static let rehelloAcceptGrace: TimeInterval = 30
-    private var engineTask: Task<Void, Never>?
+    /// Loads and releases the model as the settings need it (`ModelNeed`). Nil with `--no-ghost` or a replay.
+    private var residency: ModelResidency?
     private var trustPoll: Timer?
     private let servicesBox = ServicesBox()
     private var sessionLock: SessionLockWatch?
@@ -425,6 +426,7 @@ public final class HostRuntime {
             case .ready: return .ready
             case .loading: return .loading(nil)
             case .unavailable: return .unavailable
+            case .off: return .off
             }
         }
         onboarding.sendFirstLook = { firstLookClient.send($0) }
@@ -953,14 +955,27 @@ public final class HostRuntime {
             }
             return
         }
-        status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
         let modelURL = configuration.modelURL
-        engineTask = Task { [weak self] in
-            guard let self else { return }
-            await self.engine.load(modelURL: modelURL)
-            self.publishEngineState()
-            self.focus.requestRead()
+        let residency = ModelResidency(
+            load: { [weak self] in
+                guard let self else { return }
+                self.status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
+                await self.engine.load(modelURL: modelURL)
+                self.publishEngineState()
+                self.focus.requestRead()
+            },
+            release: { [weak self] in
+                guard let self else { return }
+                await self.engine.release()
+                self.publishEngineState()
+            }
+        )
+        self.residency = residency
+        if !ModelNeed.wanted(SettingsStore.shared.settings) {
+            engine.stayOff()
+            publishEngineState()
         }
+        residency.follow(SettingsStore.shared)
     }
 
     /// Stops input first, then joins model work and frees llama/Metal resources. Must finish
@@ -984,8 +999,10 @@ public final class HostRuntime {
         arbiter.invalidate()
         // A paste in progress must finish and put the user's clipboard back before exit.
         await executor.waitUntilIdle()
-        await engineTask?.value
-        // No generation may still be inside llama when its resources are freed.
+        // A load or release in progress finishes; none starts after it.
+        await residency?.stop()
+        // No generation may still be inside llama when its resources are freed. The engine also waits for page inline
+        // text's and rewrites' calls (`GhostTextEngine.release`).
         await coordinator.drain()
         await engine.shutdown()
         socket.stop()
@@ -996,6 +1013,7 @@ public final class HostRuntime {
         case .loading: return "Loading model"
         case .ready: return "Ready"
         case .unavailable(let reason): return "Unavailable: \(reason)"
+        case .off: return "\(CaretRole.words.title) is off"
         }
     }
 
@@ -1005,6 +1023,7 @@ public final class HostRuntime {
         case .loading: state = .init(state: "loading", modelFile: configuration.modelURL.lastPathComponent)
         case .ready: state = .init(state: "ready", modelFile: configuration.modelURL.lastPathComponent)
         case .unavailable(let reason): state = .init(state: "unavailable", detail: reason, modelFile: configuration.modelURL.lastPathComponent)
+        case .off: state = .init(state: "off", modelFile: configuration.modelURL.lastPathComponent)
         }
         status.update { $0.engine = state }
     }
