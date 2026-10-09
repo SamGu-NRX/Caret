@@ -397,6 +397,27 @@ describe("executor", () => {
     expect(await helper.executor.resume("t1")).toMatchObject({ outcome: "done", acted: 2 });
   });
 
+  it("revokes a paused run when the window a copied value came from expires (retention)", async () => {
+    const SRC = "6160-9";
+    const at = Date.now();
+    void helper.handleReader(snap([field("src/line~0", "d@example.com")], { at, windowId: SRC, app: MAIL_APP }));
+    // As contract.ts guardFor does: a copied value's source must still be in the model.
+    const guard = (): string | null => (helper.model.windows.has(SRC) ? null : "the window it was read from closed");
+    app.afterVerb = (_, v) => {
+      if (v.kind === "write" && v.key === K("textfield:name~0")) {
+        void helper.handleReader({ type: "userInput", v: PROTOCOL_VERSION, at: 5, pid: FIXTURE_APP.pid, kind: "mouse", point: [50, 50] });
+      }
+    };
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {}, undefined, { guard });
+    expect(r).toMatchObject({ outcome: "paused", step: 1 });
+    app.afterVerb = null;
+    helper.tick(at + 10 * 60 * 1000 + 10_000);
+    expect(helper.model.windows.has(SRC)).toBe(false);
+    expect(progress("t1").at(-1)).toMatchObject({ phase: "stopped", step: 1 });
+    expect(progress("t1").at(-1)?.detail).toMatch(/the window it was read from closed/);
+    expect(acts().filter((v) => v.kind === "write" && v.key === K("textfield:email~0"))).toEqual([]);
+  });
+
   it("ignores input in other processes and clicks outside the window", async () => {
     app.afterVerb = (_, v) => {
       if (v.kind !== "write") return;
