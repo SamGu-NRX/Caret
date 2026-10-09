@@ -60,68 +60,74 @@ final class U2RenderTests: XCTestCase {
 
     /// Every new text and mark of part 2, measured the way U1 measured part 1 (`ContrastRenderTests`):
     /// each token hidden in turn, the changed pixels grouped into shapes, and the weakest shape's ratio
-    /// against what is behind it. Windows are opaque, so their two backdrops read the same.
-    static func surfaces() -> [(String, AnyView, [ContrastRenderTests.Probe])] {
+    /// against what is behind it. Windows are opaque, so their two backdrops read the same. A name the
+    /// gallery no longer has fails the test by name instead of crashing the whole run.
+    static func surfaces() throws -> [(String, AnyView, [ContrastRenderTests.Probe])] {
         typealias P = ContrastRenderTests.Probe
         let text = 4.5, mark = 3.0
         func items(_ list: [Gallery.Item]) -> [String: AnyView] { Dictionary(uniqueKeysWithValues: list.map { ($0.name, $0.view) }) }
+        func item(_ table: [String: AnyView], _ name: String) throws -> AnyView {
+            try XCTUnwrap(table[name], "the gallery has no item named \(name)")
+        }
         let ask = items(Gallery.ask()), act = items(Gallery.activity()), knows = items(Gallery.knows()), memory = items(Gallery.memory())
         let slips = items(Gallery.provenance()), desk = items(Gallery.deskProvenance()), rim = items(Gallery.perch()), onboarding = items(Gallery.onboarding())
-        return [
-            ("Desk, empty", ask["ask-empty"]!, [P(name: "Ink 2, placeholder and empty line", token: Tokens.ink2, minimum: text)]),
-            ("Desk, typing", ask["ask-text"]!, [P(name: "Ink, typed words", token: Tokens.ink, minimum: text),
+        return try [
+            ("Desk, empty", item(ask, "ask-empty"), [P(name: "Ink 2, placeholder and empty line", token: Tokens.ink2, minimum: text)]),
+            ("Desk, typing", item(ask, "ask-text"), [P(name: "Ink, typed words", token: Tokens.ink, minimum: text),
                                                 P(name: "Carrot, the field's focus border", token: Tokens.carrot, minimum: mark)]),
-            ("Desk, planning", ask["ask-planning"]!, [P(name: "Ink 2, Planning", token: Tokens.ink2, minimum: text)]),
-            ("Desk, plan", ask["ask-proposal-in-list"]!, [P(name: "Ink, plan title, steps, row titles", token: Tokens.ink, minimum: text),
+            ("Desk, planning", item(ask, "ask-planning"), [P(name: "Ink 2, Planning", token: Tokens.ink2, minimum: text)]),
+            ("Desk, plan", item(ask, "ask-proposal-in-list"), [P(name: "Ink, plan title, steps, row titles", token: Tokens.ink, minimum: text),
                                                          P(name: "Ink 2, group heads, row lines, keys, footer", token: Tokens.ink2, minimum: text),
                                                          P(name: "Carrot text, You do this", token: Tokens.carrotText, minimum: text),
                                                          P(name: "Carrot, needs-you edge", token: Tokens.carrot, minimum: mark),
                                                          P(name: "Ink 3, to-do ring", token: Tokens.ink3, minimum: mark),
                                                          P(name: "On ink, Continue", token: Tokens.onInk, minimum: text)]),
-            ("Desk, running", ask["ask-running"]!, [P(name: "Carrot, the lit step", token: Tokens.carrot, minimum: mark),
+            ("Desk, running", item(ask, "ask-running"), [P(name: "Carrot, the lit step", token: Tokens.carrot, minimum: mark),
                                                     P(name: "Ink 2, done check and Working in", token: Tokens.ink2, minimum: text)]),
-            ("Desk, failed", ask["ask-failed-untraced"]!, [P(name: "Ink, why there is no plan", token: Tokens.ink, minimum: text)]),
-            ("Desk, activity", act["activity-list"]!, [P(name: "Ink, row titles, key buttons", token: Tokens.ink, minimum: text),
+            ("Desk, failed", item(ask, "ask-failed-untraced"), [P(name: "Ink, why there is no plan", token: Tokens.ink, minimum: text)]),
+            ("Desk, activity", item(act, "activity-list"), [P(name: "Ink, row titles, key buttons", token: Tokens.ink, minimum: text),
                                                       P(name: "Ink 2, row lines", token: Tokens.ink2, minimum: text)]),
-            ("Desk, Not right", desk["desk-not-right"]!, [P(name: "Ink 2, source and hint", token: Tokens.ink2, minimum: text)]),
-            ("Slip, source", slips["slip-provenance"]!, [P(name: "Ink 2, from what Caret noticed", token: Tokens.ink2, minimum: text),
+            ("Desk, Not right", item(desk, "desk-not-right"), [P(name: "Ink 2, source and hint", token: Tokens.ink2, minimum: text)]),
+            ("Slip, source", item(slips, "slip-provenance"), [P(name: "Ink 2, from what Caret noticed", token: Tokens.ink2, minimum: text),
                                                          P(name: "Ink, Not right", token: Tokens.ink, minimum: text)]),
-            ("Slip, correcting", slips["slip-not-right"]!, [P(name: "Ink, typed correction and Forget", token: Tokens.ink, minimum: text),
+            ("Slip, correcting", item(slips, "slip-not-right"), [P(name: "Ink, typed correction and Forget", token: Tokens.ink, minimum: text),
                                                             P(name: "On ink, Save", token: Tokens.onInk, minimum: text)]),
-            ("Rim caption", rim["rim-working"]!, [P(name: "Ink, caption", token: Tokens.ink, minimum: text),
+            ("Rim caption", item(rim, "rim-working"), [P(name: "Ink, caption", token: Tokens.ink, minimum: text),
                                                   P(name: "Ink 2, step count", token: Tokens.ink2, minimum: text),
                                                   // Decorative: the caption says in words what the ring shows, and the figure and
                                                   // the glyph show it too. Recorded, not gated: its weakest stretch is where it
                                                   // passes through the perched figure's own glow.
                                                   P(name: "Carrot, ring (decorative)", token: Tokens.carrot, minimum: 0)]),
-            ("Rim, stopped", rim["rim-stopped"]!, [P(name: "Graphite, ring (decorative)", token: Tokens.graphite, minimum: 0)]),
-            ("Knows, memory", knows["knows-noticed"]!, [P(name: "Ink, title and row titles", token: Tokens.ink, minimum: text),
+            ("Rim, stopped", item(rim, "rim-stopped"), [P(name: "Graphite, ring (decorative)", token: Tokens.graphite, minimum: 0)]),
+            ("Knows, memory", item(knows, "knows-noticed"), [P(name: "Ink, title and row titles", token: Tokens.ink, minimum: text),
                                                         P(name: "Ink 2, subtitle, heads, lines, Noticed in, Edit", token: Tokens.ink2, minimum: text),
                                                         P(name: "Carrot, current tab", token: Tokens.carrot, minimum: mark)]),
-            ("Knows, Not right", knows["knows-not-right"]!, [P(name: "Ink, correction and buttons", token: Tokens.ink, minimum: text),
+            ("Knows, Not right", item(knows, "knows-not-right"), [P(name: "Ink, correction and buttons", token: Tokens.ink, minimum: text),
                                                              P(name: "On ink, Save", token: Tokens.onInk, minimum: text)]),
-            ("Knows, file", knows["knows-file-open"]!, [P(name: "Ink, the file's text", token: Tokens.ink, minimum: text)]),
-            ("Knows, conflict", knows["knows-file-conflict"]!, [P(name: "Ink, what changed", token: Tokens.ink, minimum: text),
+            ("Knows, file", item(knows, "knows-file-open"), [P(name: "Ink, the file's text", token: Tokens.ink, minimum: text)]),
+            ("Knows, conflict", item(knows, "knows-file-conflict"), [P(name: "Ink, what changed", token: Tokens.ink, minimum: text),
                                                                 P(name: "Ink 2, Reload or Keep my text", token: Tokens.ink2, minimum: text),
                                                                 P(name: "On ink, Keep my text", token: Tokens.onInk, minimum: text)]),
-            ("Knows, file problem", knows["knows-file-problem"]!, [P(name: "Ink, file, line and field", token: Tokens.ink, minimum: text),
+            ("Knows, file problem", item(knows, "knows-file-problem"), [P(name: "Ink, file, line and field", token: Tokens.ink, minimum: text),
                                                                    P(name: "Carrot, the problem's edge", token: Tokens.carrot, minimum: mark)]),
-            ("Knows, permissions", memory["memory-permissions"]!, [P(name: "Ink, rule names, pop-up values", token: Tokens.ink, minimum: text),
+            ("Knows, permissions", item(memory, "memory-permissions"), [P(name: "Ink, rule names, pop-up values", token: Tokens.ink, minimum: text),
                                                                    P(name: "Ink 2, what each rule means, the ceiling", token: Tokens.ink2, minimum: text)]),
-            ("Onboarding, welcome", onboarding["onboarding-welcome"]!, [P(name: "Ink, headline", token: Tokens.ink, minimum: text),
-                                                                       P(name: "Ink 2, body", token: Tokens.ink2, minimum: text),
-                                                                       P(name: "Carrot, current dot", token: Tokens.carrot, minimum: mark),
-                                                                       P(name: "Ink 3, other dots", token: Tokens.ink3, minimum: mark),
-                                                                       P(name: "On ink, Continue", token: Tokens.onInk, minimum: text)]),
-            ("Onboarding, work", onboarding["onboarding-work"]!, [P(name: "Ink 2, group heads and details, Back", token: Tokens.ink2, minimum: text),
-                                                                 P(name: "On ink, the ticked box's check", token: Tokens.onInk, minimum: mark)]),
+            // The four-step onboarding (bff0865a) replaced the welcome and work screens these two rows measured.
+            ("Onboarding, hello", item(onboarding, "onboarding-hello-idle"), [P(name: "Ink, headline", token: Tokens.ink, minimum: text),
+                                                                             P(name: "Ink 2, line and caption", token: Tokens.ink2, minimum: text),
+                                                                             P(name: "Carrot, current dot", token: Tokens.carrot, minimum: mark),
+                                                                             P(name: "Ink 3, other dots", token: Tokens.ink3, minimum: mark),
+                                                                             P(name: "On ink, Turn on Caret", token: Tokens.onInk, minimum: text)]),
+            ("Onboarding, on", item(onboarding, "onboarding-can-preview"), [P(name: "Ink, title, row titles, preview lines", token: Tokens.ink, minimum: text),
+                                                                           P(name: "Ink 2, row details and states, consent line", token: Tokens.ink2, minimum: text),
+                                                                           P(name: "On ink, Send these and look, the rows' checks", token: Tokens.onInk, minimum: text)]),
         ]
     }
 
     func testEveryNewTextAndMarkMeetsItsContrastInBothThemes() throws {
         var table = ["| Surface | Token | Light, white page | Light, dark editor | Dark, white page | Dark, dark editor | Needs |", "|---|---|---|---|---|---|---|"]
         var failures: [String] = []
-        for (surface, view, probes) in Self.surfaces() {
+        for (surface, view, probes) in try Self.surfaces() {
             for probe in probes {
                 var cells: [String] = []
                 for dark in [false, true] {
