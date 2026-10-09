@@ -83,7 +83,8 @@ final class SettingsDragPanel {
             guard let owner = info[kCGWindowOwnerPID as String] as? pid_t, let layer = info[kCGWindowLayer as String] as? Int,
                   let b = info[kCGWindowBounds as String] as? [String: CGFloat] else { return nil }
             return .init(ownerPid: owner, layer: layer, bounds: CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0),
-                         ownerName: info[kCGWindowOwnerName as String] as? String ?? "")
+                         ownerName: info[kCGWindowOwnerName as String] as? String ?? "",
+                         alpha: (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1)
         }
     }
 

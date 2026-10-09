@@ -22,13 +22,16 @@ public enum SettingsDragPanelPlacement {
         public var onScreen: Bool
         /// The owning process's name (`kCGWindowOwnerName`), which `somethingAsks` matches.
         public var ownerName: String
+        /// `kCGWindowAlpha`: a window listed on screen at 0 shows nothing.
+        public var alpha: Double
 
-        public init(ownerPid: Int32, layer: Int, bounds: CGRect, onScreen: Bool = true, ownerName: String = "") {
+        public init(ownerPid: Int32, layer: Int, bounds: CGRect, onScreen: Bool = true, ownerName: String = "", alpha: Double = 1) {
             self.ownerPid = ownerPid
             self.layer = layer
             self.bounds = bounds
             self.onScreen = onScreen
             self.ownerName = ownerName
+            self.alpha = alpha
         }
     }
 
@@ -49,9 +52,10 @@ public enum SettingsDragPanelPlacement {
         return CGRect(x: x, y: y, width: width, height: height)
     }
 
-    /// Processes whose windows ask the person something over System Settings: the password and Touch ID dialogs and
-    /// macOS's own Accessibility alert.
-    public static let askers: Set<String> = ["SecurityAgent", "coreautha", "universalAccessAuthWarn"]
+    /// Processes whose windows ask the person something over System Settings: the password and Touch ID dialogs.
+    /// macOS's Accessibility alert (universalAccessAuthWarn) is not one: it closes before the pane opens, yet its
+    /// process keeps a window listed on screen over it, which hid the panel for the whole visit (after-run f85de72).
+    public static let askers: Set<String> = ["SecurityAgent", "coreautha"]
     /// A System Settings window smaller than this over the pane is a menu or a tooltip, which the panel may cover.
     public static let minimumSheet = CGSize(width: 200, height: 100)
 
@@ -61,7 +65,7 @@ public enum SettingsDragPanelPlacement {
     /// (PX1 after-run at 732b115, shots/015-auth-drop.png).
     public static func somethingAsks(in windows: [Window], settingsPid: Int32, settings: CGRect) -> Bool {
         windows.contains { w in
-            guard w.onScreen, w.bounds != settings, w.bounds.intersects(settings) else { return false }
+            guard w.onScreen, w.alpha > 0, w.bounds != settings, w.bounds.intersects(settings) else { return false }
             if askers.contains(w.ownerName) { return true }
             return w.ownerPid == settingsPid && w.bounds.width >= minimumSheet.width && w.bounds.height >= minimumSheet.height
         }

@@ -54,5 +54,11 @@ final class SettingsDragPanelPlacementTests: XCTestCase {
         var hidden = sheet
         hidden.onScreen = false
         XCTAssertFalse(SettingsDragPanelPlacement.somethingAsks(in: [pane, hidden], settingsPid: 7, settings: settings))
+        var clear = sheet
+        clear.alpha = 0
+        XCTAssertFalse(SettingsDragPanelPlacement.somethingAsks(in: [pane, clear], settingsPid: 7, settings: settings), "listed at alpha 0 shows nothing")
+        let spentAlert = SettingsDragPanelPlacement.Window(ownerPid: 41, layer: 0, bounds: CGRect(x: 500, y: 300, width: 260, height: 300), ownerName: "universalAccessAuthWarn")
+        XCTAssertFalse(SettingsDragPanelPlacement.somethingAsks(in: [pane, spentAlert], settingsPid: 7, settings: settings),
+                       "macOS keeps the answered Accessibility alert's window listed over the pane")
     }
 }
