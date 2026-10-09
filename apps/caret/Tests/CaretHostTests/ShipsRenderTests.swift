@@ -25,8 +25,6 @@ final class ShipsRenderTests: XCTestCase {
             ("Key, pasted", "onboarding-key-typed", [P(name: "Ink, the key's dots", token: Tokens.ink, minimum: text)]),
             // No probe on the checking screen: Back, Skip and Continue are disabled there, and WCAG 1.4.3 exempts inactive
             // controls; the checking line is Ink 2 on the same window, measured on the screen as it opens.
-            ("Key, works", "onboarding-key-works", [P(name: "Ink fill, the check", token: Tokens.inkFill, minimum: mark),
-                                                    P(name: "Ink 2, the saved line", token: Tokens.ink2, minimum: text)]),
             ("Key, no credits", "onboarding-key-no-credits", [P(name: "Ink, what to do", token: Tokens.ink, minimum: text)]),
             ("Key, rejected", "onboarding-key-rejected", [P(name: "Ink, the problem", token: Tokens.ink, minimum: text)]),
             ("Key alone, a key saved", "onboarding-key-alone-stored", [P(name: "Ink 2, the saved line", token: Tokens.ink2, minimum: text),

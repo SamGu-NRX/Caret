@@ -348,11 +348,12 @@ struct HelloField: View {
                     .font(.system(size: 13))
                     .lineLimit(1)
                     .padding(.horizontal, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipped()
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
                 }
             }
-            .clipped()
             .accessibilityHint(hello.ghost.map { "Caret offers: \($0). Press Tab to take it." } ?? "")
     }
 }

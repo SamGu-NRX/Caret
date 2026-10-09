@@ -117,18 +117,23 @@ final class OnboardingController {
     /// that ask the cloud model are held (written down first, so a relaunch holds the same ones) and given back on
     /// Send. Returns the roles the flow looks with.
     private func holdCloudRoles() -> Set<CaretRole> {
-        if let held = progress?.heldRoles { return Set(held.compactMap(CaretRole.init(rawValue:))) }
+        if let held = progress?.heldRoles ?? heldRoles { return Set(held.compactMap(CaretRole.init(rawValue:))) }
         let roles = store.settings.roles
+        // Kept here as well as in the file, so a run whose progress cannot be written never loses the roles.
+        heldRoles = roles.map(\.rawValue).sorted()
         updateProgress { $0.heldRoles = roles.map(\.rawValue).sorted() }
         store.update(source: .onboarding) { $0.roles = $0.roles.intersection([.words]) }
         return roles
     }
 
     private func decided(sent: Bool) {
-        guard let held = progress?.heldRoles else { return }
+        guard let held = progress?.heldRoles ?? heldRoles else { return }
         if sent { store.update(source: .onboarding) { $0.roles = Set(held.compactMap(CaretRole.init(rawValue:))) } }
+        heldRoles = nil
         updateProgress { $0.heldRoles = nil }
     }
+
+    private var heldRoles: [String]?
 
     private var coachShownCache: Bool?
 

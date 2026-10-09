@@ -113,8 +113,9 @@ final class OnboardingHostTests: XCTestCase {
         c.sendFirstLook = { asked.append($0); return true }
         c.sendPreview = { _, families, _ in previews.append(families); return true }
         XCTAssertEqual(c.command(["onboarding"]), #"{"open":false}"#)
+        // The test runner itself may hold Accessibility: the run says what Caret has.
+        c.permissionsOverride = .init(accessibility: false, inputMonitoring: false)
         XCTAssertEqual(try run(c, "onboarding open").step, "hello")
-        _ = try run(c, "onboarding permissions off off")
         XCTAssertEqual(try run(c, "onboarding type Hi Dana, thanks").hello?.textLength, 15)
         let access = try run(c, "onboarding next")
         XCTAssertEqual(access.step, "access")
@@ -159,6 +160,7 @@ final class OnboardingHostTests: XCTestCase {
         let dir = temp()
         defer { try? FileManager.default.removeItem(at: dir) }
         let c = controller(dir)
+        c.permissionsOverride = .init(accessibility: false, inputMonitoring: false)
         _ = try run(c, "onboarding open")
         _ = c.command(["onboarding", "later"])
         XCTAssertNil(c.debugInfo(), "closed, unfinished")

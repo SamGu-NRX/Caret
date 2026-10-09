@@ -371,10 +371,11 @@ final class ShipsHostTests: XCTestCase {
                 available: { false }, stored: { false }, check: { await JevKeyCheck.check($0, transport: transport) },
                 save: { saved.append($0); return true }, saved: { restarts += 1 }
             )
-            _ = controller.command(["onboarding", "open"])
+            controller.sendPreview = { _, _, _ in true }
+            _ = controller.command(["onboarding", "open", "on"])
             _ = controller.command(["onboarding", "permissions", "on", "on"])
-            for _ in 0..<3 { _ = controller.command(["onboarding", "next"]) }
-            XCTAssertEqual(controller.debugInfo()?.step, "jevKey")
+            _ = controller.command(["onboarding", "preview", "1"])
+            XCTAssertEqual(controller.debugInfo()?.step, "on")
             _ = controller.command(["onboarding", "jev-key", seedKey])
             _ = controller.command(["onboarding", "next"])
             let deadline = Date().addingTimeInterval(5)
