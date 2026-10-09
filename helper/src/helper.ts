@@ -75,7 +75,7 @@ import {
 } from "./protocol.ts";
 import type { Change, WindowState } from "./model.ts";
 import { Executor, type Authorization, type ExecutorDeps, type Revocation, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
-import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
+import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink } from "./executor/means.ts";
 import { RecoveryJournal, type JournalRecord } from "./executor/journal.ts";
 import { MemoryError, MemoryStore } from "./patterns/memory.ts";
 import { MemoryConflictError, MemoryDocumentError, type DocumentInfo } from "./memory/documents.ts";
@@ -232,7 +232,6 @@ export interface HelperOptions {
   watchMemory?: boolean;
   /** Where runs are saved before each act, for recovery after a crash (B23). Defaults to one beside `store`'s database. */
   journal?: RecoveryJournal;
-  urls?: UrlOpener | null;
   /**
    * Runs the read-only audit beside the helper (src/audit.ts). Only with shadow mode and Jev off,
    * since the audit's numbers are about what the helper would have done, not what it did.
@@ -611,7 +610,6 @@ export class Helper {
       model: this.model,
       reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
       calendar: opts.calendar === "reader" ? new ReaderCalendar(opts.readerLink ?? (this.socketLink as SocketReaderLink)) : (opts.calendar ?? null),
-      urls: opts.urls ?? null,
       askJev: this.ask,
       publish: (m) => {
         this.publish(m);

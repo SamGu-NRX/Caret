@@ -1,8 +1,8 @@
 // The executor (deep plan section 7). For each step of a plan:
 //   1. Re-read the step's window and stop if anything it saw at the start has changed under it.
 //   2. If the end state already holds, skip the step. A finished plan therefore reruns as a no-op.
-//   3. Pick the means: a value or focus write, a press, a raise, the calendar, or a URL. A press whose label
-//      reads as send, submit, delete or pay is never made; the run stops and hands it to the user.
+//   3. Pick the means: a value or focus write, a press, a raise or the calendar. A press is made only when the frozen
+//      capability table makes it Caret's (goals/capabilities.ts); any other press, and any URL, is handed to the user.
 //   4. Predict the change, act through a reader verb that rechecks the exact target, re-read the
 //      window, and compare what changed against the prediction. A mismatch stops the run at that step.
 // Real input in a window the task acts in, or a pause or take-over from a consumer, pauses it at the
@@ -16,9 +16,10 @@ import { randomInt, randomUUID } from "node:crypto";
 import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
+import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink } from "./means.ts";
 import { ConfirmedFiles } from "../engines/attach.ts";
 import { classifyPress, type RiskClass } from "./risk.ts";
+import { pressVerdict } from "../goals/capabilities.ts";
 import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
@@ -29,14 +30,13 @@ export interface ExecutorDeps {
   model: ScreenModel;
   reader: ReaderLink;
   calendar: CalendarPort | null;
-  urls: UrlOpener | null;
   askJev: AskJev | null;
   publish: (m: TaskProgress) => void;
   /** Every phase with what the activity feed needs beyond taskProgress: who caused it, what remains, whether undo applies. */
   onTask?: (e: TaskEvent) => void;
   /** Registers a listener for changes the model records; returns the function that removes it. */
   onChanges: (listener: (changes: readonly Change[]) => void) => () => void;
-  /** Pause between re-reads while waiting for a press or URL to show its effect. */
+  /** Pause between re-reads while waiting for a press to show its effect. */
   sleep?: (ms: number) => Promise<void>;
   rand?: (n: number) => number;
   /**
@@ -203,7 +203,7 @@ const FALLBACKS = [
   { name: "insert", does: "focus, select all and replace" },
 ] as const;
 
-/** How many re-reads a press or URL gets to show its effect, and the pause between them. Assumed, not measured. */
+/** How many re-reads a press or raise gets to show its effect, and the pause between them. Assumed, not measured. */
 const EFFECT_POLLS = 4;
 /** Extra tries for a failed walk. One cut-short walk in 20 shipping runs stopped a run on a loaded Mac. */
 const WALK_RETRIES = 2;
@@ -928,7 +928,7 @@ export class Executor {
     if (step.via === undefined) throw StepStop.stop("unreachable", `no means to reach '${step.says}': the target is not a field and the step names no press or URL`);
     if (end.kind === "fieldsRevealed" && step.via.kind !== "press") throw StepStop.stop("unreachable", `'${step.says}' reveals fields only through a press`);
     if (step.via.kind === "press") return this.pressStep(task, i, w, step.via.target, step);
-    return this.urlStep(task, i, w, step.via.url, step);
+    return this.urlStep(step.via.url);
   }
 
   // MARK: - means
@@ -1164,21 +1164,22 @@ export class Executor {
     return [...(this.tasks.get(taskId)?.left ?? [])];
   }
 
+  /**
+   * G1 (CU-COUNSEL-R2 Q3): a press is made only on a "press" verdict from the frozen capability table (goals/capabilities.ts
+   * pressVerdict, with risk.ts narrowing inside it), and only for a step that checks that capability's own verifier. Every
+   * other press is the user's, said in the verdict's words. Before G1 this consulted risk.ts alone, so any plan could have
+   * Caret press a SAFE_PRESSES label (Archive, Save draft, Back) that no capability describes or verifies.
+   */
   private async pressStep(task: Task, i: number, w: WindowState, target: Target, step: Step): Promise<void> {
     const node = await this.resolve(task, i, w, target, step.says);
     const label = (node.label ?? "").trim();
-    const risk = classifyPress({ label, windowKind: w.window.kind, bundleId: w.app.bundleId });
-    if (risk === "system") {
-      task.handedOff = { action: RISK_ACTION.system, what: label === "" ? "a control" : `'${label}'`, windowId: w.window.windowId };
-      throw StepStop.handoff(`${label === "" ? "This control" : `'${label}'`} is in a system prompt; Caret leaves that press to you`);
+    const verdict = pressVerdict({ label, role: node.role, windowKind: w.window.kind, bundleId: w.app.bundleId, page: w.window.kind === PAGE_WINDOW_KIND }, null);
+    if (verdict.kind === "handoff") {
+      if (verdict.why !== "unverifiable") task.handedOff = { action: RISK_ACTION[verdict.why], what: label === "" ? "a control" : `'${label}'`, windowId: w.window.windowId };
+      throw StepStop.handoff(sentence(verdict.says));
     }
-    if (label === "") throw StepStop.handoff(`the control for '${step.says}' has no label, so its effect cannot be classified; press it yourself`);
-    // Only a press the table positively allows is made (B22 review): one it cannot classify is the user's too.
-    if (risk === "unclassified") throw StepStop.handoff(`Caret cannot tell what pressing '${label}' does, so it leaves that press to you`);
-    if (risk !== "safe") {
-      task.handedOff = { action: RISK_ACTION[risk], what: `'${label}'`, windowId: w.window.windowId };
-      throw StepStop.handoff(`'${label}' reads as ${risk}; Caret leaves that press to you`);
-    }
+    // The capability names the end state that verifies it; a step checking anything else would press on its say-so alone.
+    if (step.end.kind !== verdict.capability.verifier) throw StepStop.handoff(`Caret presses '${label}' only to check that it shows new fields, and this step checks something else; you press it`);
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
     await this.deps.beforeAct?.(task.id, i);
@@ -1206,13 +1207,12 @@ export class Executor {
     await this.verified(task, i, step);
   }
 
-  private async urlStep(task: Task, i: number, w: WindowState, url: string, step: Step): Promise<void> {
-    if (this.deps.urls === null) throw StepStop.stop("notConfigured", "no URL opener is configured");
-    this.checkInterrupt(task);
-    this.progress(task, "acting", i, `open ${url}; expect: ${step.says}`);
-    await this.deps.urls.open(url);
-    await this.awaitEffect(task, i, step, w.window.windowId, []);
-    await this.verified(task, i, step);
+  /**
+   * G2 (CU-COUNSEL-R2 Q3): Caret opens no URL itself. The opener this replaced dispatched outside act(): no grant, no
+   * authorization and no pending-act journal row. Plan.schema keeps openUrl so saved journal rows still parse.
+   */
+  private urlStep(url: string): never {
+    throw StepStop.handoff(`open ${url} yourself`);
   }
 
   private async calendarStep(task: Task, i: number, end: Extract<EndState, { kind: "calendarEvent" }>): Promise<void> {
@@ -1926,6 +1926,11 @@ function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult):
 function names(xs: readonly string[]): string {
   if (xs.length <= 2) return xs.join(" and ");
   return xs.every((x) => x.startsWith("'")) ? `${xs.length} controls` : `${xs.length} fields`;
+}
+
+/** A hand-off's words as a sentence starts. */
+function sentence(s: string): string {
+  return `${s.charAt(0).toUpperCase()}${s.slice(1)}`;
 }
 
 function clip(s: string, max = 60): string {
