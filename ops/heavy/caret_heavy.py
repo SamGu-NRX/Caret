@@ -394,8 +394,10 @@ def _r2_vm_plan(args, worktree, rev, paths):
     inputs = [spec("payload", "payload", os.path.join(job, "payload"), "vm-job/payload", rev=rev),
               spec("job.sh", "file", os.path.join(job, "job.sh"), "vm-job/job.sh"),
               spec("tcc.txt", "file", os.path.join(job, "tcc.txt"), "vm-job/tcc.txt")]
-    if os.path.exists(os.path.join(job, "display")):
-        inputs.append(spec("display", "file", os.path.join(job, "display"), "vm-job/display"))
+    # rig-run's optional per-job files: the clone's screen size and, opt-in, its memory in GiB.
+    for name in ("display", "memory"):
+        if os.path.exists(os.path.join(job, name)):
+            inputs.append(spec(name, "file", os.path.join(job, name), "vm-job/" + name))
     recorded = {}
     # The stage options the payload was built with, recorded in the plan; the payload digest pins the file.
     options = {"h11": ("H11_OPTIONS", "h11-options.json"), "rae": ("RAE_OPTIONS", "rae-options.json")}.get(args.harness)
@@ -506,7 +508,7 @@ def _vm_cancel_proof_plan(args, worktree, rev, paths):
         raise manifest.ManifestError("--rig-wait 0..7200, --boot-timeout 60..3600 and --vz-grace 1..600 seconds")
     job = os.path.realpath(args.job_dir)
     inputs = [spec("job.sh", "file", os.path.join(job, "job.sh"), "vm-job/job.sh")]
-    for name in ("tcc.txt", "display", "no-reboot"):
+    for name in ("tcc.txt", "display", "memory", "no-reboot"):
         if os.path.exists(os.path.join(job, name)):
             inputs.append(spec(name, "file", os.path.join(job, name), "vm-job/" + name))
     return [str(args.rig_wait), str(args.boot_timeout), str(args.vz_grace)], inputs, {}
