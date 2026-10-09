@@ -19,7 +19,7 @@ import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } fro
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { createHash } from "node:crypto";
 import { bareLine, LABELLED, lineDigests, logicalLines, sentenceAround } from "./line-values.ts";
-import { spanContexts } from "./candidates.ts";
+import { alsoStale, spanContexts } from "./candidates.ts";
 import { redactWindow } from "./redact.ts";
 import { type SourceAt, splitLines, TITLE } from "../privacy/ledger/source.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
@@ -1231,6 +1231,9 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
       if (now.length === 0) return "its source no longer shows it";
       if (!sameDigests(now, pr.lines) || !sameDigests(sentenceDigests(shown, pr.span), pr.sentences)) return "what its source says around it changed";
       if (pr.context !== null && !spanContexts(view, seen as Node, pr.span).includes(pr.context)) return "the label it was read beside changed";
+      // Every other line of its window that held it, as Jev and the verifier were shown them (Candidate.also).
+      const also = alsoStale(view, pr.nodeKey, pr.span, pr.also ?? []);
+      if (also !== null) return also;
       return pr.owned === undefined ? null : ownedStale(model, pr.span, { windowId: pr.windowId, nodeKey: pr.nodeKey }, pr.owned);
     }
     case "unit": {

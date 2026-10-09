@@ -244,6 +244,43 @@ function nodeLines(node: Node): { raw: string; start: number }[] {
   return linesWithStarts(nodeText(node));
 }
 
+/**
+ * Every line of `w`'s line nodes and source fields that holds `text` whole, in document order (Candidate.also reads
+ * these): each node's text is searched for the value, and only the lines it stands in are read.
+ */
+function windowLinesHolding(w: WindowState, text: string): { node: Node; start: number; raw: string; bare: string }[] {
+  const found: { node: Node; start: number; raw: string; bare: string }[] = [];
+  if (text === "") return found;
+  for (const n of w.nodes.values()) {
+    if (!LINE_ROLES.has(n.role) && !sourceField(n)) continue;
+    const t = nodeText(n);
+    for (let at = t.indexOf(text); at >= 0; ) {
+      const start = lineStartAt(t, at);
+      const end = lineEndAt(t, at);
+      const raw = t.slice(start, end);
+      const bare = bareLine(raw);
+      if (holdsWhole(bare, text)) found.push({ node: n, start, raw, bare });
+      at = t.indexOf(text, Math.max(end, at + 1));
+    }
+  }
+  return found;
+}
+
+/**
+ * The recheck of a value's other lines before a write (contract.ts provenanceStale): why `w` now disagrees with the
+ * lines `also` recorded beside `span` read in node `nodeKey`, or null. Every recorded line must still stand, and no line
+ * outside that node may hold the value that did not: an edited warning, or a new one, refuses the write. Lines of its
+ * own node are its own lines' digests' to check.
+ */
+export function alsoStale(w: WindowState, nodeKey: string, span: string, also: readonly string[]): string | null {
+  const now = windowLinesHolding(w, span);
+  const own = new Set(now.filter((l) => l.node.key === nodeKey).map((l) => l.bare));
+  const recorded = new Set(also);
+  if (also.some((l) => !now.some((x) => x.bare === l))) return "a line that also held it changed";
+  if (now.some((x) => x.node.key !== nodeKey && x.bare !== span && !recorded.has(x.bare) && !own.has(x.bare))) return "another line now holds it";
+  return null;
+}
+
 /** Whether `text` occurs in `raw` exactly once, overlapping occurrences counted. */
 function standsOnce(raw: string, text: string): boolean {
   const at = raw.indexOf(text);
@@ -471,9 +508,15 @@ export interface Collected {
   cutTerms: ReadonlySet<string>;
   /**
    * The one set of cut kinds, which the field and pick checks read (fill.ts isCut): the kinds of a cut window's typed
-   * values that were not offered, and of every value in text the generator left unread, offered elsewhere or not.
+   * values that were not offered, of every value in text the generator left unread, offered elsewhere or not, and of
+   * every value kept out with its other lines (Candidate.also).
    */
   cutKinds: ReadonlySet<ValueKind>;
+  /**
+   * Whether a cut window or unread text took a value of some kind, which a field that names no kind may want (fill.ts
+   * fieldCut). A value kept out with its other lines is no such cut: it threatens only fields of its kind and label.
+   */
+  cutTookKinds: boolean;
   cutAll: boolean;
   /**
    * A field takes a name and a name may have been kept out: a conversation's names, or a line holding
@@ -582,9 +625,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const head = timed("blockHead", () => blockHeadRead(w, node, text));
     const occ = timed("context", () => occurrencesOf(w, node, text, where));
     if (occ.reduce((n, f) => n + f.text.length, 0) > ALSO_MAX) {
-      // Its other lines do not fit its description: withheld, as a candidate whose lines the ledger refuses is, and its
-      // window counts as cut, with the words of every line that holds it.
-      unfit(w, node, text, read?.text ?? null, occ);
+      // Its other lines do not fit its description: withheld, as a candidate whose lines the ledger refuses is (keepOut).
+      keepOut(w, node, text, kind, read?.text ?? null);
       return null;
     }
     const c: Candidate = {
@@ -634,25 +676,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const occurrencesOf = (w: WindowState, node: Node, text: string, where: { lineStart: number } | undefined): Occurrence[] => {
     const out: Occurrence[] = [];
     let chars = 0;
-    let own: { node: Node; start: number } | null = where === undefined ? null : { node, start: where.lineStart };
     const said = new Set<string>();
-    const found: { node: Node; start: number; raw: string; bare: string }[] = [];
-    for (const n of w.nodes.values()) {
-      if (!LINE_ROLES.has(n.role) && !sourceField(n)) continue;
-      const t = nodeText(n);
-      for (let at = t.indexOf(text); at >= 0; ) {
-        const start = lineStartAt(t, at);
-        const end = lineEndAt(t, at);
-        const raw = t.slice(start, end);
-        const bare = bareLine(raw);
-        if (holdsWhole(bare, text)) {
-          if (own === null && n === node) own = { node: n, start };
-          found.push({ node: n, start, raw, bare });
-        }
-        at = t.indexOf(text, Math.max(end, at + 1));
-      }
-    }
-    const ownLine = found.find((l) => own !== null && l.node === own.node && l.start === own.start) ?? found.find((l) => l.node === node);
+    const found = windowLinesHolding(w, text);
+    const ownLine = (where === undefined ? undefined : found.find((l) => l.node === node && l.start === where.lineStart)) ?? found.find((l) => l.node === node);
     if (ownLine !== undefined) said.add(ownLine.bare);
     for (const l of found) {
       // A line that is the value alone says nothing the value does not.
@@ -667,15 +693,41 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     return out;
   };
   /**
-   * A candidate withheld for its other lines (ALSO_MAX): its window counts as cut, its association is kept out, its text
-   * may not stand in from elsewhere (unwarned), and the words of its line and of every line holding it are cut terms.
+   * A value withheld for its other lines (Candidate.also: they did not fit its window's limit, or ALSO_MAX), or a span
+   * kept out with it: an omission of its own association (omit), as a deduplicated value's is, with its kinds in
+   * Collected.cutKinds, its label's words in cutTerms and, when it is name-like, its name among the names kept out, so a
+   * field of its kind or label still withholds. Its text may not stand in from another line (unwarned). Its window is not
+   * cut: a missing alternative threatens only the fields of its kind and label, and cutting the window withheld every
+   * name and every field that names no kind beside it (a bystander chat's "Thursday", evidence/screen/dedup).
    */
-  const unfit = (w: WindowState, node: Node, text: string, label: string | null, occ: readonly Occurrence[]): void => {
-    missed.add(w.window.windowId);
+  const keepOut = (w: WindowState, node: Node, text: string, kind: ValueKind | null, label: string | null): void => {
     omit(w, node, text, label);
+    if (label !== null) for (const t of words(label)) cutTerms.add(t);
+    keptOutSpans.push({ w, node, text, kind });
+    if (wantsNames && isNameLike(text, label)) cutNames.push(text);
     unwarned.add(text);
-    for (const t of words(lineHolding(nodeText(node), text))) cutTerms.add(t);
-    for (const f of occ) for (const t of words(f.text)) cutTerms.add(t);
+  };
+  /** The spans keepOut kept out, whose kinds go in Collected.cutKinds when the generator finishes (keptKinds). */
+  const keptOutSpans: { w: WindowState; node: Node; text: string; kind: ValueKind | null }[] = [];
+  /**
+   * The kinds kept out with their other lines: each kept-out span's own kind, and the kind of each typed value it holds
+   * that no offered candidate holds ("Elena Varga <elena.varga@example.org>" kept out keeps out no email when the address
+   * was offered on its own; counting it withheld every email field beside a mail's quoted contacts).
+   */
+  const keptKinds = (offered: readonly Candidate[]): Set<ValueKind> => {
+    const out = new Set<ValueKind>();
+    const taken = offered.map((c) => c.text).join("\u0000");
+    for (const { w, node, text, kind } of keptOutSpans) {
+      if (kind !== null) for (const k of valueKinds({ kind, text })) out.add(k);
+      for (const v of windowValues(w)) if (v.nodeKey === node.key && (text.includes(v.text) || v.text.includes(text)) && !taken.includes(v.text)) for (const k of valueKinds(v)) out.add(k);
+    }
+    return out;
+  };
+  /** Whether `c` would fit its window's limit without its other lines, so they are what did not fit. */
+  const fitsWithoutAlso = (w: WindowState, cs: readonly Candidate[]): boolean => {
+    if (o.ledger === undefined || !cs.some((c) => c.also !== undefined)) return false;
+    const bare = cs.map((c) => withSources({ ...c, also: undefined }, c));
+    return o.ledger.cost(w, bare.flatMap(candidateTexts), bare.flatMap(candidateSpans)) !== null;
   };
   /** Spans that go only with their clause (Candidate.line set at build). */
   const quoted = new WeakSet<Candidate>();
@@ -711,13 +763,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       // fit is dropped, and the window is neither cut nor closed for it. Counting it as a cut withheld Greenhouse's names
       // (W1's regression: 12/12 to 6/6 canned, evidence/screen/w1 CHECKLIST).
       if (partOf !== undefined) return;
+      if (fitsWithoutAlso(w, [c])) return void keepOut(w, node, text, kind, c.context);
       missed.add(w.window.windowId);
       if (c.context !== null) omitted.add(associationOf(c));
       // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
       // counts as cut, so the cut rules withhold its kind and words, but the spans after it are still read. Closing the
       // window instead cut every later line of a mail whose prose warns often (corpus clinic-intake, 7 -> 5).
-      // So does one that carries its other lines (Candidate.also): they may be what did not fit.
-      if (quoted.has(c) || c.also !== undefined) {
+      if (quoted.has(c)) {
         unwarned.add(text);
         if (!ranked.has(w.window.windowId)) leftOutOf.add(w.window.windowId);
         return;
@@ -777,10 +829,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     stats.windows = touched.size;
     stats.ms = performance.now() - t0;
-    // The one set of cut kinds: a cut window's typed values not offered (cutKinds), and every kind the unread text holds.
+    // The one set of cut kinds: a cut window's typed values not offered (cutKinds), every kind the unread text holds, and
+    // the kinds of values kept out with their other lines (keepOut).
     const kinds = cutKinds(model, [...missed], out);
     for (const k of unreadKinds) kinds.add(k);
-    return { candidates: out, stats, cut: [...missed], cutTerms, cutKinds: kinds, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
+    const cutTookKinds = kinds.size > 0;
+    for (const k of keptKinds(out)) kinds.add(k);
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutKinds: kinds, cutTookKinds, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
   };
   /**
    * Stops early, on either cap, partway through `reading`: what of it was offered is a partial
@@ -1131,13 +1186,27 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     /** Kinds left out whole, since none of them fits what is left; a line holding a value of one stays out too. */
     const leftOut = new Set(groups.keys());
     for (const g of groups.values()) for (const c of g) if (quoted.has(c)) unwarned.add(c.text);
-    if (leftOut.size > 0) missed.add(w.window.windowId);
+    // A kind that would fit but for its values' other lines is kept out value by value (keepOut), not as a cut window;
+    // so is each span left out with it below.
+    const keptOut = new Set<string>();
+    for (const [k, g] of groups) {
+      if (!fitsWithoutAlso(w, g)) continue;
+      keptOut.add(k);
+      for (const c of g) {
+        const n = w.nodes.get(c.source.nodeKey);
+        if (n !== undefined) keepOut(w, n, c.text, c.kind, c.context);
+      }
+    }
+    if ([...leftOut].some((k) => !keptOut.has(k))) missed.add(w.window.windowId);
     // Then the rest, nearest the fields first, with their facts, until one does not fit.
     for (const i of order.filter((x) => !takesKind(x))) {
       if (full() || outOfWork()) return false;
       if (closed.has(w.window.windowId)) break;
       const sp = spans[i] as (typeof spans)[number];
-      if ([...sp.terms].some((t) => leftOut.has(t))) continue;
+      if ([...sp.terms].some((t) => leftOut.has(t))) {
+        if ([...sp.terms].every((t) => !leftOut.has(t) || keptOut.has(t))) keepOut(w, sp.node, sp.text, sp.kind, sp.context()?.text ?? null);
+        continue;
+      }
       add(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset, sp.found);
     }
     return true;
