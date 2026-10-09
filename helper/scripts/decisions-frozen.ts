@@ -18,7 +18,7 @@ import { cacheFromEnv } from "../src/engines/decide/cache.ts";
 import { DecisionsAttemptError, type DecisionsResult } from "../src/engines/decide/decisions.ts";
 import { processEnv } from "../src/host-env.ts";
 import { appendStoreJson, writeStore } from "../src/privacy/send.ts";
-import type { JevRequest } from "../src/fill/jev.ts";
+import { JEV_MODEL } from "../src/fill/jev.ts";
 import { frozenRequestOf, originalRequests, type FrozenEntry } from "./decisions-frozen-input.ts";
 import { loadAsks, loadCorpus, type CorpusAsk } from "./realfill-corpus.ts";
 import { labelQuestion } from "./decisions-labels.ts";
@@ -62,7 +62,8 @@ let unmatched = 0;
 for (const sub of readdirSync(cacheDir).filter((d) => /^[0-9a-f]{2}$/u.test(d)).sort()) {
   for (const name of readdirSync(join(cacheDir, sub)).filter((f) => f.endsWith(".json")).sort()) {
     const entry = JSON.parse(readFileSync(join(cacheDir, sub, name), "utf8")) as FrozenEntry;
-    if (entry.engine !== "jev" || !entry.recordedAt.startsWith(a["recorded-at"])) continue;
+    // The shared cache also holds alternate Jev models; only the selected baseline is comparable here.
+    if (entry.engine !== "jev" || entry.model !== JEV_MODEL || !entry.recordedAt.startsWith(a["recorded-at"])) continue;
     // Only exact entries keep the request's own question and option ids, which Jev's answers name.
     if (!entry.canonical.exact) { unmatched++; continue; }
     const ask = askOf(JSON.stringify(entry.canonical));

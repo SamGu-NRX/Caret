@@ -4,6 +4,7 @@ import { minted } from "../test/minted.ts";
 
 export interface FrozenEntry {
   engine: string;
+  model: string;
   canonical: { exact: boolean; state: JsonValue; questions: { id?: string; type: "choice" | "noul"; instructions: string; criteria: [string, string | null][] | { true: string; false: string } | null }[] };
   answers: Record<string, { choice: string; confidence: number }>;
   probabilities: Record<string, Record<string, number>>;
