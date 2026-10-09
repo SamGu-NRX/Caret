@@ -21,9 +21,9 @@ import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 import { insideValues, readWhose } from "./people.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import type { Control } from "../fill/controls.ts";
-import type { IntentMaker, MakerUse } from "./intent-makers.ts";
-import { ROUTE_CUTOFF } from "./intent-makers.ts";
-import { snapMint, UNNAMED_SECTION as SECTION, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
+import type { IntentMaker, MakerUse } from "./intent.ts";
+import { snapMint, UNNAMED_SECTION as SECTION, type AskIntent, type HeadOutcome, type IntentField, type IntentSnapshot, type RouteChoice, type RouteHead } from "./intent.ts";
+import { choiceConfidence } from "../engines/decide/confidence.ts";
 import { relevance } from "./planner.ts";
 import { dateShaped, organizationField, timeShaped } from "../fill/kinds.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
@@ -33,7 +33,7 @@ import { MAX_ASK_OPTIONS } from "../protocol.ts";
 import { NO_SECTION, PLACEMENT_UNKNOWN, sectionPlacement } from "../fill/ask-scope.ts";
 
 /** Lowest confidence for the route, why, source and whose heads: plan section 3's provisional router floor, not calibrated. */
-export const HEAD_FLOOR = ROUTE_CUTOFF;
+export const HEAD_FLOOR = 0.75;
 /**
  * Lowest confidence, the lower of the two wordings, at which an "asks" answer puts a field in scope. Calibrated on B24's
  * 20 asks and A3's 26 development asks, 589 fields labelled by hand (scripts/ask-scope-labels.json, scored by
@@ -408,6 +408,24 @@ export async function settleFields(snap: IntentSnapshot, askJev: AskJev, only?: 
   };
 }
 
+/**
+ * A Choice head read against `floor`: settled when its answer's confidence clears it alone; between the top two when
+ * neither does and the two, merged into one option, would (the merged confidence is Jev's own formula over one option
+ * fewer, engines/decide/confidence.ts); unsure otherwise. Between needs the per-option probabilities and at least three
+ * options (with two, the pair is every option). This rule is written, not measured (design CU-COUNSEL-20261009).
+ */
+export function readHead<T extends string>(a: { choice: T; confidence: number; probabilities?: Readonly<Record<string, number>> }, floor: number = HEAD_FLOOR): HeadOutcome<T> {
+  if (a.confidence >= floor) return { kind: "settled", choice: a.choice, confidence: a.confidence };
+  const p = a.probabilities;
+  const ranked = p === undefined ? [] : Object.entries(p).sort(([, x], [, y]) => y - x);
+  if (ranked.length >= 3) {
+    const [[first, p1], [second, p2]] = ranked as [[string, number], [string, number]];
+    const mass = choiceConfidence([p1 + p2, ...ranked.slice(2).map(([, q]) => q)]);
+    if (mass >= floor) return { kind: "between", a: first as T, b: second as T, mass };
+  }
+  return { kind: "unsure", top: a.choice, confidence: a.confidence };
+}
+
 /** A head's answer when it clears the floor, else null. Throws when Jev left the question unanswered. */
 function settled(r: JevResult, id: string): string | null {
   const a = r.answers[id];
@@ -510,13 +528,22 @@ export function readHeads(snap: IntentSnapshot, heads: JevResult, scope: readonl
   // SCP1: a field the section veto took out is settled as nothing, so no later pick or question reaches it.
   const intent = { ...readHeadsIntent(snap, heads, scope, veto), ...(veto?.section == null ? {} : { namedSection: veto.section }) };
   const settledRefs = scope === null ? [] : scopeFields(snap).filter((f) => !vetoed(veto, f) && scopeVerdict(scope, f.ref) !== "not").map((f) => f.ref);
-  return { ...intent, settled: settledRefs };
+  return { ...intent, settled: settledRefs, routeHead: routeHeadOf(heads) };
+}
+
+/** The route question's outcome, for planAsk and the scoreboard (readHead). readHeadsIntent already threw when it is unanswered. */
+function routeHeadOf(heads: JevResult): RouteHead {
+  const a = heads.answers.route as { choice: string; confidence: number };
+  return readHead<RouteChoice>({ choice: a.choice as RouteChoice, confidence: a.confidence, ...(heads.probabilities?.route === undefined ? {} : { probabilities: heads.probabilities.route }) });
 }
 
 function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly [JevResult, JevResult] | null, veto: SectionVeto | null): AskIntent {
   const base: AskIntent = { route: "ask", why: "whichFields", scope: "all", section: "none", fields: [], sources: [], whose: "user", literals: [] };
   const route = settled(heads, "route");
-  if (route === "refuse") {
+  // Floors become questions (design CU-COUNSEL-20261009), except a refusal: a route between refusing and anything else
+  // refuses, for the why head's reason. B24-B31's baseline had four such Asks, all of them must-refuse.
+  const head = routeHeadOf(heads);
+  if (route === "refuse" || (head.kind === "between" && (head.a === "refuse" || head.b === "refuse"))) {
     const why = settled(heads, "why");
     return { ...base, route: "refuse", why: why !== null && why in WHY ? (why as AskIntent["why"]) : "nothingToFill", scope: "none" };
   }

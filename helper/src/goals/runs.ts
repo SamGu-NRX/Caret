@@ -23,7 +23,7 @@ import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
 import type { Change, ScreenModel } from "../model.ts";
 import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
 import { nodeText } from "../model.ts";
-import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
+import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, type GoalStepView, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { isDerived } from "./gates.ts";
@@ -1042,7 +1042,7 @@ export class GoalRuns {
       digest: seg.digest,
       expires: run.expires,
       where: d.kind === "window" ? { kind: "window", app: d.appName, title: d.title } : { kind: "calendar", calendar: d.calendar },
-      steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }), ...(s.kind === "attach" && s.file !== undefined ? { file: s.file } : {}) })),
+      steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }), tier: tierOf(s), ...(s.kind === "attach" && s.file !== undefined ? { file: s.file } : {}) })),
       warnings: run.cursor.segment === 0 ? run.plan.warnings : [],
       ...pageOf(this.deps.model, run.plan, seg),
     };
@@ -1295,4 +1295,22 @@ function deepFreeze<T>(v: T): T {
     for (const x of Object.values(v)) deepFreeze(x);
   }
   return v;
+}
+
+/**
+ * A step's trust tier as the preview shows it (protocol GoalStepView.tier): a press handed to the user is `yours`; a
+ * field handed to the user to set stays in the write tier, since what it risks is a value, not an effect.
+ */
+export function tierOf(s: Pick<GoalStep, "kind" | "target">): NonNullable<GoalStepView["tier"]> {
+  switch (s.kind) {
+    case "write":
+    case "calendar":
+      return "write";
+    case "attach":
+      return "attach";
+    case "press":
+      return "navigate";
+    case "handoff":
+      return s.target.control === "button" ? "yours" : "write";
+  }
 }

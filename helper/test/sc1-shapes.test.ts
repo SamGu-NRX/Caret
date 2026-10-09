@@ -106,17 +106,6 @@ describe("T-M1: verify holds each text to its slot", () => {
     expect(JSON.stringify(logged)).not.toContain("pw7Q");
   });
 
-  it("gives the intent writer one value from a source window, its sender, by an explicit row, and no other", () => {
-    expect(Object.entries(SHAPES.intent).filter(([, slot]) => slot.reasons.includes("candidate")).map(([glob]) => glob)).toEqual(["input.windows[*].from"]);
-    const { m, view } = desk();
-    const d = new Disclosure(m);
-    const sender = d.candidate(view, "Elena Vance") as ModelText;
-    const window = { ref: d.id("w1"), app: d.app(view), title: d.descriptor(view, "Notes") as ModelText, from: sender };
-    expect(() => d.seal({ kind: "intent", input: { windows: [window] } })).not.toThrow();
-    // The same value anywhere else in the intent's input is refused.
-    expect(() => d.seal({ kind: "intent", input: { fields: [{ ref: d.id("f1"), name: sender }] } })).toThrow(/input\.fields\[0\]\.name carries text minted as candidate/u);
-  });
-
   it("checks a hoisted option description as the option it came from, and a JSON state as the value it writes", () => {
     const { m, view } = desk();
     const d = new Disclosure(m);

@@ -1,6 +1,8 @@
 // The planner (brief B16): instruction spans, value tracing and the plan check are each tested on
 // their own, since each has one right answer; then planTask with a fake Jev on a synthetic desk, and the
 // helper's planRequest, proposal and accept under an act grant. Everything here is invented.
+import { scopeLabel } from "./builders.ts";
+import { headsJev } from "./heads-jev.ts";
 import { TEST_AUTHORITY } from "./mint.ts";
 import { answeringScope, optionIs } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -612,18 +614,7 @@ describe("planRequest through the helper", () => {
   });
 
   it("with an intent maker, Asks run as a scoped fill: the intent's fields only, proposed, and run only when accepted (B25)", async () => {
-    // The writer names the Name field by its ref; Jev picks Dana's name for it and calls her the user.
-    const intents: string[] = [];
-    const intentWriter = {
-      route: FAKE_WRITER_ROUTE,
-      write: async (req: WriterRequest) => {
-        intents.push(req.kind);
-        const input = req.input as unknown as { fields: { ref: string; name: string }[] };
-        const ref = input.fields.find((f) => f.name === "Name")?.ref ?? "none";
-        const json = { route: "fill", why: "none", scope: "list", section: "none", fields: [ref], sources: ["any"], whose: "user", literals: [] };
-        return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };
-      },
-    };
+    // Jev scopes the Ask to Name; acceptance still gates every write.
     const fillJev: AskJev = async (req) => {
       const answers = Object.fromEntries(
         Object.entries(req.questions).map(([id, q]) => {
@@ -634,13 +625,12 @@ describe("planRequest through the helper", () => {
       );
       return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
     };
-    const asking = new Helper({ store, memory, askJev: answeringScope(fillJev), shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, now: () => clock, ask: { maker: "writer", writer: intentWriter } });
+    const asking = new Helper({ store, memory, askJev: headsJev(answeringScope(fillJev, (ins) => scopeLabel(ins) === "Name" ? "asks" : "not")), shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, now: () => clock, ask: { maker: "heads" } });
     app.helper = asking;
     app.show();
     void asking.handleReader(referenceWindow());
     const r = await asking.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "a1", at: clock, instruction: "put the customer's name in" });
     expect(PlanProposal.parse(r)).toMatchObject({ outcome: "proposed", error: null });
-    expect(intents).toEqual(["intent"]);
     expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(0);
     const res = await asking.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: r.offerKey ?? "", actionId: "run", overrides: {}, at: clock });
     expect(res).toMatchObject({ outcome: "done", acted: 1 });

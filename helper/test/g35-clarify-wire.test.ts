@@ -1,6 +1,7 @@
 // The clarification step on the wire: a fields question beside fields the Ask settled names them (`filling`), and an
 // answer that picks nothing fills only those. Dismissing the question, or letting it lapse, writes nothing. The fake
 // app's form (Name, Email, a Billing and a Shipping City) beside a mail that shows a name and a city; all text synthetic.
+import { headsJev } from "./heads-jev.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,14 +20,6 @@ const REF = "5150-3";
 const M = (s: string): string => `dev.caret.mail/standard/${s}`;
 const mailWindow = () => snap([text(M("statictext:name: dana ortiz~0"), "Name: Dana Ortiz"), text(M("statictext:city: austin~0"), "City: Austin")], { at: 500, windowId: REF, title: "Order 48213", app: MAIL_APP });
 
-/** An intent writer that leaves the fields open; the scope question then settles them (planner/ask.ts settleFields). */
-const openFields = {
-  route: FAKE_WRITER_ROUTE,
-  write: async (_: WriterRequest) => {
-    const json = { route: "ask", why: "whichFields", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
-    return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };
-  },
-};
 
 /** Scope by label (`name` for Name, 0.4 "asks" for each City, "not" for Email); values from the mail; owners the user's. */
 const jevWith = (name: { choice: string; confidence: number }): AskJev => async (req) => {
@@ -55,7 +48,7 @@ describe("the clarification step on the wire", () => {
   let helper: Helper;
   let clock: number;
   const start = (name: { choice: string; confidence: number }) => {
-    helper = new Helper({ store, memory, askJev: jevWith(name), shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "writer", writer: openFields } });
+    helper = new Helper({ store, memory, askJev: headsJev(jevWith(name)), shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "heads" } });
     app.helper = helper;
     app.show();
     void helper.handleReader(mailWindow());

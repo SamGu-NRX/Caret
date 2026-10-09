@@ -1,6 +1,5 @@
 import { requireVercelDevelopment } from "../privacy/vercel.ts";
-// One OpenAI-compatible chat completion, the shape both Vercel AI Gateway and Groq serve. No retry: a
-// failed write is reported, and the plan says a provider change is explicit configuration.
+// One OpenAI Responses or Gateway/Groq chat-completion request. No retry or provider fallback.
 import { sendable, type Sealed, type Sink } from "../privacy/send.ts";
 import type { HostEnv } from "../host-env.ts";
 import * as z from "zod";
@@ -13,13 +12,13 @@ export interface Pricing {
 }
 
 export interface ChatRoute {
-  provider: "gateway" | "groq";
+  provider: "gateway" | "groq" | "openai";
   baseUrl: string;
   /** Environment variable holding the key; read at call time. */
   keyName: keyof HostEnv;
   model: string;
   /** Name of the output cap in this API's request body. */
-  maxTokensParam: "max_tokens" | "max_completion_tokens";
+  maxTokensParam: "max_tokens" | "max_completion_tokens" | "max_output_tokens";
   /** Provider-specific request fields, such as a reasoning effort. */
   extraBody: Readonly<Record<string, unknown>>;
   pricing: Pricing;
@@ -51,6 +50,18 @@ const Completion = z.object({
       completion_tokens_details: z.object({ reasoning_tokens: z.number().optional() }).loose().nullable().optional(),
     })
     .loose(),
+});
+
+const Responses = z.object({
+  model: z.string(),
+  output: z.array(z.object({
+    type: z.string(),
+    content: z.array(z.object({ type: z.string(), text: z.string().optional() }).loose()).optional(),
+  }).loose()),
+  usage: z.object({
+    input_tokens: z.number().nonnegative(), output_tokens: z.number().nonnegative(),
+    output_tokens_details: z.object({ reasoning_tokens: z.number().nonnegative().optional() }).loose().nullable().optional(),
+  }).loose(),
 });
 
 export class ChatHttpError extends Error {
@@ -101,6 +112,24 @@ export function chatSink(
   /** An OpenAI-style response_format, such as a strict json_schema (B25 intents); absent for free text. */
   responseFormat?: Readonly<Record<string, unknown>>,
 ): Sink {
+  if (route.provider === "openai") {
+    return {
+      name: "responses",
+      render: (wire) => {
+        const messages = messagesOf(wire);
+        if (messages.length !== 2 || messages[0]?.role !== "system" || messages[1]?.role !== "user") throw new Error("Responses writer requires exactly one system prompt and one user message");
+        return { model: route.model, instructions: messages[0].content, input: messages[1].content, max_output_tokens: maxOutputTokens, reasoning: route.extraBody.reasoning };
+      },
+      envelope: {
+        model: { kind: "config", max: 400 },
+        instructions: { kind: "rendered", max: MAX_MESSAGE },
+        input: { kind: "rendered", max: MAX_MESSAGE },
+        max_output_tokens: { kind: "scalar", types: ["number"] },
+        reasoning: { kind: "config", max: 400 },
+      },
+      wording,
+    };
+  }
   const config = { kind: "config", max: 400 } as const;
   return {
     name: "chat",
@@ -122,7 +151,7 @@ export function chatSink(
 export async function chat(route: ChatRoute, key: string, sealed: Sealed, signal: AbortSignal, fetchFn: typeof fetch = fetch): Promise<ChatResult> {
   if (route.provider === "gateway" || new URL(route.baseUrl).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
   const t0 = performance.now();
-  const res = await fetchFn(`${route.baseUrl}/chat/completions`, {
+  const res = await fetchFn(`${route.baseUrl}/${route.provider === "openai" ? "responses" : "chat/completions"}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: sendable(sealed),
@@ -147,6 +176,18 @@ export async function chat(route: ChatRoute, key: string, sealed: Sealed, signal
     if (needsCard(route.provider, res.status, type, message)) throw new GatewayNeedsCard(type);
     const retry = Number(res.headers.get("retry-after"));
     throw new ChatHttpError(route.provider, res.status, type, message, Number.isFinite(retry) && retry > 0 ? retry : null);
+  }
+  if (route.provider === "openai") {
+    const parsed = Responses.parse(JSON.parse(raw));
+    return {
+      text: parsed.output.filter((item) => item.type === "message").flatMap((item) => item.content ?? []).filter((part) => part.type === "output_text").map((part) => part.text ?? "").join(""),
+      servedModel: parsed.model,
+      inputTokens: parsed.usage.input_tokens,
+      outputTokens: parsed.usage.output_tokens,
+      reasoningTokens: parsed.usage.output_tokens_details?.reasoning_tokens ?? 0,
+      latencyMs,
+      costUsd: costOf(route.pricing, parsed.usage.input_tokens, parsed.usage.output_tokens),
+    };
   }
   const parsed = Completion.parse(JSON.parse(raw));
   const inputTokens = parsed.usage.prompt_tokens;

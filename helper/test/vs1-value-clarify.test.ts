@@ -5,6 +5,7 @@
 // at a time in form order, at most eight fields and seven values a field. A pick is new evidence for one fresh pair of
 // value questions on that field, under the unchanged cutoff, verifier and vetoes; it prepares the next preview and no
 // more. Leave blank, cancel and expiry write nothing; a changed source or form invalidates the pick. Synthetic desks.
+import { headsJev } from "./heads-jev.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +17,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { MEMORY_CUTOFF, type UnresolvedValue } from "../src/fill/fill.ts";
 import { valueChoices, valueQueue } from "../src/planner/choices.ts";
 import { AskAsks, AskRefused, answerQuestion, planAsk, type AskDraft } from "../src/planner/ask.ts";
-import type { IntentMaker } from "../src/planner/intent-makers.ts";
+import type { IntentMaker } from "../src/planner/intent.ts";
 import { SaidError } from "../src/planner/says.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
@@ -75,9 +76,9 @@ function desk(note = NOTE): ScreenModel {
   return m;
 }
 const maker: IntentMaker = {
-  name: "writer",
+  name: "heads",
   async make(snap) {
-    return { intent: { route: "fill", why: "none", scope: "list", section: "none", fields: snap.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "writer", model: "writer-test", calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0, latencyMs: 1 } };
+    return { intent: { route: "fill", why: "none", scope: "list", section: "none", fields: snap.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "heads", model: "writer-test", calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0, latencyMs: 1 } };
   },
 };
 type A = { choice: string; confidence: number };
@@ -241,14 +242,6 @@ describe("a value question in the Ask", () => {
 const REF = "5150-3";
 const M = (s: string): string => `dev.caret.mail/standard/${s}`;
 const mailWindow = () => snap([text(M("statictext:name: dana ortiz~0"), "Name: Dana Ortiz"), text(M("statictext:email: dana.ortiz@example.com~0"), "Email: dana.ortiz@example.com")], { at: 500, windowId: REF, title: "Order 48213", app: MAIL_APP });
-/** An intent writer that fills the whole form; the scope question then settles its fields (planner/ask.ts settleFields). */
-const openFields = {
-  route: FAKE_WRITER_ROUTE,
-  write: async (_: WriterRequest) => {
-    const json = { route: "fill", why: "none", scope: "all", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
-    return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };
-  },
-};
 /** Name and Email in scope; both go on to value settlement, where Name settles; Email's wordings disagree until the user picks it, then both choose it. */
 const wireJev: AskJev = async (req) => {
   const answers = Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
@@ -282,7 +275,7 @@ describe("the value question on the wire", () => {
     wireButtons(app);
     app.enforceGrants = true;
     clock = 10_000;
-    helper = new Helper({ store, memory, askJev: wireJev, shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "writer", writer: openFields } });
+    helper = new Helper({ store, memory, askJev: headsJev(wireJev), shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "heads" } });
     app.helper = helper;
     app.show();
     void helper.handleReader(mailWindow());

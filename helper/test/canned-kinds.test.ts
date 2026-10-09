@@ -14,7 +14,6 @@ import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { AskAsks, planAsk } from "../src/planner/ask.ts";
 import { headsIntentMaker, scopeRequest } from "../src/planner/intent-heads.ts";
 import { intentSnapshot } from "../src/planner/intent.ts";
-import { jevIntentMaker } from "../src/planner/intent-makers.ts";
 import { sourceNotes, verifyWrites } from "../src/planner/codeplan.ts";
 import { planTask, taskWindow } from "../src/planner/planner.ts";
 import { CannedGap, cannedReply, questionKind } from "../src/engines/decide/canned.ts";
@@ -128,12 +127,12 @@ describe("every request the planner and fill build says what it asks", () => {
       const swallow = (e: unknown): void => {
         if (e instanceof CannedGap || !(e instanceof Error)) throw e;
       };
-      await planAsk("fill out this form", desk.model, { values: () => desk.memory }, desk.about, { askJev: ask, maker: jevIntentMaker(ask, { rand: () => 0 }), writer: null, offerKey: "k", windowId: desk.form.window.windowId, now: T0, rand: () => 0 }).catch(swallow);
+      await planAsk("fill out this form", desk.model, { values: () => desk.memory }, desk.about, { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "k", windowId: desk.form.window.windowId, now: T0, rand: () => 0 }).catch(swallow);
       await taskWindow("fill out the application", desk.model, { askJev: ask, rand: () => 0 }).catch(swallow);
       await planTask("put my email in the form", desk.model, { values: () => desk.memory }, { askJev: ask, offerKey: "k", windowId: desk.form.window.windowId, now: T0, rand: () => 0 }).catch(swallow);
     }
     const purposes = new Set(seen.map((r) => r.purpose));
-    for (const p of ["intent.route", "planner.window", "planner.fields"]) expect(purposes).toContain(p);
+    for (const p of ["ask.heads", "ask.scope", "planner.window", "planner.fields"]) expect(purposes).toContain(p);
     for (const r of seen) for (const id of [...Object.keys(r.questions), ...Object.keys(r.nouls ?? {})]) expect(() => questionKind(r, id)).not.toThrow();
   }, 300_000);
 });

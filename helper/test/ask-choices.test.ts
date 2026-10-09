@@ -9,7 +9,7 @@ import { ScreenModel } from "../src/model.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { AskIntent, IntentSnapshot } from "../src/planner/intent.ts";
 import { AskRefused, planAsk } from "../src/planner/ask.ts";
-import type { IntentMaker } from "../src/planner/intent-makers.ts";
+import type { IntentMaker } from "../src/planner/intent.ts";
 import { SAYS } from "../src/planner/says.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, node, snap, text, value } from "./builders.ts";
@@ -83,7 +83,7 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
 }
 const intent = (x: Partial<AskIntent>): AskIntent => ({ route: "fill", why: "none", scope: "list", section: "none", fields: [], sources: ["any"], whose: "user", literals: [], ...x });
 let makerCalls = 0;
-const maker = (x: Partial<AskIntent> | ((s: IntentSnapshot) => Partial<AskIntent>), name: "writer" | "jev" = "writer"): IntentMaker => ({
+const maker = (x: Partial<AskIntent> | ((s: IntentSnapshot) => Partial<AskIntent>), name: "heads" = "heads"): IntentMaker => ({
   name,
   async make(s) {
     makerCalls++;

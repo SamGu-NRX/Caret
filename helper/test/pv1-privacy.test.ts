@@ -5,11 +5,10 @@ import { ScreenModel } from "../src/model.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { describeField, nearestText } from "../src/fill/descriptor.ts";
 import { intentSnapshot } from "../src/planner/intent.ts";
-import { intentInput, jevIntentMaker } from "../src/planner/intent-makers.ts";
 import { valueList } from "../src/planner/codeplan.ts";
 import { buildInventory } from "../src/goals/inventory.ts";
 import { macClock } from "../src/offers/event-time.ts";
-import { headsRequest, scopeRequest } from "../src/planner/intent-heads.ts";
+import { headsIntentMaker, headsRequest, scopeRequest } from "../src/planner/intent-heads.ts";
 import { instructionForModel } from "../src/fill/redact.ts";
 import { localTargets } from "../src/planner/targets.ts";
 import { planAsk } from "../src/planner/ask.ts";
@@ -39,7 +38,7 @@ describe("PV1 outbound redaction", () => {
   ])("does not disclose a removed instruction value: %s", (instruction) => {
     const model = modelOf([field("ref", "", { label: "Reference" })]);
     const snapshot = intentSnapshot(instruction, model, model.windows.get("form")!, []);
-    const input = intentInput(snapshot);
+    const input = headsRequest(snapshot);
     const head = headsRequest(snapshot);
     const literal = instruction.includes("violet and orchard") ? "violet and orchard" : "violet-orchard-seven";
     expect(JSON.stringify(input)).not.toContain(literal);
@@ -98,9 +97,9 @@ describe("PV1 outbound redaction", () => {
   it("does not read a marked sender into the intent writer's input", () => {
     const model = modelOf([field("email", "", { label: "Email" })]);
     model.apply(snap([node("from", "AXStaticText", { value: "From: Robin Vale; password: violet-orchard-seven" })], { at: 900, windowId: "mail", title: "A meeting", app: { pid: 6160, bundleId: "dev.caret.mail", name: "Mail" } }));
-    const input = intentInput(intentSnapshot("Fill my email", model, model.windows.get("form")!, []));
+    const input = headsRequest(intentSnapshot("Fill my email", model, model.windows.get("form")!, []));
     expect(JSON.stringify(input)).not.toContain("violet-orchard-seven");
-    expect(input.windows.find((w) => w.ref === "w1")?.from).toBeNull();
+    expect(JSON.stringify(input)).not.toContain("Robin Vale");
   });
 
   it("represents a marked section safely in descriptors and scope requests", () => {
@@ -137,7 +136,7 @@ describe("PV1 outbound redaction", () => {
       expect(JSON.stringify([req.state, Object.values(req.questions).map((q) => q.instructions)])).not.toContain("Social Security number");
       expect(() => assertNoExcludedValue(req)).not.toThrow();
     }
-    expect(JSON.stringify(intentInput(s))).not.toContain("Social Security number");
+    expect(JSON.stringify(headsRequest(s).state)).not.toContain("Social Security number");
   });
 
   it("keeps required forbidden fields in local completion checks, not writer snapshots", () => {
@@ -160,15 +159,15 @@ describe("PV1 outbound redaction", () => {
     const instruction = 'put "Robin Vale" in Password and put "R-42" in Reference';
     const w = model.windows.get("form")!;
     const snapshot = intentSnapshot(instruction, model, w, []);
-    expect(JSON.stringify(intentInput(snapshot))).not.toContain("Robin Vale");
+    expect(JSON.stringify(headsRequest(snapshot))).not.toContain("Robin Vale");
     expect(JSON.stringify(headsRequest(snapshot))).not.toContain("Robin Vale");
     let calls = 0;
-    await jevIntentMaker(async (req) => {
+    await headsIntentMaker(async (req) => {
       calls++;
       expect(JSON.stringify(req)).not.toContain("Robin Vale");
-      return { model: "fixture", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "refuse", confidence: 1 }])), inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 };
+      return { model: "fixture", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: req.purpose === "ask.scope" ? (id === "section" ? "fields" : "not") : id === "route" ? "refuse" : Object.keys(req.questions[id]!.criteria)[0]!, confidence: 1 }])), inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 };
     }).make(snapshot);
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
     const values = valueList(instruction, model, w, [], new Disclosure(model), 1000);
     expect(values.find((v) => v.text === "Robin Vale")?.display).toBe("[a field Caret leaves to you]");
     expect(values.find((v) => v.text === "R-42")?.display).toContain("R-42");
@@ -219,7 +218,7 @@ describe("PV1 outbound redaction", () => {
   it("the writer refuses marked input before reading its key or sending", async () => {
     let keyReads = 0;
     const writer = makeWriterPort(gatewayRoute("openai/gpt-oss-120b"), { key: () => { keyReads++; throw new Error("must not read a key"); } });
-    await expect(writer.write({ kind: "intent", disclosureId: "fixture", input: { instruction: "password: violet-orchard-seven" as never }, disclosure: new Disclosure(registryOf([])), maxOutputTokens: 50, signal: new AbortController().signal })).rejects.toBeInstanceOf(UnmintedText);
+    await expect(writer.write({ kind: "plan", disclosureId: "fixture", input: { instruction: "password: violet-orchard-seven" as never }, disclosure: new Disclosure(registryOf([])), maxOutputTokens: 50, signal: new AbortController().signal })).rejects.toBeInstanceOf(UnmintedText);
     expect(keyReads).toBe(0);
   });
 });

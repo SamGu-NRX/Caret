@@ -22,9 +22,9 @@ import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } 
 import { assertNoExcludedValue, SecretInRequest } from "../src/privacy.ts";
 import { Disclosure, OutOfShape, UnmintedText, type ModelText, registryOf } from "../src/privacy/disclosure.ts";
 import { redactWindow } from "../src/fill/redact.ts";
-import { headsRequest, scopeRequest } from "../src/planner/intent-heads.ts";
+import { answeringScope } from "./builders.ts";
+import { headsIntentMaker, headsRequest, scopeRequest } from "../src/planner/intent-heads.ts";
 import { intentSnapshot } from "../src/planner/intent.ts";
-import { jevIntentMaker, writerIntentMaker } from "../src/planner/intent-makers.ts";
 import { planWithCode } from "../src/planner/codeplan.ts";
 import { planTask } from "../src/planner/planner.ts";
 import { PlannerError } from "../src/planner/validate.ts";
@@ -650,7 +650,7 @@ describe("G2 round 4: the redacted view, generated", () => {
       await proposeFill(model, ask, WIN, keyOf(name), 2000);
       const snap = intentSnapshot("Fill all fields", model, model.windows.get(WIN)!, []);
       requests.push(headsRequest(snap), scopeRequest(snap, 0), scopeRequest(snap, 1));
-      await jevIntentMaker(ask).make(snap);
+      await headsIntentMaker(answeringScope(ask)).make(snap);
       const writes: WriterRequest[] = [];
       const writer: WriterPort = {
         route: gatewayRoute("openai/gpt-oss-120b"),
@@ -659,12 +659,11 @@ describe("G2 round 4: the redacted view, generated", () => {
           return { model: "fixture", provider: "fixture", output: { program: null, reply: "", json: { route: "refuse", why: "nothingToFill", scope: "none", section: "none", fields: [], sources: [], whose: "user", literals: [] } }, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
         },
       };
-      await writerIntentMaker(writer, () => "fixture").make(snap);
       // These writers stop after their request, before any program runs. A secret guard failure must not be hidden
       // as an expected planner failure: all three requests must reach the stand-in.
       await expect(planWithCode("Fill all fields", model, { values: () => [] }, { writer, askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 })).rejects.toBeInstanceOf(PlannerError);
       await expect(planGoal(model, { goalId: "fixture", instruction: "Fill all fields", writer, askJev: ask, windows: [WIN], memory: [], calendar: null, clock: macClock(new Date(2000)), now: 2000, readerSession: 0 })).rejects.toBeInstanceOf(GoalError);
-      expect(writes, `case ${i}: all writer builders reached`).toHaveLength(3);
+      expect(writes, `case ${i}: all writer builders reached`).toHaveLength(2);
       try {
         await planTask("Fill all fields", model, { values: () => [] }, { askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 });
       } catch (e) {

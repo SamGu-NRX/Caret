@@ -32,7 +32,7 @@ function viewName(w: WindowState, n: Node): string {
   const kept = v.nodes.get(n.key);
   return kept === undefined ? UNNAMED_FIELD : fieldName(v, kept);
 }
-import { saysNoValue, SECTION_UNKNOWN_FIELD, UNSURE_FIELD } from "../planner/says.ts";
+import { QUIET_FIELD, saysNoValue, SECTION_UNKNOWN_FIELD, UNSURE_FIELD } from "../planner/says.ts";
 import { handoffWhy } from "../planner/validate.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import type { DraftPlan } from "../codemode/types.ts";
@@ -121,6 +121,8 @@ export interface PlanPageOptions {
    * is the user's, said before Tab (planner/ask.ts AskGoal.page.unsure). Never in `scope`.
    */
   unsure?: readonly string[];
+  /** Question memory: fields left to the user because they put the question that offered them away twice (says.ts QUIET_FIELD). */
+  quiet?: readonly string[];
   /** SCP1: the empty fields Jev chose that the Ask leaves to the user because Caret couldn't tell which section each is in. Never in `scope`. */
   sectionless?: readonly string[];
   /** What the user told Caret (fill/about.ts), as a Fill all offers it. */
@@ -310,6 +312,11 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   for (const k of o.sectionless ?? []) {
     const n = w.nodes.get(k);
     if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, SECTION_UNKNOWN_FIELD);
+  }
+  // Question memory: the fields a question the user put away twice would have offered, left to them as before.
+  for (const k of o.quiet ?? []) {
+    const n = w.nodes.get(k);
+    if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, QUIET_FIELD);
   }
   // Fields of a kind Caret never types that the scope takes are named before Tab.
   const scopeKeys = o.scope === null || o.kind === "all" ? null : new Set(o.kind === "list" ? o.scope.fields : []);

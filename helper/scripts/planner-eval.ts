@@ -90,9 +90,9 @@ const { values: a } = parseArgs({
 if (a.bin === undefined || a.out === undefined) throw new Error("--bin and --out are required");
 if (a.jev !== "fake" && a.jev !== "live") throw new Error("--jev is fake or live");
 if (a.ask !== undefined && a.jev !== "live") throw new Error("--ask needs --jev live: the fake Jev answers plan questions only");
-function askConfig(maker: string): { maker: "jev" } | { maker: "writer"; writer: WriterPort } {
-  if (maker === "jev") return { maker: "jev" };
-  return { maker: "writer", writer: spacedWriter(devWriterRoute(maker)) };
+function askConfig(maker: string): { maker: "heads" } {
+  if (maker !== "heads") throw new Error("--maker is heads");
+  return { maker: "heads" };
 }
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });

@@ -9,10 +9,8 @@ import { checkIntent, intentSnapshot, personSpans, type AskIntent, type IntentSn
 import { AskAsks, AskRefused, planAsk, type AskDraft } from "../src/planner/ask.ts";
 import { asksForWholeForm } from "../src/planner/scope-words.ts";
 import { BY_WORD, REVIEWED } from "./b28-reviewed.ts";
-import type { IntentMaker } from "../src/planner/intent-makers.ts";
-import { intentInput, jevIntentMaker, writerIntentMaker } from "../src/planner/intent-makers.ts";
+import type { IntentMaker } from "../src/planner/intent.ts";
 import { HEAD_FLOOR, headsIntentMaker, headsRequest, readHeads, scopeId, tieLiterals } from "../src/planner/intent-heads.ts";
-import { intentResponseFormat, IntentInputSchema } from "../src/writer/intent-prompt.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
 import { proposed } from "../src/planner/proposal.ts";
@@ -99,17 +97,7 @@ describe("intentSnapshot", () => {
     expect(s.memory).toEqual(["Name"]);
   });
 
-  it("gives the writer a strict schema that enumerates the snapshot's refs", () => {
-    const s = snapOf("use Gary's info for the landlord part");
-    const input = IntentInputSchema.parse(intentInput(s));
-    const f = intentResponseFormat(input) as { json_schema: { strict: boolean; schema: { properties: Record<string, { enum?: string[]; items?: { enum?: string[] } }> } } };
-    expect(f.json_schema.strict).toBe(true);
-    expect(f.json_schema.schema.properties.fields?.items?.enum).toEqual(s.fields.map((x) => x.ref));
-    expect(f.json_schema.schema.properties.whose?.enum).toEqual(["user", "unnamed", "p1"]);
-    expect(f.json_schema.schema.properties.sources?.items?.enum).toEqual(["any", "memory", "instruction", "w1", "w2"]);
-    // Field names and titles go to the writer; no value does.
-    expect(JSON.stringify(input)).not.toContain("Gary Pruitt");
-  });
+
 });
 
 describe("checkIntent", () => {
@@ -252,61 +240,6 @@ describe("a named person's several values", () => {
   });
 });
 
-describe("the intent makers", () => {
-  const fakeWriter = (out: () => unknown) => ({
-    route: { provider: "groq", baseUrl: "", keyName: "GROQ_API_KEY", model: "fake", maxTokensParam: "max_tokens", extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "" } } as const,
-    write: async () => {
-      const json = out();
-      return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 10, outputTokens: 5, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };
-    },
-  });
-  it("takes the writer's JSON as the intent, and fails loudly on anything else", async () => {
-    const s = snapOf("my email please");
-    const good = { route: "fill", why: "none", scope: "list", section: "none", fields: ["f2"], sources: ["any"], whose: "user", literals: [] };
-    expect((await writerIntentMaker(fakeWriter(() => good), () => "k").make(s)).intent).toEqual(good);
-    const bad = await writerIntentMaker(fakeWriter(() => ({ route: "fill" })), () => "k").make(s).catch((e: unknown) => e);
-    expect((bad as PlannerError).code).toBe("schema");
-    const down = await writerIntentMaker({ ...fakeWriter(() => good), write: async () => { throw new Error("groq HTTP 429"); } }, () => "k").make(s).catch((e: unknown) => e);
-    expect((down as PlannerError).code).toBe("unavailable");
-  });
-
-  /** Jev answering each stage-one question by id, the same in both asks unless `second` says otherwise; nouls by id. */
-  const jevAnswers = (first: Record<string, string>, nouls: Record<string, number> = {}, second: Record<string, string> = {}): AskJev => {
-    let n = 0;
-    return async (req) => {
-      const which = n++ % 2 === 1 ? { ...first, ...second } : first;
-      const answers = Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: which[id] ?? Object.keys(req.questions[id]?.criteria ?? {})[0] ?? "none", confidence: 0.9 }]));
-      return { model: "jev-test", answers, ...(req.nouls === undefined ? {} : { nouls: Object.fromEntries(Object.keys(req.nouls).map((id) => [id, nouls[id] ?? 0])) }), inputTokens: 100, latencyMs: 1, costUsd: 0 };
-    };
-  };
-  const make = (ask: AskJev, instruction: string) => jevIntentMaker(ask, { rand: () => 0 }).make(snapOf(instruction));
-
-  it("Jev: a list is the fields both Noul asks confirm at the floor, from the agreed source", async () => {
-    const s = snapOf("use Gary for the landlord part from my note");
-    const ref = (name: string) => refOf(s, name);
-    const r = await make(jevAnswers({ route: "fill", scope: "list", source: "w1", whose: "p1" }, { [`n_${ref("Landlord name")}`]: 0.97, [`n_${ref("Landlord phone")}`]: 0.96, [`n_${ref("Email")}`]: 0.6 }), "use Gary for the landlord part from my note");
-    expect(r.intent).toMatchObject({ route: "fill", scope: "list", fields: [ref("Landlord name"), ref("Landlord phone")], sources: ["w1"], whose: "p1" });
-    expect(r.use.calls).toBe(4);
-  });
-
-  it("Jev: asks rather than widen when the route, the source or the person is unsettled, and refuses what both asks refuse", async () => {
-    expect((await make(jevAnswers({ route: "fill" }, {}, { route: "plan" }), "fill this out")).intent).toMatchObject({ route: "ask" });
-    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "w1" }, {}, { source: "w2" }), "fill this out from my note")).intent).toMatchObject({ route: "ask", why: "whichSource" });
-    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "any", whose: "p1" }, {}, { whose: "user" }), "use Gary for this")).intent).toMatchObject({ route: "ask", why: "whichPerson" });
-    expect((await make(jevAnswers({ route: "refuse", why: "payment" }), "pay for it")).intent).toMatchObject({ route: "refuse", why: "payment" });
-    expect((await make(jevAnswers({ route: "fill", scope: "list", source: "any" }), "my email please")).intent).toMatchObject({ route: "ask", why: "whichFields" });
-  });
-
-  it("Jev: keeps what both asks settled beside the parts it leaves open, in the order they are asked (B29)", async () => {
-    // Route unsettled: the fields are open; the agreed source and person stand.
-    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "w1", whose: "user" }, {}, { route: "plan" }), "fill this out from my note")).intent).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"], sources: ["w1"], whose: "user" });
-    // Source and person both unsettled: both open, the source first.
-    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "w1", whose: "p1" }, {}, { source: "w2", whose: "user" }), "use Gary for this")).intent).toMatchObject({ route: "ask", why: "whichSource", open: ["source", "person"], scope: "all" });
-    // Someone else's details, unnamed: the person is open, no longer a refusal.
-    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "any", whose: "unnamed" }), "add his number")).intent).toMatchObject({ route: "ask", why: "otherPersonUnnamed", open: ["person"] });
-  });
-});
-
 describe("the heads intent maker (P1, A3)", () => {
   /** The heads at `conf` (0.9 unless given), each by id, else the first option; the scope ask by `asks`, both wordings at 0.99. */
   const answer = (s: IntentSnapshot, heads: Record<string, string>, conf: Record<string, number> = {}): JevResult => {
@@ -411,9 +344,9 @@ describe("the heads intent maker (P1, A3)", () => {
 });
 
 const maker = (x: Partial<AskIntent> | ((s: IntentSnapshot) => Partial<AskIntent>)): IntentMaker => ({
-  name: "writer",
+  name: "heads",
   async make(s) {
-    return { intent: intent(typeof x === "function" ? x(s) : x), use: { maker: "writer", model: "test", calls: 1, inputTokens: 1000, outputTokens: 50, costUsd: 0, latencyMs: 1 } };
+    return { intent: intent(typeof x === "function" ? x(s) : x), use: { maker: "heads", model: "test", calls: 1, inputTokens: 1000, outputTokens: 50, costUsd: 0, latencyMs: 1 } };
   },
 });
 const memory = { values: () => MEMORY };
@@ -552,7 +485,7 @@ describe("what an Ask says when it refuses or asks (B26 lead decision 3)", () =>
   });
 
   it("turns a model's failure into a plain sentence and keeps the provider's text in the detail", async () => {
-    const failing: IntentMaker = { name: "writer", make: async () => { throw new PlannerError("unavailable", "the intent writer failed: groq HTTP 429 tokens per day"); } };
+    const failing: IntentMaker = { name: "heads", make: async () => { throw new PlannerError("unavailable", "the intent writer failed: groq HTTP 429 tokens per day"); } };
     const e = await planAsk("fill this out", desk(), memory, about, { askJev: jevBy(() => null).ask, maker: failing, writer: null, offerKey: "s4", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect((e as AskRefused).message).toBe(SAYS.unreachable);
     expect((e as AskRefused).detail).toContain("429");

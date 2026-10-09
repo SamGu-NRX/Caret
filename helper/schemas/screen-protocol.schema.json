@@ -8513,7 +8513,8 @@
                 "fields",
                 "source",
                 "person",
-                "value"
+                "value",
+                "task"
               ]
             },
             "text": {
@@ -8691,6 +8692,36 @@
                     "required": [
                       "kind",
                       "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "task"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "label": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 80
+                      },
+                      "says": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "label",
+                      "says"
                     ],
                     "additionalProperties": false
                   }
@@ -8910,6 +8941,16 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 600
+                      },
+                      "tier": {
+                        "type": "string",
+                        "enum": [
+                          "read",
+                          "navigate",
+                          "write",
+                          "attach",
+                          "yours"
+                        ]
                       },
                       "file": {
                         "oneOf": [

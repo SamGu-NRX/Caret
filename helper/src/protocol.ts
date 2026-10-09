@@ -2299,6 +2299,15 @@ export const ASK_CHOICES_CAPABILITY = "askChoices";
  * values left to the user, as before, so a host that cannot draw value rows never receives one.
  */
 export const ASK_VALUES_CAPABILITY = "askValues";
+/**
+ * The hello capability for task questions (design CU-COUNSEL-20261009, "Floors become questions"): a consumer that
+ * declares it beside ASK_CHOICES_CAPABILITY may get an askQuestion whose part is `task`, when Jev's route question
+ * stopped between filling and a larger task and both can run. Any other consumer gets the Ask as before, read as a fill.
+ */
+export const ASK_TASK_CAPABILITY = "askTask";
+/** A task option's label and sentence, at most (AskOption kind task). */
+export const MAX_TASK_LABEL = 80;
+export const MAX_TASK_SAYS = 200;
 
 /**
  * One choice of an askQuestion, typed by what it fixes. `id` is the helper's, valid for that question only; the host
@@ -2306,7 +2315,9 @@ export const ASK_VALUES_CAPABILITY = "askValues";
  * heading). `window`: an open window to copy from, as the user knows it. `memory`: what the user told Caret about
  * themselves. `you`: the user's own details. `person`: someone named in the instruction or on screen. `value`: a value
  * for the question's field, exactly as Caret would put it in (`value`), and where Caret read it, in the user's words
- * (`source`: "Your saved Email", or a window's title and the line). `blank`: leave the field blank.
+ * (`source`: "Your saved Email", or a window's title and the line). `blank`: leave the field blank. `task`: one reading
+ * of what the user asked Caret to do, as a short `label` ("Fill 3 fields") and one sentence of what Caret then does and
+ * leaves to the user (`says`).
  */
 export const AskOption = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("field"), id: z.string().min(1), label: z.string().min(1), section: z.string().nullable() }),
@@ -2316,14 +2327,16 @@ export const AskOption = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("person"), id: z.string().min(1), name: z.string().min(1) }),
   z.object({ kind: z.literal("value"), id: z.string().min(1), value: z.string().min(1), source: z.string().min(1) }),
   z.object({ kind: z.literal("blank"), id: z.string().min(1) }),
+  z.object({ kind: z.literal("task"), id: z.string().min(1), label: z.string().min(1).max(MAX_TASK_LABEL), says: z.string().min(1).max(MAX_TASK_SAYS) }),
 ]);
 export type AskOption = z.infer<typeof AskOption>;
 
 /**
  * Helper to the asker, in place of a planProposal (B29): the Ask needs one part settled, and code listed that part's
  * real choices from the screen. `part` says which: `fields` (pick one or more), `source` (one window, or memory), `person` (whose
- * details) or `value` (which value goes in one field: its values, then exactly one `blank`; only to a consumer that
- * declared ASK_VALUES_CAPABILITY). `text` is the question as the user reads it. Answered with askAnswer naming
+ * details), `value` (which value goes in one field: its values, then exactly one `blank`; only to a consumer that
+ * declared ASK_VALUES_CAPABILITY) or `task` (which reading of the request: one `task` option each, at least two; only to a
+ * consumer that declared ASK_TASK_CAPABILITY). `text` is the question as the user reads it. Answered with askAnswer naming
  * `questionId` and the picks, once, before `expires`; the answer's reply is a planProposal or another askQuestion.
  * `window` is the form. `filling`, on a fields question, labels the fields Caret fills whatever is picked; with it, an
  * answer with no picks fills those alone, so the user can decline the offered fields without dismissing the Ask. On a
@@ -2336,7 +2349,7 @@ export const AskQuestion = z
     requestId: z.string(),
     at: ms,
     questionId: z.string().min(1),
-    part: z.enum(["fields", "source", "person", "value"]),
+    part: z.enum(["fields", "source", "person", "value", "task"]),
     text: z.string().min(1),
     pick: z.enum(["one", "many"]),
     options: z.array(AskOption).min(1).max(MAX_ASK_OPTIONS),
@@ -2345,7 +2358,7 @@ export const AskQuestion = z
     expires: ms,
   })
   .superRefine((m, ctx) => {
-    const kinds = { fields: ["field"], source: ["window", "memory"], person: ["you", "person"], value: ["value", "blank"] }[m.part];
+    const kinds = { fields: ["field"], source: ["window", "memory"], person: ["you", "person"], value: ["value", "blank"], task: ["task"] }[m.part];
     const pick = m.part === "fields" ? "many" : "one";
     const problem = m.pick !== pick
       ? `a ${m.part} question picks ${pick}`
@@ -2355,9 +2368,11 @@ export const AskQuestion = z
           ? `a ${m.part} question lists only ${kinds.join(" or ")} options`
           : m.part === "value" && (m.options.filter((o) => o.kind === "blank").length !== 1 || m.options.at(-1)?.kind !== "blank" || m.options.length < 2)
             ? "a value question lists its values, then one blank"
-            : new Set(m.options.map((o) => o.id)).size !== m.options.length
-              ? "option ids repeat"
-              : null;
+            : m.part === "task" && m.options.length < 2
+              ? "a task question lists at least two readings"
+              : new Set(m.options.map((o) => o.id)).size !== m.options.length
+                ? "option ids repeat"
+                : null;
     if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["options"] });
   });
 export type AskQuestion = z.infer<typeof AskQuestion>;
@@ -2487,6 +2502,13 @@ export const GoalStepView = z
     kind: z.enum(["write", "calendar", "press", "handoff", "attach"]),
     says: z.string().min(1).max(900),
     drafted: z.string().min(1).max(600).optional(),
+    /**
+     * The trust tier the step is in (design CU-COUNSEL-20261009, "Tiers"), so a host draws each row by what it risks:
+     * `navigate` a press Caret makes from the capability table; `write` a value written, or a field handed to the user to
+     * set; `attach` a file; `yours` a press handed to the user (send, submit, delete, pay), which Caret never makes and
+     * a host draws last and set apart. `read` is reserved for steps that only read. Absent from a helper before it.
+     */
+    tier: z.enum(["read", "navigate", "write", "attach", "yours"]).optional(),
     /**
      * P3: on an attach step only, the file its row offers. `choose`: none yet; the host's row says "Choose a file" and
      * opens a file chooser. `saved`: a file the user saved for this question before (fileSave), which a Jev choice matched

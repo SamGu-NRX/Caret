@@ -26,7 +26,7 @@ import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { runCodePlan } from "../codemode/sandbox.ts";
 import { jevChooser } from "../codemode/jev-chooser.ts";
 import type { PlanningSnapshot } from "../codemode/types.ts";
-import type { WriterPort } from "../writer/port.ts";
+import { WriterUnavailable, type WriterPort } from "../writer/port.ts";
 import { WRITER_MAX_OUTPUT_TOKENS } from "../writer/config.ts";
 import { instructionValues } from "./spans.ts";
 import { allRefused, asksToFillForm, byRelevance, mintFieldName, mintWrites, namesShortLabel, outrankedFields, PLAN_CUTOFF, relevance, writableFields, type Field, type PlanDraft, type PlannerMemory } from "./planner.ts";
@@ -35,7 +35,7 @@ import { PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 import type { MemoryValue } from "./trace.ts";
 import type { Snippet } from "../privacy.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
-import { jevFailedError } from "./says.ts";
+import { jevFailedError, SaidError, SAYS } from "./says.ts";
 
 export interface CodePlanOptions {
   writer: WriterPort;
@@ -232,6 +232,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   try {
     written = await o.writer.write(ledger.seal({ kind: "plan", disclosureId: o.offerKey, disclosed: writerDisclosure, input: { goal: d.slice(d.instruction(instruction), 500), snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) }));
   } catch (e) {
+    if (e instanceof WriterUnavailable) throw new SaidError("unavailable", SAYS.writerBudget, e.message);
     throw new PlannerError("unavailable", `the plan writer failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
   }
   const use: WriterUse = { model: written.model, latencyMs: written.latencyMs, costUsd: written.costUsd, inputTokens: written.inputTokens, outputTokens: written.outputTokens, program: written.output.program, disclosed: writerDisclosure };

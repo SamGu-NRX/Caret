@@ -7,7 +7,7 @@ import { fieldFingerprint } from "../src/fill/ask-scope.ts";
 import { planAsk } from "../src/planner/ask.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import type { AskIntent, IntentSnapshot } from "../src/planner/intent.ts";
-import type { IntentMaker } from "../src/planner/intent-makers.ts";
+import type { IntentMaker } from "../src/planner/intent.ts";
 import { field, node, snap, text } from "./builders.ts";
 
 const P = "com.google.Chrome/standard";
@@ -38,9 +38,9 @@ const none: AskJev = async (req) => ({
   costUsd: 0,
 });
 const maker = (pick: (s: IntentSnapshot) => Partial<AskIntent>): IntentMaker => ({
-  name: "writer",
+  name: "heads",
   async make(s) {
-    return { intent: { route: "fill", why: "none", scope: "list", section: "none", fields: [], sources: ["any"], whose: "user", literals: [], ...pick(s) }, use: { maker: "writer", model: "test", calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0, latencyMs: 1 } };
+    return { intent: { route: "fill", why: "none", scope: "list", section: "none", fields: [], sources: ["any"], whose: "user", literals: [], ...pick(s) }, use: { maker: "heads", model: "test", calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0, latencyMs: 1 } };
   },
 });
 

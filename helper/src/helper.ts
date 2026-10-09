@@ -110,11 +110,11 @@ import type { AttachOffer, GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts"
 import type { FillScope } from "./fill/fill.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
-import { fillSays, jevFailureSays, SaidError, SAYS, saysFor } from "./planner/says.ts";
+import { fillSays, jevFailureSays, SaidError, SAYS, saysFor, saysLeftAsBefore } from "./planner/says.ts";
 import { planAttach } from "./planner/attach.ts";
 import { isPageWindow, PAGE_WINDOW_KIND } from "./engines/windows.ts";
-import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { headsIntentMaker, settleFields } from "./planner/intent-heads.ts";
+import type { IntentMaker } from "./planner/intent.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
 import type { LocalModelPort } from "./writer/local-port.ts";
@@ -124,7 +124,8 @@ import type { FileConfirm, FileConfirmReply, PageInsert, PageInsertReply, PlanEr
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
-import { answerQuestion, AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
+import { answerQuestion, AskAsks, AskRefused, askedKeyOf, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
+import type { AskedKey } from "./memory/questions.ts";
 import { intentSnapshot } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
 import { ASK_ROUTES, type MintedSay, type RouteCandidate, type TaskEvidence } from "./routing/routes.ts";
@@ -277,10 +278,12 @@ export interface HelperOptions {
    */
   drafter?: LocalModelPort;
   /**
-   * How an Ask's instruction becomes an intent (B25, planner/ask.ts): Jev's staged questions, or the writer's
-   * strict JSON through this port. Absent or null: Ask runs the planner, then the code-mode writer, as before B25.
+   * How an Ask's instruction becomes an intent (planner/ask.ts): Jev's heads request (intent-heads.ts). `scripted` is for
+   * tests only: an intent the test states, in place of Jev's, so a test of what follows an intent (a page goal's kind, a
+   * carry to the next page) does not depend on how Jev reads the instruction. Absent or null: Ask runs the planner, then
+   * the code-mode writer, as before B25.
    */
-  ask?: { maker: "jev" | "heads" } | { maker: "writer"; writer: WriterPort } | null;
+  ask?: { maker: "heads" } | { maker: "scripted"; make: IntentMaker } | null;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Replaces the level's offers per hour (OfferGate), for fixture evaluations that make dozens of offers in minutes. Never set in normal use. */
@@ -399,7 +402,7 @@ export class Helper {
   /** The configured plan writer, wrapped so each request is recorded (recordRead). */
   private readonly writer: WriterPort | null;
   /** How an Ask makes its intent; the writer's port is wrapped like the plan writer's. Null: the planner as before B25. */
-  private readonly askConfig: { maker: "jev" | "heads" } | { maker: "writer"; writer: WriterPort } | null;
+  private readonly askConfig: NonNullable<HelperOptions["ask"]> | null;
   /** What the last "Read and prepare" use's request declared, so the two asks of one question, which declare the same text, count once. */
   private lastRead: { declared: string; at: number } | null = null;
   /** Offers already recorded as a use of "Show in Caret's UI", by key; bounded. */
@@ -504,7 +507,10 @@ export class Helper {
    * Ask questions waiting for the user's pick (B29), by question id: the connection that may answer, when the question
    * lapses, and what continues the Ask. Each is answered once; a reader restart drops them all, as it drops plan offers.
    */
-  private readonly askQuestions = new Map<string, { session: string | undefined; expires: number; draft: AskQuestionDraft }>();
+  /** Open questions, by id; `asked` is what question memory knows each by (memory/questions.ts). */
+  /** Question memory: the fields a quiet question would have offered, by the offer its Ask continues as. */
+  private readonly quietLeft = new Map<string, { says: string; keys: readonly string[] }>();
+  private readonly askQuestions = new Map<string, { session: string | undefined; expires: number; draft: AskQuestionDraft; asked: AskedKey }>();
   private askSeq = 0;
   /** A reader is on the socket: set by its hello, cleared when it disconnects. An in-process reader link is always there. */
   private readerConnected: boolean;
@@ -588,7 +594,7 @@ export class Helper {
     const writer = opts.writer ?? null;
     this.writer = writer === null ? null : recorded(writer, "the plan writer");
     const askOpt = opts.ask ?? null;
-    this.askConfig = askOpt === null || askOpt.maker !== "writer" ? askOpt : { maker: "writer", writer: recorded(askOpt.writer, "the intent writer") };
+    this.askConfig = askOpt;
     this.mode = opts.shadow ? "shadow" : "live";
     const routed = opts.routing != null && this.ask !== null;
     // A producer's candidate arrived outside the user's own field (a held pattern offer, a resolved watch, a heard line):
@@ -1513,7 +1519,7 @@ export class Helper {
    * A page goal (P2): the page planner over the Ask's scope on that page, fill's picks gated by fill. Throws GoalError
    * when nothing can be offered; with no Jev, no page engine document, or no page, it refuses.
    */
-  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet } = {}): Promise<GoalPlan> {
+  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[]; quiet?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet } = {}): Promise<GoalPlan> {
     const ask = this.ask;
     const pageDocument = this.opts.pageDocument;
     if (ask === null) throw new GoalError("unchecked", "Jev is off, so Caret can't choose this page's values");
@@ -1574,7 +1580,7 @@ export class Helper {
     queueMicrotask(() => this.goals.forgetSource(goalId, windows));
   }
 
-  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet }): Promise<GoalPlan> {
+  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null; unsure?: readonly string[]; sectionless?: readonly string[]; quiet?: readonly string[] }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; scopes?: ScopeSet }): Promise<GoalPlan> {
     return planPage(this.model, {
       goalId,
       ...(sources === this.model ? {} : { sources }),
@@ -1585,6 +1591,7 @@ export class Helper {
       section: page.section,
       ...(page.unsure === undefined ? {} : { unsure: page.unsure }),
       ...(page.sectionless === undefined ? {} : { sectionless: page.sectionless }),
+      ...(page.quiet === undefined ? {} : { quiet: page.quiet }),
       about: this.aboutValues(),
       askJev: ask,
       now: this.now(),
@@ -1671,9 +1678,16 @@ export class Helper {
    */
   async handlePlanRequest(m: PlanRequest): Promise<PlanProposal>;
   async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean): Promise<PlanProposal | AskQuestion>;
-  async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean, canGoal: boolean, canAskValues?: boolean): Promise<PlanProposal | AskQuestion | GoalProgress>;
-  async handlePlanRequest(m: PlanRequest, from?: string, canAsk = false, canGoal = false, canAskValues = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
+  async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean, canGoal: boolean, canAskValues?: boolean, canAskTask?: boolean): Promise<PlanProposal | AskQuestion | GoalProgress>;
+  async handlePlanRequest(m: PlanRequest, from?: string, canAsk = false, canGoal = false, canAskValues = false, canAskTask = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     this.opts.store.count("plan.request", 1);
+    // A new request from the connection that was asked a question puts that question away unanswered: the desk shows
+    // one Ask at a time. Question memory counts it as dismissed.
+    for (const [k, q] of [...this.askQuestions]) {
+      if (q.session !== from) continue;
+      this.askQuestions.delete(k);
+      this.memory.questions.dismissed(q.asked, this.now());
+    }
     let windowId: string | null = null;
     try {
       windowId = requestedWindow(this.model, m);
@@ -1696,7 +1710,7 @@ export class Helper {
       this.opts.store.count("plan.pageWindow", 1);
       windowId = page;
     }
-    return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk, canGoal, canAskValues);
+    return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk, canGoal, canAskValues, canAskTask);
   }
 
   /**
@@ -1704,14 +1718,15 @@ export class Helper {
    * yet answered or lapsed, and every pick one of its options (one for a single-choice question). The picks fix that
    * part, and the same Ask goes on from there: its reply is a proposal, a refusal, or the next question.
    */
-  async handleAskAnswer(m: AskAnswer, from?: string, canGoal = false, canAskValues = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
+  async handleAskAnswer(m: AskAnswer, from?: string, canGoal = false, canAskValues = false, canAskTask = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     this.opts.store.count("plan.askAnswer", 1);
     const q = this.askQuestions.get(m.questionId);
     if (q === undefined || q.session !== from || q.expires <= this.now()) return this.planFailed(m.requestId, "questionGone", `no open question ${m.questionId} for this connection`);
     this.askQuestions.delete(m.questionId);
+    this.memory.questions.answered(q.asked, this.now());
     const resume = answerQuestion(q.draft, m.picks);
     if (typeof resume === "string") return this.planFailed(m.requestId, "schema", `question ${m.questionId}: ${resume}`);
-    return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true, canGoal, canAskValues);
+    return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true, canGoal, canAskValues, canAskTask);
   }
 
   private planFailed(requestId: string, code: Parameters<typeof planError>[1], detail: string, says: string = saysFor(code)): PlanProposal {
@@ -1723,18 +1738,18 @@ export class Helper {
    * Plans an Ask or a planner task and offers it; an Ask that asks a question returns it to a consumer that can answer,
    * and an Ask whose route is plan, asked by a host that runs goal plans (`canGoal`), is offered as a goal (B30).
    */
-  private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal = false, canAskValues = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
+  private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal = false, canAskValues = false, canAskTask = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     let offerKey = `plan-${++this.planSeq}-${requestId}`;
     while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${requestId}`;
     try {
-      return await this.planAndOffer(offerKey, requestId, instruction, windowId, resume, from, canAsk, canGoal, canAskValues);
+      return await this.planAndOffer(offerKey, requestId, instruction, windowId, resume, from, canAsk, canGoal, canAskValues, canAskTask);
     } finally {
       // I6: only a recorded offer keeps what its Ask read of the tab the user left.
       if (!this.planOffers.has(offerKey)) this.tabSource?.release(offerKey);
     }
   }
 
-  private async planAndOffer(offerKey: string, requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal: boolean, canAskValues: boolean): Promise<PlanProposal | AskQuestion | GoalProgress> {
+  private async planAndOffer(offerKey: string, requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal: boolean, canAskValues: boolean, canAskTask = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     const store = this.opts.store;
     // Every refusal carries the user's sentence (H5): a SaidError's own, or the one for its code.
     const fail = (code: Parameters<typeof planError>[1], detail: string, says?: string): PlanProposal => this.planFailed(requestId, code, detail, says);
@@ -1774,8 +1789,8 @@ export class Helper {
     } else if (askConfig !== null) {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
-        const maker = askConfig.maker === "writer" ? writerIntentMaker(askConfig.writer, () => offerKey) : askConfig.maker === "heads" ? headsIntentMaker(ask) : jevIntentMaker(ask);
-        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, values: canAskValues, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...(requestSettled === undefined ? {} : { settled: requestSettled }), ...(this.opts.pageDocument === undefined ? {} : { documentOf: this.opts.pageDocument }), ...this.opts.plannerHooks });
+        const maker = askConfig.maker === "scripted" ? askConfig.make : headsIntentMaker(ask);
+        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, values: canAskValues, tasks: canAskTask, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...(requestSettled === undefined ? {} : { settled: requestSettled }), ...(this.opts.pageDocument === undefined ? {} : { documentOf: this.opts.pageDocument }), ...this.opts.plannerHooks });
         // Rule 6: text that was dropped while Jev answered offers nothing made from it.
         if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired, SAYS.tabExpired);
         store.count(`plan.ask_${d.route}`, 1);
@@ -1784,7 +1799,9 @@ export class Helper {
           if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
           // I2: an Ask's goal: its own scope, or null when it came from a window with no field (its windows settle theirs).
           // A fresh Ask's goal may settle the windows it writes in; a continued one's settles nothing (I2 ruling).
-          return await this.offerGoal(requestId, instruction, from, d.windowId, d.page ?? null, { scope: d.askScope ?? null, askId: d.askId, ticket: d.resumed ? null : settleTicket("freshAsk") });
+          const quiet = this.quietLeft.get(offerKey);
+          const page = d.page === undefined ? null : quiet === undefined ? d.page : { ...d.page, quiet: quiet.keys };
+          return await this.offerGoal(requestId, instruction, from, d.windowId, page, { scope: d.askScope ?? null, askId: d.askId, ticket: d.resumed ? null : settleTicket("freshAsk") });
         }
         draft = d;
       } catch (e) {
@@ -1792,7 +1809,26 @@ export class Helper {
         if (!(e instanceof PlannerError)) throw e;
         if (e instanceof AskRefused && e.intent !== null) this.countAskRoute(e.intent.route);
         // B29: a question with choices, to a consumer that said it can answer one; anyone else reads the refusal.
-        if (e instanceof AskAsks && canAsk && session === this.readerSession) return this.askQuestion(requestId, e.question, from);
+        if (e instanceof AskAsks && canAsk && session === this.readerSession) {
+          // Question memory: a fields question the user put away twice in a week proceeds as an empty answer would,
+          // filling only what Caret settled beside it, and says it left the rest to them as before.
+          const q = e.question;
+          if (q.part === "fields" && this.memory.questions.quiet(askedKeyOf(q), this.now())) {
+            this.opts.store.count("plan.askQuiet", 1);
+            const labels = q.options.flatMap((c) => (c.option.kind === "field" ? [c.option] : []));
+            // Two fields of one label are told apart by their sections, as the question listed them.
+            const left = labels.map((o) => (labels.filter((x) => x.label === o.label).length > 1 && o.section !== null ? `${o.label} (${o.section})` : o.label));
+            const resume = q.filling.length === 0 ? null : answerQuestion(q, []);
+            if (resume === null || typeof resume === "string") return fail("unsure", "question memory: the user put this fields question away twice within a week", saysLeftAsBefore(left));
+            this.quietLeft.set(offerKey, { says: saysLeftAsBefore(left), keys: q.options.flatMap((c) => c.fixes.fields ?? []) });
+            try {
+              return await this.planAndOffer(offerKey, requestId, instruction, windowId, resume, from, canAsk, canGoal, canAskValues, canAskTask);
+            } finally {
+              this.quietLeft.delete(offerKey);
+            }
+          }
+          return this.askQuestion(requestId, q, from);
+        }
         // H13: nothing to fill because the tab left was a Google editor whose text Caret cannot read yet.
         const docs = e.code === "nothingToDo" ? (this.tabSource?.docsOff(offerKey) ?? null) : null;
         if (docs !== null) return fail(e.code, "the tab left is a Google editor whose text for assistive technology is off", docsOffSays(docs));
@@ -1829,6 +1865,9 @@ export class Helper {
     // Window ids start over with a new reader; a plan drafted in the old session names other windows now.
     if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply", SAYS.windowChanged);
     if (this.mode !== "live" || this.gate.settings.paused) return fail("unavailable", this.mode !== "live" ? "the helper is in shadow mode" : "Caret is paused", this.mode !== "live" ? undefined : SAYS.paused);
+    // Question memory: the fields a quiet question would have offered are said as left to the user, once.
+    const quiet = this.quietLeft.get(offerKey);
+    if (quiet !== undefined) draft = { ...draft, leftToYou: draft.leftToYou === undefined || draft.leftToYou === null ? quiet.says : `${draft.leftToYou} ${quiet.says}` };
     const reply = proposed(requestId, draft, this.now());
     const w = draft.checked.window;
     const anchor = draft.checked.writes[0]?.node.key ?? draft.checked.handoff?.node.key ?? w.window.windowId;
@@ -1880,7 +1919,7 @@ export class Helper {
     const questionId = `ask-${++this.askSeq}-${requestId}`.slice(0, 240);
     const msg = AskQuestion.safeParse({ type: "askQuestion", v: PROTOCOL_VERSION, requestId, at, questionId, part: q.part, text: q.text, pick: q.pick, options: wireOptions(q), ...(q.filling.length === 0 ? {} : { filling: q.filling }), window: q.window, expires: at + ASK_QUESTION_MS });
     if (!msg.success) return this.planFailed(requestId, "schema", `the question failed the protocol check: ${msg.error.issues[0]?.message ?? "invalid"}`);
-    this.askQuestions.set(questionId, { session: from, expires: msg.data.expires, draft: q });
+    this.askQuestions.set(questionId, { session: from, expires: msg.data.expires, draft: q, asked: askedKeyOf(q) });
     this.opts.store.count(`plan.asked_${q.part}`, 1);
     return msg.data;
   }
@@ -2678,7 +2717,12 @@ export class Helper {
     this.patterns.tick(now);
     for (const [k, f] of [...this.firstLooks]) if (expired("firstLook", f.at, now)) this.withdrawFirstLook(k, "expired");
     for (const [k, p] of [...this.planOffers]) if (expired("plan", p.at, now)) this.withdrawPlan(k, "expired");
-    for (const [k, q] of [...this.askQuestions]) if (q.expires <= now) this.askQuestions.delete(k);
+    // A question that waited past its time unanswered was put away: question memory counts it.
+    for (const [k, q] of [...this.askQuestions]) {
+      if (q.expires > now) continue;
+      this.askQuestions.delete(k);
+      this.memory.questions.dismissed(q.asked, now);
+    }
     this.goals.tick(now);
     this.events.tick(now);
     if (this.mode === "shadow") this.shadowLogger.tick(now);

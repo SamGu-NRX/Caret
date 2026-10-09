@@ -28,7 +28,7 @@ export class SaidError extends PlannerError {
  */
 export type AskPart = "fields" | "source" | "person";
 /** The part an Ask's question with choices settles: an intent's part, or (value settlement) which value goes in one field. */
-export type QuestionPart = AskPart | "value";
+export type QuestionPart = AskPart | "value" | "task";
 
 export class Unclear extends SaidError {
   readonly part: AskPart;
@@ -45,6 +45,22 @@ export const ASKS: Record<AskPart, string> = {
   person: "Whose details go in?",
 };
 
+/**
+ * The task question (design CU-COUNSEL-20261009): Jev's route stopped between filling the form and a larger task, and
+ * both readings can run. Each option says what Caret then does and what stays the user's.
+ */
+export const TASK_ASK = "Which should Caret do?";
+export const TASK_FILL_SAYS = "Fills them in and stops there. Pressing and sending stay yours.";
+export const TASK_FILL_SOME_SAYS = "Asks which fields next, then fills them. Pressing and sending stay yours.";
+export const TASK_PLAN_LABEL = "Do the whole task";
+export const TASK_PLAN_SAYS = "Shows every step before anything runs. Sending stays yours.";
+/** "Fill Name and Email", or "Fill 5 fields" when the names don't fit a label. */
+export function taskFillLabel(names: readonly string[], max: number): string {
+  if (names.length === 0) return "Fill some fields";
+  const named = `Fill ${list(names, "and")}`;
+  return named.length <= max ? named : `Fill ${names.length} fields`;
+}
+
 /** What a value question calls the value it asks for, by the field's kind (fill.ts ValueAsked); a box is asked whether to tick it. */
 const VALUE_NOUNS = { email: "email", phone: "phone number", url: "link", date: "date", time: "time", amount: "amount", name: "name", option: "option", value: "value" } as const satisfies Record<Exclude<ValueAsked, "box">, string>;
 
@@ -54,6 +70,7 @@ export function asksValue(kind: ValueAsked, field: string): string {
 }
 
 export const SAYS = {
+  writerBudget: "Caret's planner is out of budget for today.",
   payment: "Paying is yours to do. Caret stops before payment.",
   submit: "Submitting is yours to do.",
   send: "Sending is yours to do.",
@@ -313,6 +330,13 @@ export function saysUnsureField(name: string): string {
   return `${field(name)}: ${UNSURE_FIELD}.`;
 }
 export const UNSURE_FIELD = "Caret wasn't sure your request asks for it";
+
+/**
+ * Question memory (memory/questions.ts): a fields question the user put away twice in a week is not asked a third time;
+ * the fields it would have offered are left to them, said once on the preview, and each on its own row as QUIET_FIELD.
+ */
+export const saysLeftAsBefore = (names: readonly string[]): string => `Left ${list(names, "and")} to you, as before.`;
+export const QUIET_FIELD = "left to you, as before";
 
 /**
  * SCP1: a field an Ask leaves to the user because the request named one section and Caret couldn't tell which section

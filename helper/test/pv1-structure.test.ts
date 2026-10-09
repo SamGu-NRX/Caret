@@ -17,7 +17,7 @@ const builders: Record<string, number> = {
   "codemode/jev-chooser.ts": 1, "executor/target.ts": 1, "fill/contract.ts": 1, "fill/fill.ts": 2,
   "goals/drafts.ts": 1, "goals/propose.ts": 1, "goals/saved-files.ts": 1, "offers/event-card.ts": 1,
   "patterns/naming.ts": 1, "planner/ask.ts": 1, "planner/codeplan.ts": 3, "planner/intent-heads.ts": 2,
-  "planner/intent-makers.ts": 3, "planner/planner.ts": 2, "routing/judge.ts": 3, "tasks/pending.ts": 2,
+  "planner/planner.ts": 2, "routing/judge.ts": 3, "tasks/pending.ts": 2,
 };
 // These transform an already checked request, or normalize it for a cache; they never extract window text.
 const transforms: Record<string, number> = { "engines/decide/cache.ts": 2, "engines/decide/harness.ts": 1, "fill/jev.ts": 4, "privacy/disclosure.ts": 1, "privacy/send.ts": 1 };
