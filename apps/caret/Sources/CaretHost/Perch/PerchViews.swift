@@ -39,8 +39,6 @@ final class PerchModel: ObservableObject {
     @Published var character: FigureCharacter = .pebble
     /// For screen readers: what the perch reports, in words.
     @Published var summary = ""
-    /// Bumped every 5 s while the eyes are open on something: one blink each time.
-    @Published var blinkTick = 0
     var animated = true
     var onTap: (() -> Void)?
 }
@@ -50,8 +48,9 @@ final class PerchModel: ObservableObject {
 /// when it needs you. Clicking it opens the desk.
 ///
 /// Motion: it arrives with the figure's entrance (160 ms ease-out, opacity, a 2 pt settle, scale
-/// 0.9) and hops off with a 4 pt rise to nothing (160 ms). Reduce Motion keeps 120 ms fades and
-/// stops the bob and the blink (`FigureView`).
+/// 0.9) and hops off with a 4 pt rise to nothing (160 ms). At rest it blinks at irregular
+/// intervals, as every figure does (`FigureIdle`). Reduce Motion keeps 120 ms fades and stops the
+/// bob and the blinks (`FigureView`).
 struct PerchView: View {
     @ObservedObject var model: PerchModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -61,7 +60,7 @@ struct PerchView: View {
             if model.presented {
                 FigureView(
                     character: model.character, state: model.mood.figure, size: PerchModel.figureWidth,
-                    animated: model.animated, gaze: model.mood.gaze, blinkTick: model.blinkTick
+                    animated: model.animated, gaze: model.mood.gaze
                 )
                 .transition(transition)
             }

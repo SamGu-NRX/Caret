@@ -583,7 +583,7 @@ final class SurfaceCoordinator {
         }
         switch placement {
         case .inPlace:
-            panel.setContent(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil), growing: growing)
+            panel.setContent(typing(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil), content: content), growing: growing)
             panel.text = text
             if !panel.isVisible { panel.enter() }
         case .atField(let field, let caret, let pid, let entering):
@@ -620,10 +620,24 @@ final class SurfaceCoordinator {
             if enter || panel.anchor.point != Self.cocoaPoint(chosen) || panel.anchor.corner != Self.corner(chosen.spot.corner) {
                 panel.pin(HostedPanel.Anchor(corner: Self.corner(chosen.spot.corner), point: Self.cocoaPoint(chosen)))
             }
-            panel.setContent(view(chosen.spot.isNarrow ? PopupView.minWidth : nil), growing: growing)
+            panel.setContent(typing(view(chosen.spot.isNarrow ? PopupView.minWidth : nil), content: content), growing: growing)
             panel.text = text
             if enter { panel.enter() }
         }
+    }
+
+    /// Tells the panel's figure where the caret is from its seat, so its rest glances go to the
+    /// typing (`FigureIdle`). Nothing before the panel is placed.
+    private func typing(_ view: AnyView, content: PanelContent?) -> AnyView {
+        guard let placed else { return view }
+        let seat: CGPoint
+        switch content {
+        case .popup?: seat = CGPoint(x: 12 + PopupView.figureSize / 2, y: 20)
+        case .compactLine?: seat = CGPoint(x: 5 + Tokens.FigureSize.compact / 2, y: Tokens.Shape.compactHeight / 2)
+        case .line?, nil: seat = CGPoint(x: Tokens.Shape.slipLeading + Tokens.FigureSize.line / 2, y: Tokens.Shape.slipHeight / 2)
+        }
+        let direction = FigureIdle.typingDirection(panel: placed.choice.frame, seat: seat, caret: placed.caret)
+        return AnyView(view.environment(\.figureTyping, direction))
     }
 
     private func place(
