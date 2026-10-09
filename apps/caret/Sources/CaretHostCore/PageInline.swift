@@ -31,12 +31,16 @@ public struct PageInsert: Codable, Equatable, Sendable {
     /// The element the offer was made for (`PageField.token`); the page refuses an insert into any other.
     public var token: String
     public var at: Int64
+    /// Brief item 5: how many UTF-16 units just before the caret the text replaces (a writing fix: "teh " with
+    /// "the "). Nil inserts at the caret. Never more than `expect` holds; written only when set.
+    public var replace: Int?
 
-    public init(requestId: String, windowId: String, key: String, expect: String, text: String, token: String, at: Int64) {
+    public init(requestId: String, windowId: String, key: String, expect: String, text: String, token: String, at: Int64, replace: Int? = nil) {
         self.requestId = requestId; self.windowId = windowId; self.key = key; self.expect = expect; self.text = text; self.token = token; self.at = at
+        self.replace = replace
     }
 
-    enum CodingKeys: String, CodingKey { case type, v, requestId, windowId, key, expect, text, token, at }
+    enum CodingKeys: String, CodingKey { case type, v, requestId, windowId, key, expect, text, token, at, replace }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -44,6 +48,10 @@ public struct PageInsert: Codable, Equatable, Sendable {
         requestId = try c.decode(String.self, forKey: .requestId); windowId = try c.decode(String.self, forKey: .windowId)
         key = try c.decode(String.self, forKey: .key); expect = try c.decode(String.self, forKey: .expect)
         text = try c.decode(String.self, forKey: .text); token = try c.decode(String.self, forKey: .token); at = try c.decode(Int64.self, forKey: .at)
+        replace = try c.decodeIfPresent(Int.self, forKey: .replace)
+        if let replace, replace < 0 || replace > UTF16Text.length(expect) {
+            throw DecodingError.dataCorruptedError(forKey: .replace, in: c, debugDescription: "replace \(replace) is outside the \(UTF16Text.length(expect)) units before the caret")
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -51,6 +59,7 @@ public struct PageInsert: Codable, Equatable, Sendable {
         try c.encode(Self.type, forKey: .type); try c.encode(Proto.version, forKey: .v)
         try c.encode(requestId, forKey: .requestId); try c.encode(windowId, forKey: .windowId); try c.encode(key, forKey: .key)
         try c.encode(expect, forKey: .expect); try c.encode(text, forKey: .text); try c.encode(token, forKey: .token); try c.encode(at, forKey: .at)
+        if let replace, replace > 0 { try c.encode(replace, forKey: .replace) }
     }
 }
 

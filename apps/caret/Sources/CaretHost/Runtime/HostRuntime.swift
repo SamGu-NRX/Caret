@@ -542,6 +542,7 @@ public final class HostRuntime {
                     MainActor.assumeIsolated {
                         surface.navigated(offerID: offerID, ui: ui)
                         writing.navigated(offerID: offerID, ui: ui)
+                        pageInline.navigated(offerID: offerID, ui: ui)
                     }
                 }
             },

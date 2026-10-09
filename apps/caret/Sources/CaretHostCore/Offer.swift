@@ -122,7 +122,8 @@ public struct Claim: Equatable, Sendable {
         switch offer.kind {
         case .ghost: return !choice.fillAll && !PageWindow.isPage(offer.target.windowID)
         case .fill(let origin): return !choice.fillAll && !PageWindow.isPage(origin.windowID)
-        case .writing: return rangeEdit != nil
+        // A writing fix in a page field goes in through the page (`PageWritingMachine`), not Accessibility.
+        case .writing: return rangeEdit != nil && !PageWindow.isPage(offer.target.windowID)
         case .action, .popup: return false
         }
     }
