@@ -15,6 +15,7 @@ FILES = [
 ]
 ACCEPTED = ('export const PRIVACY_ACCEPTANCES = { "pv2-sites-send": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture", '
             'at: "2026-10-07T00:00:00Z" }, "ha2-copied-conversation": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture", '
+            'at: "2026-10-07T00:00:00Z" }, "t1-retention": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture", '
             'at: "2026-10-07T00:00:00Z" } };\n')
 UNACCEPTED = "export const PRIVACY_ACCEPTANCES = {};\n"
 CHANGED = "What Caret sends\n\nA sentence nobody approved.\n"

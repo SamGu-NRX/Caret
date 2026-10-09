@@ -15,6 +15,9 @@ if (owner !== null) reasons.push(owner);
 const required = [
   ["pv2-sites-send", "PV2's Sites and send-boundary fixes aren't accepted yet; the promise's switched-off sentence isn't backed", "It sends nothing from an app or website you've switched off."],
   ["ha2-copied-conversation", "HA2's copied-conversation fix isn't accepted yet", "No request takes more than half of any one conversation."],
+  // T1 (#32) bounds the screen model, its change log, the rolling text and the offers built on them. Paused runs' source
+  // views, routine values, finished task records and pending watch lines still keep pieces of screen text longer.
+  ["t1-retention", "T1's retention fixes aren't accepted yet; the promise's ten-minute sentence isn't backed", "Caret keeps what it reads from your screen for ten minutes after it last reads it, then forgets it."],
 ] as const;
 // Internal VM and test builds use synthetic data and are never distributed, so the release acceptance records don't
 // apply to them. build-app.sh sets this for debug and acceptance only and stamps their bundles CaretInternalBuild.

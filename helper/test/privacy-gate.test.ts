@@ -32,7 +32,7 @@ function shippedResource(path: string): string {
 }
 function acceptAll(path: string): void {
   mkdirSync(join(path, "helper/src/privacy"), { recursive: true });
-  writeFileSync(join(path, "helper/src/privacy/accepted.ts"), 'export const PRIVACY_ACCEPTANCES = { "pv2-sites-send": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture reviewer", at: "2026-10-07T00:00:00Z" }, "ha2-copied-conversation": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture reviewer", at: "2026-10-07T00:00:00Z" } };\n');
+  writeFileSync(join(path, "helper/src/privacy/accepted.ts"), 'export const PRIVACY_ACCEPTANCES = { "pv2-sites-send": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture reviewer", at: "2026-10-07T00:00:00Z" }, "ha2-copied-conversation": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture reviewer", at: "2026-10-07T00:00:00Z" }, "t1-retention": { commit: "0123456789abcdef0123456789abcdef01234567", by: "fixture reviewer", at: "2026-10-07T00:00:00Z" } };\n');
 }
 function gate(path: string, enabled = "0", extra: Record<string, string> = {}) {
   return spawnSync(process.execPath, [join(path, "helper/scripts/privacy-gate.ts")], {
