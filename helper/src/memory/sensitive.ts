@@ -34,6 +34,7 @@ export const LABEL_PHRASES: readonly (readonly [SensitiveKind, readonly (readonl
 /** Value shapes that are refused whatever the label says (privacy/exclude.ts withholds them when a window is read in). */
 export const API_KEY_SHAPES: readonly RegExp[] = [
   /\b(?:sk|pk|rk)[-_](?:live|test|proj|ant)[-_][A-Za-z0-9_-]{12,}/,
+  // OpenAI project keys and legacy sk- keys are covered here; Decisions uses the same exclusion boundary.
   /\bsk-[A-Za-z0-9_-]{20,}/,
   /\bgh[pousr]_[A-Za-z0-9]{30,}/,
   /\bgithub_pat_[A-Za-z0-9_]{20,}/,
