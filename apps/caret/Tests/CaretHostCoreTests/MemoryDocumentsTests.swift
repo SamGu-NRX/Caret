@@ -34,7 +34,7 @@ final class MemoryDocumentsTests: XCTestCase {
         let golden = try XCTUnwrap(object(Self.line(0)).mutableCopy() as? NSMutableDictionary)
         XCTAssertEqual(golden["capabilities"] as? [String], [MemoryDocs.capability])
         golden["capabilities"] = HostHello.capabilities(routing: false)
-        XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: golden["pid"] as! Int, routing: false))), golden)
+        XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: golden["pid"] as! Int, routing: false, host: true))), golden)
     }
 
     /// The people add: a person the user names, the same `memoryRequest add` as onboarding's About.

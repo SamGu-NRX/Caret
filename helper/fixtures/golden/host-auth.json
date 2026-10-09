@@ -1,0 +1,12 @@
+{
+  "about": "The host's proof to the helper (helper/src/host-auth.ts, apps/caret CaretHostCore/HostAuth.swift); both sides' tests check these values. launchSecret is the launcher's 32 bytes (the ASCII of 'caret-b23-golden-launch-secret!!'); hostKey is HMAC-SHA256(launchSecret, 'caret-host-key'), the raw 32 bytes the hex names; proof is base64 HMAC-SHA256(hostKey, 'caret-host-proof\\n' + nonce). lines are the handshake after a consumer hello with host: true: the helper's challenge, the host's proof, the helper's acceptance.",
+  "launchSecret": "63617265742d6232332d676f6c64656e2d6c61756e63682d7365637265742121",
+  "hostKey": "7e15f11dfc25e612d8ef55a9a094dc3ed4728417a084e9a0c064fb894b242181",
+  "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "proof": "YZD58nutp/W0tj8gKahuNpRhzBIoEYruemYTqTnNljs=",
+  "lines": [
+    { "type": "hostChallenge", "v": 1, "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=" },
+    { "type": "hostProof", "v": 1, "proof": "YZD58nutp/W0tj8gKahuNpRhzBIoEYruemYTqTnNljs=" },
+    { "type": "hostAuthenticated", "v": 1 }
+  ]
+}

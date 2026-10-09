@@ -17,7 +17,7 @@ import { parseDocument } from "../src/memory/parse.ts";
 import { AnyMessage, ConsumerMessage, HelperMessage, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, type MemoryDocumentReply, type MemoryEntry, type MemoryProvenance, type OfferPopup } from "../src/protocol.ts";
 import { noticedSays } from "../src/helper.ts";
 import { field, focus, jevPickingText, snap } from "./builders.ts";
-import { LineClient, SocketReader, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, TEST_LAUNCH_SECRET, until } from "./socket-reader.ts";
 
 const F = (s: string): string => `dev.caret.fixture/standard/${s}`;
 const key = (label: string): string => F(`textfield:${label.toLowerCase()}~0`);
@@ -40,7 +40,7 @@ describe("memory as markdown, through the helper", () => {
     store = new Store(join(dir, "data"));
     let n = 0;
     beforeAct = null;
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       askJev: jevPickingText((_, ins) => {
@@ -60,6 +60,7 @@ describe("memory as markdown, through the helper", () => {
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true, capabilities: [MEMORY_DOCUMENTS_CAPABILITY] });
+    await authenticateHost(host);
     oldHost = await LineClient.connect(join(dir, "screen.sock"));
     oldHost.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "host-before-m1" });
     reader = await SocketReader.connect(join(dir, "screen.sock"));

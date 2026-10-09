@@ -13,6 +13,7 @@ import { Helper } from "../src/helper.ts";
 import { HelperServer, withOldReasons } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, ReaderMessage, VALUE_CHECKS_CAPABILITY, type FillProposal } from "../src/protocol.ts";
+import { authenticateRawHost, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const lines = readFileSync(new URL("../fixtures/golden/value-checks.ndjson", import.meta.url), "utf8").trim().split("\n");
 const at = (i: number): Record<string, unknown> => JSON.parse(lines[i] as string) as Record<string, unknown>;
@@ -68,7 +69,7 @@ describe("the new reasons on the socket (W2)", () => {
     store = new Store(join(dir, "data"));
     let s: HelperServer | null = null;
     helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => s?.publish(m) });
-    server = new HelperServer(path, () => helper, () => {});
+    server = new HelperServer(path, () => helper, () => {}, TEST_LAUNCH_SECRET);
     s = server;
     await server.listen();
   });
@@ -85,6 +86,8 @@ describe("the new reasons on the socket (W2)", () => {
     const plain = await connect(path);
     send(checks.s, hello(1, ["fillAll", VALUE_CHECKS_CAPABILITY]));
     send(plain.s, hello(2, ["fillAll"]));
+    await authenticateRawHost(checks.s, checks.lines);
+    await authenticateRawHost(plain.s, plain.lines);
     await tick();
     server.publish(HelperMessage.parse(at(2)));
     await tick();

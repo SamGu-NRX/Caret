@@ -66,6 +66,10 @@ public enum HelperInbound: Equatable, Sendable {
     case fileSaveReply(FileSaveReply)
     /// H14: the files the user kept, for the memory window (`SavedFilesBook`).
     case savedFilesReply(SavedFilesReply)
+    /// The helper's challenge to a hello with `host: true`; `HostHandshake` answers it (`HostAuth`).
+    case hostChallenge(HostChallenge)
+    /// The helper accepted this host's proof: from here on the connection is the host's.
+    case hostAuthenticated
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -105,6 +109,8 @@ public enum HelperInbound: Equatable, Sendable {
         case .fileSaveOffer: return FileSaveOffer.type
         case .fileSaveReply: return FileSaveReply.type
         case .savedFilesReply: return SavedFilesReply.type
+        case .hostChallenge: return HostChallenge.type
+        case .hostAuthenticated: return "hostAuthenticated"
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -197,6 +203,14 @@ public enum HelperInbound: Equatable, Sendable {
             return .fileSaveReply(try JSONDecoder().decode(FileSaveReply.self, from: line))
         case SavedFilesReply.type:
             return .savedFilesReply(try JSONDecoder().decode(SavedFilesReply.self, from: line))
+        case HostChallenge.type:
+            return .hostChallenge(try JSONDecoder().decode(HostChallenge.self, from: line))
+        case "hostAuthenticated":
+            return .hostAuthenticated
+        case HostProof.type:
+            // The host's own proof, echoed back; validated so a malformed line is still counted.
+            _ = try JSONDecoder().decode(HostProof.self, from: line)
+            return .notForConsumer(type: envelope.type)
         case FileSave.type:
             _ = try JSONDecoder().decode(FileSave.self, from: line)
             return .notForConsumer(type: envelope.type)
@@ -291,7 +305,9 @@ public struct LineFramer: Sendable {
 
 /// The host's hello to the helper. `host: true` (B23): only the host app's session counts as "host
 /// connected", which a skill needs before it runs on its own, and the helper binds the work the host
-/// accepts to this session. `capabilities` names what this host understands:
+/// accepts to this session. The helper believes it only after the host's proof (`HostAuth`), so a Caret
+/// without a host key says nothing of a host and is served as any other consumer.
+/// `capabilities` names what this host understands:
 /// - `memoryDocuments` (M1): noticed facts as noticed, with provenance, "Not right" and the documents.
 /// - `fillAll` (D2-04): ⌘1 on a field's fill sends `fillAll` for the whole form.
 /// - `askChoices` (B29): an Ask may come back as a question with choices, answered with `askAnswer`.
@@ -334,8 +350,10 @@ public enum HostHello {
             + (routing ? [Routing.capability] : [])
     }
 
-    public static func make(pid: Int, routing: Bool, goalFiles: Bool = false) -> Message {
-        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true), capabilities: capabilities(routing: routing, goalFiles: goalFiles))
+    /// `host`: this Caret holds a host key and will answer the helper's challenge. Without one the hello leaves `host`
+    /// out; the capabilities are listed either way, and the helper honors only those any consumer may have.
+    public static func make(pid: Int, routing: Bool, goalFiles: Bool = false, host: Bool) -> Message {
+        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: host), capabilities: capabilities(routing: routing, goalFiles: goalFiles))
     }
 
     /// CaretScreenCore's `Hello` with the capabilities beside it; that mirror has no such key.

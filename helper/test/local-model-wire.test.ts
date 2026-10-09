@@ -11,7 +11,7 @@ import type { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { DRAFT_GRAMMAR, draftAsk } from "../src/writer/local-draft.ts";
 import { HostLocalModel, LocalModelUnavailable } from "../src/writer/local-port.ts";
-import { LineClient } from "./socket-reader.ts";
+import { authenticateHost, LineClient, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const lines = readFileSync(new URL("../fixtures/golden/local-model.ndjson", import.meta.url), "utf8").trim().split("\n");
 const at = (i: number): Record<string, unknown> => JSON.parse(lines[i] as string) as Record<string, unknown>;
@@ -59,7 +59,7 @@ describe("local text over the helper's socket", () => {
     dir = mkdtempSync(join(tmpdir(), "caret-local-"));
     clock = 1_790_000_300_000;
     local = new HostLocalModel((m) => server.sendLocalText(m), () => clock);
-    server = new HelperServer(join(dir, "s", "screen.sock"), () => helper, (l) => void warnings.push(l), null, local);
+    server = new HelperServer(join(dir, "s", "screen.sock"), () => helper, (l) => void warnings.push(l), TEST_LAUNCH_SECRET, local);
     await server.listen();
     warnings.length = 0;
   });
@@ -71,6 +71,7 @@ describe("local text over the helper's socket", () => {
   async function host(capabilities = ["routing", "goalPlans", LOCAL_MODEL_CAPABILITY], isHost = true): Promise<LineClient> {
     const c = await LineClient.connect(join(dir, "s", "screen.sock"));
     c.send(hello(capabilities, isHost));
+    if (isHost) await authenticateHost(c);
     // A round trip after the hello, so the server has registered it before the test sends anything.
     c.send({ type: "localTextReply", v: PROTOCOL_VERSION, id: "warm-up", outcome: "busy", text: null, model: "", latencyMs: 0 });
     await new Promise((r) => setTimeout(r, 30));

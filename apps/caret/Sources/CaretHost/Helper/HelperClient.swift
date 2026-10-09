@@ -10,6 +10,10 @@ import os
 /// with backoff; a helper started after the host is picked up within `maxBackoff`. Decoded
 /// messages go to `onMessage` on that thread, which must only enqueue. `send` writes from any
 /// thread under a lock, so a `fillResult` line is never interleaved with another.
+///
+/// With a host key the hello says `host: true`, and the connection carries nothing but the proof until the helper says
+/// `hostAuthenticated` (`HostHandshake`): no settings, no request, no `onLink(true)`. Without one the hello leaves
+/// `host` out and the helper serves this Caret as any other consumer.
 final class HelperClient: @unchecked Sendable {
     typealias Stats = DebugState.HelperLink
 
@@ -32,6 +36,9 @@ final class HelperClient: @unchecked Sendable {
     /// sent after hello or sent on its own afterwards, never lost. Writers hold it for the whole line.
     private struct Link {
         var fd: Int32 = -1
+        /// The connection carries this host's messages: at once without a host key, after `hostAuthenticated` with
+        /// one. Until then only the proof is written to `fd`.
+        var ready = false
         var settings: HostSettings?
         /// This connection's hello named `routing` (H6).
         var routing = false
@@ -50,6 +57,9 @@ final class HelperClient: @unchecked Sendable {
     private let wantsRouting: @Sendable () -> Bool
     /// H14: whether the hello names goalFiles: the page task panel can fill attach rows (`PageTaskMachine.filesWired`).
     private let goalFiles: @Sendable () -> Bool
+    /// The key this Caret proves it is the host with (`HostAuth`), handed over in memory by `CaretServices`; nil
+    /// connects as a plain consumer.
+    private let hostKey: Data?
 
     init(
         path: String = HelperClient.defaultPath,
@@ -57,8 +67,11 @@ final class HelperClient: @unchecked Sendable {
         onLink: @escaping @Sendable (Bool) -> Void = { _ in },
         authority: HostAuthority? = nil,
         wantsRouting: @escaping @Sendable () -> Bool = { false },
-        goalFiles: @escaping @Sendable () -> Bool = { false }
+        goalFiles: @escaping @Sendable () -> Bool = { false },
+        hostKey: Data?
     ) {
+        self.hostKey = hostKey
+        if hostKey != nil { stats.withLock { $0.hostAuthenticated = false } }
         self.path = path
         self.onMessage = onMessage
         self.onLink = onLink
@@ -73,9 +86,9 @@ final class HelperClient: @unchecked Sendable {
     var lastAcceptAt: Date? { lastAccept.withLock { $0 } }
 
     /// The connection is up and its hello named `routing`, so the helper sends it route decisions.
-    var declaresRouting: Bool { connection.withLock { $0.fd >= 0 && $0.routing } }
+    var declaresRouting: Bool { connection.withLock { $0.fd >= 0 && $0.ready && $0.routing } }
     /// The connection is up and its hello named `goalFiles`, so the helper takes `savedFilesRequest` from it.
-    var declaresGoalFiles: Bool { connection.withLock { $0.fd >= 0 && $0.goalFiles } }
+    var declaresGoalFiles: Bool { connection.withLock { $0.fd >= 0 && $0.ready && $0.goalFiles } }
 
     func start() {
         let alreadyRunning = running.withLock { r -> Bool in
@@ -293,7 +306,7 @@ final class HelperClient: @unchecked Sendable {
         let sent = connection.withLock { link -> Bool? in
             if let previous = link.settings, previous.same(as: settings) { return nil }
             link.settings = settings
-            guard link.fd >= 0, let line = try? NDJSON.line(settings) else { return false }
+            guard link.fd >= 0, link.ready, let line = try? NDJSON.line(settings) else { return false }
             let written = Self.writeAll(link.fd, line)
             if !written { shutdown(link.fd, SHUT_RDWR) }
             return written
@@ -305,7 +318,7 @@ final class HelperClient: @unchecked Sendable {
     private func sendLine(_ line: Data?) -> Bool {
         guard let line else { return false }
         let sent = connection.withLock { link -> Bool in
-            guard link.fd >= 0 else { return false }
+            guard link.fd >= 0, link.ready else { return false }
             let written = Self.writeAll(link.fd, line)
             // A write that fails on a live connection leaves the helper and the host disagreeing
             // about what was said; closing it makes the helper revoke this session's work (B22).
@@ -325,15 +338,21 @@ final class HelperClient: @unchecked Sendable {
         while running.withLock({ $0 }) {
             if let fd = connect() {
                 backoff = minBackoff
-                onLink(true)
-                readUntilClosed(fd)
-                connection.withLock { link in
-                    if link.fd == fd { link.fd = -1 }
+                var handshake = HostHandshake(hostKey: hostKey)
+                if handshake.isDone { becomeReady(fd) }
+                readUntilClosed(fd, &handshake)
+                let wasReady = connection.withLock { link -> Bool in
+                    guard link.fd == fd else { return false }
+                    defer { link.fd = -1; link.ready = false }
+                    return link.ready
                 }
                 close(fd)
-                stats.withLock { $0.connected = false }
+                stats.withLock {
+                    $0.connected = false
+                    if hostKey != nil { $0.hostAuthenticated = false }
+                }
                 authority?.revokeAll("helperDisconnected")
-                onLink(false)
+                if wasReady { onLink(false) }
             }
             guard running.withLock({ $0 }) else { break }
             Thread.sleep(forTimeInterval: backoff)
@@ -361,19 +380,30 @@ final class HelperClient: @unchecked Sendable {
             close(fd)
             return nil
         }
-        let routing = wantsRouting()
-        let files = goalFiles()
-        let hello = HostHello.make(pid: Int(getpid()), routing: routing, goalFiles: files)
+        // A capability only the host may have is not claimed without the key: the helper would not honor it.
+        let host = hostKey != nil
+        let routing = host && wantsRouting()
+        let files = host && goalFiles()
+        let hello = HostHello.make(pid: Int(getpid()), routing: routing, goalFiles: files, host: host)
         guard let line = try? NDJSON.line(hello), Self.writeAll(fd, line) else {
             close(fd)
             return nil
         }
-        // Settings go right after hello, restamped now: the helper's gate applies them to its next
-        // decision, which may be the first thing it says to this connection.
-        let settingsSent = connection.withLock { link -> Bool? in
+        connection.withLock { link in
             link.fd = fd
+            link.ready = false
             link.routing = routing
             link.goalFiles = files
+        }
+        return fd
+    }
+
+    /// The connection now carries this host's messages. Settings go first, restamped now: the helper's gate applies
+    /// them to its next decision, which may be the first thing it says to this connection.
+    private func becomeReady(_ fd: Int32) {
+        let settingsSent = connection.withLock { link -> Bool? in
+            guard link.fd == fd else { return false }
+            link.ready = true
             guard var settings = link.settings else { return nil }
             settings.gate.at = Int64((Date().timeIntervalSince1970 * 1000).rounded())
             link.settings = settings
@@ -383,12 +413,13 @@ final class HelperClient: @unchecked Sendable {
         stats.withLock {
             $0.connected = true
             $0.connects &+= 1
+            if hostKey != nil { $0.hostAuthenticated = true }
             if settingsSent == true { $0.settingsSent &+= 1 }
         }
-        return fd
+        onLink(true)
     }
 
-    private func readUntilClosed(_ fd: Int32) {
+    private func readUntilClosed(_ fd: Int32, _ handshake: inout HostHandshake) {
         var framer = LineFramer()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while running.withLock({ $0 }) {
@@ -402,13 +433,13 @@ final class HelperClient: @unchecked Sendable {
                 case .oversized:
                     stats.withLock { $0.undecodable &+= 1 }
                 case .line(let line):
-                    handle(line)
+                    handle(line, fd, &handshake)
                 }
             }
         }
     }
 
-    private func handle(_ line: Data) {
+    private func handle(_ line: Data, _ fd: Int32, _ handshake: inout HostHandshake) {
         let message: HelperInbound
         do {
             message = try HelperInbound.decode(line)
@@ -446,10 +477,29 @@ final class HelperClient: @unchecked Sendable {
             case .answerSaveOffer, .answerSaveReply: s.answerSaves &+= 1
             case .pageInsertReply: s.pageInserts &+= 1
             case .fileSaveOffer, .fileSaveReply, .savedFilesReply: s.files &+= 1
+            case .hostChallenge, .hostAuthenticated: break
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
             }
         }
-        onMessage(message)
+        switch handshake.receive(message) {
+        case .deliver:
+            onMessage(message)
+        case .send(let proof):
+            // Written past `ready`, which is still false: the proof is the one line allowed before it.
+            if !Self.writeAll(fd, proof) { fail("could not write the host proof", fd) }
+        case .authenticated:
+            becomeReady(fd)
+        case .fail(let why):
+            fail(why, fd)
+        }
+    }
+
+    /// Ends a connection whose handshake failed, and says why in the log and on the debug socket. The run loop then
+    /// reconnects with backoff.
+    private func fail(_ why: String, _ fd: Int32) {
+        stats.withLock { $0.lastError = String(why.prefix(200)) }
+        FileHandle.standardError.write(Data("[caret-host \(ISO8601DateFormatter().string(from: Date()))] helper link: \(why); closing\n".utf8))
+        shutdown(fd, SHUT_RDWR)
     }
 
     private static func writeAll(_ fd: Int32, _ data: Data) -> Bool {

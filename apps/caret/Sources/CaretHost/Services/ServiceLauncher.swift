@@ -7,7 +7,8 @@ import Security
 /// Starts the helper and caret-screen from inside Caret.app, as helper/src/launch.ts does from a terminal (B23):
 /// one 32-byte launch secret, made here and held only in this object's memory, written to each child's standard
 /// input (`--auth-fd 0`) and closed. The reader accepts a helper only if it proves it holds that secret, and the
-/// helper's page.sock key is derived from it, which is what the bridge relay proves (`pageKey`).
+/// helper's page.sock key is derived from it, which is what the bridge relay proves (`pageKey`), as is the key this
+/// Caret proves it is the helper's host with (`hostKey`).
 ///
 /// A child that exits on its own is started again with the same secret, within `RestartBudget`; past it both stop
 /// and `stopped` says why, for the menu's "Caret stopped. Restart".
@@ -97,6 +98,9 @@ final class ServiceLauncher {
 
     /// The page key the helper derives from the secret (`HMAC(secret, "caret-page-key")`), for the bridge relay.
     func pageKey(_ derive: (Data) -> Data) -> Data { derive(secret) }
+
+    /// The host key the helper derives from the secret (`HostAuth.hostKey`), for this Caret's own helper connection.
+    var hostKey: Data { HostAuth.hostKey(launchSecret: secret) }
 
     /// The helper's socket the host connects to.
     var helperSocket: String { home.screenSocket }

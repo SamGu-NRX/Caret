@@ -13,7 +13,7 @@ import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
 import { devWriterRoute } from "../src/writer/routes.ts";
 import { ledgeredJev, ledgeredWriter, SpendLedger, throttledTotals } from "../src/spend.ts";
 import type { Helper } from "../src/helper.ts";
-import { LineClient } from "./socket-reader.ts";
+import { authenticateHost, LineClient, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const lines = readFileSync(new URL("../fixtures/golden/spend.ndjson", import.meta.url), "utf8").trim().split("\n");
 const req = {} as JevRequest;
@@ -103,7 +103,7 @@ describe("spend on the socket", () => {
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "caret-spend-"));
-    server = new HelperServer(join(dir, "screen.sock"), () => helperStub, () => {});
+    server = new HelperServer(join(dir, "screen.sock"), () => helperStub, () => {}, TEST_LAUNCH_SECRET);
     await server.listen();
   });
   afterEach(async () => {
@@ -116,10 +116,12 @@ describe("spend on the socket", () => {
     server.spendNow = () => ledger.message();
     const asks = await LineClient.connect(join(dir, "screen.sock"));
     asks.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true, capabilities: [SPEND_CAPABILITY] });
+    await authenticateHost(asks);
     const first = await asks.waitFor<Spend>((m) => m.type === "spend");
     expect(first.jev.calls).toBe(0);
     const plain = await LineClient.connect(join(dir, "screen.sock"));
     plain.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "host-test", host: true });
+    await authenticateHost(plain);
     ledger.answered("writer", { inputTokens: 5, outputTokens: 7, costUsd: 0.5 });
     server.publish(ledger.message());
     const after = await asks.waitFor<Spend>((m) => m.type === "spend" && (m as unknown as Spend).writer.calls === 1);

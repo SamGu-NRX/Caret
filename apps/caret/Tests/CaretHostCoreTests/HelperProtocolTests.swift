@@ -53,6 +53,8 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .fileSaveOffer: return "fileSaveOffer"
             case .fileSaveReply: return "fileSaveReply"
             case .savedFilesReply: return "savedFilesReply"
+            case .hostChallenge: return "hostChallenge"
+            case .hostAuthenticated: return "hostAuthenticated"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
@@ -149,7 +151,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
     func testTheHostsHelloIsTheGoldenHostHello() throws {
         let golden = try XCTUnwrap(object(goldenLines()[61]).mutableCopy() as? NSMutableDictionary)
         golden["capabilities"] = HostHello.capabilities(routing: false)
-        XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: golden["pid"] as! Int, routing: false))), golden)
+        XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: golden["pid"] as! Int, routing: false, host: true))), golden)
     }
 
     /// B10's settings message, from the host's own settings: golden lines 32 and 33.
