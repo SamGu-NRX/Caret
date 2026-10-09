@@ -7,6 +7,7 @@ import { Store } from "../src/store.ts";
 import { PAGE_SUBROLE, type HelperMessage } from "../src/protocol.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN } from "./fake-app.ts";
+import { everyCaseSelected } from "./case-selection.ts";
 
 const NAME = K("textfield:name~0");
 const EMAIL = K("textfield:email~0");
@@ -360,7 +361,8 @@ describe("E1 stop at the reader's last grant check", () => {
       expect(app.node(NAME)?.value ?? "").toBe(held);
     });
 
-    afterAll(() => {
+    afterAll(({}, suite) => {
+      if (!everyCaseSelected(suite)) return;
       expect(cases).toBeGreaterThan(100);
     });
   });

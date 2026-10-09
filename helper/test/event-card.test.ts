@@ -20,6 +20,7 @@ import { ScreenModel } from "../src/model.ts";
 import { DEFAULT_SETTINGS, OfferGate } from "../src/offers/settings.ts";
 import type { WindowState } from "../src/model.ts";
 import { snap, text } from "./builders.ts";
+import { everyCaseSelected } from "./case-selection.ts";
 
 interface Golden {
   now: string;
@@ -270,7 +271,8 @@ describe("event cards through the helper", () => {
       asked.push(...jev.asked);
     });
 
-    afterAll(() => {
+    afterAll(({}, suite) => {
+      if (!everyCaseSelected(suite)) return;
       // Shuffled tests finish in a different order; compare the same complete set in fixture order.
       const order = GOLDEN.sentences.map((s) => s.id);
       results.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
