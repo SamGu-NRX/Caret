@@ -189,8 +189,11 @@ describe("the recorded verifier pairs still fail", () => {
     }
     // Through the production boundary, the base's seals' charges kept, value settlement's pair for b31-04's School and
     // b31-09's Reference relationship no longer passes its check: settlement is not asked, the verifier never sees their
-    // values, and neither is offered.
-    expect(offered).toEqual(["b31-01 First name", "b31-01 Last name"]);
+    // values, and neither is offered. b31-01's First and Last name are not offered either since each candidate carries
+    // every other line of its window that holds its value (candidates.ts Candidate.also): the bystander chat "Venue
+    // deposit and Thursday review" spends its limit sooner, on "Thursday" and its two other lines, so it is cut and the
+    // names it holds may have been kept out.
+    expect(offered).toEqual([]);
   });
 });
 

@@ -78,6 +78,14 @@ export interface CandidateSource {
   readonly context?: Fact;
   readonly section?: Fact;
   readonly blockHead?: Fact;
+  /** Candidate.also's lines with their ranges where recorded, in the same order. */
+  readonly also?: readonly Occurrence[];
+}
+
+/** A line holding a candidate's value (Candidate.also), with its range when one was recorded. */
+export interface Occurrence {
+  readonly text: string;
+  readonly at?: SourceAt;
 }
 
 /** A text the generator read, with its source range. */
@@ -117,6 +125,7 @@ export function candidateSpans(c: Candidate): ViewSpan[] {
   add(c.blockHead, src.blockHead);
   if (c.section !== c.context) add(c.section, src.section);
   if (c.source.windowTitle !== "") add(c.source.windowTitle, c.source.windowTitle === view.window.title ? wholePart(TITLE, view.window.title) : undefined);
+  (c.also ?? []).forEach((l, i) => add(l, src.also?.[i]?.text === l ? src.also[i]?.at : undefined));
   return out;
 }
 
@@ -283,6 +292,13 @@ export interface Candidate {
   identity?: CandidateIdentity;
   /** G2: where the span sits, as code reads its window (whose.ts placementsOf); shown to Jev in whose-value questions. */
   placements?: readonly Placement[];
+  /**
+   * Every other line of its window that holds its exact value, in document order, each once: what deduplication merged
+   * into this candidate. Jev and the verifier read them with it ("Booking ref: QX7-4410", and later "Do not use this
+   * booking ref: QX7-4410"). A line spelled as the candidate's own, or that is the value alone, says nothing more and is
+   * not carried. Absent when there are none.
+   */
+  also?: readonly string[];
   /** The nearest named container around the span, such as a group box or a section heading. */
   section: string | null;
   /**
@@ -362,6 +378,12 @@ const LEFT_OUT_MAX = 2000;
  * a synthetic realistic desk, so the cap is above that one desk and nothing more.
  */
 const UNREAD_MAX = 2000;
+/**
+ * Characters of a candidate's other lines (Candidate.also) its description may carry. Past it the candidate is withheld,
+ * as one whose lines the ledger refuses is: its description must fit a question's criterion (privacy/shapes.ts, 1,200 for
+ * fill.values) beside its own facts. Chosen, not measured: half that criterion.
+ */
+const ALSO_MAX = 600;
 /**
  * Visits a conversation's listing may spend (rankWindow), newest message first; its older messages past the share are
  * read for what they hold instead (unreadRest). Half of MAX_GENERATOR_VISITS, chosen so a long conversation leaves the
@@ -558,6 +580,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const clause = required !== undefined || fact === null || fact.required ? null : fact.clause;
     const sec = timed("section", () => sectionRead(w, node));
     const head = timed("blockHead", () => blockHeadRead(w, node, text));
+    const occ = timed("context", () => occurrencesOf(w, node, text, where));
+    if (occ.reduce((n, f) => n + f.text.length, 0) > ALSO_MAX) {
+      // Its other lines do not fit its description: withheld, as a candidate whose lines the ledger refuses is, and its
+      // window counts as cut, with the words of every line that holds it.
+      unfit(w, node, text, read?.text ?? null, occ);
+      return null;
+    }
     const c: Candidate = {
     id: `c${out.length + 1}`,
     text,
@@ -566,6 +595,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     labelled,
     line: required ?? null,
     ...(partOf === undefined ? {} : { partOf }),
+    ...(occ.length === 0 ? {} : { also: occ.map((f) => f.text) }),
     section: sec?.text ?? null,
     blockHead: head?.text ?? null,
     recency: recency(w),
@@ -591,8 +621,61 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       context: factOf(read),
       section: factOf(sec),
       blockHead: factOf(head),
+      ...(occ.length === 0 ? {} : { also: occ }),
     });
     return c;
+  };
+  /**
+   * The other lines of `w` that hold `text` whole, each once and not spelled as its own line (Candidate.also), with their
+   * ranges; the search stops once they pass ALSO_MAX characters, since the candidate is then withheld. Each node's text
+   * is searched for the value, and only the lines it stands in are read, so a node of a million lines costs one search,
+   * not a million lines. Its own line: the one it was read at (`where`), else the first line of its node that holds it.
+   */
+  const occurrencesOf = (w: WindowState, node: Node, text: string, where: { lineStart: number } | undefined): Occurrence[] => {
+    const out: Occurrence[] = [];
+    let chars = 0;
+    let own: { node: Node; start: number } | null = where === undefined ? null : { node, start: where.lineStart };
+    const said = new Set<string>();
+    const found: { node: Node; start: number; raw: string; bare: string }[] = [];
+    for (const n of w.nodes.values()) {
+      if (!LINE_ROLES.has(n.role) && !sourceField(n)) continue;
+      const t = nodeText(n);
+      for (let at = t.indexOf(text); at >= 0; ) {
+        const start = lineStartAt(t, at);
+        const end = lineEndAt(t, at);
+        const raw = t.slice(start, end);
+        const bare = bareLine(raw);
+        if (holdsWhole(bare, text)) {
+          if (own === null && n === node) own = { node: n, start };
+          found.push({ node: n, start, raw, bare });
+        }
+        at = t.indexOf(text, Math.max(end, at + 1));
+      }
+    }
+    const ownLine = found.find((l) => own !== null && l.node === own.node && l.start === own.start) ?? found.find((l) => l.node === node);
+    if (ownLine !== undefined) said.add(ownLine.bare);
+    for (const l of found) {
+      // A line that is the value alone says nothing the value does not.
+      if (l === ownLine || said.has(l.bare) || l.bare === text) continue;
+      said.add(l.bare);
+      chars += l.bare.length;
+      // A line with no range is charged every line of the window that holds it (candidateSpans).
+      const at = lineRange(l.node, l.start, l.raw, l.bare, 0);
+      out.push(at === null ? { text: l.bare } : { text: l.bare, at });
+      if (chars > ALSO_MAX) break;
+    }
+    return out;
+  };
+  /**
+   * A candidate withheld for its other lines (ALSO_MAX): its window counts as cut, its association is kept out, its text
+   * may not stand in from elsewhere (unwarned), and the words of its line and of every line holding it are cut terms.
+   */
+  const unfit = (w: WindowState, node: Node, text: string, label: string | null, occ: readonly Occurrence[]): void => {
+    missed.add(w.window.windowId);
+    omit(w, node, text, label);
+    unwarned.add(text);
+    for (const t of words(lineHolding(nodeText(node), text))) cutTerms.add(t);
+    for (const f of occ) for (const t of words(f.text)) cutTerms.add(t);
   };
   /** Spans that go only with their clause (Candidate.line set at build). */
   const quoted = new WeakSet<Candidate>();
@@ -633,7 +716,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
       // counts as cut, so the cut rules withhold its kind and words, but the spans after it are still read. Closing the
       // window instead cut every later line of a mail whose prose warns often (corpus clinic-intake, 7 -> 5).
-      if (quoted.has(c)) {
+      // So does one that carries its other lines (Candidate.also): they may be what did not fit.
+      if (quoted.has(c) || c.also !== undefined) {
         unwarned.add(text);
         if (!ranked.has(w.window.windowId)) leftOutOf.add(w.window.windowId);
         return;
@@ -1554,7 +1638,7 @@ export function candidateKinds(model: ScreenModel, c: Candidate): Set<ValueKind>
 
 /** The screen text describeCandidate puts in a request for this candidate: the span, its facts, and its window's title. */
 export function candidateTexts(c: Candidate): (string | null)[] {
-  return [c.text, c.context, c.line ?? null, c.blockHead, c.section, c.source.windowTitle];
+  return [c.text, c.context, c.line ?? null, c.blockHead, c.section, c.source.windowTitle, ...(c.also ?? [])];
 }
 
 /**
@@ -1768,7 +1852,7 @@ const RECENCY_TEXT = {
 } as const satisfies Record<Recency, string>;
 
 /** The fixed words of a candidate's line (mintCandidate), reserved with a fill request's wording (fill.ts fillWording). */
-export const CANDIDATE_WORDING: readonly string[] = ["the user's own \n, which the user told Caret", "labelled '\n'", "in the line '\n'", "in a block that starts '\n'", "under '\n'", "\"\n\" (\n)", "in \n window '\n', \n", ...Object.values(RECENCY_TEXT)];
+export const CANDIDATE_WORDING: readonly string[] = ["the user's own \n, which the user told Caret", "labelled '\n'", "in the line '\n'", "in a block that starts '\n'", "under '\n'", "also in the line '\n'", "\"\n\" (\n)", "in \n window '\n', \n", ...Object.values(RECENCY_TEXT)];
 
 /**
  * SC1 2b: describeCandidate's line, minted by `d`: the span, its label, line, block head and section as its source
@@ -1802,6 +1886,7 @@ export function mintCandidate(d: Disclosure, model: ScreenModel, c: Candidate, o
     [o.blockHead === false ? null : c.blockHead, "candidate", (m) => d.t`in a block that starts '${m}'`, rangeOf(c.blockHead, src.blockHead)],
     [c.section !== null && c.section !== c.context ? c.section : null, "descriptor", (m) => d.t`under '${m}'`, rangeOf(c.section, src.section)],
   ];
+  for (const [i, l] of (c.also ?? []).entries()) parts.push([l, "candidate", (m) => d.t`also in the line '${m}'`, src.also?.[i]?.text === l ? src.also[i]?.at : undefined]);
   for (const [t, as, say, at] of parts) {
     if (t === null || t === undefined) continue;
     const m = at === undefined ? view(t, as) : as === "descriptor" ? d.descriptor(v, t, at) : d.candidate(v, t, at);
@@ -1823,6 +1908,7 @@ export function describeCandidate(c: Candidate): string {
   if (c.line !== undefined && c.line !== null) facts.push(`in the line '${c.line}'`);
   if (c.blockHead !== null) facts.push(`in a block that starts '${c.blockHead}'`);
   if (c.section !== null && c.section !== c.context) facts.push(`under '${c.section}'`);
+  for (const l of c.also ?? []) facts.push(`also in the line '${l}'`);
   facts.push(`in ${c.source.appName} window '${c.source.windowTitle}', ${RECENCY_TEXT[c.recency]}`);
   return `"${c.text}" (${facts.join("; ")})`;
 }

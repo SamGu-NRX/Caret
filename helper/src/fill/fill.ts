@@ -3467,7 +3467,8 @@ export function candidateProvenance(model: ScreenModel, c: Candidate, text?: str
   const label = pr.label === null ? undefined : at(src.context, pr.label);
   const line = at(src.line, pr.line);
   const title = pr.title !== "" && pr.title === view.window.title ? wholePart(TITLE, view.window.title) : undefined;
-  return withReads(pr, { view, ...(src.text === undefined ? {} : { span: src.text }), ...(label === undefined ? {} : { label }), ...(line === undefined ? {} : { line }), ...(title === undefined ? {} : { title }) });
+  const also = pr.also?.map((l, i) => (src.also?.[i]?.text === l ? src.also[i]?.at : undefined));
+  return withReads(pr, { view, ...(src.text === undefined ? {} : { span: src.text }), ...(label === undefined ? {} : { label }), ...(line === undefined ? {} : { line }), ...(title === undefined ? {} : { title }), ...(also === undefined ? {} : { also }) });
 }
 
 /**

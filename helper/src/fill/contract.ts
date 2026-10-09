@@ -136,6 +136,8 @@ export type Provenance =
       line: string | null;
       /** The labelled value this span was cut from (Candidate.partOf), or null. */
       partOf: string | null;
+      /** Every other line of its window that held the span (Candidate.also), which the verifier reads with it. */
+      also?: readonly string[];
       /**
        * The label the candidate was read beside (Candidate.context): a line's own label, or an editable source field's
        * label ("Mobile" for "555-0164"). The recheck before a write requires the source to give it still (provenanceStale).
@@ -567,8 +569,10 @@ export interface ProvenanceReads {
   readonly span?: SourceAt;
   readonly label?: SourceAt;
   readonly line?: SourceAt;
+  /** The ranges of the provenance's `also` lines, in their order, where recorded. */
+  readonly also?: readonly (SourceAt | undefined)[];
 }
-type ReadRole = Exclude<keyof ProvenanceReads, "view">;
+type ReadRole = Exclude<keyof ProvenanceReads, "view" | "also">;
 const READS = new WeakMap<Provenance, ProvenanceReads>();
 
 /** `copy`, a copy of `pr` (a clone, a spread), with `pr`'s reads and those of the provenances it names. */
@@ -628,7 +632,14 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
         : d.t`a value in ${at}`;
       // The labelled value a span was cut from has no recorded range: it is quoted as plan text.
       const whole = pr.partOf !== null && pr.partOf !== pr.line ? m(null, pr.partOf) : null;
-      return whole !== null ? d.t`${base}, which is part of "${whole}"` : base;
+      const said = whole !== null ? d.t`${base}, which is part of "${whole}"` : base;
+      // Every other line that holds the span, at its range; one the view no longer shows is named, as any refused text is.
+      const also = (pr.also ?? []).map((l, i) => {
+        const at = read?.also?.[i];
+        const q = !shown(pr.windowId, l) ? null : read === undefined || at === undefined ? quote(l) : d.candidate(read.view, l, at);
+        return q === null ? d.own("a line the ledger did not admit") : d.t`the line "${q}"`;
+      });
+      return also.length === 0 ? said : d.t`${said}; the value also stands in ${d.join(also, " and ")}`;
     }
     case "unit": {
       const t = pr.title.trim();
@@ -704,7 +715,8 @@ function unreadTexts(pr: Provenance): string[] {
     case "window": {
       const read = READS.get(pr);
       const roles: [ReadRole | null, string | null][] = [["title", pr.title], ["line", pr.line], ["label", pr.label], ["span", pr.span], [null, pr.partOf]];
-      return roles.flatMap(([role, t]) => (t === null || t.trim() === "" || (role !== null && read?.[role] !== undefined) ? [] : [t]));
+      const also = (pr.also ?? []).filter((_, i) => read?.also?.[i] === undefined);
+      return [...roles.flatMap(([role, t]) => (t === null || t.trim() === "" || (role !== null && read?.[role] !== undefined) ? [] : [t])), ...also];
     }
     case "unit":
       return pr.title.trim() === "" ? [] : [pr.title];
@@ -1141,11 +1153,11 @@ export function contractStale(node: Node, f: FieldContract, text: string): strin
  * digests of the lines around it in `text`, its source node's text as Jev was shown it (fill passes the text it took
  * before its asks, G2's `judged`); by default the node's text in `w` now.
  */
-export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }, text?: string): Provenance {
+export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; also?: readonly string[]; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }, text?: string): Provenance {
   w = w === undefined ? undefined : redactWindow(w);
   const node = w?.nodes.get(c.source.nodeKey);
   const read = text ?? (node === undefined ? undefined : nodeText(node));
-  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, lines: read === undefined ? [] : lineDigests(read, c.text), sentences: read === undefined ? [] : sentenceDigests(read, c.text) };
+  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, ...(c.also === undefined ? {} : { also: c.also }), context: c.context, lines: read === undefined ? [] : lineDigests(read, c.text), sentences: read === undefined ? [] : sentenceDigests(read, c.text) };
 }
 
 /**

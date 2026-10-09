@@ -194,7 +194,11 @@ describe("a menu's option named by a source, through fill (G3's examples)", () =
   });
 
   it("held-16: a value equal to an option needs no link and mints under optionLabel", async () => {
-    const { at, offered } = await fill("greenhouse-apply", { Degree: "Bachelor's Degree" });
+    // Unscoped, Degree is withheld: the bystander chat's dates no longer fit its limit once "Thursday" carries its two other
+    // lines (candidates.ts Candidate.also), and a cut kind withholds a field that names none. Scoped to the notes, the
+    // option is still taken under its label.
+    expect((await fill("greenhouse-apply", { Degree: "Bachelor's Degree" })).at("Degree")?.withheld).toBe("sourceCut");
+    const { at, offered } = await fill("greenhouse-apply", { Degree: "Bachelor's Degree" }, only("Degree"));
     const degree = at("Degree");
     expect(degree?.handoff?.value).toBe("Bachelor's Degree");
     expect(mintOf(degree as NonNullable<typeof degree>)?.verdict).toEqual({ by: "exempt", rule: "optionLabel" });
