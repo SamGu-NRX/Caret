@@ -658,10 +658,12 @@ public final class OnboardingFlow {
             state.access.otherCarets = others
         case .accessChangedStillUntrusted:
             guard state.step == .access, !state.permissions.accessibility else { break }
-            state.access.wrongCaret = OtherCarets.wrongOneTurnedOn(changeNoticed: true, trusted: state.permissions.accessibility,
-                                                                   others: state.access.otherCarets)
-            // No other Caret installed: the entry turned on is this bundle id's, from an earlier copy signed differently
-            // (the rig VM's golden image had one; very likely Sam's beta.1 too). Offer to reset it.
+            // macOS lists one entry per bundle id. Another app named Caret with its own id (the hackathon build) is a
+            // separate entry: name it. A copy with this id (an older Caret 2 anywhere, or none left) shares this entry,
+            // so turning "it" on cannot help: offer to reset the entry. The DF1 stale-row run showed the first rule
+            // alone telling the user to turn on an entry that was already on.
+            let otherIDs = state.access.otherCarets.filter { $0.bundleID != OtherCarets.thisBundleID }
+            state.access.wrongCaret = OtherCarets.wrongOneTurnedOn(changeNoticed: true, trusted: state.permissions.accessibility, others: otherIDs)
             if !state.access.wrongCaret { state.access.stale = true }
         case .resetGrant:
             guard state.step == .access, state.access.stale else { break }
@@ -995,6 +997,7 @@ public final class OnboardingFlow {
         info.browserConnected = state.browser.connected
         info.otherCarets = state.access.otherCarets.isEmpty ? nil : state.access.otherCarets.map(\.path)
         info.wrongCaret = state.access.wrongCaret ? true : nil
+        info.staleEntry = state.access.stale ? true : nil
         if state.on.needsKey {
             info.jevKey = state.on.jevKey.phase.name
             info.jevKeyLength = state.on.jevKey.text.utf16Count

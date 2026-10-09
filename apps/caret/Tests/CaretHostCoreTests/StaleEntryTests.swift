@@ -57,6 +57,13 @@ final class StaleEntryTests: XCTestCase {
         XCTAssertFalse(flow.state.access.stale)
     }
 
+    func testAnotherCopyWithThisBundleIDSharesTheEntrySoItOffersTheReset() {
+        let flow = flowAtTheSwitch(others: [OtherCaret(bundleID: "dev.caret.host", path: "/Users/sam/Downloads/Caret.app")])
+        flow.send(.accessChangedStillUntrusted)
+        XCTAssertTrue(flow.state.access.stale, "one entry per bundle id: turning on 'the other one' is the same switch")
+        XCTAssertFalse(flow.state.access.wrongCaret)
+    }
+
     func testOnceTrustedNoChangeNoticeOffersAReset() {
         let flow = flowAtTheSwitch(others: [])
         flow.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: false)))
