@@ -381,6 +381,14 @@ describe("Decisions errors, retries, key fallback and the result cache (recorded
     expect(waits).toEqual([750, 1500, 3000]);
     expect(error.attempts).toHaveLength(MAX_ATTEMPTS);
   });
+  it.each(["rate_limit_exceeded", "server_is_overloaded", "credit_balance_exhausted"])("a probe makes one attempt without retry or personal fallback on %s", async (name) => {
+    const t = scripted(reply(name), ok()); const dir = folder();
+    const ask = makeDecisionsClient({ fixture, env: both, fetchFn: t.fn, spend: spend(dir), probe: true, sleep: async (ms) => { waits.push(ms); } });
+    await expect(ask(request())).rejects.toBeInstanceOf(DecisionsAttemptError);
+    expect(t.keys).toEqual(["org"]);
+    expect(waits).toEqual([]);
+    expect(ledger(dir).filter((r) => r.type === "reserve")).toHaveLength(1);
+  });
   it("never waits past the 60 s request budget", async () => {
     const t = scripted(() => new Response(JSON.stringify(errors.rate_limit_exceeded!.body), { status: 429, headers: { "retry-after": "70" } }));
     await expect(make({ OPENAI_API_KEY: key }, t.fn)(request())).rejects.toThrow(/429/);
