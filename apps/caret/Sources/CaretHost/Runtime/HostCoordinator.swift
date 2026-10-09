@@ -47,6 +47,8 @@ final class HostCoordinator {
     private var anchor: GhostSuggestion?
     private var lastContextKey: String?
     private var lastCaretRect: CGRect?
+    /// The last focus read, for an extension to draw at the caret's current place.
+    private var latest: (field: TargetIdentity, snapshot: FocusedFieldSnapshot)?
     private var generation: Task<Void, Never>?
     private var generationSerial: UInt64 = 0
     /// Every generation task that may still be inside the model, including cancelled ones:
@@ -88,6 +90,7 @@ final class HostCoordinator {
             return reset()
         }
         onFocus?(field.identity)
+        latest = (field.identity, snapshot)
         // Every read, a selection or an app Caret skips included: the router hears of each breakpoint.
         route?.observe(field)
         let context = snapshot.context
@@ -335,7 +338,8 @@ final class HostCoordinator {
             let full = offer.text + more.text
             // Publishing the longer offer displaces the shorter one (which takes its text down) and draws the whole
             // in the same turn of the main thread, so the words already shown stay where they were.
-            guard self.present(full, snapshot: held.snapshot, element: held.element, field: fresh, keyStamp: held.keyStamp) else {
+            let at = Self.drawSnapshot(held: held.snapshot, heldField: held.field.identity, latest: self.latest)
+            guard self.present(full, snapshot: at, element: held.element, field: fresh, keyStamp: held.keyStamp) else {
                 // Never leave an offer on the arbiter that is not drawn.
                 self.clearOffer()
                 return self.status.increment("ghost.extend.notDrawn")
@@ -343,6 +347,16 @@ final class HostCoordinator {
             self.anchor = GhostSuggestion(text: full, context: held.suggestion.context, generationMs: held.suggestion.generationMs)
             self.status.increment("ghost.extended")
         }
+    }
+
+    /// The snapshot an extension draws at: the latest read of the same field (same element and value), which has the
+    /// caret's current place, else the one the suggestion was made on. A scroll during the second request moves the
+    /// caret without changing the text, and drawing at the old place moved a correct ghost back (PR #16 review).
+    static func drawSnapshot(
+        held: FocusedFieldSnapshot, heldField: TargetIdentity, latest: (field: TargetIdentity, snapshot: FocusedFieldSnapshot)?
+    ) -> FocusedFieldSnapshot {
+        guard let latest, latest.field == heldField else { return held }
+        return latest.snapshot
     }
 
     /// Records which window held a ghost as covered, in the debug state, and logs it when the
