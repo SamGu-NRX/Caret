@@ -60,6 +60,11 @@ export function notePassword(el: object, identity: readonly string[] = []): void
   for (const k of identity) passwordIdentities.add(k);
 }
 
+/** Whether `el` was ever noted as a password field. */
+export function notedPassword(el: object): boolean {
+  return wasPassword.has(el);
+}
+
 /** An input's type attribute changed from `from` to `to` (a MutationObserver record): a password once stays one. */
 export function noteTypeChange(el: object, from: string | null, to: string | null, identity: readonly string[] = []): void {
   if (from?.trim().toLowerCase() === "password" || to?.trim().toLowerCase() === "password") notePassword(el, identity);
@@ -124,6 +129,11 @@ const REVEALED_TYPES = new Set(["text", "search", "tel", "url", "email"]);
  */
 export function withheldForHistory(f: { tag: string; type: string }, known: boolean): boolean {
   return !known && f.tag === "input" && REVEALED_TYPES.has(f.type);
+}
+
+/** Whether an input of this type could be a revealed password: it holds any text. */
+export function revealable(type: string): boolean {
+  return REVEALED_TYPES.has(type);
 }
 
 /** What textWithoutSecrets reads of a node tree. A DOM node has all of it (secret-dom.ts). */

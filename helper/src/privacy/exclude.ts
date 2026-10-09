@@ -130,6 +130,14 @@ export function excludedValue(text: string | null | undefined): Exclusion | null
   return text === null || text === undefined || text === "" ? null : scan(text).kind;
 }
 
+/**
+ * excludedValue without its cache, for text that must not be kept even as a cache key: an act's receipt, which is page
+ * text no exclusion screened (engines/session.ts screenReadings).
+ */
+export function excludedValueUncached(text: string): Exclusion | null {
+  return text === "" ? null : (spans(text)[0]?.kind ?? null);
+}
+
 /** `text` with every value excludedValue finds replaced by WITHHELD; the same string when it holds none. */
 export function withholdValues(text: string): string {
   return text === "" ? text : scan(text).kept;

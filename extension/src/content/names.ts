@@ -4,6 +4,7 @@
 // read without the secret fields inside it (secret-dom.ts safeText), so a label wrapped around a one-time-code box
 // doesn't carry its code.
 import { readable, safeText } from "./secret-dom.ts";
+import { composedParent } from "./shadow.ts";
 
 const MAX_NAME = 200;
 
@@ -87,31 +88,8 @@ export function textOfLabel(label: Element, control: Element): string {
   return clean(labelText(label, control));
 }
 
-/**
- * The node's parent in the flat tree, the tree that is rendered: a slotted light-DOM node's slot (in an open or a
- * closed shadow root), else through a shadow root to its host, else its parent element (W1 review, round 2, #6).
- */
-export function composedParent(n: Node): Element | null {
-  const p = n.parentNode;
-  if (p instanceof Element) {
-    const root = p.shadowRoot ?? closedRootOf(p);
-    if (root !== null) {
-      for (const slot of root.querySelectorAll("slot")) if (slot.assignedNodes().includes(n as ChildNode)) return slot;
-    }
-    return p;
-  }
-  if (p instanceof ShadowRoot) return p.host;
-  return null;
-}
-
-function closedRootOf(el: Element): ShadowRoot | null {
-  if (!(el instanceof HTMLElement) || typeof chrome === "undefined" || chrome.dom?.openOrClosedShadowRoot === undefined) return null;
-  try {
-    return (chrome.dom.openOrClosedShadowRoot(el) as ShadowRoot | null) ?? null;
-  } catch {
-    return null;
-  }
-}
+/** The node's parent in the flat tree (shadow.ts), shared with secret classification. */
+export { composedParent } from "./shadow.ts";
 
 /**
  * The names of every group the control sits in, nearest first: fieldset legends and ARIA groups, through shadow

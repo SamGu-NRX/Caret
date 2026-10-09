@@ -4,6 +4,7 @@
 // field's value can't leave the frame as part of some other text.
 import { readableFrom, secretKind, secretWithin, textWithoutSecrets, type SecretKind, type TextTree, type UpTree } from "./secret.ts";
 import { identityOf } from "./password-watch.ts";
+import { composedParent } from "./shadow.ts";
 
 /** Input types that hold no typed text: their name and label can't mark a secret. */
 const NO_VALUE_TYPES = new Set(["submit", "button", "reset", "image", "checkbox", "radio", "file", "range", "color", "hidden"]);
@@ -60,12 +61,9 @@ function ownField(el: Element): boolean {
   return (role !== undefined && VALUE_ROLES.has(role)) || el.hasAttribute("contenteditable");
 }
 
-/** The element above `n` in the composed tree: through a shadow root to its host. */
+/** The element above `n` in the flat tree: a slotted node's slot, through a shadow root to its host (shadow.ts). */
 function elementAbove(n: Node): Element | null {
-  for (let p: Node | null = n instanceof ShadowRoot ? n.host : n.parentNode; p !== null; p = p instanceof ShadowRoot ? p.host : p.parentNode) {
-    if (p.nodeType === Node.ELEMENT_NODE) return p as Element;
-  }
-  return null;
+  return n instanceof ShadowRoot ? n.host : composedParent(n);
 }
 
 /** A field of any kind: by its own markup, or inside an editable region. */

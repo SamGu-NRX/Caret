@@ -219,6 +219,11 @@ const MARKER_MEMO = 8000;
 const WORD_MEMO = new Map<string, boolean>();
 const ENDS_MEMO = new Map<string, boolean>();
 
+/** secretText without the caches, for text that must not be kept even as a cache key (engines/session.ts screenReadings). */
+export function secretTextUncached(text: string): boolean {
+  return text !== "" && (scanMarker(text, false) || valueKind(text) !== null);
+}
+
 /** G2 round 4: whether a text is one fill must never send: it holds a marker word or a value Caret never types. */
 export function secretText(text: string | null | undefined): boolean {
   if (text === null || text === undefined || text === "") return false;

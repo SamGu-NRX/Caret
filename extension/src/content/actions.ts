@@ -35,6 +35,7 @@ import { chooseOption } from "./combobox.ts";
 import { pressOption } from "./press.ts";
 import { attachFile } from "./attach.ts";
 import { insertAtCaret } from "./insert.ts";
+import { valueWithheld } from "./password-watch.ts";
 
 const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Partial<ActAnswer> = {}): ActAnswer => ({ outcome, detail, ...extra });
 
@@ -90,7 +91,19 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
     a = await actOn(r.el, verb, check, alive);
   }
   // A rebind is the one way an act reaches an element other than the walked object; the receipt says so.
-  return r.rebound && (a.outcome === "ok" || a.outcome === "alreadyTrue") ? { ...a, detail: a.detail === null ? "rebound by its strong key" : `${a.detail}; rebound by its strong key` } : a;
+  const said = r.rebound && (a.outcome === "ok" || a.outcome === "alreadyTrue") ? { ...a, detail: a.detail === null ? "rebound by its strong key" : `${a.detail}; rebound by its strong key` } : a;
+  return receiptFor(said, valueWithheld(r.el));
+}
+
+/**
+ * The answer an act sends: without its readings (the field's values and the page's error text after the write) when
+ * the control's value is withheld (password-watch.ts valueWithheld), as a walk sends no value for it. The helper then
+ * reads a failed write as unverified.
+ */
+export function receiptFor(a: ActAnswer, withheld: boolean): ActAnswer {
+  if (!withheld || a.readings === undefined) return a;
+  const { readings: _readings, ...rest } = a;
+  return rest;
 }
 
 /** A stage boundary: the task's grant still covers the frame (asked of the worker), then the element is still eligible. */

@@ -5,8 +5,8 @@
 // every grant when its port closes, so a new session starts with none.
 import { randomUUID } from "node:crypto";
 import { deniedOrigin } from "../privacy/denied-origins.ts";
-import { excludedValue } from "../privacy/exclude.ts";
-import { secretText } from "../memory/sensitive.ts";
+import { excludedValueUncached } from "../privacy/exclude.ts";
+import { secretTextUncached } from "../memory/sensitive.ts";
 import { PROTOCOL_VERSION, type AppRef, type EngineMessage, type HelperToEngine, type PageFocusMoved, type PageHello, type PageInput, type PagePong, type PageResult, type PageSnapshot, type PageVerb, type ScopedActGrant } from "../protocol.ts";
 
 export interface EngineInfo {
@@ -210,17 +210,20 @@ export class EngineSession {
 }
 
 /**
- * An act result with its readings screened before anyone reads them. The page's error and description text after a
- * write is never kept: nothing reads it, and it is page text no exclusion screened. The field's values before and
- * after are kept only when none holds a value Caret never carries or a secret marker (privacy/exclude.ts,
- * memory/sensitive.ts); otherwise every reading goes, and a failed write reads as unverified ("may have landed",
- * page-link.ts toVerbOutcome) and an ok write's value as the one Caret wrote.
+ * An act result with its readings screened before anyone reads them. A second layer only: the extension sends no
+ * readings for a control it can't show is non-secret with known history (content/actions.ts receiptFor), and these
+ * format and word checks pass "swordfish" or "123456", so they prove nothing on their own. The page's error and
+ * description text after a write is never kept: nothing reads it, and it is page text no exclusion screened. The
+ * field's values before and after are kept only when none holds a value Caret never carries or a secret marker
+ * (privacy/exclude.ts, memory/sensitive.ts); otherwise every reading goes, and a failed write reads as unverified
+ * ("may have landed", page-link.ts toVerbOutcome) and an ok write's value as the one Caret wrote.
  */
 export function screenReadings(r: PageResult): PageResult {
   if (r.readings === undefined) return r;
   const { readings, ...rest } = r;
   const values = [readings.before, readings.afterInput, readings.afterBlur];
-  if (values.some((v) => excludedValue(v) !== null || secretText(v))) return rest;
+  // Uncached: a receipt's values must not stay behind as the recognizers' cache keys.
+  if (values.some((v) => excludedValueUncached(v) !== null || secretTextUncached(v))) return rest;
   return { ...rest, readings: { ...readings, error: null } };
 }
 
