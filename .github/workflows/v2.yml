@@ -1,0 +1,252 @@
+name: Caret v2
+
+on:
+  push:
+    branches: ['v2/**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: caret-v2-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  helper:
+    name: helper
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: helper
+    steps:
+      - name: Refuse credentials and external environment files
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
+            if [[ -v "$name" ]]; then
+              echo "::error::$name must not be set in fixture-only CI"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: helper/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm exec vitest run
+
+  extension:
+    name: extension
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - name: Refuse credentials and external environment files
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
+            if [[ -v "$name" ]]; then
+              echo "::error::$name must not be set in fixture-only CI"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: extension/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  python:
+    name: python
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Refuse credentials and external environment files
+        shell: bash
+        run: |
+          for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
+            if [[ -v "$name" ]]; then
+              echo "::error::$name must not be set in fixture-only CI"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python3 -m unittest discover -s tests
+      - run: python3 scripts/check_sources.py
+
+  screen-reader:
+    name: screen-reader
+    runs-on: macos-26
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/screen-reader
+    steps:
+      - name: Refuse credentials and external environment files
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
+            if [[ -v "$name" ]]; then
+              echo "::error::$name must not be set in fixture-only CI"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - name: Report toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      # This package has no resolved dependencies yet; include the manifest so its cache still has a key.
+      - uses: actions/cache@v4
+        with:
+          path: apps/screen-reader/.build
+          key: screen-reader-${{ runner.os }}-${{ runner.arch }}-macos26-${{ hashFiles('apps/screen-reader/Package.resolved', 'apps/screen-reader/Package.swift') }}-${{ hashFiles('apps/screen-reader/Sources/**', 'apps/screen-reader/Tests/**') }}
+          restore-keys: |
+            screen-reader-${{ runner.os }}-${{ runner.arch }}-macos26-${{ hashFiles('apps/screen-reader/Package.resolved', 'apps/screen-reader/Package.swift') }}-
+      - run: swift build && swift test
+
+  host:
+    name: host
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      CARET_RECORD_SNAPSHOTS: '0'
+    steps:
+      - name: Refuse credentials and external environment files
+        shell: bash
+        run: |
+          for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
+            if [[ -v "$name" ]]; then
+              echo "::error::$name must not be set in fixture-only CI"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - name: Fetch pinned KeyType packages
+        run: git submodule update --init --depth 1 packages/keytype
+      - name: Install pinned llama.cpp macOS framework
+        shell: bash
+        run: |
+          download=$(mktemp -d "$RUNNER_TEMP/llama-download.XXXXXX")
+          extracted=$(mktemp -d "$RUNNER_TEMP/llama-extracted.XXXXXX")
+          curl --fail --location --retry 3 \
+            https://github.com/ggml-org/llama.cpp/releases/download/b9402/llama-b9402-xcframework.zip \
+            --output "$download/llama.zip"
+          unzip -q "$download/llama.zip" -d "$extracted" \
+            'build-apple/llama.xcframework/Info.plist' \
+            'build-apple/llama.xcframework/macos-arm64_x86_64/*'
+          python3 -I - "$extracted/build-apple/llama.xcframework/Info.plist" <<'PY'
+          import plistlib
+          import sys
+          path = sys.argv[1]
+          with open(path, 'rb') as f:
+              manifest = plistlib.load(f)
+          manifest['AvailableLibraries'] = [
+              lib for lib in manifest['AvailableLibraries'] if lib['SupportedPlatform'] == 'macos'
+          ]
+          if len(manifest['AvailableLibraries']) != 1:
+              raise SystemExit('Expected exactly one macOS llama.cpp library')
+          with open(path, 'wb') as f:
+              plistlib.dump(manifest, f)
+          PY
+          mkdir -p packages/keytype/Packages/ModelRuntime/Vendor
+          mv "$extracted/build-apple/llama.xcframework" packages/keytype/Packages/ModelRuntime/Vendor/
+      - name: Report toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - run: swift test --package-path apps/caret
+
+  guards:
+    name: guards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: helper
+    env:
+      EVIDENCE: ${{ runner.temp }}/caret-v2-guards
+    steps:
+      - name: Refuse credentials and external environment files
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
+            if [[ -v "$name" ]]; then
+              echo "::error::$name must not be set in fixture-only CI"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: helper/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Guard adversary, refuse verifier
+        run: node scripts/guard-adversary.ts --out "$EVIDENCE/refuse" --verifier refuse
+      - name: Guard adversary, accept verifier
+        if: ${{ !cancelled() }}
+        run: node scripts/guard-adversary.ts --out "$EVIDENCE/accept" --verifier accept
+      # The canned oracle replays fixture desks in-process; no browser or form server is used.
+      - name: B24 page oracle, canned engine
+        if: ${{ !cancelled() }}
+        run: node scripts/realfill-asks.ts --out "$EVIDENCE/oracle" --engine canned --maker heads --asks-file asks.json --form-window page
+      - name: Check refuse writes and oracle wrong counts
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const read = (path) => JSON.parse(readFileSync(join(process.env.EVIDENCE, path), 'utf8'));
+          const refuse = read('refuse/guard-adversary.json');
+          assert.equal(refuse.verifier, 'refuse');
+          assert.equal(refuse.unexempt, 0, 'Refuse mode wrote outside a named exemption');
+          const oracle = read('oracle/realfill-asks.json');
+          assert.equal(oracle.formWindow, 'page');
+          assert.ok(oracle.rows.length > 0, 'Oracle must score asks');
+          const wrong = oracle.rows.filter(row => row.verdict === 'wrong').length;
+          const afterPickWrong = oracle.rows.filter(row => row.continued?.verdict === 'wrong').length;
+          const refusePickWrites = oracle.rows.reduce((n, row) => n + (row.refusePicks?.proposed.length ?? 0), 0);
+          console.log({ wrong, afterPickWrong, refusePickWrites, asks: oracle.rows.length });
+          assert.equal(wrong, 0, 'Oracle reported wrong automatic results');
+          assert.equal(afterPickWrong, 0, 'Oracle reported wrong results after picks');
+          assert.equal(refusePickWrites, 0, 'Must-refuse asks proposed values after picks');
+          assert.equal(oracle.jevSpent + oracle.writerSpent, 0, 'Fixture CI must not spend on models');
+          JS
+      - name: Upload oracle summary and guard evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: caret-v2-guards
+          path: ${{ env.EVIDENCE }}
+          if-no-files-found: error
