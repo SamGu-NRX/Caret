@@ -4,6 +4,7 @@ import type { AppRef, Node, Snapshot, TypedValue, WindowRef } from "./protocol.t
 import { PAGE_WINDOW_KIND } from "./engines/windows.ts";
 import { admitNode, admitTitle, admitValues, confers, inherited } from "./privacy/exclude.ts";
 import { appOff, DEFAULT_APPS_OFF, noteSwitchedOff } from "./privacy/read-policy.ts";
+import { readerValue } from "./fill/kinds.ts";
 
 export interface WindowState {
   app: AppRef;
@@ -137,7 +138,8 @@ export class ScreenModel {
       // V4 review: a pop-up menu's option is a choice the window offers, not a fact it states, so a value read in one (a date
       // in "Deliver on Oct 17") is no window's value: kept, it was offered to other forms as a source and could mint as a
       // plain date. The reader keeps a pop-up's own menu items as its options (Compactor.swift popUpMenu).
-      values: admitValues(values.filter((v) => !menuOption(nodes, v.nodeKey) && !dropped.has(v.nodeKey)), nodes),
+      // A reader phone that its line says is a loyalty or membership number is an ID (kinds.ts readerValue).
+      values: admitValues(values.filter((v) => !menuOption(nodes, v.nodeKey) && !dropped.has(v.nodeKey)), nodes).map((v) => readerValue(v, [nodes.get(v.nodeKey)?.value, nodes.get(v.nodeKey)?.label])),
       focusedKey,
       updatedAt: snap.at,
       lastFocusedAt: snap.focused ? snap.at : (prior?.lastFocusedAt ?? 0),
