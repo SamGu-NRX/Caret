@@ -331,6 +331,9 @@ final class HostCoordinator {
             overlay.hide()
             return false
         }
+        // A suggestion wider than a single-line field's room offers the words that fit; the rest stays in
+        // `anchor` and comes back as the user types or takes these (`SuggestionAnchor.remaining`).
+        let text = overlay.inlineText(text, at: snapshot, style: style)
         let offer = Offer(text: text, target: field.identity, fieldValue: field.value, caretUTF16: field.selection.start)
         guard let offerID = arbiter.publish(offer, shown: false) else {
             status.increment("offer.refused")

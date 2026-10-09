@@ -58,21 +58,18 @@ final class GhostOverlay {
     /// `viewport`: reads the field's visible text area, global top-left points
     /// (`AXRead.visibleFrame`); the capsule stays inside it when it can. Asked only for a capsule,
     /// because it walks the element's ancestors and ghost text is drawn on every key.
-    @discardableResult
-    func show(_ text: String, at snapshot: FocusedFieldSnapshot, style: OverlayTextStyle, pid: Int32? = nil,
-              capsule forced: Bool = false, viewport: () -> CGRect? = { nil }) -> Presentation? {
-        let live = snapshot.context
-        guard !text.isEmpty else {
-            lastFit = nil
-            hide()
-            return nil
-        }
-        guard var placement = placementResolver.placement(for: live) else {
-            let cause: GhostFit.Cause = live.geometry.cursorRect == nil ? .noCaret : .resolverRefused
-            lastFit = Self.record(.declined, cause, text: text, font: style.font, placement: nil, context: live)
-            hide()
-            return nil
-        }
+    /// What `show` would draw with, before the overflow rule: KeyType's placement (with the mid-line
+    /// capsule and the app's font fallback applied), the style, the resolved font and the text mirror.
+    private struct Resolved {
+        var placement: OverlayPlacement
+        var style: OverlayTextStyle
+        var font: NSFont
+        var mirrorContext: TextMirrorOverlayContext?
+        var canMirror: Bool
+    }
+
+    private func resolve(_ live: TextFieldContext, style: OverlayTextStyle) -> Resolved? {
+        guard var placement = placementResolver.placement(for: live) else { return nil }
         if placement.mode == .inline, GhostTextEngine.shouldUseCapsule(for: live) {
             placement.presentation = .capsule
         }
@@ -85,15 +82,52 @@ final class GhostOverlay {
             }
             placement.fontSizeAdjustmentFactor *= fallback.sizeAdjustmentFactor
         }
-
         let mirrorContext: TextMirrorOverlayContext?
         if placement.mode == .mirror, placement.presentation == .inlineGhost, placement.fieldRect?.isEmpty == false {
             mirrorContext = TextMirrorOverlayContext(beforeCursor: live.beforeCursor, afterCursor: live.afterCursor)
         } else {
             mirrorContext = nil
         }
-        let canMirror = GhostTextOverlayWindow.canUseTextMirror(placement: placement, mirrorContext: mirrorContext)
-        let font = InlineGhostTextPresenter.resolveFont(effective.font, placement: placement)
+        return Resolved(
+            placement: placement, style: effective,
+            font: InlineGhostTextPresenter.resolveFont(effective.font, placement: placement),
+            mirrorContext: mirrorContext,
+            canMirror: GhostTextOverlayWindow.canUseTextMirror(placement: placement, mirrorContext: mirrorContext)
+        )
+    }
+
+    /// The part of `text` to offer at the snapshot's caret: all of it, unless it is too wide for the
+    /// room left on a single-line field, where it is the whole words that fit
+    /// (`GhostFit.wordsThatFit`). When not even one word fits, all of it, which `show` then puts in the
+    /// capsule. Called before the offer is published, so Tab takes exactly what is drawn.
+    func inlineText(_ text: String, at snapshot: FocusedFieldSnapshot, style: OverlayTextStyle) -> String {
+        guard overflow == .capsule, let r = resolve(snapshot.context, style: style), !r.canMirror,
+              r.placement.presentation == .inlineGhost else { return text }
+        let overflows = { GhostTextOverlayWindow.shouldSuppressInlineSingleLineOverflow(text: $0, font: r.font, placement: r.placement) }
+        guard overflows(text) else { return text }
+        return GhostFit.wordsThatFit(text) { !overflows($0) } ?? text
+    }
+
+    @discardableResult
+    func show(_ text: String, at snapshot: FocusedFieldSnapshot, style: OverlayTextStyle, pid: Int32? = nil,
+              capsule forced: Bool = false, viewport: () -> CGRect? = { nil }) -> Presentation? {
+        let live = snapshot.context
+        guard !text.isEmpty else {
+            lastFit = nil
+            hide()
+            return nil
+        }
+        guard let resolved = resolve(live, style: style) else {
+            let cause: GhostFit.Cause = live.geometry.cursorRect == nil ? .noCaret : .resolverRefused
+            lastFit = Self.record(.declined, cause, text: text, font: style.font, placement: nil, context: live)
+            hide()
+            return nil
+        }
+        var placement = resolved.placement
+        let effective = resolved.style
+        let mirrorContext = resolved.mirrorContext
+        let canMirror = resolved.canMirror
+        let font = resolved.font
         let decision = forced ? .capsule : Self.decision(text, font: font, placement: placement, canMirror: canMirror, rule: overflow)
         switch decision {
         case .asPlaced: break
