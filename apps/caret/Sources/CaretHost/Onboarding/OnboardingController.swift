@@ -76,6 +76,10 @@ final class OnboardingController {
     var jevKey = JevKeyHooks()
     private var jevKeyGeneration = 0
     private let guide = GuidePlacement()
+    /// "Drag Caret into the list above", inside System Settings while the switch is off.
+    private let dragPanel = SettingsDragPanel()
+    /// The window waits this long for System Settings to appear before it shows its own guide instead.
+    private var settingsWait: Timer?
 
     init(mode: Mode, testHooks: Bool, store: SettingsStore = .shared, progressPath: String? = nil) {
         self.mode = mode
@@ -209,6 +213,9 @@ final class OnboardingController {
         stopPolling()
         completion?.cancel()
         completion = nil
+        dragPanel.stop()
+        settingsWait?.invalidate()
+        settingsWait = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
@@ -250,6 +257,12 @@ final class OnboardingController {
         switch command {
         case .changed:
             model.state = flow?.state
+            dragPanel.landed = flow?.state.access.granted == true
+            if flow?.state.step != .access {
+                dragPanel.stop()
+                settingsWait?.invalidate()
+                settingsWait = nil
+            }
             followFrame()
         case .finished:
             store.update(source: .onboarding) { $0.onboarded = true }
@@ -258,6 +271,7 @@ final class OnboardingController {
         case .openSystemSettings:
             guard drawsWindow else { return suppressed.append("openSystemSettings") }
             Self.openAccessibilityPane()
+            startDragPanel()
         case .bringForward:
             guard drawsWindow, let window else { return }
             NSApp.activate(ignoringOtherApps: true)
@@ -332,11 +346,36 @@ final class OnboardingController {
         if !sendAccept(sent) { flow?.send(.sendFailed(.accept)) }
     }
 
-    /// The alert that puts Caret in the Accessibility list (macOS has no quieter way), then the pane itself.
+    /// The pane itself, with no macOS alert: the person drags Caret into the list (`SettingsDragPanel`), which is how T3
+    /// Code saves the alert's click.
     private static func openAccessibilityPane() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    /// Hands the switch step to the panel inside System Settings: Caret's own window steps out of the way. If System
+    /// Settings has not shown its window within 6 s, or closes before the switch, the window comes back as the guide.
+    private func startDragPanel() {
+        dragPanel.onSettingsClosed = { [weak self] in self?.showGuideWindow() }
+        dragPanel.start()
+        window?.orderOut(nil)
+        settingsWait?.invalidate()
+        settingsWait = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.settingsWait = nil
+                guard !self.dragPanel.isShown, self.flow?.state.step == .access else { return }
+                self.showGuideWindow()
+            }
+        }
+    }
+
+    private func showGuideWindow() {
+        settingsWait?.invalidate()
+        settingsWait = nil
+        guard drawsWindow, let window, flow?.state.step == .access, !dragPanel.isShown else { return }
+        shownFrame = nil
+        followFrame()
+        window.orderFrontRegardless()
     }
 
     // MARK: - Reading the system
@@ -422,6 +461,9 @@ final class OnboardingController {
             let content = NSRect(x: screen.midX - size.width / 2, y: screen.midY - size.height / 2, width: size.width, height: size.height)
             Self.move(window, to: window.frameRect(forContentRect: content), animate: animate)
         case .guide:
+            // While the panel sits inside System Settings (or System Settings is still opening), Caret's own window
+            // stays out of the way.
+            if dragPanel.isShown || settingsWait != nil { return }
             window.level = .floating
             let size = OnboardingView.size(for: .guide)
             let content = guide.placement(for: size, screen: nil)

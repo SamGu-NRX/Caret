@@ -415,7 +415,12 @@ struct AccessPane: View {
                 }
             }
             .padding(.top, 14)
-            SettingsRowDrawing(on: granted, animated: animated && !reduceMotion).padding(.top, 14)
+            // The same row as the panel inside System Settings: drag it into the list there.
+            if granted {
+                SettingsRowDrawing(on: true, animated: false).padding(.top, 14)
+            } else {
+                DragRow().frame(height: 52).padding(.top, 14)
+            }
             if !granted {
                 Button(OnboardingCopy.Access.help) { send(.toggleHelp) }
                     .buttonStyle(QuietButtonStyle(size: 13))

@@ -19,9 +19,9 @@ enum OnboardingCopy {
     }
 
     enum Access {
-        static let title = "Turn on Caret in the list."
-        static let line = "System Settings is open at Privacy & Security, Accessibility. Flip the switch next to Caret. macOS asks for your password or Touch ID."
-        static let reopened = "Caret opened again, and its switch is still off. In System Settings, flip the one next to Caret. macOS asks for your password or Touch ID."
+        static let title = "Drag Caret into the list."
+        static let line = "System Settings is open at Privacy & Security, Accessibility. Drag Caret from here into the list there. macOS asks for your password or Touch ID."
+        static let reopened = "Caret opened again, and it isn't on yet. Open System Settings, then drag Caret into the Accessibility list."
         static let row = "Accessibility"
         static let waiting = "Waiting for the switch…"
         static let on = "On."
@@ -77,6 +77,13 @@ enum OnboardingCopy {
         static let menuBar = "Caret lives in the menu bar. Pause it or change anything there."
         static let notNow = "Not now"
         static let done = "Done"
+    }
+
+    /// The panel inside System Settings' Accessibility pane.
+    enum Drag {
+        static let header = "Drag Caret into the list above"
+        static let voiceOver = "Drag Caret to System Settings, or press to show it in Finder"
+        static let close = "Close"
     }
 
     /// The one-time coach slip at the first ghost text in another app.

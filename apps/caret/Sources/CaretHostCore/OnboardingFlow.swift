@@ -272,7 +272,7 @@ public final class OnboardingFlow {
         public var reopened = false
         /// "Caret isn't in the list?" is open.
         public var helpOpen = false
-        /// The macOS alert was raised (with `openSystemSettings`).
+        /// System Settings was opened for the switch (`openSystemSettings`).
         public var alertShown = false
     }
 
@@ -408,7 +408,7 @@ public final class OnboardingFlow {
         case finished
         /// Write `OnboardingProgress` for this step.
         case saveProgress(OnboardingStep)
-        /// Ask macOS (the alert that puts Caret in the list) and open Privacy & Security, Accessibility.
+        /// Open Privacy & Security, Accessibility, with the panel to drag Caret into its list (no macOS alert).
         case openSystemSettings
         /// The grant landed and the flow moved on: Caret takes the focus back from System Settings, once.
         case bringForward
