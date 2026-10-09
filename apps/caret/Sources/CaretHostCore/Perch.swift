@@ -74,7 +74,7 @@ public enum Perch {
     public static func subject(_ records: [TaskRecord], now: Date, acknowledgedAt: Int64 = 0) -> Subject? {
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
         let candidates: [(TaskRecord, Mood)] = records.compactMap { r -> (TaskRecord, Mood)? in
-            guard let mood = mood(for: r.state) else { return nil }
+            guard let mood: Mood = Perch.mood(for: r.state) else { return nil }
             // Done by the user's own hand (a prepared offer they typed out, a watched window they
             // closed): no gesture of relief for work Caret did not do.
             if r.state == .done, r.cause == .you { return nil }
