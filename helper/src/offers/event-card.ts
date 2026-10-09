@@ -641,6 +641,17 @@ export class EventCards {
     }
   }
 
+  /**
+   * The screen model let go of a window's text (ScreenModel.expire): a card read from it, or shown in a field of it, is
+   * withdrawn as stale, since taking it would find no sentence to check. The lines heard there and the sentences judged
+   * there, which quote its text, go too.
+   */
+  windowExpired(windowId: string): void {
+    for (const e of [...this.entries.values()]) if (e.windowId === windowId || e.field.windowId === windowId) this.withdraw(e.offerKey, "stale");
+    for (let i = this.heardLines.length - 1; i >= 0; i--) if (this.heardLines[i]?.w.window.windowId === windowId) this.heardLines.splice(i, 1);
+    for (const k of [...this.judged]) if (k.startsWith(`${windowId}\u0000`)) this.judged.delete(k);
+  }
+
   withdrawAll(reason: "settings" | "stale"): void {
     for (const k of [...this.entries.keys()]) this.withdraw(k, reason);
   }

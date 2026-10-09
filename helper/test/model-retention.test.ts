@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { releaseSources } from "../src/executor/executor.ts";
+import { provenanceWindows, type Provenance } from "../src/fill/contract.ts";
+import { notifyExpiry, WINDOW_STATE_HOLDERS, type ExpiryList } from "../src/expiry.ts";
+import { OFFER_LIFETIMES } from "../src/offers/lifetimes.ts";
 import { Helper } from "../src/helper.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
@@ -180,6 +183,12 @@ describe("the helper's copies of a window's text", () => {
     expect(h.model.windows.has(FORM)).toBe(true);
   });
 
+  it("are listed in one place, every offer family included, which a new family can't be left out of", () => {
+    expect(Object.keys(h.onExpiry).sort()).toEqual([...Object.keys(OFFER_LIFETIMES), ...WINDOW_STATE_HOLDERS].sort());
+    // A skill's keep or promote question is the one holder with nothing read from a window.
+    expect(Object.entries(h.onExpiry).flatMap(([k, f]) => (f === null ? [k] : []))).toEqual(["skill"]);
+  });
+
   it("drop it from the model at once when its window closes", () => {
     void h.handleReader({ type: "windowClosed", v: PROTOCOL_VERSION, at: 2, windowId: NOTE });
     expect(holds(h.model, PLANTED)).toBe(false);
@@ -208,5 +217,34 @@ describe("a finished task's hold on its source windows", () => {
     const task = { sourced: [], guard: null };
     releaseSources(task);
     expect(task.guard).toBeNull();
+  });
+});
+
+describe("notifyExpiry", () => {
+  it("calls each holder once, in the list's order, though several families share one, and skips a holder with nothing to drop", () => {
+    const calls: string[] = [];
+    const shared = (id: string): void => void calls.push(`shared ${id}`);
+    // Object.fromEntries loses the keys' type; they are every holder, as the test above checks Helper.onExpiry's are.
+    const list = Object.fromEntries([...Object.keys(OFFER_LIFETIMES), ...WINDOW_STATE_HOLDERS].map((k) => [k, (id: string) => void calls.push(`${k} ${id}`)])) as ExpiryList;
+    list.routine = shared;
+    list.loopNext = shared;
+    list.skill = null;
+    notifyExpiry(list, "w");
+    expect(calls.filter((c) => c === "shared w")).toHaveLength(1);
+    expect(calls.some((c) => c.startsWith("skill"))).toBe(false);
+    expect(calls.at(-1)).toBe("router w");
+  });
+});
+
+describe("provenanceWindows", () => {
+  it("names every window a value was read from, through derived values, and none for memory or the instruction", () => {
+    const unit: Provenance = { kind: "unit", windowId: "w1", app: "Notes", title: "Trip", digest: "d" };
+    const transfer: Provenance = { kind: "transfer", srcWindowId: "w2", srcKey: "k", rounds: 1, reshaped: null };
+    const memory: Provenance = { kind: "memory", id: "m", label: "Name", part: null, whose: "user" };
+    expect(provenanceWindows(unit)).toEqual(["w1"]);
+    expect(provenanceWindows(transfer)).toEqual(["w2"]);
+    expect(provenanceWindows({ kind: "derived", how: "namePart", base: unit, also: transfer })).toEqual(["w1", "w2"]);
+    expect(provenanceWindows({ kind: "derived", how: "namePart", base: memory, also: null })).toEqual([]);
+    expect(provenanceWindows({ kind: "instruction", span: "Dana" })).toEqual([]);
   });
 });

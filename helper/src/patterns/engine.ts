@@ -575,6 +575,21 @@ export class PatternEngine {
       this.judgeEdit(w);
       this.watches.delete(id);
     }
+    this.withdrawOffersFrom(windowId);
+  }
+
+  /**
+   * The screen model let go of a window's text without its closing (ScreenModel.expire): a loop's prediction stops
+   * quoting it, and the offers that read it go as they would on a close. Routines and edit watches are left alone, since
+   * the window has not closed.
+   */
+  windowExpired(windowId: string): void {
+    this.loops.sourceClosed(windowId);
+    this.withdrawOffersFrom(windowId);
+  }
+
+  /** Offers made in the window are withdrawn; offers with a value from it lose it as a source, or are withdrawn. */
+  private withdrawOffersFrom(windowId: string): void {
     for (const o of this.offers.values()) {
       if (o.state !== "open") continue;
       if (o.msg.windowId === windowId) this.withdraw(o, "stale");

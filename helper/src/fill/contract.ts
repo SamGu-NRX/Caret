@@ -1201,6 +1201,21 @@ const norm = (t: string): string => t.replace(/\s+/gu, " ").trim();
  * is checked by the executor's memoryHolds, and an identity, a saved answer and a memory value by the preview's own
  * recheck (fill-popup.ts valueStale); an instruction has no screen source.
  */
+/** The windows a provenance was read from: what a holder of the value depends on (Helper.onExpiry). */
+export function provenanceWindows(pr: Provenance): string[] {
+  switch (pr.kind) {
+    case "window":
+    case "unit":
+      return [pr.windowId];
+    case "transfer":
+      return [pr.srcWindowId];
+    case "derived":
+      return [...provenanceWindows(pr.base), ...(pr.also === null ? [] : provenanceWindows(pr.also))];
+    default:
+      return [];
+  }
+}
+
 export function provenanceStale(model: ScreenModel, pr: Provenance): string | null {
   switch (pr.kind) {
     case "window": {

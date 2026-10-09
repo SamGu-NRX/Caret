@@ -10,6 +10,7 @@ import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScop
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
 import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
+import { notifyExpiry, type ExpiryList } from "./expiry.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
@@ -85,7 +86,7 @@ import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
-import { guardFor, type CheckedValue } from "./fill/contract.ts";
+import { guardFor, provenanceWindows, type CheckedValue } from "./fill/contract.ts";
 import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFields, recheckFill, valueStale, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
@@ -330,6 +331,15 @@ interface CaretFill {
 }
 
 const fieldId = (windowId: string, key: string): string => `${windowId}\u0000${key}`;
+
+/** The windows a planned task acts in or copies from: its target, and each window a value it writes or attaches was read from. */
+function planWindows(d: PlanDraft): Set<string> {
+  const out = new Set([d.checked.window.window.windowId]);
+  const mints = [...d.checked.mints.values(), ...d.checked.writes.map((w) => w.checked), ...(d.checked.attach === null ? [] : [d.checked.attach.checked])];
+  for (const m of mints) for (const id of provenanceWindows(m.provenance)) out.add(id);
+  return out;
+}
+
 /** How long an offer to save an answer can be taken (S1). Assumed: as long as a fill proposal is kept. */
 const ANSWER_OFFER_KEEP_MS = PROPOSAL_KEEP_MS;
 /** Values Caret's executor wrote into one field that capture remembers, newest last. Assumed: a form is written a few times at most. */
@@ -493,7 +503,7 @@ export class Helper {
   /** Answers the host's firstLook. */
   readonly firstLookRunner: FirstLookRunner;
   /** Offers a first look found and recorded, by key, until taken, expired or withdrawn, with the engine offer each reports, if any. */
-  private readonly firstLooks = new Map<string, { at: number; family: Family; underlying: string | null }>();
+  private readonly firstLooks = new Map<string, { at: number; family: Family; underlying: string | null; windowId: string }>();
   /**
    * Planned tasks on offer, by offerKey: the draft, when it was proposed, and what each field it writes
    * held then, so a field the user changes before the run's first read stops it.
@@ -785,7 +795,7 @@ export class Helper {
       run: (taskId, plan, slots, expect, guard) => this.executor.run(taskId, plan, slots, expect, { grant: true, ...(guard === undefined ? {} : { guard }) }),
       record: (msg, family, accept, underlying) => {
         this.offers.record(msg, accept);
-        this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
+        this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying, windowId: msg.field.windowId });
       },
       withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
       about: () => this.aboutValues(),
@@ -3344,26 +3354,56 @@ export class Helper {
 
   /**
    * The model dropped a window whose text went ten minutes without a snapshot (ScreenModel.expire). Not a close: the
-   * window may still be open, so pending watches and routines don't hear of it. What keeps a copy of its text lets it go:
-   * an open-app offer quoting its status line is withdrawn as stale, as on a close, since accepting it would find no
-   * window. Whatever depends on the window is rechecked against the model now: a fill pop-up that showed a value from it
-   * is withdrawn as stale, and a goal segment or a run, running or paused, that copies from it or acts in it is revoked,
-   * its grant and kept sources with it. The router reads the moment again.
+   * window may still be open, so pending watches and routines don't hear of it; everything in onExpiry does.
    */
   private windowExpired(windowId: string, now: number): void {
     this.opts.store.count("model.window_expired", 1, now);
-    // An edit still open there was typed over ten minutes ago, so transfers.tick has judged it; this lets go of its text.
-    this.record(this.transfers.flush(windowId));
-    forgetWindow(windowId);
-    this.ownerVerdicts.forget(new Set([windowId]));
-    this.openApp.onWindowClosed(windowId);
-    if (this.preFocus?.windowId === windowId) this.preFocus = null;
-    this.goals.onChanges([]);
-    this.executor.recheck();
-    this.checkFills(windowId);
-    this.routing?.candidatesChanged();
-    this.routing?.observe();
+    notifyExpiry(this.onExpiry, windowId);
   }
+
+  private readonly patternsExpired = (windowId: string): void => this.patterns.windowExpired(windowId);
+
+  /**
+   * Everything that holds state read from one window, and how each lets go of it when the window expires, in this order:
+   * copies of its text first, then the offers built on it (withdrawn as stale, since taking one would find no source to
+   * check), then the work that depends on it (revoked when its next copy or act needs the window), and the router last,
+   * to read the moment without them. The type names every offer family (expiry.ts).
+   */
+  readonly onExpiry: ExpiryList = {
+    // An edit still open there was typed over ten minutes ago, so transfers.tick has judged it; this lets go of its text.
+    transfers: (id) => this.record(this.transfers.flush(id)),
+    lineTable: forgetWindow,
+    ownerVerdicts: (id) => this.ownerVerdicts.forget(new Set([id])),
+    preFocus: (id) => {
+      if (this.preFocus?.windowId === id) this.preFocus = null;
+    },
+    answerOffers: (id) => {
+      for (const [k, o] of this.answerOffers) if (o.windowId === id) this.answerOffers.delete(k);
+    },
+    askQuestions: (id) => {
+      for (const [k, q] of this.askQuestions) if (q.draft.window.windowId === id) this.askQuestions.delete(k);
+    },
+    fill: (id) => this.checkFills(id),
+    open: (id) => this.openApp.onWindowClosed(id),
+    event: (id) => this.events.windowExpired(id),
+    routine: this.patternsExpired,
+    loopNext: this.patternsExpired,
+    loopFinish: this.patternsExpired,
+    // A keep or promote question asks about a run that just ended and quotes only the routine's own name.
+    skill: null,
+    firstLook: (id) => {
+      for (const [k, f] of [...this.firstLooks]) if (f.windowId === id) this.withdrawFirstLook(k, "stale");
+    },
+    plan: (id) => {
+      for (const [k, p] of [...this.planOffers]) if (planWindows(p.draft).has(id)) this.withdrawPlan(k, "stale");
+    },
+    goalSegments: () => this.goals.onChanges([]),
+    runs: () => this.executor.recheck(),
+    router: () => {
+      this.routing?.candidatesChanged();
+      this.routing?.observe();
+    },
+  };
 
   private checkFills(windowId: string): void {
     for (const [id, { p, form }] of this.fillPopups) {

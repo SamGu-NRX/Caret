@@ -368,10 +368,45 @@ describe("offer lifetimes over the socket", () => {
     await replayDesk(events);
     const action = await host.waitFor<{ at: number; offerKey: string; actions: { id: string }[] }>((m) => m.type === "action");
     expect(action.actions.map((a) => a.id)).toEqual(["run"]);
+    // The calendar the values come from is read again meanwhile, so only the offer's own lifetime can end it.
+    reader.clock = action.at;
+    await readAgain("5150-20", 5 * MIN);
     await tickAt(action.at + 10 * MIN - 1);
     expect(withdrawals()).toEqual([]);
     await tickAt(action.at + 10 * MIN);
     expect(withdrawals()).toEqual([[action.offerKey, "expired"]]);
+  });
+
+  it("routine: is withdrawn as stale once the window its values come from goes ten minutes without a snapshot", async () => {
+    const calendar = (day: number): ListWindow => ({
+      windowId: "5150-20",
+      app: FIXTURE_APP,
+      title: "Calendar",
+      group: "Event",
+      lines: [`Design review ${day}`, `priya.raman+${day}@northwind.example`, `https://meet.example.com/day-${day}`],
+    });
+    const compose = (day: number): GridWindow => ({ windowId: `6160-${100 + day}`, app: MAIL_APP, title: `New message ${day}`, columns: ["Subject", "To", "Link"], rows: 1, values: new Map() });
+    const events = recordDesk((desk) => {
+      for (let day = 1; day <= 4; day++) {
+        desk.at += DAY;
+        const cal = calendar(day);
+        desk.showList(cal);
+        desk.advance(1000);
+        const c = compose(day);
+        desk.showGrid(c);
+        if (day === 4) return;
+        for (let i = 0; i < 3; i++) desk.fill(c, 0, i, cal.lines[i] as string);
+        desk.close(c.windowId);
+      }
+    });
+    await replayDesk(events);
+    const action = await host.waitFor<{ at: number; offerKey: string }>((m) => m.type === "action");
+    const read = helper.model.windows.get("5150-20")?.updatedAt ?? 0;
+    expect(read).toBeLessThan(action.at);
+    // One millisecond past the window's ten minutes, about a second before the offer's own run out.
+    await tickAt(read + 10 * MIN + 1);
+    expect(helper.model.windows.has("5150-20")).toBe(false);
+    expect(withdrawals()).toEqual([[action.offerKey, "stale"]]);
   });
 
   /** The reader's walk of `windowId` again, as a focus or a change there sends it, `ms` from now. */
