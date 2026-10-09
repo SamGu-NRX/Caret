@@ -337,8 +337,12 @@ final class OnboardingController {
             let complete = self.complete
             completion = Task { @MainActor [weak self] in
                 let ghost = await complete(text)
-                guard !Task.isCancelled else { return }
-                self?.flow?.send(.ghost(requestId: id, text: ghost))
+                guard !Task.isCancelled, let self else { return }
+                // Complete words may have gone off while the model answered, and the flow hears that only at the next
+                // poll. Telling it first drops the request, so the answer can't show or be taken (Codex on #30).
+                let readiness = self.readModel()
+                if readiness != self.flow?.state.hello.model { self.flow?.send(.model(readiness)) }
+                self.flow?.send(.ghost(requestId: id, text: ghost))
             }
         case .askPreview(let id, let families, let level):
             if !sendPreview(id, families, level) { flow?.send(.previewFailed(requestId: id, "helperNotConnected")) }

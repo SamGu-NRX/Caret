@@ -556,7 +556,7 @@ public struct DebugState: Codable, Equatable, Sendable {
         public struct HelloInfo: Codable, Equatable, Sendable {
             public var textLength: Int
             public var ghostLength: Int?
-            /// `ready`, `loading` or `unavailable`.
+            /// `ready`, `loading`, `unavailable` or `off` (`ModelReadiness.name`).
             public var model: String
             public var apps: [String]
             public var taken: Bool
