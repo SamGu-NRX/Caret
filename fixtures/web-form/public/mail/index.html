@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Inbox - Mail</title>
+<!-- Slice 2's page task (CU-COUNSEL-R2 "The two tasks"), in Gmail's shape: a role=grid list whose rows are
+     <tr role="row" tabindex="-1">. A row click does pushState('#thread/<id>') and renders that thread in place of the
+     list, in the same document, retitling it; the thread has a reply area and Send. Below the list, a row-shaped
+     <button type="submit"> inside a <form>: the navigation negative, which must never be clicked as a row. Messages and
+     their confirmation codes come from /mail/messages.json, new per server start (server.ts MailSite). Send and the form
+     post to the oracle (/mail/send, /mail/search); the page posts what it shows to /mail/state. Every name, address and
+     code is invented. -->
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; }
+  main { margin: 16px 24px; max-width: 820px; }
+  table { border-collapse: collapse; width: 100%; }
+  tr[role="row"] { cursor: pointer; }
+  tr[role="row"]:hover { background: #f2f4f7; }
+  td { padding: 8px 10px; border-bottom: 1px solid #e3e6ea; }
+  td.time { color: #667; text-align: right; white-space: nowrap; }
+  .saved button { all: unset; display: block; width: 100%; padding: 8px 10px; border-bottom: 1px solid #e3e6ea; cursor: pointer; color: #335; }
+  textarea { width: 100%; min-height: 96px; font: inherit; }
+  .thread p { margin: 6px 0; }
+</style>
+</head>
+<body>
+<main id="main" aria-label="Mail"></main>
+<script src="/fixture.js"></script>
+<script src="/mail/mail.js"></script>
+</body>
+</html>

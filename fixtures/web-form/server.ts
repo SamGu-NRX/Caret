@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { TaskPages } from "./tasks/site.ts";
+import { MailSite } from "./mail.ts";
 
 const PUBLIC = fileURLToPath(new URL("./public/", import.meta.url));
 const read = (f: string): string => readFileSync(`${PUBLIC}${f}`, "utf8");
@@ -35,6 +36,8 @@ export class FixtureSite {
   state: Record<string, unknown> | null = null;
   /** F1: the browser task pages under /tasks/ and their oracle (tasks/site.ts). */
   readonly tasks = new TaskPages();
+  /** Slice 2: the Gmail-shaped inbox under /mail/ and its oracle (mail.ts). */
+  readonly mail = new MailSite();
   readonly loads: { loadId: string; href: string; at: number }[] = [];
   private readonly queue: Command[] = [];
   private readonly pollers: ServerResponse[] = [];
@@ -182,6 +185,21 @@ export class FixtureSite {
       }
       case "GET /replica/landings":
         return send(res, "application/json", JSON.stringify(Object.fromEntries(this.landed)));
+      // Slice 2: the Gmail-shaped inbox (public/mail), its messages and its oracle (mail.ts).
+      case "GET /mail/":
+        return html(res, read("mail/index.html"));
+      case "GET /mail/mail.js":
+        return send(res, "text/javascript", read("mail/mail.js"));
+      case "GET /mail/messages.json":
+        return send(res, "application/json", JSON.stringify(this.mail.messages()));
+      case "GET /mail/oracle":
+        return send(res, "application/json", JSON.stringify(this.mail.oracle()));
+      case "POST /mail/send":
+      case "POST /mail/search":
+      case "POST /mail/state":
+        this.mail.post(url.pathname, body);
+        // The search form's submit lands on a page that says so; the oracle counted it.
+        return url.pathname === "/mail/search" ? html(res, `<!doctype html><title>Searched</title><p>Search submitted.</p><script src="/fixture.js"></script>`) : send(res, "application/json", "{}");
       case "GET /replica/replica.js":
         return send(res, "text/javascript", read("replica/replica.js"));
       case "GET /busy":
