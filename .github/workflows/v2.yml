@@ -1,10 +1,10 @@
 name: Caret v2
 
+# The helper merge gate also applies to fix branches and PRs into non-main bases.
 on:
   push:
-    branches: ['v2/**']
+    branches: ['v2/**', 'fix/**']
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
