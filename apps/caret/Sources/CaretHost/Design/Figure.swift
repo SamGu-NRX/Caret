@@ -482,6 +482,19 @@ struct FigureView: View {
         }
         .frame(width: size, height: height)
         .accessibilityHidden(true)
+        .preference(key: FigureMotionKey.self, value: [plan])
+    }
+}
+
+/// The motion plan each figure in a view chose, in layout order. Nothing in the app reads it. A
+/// test hosts a live figure and reads it to see what Reduce Motion did; an off-screen render can't
+/// show that, because `rendersOffscreen` freezes the figure before Reduce Motion is read (Greptile
+/// on #19).
+struct FigureMotionKey: PreferenceKey {
+    static var defaultValue: [FigureMotion] { [] }
+
+    static func reduce(value: inout [FigureMotion], nextValue: () -> [FigureMotion]) {
+        value += nextValue()
     }
 }
 
