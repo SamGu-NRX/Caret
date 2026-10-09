@@ -42,7 +42,8 @@ Someone who installed Caret gives it a Jev key in onboarding (H12). Caret checks
 ## What v2 keeps
 
 - Screen text stays in memory for ten minutes. The store keeps counts, timings and HMAC hashes of values, not the values.
-- What you tell Caret about yourself, and each run's recovery journal, are sealed with AES-256-GCM under a local key.
+- What you tell Caret about yourself is kept as plain Markdown files in `~/Library/Application Support/Caret/Memory`, readable only by your account (folder 0700, files 0600). Other software running as you, Spotlight and backups can read them, so Caret refuses to keep secrets there (`helper/src/memory/sensitive.ts`).
+- Each run's recovery journal is sealed with AES-256-GCM under a local key.
 - A Jev request carries snippets of the windows involved, never a whole document or conversation.
 
 ## The v1 hackathon starter
