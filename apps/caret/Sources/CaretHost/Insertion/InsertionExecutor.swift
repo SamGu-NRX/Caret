@@ -59,6 +59,8 @@ final class InsertionExecutor: @unchecked Sendable {
     private let policy: TargetPolicy
     let authority: HostAuthority
     let writeMethods = WriteMethodTable()
+    /// Keys typed into the app while a fix is written there; the tap starts the hold, this ends it.
+    let keyHold: KeyHold
     /// Pastes through Caret's marked item and puts the user's clipboard back only if it is still
     /// Caret's (Sam's decision of 2026-10-04).
     private let pasteboard: ReconcilingPasteboard
@@ -90,6 +92,7 @@ final class InsertionExecutor: @unchecked Sendable {
         advanceAfterFill: Bool,
         pasteRestoreDelay: TimeInterval = 0,
         pasteboard: ReconcilingPasteboard = ReconcilingPasteboard(),
+        keyHold: KeyHold = KeyHold(),
         onFinished: @escaping @Sendable (Result) -> Void,
         onUndone: @escaping @Sendable (UndoResult) -> Void
     ) {
@@ -101,6 +104,7 @@ final class InsertionExecutor: @unchecked Sendable {
         self.advanceAfterFill = advanceAfterFill
         self.pasteRestoreDelay = pasteRestoreDelay
         self.pasteboard = pasteboard
+        self.keyHold = keyHold
         self.onFinished = onFinished
         self.onUndone = onUndone
     }
@@ -465,9 +469,8 @@ final class InsertionExecutor: @unchecked Sendable {
     // MARK: - Range edits (writing fixes)
 
     /// A writing fix: one range of the field replaced, bound by `RangeEdit` to the field as offered
-    /// (`action-engine-v2.md` section 7). Only through Accessibility, never a paste: a range edit
-    /// selects text the user did not select, and a pid-posted ⌘V lands in whichever field has
-    /// focus when the app reads it (D2-09). An app that refuses the AX write gets nothing.
+    /// (`action-engine-v2.md` section 7). Through Accessibility, except in apps that paste ghost
+    /// text, which get `pasteRange` (`FixPaste`; this replaced D2-09 for those apps only).
     ///
     /// 1. Reread the focused field of the offer's pid and `confirmRange` it (`.observed`).
     /// 2. Select the range: the one selection change acceptance authorizes. Reread and validate
@@ -485,19 +488,21 @@ final class InsertionExecutor: @unchecked Sendable {
         let authority = self.authority
         let live = { authority.isLive(authorization) }
 
+        var method: FillResult.Method = .axSelectedText
         func finish(error: String?, rejected: Bool = false, undo: UndoGrant? = nil) {
+            keyHold.end(pid: pid)
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: error == nil, error: error, text: edit.replacement,
                 durationMs: Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000,
                 verified: rejected ? nil : error == nil
             )
             insertion.kind = claim.offer.kind.name
-            insertion.method = rejected ? nil : FillResult.Method.axSelectedText.rawValue
+            insertion.method = rejected ? nil : method.rawValue
             status.update { $0.lastInsertion = insertion }
             status.increment(error == nil ? "writing.fixed" : "writing.\(error ?? "failed")")
             onFinished(Result(
                 claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected,
-                method: rejected ? nil : .axSelectedText, strayField: nil
+                method: rejected ? nil : method, strayField: nil
             ))
         }
         func refuse(_ reason: String) {
@@ -515,9 +520,25 @@ final class InsertionExecutor: @unchecked Sendable {
             live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid)
                 && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
         }
-        let outcome = applyRange(edit, element: element, before: before, stillTarget: stillTarget, refusal: { live() ? "targetNotAllowed" : "revoked" })
+        // An app that pastes ghost text gets its fixes by paste too (`FixPaste`, which records the
+        // lead decision that replaced D2-09 for these apps).
+        let appKey = WriteMethodTable.appKey(pid: pid)
+        let pastes = WriteFallback.pastesFirst(
+            learned: writeMethods.learnedMethod(for: appKey).map { $0 == .pastePid },
+            selectedTextSettable: AXRead.isSettable(kAXSelectedTextAttribute, on: element),
+            electron: writeMethods.isElectron(pid: pid)
+        )
+        if pastes { method = .pastePid }
+        let refusal = { live() ? "targetNotAllowed" : "revoked" }
+        let outcome = pastes
+            ? pasteRange(claim, edit, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
+            : applyRange(edit, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
         switch outcome {
         case .failed(let code):
+            if pastes, !FixPaste.keepsFixes(after: code) {
+                writeMethods.stopFixes(for: appKey)
+                status.increment("writing.fixesStopped")
+            }
             arbiter.finishInsertion(claimID: claim.claimID, error: code)
             finish(error: code)
         case .applied(let applied):
@@ -530,8 +551,11 @@ final class InsertionExecutor: @unchecked Sendable {
                 list.append((writeID, element, processStart))
                 if list.count > 8 { list.removeFirst(list.count - 8) }
             }
+            // A pasted fix is one step of the app's own Undo: the VM's ⌘Z rows after a pasted ghost
+            // in Electron and Catalyst (run 20261009T113411Z-9346) took back exactly the paste.
+            let strategy: UndoStrategy = pastes ? .nativeUndo : NativeUndoApps.strategy(bundleID: claim.offer.target.bundleID)
             finish(error: nil, undo: .range(applied.undo, priorValue: before.value, writtenValue: applied.value, writeID: writeID,
-                                            strategy: NativeUndoApps.strategy(bundleID: claim.offer.target.bundleID)))
+                                            strategy: strategy))
         }
     }
 
@@ -575,6 +599,93 @@ final class InsertionExecutor: @unchecked Sendable {
     private enum RangeOutcome {
         case applied(AppliedRange)
         case failed(String)
+    }
+
+    /// `FixPaste`'s steps, for a fix in an app that pastes ghost text. `before` was validated
+    /// `.observed`. Keys the user types meanwhile are held (`KeyHold`).
+    private func pasteRange(
+        _ claim: Claim, _ edit: RangeEdit, element: AXUIElement, before: FieldState,
+        stillTarget: @escaping () -> Bool, refusal: () -> String
+    ) -> RangeOutcome {
+        // The user's selection back, after a refusal before anything was pasted. Harmless if the
+        // range selection never took; if it lands late, this later set lands after it.
+        func putSelectionBack() {
+            guard stillTarget() else { return }
+            let s = edit.observedSelection
+            AXRead.setRange(kAXSelectedTextRangeAttribute, location: s.start, length: s.end - s.start, on: element)
+        }
+        guard stillTarget() else { return .failed(refusal()) }
+        // 1. Exactly the word selected, read back as such.
+        let range = UTF16Selection(start: edit.replace.start, end: edit.replace.end)
+        guard AXRead.setRange(kAXSelectedTextRangeAttribute, location: edit.replace.start, length: edit.replace.length, on: element) == .success else {
+            return .failed(FixPaste.Failure.selectionNotTaken.rawValue)
+        }
+        let asked = Date()
+        var selected: FieldState?
+        while selected == nil, Date().timeIntervalSince(asked) <= FixPaste.selectionTimeout {
+            if let read = FieldReader.read(element), read.selection == range { selected = read } else { Thread.sleep(forTimeInterval: 0.01) }
+        }
+        guard let selected else {
+            putSelectionBack()
+            return .failed(FixPaste.Failure.selectionNotTaken.rawValue)
+        }
+        // 2. The field as the fix was offered for.
+        let approved: RangeEdit.Approved
+        switch edit.validate(Self.rangeLive(selected), phase: .rangeSelected) {
+        case .failure(let refusal):
+            putSelectionBack()
+            return .failed(refusal.code)
+        case .success(let a):
+            approved = a
+        }
+        // 3. The paste, through the clipboard ghost text uses.
+        let snapshot: ClipboardSnapshot
+        switch pasteboard.clipboard.check() {
+        case .pasteable(let checked): snapshot = checked
+        case .refused:
+            putSelectionBack()
+            return .failed(WriteFallback.clipboardUnrestorable)
+        }
+        guard stillTarget() else {
+            putSelectionBack()
+            return .failed(refusal())
+        }
+        let write = InsertionGuard.ApprovedEdit(
+            target: selected.identity, replaceStart: edit.replace.start, replaceEnd: edit.replace.end,
+            replacement: edit.replacement, resultingValue: approved.resultingValue
+        )
+        let paste = pasteInsert(claim, snapshot: snapshot, approved: write, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
+        // A paste that went to another field is left there and named, as for ghost text: a ⌘Z
+        // now would reach that field, not this one.
+        if paste.step == .failed("wroteElsewhere") { return .failed("wroteElsewhere") }
+        // 4. Exactly the range replaced, or taken back.
+        switch FixPaste.afterPaste(value: FieldReader.read(element)?.value, before: before.value, expected: approved.resultingValue) {
+        case .applied:
+            let caret = approved.resultingSelection
+            if stillTarget() {
+                AXRead.setRange(kAXSelectedTextRangeAttribute, location: caret.start, length: caret.end - caret.start, on: element)
+            }
+            guard let after = FieldReader.read(element) else { return .failed("fieldUnreadable") }
+            switch edit.verify(after: Self.rangeLive(after), approved: approved) {
+            case .failure(let refusal): return .failed(refusal.code)
+            case .success(let undo): return .applied(AppliedRange(value: approved.resultingValue, undo: undo))
+            }
+        case .untouched:
+            putSelectionBack()
+            if case .failed(let code) = paste.step { return .failed(code) }
+            return .failed("writeIgnored")
+        case .mismatch:
+            guard stillTarget(),
+                  PidKeystrokeSynthesizer(pid: claim.offer.target.pid, element: element, stillTarget: stillTarget).undo()
+            else { return .failed(FixPaste.Failure.fixNotRestored.rawValue) }
+            let sent = Date()
+            var back = FieldReader.read(element)?.value
+            while back?.utf16.elementsEqual(before.value.utf16) != true, Date().timeIntervalSince(sent) <= NativeUndo.timeout {
+                Thread.sleep(forTimeInterval: 0.02)
+                back = FieldReader.read(element)?.value
+            }
+            return .failed(FixPaste.afterUndo(value: back, before: before.value).rawValue)
+        }
     }
 
     /// Steps 2 to 4 of `runRange`, for a fix and for its undo. `before` was validated `.observed`.

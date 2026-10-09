@@ -89,9 +89,13 @@ public final class TapThread: @unchecked Sendable {
     private var runLoop: CFRunLoop?
     private var thread: Thread?
 
-    public init(arbiter: OfferArbiter, callbacks: Callbacks) {
+    /// Keys typed into an app while Caret writes a fix there (`KeyHold`).
+    let keyHold: KeyHold
+
+    init(arbiter: OfferArbiter, callbacks: Callbacks, keyHold: KeyHold = KeyHold()) {
         self.arbiter = arbiter
         self.callbacks = callbacks
+        self.keyHold = keyHold
     }
 
     /// Creates the tap on a new thread and waits for it. False when the system refused the tap,
@@ -255,6 +259,10 @@ public final class TapThread: @unchecked Sendable {
         // time the key is delivered. Such a key takes nothing; the counter says how often it happens.
         let key = KeyStroke(event: event)
         stats.withLock { key.targetPID == nil ? ($0.targetMissing &+= 1) : ($0.targetFromEvent &+= 1) }
+        if keyHold.take(event, pid: key.targetPID) {
+            record(started: started)
+            return nil
+        }
         let disposition = routeKey(key, stampedAt: started)
         record(started: started)
         switch disposition {

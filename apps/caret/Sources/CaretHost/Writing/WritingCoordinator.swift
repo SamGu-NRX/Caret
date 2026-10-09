@@ -34,6 +34,8 @@ final class WritingCoordinator {
     private var offerWhenRouted = false
     /// This coordinator's toast took the arbiter's toast slot; the other owners take theirs down.
     var onToastShown: (() -> Void)?
+    /// True for an app whose fixes stopped this session (`WriteMethodTable.stopFixes`).
+    var fixesStopped: ((pid_t) -> Bool)?
 
     private var marks = WritingMarks()
     private var element: AXUIElement?
@@ -102,6 +104,7 @@ final class WritingCoordinator {
         if sameElement, field.role == nil { return status.increment("writing.readFailed") }
         guard policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
               !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
+              fixesStopped?(field.identity.pid) != true,
               !SecretField.holdsSecret(field, traits: change.snapshot?.context.traits), Self.isProse(element, field: field)
         else { return leaveField() }
         if marks.observe(field: field.identity, value: field.value) {

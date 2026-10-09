@@ -123,6 +123,18 @@ final class WriteMethodTable: @unchecked Sendable {
     }
 
     private let electron = OSAllocatedUnfairLock(initialState: [String: Bool]())
+    private let noFixes = OSAllocatedUnfairLock(initialState: Set<String>())
+
+    /// Writing fixes stop in an app for the rest of the session after one there could not be shown
+    /// to work or to be taken back (`FixPaste.keepsFixes`).
+    func stopFixes(for app: String) { noFixes.withLock { _ = $0.insert(app) } }
+
+    func fixesStopped(pid: pid_t) -> Bool {
+        let key = Self.appKey(pid: pid)
+        return noFixes.withLock { $0.contains(key) }
+    }
+
+    func stoppedFixes() -> [String] { noFixes.withLock { $0.sorted() } }
 
     /// Whether the app is built on Electron (`AppClassifier` reads its bundle), once per app.
     func isElectron(pid: pid_t) -> Bool {

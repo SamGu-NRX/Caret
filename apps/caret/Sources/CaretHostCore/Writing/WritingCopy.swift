@@ -85,7 +85,9 @@ public enum WritingCopy {
     /// Why Tab changed nothing, by the executor's refusal code. Short enough for one line.
     public static func notFixed(_ code: String) -> String {
         switch code {
-        case "writeRefused", "writeIgnored": return "This app didn't take the fix, so nothing changed."
+        case "writeRefused", "writeIgnored", "selectionNotTaken": return "This app didn't take the fix, so nothing changed."
+        case "fixUndone": return "Caret couldn't fix that here."
+        case "fixNotRestored": return "Caret couldn't fix that here, and couldn't put your text back. Check it."
         case "composing": return "Caret doesn't fix text while an input method is on."
         case "revoked": return "Caret is paused, so nothing changed."
         default: return "The text changed, so nothing was fixed."

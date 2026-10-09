@@ -205,9 +205,11 @@ public final class HostRuntime {
         // Every host write asks this right before it acts; pause, stop, take over and the helper's
         // connection closing end it (S1 audit #2).
         let authority = HostAuthority()
+        let keyHold = KeyHold()
         let executor = InsertionExecutor(
             arbiter: arbiter, status: status, compatibilityStore: compatibilityStore, policy: policy,
             authority: authority, advanceAfterFill: configuration.fillAdvances, pasteRestoreDelay: configuration.testHooks ? configuration.pasteRestoreDelay : 0,
+            keyHold: keyHold,
             onFinished: { result in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
@@ -537,6 +539,9 @@ public final class HostRuntime {
         let focusObserver = focus
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
+                // Before the Tab returns: no key typed after it reaches the app while its word is
+                // selected for the fix. The executor ends the hold.
+                if claim.insertsText, claim.rangeEdit != nil, !writesNothing { keyHold.begin(pid: claim.offer.target.pid) }
                 if claim.insertsText {
                     // A headless host writes nothing: the claim is decided and recorded, never applied.
                     if writesNothing { arbiter.abandon(claimID: claim.claimID, reason: "headless") } else { executor.submit(claim) }
@@ -622,7 +627,9 @@ public final class HostRuntime {
             typed: { pid in
                 DispatchQueue.main.async { MainActor.assumeIsolated { focusObserver.keyTyped(pid: pid) } }
             }
-        ))
+        ), keyHold: keyHold)
+        let fixMethods = executor.writeMethods
+        writing.fixesStopped = { pid in fixMethods.fixesStopped(pid: pid) }
         let tap = self.tap
         // Accessibility granted in onboarding: a key tap the system refused at launch is made now.
         onboarding.onPermissionsChanged = { granted in
