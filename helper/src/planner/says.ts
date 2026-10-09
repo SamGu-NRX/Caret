@@ -54,11 +54,14 @@ export const TASK_FILL_SAYS = "Fills them in and stops there. Pressing and sendi
 export const TASK_FILL_SOME_SAYS = "Asks which fields next, then fills them. Pressing and sending stay yours.";
 export const TASK_PLAN_LABEL = "Do the whole task";
 export const TASK_PLAN_SAYS = "Shows every step before anything runs. Sending stays yours.";
-/** "Fill Name and Email", or "Fill 5 fields" when the names don't fit a label. */
+/**
+ * "Only fill Name and Email", or "Only fill 5 fields" when the names don't fit a label: "only" says this reading stops
+ * at the fields, beside "Do the whole task" (lead review: "Fill To and Message" read as a field named that).
+ */
 export function taskFillLabel(names: readonly string[], max: number): string {
   if (names.length === 0) return "Fill some fields";
-  const named = `Fill ${list(names, "and")}`;
-  return named.length <= max ? named : `Fill ${names.length} fields`;
+  const named = `Only fill ${list(names, "and")}`;
+  return named.length <= max ? named : `Only fill ${names.length} fields`;
 }
 
 /** What a value question calls the value it asks for, by the field's kind (fill.ts ValueAsked); a box is asked whether to tick it. */

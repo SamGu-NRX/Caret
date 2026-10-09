@@ -65,7 +65,7 @@ final class GoalCardTests: XCTestCase {
         XCTAssertNoThrow(try JSONDecoder().decode(AskQuestion.self, from: Data(line.utf8)))
         let one = line.replacingOccurrences(of: #",{"kind":"task","id":"o2","label":"Do the whole task","says":"Shows every step before anything runs. Sending stays yours."}"#, with: "")
         XCTAssertThrowsError(try JSONDecoder().decode(AskQuestion.self, from: Data(one.utf8)), "one reading is no question")
-        let long = line.replacingOccurrences(of: "Fill To and Message", with: String(repeating: "x", count: AskQuestion.maxTaskLabel + 1))
+        let long = line.replacingOccurrences(of: "Only fill To and Message", with: String(repeating: "x", count: AskQuestion.maxTaskLabel + 1))
         XCTAssertThrowsError(try JSONDecoder().decode(AskQuestion.self, from: Data(long.utf8)))
         let many = line.replacingOccurrences(of: #""pick":"one""#, with: #""pick":"many""#)
         XCTAssertThrowsError(try JSONDecoder().decode(AskQuestion.self, from: Data(many.utf8)))

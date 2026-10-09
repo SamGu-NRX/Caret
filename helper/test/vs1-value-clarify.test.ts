@@ -209,6 +209,25 @@ describe("a value question in the Ask", () => {
     expect(writes(await outcome(plan(m, j, pickValue(q2, null))))).toEqual({ "First name": "Grace" });
   });
 
+  it("a quiet fields question's note rides each later question's resume to the proposal", async () => {
+    // Question memory (helper.ts) answers a quiet fields question as empty and puts what it left on the resume; a value
+    // question after it must hand the note on, or the proposal no longer says the fields were left to the user.
+    const m = desk();
+    const j = jev({ ...split, Phone: [["555-0188", 0.4], ["555-0188", 0.4]] });
+    const quiet = { says: "Left Fax to you, as before.", keys: ["form/9"] };
+    const first = ask(await outcome(plan(m, j)));
+    expect(first.question.resume.quiet, "no note without a quiet question").toBeUndefined();
+    // A quiet answer resumes the Ask with no value step yet, so the value question after it is a fresh one.
+    const { values: _, ...resumed } = first.question.resume;
+    const q1 = ask(await outcome(plan(m, j, { ...resumed, quiet })));
+    expect(q1.question.text).toBe("Which email should go in Work email?");
+    expect(q1.question.resume.quiet).toEqual(quiet);
+    // A pick on it continues with the same resume, note and all.
+    const q2 = ask(await outcome(plan(m, j, pickValue(q1, null))));
+    expect(q2.question.text).toBe("Which phone number should go in Phone?");
+    expect(q2.question.resume.quiet).toEqual(quiet);
+  });
+
   it("a changed source invalidates the pick", async () => {
     const m = desk();
     const j = jev({ "First name": GRACE, Phone: [["555-0188", 0.4], ["555-0188", 0.4]] }, () => ["555-0188", 0.9]);

@@ -111,10 +111,21 @@ describe("the task question", () => {
     expect(q.part).toBe("task");
     expect(q.pick).toBe("one");
     expect(q.options.map((c) => c.option)).toEqual([
-      { kind: "task", id: "o1", label: "Fill Full name", says: "Fills them in and stops there. Pressing and sending stay yours." },
+      { kind: "task", id: "o1", label: "Only fill Full name", says: "Fills them in and stops there. Pressing and sending stay yours." },
       { kind: "task", id: "o2", label: TASK_PLAN_LABEL, says: "Shows every step before anything runs. Sending stays yours." },
     ]);
     expect(gates.map((g) => g.gate)).toEqual(["routeBetween"]);
+  });
+
+  it("with the task question off, a route that names plan beside a chosen field does not count as a plan blocker", async () => {
+    // The Ask goes on as the fill it reads as (firstGate in ask.ts): "plan" can block only through the task question.
+    for (const route of [BETWEEN_FILL_PLAN, { plan: 0.4, some: 0.25, all: 0.2, refuse: 0.15 }]) {
+      const gates: Gate[] = [];
+      await ask(route, { tasks: false, gate: (g) => gates.push(g) }).catch((x: unknown) => x);
+      const head = gates.filter((g) => g.gate === "routeBetween" || g.gate === "routeFloor");
+      expect(head).toHaveLength(1);
+      expect(head[0]?.blocking).toBe(false);
+    }
   });
 
   it("continues as the fill on the fill pick, and asks no task question again", async () => {
@@ -151,8 +162,8 @@ describe("the task question", () => {
 
   it("labels the fill by its fields while they fit, else by their count", () => {
     expect(taskFillLabel([], MAX_TASK_LABEL)).toBe("Fill some fields");
-    expect(taskFillLabel(["Name", "Email"], MAX_TASK_LABEL)).toBe("Fill Name and Email");
-    expect(taskFillLabel(["A very long field label for the first", "Another very long field label too"], 40)).toBe("Fill 2 fields");
+    expect(taskFillLabel(["Name", "Email"], MAX_TASK_LABEL)).toBe("Only fill Name and Email");
+    expect(taskFillLabel(["A very long field label for the first", "Another very long field label too"], 40)).toBe("Only fill 2 fields");
     expect(taskChoices(["Name"]).options.map((c) => c.fixes.task)).toEqual(["fill", "plan"]);
   });
 });
@@ -168,7 +179,7 @@ describe("firstGate", () => {
 
 describe("the task question and the step tier on the wire", () => {
   const base = { type: "askQuestion", v: 1, requestId: "ask-1", at: 1, questionId: "q1", part: "task", text: "Which should Caret do?", pick: "one", window: { pid: 1, windowId: "w", appName: "Forms", title: "Booking" }, expires: 2 };
-  const fill = { kind: "task", id: "o1", label: "Fill Full name", says: "Fills them in and stops there." };
+  const fill = { kind: "task", id: "o1", label: "Only fill Full name", says: "Fills them in and stops there." };
   const plan = { kind: "task", id: "o2", label: "Do the whole task", says: "Shows every step before anything runs." };
 
   it("takes two or more task readings, one picked", () => {

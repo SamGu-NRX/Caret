@@ -9,7 +9,7 @@ extension Gallery {
 
     /// ask-task.ndjson's task question, decoded through the same checks a helper's pass.
     static func askTaskQuestion() -> AskQuestion {
-        let line = #"{"type":"askQuestion","v":1,"requestId":"ask-31","at":1790400000900,"questionId":"ask-9-ask-31","part":"task","text":"Which should Caret do?","pick":"one","options":[{"kind":"task","id":"o1","label":"Fill To and Message","says":"Fills them in and stops there. Pressing and sending stay yours."},{"kind":"task","id":"o2","label":"Do the whole task","says":"Shows every step before anything runs. Sending stays yours."}],"window":{"pid":4210,"windowId":"4210-3","appName":"Mail","title":"Re: Planning review"},"expires":1790400600900}"#
+        let line = #"{"type":"askQuestion","v":1,"requestId":"ask-31","at":1790400000900,"questionId":"ask-9-ask-31","part":"task","text":"Which should Caret do?","pick":"one","options":[{"kind":"task","id":"o1","label":"Only fill To and Message","says":"Fills them in and stops there. Pressing and sending stay yours."},{"kind":"task","id":"o2","label":"Do the whole task","says":"Shows every step before anything runs. Sending stays yours."}],"window":{"pid":4210,"windowId":"4210-3","appName":"Mail","title":"Re: Planning review"},"expires":1790400600900}"#
         return try! JSONDecoder().decode(AskQuestion.self, from: Data(line.utf8))
     }
 

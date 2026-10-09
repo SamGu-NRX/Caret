@@ -32,7 +32,7 @@ public struct AskQuestion: Codable, Equatable, Sendable {
         case value(id: String, value: String, source: String)
         /// Leave the value question's field blank.
         case blank(id: String)
-        /// One reading of the request: a short label ("Fill To and Message") and what Caret then does and leaves to the user.
+        /// One reading of the request: a short label ("Only fill To and Message") and what Caret then does and leaves to the user.
         case task(id: String, label: String, says: String)
 
         public var id: String {

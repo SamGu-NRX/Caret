@@ -152,6 +152,12 @@ export interface AskResume {
   scopeKeys?: string[];
   /** Value clarification: the fill a value question was asked about, which its answer continues (ValueStep). */
   values?: ValueStep;
+  /**
+   * Question memory: the fields a fields question the user put away twice would have offered (keys), and the sentence
+   * that says they were left to the user (helper.ts). Carried by every later question of the same Ask, so its proposal
+   * says it however many questions follow.
+   */
+  quiet?: { says: string; keys: readonly string[] };
 }
 
 /**
@@ -644,6 +650,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     document,
     askId,
     scopeKeys,
+    ...(resume?.quiet === undefined ? {} : { quiet: resume.quiet }),
   });
   const refused = (e: unknown): never => {
     if (e instanceof PlannerError) {
@@ -759,14 +766,15 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   const listsAll = !agreed && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
   // firstGate: what the intent left unsettled, in pipeline order: the route, a refusal, the parts it asks about, and the
   // fields it leaves to the user. A route under its floor blocks only when it decided something: its top answers include
-  // plan or refuse (code then reads the Ask as a fill), or Jev chose and offered no field (the route alone decides).
+  // refuse (the Ask then refuses), or Jev chose and offered no field (the route alone decides). A "plan" among them blocks
+  // only through the task question, which records its own gate above; without it the Ask goes on as the fill it reads as.
   if (o.gate !== undefined) {
     const keysOf = (refs: readonly string[] | undefined): string[] => byRefs(snap, refs).map((f) => f.key);
     const rh = made.intent.routeHead;
     if (rh !== undefined && rh.kind !== "settled") {
       const said = rh.kind === "between" ? [rh.a, rh.b] : rh.top === null ? [] : [rh.top];
       const none = intent.fields.length === 0 && (intent.options ?? []).length === 0;
-      gate(rh.kind === "between" ? "routeBetween" : "routeFloor", JSON.stringify(rh), said.some((x) => x === "plan" || x === "refuse") || none);
+      gate(rh.kind === "between" ? "routeBetween" : "routeFloor", JSON.stringify(rh), said.includes("refuse") || none);
     }
     if (intent.route === "refuse") gate(`refuse:${intent.why}`, `the intent refuses: ${intent.why}`);
     for (const part of intent.route === "ask" ? openParts(intent) : []) {

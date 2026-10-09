@@ -508,8 +508,6 @@ export class Helper {
    * lapses, and what continues the Ask. Each is answered once; a reader restart drops them all, as it drops plan offers.
    */
   /** Open questions, by id; `asked` is what question memory knows each by (memory/questions.ts). */
-  /** Question memory: the fields a quiet question would have offered, by the offer its Ask continues as. */
-  private readonly quietLeft = new Map<string, { says: string; keys: readonly string[] }>();
   private readonly askQuestions = new Map<string, { session: string | undefined; expires: number; draft: AskQuestionDraft; asked: AskedKey }>();
   private askSeq = 0;
   /** A reader is on the socket: set by its hello, cleared when it disconnects. An in-process reader link is always there. */
@@ -1799,7 +1797,7 @@ export class Helper {
           if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
           // I2: an Ask's goal: its own scope, or null when it came from a window with no field (its windows settle theirs).
           // A fresh Ask's goal may settle the windows it writes in; a continued one's settles nothing (I2 ruling).
-          const quiet = this.quietLeft.get(offerKey);
+          const quiet = resume?.quiet;
           const page = d.page === undefined ? null : quiet === undefined ? d.page : { ...d.page, quiet: quiet.keys };
           return await this.offerGoal(requestId, instruction, from, d.windowId, page, { scope: d.askScope ?? null, askId: d.askId, ticket: d.resumed ? null : settleTicket("freshAsk") });
         }
@@ -1818,14 +1816,11 @@ export class Helper {
             const labels = q.options.flatMap((c) => (c.option.kind === "field" ? [c.option] : []));
             // Two fields of one label are told apart by their sections, as the question listed them.
             const left = labels.map((o) => (labels.filter((x) => x.label === o.label).length > 1 && o.section !== null ? `${o.label} (${o.section})` : o.label));
-            const resume = q.filling.length === 0 ? null : answerQuestion(q, []);
-            if (resume === null || typeof resume === "string") return fail("unsure", "question memory: the user put this fields question away twice within a week", saysLeftAsBefore(left));
-            this.quietLeft.set(offerKey, { says: saysLeftAsBefore(left), keys: q.options.flatMap((c) => c.fixes.fields ?? []) });
-            try {
-              return await this.planAndOffer(offerKey, requestId, instruction, windowId, resume, from, canAsk, canGoal, canAskValues, canAskTask);
-            } finally {
-              this.quietLeft.delete(offerKey);
-            }
+            const answered = q.filling.length === 0 ? null : answerQuestion(q, []);
+            if (answered === null || typeof answered === "string") return fail("unsure", "question memory: the user put this fields question away twice within a week", saysLeftAsBefore(left));
+            // The note rides on the Ask's resume, so a later question of the same Ask carries it to the proposal.
+            const quiet = { says: saysLeftAsBefore(left), keys: q.options.flatMap((c) => c.fixes.fields ?? []) };
+            return await this.planAndOffer(offerKey, requestId, instruction, windowId, { ...answered, quiet }, from, canAsk, canGoal, canAskValues, canAskTask);
           }
           return this.askQuestion(requestId, q, from);
         }
@@ -1866,7 +1861,7 @@ export class Helper {
     if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply", SAYS.windowChanged);
     if (this.mode !== "live" || this.gate.settings.paused) return fail("unavailable", this.mode !== "live" ? "the helper is in shadow mode" : "Caret is paused", this.mode !== "live" ? undefined : SAYS.paused);
     // Question memory: the fields a quiet question would have offered are said as left to the user, once.
-    const quiet = this.quietLeft.get(offerKey);
+    const quiet = resume?.quiet;
     if (quiet !== undefined) draft = { ...draft, leftToYou: draft.leftToYou === undefined || draft.leftToYou === null ? quiet.says : `${draft.leftToYou} ${quiet.says}` };
     const reply = proposed(requestId, draft, this.now());
     const w = draft.checked.window;
