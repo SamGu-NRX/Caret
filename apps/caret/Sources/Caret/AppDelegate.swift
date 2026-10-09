@@ -26,7 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// reach Caret. Hidden while none runs.
     private let tabOwnerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var signalSources: [DispatchSourceSignal] = []
-    private var isTerminating = false
+    private let shutdown = ShutdownOnce()
+    /// Quit has returned `.terminateLater`; its reply comes within `ShutdownOnce.deadline`.
+    private var quitReplyPending = false
     private var working = false
     private let perchItem = NSMenuItem(title: "Show Perch", action: nil, keyEquivalent: "")
     private let pauseItem = NSMenuItem(title: "Pause Caret", action: nil, keyEquivalent: "")
@@ -90,27 +92,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if showsStatusItem { installStatusItem() }
     }
 
+    /// The runtime, then the services. Every path below runs it through `shutdown`, once, and waits for it at most
+    /// `ShutdownOnce.deadline`.
+    private func stopEverything() async {
+        await runtime.shutdown()
+        await services.stop()
+    }
+
+    /// Always replies: when the shutdown finishes, or at the deadline if it (or a hand-off already under way) is stuck.
+    /// Quit exits 0, which tells launchd (KeepAlive SuccessfulExit false) not to start Caret again.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !isTerminating else { return .terminateLater }
-        isTerminating = true
-        Task {
-            await runtime.shutdown()
-            await services.stop()
-            // Quit exits 0, which tells launchd (KeepAlive SuccessfulExit false) not to start Caret again.
+        guard !quitReplyPending else { return .terminateLater }
+        quitReplyPending = true
+        shutdown.finish(body: { [weak self] in await self?.stopEverything() }) { finished in
+            if !finished { Self.say("Caret did not finish stopping within \(Int(ShutdownOnce.deadline)) s; quitting anyway") }
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    private static func say(_ line: String) {
+        FileHandle.standardError.write(Data("caret: \(line)\n".utf8))
     }
 
     /// Onboarding is done (or the browser step needs the bridge): register the login item, which launchd starts, and
     /// stop this copy. Services stop first, so the agent's copy finds the sockets free. If the hand-off fails, a fresh
     /// copy opens and runs in-process as before.
     private func handOffToLoginItem() {
-        guard !isTerminating else { return }
-        isTerminating = true
+        guard shutdown.start({ [weak self] in await self?.stopEverything() }) else { return }
         Task {
-            await runtime.shutdown()
-            await services.stop()
+            if await !shutdown.wait() {
+                Self.say("Caret did not finish stopping within \(Int(ShutdownOnce.deadline)) s; handing off anyway")
+            }
             switch LoginAgent.handOff(onboarded: true) {
             case .handedOff(let why):
                 FileHandle.standardError.write(Data("caret: \(why); this copy exits\n".utf8))
@@ -127,12 +140,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func shutdownAndExit() { shutdownAndExitThen {} }
 
+    /// SIGTERM, SIGINT and Restart Caret. While another shutdown runs (Quit, the hand-off) this does nothing: that one
+    /// ends the process within its own deadline.
     private func shutdownAndExitThen(_ last: @escaping () -> Void) {
-        guard !isTerminating else { return }
-        isTerminating = true
+        guard shutdown.start({ [weak self] in await self?.stopEverything() }) else { return }
         Task {
-            await runtime.shutdown()
-            await services.stop()
+            if await !shutdown.wait() {
+                Self.say("Caret did not finish stopping within \(Int(ShutdownOnce.deadline)) s; exiting anyway")
+            }
             last()
             exit(0)
         }
