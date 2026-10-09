@@ -218,11 +218,13 @@ const scripted =
 let calls = 0;
 let cost = 0;
 const fixtureIds = new Set<string>();
-const real = a.engine === undefined ? (a.jev === "live" ? makeJevClient(loadJevKey) : null) : harnessEngine({
+const decide = a.engine === undefined ? null : harnessEngine({
   name: engineName(a.engine), canned: scripted(a.jev === "eager"),
   fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: false },
   logRequests: a["log-requests"] ?? join(OUT, "requests.ndjson"),
-}).ask;
+});
+const real = decide?.ask ?? (a.jev === "live" ? makeJevClient(loadJevKey) : null);
+const engine = decide?.says ?? `Jev ${a.jev}`;
 /** Each field's whose-details answers, in ask order, as Jev gave them. */
 const whoseOf = new Map<FormField, { choice: string; confidence: number }[]>();
 const ask: AskJev = async (req) => {
@@ -326,14 +328,14 @@ for (const f of forms) {
 const count = (pred: (r: Row) => boolean): number => rows.filter(pred).length;
 const own = (r: Row): boolean => r.expect === "name" || r.expect === "email";
 const ownPart = (r: Row): boolean => r.expect === "first" || r.expect === "last";
-const md: string[] = [`# Fill from what the user told Caret, held-out forms, Jev ${a.jev}`, ""];
+const md: string[] = [`# Fill from what the user told Caret, held-out forms, ${engine}`, ""];
 md.push(`Forms: ${forms.length}; fields: ${rows.length}. Rules as committed; the forms were written by an agent that saw only the world description.`, "");
 md.push(`- Wrong fills: ${count((r) => r.outcome === "wrong")} (of them from memory: ${count((r) => r.outcome === "wrong" && r.from === "memory")})`);
 md.push(`- The user's own Name or Email filled: ${count((r) => own(r) && r.outcome === "right")} of ${count(own)}`);
 md.push(`- The user's own first or last name filled: ${count((r) => ownPart(r) && r.outcome === "right")} of ${count(ownPart)}`);
 md.push(`- A window's value filled as expected: ${count((r) => !own(r) && !ownPart(r) && r.expect !== "none" && r.outcome === "right")} of ${count((r) => !own(r) && !ownPart(r) && r.expect !== "none")}`);
 md.push(`- Left blank as expected: ${count((r) => r.expect === "none" && r.outcome === "blank")} of ${count((r) => r.expect === "none")}`);
-md.push(`- Jev: ${calls} calls, $${cost.toFixed(5)}${a.jev === "live" ? ` (budget $${MAX_USD})` : " (scripted)"}; errors: ${errors.length}`);
+md.push(`- ${engine}: ${calls} calls, $${cost.toFixed(5)}${real !== null ? ` (budget $${MAX_USD})` : " (scripted)"}; errors: ${errors.length}`);
 md.push(`- Options: ${JSON.stringify(fillOpts)}`, "");
 const whos = [...new Set(rows.map((r) => r.who))].filter((x) => x !== "");
 if (whos.length > 0) {
@@ -359,6 +361,6 @@ md.push("| Form | Field | Section | Who | Expected | Got | From | Outcome | With
 for (const r of rows) md.push(`| ${r.form} | ${r.field} | ${r.section ?? ""} | ${r.who} | ${r.expect} | ${r.got ?? ""} | ${r.from ?? ""} | ${r.outcome} | ${r.withheld ?? ""} | ${r.asks} | ${r.whose.map((x) => `${x.choice} ${x.confidence.toFixed(2)}`).join(" / ")} |`);
 if (errors.length > 0) md.push("", "## Errors", "", ...errors.map((e) => `- ${e}`));
 writeStore(`${OUT}/about-fill-eval.md`, md.join("\n") + "\n");
-writeStoreJson(`${OUT}/about-fill-eval.json`, { jev: a.jev, calls, cost, rows, errors }, 2);
+writeStoreJson(`${OUT}/about-fill-eval.json`, { engine, jev: decide === null ? a.jev : null, calls, cost, rows, errors }, 2);
 console.log(md.slice(0, 9).join("\n"));
 process.exit(errors.length > 0 ? 1 : 0);

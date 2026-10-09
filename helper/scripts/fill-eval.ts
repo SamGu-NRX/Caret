@@ -75,6 +75,7 @@ const targets: Target[] = gold.forms.map((form) => {
 const proposals: FillProposal[] = [];
 const errors: string[] = [];
 let fromFocus = 0;
+let engine = "live Jev via helper socket";
 if (a.engine === "decisions") {
   // Decisions never runs in the helper that reads live screens. Replay only the declared synthetic fixture recording
   // locally and score proposals without sending a write to the reader. The default Jev/socket path stays unchanged.
@@ -86,6 +87,7 @@ if (a.engine === "decisions") {
     fixture: { windows: (id) => ids.has(id), memory: false, plan: false },
     logRequests: a["log-requests"] ?? join(a.out, "requests.ndjson"),
   });
+  engine = decide.says;
   const now = snapshots.reduce((at, s) => Math.max(at, s.at), 0) + 1;
   try {
     for (let r = 0; r < rounds; r++) for (const target of targets) {
@@ -209,10 +211,10 @@ const summary = {
   costUsd: requests.reduce((s, r) => s + r.costUsd, 0),
   errors,
 };
-writeStoreJson(join(a.out, "fill-eval.json"), { summary, requests, rows }, 2);
+writeStoreJson(join(a.out, "fill-eval.json"), { engine, summary, requests, rows }, 2);
 
 const md: string[] = [];
-md.push(`# Grounded fill on caret-fixture, live Jev`, "");
+md.push(`# Grounded fill on caret-fixture, ${engine}`, "");
 md.push(`${summary.requests} requests (${fromFocus} triggered by a focus event, the rest by fillRequest), ${summary.fieldJudgments} field judgments over ${targets.length} forms.`, "");
 md.push(`| Measure | Value |`, `| --- | --- |`);
 md.push(`| Exact match | ${summary.exact} of ${summary.fieldJudgments} (${(summary.exactRate * 100).toFixed(1)}%) |`);

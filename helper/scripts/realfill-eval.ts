@@ -62,11 +62,13 @@ const SPEND_LIMIT = Number(a["spend-limit"]);
 let spent = 0;
 let calls = 0;
 const fixtureIds = new Set<string>();
-const live = a.engine === "jev" ? makeJevClient(loadJevKey) : harnessEngine({
+const decide = a.engine === "jev" ? null : harnessEngine({
   name: engineName(a.engine), canned: null,
   fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true },
   logRequests: a["log-requests"] ?? join(OUT, "requests.ndjson"),
-}).ask;
+});
+const live = decide?.ask ?? makeJevClient(loadJevKey);
+const engine = decide?.says ?? "live Jev";
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   // Sealed before it is sent: sent and logged from this frozen copy (PV2).
@@ -180,7 +182,7 @@ const handed = (xs: readonly Scored[]) => xs.filter((s) => s.proposed !== null &
 const md: string[] = [
   "# Real-form scoreboard (B24)",
   "",
-  `Windows: ${a.windows}. Jev calls ${calls}, $${spent.toFixed(4)}. Seed ${a.seed}.`,
+  `Windows: ${a.windows}. ${engine}, calls ${calls}, $${spent.toFixed(4)}. Seed ${a.seed}.`,
   "",
   "| form | source | fillable | right | written | handed off | wrong | missed | correct blanks | not found | source budget | source cut | kinds cut |",
   "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
@@ -224,5 +226,5 @@ const md: string[] = [
   ]),
 ];
 writeStore(join(OUT, "realfill-eval.md"), md.join("\n") + "\n");
-writeStoreJson(join(OUT, "realfill-eval.json"), { calls, spent, results: results.map((r) => ({ form: r.form.id, error: r.error, scored: r.scored, proposal: r.proposal })) }, 1);
+writeStoreJson(join(OUT, "realfill-eval.json"), { engine, calls, spent, results: results.map((r) => ({ form: r.form.id, error: r.error, scored: r.scored, proposal: r.proposal })) }, 1);
 process.stderr.write(`wrote ${join(OUT, "realfill-eval.md")}; all: right ${count(all, "right")}/${fillable(all)}, wrong ${count(all, "wrong")}; $${spent.toFixed(4)}\n`);
