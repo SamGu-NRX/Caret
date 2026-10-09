@@ -22,6 +22,7 @@ struct WritingTabView: View {
             entries
             keys
             appsOff
+            if let model = state.model { modelGroup(model) }
         }
         .padding(.top, 6)
         .probed("writing")
@@ -160,6 +161,40 @@ struct WritingTabView: View {
             Hairline()
         }
         .probed("writing.keys")
+    }
+
+    // MARK: - Model (brief item 8)
+
+    private func modelGroup(_ model: WritingPage.ModelPanel) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            GroupHead(text: ModelCopy.head)
+                .padding(.top, 20)
+                .padding(.bottom, 2)
+            HStack(alignment: .center, spacing: 14) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.line)
+                        .font(Tokens.Font.row)
+                        .foregroundStyle(Color(token: Tokens.ink))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let status = model.status {
+                        Text(status)
+                            .font(Tokens.Font.chromeSmall)
+                            .foregroundStyle(Color(token: Tokens.ink2))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityAddTraits(.updatesFrequently)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if let action = model.action {
+                    Button(action) { send(.model) }
+                        .buttonStyle(WindowButtonStyle(kind: .key, small: true))
+                }
+            }
+            .padding(.vertical, 12)
+            .accessibilityElement(children: .contain)
+            Hairline()
+        }
+        .probed("writing.model")
     }
 
     // MARK: - Apps Caret is off in

@@ -22,6 +22,8 @@ extension Gallery {
         keys.editing = nil
         keys.keys = .cotypist
         keys.appsOff = [WritingPage.App(bundleID: "com.apple.Terminal", name: "Terminal")]
+        keys.model = WritingPage.ModelPanel(line: ModelCopy.inUse(ModelFiles.Found(url: URL(fileURLWithPath: "/m.gguf"), source: .cotypist)),
+                                            action: "Stop downloading (42%)", status: ModelCopy.status(.downloading(received: 1_440_000_000, total: ModelFiles.bytes)))
 
         return [
             Item(name: "writing-empty", view: tab(empty)),

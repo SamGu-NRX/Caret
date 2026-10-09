@@ -47,6 +47,12 @@ final class MemoryController {
     var sendSavedFiles: (SavedFilesRequest) -> Bool = { _ in false } {
         didSet { savedFiles.send = { [sendSavedFiles] in sendSavedFiles($0) } }
     }
+    /// Brief item 8: the Model group's button (`ModelKeeper.toggle`), set by the runtime.
+    var onModel: () -> Void = {}
+
+    /// The Model group as the runtime's `ModelKeeper` says it now is.
+    func showModel(_ panel: WritingPage.ModelPanel) { model.writing.model = panel }
+
     /// Finder and the user's editor, replaced in tests.
     var workspace: MemoryWorkspace = SystemWorkspace()
 
@@ -345,6 +351,7 @@ final class MemoryController {
         case .routing(let on): SettingsStore.shared.update(source: .menu) { $0.routing = on }
         case .calendar(let id): SettingsStore.shared.update(source: .menu) { $0.eventCalendar = id }
         case .pageInlineText, .pageInlineContentEditable: break
+        case .model: onModel()
         case .aboutText, .saveAbout, .editEntry, .entryText, .saveEntry, .cancelEntry, .removeEntry, .keys, .appOff, .appOn:
             performWriting(action)
         case .fileForget(let id):

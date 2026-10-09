@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let pauseItem = NSMenuItem(title: "Pause Caret", action: nil, keyEquivalent: "")
     /// Brief item 7: Caret off or back on in the app in front, named. Hidden when no other app is in front.
     private let appItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    /// Brief item 8: the model file in use (a line, not a choice), and the download of Caret's own copy when it helps.
+    private let modelItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let modelActionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     /// Brief item 6: which keys take ghost text, one item per preset.
     private var keysItems: [NSMenuItem] = []
     private var roleItems: [NSMenuItem] = []
@@ -104,6 +107,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         stateItem.title = runtime.engineSummary
+        modelItem.title = runtime.modelLine
+        modelItem.toolTip = runtime.modelStatus
+        if let action = runtime.modelAction {
+            modelActionItem.title = action
+            modelActionItem.toolTip = runtime.modelStatus
+            modelActionItem.isHidden = false
+        } else {
+            modelActionItem.isHidden = true
+        }
         let notice = OtherTabOwners.notice(OtherTabOwners.running(in: NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)))
         tabOwnerItem.title = notice ?? ""
         tabOwnerItem.isHidden = notice == nil
@@ -181,6 +193,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SettingsStore.shared.update(source: .menu) { $0.paused.toggle() }
     }
 
+    @objc private func toggleModelDownload(_ sender: NSMenuItem) {
+        runtime.toggleModelDownload()
+    }
+
     @objc private func toggleApp(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         SettingsStore.shared.update(source: .menu) { $0.setApp(id, off: !$0.isOff(id)) }
@@ -237,6 +253,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         stateItem.isEnabled = false
         menu.addItem(stateItem)
+        modelItem.isEnabled = false
+        menu.addItem(modelItem)
+        modelActionItem.action = #selector(toggleModelDownload(_:))
+        modelActionItem.target = self
+        menu.addItem(modelActionItem)
         tabOwnerItem.isEnabled = false
         tabOwnerItem.isHidden = true
         menu.addItem(tabOwnerItem)

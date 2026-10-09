@@ -23,8 +23,18 @@ public enum WritingPage {
         public init(kind: Kind, key: String, name: String, text: String) { self.kind = kind; self.key = key; self.name = name; self.text = text }
     }
 
+    /// The Model group (brief item 8): the file in use, the download's action and its status line.
+    public struct ModelPanel: Equatable, Sendable {
+        public var line: String
+        public var action: String?
+        public var status: String?
+        public init(line: String, action: String?, status: String?) { self.line = line; self.action = action; self.status = status }
+    }
+
     public struct State: Equatable, Sendable {
         public var keys = GhostKeys.caret
+        /// Nil draws no Model group (renders and tests that leave it out).
+        public var model: ModelPanel?
         /// The How you write editor's text, and the saved text it started from.
         public var aboutDraft = ""
         public var aboutSaved = ""
@@ -43,7 +53,7 @@ public enum WritingPage {
         public static func == (a: State, b: State) -> Bool {
             a.keys == b.keys && a.aboutDraft == b.aboutDraft && a.aboutSaved == b.aboutSaved && a.entries == b.entries
                 && a.editing?.id == b.editing?.id && a.editing?.draft == b.editing?.draft && a.hereApp == b.hereApp
-                && a.herePage == b.herePage && a.appsOff == b.appsOff && a.problem == b.problem
+                && a.herePage == b.herePage && a.appsOff == b.appsOff && a.problem == b.problem && a.model == b.model
         }
 
         public var aboutChanged: Bool { aboutDraft != aboutSaved }

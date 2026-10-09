@@ -141,6 +141,8 @@ public final class HostRuntime {
     private let socket: DebugStateSocket
     private let onboarding: OnboardingController
     private let memory: MemoryController
+    /// Brief item 8: the model file in use and Caret's own copy's download.
+    private let modelKeeper: ModelKeeper
     private let pageSight: PageSightCoordinator
     /// H6: the helper's router, as ghost text and the writing line follow it.
     private let routeLink: RouteLink
@@ -249,6 +251,14 @@ public final class HostRuntime {
         let activity = ActivityCenter()
         self.activity = activity
         let memory = MemoryController(testHooks: configuration.testHooks)
+        let modelKeeper = ModelKeeper(configured: configuration.modelURL)
+        self.modelKeeper = modelKeeper
+        let showModel: () -> Void = { [weak memory, unowned modelKeeper] in
+            memory?.showModel(WritingPage.ModelPanel(line: modelKeeper.line, action: modelKeeper.action(menu: false), status: modelKeeper.status))
+        }
+        modelKeeper.observe(showModel)
+        showModel()
+        memory.onModel = { [unowned modelKeeper] in modelKeeper.toggle() }
         self.memory = memory
         let perch = PerchController(center: activity, drawsOnScreen: configuration.perchDrawsOnScreen)
         self.perch = perch
@@ -790,6 +800,14 @@ public final class HostRuntime {
 
     /// The menu's What Caret Knows: the memory window.
     public func openMemory() { memory.open() }
+
+    /// Brief item 8, for the menu: the line naming the model file in use, the download's item (nil when there is
+    /// nothing to offer) and its status.
+    public var modelLine: String { modelKeeper.line }
+    public var modelAction: String? { modelKeeper.action(menu: true) }
+    public var modelStatus: String? { modelKeeper.status }
+    /// Starts Caret's model download, or stops the one running. Only ever from a user's choice.
+    public func toggleModelDownload() { modelKeeper.toggle() }
 
     public func start() throws {
         try socket.start()

@@ -63,6 +63,8 @@ enum MemoryAction: Equatable {
     case keys(GhostKeys)
     case appOff(String)
     case appOn(String)
+    /// Brief item 8: Download Caret's model, or stop the download running.
+    case model
 }
 
 /// "What Caret knows" (DIRECTION.md 5.8): what Caret remembers, in groups, and what it may do per
