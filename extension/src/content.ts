@@ -13,8 +13,8 @@
 // events (the combobox handler's presses) can raise it; nothing about the element or the key travels.
 //
 // S1 adds a passive input listener that sends nothing: per text field, in memory, it notes whether the text came from
-// the user's own typing (content/entry.ts). A walk reports that one word per field, so Caret saves an answer as the
-// user's words only when they typed it.
+// the user's own typing (content/entry.ts), and keeps nothing for a secret field (content/secret.ts). A walk reports
+// that one word per field, so Caret saves an answer as the user's words only when they typed it.
 //
 // P4 adds one more message the worker may ask, never sent on its own: "text", the frame's visible text, read once
 // for the tab the user just left (content/text.ts). A walk also reports the text around the caret of the focused
@@ -24,7 +24,9 @@ import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
-import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
+import { deepActiveElement, kindOf, secretOf, visible, walkControls } from "./content/walker.ts";
+import { controlName } from "./content/question.ts";
+import { notePassword } from "./content/secret.ts";
 import { EntryTracker } from "./content/entry.ts";
 import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 import { docsKind, readFrameText } from "./content/text.ts";
@@ -175,7 +177,15 @@ if (globalThis.__caretContent === undefined) {
    * How each text field's text was entered (S1). Not kept in a late-injected document: edits made before this script
    * arrived were never seen, so no field there can be shown to hold only the user's typing.
    */
-  const entries = late ? null : new EntryTracker();
+  const entries = late ? null : new EntryTracker((el) => el instanceof Element && secretOf(el, controlName(el, kindOf(el) ?? "")) !== null);
+  // A password field stays secret after a "show password" toggle makes it type=text (content/secret.ts). Focus and the
+  // first keystroke both come before any toggle the user can press.
+  const seenPassword = (e: Event): void => {
+    const el = e.composedPath()[0];
+    if (el instanceof HTMLInputElement && el.type === "password") notePassword(el);
+  };
+  addEventListener("focusin", seenPassword, { capture: true, passive: true });
+  addEventListener("beforeinput", seenPassword, { capture: true, passive: true });
   if (entries !== null) {
     addEventListener(
       "beforeinput",

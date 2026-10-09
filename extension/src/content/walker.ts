@@ -8,6 +8,7 @@ import { clean, composedParent, groupNames, labelledBy } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
 import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
+import { secretKind, type SecretKind } from "./secret.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -28,9 +29,6 @@ export const SELF_IDENTIFICATION = /\b(self[- ]identif\w*|gender|sex|race|racial
  * folded, whitespace collapsed), so a fullwidth "Ｇｅｎｄｅｒ" is excluded as "Gender" is.
  */
 export const selfIdentifying = (text: string): boolean => SELF_IDENTIFICATION.test(sectionName(text));
-
-/** Field names and ids that mark a card number or code even without autocomplete. */
-const PAYMENT_NAME = /\b(card.?number|cc.?(num|number|csc|cvc|cvv)|cvc|cvv|csc|security.?code)\b/i;
 
 /** An element's shadow root, open or closed. chrome.dom takes HTML elements only and throws on others (SVG). */
 export function shadowRootOf(el: Element): ShadowRoot | null {
@@ -86,23 +84,26 @@ function ariaHidden(el: Element): boolean {
   return false;
 }
 
-/** Sensitive autocomplete tokens, on any control: a <select autocomplete="cc-exp-month"> is a card field too (W1 review #5). */
-function autocompleteExclusion(el: Element): PageExclusion | null {
-  const ac = (el.getAttribute("autocomplete") ?? "").toLowerCase();
-  if (/(^|\s)cc-/.test(ac)) return "payment";
-  if (/(^|\s)one-time-code(\s|$)/.test(ac)) return "oneTimeCode";
-  return null;
+/** Control kinds that hold what the user types or picks, whose name and label can mark a secret (content/secret.ts). */
+const VALUE_KINDS: ReadonlySet<PageControlKind> = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea", "select", "combobox", "contenteditable"]);
+
+/** Why `el`, called `name`, holds a password, a one-time code or card details, or null (content/secret.ts). */
+export function secretOf(el: Element, name: string): SecretKind | null {
+  const kind = kindOf(el);
+  return secretKind(el, {
+    role: kind !== null && VALUE_KINDS.has(kind) ? "field" : "other",
+    type: el instanceof HTMLInputElement ? el.type : "",
+    autocomplete: el.getAttribute("autocomplete") ?? "",
+    nameAndId: `${el.getAttribute("name") ?? ""} ${el.id}`,
+    label: name,
+  });
 }
 
 /** Why a control must not leave the frame, or null. */
 export function exclusionOf(el: Element, name: string): PageExclusion | null {
-  if (el instanceof HTMLInputElement) {
-    if (el.type === "hidden") return "hidden";
-    if (el.type === "password") return "password";
-  }
-  const ac = autocompleteExclusion(el);
-  if (ac !== null) return ac;
-  if ((el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) && PAYMENT_NAME.test(`${el.name} ${el.id}`)) return "payment";
+  if (el instanceof HTMLInputElement && el.type === "hidden") return "hidden";
+  const secret = secretOf(el, name);
+  if (secret !== null) return secret;
   if (ariaHidden(el)) return "ariaHidden";
   if (!visible(el) && !visibleReactSelect(el) && !ownedFileInput(el)) return "invisible";
   if (selfIdentifying(name) || groupNames(el).some(selfIdentifying)) return "selfIdentification";
