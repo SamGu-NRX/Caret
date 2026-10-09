@@ -2217,6 +2217,11 @@
               "minLength": 1,
               "maxLength": 2000
             },
+            "replace": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2000
+            },
             "token": {
               "type": "string",
               "minLength": 1,
