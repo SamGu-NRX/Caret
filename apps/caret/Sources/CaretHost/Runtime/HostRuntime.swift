@@ -334,6 +334,7 @@ public final class HostRuntime {
                 if !perch.ask.receive(goal, toForm: { pageTask.machine.start($0) }) { pageTask.machine.receive(goal) }
             case .error(let e):
                 pageTask.machine.helperError(e)
+                perch.ask.helperError(e)
                 // H13: a fill found nothing because the tab left is a Google editor whose text is off: say so at the field.
                 if let app = e.sourceOff { pageInline.sourceOff(app, says: e.message) }
             // S1: keep an answer the user typed; only ⌘1 on the line says yes.
@@ -452,6 +453,8 @@ public final class HostRuntime {
             case .control(let control): return askClient.send(control)
             case .confirmFile(let confirm): return askClient.send(confirm)
             case .answer(let answer): return askClient.send(answer)
+            case .goalAccept(let accept): return askClient.send(accept)
+            case .goalEdit(let edit): return askClient.send(edit)
             }
         }
         // Caret never searches the disk for a file (lead decision, H11): H5's guess by name in Documents, Downloads and

@@ -14,20 +14,21 @@
 // whose exactness code settles (an option's own label, a resolved date, the user's saved answer, a user transfer, a
 // draft) are minted under a named exemption instead (ExemptRule); only the never-typed check runs on them.
 import { ENV, processEnv } from "../host-env.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import { Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
 import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { createHash } from "node:crypto";
 import { bareLine, LABELLED, lineDigests, logicalLines, sentenceAround } from "./line-values.ts";
-import { spanContexts } from "./candidates.ts";
+import { spanContexts, viewOf } from "./candidates.ts";
 import { redactWindow } from "./redact.ts";
 import { type SourceAt, splitLines, TITLE } from "../privacy/ledger/source.ts";
-import { describeControl, type Control, type FormControl } from "./controls.ts";
+import { describeControl, formControls, pickableOptions, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, PART_SAYS, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
 import { authorityRefusal, fieldFingerprint, scopeRefusal, type Authority, type DocumentReader, type Origin } from "./ask-scope.ts";
 import { sentLineFor } from "./when.ts";
-import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
+import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind, wrappedValue } from "./kinds.ts";
 import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
@@ -117,8 +118,10 @@ export function autocompletePart(token: AutocompleteToken | null | undefined): F
  * "boxTicked" is a checkbox's checked state from text that says to tick it (controls.ts statesFact, namedInList).
  * "sourceSupported" is a listed option or a service box's tick that code proposes for judgment against a whole source
  * unit, memory entry or the user's whole request, without having found the source naming it (design/ask/MISSING-CANDIDATES.md).
+ * "jevOption" is a page select's label settled by the bounded pair. Unlike a code-inferred mapping it has no stated
+ * assumption; optionLabel still requires exact membership in the current page control before minting and dispatch.
  */
-export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat" | "amountNumber" | "boxTicked" | "sourceSupported";
+export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed" | "fieldFormat" | "amountNumber" | "boxTicked" | "sourceSupported" | "jevOption";
 
 /** Where a value came from, carried unchanged from the moment it was read to the step that writes it. */
 export type Provenance =
@@ -245,9 +248,22 @@ export interface VerifyAsk {
 }
 
 /**
- * Lowest confidence, the lower of two wordings, at which "exact" mints. 0.75 is FILL_CUTOFF's value, inherited because it
- * is the only calibrated floor the helper has; no run has calibrated this question. The dev set
- * (fixtures/verify/dev.json, scripts/verifier-eval.ts) is its first evidence.
+ * Lowest confidence, the lower of two wordings, at which "exact" mints. 0.75 is FILL_CUTOFF's value, inherited, and kept
+ * after a sweep from 0.50 to 0.75 over W2's run of the dev set (fixtures/verify/dev.json, scripts/verifier-eval.ts: 371
+ * cases, 3 passes, at W2's wording, before the requests gained provenance notes; table in
+ * ~/.caret-run/evidence/act/slice2/floor/w2-sweep.txt). Below 0.65, wrong values were answered "exact" twice: a value with
+ * more than the field takes at 0.61 to 0.62, and another person's value at 0.53 to 0.64. From 0.65 up, none was, but only
+ * 32 wrong answers of any verdict fell between 0.65 and 0.75, none of them exact twice. That is too few to show that a
+ * lower floor stays wrong-free beyond these cases; the bar was about 100. Replaying B24 to B31's recorded Asks with no
+ * floor gains 14 fields and 0 wrong, but those are fixtures and cannot settle it alone. The floor does not keep out
+ * b-032, another person's email, which the verifier answered exact at 0.85 to 0.89.
+ *
+ * A second, larger set confirms it at the current wording (Oct 9; ~/.caret-run/evidence/act/slice3: 4,251 synthetic cases,
+ * one pass, $0.11, labelled by construction from the guard adversary's canned values, tools/hardset.py; sweep.txt). Its
+ * plainest wrong class, the source value with characters around it ('"123456796"', a URL with a trailing period, a link in
+ * angle brackets), is answered "exact" twice by values the shape check lets through: 4 at 0.75, 7 at 0.70, 9 at 0.65 and
+ * 13 at 0.60, among 162 wrong answers between 0.60 and 0.75. No floor from 0.60 to 0.75 is free of false exacts, so none
+ * is lower than this one, and those 4 at 0.75 are for a code check to catch, not the floor.
  */
 export const VERIFY_CUTOFF = 0.75;
 
@@ -496,6 +512,10 @@ export function shapeRefusal(p: Proposed): string | null {
   // "08:45" as plain text): c2-page's month from "Aug '22" was refused here once V3 sent it to the verifier.
   const kind = chosen ? null : misfit(v, p.field.labelWords);
   if (kind !== null) return kind;
+  // A field of an email, URL, phone or ID kind takes the value alone: the verifier answered "exact" twice at 0.75 to 0.92
+  // for one in quotes, in angle brackets or with a trailing period (kinds.ts unwrapValue). Fill types the value inside
+  // instead where it can; any other path that proposes it wrapped is refused here.
+  if (wrappedValue(p.text, p.field.kinds)) return `'${clip(v)}' has marks around the value; the field takes the value alone`;
   if (p.field.part !== null && !partFits(p.field.part, v)) return `'${clip(v)}' is not the ${p.field.part} the field takes`;
   if (p.field.maxLength !== null && p.text.length > p.field.maxLength) return `'${clip(v)}' is longer than the ${p.field.maxLength} characters the field takes`;
   return null;
@@ -660,7 +680,7 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) =>
   }
 }
 
-const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format", amountNumber: "the number of the amount", boxTicked: "the ticked state stated", sourceSupported: "a listed option or tick, proposed for judgment on the evidence" } as const satisfies Record<DeriveHow, string>;
+const DERIVE_SAYS = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named", fieldFormat: "the source value written in the field's format", amountNumber: "the number of the amount", boxTicked: "the ticked state stated", sourceSupported: "a listed option or tick, proposed for judgment on the evidence", jevOption: "a listed page option selected by both value questions" } as const satisfies Record<DeriveHow, string>;
 
 /**
  * The proposed value as the verifier quotes it, minted from where it was read (READS): a window value at its recorded
@@ -808,6 +828,7 @@ const DERIVATION_SAYS = {
   amountNumber: "the amount's number without its currency sign",
   boxTicked: "the box ticked, as the supporting text says it should be",
   sourceSupported: "not copied from the source",
+  jevOption: "the page's listed option, selected by both value questions",
 } as const satisfies Record<DeriveHow, string>;
 
 /**
@@ -1099,7 +1120,14 @@ export function statedChoice(pr: Provenance): string | null {
   return pr.says ?? statedChoice(pr.base) ?? (pr.also === null ? null : statedChoice(pr.also));
 }
 
-export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction: string, authority: Authority, documentOf: DocumentReader | null = null): CheckedValue {
+/** A page select writes label bytes, never a guessed or normalized value. Read its options again after the asks. */
+function pageOptionRefusal(p: Proposed, w: WindowState | null | undefined): string | null {
+  if (w === undefined || w === null || w.window.windowId !== p.field.windowId || w.window.kind !== PAGE_WINDOW_KIND) return "the page select's current options are unavailable";
+  const control = formControls(w).find((c) => c.node.key === p.field.key && c.control === "select");
+  return control !== undefined && pickableOptions(w, control).includes(p.text) ? null : "the written value is not exactly one of the page select's current option labels";
+}
+
+export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction: string, authority: Authority, documentOf: DocumentReader | null = null, currentWindow: WindowState | null = null): CheckedValue {
   // Frozen before it is judged, as checkValues does: what is judged is what is minted (W2 review).
   const p = snapshot(proposed);
   const out = authorityScopeRefusal(p, authority, documentOf);
@@ -1108,6 +1136,10 @@ export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, in
   // the verifier, never minted as a plain conversion; reaching here is a bug in the caller.
   const chose = statedChoice(p.provenance);
   if (chose !== null) throw new ContractError("chosen", `'${clip(p.text)}' was derived by a choice code made (${clip(chose)}), so only the verifier may check it, not the ${rule} exemption`);
+  if (rule === "optionLabel" && p.field.control === "select" && (currentWindow !== null || (p.provenance.kind === "derived" && p.provenance.how === "jevOption"))) {
+    const option = pageOptionRefusal(p, currentWindow);
+    if (option !== null) throw new ContractError("shape", option);
+  }
   const why = exemptRefusal(p, rule, instruction);
   if (why !== null) throw new ContractError(neverTypedRefusal(p, instruction) === null ? "shape" : "neverTyped", why);
   return mint(p, { by: "exempt", rule }, now, authority);
@@ -1264,6 +1296,10 @@ export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, Ch
     // At dispatch the executor names the element it resolved: it must be the field checked, still asking the same (W2 review).
     if (target !== undefined && (target.node.key !== m.field.key || target.windowId !== m.field.windowId)) return "the field is not the one Caret checked the value for";
     if (target !== undefined && contractStale(target.node, m.field, value) !== null) return "the field now asks for something else than when its value was checked";
+    if (m.verdict.by === "exempt" && m.verdict.rule === "optionLabel" && m.field.control === "select") {
+      const option = pageOptionRefusal(m, target?.window ?? viewOf(model(), m.field.windowId));
+      if (option !== null) return option;
+    }
     // I2: a value minted under an Ask's scope is written only into a field that still reads as when the Ask was asked,
     // read from the window the executor resolved, right before the dispatch.
     if (m.authority.kind === "ask" && target !== undefined) {

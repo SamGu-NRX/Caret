@@ -26,13 +26,17 @@ import { fieldKinds } from "../src/fill/kinds.ts";
 import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import type { Control } from "../src/fill/controls.ts";
 import type { FillPart } from "../src/fill/derive.ts";
-import type { Node } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type Node, type Snapshot } from "../src/protocol.ts";
+import { ScreenModel } from "../src/model.ts";
+import { Disclosure } from "../src/privacy/disclosure.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const a = parseArgs({ options: { out: { type: "string" }, dev: { type: "string", default: join(HERE, "..", "fixtures", "verify", "dev.json") }, passes: { type: "string", default: "3" }, from: { type: "string" } } });
 if (a.values.out === undefined) throw new Error("--out is required");
 const OUT = resolve(a.values.out);
 const PASSES = Number(a.values.passes);
+/** Cases per verifyProposed call: ten batches of VERIFY_BATCH, twenty requests at a time. */
+const CHUNK = 200;
 if (!Number.isInteger(PASSES) || PASSES < 1) throw new Error(`--passes must be a whole number of at least 1, not ${a.values.passes}`);
 
 interface DevCase {
@@ -47,11 +51,34 @@ interface DevCase {
   note?: string;
 }
 const dev = JSON.parse(readFileSync(resolve(a.values.dev), "utf8")) as { cases: DevCase[] };
-const proposed: Proposed[] = dev.cases.map((c) => ({
+/**
+ * The source windows the requests quote. The output ledger measures every request against the screen and refuses one
+ * with no registry (privacy/disclosure.ts), so each case's source is a window of its own, holding the text its
+ * provenance read (its line, else "label: span", else the span) among synthetic lines no case quotes, so a request
+ * reveals a small share of it as on a real desk. A case's window id is replaced by its own. Each chunk's requests are
+ * measured against a screen of that chunk's windows only: one screen of all 4,251 windows of the slice 2 set kept the
+ * ledger busy for over 20 minutes before the first request. Fixture text only.
+ */
+const FILLER = ["Groceries: oats, lemons, brown rice, coffee filters", "Dentist moved to the 14th, bring the insurance card", "Library books due Friday", "Water the ferns on the balcony", "Pick up dry cleaning before 6", "Gym class is at 7:15 on Tuesdays", "Order more printer paper", "Book club: chapters 4 to 7", "Renew the parking permit next month", "Call the plumber about the slow drain", "Bring the blue folder to the meeting", "Car service light came on again"];
+const sourceOf = (c: DevCase, i: number): DevCase["provenance"] => (c.provenance.kind === "window" ? { ...c.provenance, windowId: `eval-src-${i}`, nodeKey: `eval-src-${i}/body` } : c.provenance);
+const screenOf = (from: number, to: number): ScreenModel => {
+  const model = new ScreenModel();
+  for (let i = from; i < Math.min(to, dev.cases.length); i++) addSource(model, dev.cases[i] as DevCase, i);
+  return model;
+};
+const addSource = (model: ScreenModel, c: DevCase, i: number): void => {
+  const pr = sourceOf(c, i);
+  if (pr.kind !== "window") return;
+  const said = pr.line ?? (pr.label !== null ? `${pr.label}: ${pr.span}` : pr.span);
+  const body = [...FILLER.slice(0, 6), said, ...FILLER.slice(6)].join("\n");
+  const snap: Snapshot = { type: "snapshot", v: PROTOCOL_VERSION, seq: 0, at: 1, reason: "event", app: { pid: 7000 + (i % 100), bundleId: "com.apple.TextEdit", name: pr.app }, window: { windowId: pr.windowId, kind: "standard", title: pr.title, frame: [0, 0, 800, 600] }, focused: false, root: null, nodes: [{ key: pr.nodeKey, parent: null, role: "AXTextArea", value: body }], values: [], focusedKey: null, stats: { walkMs: 1, visited: 1, truncated: false } };
+  model.apply(snap);
+};
+const proposed: Proposed[] = dev.cases.map((c, i) => ({
   field: makeFieldContract({ windowId: "form", node: { key: c.field.key, parent: null, role: "AXTextField", label: c.field.name, ...(c.field.inputKind === null ? {} : { inputKind: c.field.inputKind }), ...(c.field.maxLength === null ? {} : { maxLength: c.field.maxLength }) }, descriptor: c.field.descriptor, name: c.field.name, labelWords: c.field.labelWords, control: c.field.control, kinds: fieldKinds(c.field.labelWords), part: c.field.part }),
   text: c.text,
   display: c.text,
-  provenance: c.provenance,
+  provenance: sourceOf(c, i),
   owner: c.owner,
 }));
 const code = proposed.map((p) => ({ shape: shapeRefusal(p), w1: textShapeRefusal(p) }));
@@ -75,9 +102,20 @@ if (a.values.from !== undefined) {
     return r;
   };
   for (let i = 0; i < PASSES; i++) {
-    const r = await verifyProposed(proposed, { authority: { kind: "plan", offerKey: "verifier-eval" }, askJev: ask, ledger: null, now: Date.now() });
-    passes.push(r.asks);
-    process.stderr.write(`pass ${i + 1}: ${r.jev.requests} requests, $${r.jev.costUsd.toFixed(5)}\n`);
+    // In chunks of CHUNK cases, one after another: verifyProposed sends every batch at once, and a large set's hundreds of
+    // requests at once would meet Jev's rate limit, which loses the whole pass.
+    const asks: (readonly [VerifyAsk, VerifyAsk] | null)[] = [];
+    let requests = 0;
+    let cost = 0;
+    for (let at = 0; at < proposed.length; at += CHUNK) {
+      const r = await verifyProposed(proposed.slice(at, at + CHUNK), { authority: { kind: "plan", offerKey: "verifier-eval" }, askJev: ask, ledger: new Disclosure(screenOf(at, at + CHUNK)), now: Date.now() });
+      asks.push(...r.asks);
+      requests += r.jev.requests;
+      cost += r.jev.costUsd;
+      process.stderr.write(`  ${Math.min(at + CHUNK, proposed.length)}/${proposed.length} cases, $${cost.toFixed(5)}\n`);
+    }
+    passes.push(asks);
+    process.stderr.write(`pass ${i + 1}: ${requests} requests, $${cost.toFixed(5)}\n`);
   }
 }
 

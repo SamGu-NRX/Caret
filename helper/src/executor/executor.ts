@@ -17,6 +17,9 @@ import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type App
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
+
+/** What undo says of a calendar event the user changed after Caret added it (the reader's CalendarAdapter.changedByYou). */
+export const EVENT_CHANGED = "You've changed this event, so Caret left it";
 import { ConfirmedFiles } from "../engines/attach.ts";
 import { classifyPress, type RiskClass } from "./risk.ts";
 import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
@@ -1733,9 +1736,16 @@ export class Executor {
     const ev = await cal.get(eventId);
     if (ev === null) return "the event is already gone";
     if (ev.title !== e.title || ev.calendar !== e.calendar || Date.parse(ev.start) !== Date.parse(e.start) || Date.parse(ev.end) !== Date.parse(e.end)) {
-      return "the event changed after Caret added it";
+      return EVENT_CHANGED;
     }
-    await cal.remove(eventId, task.id);
+    // The reader compares everything else the user can change (notes, place, link, alarms, people) in a fresh read
+    // inside the removal itself, so an edit made since this check still leaves the event (Greptile review on #13).
+    try {
+      await cal.remove(eventId, task.id);
+    } catch (err) {
+      if (err instanceof CalendarRefused && err.outcome === "changed") return EVENT_CHANGED;
+      throw err;
+    }
     // A read that fails throws (S1 audit #16): only a read that succeeds and finds nothing counts as removed.
     return (await cal.get(eventId)) === null ? null : "the event is still there after removal";
   }

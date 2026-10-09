@@ -42,7 +42,7 @@ describe("an attach row in a page goal's preview (P3)", () => {
     const r = await rig({ goalFiles: true });
     const s = (await r.ask("fill out this form from my note")) as Segment;
     const attach = s.steps.filter((x) => x.kind === "attach");
-    expect(attach).toEqual([{ index: s.steps.length - 2, kind: "attach", says: "Resume: a file you choose", file: { source: "choose" } }]);
+    expect(attach).toEqual([{ index: s.steps.length - 2, kind: "attach", says: "Resume: a file you choose", tier: "attach", file: { source: "choose" } }]);
     expect(s.steps.slice(0, -2).every((x) => x.kind === "write")).toBe(true);
     // I6: the hand-off row comes last, after the attach rows.
     expect(s.steps.at(-1)).toMatchObject({ kind: "handoff", says: "You press Submit Application" });

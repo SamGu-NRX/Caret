@@ -143,7 +143,7 @@ helper = new Helper({
   // The code-mode plan and goal writer (B24, D2-06): only a developer's --dev-writer route (L1).
   writer: writers?.plan == null ? null : ledgeredWriter(writers.plan, spend),
   // Ask as a scoped fill (B25), its intent from the configured maker.
-  ask: writers === null ? null : writers.ask.maker === "writer" ? { maker: "writer", writer: ledgeredWriter(writers.ask.writer, spend) } : writers.ask,
+  ask: writers === null ? null : writers.ask,
   // D2-02: one router above the producers whenever Jev is on. No host consumes a write decision yet (no routeDecision
   // message on the wire), so write is not a legal outcome: a document with nothing else due costs no model call.
   routing: args["no-jev"] || args.shadow ? null : {},

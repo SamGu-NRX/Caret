@@ -120,7 +120,7 @@ describe("the mixed form", () => {
   it("ends with its one forward button", async () => {
     const r = await rig({ controls: mixedControls });
     const s = (await r.ask("fill out this form from my note")) as Segment;
-    expect(s.steps.at(-1)).toEqual({ index: s.steps.length - 1, kind: "handoff", says: "You press Submit Application" });
+    expect(s.steps.at(-1)).toEqual({ index: s.steps.length - 1, kind: "handoff", says: "You press Submit Application", tier: "yours" });
   });
 });
 

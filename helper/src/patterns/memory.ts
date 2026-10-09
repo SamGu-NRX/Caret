@@ -30,6 +30,7 @@ import { recordDigest, recordSecret, type DocId, type MemoryRecord, type Noticed
 import { refusal, valueKind } from "../memory/sensitive.ts";
 import { loadKey, open, seal } from "../sealed.ts";
 import { assertLocalStorePath } from "../privacy/store-path.ts";
+import { QuestionMemory } from "../memory/questions.ts";
 import {
   AboutFields,
   PeopleFields,
@@ -313,6 +314,8 @@ export class MemoryStore {
    * describes proof by the Balanced number.
    */
   routineSightings: number = LEVELS.balanced.routineSightings ?? 3;
+  /** The questions an Ask stops asking after the user put them away (memory/questions.ts). */
+  readonly questions: QuestionMemory;
 
   constructor(dir: string, opts: MemoryOptions = {}) {
     // The database path is checked once, here; SQLite then writes that file and its -wal and -shm beside it.
@@ -325,6 +328,7 @@ export class MemoryStore {
     chmodSync(path, 0o600);
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec(SCHEMA);
+    this.questions = new QuestionMemory(this.db, this.key);
     this.seedPermissions();
     const memoryDir = resolve(opts.documents ?? join(dir, "Memory"));
     this.folder = memoryDir;

@@ -12,7 +12,7 @@ import { MAX_ASK_OPTIONS, Snapshot } from "../src/protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { intentSnapshot, MAX_INTENT_FIELDS, type AskFixed, type AskIntent, type IntentSnapshot } from "../src/planner/intent.ts";
 import { headsIntentMaker, headsRequest, readHeads, SCOPE_CUTOFF, scopeId, scopeRequest, SECTION_QUESTION, settleFields } from "../src/planner/intent-heads.ts";
-import type { IntentMaker } from "../src/planner/intent-makers.ts";
+import type { IntentMaker } from "../src/planner/intent.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft } from "../src/planner/ask.ts";
 import { PlannerError, validatePlan } from "../src/planner/validate.ts";
 import { checkValues, fieldContract, guardFor, windowProvenance } from "../src/fill/contract.ts";
@@ -112,10 +112,10 @@ async function question(p: Promise<unknown>): Promise<AskAsks> {
 
 /** A writer's intent (ask.ts settles its fields with settleFields): a fill of the listed fields, from any source, for the user. */
 const writerMaker = (fields: readonly string[]): IntentMaker => ({
-  name: "writer",
+  name: "heads",
   async make(snap) {
     const intent: AskIntent = { route: "fill", why: "none", scope: "list", section: "none", fields: snap.fields.filter((f) => fields.includes(f.name)).map((f) => f.ref), sources: ["any"], whose: "user", literals: [] };
-    return { intent, use: { maker: "writer", model: "writer-test", calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0, latencyMs: 1 } };
+    return { intent, use: { maker: "heads", model: "writer-test", calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0, latencyMs: 1 } };
   },
 });
 

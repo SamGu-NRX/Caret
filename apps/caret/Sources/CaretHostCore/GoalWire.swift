@@ -329,17 +329,23 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             case choose
             case saved(savedId: String, path: String, name: String, edited: Int64)
         }
+        /// The trust tier a step is in (protocol.ts GoalStepView.tier): a press Caret makes from its capability table is
+        /// `navigate`; a value written, or a field handed over to set, `write`; a file, `attach`; a press handed to the
+        /// user (send, submit, delete, pay) `yours`, which the goal card draws last and set apart. Nil from a helper before it.
+        public enum Tier: String, Codable, Sendable { case read, navigate, write, attach, yours }
         public var index: Int
         public var kind: Kind
         public var says: String
         public var drafted: String?
+        public var tier: Tier?
         public var file: File?
 
-        public init(index: Int, kind: Kind, says: String, drafted: String? = nil, file: File? = nil) {
+        public init(index: Int, kind: Kind, says: String, drafted: String? = nil, tier: Tier? = nil, file: File? = nil) {
             self.index = index
             self.kind = kind
             self.says = says
             self.drafted = drafted
+            self.tier = tier
             self.file = file
         }
     }
@@ -375,13 +381,17 @@ public struct GoalProgress: Codable, Equatable, Sendable {
         public var says: String
         /// The goal id of the fresh plan offered in its place, which the next message previews.
         public var freshPlan: String?
+        /// The executor task that ran in the stopped segment, when one did (helper protocol.ts): what ⌘Z undoes for a
+        /// write that landed but never read back. Nil when the stop came before any task ran.
+        public var taskId: String?
 
-        public init(segment: Int?, step: Int?, reason: StopReason, says: String, freshPlan: String?) {
+        public init(segment: Int?, step: Int?, reason: StopReason, says: String, freshPlan: String?, taskId: String? = nil) {
             self.segment = segment
             self.step = step
             self.reason = reason
             self.says = says
             self.freshPlan = freshPlan
+            self.taskId = taskId
         }
     }
 
@@ -418,7 +428,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
     }
 
     enum PlaceKeys: String, CodingKey { case kind, app, title, calendar }
-    enum StepKeys: String, CodingKey { case index, kind, says, drafted, file }
+    enum StepKeys: String, CodingKey { case index, kind, says, drafted, tier, file }
     enum FileKeys: String, CodingKey { case source, savedId, path, name, edited }
 
     static func decodeFile(_ s: KeyedDecodingContainer<StepKeys>) throws -> Step.File? {
@@ -471,7 +481,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
                 let s = try list.nestedContainer(keyedBy: StepKeys.self)
                 let step = Step(index: try s.decode(Int.self, forKey: .index), kind: try s.decode(Step.Kind.self, forKey: .kind),
                                 says: try s.decode(String.self, forKey: .says), drafted: try s.decodeIfPresent(String.self, forKey: .drafted),
-                                file: try Self.decodeFile(s))
+                                tier: try s.decodeIfPresent(Step.Tier.self, forKey: .tier), file: try Self.decodeFile(s))
                 guard step.index >= 0, !step.says.isEmpty else { throw ProtocolError("a goal step has an index and words") }
                 // protocol.ts GoalStepView's refine: an attach step names its file, and no other step does.
                 guard (step.kind == .attach) == (step.file != nil) else { throw ProtocolError("an attach step names its file, and no other step does") }
@@ -503,7 +513,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
         case "stopped":
             event = .stopped(Stop(segment: try GoalPlans.nullable(Int.self, c, .segment), step: try GoalPlans.nullable(Int.self, c, .step),
                                   reason: try c.decode(StopReason.self, forKey: .reason), says: try c.decode(String.self, forKey: .says),
-                                  freshPlan: try GoalPlans.nullable(String.self, c, .freshPlan)))
+                                  freshPlan: try GoalPlans.nullable(String.self, c, .freshPlan), taskId: try c.decodeIfPresent(String.self, forKey: .taskId)))
         case "finished":
             let end = End(outcome: try c.decode(End.Outcome.self, forKey: .outcome), verified: try c.decode(Int.self, forKey: .verified),
                           skipped: try c.decode(Int.self, forKey: .skipped), left: try c.decode([String].self, forKey: .left),
@@ -537,6 +547,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
                 var e = list.nestedContainer(keyedBy: StepKeys.self)
                 try e.encode(s.index, forKey: .index); try e.encode(s.kind, forKey: .kind); try e.encode(s.says, forKey: .says)
                 try e.encodeIfPresent(s.drafted, forKey: .drafted)
+                try e.encodeIfPresent(s.tier, forKey: .tier)
                 if let file = s.file { try Self.encodeFile(file, into: &e) }
             }
             try c.encode(p.warnings, forKey: .warnings)
@@ -548,7 +559,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
         case .stopped(let s):
             try c.encode("stopped", forKey: .event)
             try c.encode(s.segment, forKey: .segment); try c.encode(s.step, forKey: .step); try c.encode(s.reason, forKey: .reason)
-            try c.encode(s.says, forKey: .says); try c.encode(s.freshPlan, forKey: .freshPlan)
+            try c.encode(s.says, forKey: .says); try c.encode(s.freshPlan, forKey: .freshPlan); try c.encodeIfPresent(s.taskId, forKey: .taskId)
         case .finished(let e):
             try c.encode("finished", forKey: .event)
             try c.encode(e.outcome, forKey: .outcome); try c.encode(e.verified, forKey: .verified); try c.encode(e.skipped, forKey: .skipped)

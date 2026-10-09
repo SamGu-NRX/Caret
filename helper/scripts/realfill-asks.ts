@@ -3,14 +3,13 @@
 // chosen maker, checked by code, then the scoped fill or the planner. Nothing runs: a proposed plan is scored,
 // never executed.
 //
-//   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker heads|jev|writer]
-//        [--spend-limit USD] [--gap S] [--writer-model provider:model] [--plan-writer provider:model]
+//   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker heads]
+//        [--spend-limit USD] [--gap S] [--plan-writer provider:model]
 //        [--engine jev|llama|gemini] [--log-requests FILE] [--replay JEV_LOG] [--form-window page|reader]
 // J1: --engine names the decision engine in Jev's place (engines/decide/harness.ts; llama's server and calibration come
 // from CARET_LLAMA_* and CARET_ENGINE_CALIBRATION), behind the record-and-replay cache (CARET_JEV_CACHE, replay-or-record
 // by default), so a rerun of unchanged asks costs nothing. Every window and memory entry here comes from fixture files.
-// L1: the maker is writer/config.ts ASK_MAKER (Jev) and the plan route has no writer unless a flag names a route
-// (writer/routes.ts devWriterRoute); --maker writer needs --writer-model.
+// The heads maker uses Jev; the plan route has no writer unless --plan-writer names one.
 // P1: --maker heads is Jev in one request (planner/intent-heads.ts); the report counts each intent's Jev requests.
 //
 // Each ask's expected values are the fields it asks to change. A plan is right when it writes every expected
@@ -40,8 +39,8 @@ import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { realfillOracle } from "./realfill-oracle.ts";
 import { mintOf, type FillTrace } from "../src/fill/fill.ts";
 import { engineName } from "../src/engines/decide/port.ts";
-import { answerQuestion, AskAsks, AskRefused, planAsk, type AskDraft, type AskQuestionDraft } from "../src/planner/ask.ts";
-import { jevIntentMaker, writerIntentMaker, type IntentMaker, type MakerUse } from "../src/planner/intent-makers.ts";
+import { answerQuestion, AskAsks, AskRefused, planAsk, type AskDraft, type AskQuestionDraft, type Gate } from "../src/planner/ask.ts";
+import { type IntentMaker, type MakerUse } from "../src/planner/intent.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import type { AskIntent } from "../src/planner/intent.ts";
 import { PlannerError } from "../src/planner/validate.ts";
@@ -70,8 +69,6 @@ const { values: a } = parseArgs({
     gap: { type: "string", default: "13" },
     /** Kept so older run scripts still parse: the plan route has no writer unless --plan-writer names one. */
     "no-writer": { type: "boolean", default: false },
-    /** The intent writer's route for --maker writer, "groq:<model>" or "gateway:<model>"; the report names it. */
-    "writer-model": { type: "string" },
     /** A writer for the plan route's programs, as the helper's --dev-writer; none by default. */
     "plan-writer": { type: "string" },
     seed: { type: "string", default: "24" },
@@ -96,7 +93,7 @@ const { values: a } = parseArgs({
 });
 if (a.out === undefined) throw new Error("--out is required");
 if (a["form-window"] !== "reader" && a["form-window"] !== "page") throw new Error("--form-window is reader or page");
-if (a.maker !== "writer" && a.maker !== "jev" && a.maker !== "heads") throw new Error("--maker is heads, jev or writer");
+if (a.maker !== "heads") throw new Error("--maker is heads");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
 const corpus = loadCorpus(resolve(a.corpus));
@@ -129,15 +126,16 @@ const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixtu
  * run is a measurement.
  */
 const replayKey = (ask: string, qs: Record<string, string>): string => `${ask}\u0000${Object.entries(qs).sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, t]) => `${k}=${t}`).join("\u0001")}`;
-const recorded = new Map<string, { answers: Awaited<ReturnType<AskJev>>["answers"]; nouls: Record<string, number> }[]>();
+const recorded = new Map<string, { answers: Awaited<ReturnType<AskJev>>["answers"]; nouls: Record<string, number>; probabilities?: Awaited<ReturnType<AskJev>>["probabilities"] }[]>();
 if (a.replay !== undefined) {
   for (const line of readFileSync(resolve(a.replay), "utf8").split("\n")) {
     if (line.trim() === "") continue;
-    const e = JSON.parse(line) as { ask: string; questions?: Record<string, string>; answers?: Awaited<ReturnType<AskJev>>["answers"]; nouls?: Record<string, number> };
+    const e = JSON.parse(line) as { ask: string; questions?: Record<string, string>; answers?: Awaited<ReturnType<AskJev>>["answers"]; nouls?: Record<string, number>; probabilities?: Awaited<ReturnType<AskJev>>["probabilities"] };
     // A dispatch line, or a request that failed: nothing to replay.
     if (e.questions === undefined || e.answers === undefined) continue;
     const k = replayKey(e.ask, e.questions);
-    recorded.set(k, [...(recorded.get(k) ?? []), { answers: e.answers, nouls: e.nouls ?? {} }]);
+    // Logs before firstGate kept no per-option probabilities, so a replay of them reads no route head as "between".
+    recorded.set(k, [...(recorded.get(k) ?? []), { answers: e.answers, nouls: e.nouls ?? {}, ...(e.probabilities === undefined ? {} : { probabilities: e.probabilities }) }]);
   }
 }
 const replay = { hits: 0, misses: 0 };
@@ -159,7 +157,7 @@ const jev = attributedJev(async (req, ask) => {
   // Sealed before it is sent: the engine is asked, and the log written, from this frozen copy (PV2).
   const sent = sealRequest(req);
   if (a.replay !== undefined) replay[hit === undefined ? "misses" : "hits"]++;
-  const r = hit === undefined ? await decide.ask(sent.asked) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
+  const r = hit === undefined ? await decide.ask(sent.asked) : { model: "replay", answers: hit.answers, nouls: hit.nouls, ...(hit.probabilities === undefined ? {} : { probabilities: hit.probabilities }), inputTokens: 0, latencyMs: 0, costUsd: 0 };
   jevSpent += r.costUsd;
   jevModels.add(r.model);
   requestMs.push(r.latencyMs);
@@ -170,12 +168,10 @@ const jev = attributedJev(async (req, ask) => {
   const { request, ask } = line;
   if (line.event === "dispatch") return appendStoreJson(logJev, { request, ask, purpose: line.req.purpose ?? null, dispatchedAt: Date.now() });
   const questions = storedRecord(sealRequest(line.req), (f) => Object.fromEntries(Object.entries({ ...f.questions, ...f.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])));
-  appendStoreJson(logJev, line.event === "error" ? { request, ask, questions, error: line.error } : { request, ask, questions, answers: line.result.answers, nouls: line.result.nouls ?? {} });
+  appendStoreJson(logJev, line.event === "error" ? { request, ask, questions, error: line.error } : { request, ask, questions, answers: line.result.answers, nouls: line.result.nouls ?? {}, ...(line.result.probabilities === undefined ? {} : { probabilities: line.result.probabilities }) });
 });
 const askJev = jev.ask;
-// Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.
-if (a.maker === "writer" && a["writer-model"] === undefined) throw new Error("--maker writer needs --writer-model provider:model (no route is a default since L1)");
-const route = a["writer-model"] === undefined ? null : devWriterRoute(a["writer-model"]);
+// Only a named plan route may use a writer.
 const planRoute = a["plan-writer"] === undefined || a["no-writer"] === true ? null : devWriterRoute(a["plan-writer"]);
 let retries = 0;
 /** A writer, spaced to the provider's per-minute limit, with one wait-and-retry on 429 (counted; WriterPort itself never retries). */
@@ -205,7 +201,6 @@ const spaced = (port: WriterPort): WriterPort => {
   },
   };
 };
-const writer = route === null ? null : spaced(makeWriterPort(route));
 const planWriter = planRoute === null ? null : spaced(makeWriterPort(planRoute));
 
 type Verdict = "right" | "partial" | "wrong" | "refused" | "asked" | "notRun";
@@ -239,6 +234,12 @@ interface Row {
   refusePicks: { tried: number; proposed: string[] } | null;
   /** A1: decision requests the Ask made before any simulated pick. */
   requests: number;
+  /**
+   * firstGate (design CU-COUNSEL-20261009): the first checkpoint that stopped this Ask doing what its key expects, null
+   * when it is right (firstGateOf). `gates` are every checkpoint the first run did not pass, in order (planner/ask.ts Gate).
+   */
+  firstGate: string | null;
+  gates: Gate[];
 }
 
 const rows: Row[] = [];
@@ -253,7 +254,7 @@ for (const [i, ask] of asks.entries()) {
   current = ask.id;
   traces = [];
   corpusLabel = new Map(form.fields.flatMap((f) => nodesFor(desk.form, f).map((n) => [n.key, f.label] as const)));
-  const maker: IntentMaker = a.maker === "heads" ? headsIntentMaker(askJev) : a.maker === "jev" || writer === null ? jevIntentMaker(askJev, { rand: (n) => Math.floor(r() * n) }) : writerIntentMaker(writer, () => offerKey);
+  const maker: IntentMaker = headsIntentMaker(askJev);
   let draft: AskDraft | null = null;
   let error: string | null = null;
   let says: string | null = null;
@@ -262,8 +263,11 @@ for (const [i, ask] of asks.entries()) {
   let use: MakerUse | null = null;
   let question: AskQuestionDraft | null = null;
   let asked0: AskAsks | null = null;
+  // firstGate: the first run's checkpoints only; a continuation after a simulated pick records its own and is not kept.
+  const gates: Gate[] = [];
+  let gatesOpen = true;
   const run = (resume?: AskQuestionDraft["resume"]) =>
-    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), fillTrace: (t) => traces.push(t), values: true, ...(resume === undefined ? {} : { resume }) });
+    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), fillTrace: (t) => traces.push(t), values: true, gate: (g) => (gatesOpen ? gates.push(g) : undefined), ...(resume === undefined ? {} : { resume }) });
   try {
     draft = await run();
     intent = draft.intent;
@@ -281,6 +285,7 @@ for (const [i, ask] of asks.entries()) {
       asked0 = e;
     }
   }
+  gatesOpen = false;
   const labelOf = new Map<string, string>();
   for (const f of form.fields) for (const n of nodesFor(desk.form, f)) labelOf.set(n.key, f.label);
   const expected = ask.expected === "refuse" ? {} : ask.expected;
@@ -332,6 +337,11 @@ for (const [i, ask] of asks.entries()) {
       const hit = q.options.find((c) => (id === null ? c.fixes.source?.kind === "memory" : c.fixes.source?.kind === "window" && c.fixes.source.windowId === id));
       return { ids: hit === undefined ? null : [hit.option.id], right: [desk.source === null ? "memory" : desk.source.window.title] };
     }
+    // The task question: every key in these sets is a fill's, so the right reading is the fill.
+    if (q.part === "task") {
+      const fill = q.options.find((c) => c.fixes.task === "fill");
+      return { ids: fill === undefined ? null : [fill.option.id], right: ["fill"] };
+    }
     if (q.part === "value") {
       // The right value as the field takes it (corpus `expected` or `accept`), by the exact output the option stands for; else Leave blank.
       const u = q.resume.values?.queue[0];
@@ -348,7 +358,7 @@ for (const [i, ask] of asks.entries()) {
   };
   const optionText = (c: AskQuestionDraft["options"][number]): string => {
     const o = c.option;
-    return o.kind === "field" ? (labelOf.get(c.fixes.fields?.[0] ?? "") ?? o.label) : o.kind === "window" ? o.title : o.kind === "memory" ? "memory" : o.kind === "you" ? "you" : o.kind === "value" ? o.value : o.kind === "blank" ? "(leave blank)" : o.name;
+    return o.kind === "field" ? (labelOf.get(c.fixes.fields?.[0] ?? "") ?? o.label) : o.kind === "window" ? o.title : o.kind === "memory" ? "memory" : o.kind === "you" ? "you" : o.kind === "value" ? o.value : o.kind === "blank" ? "(leave blank)" : o.kind === "task" ? o.label : o.name;
   };
   const askedRows: Row["asked"] = [];
   let continued: Row["continued"] = null;
@@ -395,8 +405,23 @@ for (const [i, ask] of asks.entries()) {
   const verdict: Verdict = (await jev.notRun(ask.id)) ? "notRun" : scored.verdict;
   const fill = (draft?.fill?.fields ?? []).map((f) => ({ field: labelOf.get(f.key) ?? f.descriptor, value: f.value ?? f.handoff?.value ?? null, withheld: f.withheld }));
   const sentenceOk = ask.reason === undefined ? null : says !== null && sentenceFor(ask.reason, says);
-  rows.push({ ask, route: draft?.route ?? intent?.route ?? "none", verdict, proposed, missing, error, says, detail, sentenceOk, intent, maker: use, fill, asked: askedRows, continued, refusePicks, requests: requestsBy.get(ask.id) ?? 0 });
-  process.stderr.write(`${ask.id} (${ask.form}): ${verdict} via ${draft?.route ?? "none"}${error === null ? "" : `; ${error.slice(0, 160)}`}${detail === null || detail === says ? "" : ` [${detail.slice(0, 200)}]`}\n`);
+  const missingKeys = new Set(form.fields.filter((f) => missing.includes(f.label)).flatMap((f) => nodesFor(desk.form, f).map((n) => n.key)));
+  const firstGate = firstGateOf(verdict, gates, missingKeys, error);
+  rows.push({ ask, route: draft?.route ?? intent?.route ?? "none", verdict, proposed, missing, error, says, detail, sentenceOk, intent, maker: use, fill, asked: askedRows, continued, refusePicks, requests: requestsBy.get(ask.id) ?? 0, firstGate, gates });
+  process.stderr.write(`${ask.id} (${ask.form}): ${verdict} [${firstGate ?? "-"}] via ${draft?.route ?? "none"}${error === null ? "" : `; ${error.slice(0, 160)}`}${detail === null || detail === says ? "" : ` [${detail.slice(0, 200)}]`}\n`);
+}
+
+/**
+ * The first checkpoint that kept an Ask from its key: null when right. For a partial, the first blocking gate that is
+ * about the whole Ask or about a field it missed, else "scopeNot" (Jev's scope said the request does not ask for the
+ * field). For any other verdict, the first blocking gate, else the refusal's own code. "wrong" and "notRun" name themselves.
+ */
+function firstGateOf(verdict: Verdict, gates: readonly Gate[], missingKeys: ReadonlySet<string>, error: string | null): string | null {
+  if (verdict === "right") return null;
+  if (verdict === "wrong" || verdict === "notRun") return verdict;
+  const blocking = gates.filter((g) => g.blocking);
+  if (verdict === "partial") return blocking.find((g) => g.keys === undefined || g.keys.some((k) => missingKeys.has(k)))?.gate ?? "scopeNot";
+  return blocking[0]?.gate ?? (error === null ? "unknown" : `plannerError:${error.split(":")[0]}`);
 }
 
 /** Whether a refusal's sentence is the one its reason calls for. */
@@ -445,8 +470,8 @@ const kinds = [...new Set(rows.flatMap((r) => (r.ask.kind === undefined ? [] : [
 const md = [
   `# Ask scoreboard (B26): ${a["asks-file"]}, maker ${a.maker}, form window ${a["form-window"]}`,
   "",
-  `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker !== "writer" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
-  `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
+  `Maker ${a.maker}${` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})`}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
+  `Maker tokens per intent (input + output, Jev input only): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
   ...(a.replay === undefined ? [] : [`Replayed from ${a.replay}: ${replay.hits} requests; ${replay.misses} asked of ${decide.says} instead.`]),
   `Decisions: ${decide.says}; generator cap ${MAX_GENERATOR_VISITS} visits; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
   `Maker requests per intent: ${[...new Set(makerCalls)].sort((x, y) => x - y).join(", ") || "none"} (${makerCalls.length} intents made); maker latency p50 ${pct(makerMs, 0.5)} ms, p95 ${pct(makerMs, 0.95)} ms.`,
@@ -459,22 +484,24 @@ const md = [
   `Of the ${refuseAsks.length} that should be refused: refused ${n("refused", refuseAsks)}, wrong ${n("wrong", refuseAsks)}; with the right sentence ${named.filter((r) => r.sentenceOk === true).length} of the ${named.length} that name their reason.`,
   `A1 asks back: ${back.length} (asked with choices ${back.filter((r) => r.verdict === "asked").length}, the right option offered in ${back.filter((r) => r.asked[0]?.recall === true).length}; refused as unsure ${back.filter((r) => r.verdict === "refused").length}). Asks whose right outcome is a question: ${rows.filter((r) => r.ask.ask !== undefined).length}, asked rightly ${rightAsks.length}.`,
   `A1 decision requests per ask before any pick: mean ${(firstRequests.reduce((x, y) => x + y, 0) / Math.max(1, firstRequests.length)).toFixed(2)}, max ${Math.max(0, ...firstRequests)}; ${requestMs.length} requests in all, with the simulated picks.`,
+  `firstGate (the first checkpoint that kept each Ask from its key; null is right): ${[...rows.reduce((m, r) => m.set(r.firstGate ?? "null", (m.get(r.firstGate ?? "null") ?? 0) + 1), new Map<string, number>())].sort((x, y) => y[1] - x[1]).map(([g, k]) => `${g} ${k}`).join(", ")}.`,
+  `Route head (readHead): ${[...rows.reduce((m, r) => { const k = r.intent?.routeHead?.kind ?? "none"; return m.set(k, (m.get(k) ?? 0) + 1); }, new Map<string, number>())].map(([g, k]) => `${g} ${k}`).join(", ")}.`,
   ...(kinds.length === 0 ? [] : ["", "| kind | asks | right | partial | asked | refused | wrong | asked back |", "|---|---|---|---|---|---|---|---|", ...kinds.map((k) => { const xs = rows.filter((r) => r.ask.kind === k); return `| ${k} | ${xs.length} | ${n("right", xs)} | ${n("partial", xs)} | ${n("asked", xs)} | ${n("refused", xs)} | ${n("wrong", xs)} | ${xs.filter(askedBack).length} |`; })]),
   "",
-  "| ask | form | instruction | verdict | route | proposed | missing | intent | says | detail | asked (options; right; recall) | after pick |",
-  "|---|---|---|---|---|---|---|---|---|---|---|---|",
+  "| ask | form | instruction | verdict | firstGate | route | proposed | missing | intent | says | detail | asked (options; right; recall) | after pick |",
+  "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
   ...rows.map((r) => {
     const it = r.intent === null ? "" : `${r.intent.route}${r.intent.why === "none" ? "" : `/${r.intent.why}`} ${r.intent.scope}${r.intent.scope === "list" ? `[${r.intent.fields.join(",")}]` : ""} src=${r.intent.sources.join(",")} whose=${r.intent.whose}${r.intent.literals.length === 0 ? "" : ` lit=${r.intent.literals.map((l) => `${l.field}:${l.text}`).join(",")}`}`;
     const props = r.proposed.map((p) => `${p.control ? "set " : ""}${p.field} = ${p.value}${ok2(p) ? "" : ` (expected ${p.expected ?? "no change"})`}`).join("; ");
     const sentence = r.says === null ? "" : `${r.sentenceOk === false ? "WRONG SENTENCE: " : ""}${r.error?.split(":")[0] ?? ""}: ${r.says}`;
     const qs = r.asked.map((x) => `${x.part}: [${x.options.join("; ")}]; right ${x.right.join("; ")}; ${x.recall ? `picked ${x.picked.join("; ")}` : "NOT OFFERED"}`).join(" -> ");
     const after = r.continued === null ? "" : `${r.continued.verdict}: ${r.continued.proposed.map((p) => `${p.field} = ${p.value}${ok2(p) ? "" : ` (expected ${p.expected ?? "no change"})`}`).join("; ")}${r.continued.missing.length === 0 ? "" : ` missing ${r.continued.missing.join("; ")}`}${r.continued.says === null ? "" : ` says ${r.continued.says}`}`;
-    return `| ${r.ask.id} | ${r.ask.form} | ${r.ask.instruction} | ${r.verdict} | ${r.route} | ${props} | ${r.missing.join("; ")} | ${it} | ${sentence.replace(/\|/g, "/")} | ${(r.detail ?? "").replace(/\|/g, "/").slice(0, 200)} | ${qs.replace(/\|/g, "/")} | ${after.replace(/\|/g, "/")} |`;
+    return `| ${r.ask.id} | ${r.ask.form} | ${r.ask.instruction} | ${r.verdict} | ${r.firstGate ?? ""} | ${r.route} | ${props} | ${r.missing.join("; ")} | ${it} | ${sentence.replace(/\|/g, "/")} | ${(r.detail ?? "").replace(/\|/g, "/").slice(0, 200)} | ${qs.replace(/\|/g, "/")} | ${after.replace(/\|/g, "/")} |`;
   }),
 ];
 function ok2(p: Proposed): boolean {
   return p.expected === p.value;
 }
 writeStore(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
-writeStoreJson(join(OUT, "realfill-asks.json"), { engine: decide.says, formWindow: a["form-window"], requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, 1);
+writeStoreJson(join(OUT, "realfill-asks.json"), { engine: decide.says, formWindow: a["form-window"], requestMs, maker: a.maker, model: `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, 1);
 process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}, not run ${n("notRun")}${n("notRun") === 0 ? "" : ` (rerun ${rows.filter((r) => r.verdict === "notRun").map((r) => r.ask.id).join(",")})`}; asked back ${back.length}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}${a.replay === undefined ? "" : `; replayed ${replay.hits}, missed ${replay.misses}`}\n`);

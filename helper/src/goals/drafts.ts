@@ -19,7 +19,8 @@ import { Disclosure, type ModelText, type ScreenRegistry } from "../privacy/disc
 // after a greeting or thanks; a lower-case Roman numeral only after a word like "chapter"; an amount with no currency
 // only beside a word like "quote" or "price"; a commitment with no fact in it ("I'll handle it") is Jev's to judge.
 import type { AskJev, JevRequest } from "../fill/jev.ts";
-import { NOUL_FLOOR } from "../planner/intent-makers.ts";
+/** Lowest probability of yes for a draft claim: plan section 4's provisional floor, not calibrated. */
+export const NOUL_FLOOR = 0.95;
 import type { Snippet } from "../privacy.ts";
 
 /** Longest draft, in characters (code points). The brief's limit (B30). */

@@ -4,7 +4,7 @@
 // candidate generator uses the word overlap to spend a conversation's budget on the lines nearest each
 // field's label first (candidates.ts). Names are grouped the same way under NAME_TERM, read from the
 // line's shape since the reader types no names.
-import type { ValueKind } from "../protocol.ts";
+import type { TypedValue, ValueKind } from "../protocol.ts";
 
 /**
  * Label words that say a field takes a value of a kind; the reader's typed values use the same kinds
@@ -26,6 +26,95 @@ const KIND_WORDS: readonly (readonly [ValueKind, RegExp])[] = [
   ["address", /\b(?:address|street)\b|(?<![\p{L}\p{M}])(?:dirección|adresse|anschrift|العنوان|عنوان|पता|पते)(?![\p{L}\p{M}])|주소|地址|住所/iu],
   ["id", /\b(?:id|number|ref|reference|tracking|invoice|ticket|confirmation|code)\b/],
 ];
+
+/**
+ * Words that say a number is a loyalty or membership number: "Mileage Plan: 123456789", "Rewards member 4417 2290".
+ * Written for the corpus's mail and common program words, not measured on real mail.
+ */
+const MEMBERSHIP_WORDS = /\b(?:mileage|miles|frequent[ -]?fl[iy]er|loyalty|rewards?|member(?:ship)?|skymiles|aadvantage)\b/iu;
+
+/**
+ * The kind of a value the reader typed, corrected where its label says otherwise. The reader's data detector
+ * (TypedValues.swift) types a bare run of digits as a phone, so B25 held-13's "Mileage Plan: 123456789" was one of the
+ * mail's phones: when the request's budget cut those, the Mileage Plan field lost its only value with them (slice 2
+ * analysis of the 43 source cuts). A bare digit run on a line whose words before it name a loyalty or membership number,
+ * and no phone, is an ID. A number written with a plus, parentheses or separators stays a phone, as does any number on a
+ * line that says phone. The reader applies the same rule (TypedValueDetector.membershipNumber); this covers snapshots it
+ * typed before it did.
+ */
+export function readerValue(v: TypedValue, texts: readonly (string | null | undefined)[]): TypedValue {
+  if (v.kind !== "phone" || !/^\d{6,15}$/u.test(v.text)) return v;
+  for (const t of texts) {
+    if (typeof t !== "string") continue;
+    for (const line of t.split(/\r?\n/u)) {
+      const at = line.indexOf(v.text);
+      if (at < 0) continue;
+      const before = line.slice(0, at).normalize("NFKC");
+      if (MEMBERSHIP_WORDS.test(before) && !(KIND_WORDS.find(([k]) => k === "phone")?.[1].test(before.toLowerCase()) ?? false)) return { ...v, kind: "id" };
+    }
+  }
+  return v;
+}
+
+/** The kinds whose values are one token-like string that never starts or ends with quotes, brackets or sentence punctuation. */
+const WRAPPABLE: readonly ValueKind[] = ["email", "url", "phone", "id"];
+const PAIRS: Readonly<Record<string, string>> = { '"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019", "\u00ab": "\u00bb", "<": ">", "(": ")", "[": "]" };
+const TRAILING = /[.,;:!?\u3002]+$/u;
+/**
+ * A link's own last character may be "!" or "?" ("https://example.com/search?q=hello!"), so after a link only the
+ * punctuation that ends a sentence around it is a mark (Greptile review on #22).
+ */
+const LINK_TRAILING = /[.,;:\u3002]+$/u;
+const LINK = /^[<("'[\u201c\u2018\u00ab]*(?:https?:\/\/|www\.)/iu;
+const trailingOf = (t: string): RegExp => (LINK.test(t) ? LINK_TRAILING : TRAILING);
+/** Whether a text is a whole value of the kind, nothing around it. */
+const WHOLE: Readonly<Record<string, RegExp>> = {
+  email: /^[^\s@<>()"'\[\],;:]+@[^\s@<>()"'\[\],;:]+\.[\p{L}]{2,}$/u,
+  url: /^(?:https?:\/\/)?[^\s<>()"'\[\]]+\.[^\s<>"'\[\]]*[^\s<>"'\[\].,;:)]$/u,
+  phone: /^\+?[\d(][\d ().-]{5,}\d$/u,
+  id: /^[\p{L}\p{N}#][\p{L}\p{N}#\-_/.]*[\p{L}\p{N}]$/u,
+};
+
+/**
+ * The value inside a text a field of an email, URL, phone or ID kind would take, when the text is that value wrapped in
+ * quotes, angle brackets, parentheses or square brackets, or followed by sentence punctuation: '"123456796"' gives
+ * 123456796, "<https://x.example>" and "https://x.example." give the link. Null when the text is not wrapped, or what it
+ * wraps is not a whole value of one of those kinds. The verifier answered "exact" twice for such texts at 0.75 to 0.92
+ * (slice 2's labelled set, ~/.caret-run/evidence/act/slice3/sweep.txt), so code reads them, not the floor. A field
+ * whose label names no kind ("LinkedIn Profile") is held to the kind of what the marks wrap, when that is a whole email,
+ * link or phone number.
+ */
+export function unwrapValue(text: string, kinds: ReadonlySet<ValueKind>): string | null {
+  const core = stripMarks(text);
+  if (core === text.trim()) return null;
+  const wants = kinds.size === 0 ? (["email", "url", "phone"] as const) : WRAPPABLE.filter((k) => kinds.has(k));
+  return wants.some((k) => WHOLE[k]?.test(core) === true) ? core : null;
+}
+
+/** The text without the quotes, brackets and trailing sentence punctuation around it, however deep. */
+function stripMarks(text: string): string {
+  let core = text.trim();
+  for (let changed = true; changed; ) {
+    changed = false;
+    const close = PAIRS[core[0] ?? ""];
+    if (close !== undefined && core.length > 2 && core.endsWith(close)) ((core = core.slice(1, -1).trim()), (changed = true));
+    const bare = core.replace(trailingOf(core), "");
+    if (bare !== core && bare.length > 0) ((core = bare), (changed = true));
+  }
+  return core;
+}
+
+/**
+ * Whether a text for a field of an email, URL, phone or ID kind carries quotes, brackets or punctuation around its value;
+ * for a field that names no kind, whether it is a whole email, link or phone number with marks around it (unwrapValue).
+ */
+export function wrappedValue(text: string, kinds: ReadonlySet<ValueKind>): boolean {
+  if (kinds.size === 0) return unwrapValue(text, kinds) !== null;
+  if (!WRAPPABLE.some((k) => kinds.has(k))) return false;
+  const t = text.trim();
+  const close = PAIRS[t[0] ?? ""];
+  return (close !== undefined && t.length > 2 && t.endsWith(close)) || trailingOf(t).test(t);
+}
 
 /** A clock time inside a value: "3:00 PM", "15:00", "3 PM". */
 const CLOCK = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b(?:1[0-2]|0?[1-9])\s?[ap]\.?m\b\.?/iu;

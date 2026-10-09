@@ -31,6 +31,9 @@ final class ManualClock: SurfaceClock {
         return entry
     }
 
+    /// Moves the time on without firing anything due: a timer the run loop delayed (busy, or just after wake).
+    func skip(by seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
+
     func advance(by seconds: TimeInterval) {
         let end = now.addingTimeInterval(seconds)
         while let next = entries.filter({ !$0.cancelled && $0.due <= end }).min(by: { $0.due < $1.due }) {

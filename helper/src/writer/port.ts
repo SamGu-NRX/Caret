@@ -1,22 +1,41 @@
 // WriterPort (action-engine-v2 section 5): one bounded write by the configured model. This batch serves
 // `plan`; `polish` and `memoryProposal` are refused until their schemas exist. The output is untrusted
 // text: a plan program still has to pass compileProgram and the sandbox.
-import { chat, chatSink, type ChatRoute } from "./chat.ts";
+import { chat, ChatHttpError, chatSink, type ChatRoute } from "./chat.ts";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
 import { verifyWriterInput, type Disclosure, type ModelValue } from "../privacy/disclosure.ts";
-import { seal } from "../privacy/send.ts";
+import { seal, sendable } from "../privacy/send.ts";
 import { writerPolicy, type ProviderPolicy } from "../privacy/providers.ts";
 import { readKey } from "./env.ts";
 import { extractProgram, PLAN_SYSTEM, PLAN_WORDING, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
 import { GOAL_SYSTEM } from "./goal-prompt.ts";
-import { INTENT_SYSTEM, INTENT_WORDING, IntentInputSchema, intentResponseFormat, intentUserMessage } from "./intent-prompt.ts";
+import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
+import { ENV, processEnv } from "../host-env.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { WRITER_DAILY_CAP_USD } from "./config.ts";
+
+export const WRITER_SPEND_DIR = join(homedir(), "Library", "Application Support", "CaretV2", "writer-spend");
+const dailySpend = new DailySpend({ dir: processEnv()[ENV.caret_writer_spend_dir] || WRITER_SPEND_DIR, capUsd: WRITER_DAILY_CAP_USD });
+
+/** The configured writer cannot send today. No alternate route is tried. */
+export class WriterUnavailable extends Error {
+  readonly reason: "budget";
+  constructor(reason: "budget") {
+    super(`writer unavailable: ${reason}`);
+    this.name = "WriterUnavailable";
+    this.reason = reason;
+  }
+}
+
+/** UTF-8 bytes overestimate input tokens; reserve the full output cap, including reasoning. Assumed, not measured. */
+export function writerEstimateUsd(route: ChatRoute, body: string, maxOutputTokens: number): number {
+  return (Buffer.byteLength(body, "utf8") * route.pricing.inputUsdPerMTok + maxOutputTokens * route.pricing.outputUsdPerMTok) / 1_000_000;
+}
 
 export interface WriterRequest {
-  /**
-   * "intent" (B25): an Ask's intent as strict JSON over the snapshot's refs (intent-prompt.ts). "goal" (D2-06): a plan
-   * program whose steps may span the listed windows and the calendar (goal-prompt.ts); same input as "plan".
-   */
-  kind: "plan" | "goal" | "intent" | "polish" | "memoryProposal";
+  /** "goal" programs may span the listed windows and calendar; same input as "plan". */
+  kind: "plan" | "goal" | "polish" | "memoryProposal";
   /** Names the disclosure the caller accounted for this request; required so no write goes out unaccounted. */
   disclosureId: string;
   /**
@@ -36,7 +55,7 @@ export interface WriterResult {
   /** The model id the provider says served the request. */
   model: string;
   provider: string;
-  /** `program` for a plan; `json` for an intent, parsed but not yet checked against its schema. */
+  /** The untrusted program and raw reply. Test doubles may also attach parsed JSON. */
   output: { program: string | null; reply: string; json?: unknown };
   inputTokens: number;
   outputTokens: number;
@@ -65,14 +84,15 @@ export class WriterProviderRefused extends Error {
  * `evaluation`: the caller is an evaluation harness whose requests carry fixture text only, the one case a route whose
  * provider keeps what it is sent may run (privacy/providers.ts). `policy` replaces writerPolicy, for tests.
  */
-export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fetchFn?: typeof fetch; evaluation?: boolean; policy?: (route: ChatRoute) => ProviderPolicy } = {}): WriterPort {
+export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fetchFn?: typeof fetch; evaluation?: boolean; policy?: (route: ChatRoute) => ProviderPolicy; spend?: DailySpend } = {}): WriterPort {
   const key = opts.key ?? (() => readKey(route.keyName));
+  const spend = opts.spend ?? dailySpend;
   const retains = (opts.policy ?? writerPolicy)(route).retains;
   return {
     route,
     async write(req) {
       // A kind with no schema yet is refused before its input is read (privacy/shapes.ts gives it no slot).
-      if (req.kind !== "plan" && req.kind !== "goal" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
+      if (req.kind !== "plan" && req.kind !== "goal") throw new Error(`writer kind ${req.kind} is not implemented yet`);
       assertNoExcludedValue(req);
       if (retains && opts.evaluation !== true) throw new WriterProviderRefused(`${route.provider}:${route.model} keeps what it is sent, so it writes only for evaluation harnesses over fixture text`);
       if (req.disclosureId.length === 0) throw new Error("writer request has no disclosureId");
@@ -80,23 +100,6 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
       // Then sealed once for the chat sink (privacy/send.ts): rendered from the frozen input, validated, measured, and
       // sent as those bytes only.
       verifyWriterInput(req);
-      if (req.kind === "intent") {
-        const input = IntentInputSchema.parse(req.input);
-        const messages = (wire: unknown) => [
-          { role: "system" as const, content: INTENT_SYSTEM },
-          { role: "user" as const, content: intentUserMessage(IntentInputSchema.parse(wire)) },
-        ];
-        const sealed = seal({ writer: req }, chatSink(route, messages, INTENT_WORDING, req.maxOutputTokens, intentResponseFormat(input)));
-        const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);
-        const r = await chat(route, key(), sealed, signal, opts.fetchFn);
-        let json: unknown;
-        try {
-          json = JSON.parse(r.text);
-        } catch {
-          json = undefined;
-        }
-        return { model: r.servedModel, provider: route.provider, output: { program: null, reply: r.text, json }, inputTokens: r.inputTokens, outputTokens: r.outputTokens, reasoningTokens: r.reasoningTokens, latencyMs: r.latencyMs, costUsd: r.costUsd };
-      }
       PlanInputSchema.parse(req.input);
       const system = req.kind === "goal" ? GOAL_SYSTEM : PLAN_SYSTEM;
       const messages = (wire: unknown) => [
@@ -105,7 +108,31 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
       ];
       const sealed = seal({ writer: req }, chatSink(route, messages, [system, ...PLAN_WORDING], req.maxOutputTokens));
       const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);
-      const r = await chat(route, key(), sealed, signal, opts.fetchFn);
+      // The key is read before anything is reserved: a key that can't be read sends nothing, so it may charge nothing
+      // (Codex review on #22: a missing key once charged the full estimate, and repeats could use up the day's cap).
+      const apiKey = key();
+      let hold;
+      let estimate = 0;
+      try {
+        // DailySpend permits a zero-price request at equality, so check the landed total explicitly too.
+        if (spend.spent() >= spend.capUsd) throw new WriterUnavailable("budget");
+        estimate = writerEstimateUsd(route, sendable(sealed), req.maxOutputTokens);
+        hold = spend.reserve(estimate);
+      } catch (e) {
+        if (e instanceof JevCapError) throw new WriterUnavailable("budget");
+        throw e;
+      }
+      let r;
+      try {
+        r = await chat(route, apiKey, sealed, signal, opts.fetchFn);
+      } catch (e) {
+        // Only a provider's 4xx refusal is known unbilled. A timeout, a network error, a 5xx or an unreadable answer may
+        // have been processed and billed, so it counts at its reservation, and repeated failures still reach the cap.
+        if (e instanceof ChatHttpError && e.status >= 400 && e.status < 500) hold.release();
+        else hold.settle(estimate, 0);
+        throw e;
+      }
+      hold.settle(r.costUsd, r.inputTokens);
       return {
         model: r.servedModel,
         provider: route.provider,
