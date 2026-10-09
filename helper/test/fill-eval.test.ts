@@ -42,3 +42,14 @@ it("replays partial values and focus visits in event order, using the last event
   expect(now).toBe(6);
   expect(fake.close).toHaveBeenCalledOnce();
 });
+it("records a failed form and continues to write a partial report", async () => {
+  fake.propose.mockRejectedValueOnce(new Error("synthetic refusal"));
+  await import("../scripts/fill-eval.ts");
+  expect(fake.propose).toHaveBeenCalledTimes(2);
+  expect(fake.close).toHaveBeenCalledOnce();
+  const report = JSON.parse(readFileSync(join(dir, "fill-eval.json"), "utf8"));
+  expect(report.summary.requests).toBe(1);
+  expect(report.requests[0].form).toBe("other");
+  expect(report.summary.errors).toEqual(["round 0 form: synthetic refusal"]);
+  expect(readFileSync(join(dir, "fill-eval.md"), "utf8")).toContain("round 0 form: synthetic refusal");
+});

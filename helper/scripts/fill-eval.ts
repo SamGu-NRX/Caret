@@ -89,8 +89,12 @@ if (a.engine === "decisions") {
   const now = snapshots.reduce((at, s) => Math.max(at, s.at), 0) + 1;
   try {
     for (let r = 0; r < rounds; r++) for (const target of targets) {
-      const proposal = await proposeFill(model, decide.ask, target.windowId, target.trigger, now);
-      proposals.push(proposal);
+      try {
+        const proposal = await proposeFill(model, decide.ask, target.windowId, target.trigger, now);
+        proposals.push(proposal);
+      } catch (e) {
+        errors.push(`round ${r} ${target.title}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   } finally { decide.engine.close?.(); }
 } else {
