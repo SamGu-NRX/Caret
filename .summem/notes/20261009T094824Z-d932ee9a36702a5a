@@ -1,0 +1,1 @@
+In the macOS 26 rig guest the system-wide AX element answers -25204 for its focused element and app while the app's own element works; AXRead.focusedElement falls back to the frontmost app (DF1 run 20261009T091737Z-83186).

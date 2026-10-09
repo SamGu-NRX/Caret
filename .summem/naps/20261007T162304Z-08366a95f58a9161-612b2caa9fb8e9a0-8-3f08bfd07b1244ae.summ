@@ -1,1 +1,0 @@
-Ask: facts blocks by first-row label (proposal.ts); stand-ins via builders.scopeLabel. Typecheck: swift-typecheck <wt> --since. TODO(INT1) holds OWNER_NOTE_CHARS 0. Tests inject PrivacyPromise.txt. Info.plist comments: no double hyphen. VM harnesses hardcode v2/host.
