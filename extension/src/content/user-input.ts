@@ -25,8 +25,13 @@ export function isUserInput(e: { isTrusted: boolean; type: string; key?: string 
 }
 
 export class UserInputs<E extends object> {
-  /** Element to the time input last reached it, oldest first. */
-  private readonly seen = new Map<E, number>();
+  /**
+   * The time input last reached each element, oldest first. Held weakly, so a field the page removes is not kept
+   * alive by this record when no later event or walk prunes it (PR #33 review).
+   */
+  private readonly seen = new Map<WeakRef<E>, number>();
+  /** Each element's one reference in `seen`. */
+  private readonly refs = new WeakMap<E, WeakRef<E>>();
   /** Input before this time is noted: USER_INPUT_RECENT_MS past the end of the frame's grants. */
   private until = 0;
   /** Whether `inner` is `outer` or sits inside it, shadow roots included. */
@@ -46,9 +51,15 @@ export class UserInputs<E extends object> {
 
   /** The user's input reached `el` at `at`; kept only while the frame is armed (`armed`). */
   noted(el: E, at: number): void {
+    this.prune(at);
     if (at >= this.until) return;
-    this.seen.delete(el);
-    this.seen.set(el, at);
+    let ref = this.refs.get(el);
+    if (ref === undefined) {
+      ref = new WeakRef(el);
+      this.refs.set(el, ref);
+    }
+    this.seen.delete(ref);
+    this.seen.set(ref, at);
     this.prune(at);
   }
 
@@ -56,14 +67,17 @@ export class UserInputs<E extends object> {
   at(control: E, now: number): number | undefined {
     this.prune(now);
     let last: number | undefined;
-    for (const [el, at] of this.seen) if ((last === undefined || at > last) && this.within(el, control)) last = at;
+    for (const [ref, at] of this.seen) {
+      const el = ref.deref();
+      if (el !== undefined && (last === undefined || at > last) && this.within(el, control)) last = at;
+    }
     return last;
   }
 
+  /** Drops what is too old, past MAX_KEPT, or gone from memory. */
   private prune(now: number): void {
-    for (const [el, at] of this.seen) {
-      if (now - at < USER_INPUT_RECENT_MS && this.seen.size <= MAX_KEPT) break;
-      this.seen.delete(el);
+    for (const [ref, at] of this.seen) {
+      if (now - at >= USER_INPUT_RECENT_MS || this.seen.size > MAX_KEPT || ref.deref() === undefined) this.seen.delete(ref);
     }
   }
 }

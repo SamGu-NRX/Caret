@@ -214,15 +214,22 @@ describe("AX: which reader input counts", () => {
     expect(await run(r)).toMatchObject({ acted: 0, detail: expect.stringContaining("you typed in it") });
   });
 
-  it("counts a click inside the field's window, and not one outside it", async () => {
+  it("counts a click inside the field's window, and one elsewhere in its app (PR #33 review)", async () => {
     const click = (point: [number, number]) => ({ at: STOP_AT + 20, act: (x: Rig) => x.reader({ type: "userInput", v: 1, at: Date.now(), pid: AX_PID, kind: "mouse", point }) });
     const inside = rig("AX", { landed: true, user: click([150, 50]) });
     expect(await run(inside)).toMatchObject({ acted: 0, detail: expect.stringContaining("you clicked in its window") });
     expect(await inside.helper.executor.undo("t")).toMatchObject({ restored: 0 });
     for (const close of cleanups.splice(0)) close();
+    // A suggestion list outside the window's frame can put the value in too.
     const outside = rig("AX", { landed: true, user: click([900, 700]) });
-    expect(await run(outside)).toMatchObject({ acted: 1 });
-    expect(await outside.helper.executor.undo("t")).toMatchObject({ restored: 1 });
+    expect(await run(outside)).toMatchObject({ acted: 0, detail: expect.stringContaining("you clicked in its app") });
+    expect(await outside.helper.executor.undo("t")).toMatchObject({ restored: 0 });
+  });
+
+  it("does not count a click in another app", async () => {
+    const r = rig("AX", { landed: true, user: { at: STOP_AT + 20, act: (x) => x.reader({ type: "userInput", v: 1, at: Date.now(), pid: AX_PID + 1, kind: "mouse", point: [150, 50] }) } });
+    expect(await run(r)).toMatchObject({ acted: 1 });
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1 });
   });
 
   it("keeps Undo off the field when the reader's report arrives after the recovery read (B29)", async () => {

@@ -526,15 +526,16 @@ export class Executor {
    * step boundary (S1 audit #3): a write already queued in the reader behind a slow call is refused there.
    */
   onUserInput(m: UserInput): void {
-    // A click in the window of a watched write counts as input on its field (InputWatch): a click can put text in with
+    // A click in the app of a watched write counts as input on its field (InputWatch): a click can put text in with
     // no key (a suggestion list, a context menu's Paste), and it moves focus before the reader reads the move, so the
-    // keys that follow may still name the field that had focus before. Keys count only through fieldInput, which
-    // leaves out the Esc that stops a run.
-    if (m.kind === "mouse" && m.point !== null) {
+    // keys that follow may still name the field that had focus before. The whole app, not the field's window: a
+    // suggestion list can sit outside that window, and a window's frame can be unreadable (PR #33 review). Keys count
+    // only through fieldInput, which leaves out the Esc that stops a run.
+    if (m.kind === "mouse") {
       for (const watch of this.inputWatches) {
         if (watch.pid !== m.pid || m.at < watch.since) continue;
         const frame = this.deps.model.windows.get(watch.windowId)?.window.frame ?? null;
-        if (frame !== null && contains(frame, m.point)) this.inputSeen(watch, "you clicked in its window");
+        this.inputSeen(watch, frame !== null && m.point !== null && contains(frame, m.point) ? "you clicked in its window" : "you clicked in its app");
       }
     }
     for (const task of this.tasks.values()) {

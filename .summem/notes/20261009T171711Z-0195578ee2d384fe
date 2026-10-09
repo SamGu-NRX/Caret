@@ -1,1 +1,0 @@
-Stop reconciliation: a proper prefix read after a pause or stop is never Caret's partial write (the user may have typed it); ledger partialWrite holds the exact prefix read before the interrupt, and undo restores only while the field holds exactly that.

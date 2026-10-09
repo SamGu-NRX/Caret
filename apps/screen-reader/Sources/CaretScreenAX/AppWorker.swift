@@ -122,9 +122,16 @@ final class PressIndex: @unchecked Sendable {
         focusMoved = false
     }
 
+    /// Caret is about to focus an element itself (a focus-first write, PR #33 review): until the focus change it causes
+    /// is read, on the worker's queue after the write, the user's keys go to an element the index does not know.
+    func focusMayMove() {
+        lock.lock(); defer { lock.unlock() }
+        focusMoved = true
+    }
+
     /// The fieldInput for a key going down now (FieldInputs), placed at the focused element as last read; nil for Esc.
-    /// A Tab leaves the element unknown until the next focus change is read, so the keys after it count against the
-    /// whole window. A focus change read before the Tab's own report leaves it unknown until the one after.
+    /// A Tab, or Caret focusing a field itself (focusMayMove), leaves the element unknown until the next focus change is
+    /// read, so the keys after it count against the whole window. A focus change read before the Tab's own report leaves it unknown until the one after.
     func fieldInput(keyCode: UInt16, at: Int64, pid: Int) -> FieldInput? {
         lock.lock(); defer { lock.unlock() }
         let entry = focus.flatMap { byWindow[$0.window] }
@@ -851,6 +858,7 @@ public final class AppWorker: @unchecked Sendable {
             if attribute == "focused" {
                 if nowMs() > expires { return (.axError, "the command expired before it could act") }
                 if let no = refused(windowId) { return no }
+                pressIndex.focusMayMove()
                 err = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             } else {
                 // Classified before the last checks below: its parent reads can block, and a grant that ends meanwhile
@@ -956,6 +964,7 @@ public final class AppWorker: @unchecked Sendable {
                 return now == expect ? nil : (.changed, "\(when) the value is '\(now.prefix(80))'")
             }
         }
+        pressIndex.focusMayMove()
         let f = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         guard f == .success else { return (.axError, "insert: focus failed with \(f.rawValue)") }
         if let no = holdsExpect("after focus") { return no }
@@ -1017,6 +1026,7 @@ public final class AppWorker: @unchecked Sendable {
     /// Focus can run the page's own handlers, so the field must still hold `expect` before the write. The
     /// executor's walk afterwards checks what the field holds. Nil when both steps went through.
     private func focusThenValue(_ value: String, into el: AXUIElement, window win: AXRef, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
+        pressIndex.focusMayMove()
         let f = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         guard f == .success else { return (.axError, "focusValue: focus failed with \(f.rawValue)") }
         switch AX.read(el, kAXValueAttribute) {
