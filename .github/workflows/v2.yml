@@ -187,8 +187,6 @@ jobs:
     defaults:
       run:
         working-directory: helper
-    env:
-      EVIDENCE: ${{ runner.temp }}/caret-v2-guards
     steps:
       - name: Refuse credentials and external environment files
         working-directory: ${{ runner.temp }}
@@ -210,6 +208,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: helper/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Set evidence directory
+        run: echo "EVIDENCE=$RUNNER_TEMP/caret-v2-guards" >> "$GITHUB_ENV"
       - name: Guard adversary, refuse verifier
         run: node scripts/guard-adversary.ts --out "$EVIDENCE/refuse" --verifier refuse
       - name: Guard adversary, accept verifier
