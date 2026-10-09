@@ -95,6 +95,7 @@ final class HostCoordinator {
         }
         guard engine.state == .ready, wordsAllowed(),
               policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
+              !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
               !field.secure, !context.traits.isSecureTextEntry, !context.traits.isPasswordField,
               field.selection.isEmpty
         else { return reset() }

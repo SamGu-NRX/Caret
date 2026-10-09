@@ -196,7 +196,7 @@ final class SurfaceCoordinator {
     // MARK: - Reading the system (the machine's `SurfaceWorld`)
 
     fileprivate func allows(pid: Int32) -> Bool {
-        headless ? policy.allows(pid: pid, bundleID: nil) : policy.allowsLive(pid: pid)
+        (headless ? policy.allows(pid: pid, bundleID: nil) : policy.allowsLive(pid: pid)) && !AppSwitch.shared.isOff(pid: pid)
     }
 
     fileprivate func readField(pid: Int32) -> FocusedField? {

@@ -165,7 +165,7 @@ final class PageInlineCoordinator {
     private func writingGate(pid: Int32) -> PageWritingMachine.Gate {
         let settings = SettingsStore.shared.settings
         let allowed = PageInline.allowed(settings, wordsAllowed: wordsAllowed(), engineReady: true,
-                                         browserAllowed: drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil),
+                                         browserAllowed: (drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil)) && !AppSwitch.shared.isOff(pid: pid),
                                          composing: InputMethodState.shared.composes)
         let checks = language.flatMap { NativeChecker.supports($0) ? $0 : nil }
         return PageWritingMachine.Gate(allowed: allowed, contentEditable: settings.pageInlineContentEditable, settings: settings.pageInline, language: checks)
@@ -202,7 +202,7 @@ final class PageInlineCoordinator {
 
     private func gate(pid: Int32) -> PageInlineMachine.Gate {
         let allowed = PageInline.allowed(SettingsStore.shared.settings, wordsAllowed: wordsAllowed(), engineReady: engine.state == .ready,
-                                         browserAllowed: drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil),
+                                         browserAllowed: (drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil)) && !AppSwitch.shared.isOff(pid: pid),
                                          composing: InputMethodState.shared.composes)
         let settings = SettingsStore.shared.settings
         return PageInlineMachine.Gate(allowed: allowed, contentEditable: settings.pageInlineContentEditable, settings: settings.pageInline)

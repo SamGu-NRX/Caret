@@ -121,8 +121,27 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// Which keys take ghost text (brief item 6). Caret's own until Sam picks a default; Cotypist's is
     /// the other preset.
     public var ghostKeys = GhostKeys.caret
+    /// Brief item 7: apps where Caret shows nothing, by bundle identifier, sorted, each once. Ghost text, writing fixes,
+    /// fills and Caret's lines stay out of them; the reader still reads their windows, as it does every app's.
+    public private(set) var appsOff: [String] = []
 
     public init() {}
+
+    /// Turns Caret off or back on in one app. An identifier that is empty or holds a space changes nothing.
+    public mutating func setApp(_ bundleID: String, off: Bool) {
+        guard Self.isBundleID(bundleID) else { return }
+        var set = Set(appsOff)
+        if off { set.insert(bundleID) } else { set.remove(bundleID) }
+        appsOff = set.sorted()
+    }
+
+    /// Whether Caret is off in the app with this bundle identifier. An app without one is never off.
+    public func isOff(_ bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return appsOff.contains(bundleID)
+    }
+
+    public static func isBundleID(_ s: String) -> Bool { !s.isEmpty && !s.contains(where: \.isWhitespace) }
 
     /// Turns Caret off or back on for one origin; an origin not in `SiteOrigin`'s form changes nothing.
     public mutating func setSite(_ origin: String, off: Bool) {
@@ -132,7 +151,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = set.sorted()
     }
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable, ghostKeys }
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable, ghostKeys, appsOff }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -172,6 +191,12 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         pageInlineContentEditable = try c.decodeIfPresent(Bool.self, forKey: .pageInlineContentEditable) ?? false
         // Absent: the default. A scheme this host does not know is refused with the file.
         ghostKeys = try c.decodeIfPresent(GhostKeys.self, forKey: .ghostKeys) ?? .caret
+        // Absent from a file written before item 7: no app was turned off.
+        let apps = try c.decodeIfPresent([String].self, forKey: .appsOff) ?? []
+        if let bad = apps.first(where: { !Self.isBundleID($0) }) {
+            throw DecodingError.dataCorruptedError(forKey: .appsOff, in: c, debugDescription: "'\(bad)' is not a bundle identifier")
+        }
+        appsOff = Array(Set(apps)).sorted()
         let pages = Set(PageField.OwnSuggestions.allCases.map(\.rawValue))
         if let bad = (pageInline.on + pageInline.quiet).first(where: { !pages.contains($0) }) {
             throw DecodingError.dataCorruptedError(forKey: .pageInline, in: c, debugDescription: "\(bad) is not a page with its own suggestions")
@@ -196,6 +221,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         if !pageInlineText { try c.encode(pageInlineText, forKey: .pageInlineText) }
         if pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
         if ghostKeys != .caret { try c.encode(ghostKeys, forKey: .ghostKeys) }
+        if !appsOff.isEmpty { try c.encode(appsOff, forKey: .appsOff) }
     }
 
     public var gate: GatePolicy { GatePolicy(self) }

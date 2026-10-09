@@ -441,11 +441,23 @@ public final class HostRuntime {
         let gateClient = helper
         gateClient.update(HostSettings(SettingsStore.shared.settings, at: Self.nowMs()))
         arbiter.setGhostKeys(SettingsStore.shared.settings.ghostKeys)
+        AppSwitch.shared.update(SettingsStore.shared.settings)
+        var appsOff = SettingsStore.shared.settings.appsOff
         // A setting that closes the gate takes down what it no longer allows at once, not only
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in
             gateClient.update(HostSettings(settings, at: Self.nowMs()))
             arbiter.setGhostKeys(settings.ghostKeys)
+            AppSwitch.shared.update(settings)
+            // An app just turned off: what Caret shows there goes now, not at the next keystroke.
+            if settings.appsOff != appsOff {
+                appsOff = settings.appsOff
+                coordinator.gateClosed()
+                writing.gateClosed()
+                pageInline.gateClosed()
+                fill.gateClosed()
+                surface.gateClosed()
+            }
             if !HostGate.allowsGhostText(settings) {
                 coordinator.gateClosed()
                 writing.gateClosed()

@@ -41,6 +41,25 @@ public enum GhostKeys: String, Codable, CaseIterable, Sendable {
     case cotypist
 }
 
+/// What the menu and settings call each preset. The titles name the keys, since that is what a person chooses between.
+public enum GhostKeysCopy {
+    public static let menuTitle = "Accept Keys"
+
+    public static func title(_ keys: GhostKeys) -> String {
+        switch keys {
+        case .caret: return "Tab Takes All, ⌥→ Takes a Word"
+        case .cotypist: return "Tab Takes a Word, ` Takes All"
+        }
+    }
+
+    public static func detail(_ keys: GhostKeys) -> String {
+        switch keys {
+        case .caret: return "Caret's keys. Esc dismisses."
+        case .cotypist: return "Cotypist's keys. ⌥Tab types a real Tab, and Esc dismisses."
+        }
+    }
+}
+
 /// A key-down reduced to the classes the ownership table talks about.
 public enum KeyClass: Equatable, Sendable, CustomStringConvertible {
     case tab, shiftTab, up, down, left, right, escape, returnKey, delete, space

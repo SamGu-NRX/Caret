@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var characterItems: [NSMenuItem] = []
     private let perchItem = NSMenuItem(title: "Show Perch", action: nil, keyEquivalent: "")
     private let pauseItem = NSMenuItem(title: "Pause Caret", action: nil, keyEquivalent: "")
+    /// Brief item 7: Caret off or back on in the app in front, named. Hidden when no other app is in front.
+    private let appItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    /// Brief item 6: which keys take ghost text, one item per preset.
+    private var keysItems: [NSMenuItem] = []
     private var roleItems: [NSMenuItem] = []
     private var levelItems: [NSMenuItem] = []
     /// Under the state while the helper runs without Jev because Caret has no key (H12); choosing it opens the key step.
@@ -111,6 +115,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let settings = SettingsStore.shared.settings
         pauseItem.title = settings.paused ? "Resume Caret" : "Pause Caret"
+        // The status menu opens without taking the front, so the frontmost app is the one the user was in.
+        let front = NSWorkspace.shared.frontmostApplication
+        if let front, front.processIdentifier != ProcessInfo.processInfo.processIdentifier, let id = front.bundleIdentifier {
+            let name = front.localizedName ?? id
+            appItem.title = settings.isOff(id) ? "Turn Back On in \(name)" : "Turn Off in \(name)"
+            appItem.representedObject = id
+            appItem.isHidden = false
+        } else {
+            appItem.isHidden = true
+        }
+        for item in keysItems {
+            item.state = item.representedObject as? String == settings.ghostKeys.rawValue ? .on : .off
+        }
         for item in roleItems {
             let role = (item.representedObject as? String).flatMap(CaretRole.init(rawValue:))
             item.state = role.map(settings.roles.contains) == true ? .on : .off
@@ -162,6 +179,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func togglePause(_ sender: NSMenuItem) {
         SettingsStore.shared.update(source: .menu) { $0.paused.toggle() }
+    }
+
+    @objc private func toggleApp(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        SettingsStore.shared.update(source: .menu) { $0.setApp(id, off: !$0.isOff(id)) }
+    }
+
+    @objc private func chooseKeys(_ sender: NSMenuItem) {
+        guard let keys = (sender.representedObject as? String).flatMap(GhostKeys.init(rawValue:)) else { return }
+        SettingsStore.shared.update(source: .menu) { $0.ghostKeys = keys }
     }
 
     @objc private func toggleRole(_ sender: NSMenuItem) {
@@ -225,6 +252,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseItem.action = #selector(togglePause(_:))
         pauseItem.target = self
         menu.addItem(pauseItem)
+        appItem.action = #selector(toggleApp(_:))
+        appItem.target = self
+        menu.addItem(appItem)
         menu.addItem(.separator())
         // Asking needs no shortcut to remember: it is here and at the top of the perch's list.
         let askItem = NSMenuItem(title: "Ask Caret…", action: #selector(askCaret(_:)), keyEquivalent: "")
@@ -283,6 +313,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let levelItem = NSMenuItem(title: CaretLevel.question.capitalized, action: nil, keyEquivalent: "")
         levelItem.submenu = levelMenu
         menu.addItem(levelItem)
+        let keysMenu = NSMenu()
+        for keys in GhostKeys.allCases {
+            let item = NSMenuItem(title: GhostKeysCopy.title(keys), action: #selector(chooseKeys(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = keys.rawValue
+            item.toolTip = GhostKeysCopy.detail(keys)
+            keysMenu.addItem(item)
+            keysItems.append(item)
+        }
+        let keysItem = NSMenuItem(title: GhostKeysCopy.menuTitle, action: nil, keyEquivalent: "")
+        keysItem.submenu = keysMenu
+        menu.addItem(keysItem)
         let characterItem = NSMenuItem(title: "Character", action: nil, keyEquivalent: "")
         characterItem.submenu = characterMenu
         menu.addItem(characterItem)
