@@ -7,6 +7,12 @@ import { legacyGenerateCandidates } from "./legacy-candidates.ts";
 import { largeScene, rng } from "./large-scene.ts";
 import { snap } from "./builders.ts";
 
+/**
+ * A candidate without the other lines that hold its value (Candidate.also), which the old generator did not read: these
+ * tests compare which spans are offered, and in what order.
+ */
+const sansAlso = <C extends { also?: unknown }>({ also: _also, ...c }: C): Omit<C, "also"> => c;
+
 describe("candidate generator", () => {
   const scene = largeScene();
   const NOW = 2_000_000;
@@ -47,7 +53,7 @@ describe("candidate generator", () => {
         model.apply(snap(nodes, { at: 1000 + w * 100 + seed, windowId: `w${w}`, focused: r() < 0.7, values }));
       }
       for (const max of [3, 10, MAX_CANDIDATES]) {
-        expect(collectCandidates(model, "w0", { max, now: 5000 }).candidates, `seed ${seed} max ${max}`).toEqual(
+        expect(collectCandidates(model, "w0", { max, now: 5000 }).candidates.map(sansAlso), `seed ${seed} max ${max}`).toEqual(
           legacyGenerateCandidates(model, "w0", max, 5000),
         );
       }
@@ -76,7 +82,7 @@ describe("candidate generator", () => {
         model.apply(snap(nodes, { at: 1000 + w * 100 + seed, windowId: `w${w}`, focused: w === 0, values }));
       }
       for (const max of [5, MAX_CANDIDATES]) {
-        expect(collectCandidates(model, "w0", { max, now: 5000 }).candidates, `seed ${seed} max ${max}`).toEqual(
+        expect(collectCandidates(model, "w0", { max, now: 5000 }).candidates.map(sansAlso), `seed ${seed} max ${max}`).toEqual(
           legacyGenerateCandidates(model, "w0", max, 5000),
         );
       }
