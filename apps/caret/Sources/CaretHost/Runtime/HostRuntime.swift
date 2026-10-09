@@ -14,6 +14,9 @@ public final class HostRuntime {
         public var socketPath: String
         public var helperSocketPath: String
         public var modelURL: URL
+        /// Where the engine keeps its token profiles (`CaretHome.profilesDirectory`): a run with its own `--home`
+        /// keeps them there, not in the user's Library.
+        public var profileDirectory: URL = EngineLoader.profileDirectory
         /// When set, offers are made only in these apps. For test runs on a shared Mac, so the host
         /// never draws over or takes Tab from windows it did not create. Nil means every app.
         public var allowedBundleIDs: Set<String>?
@@ -956,11 +959,12 @@ public final class HostRuntime {
             return
         }
         let modelURL = configuration.modelURL
+        let profileDirectory = configuration.profileDirectory
         let residency = ModelResidency(
             load: { [weak self] in
                 guard let self else { return }
                 self.status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
-                await self.engine.load(modelURL: modelURL)
+                await self.engine.load(modelURL: modelURL, profileDirectory: profileDirectory)
                 self.publishEngineState()
                 self.focus.requestRead()
                 self.pageInline.modelLoaded()

@@ -101,11 +101,11 @@ final class GhostTextEngine {
         self.filter = DefaultCandidateFilter(compatibilityStore: compatibilityStore, wordRecognizer: SystemWordRecognizer())
     }
 
-    func load(modelURL: URL, prependBOS: Bool? = nil) async {
+    func load(modelURL: URL, prependBOS: Bool? = nil, profileDirectory: URL = EngineLoader.profileDirectory) async {
         state = .loading
         let store = compatibilityStore
         let result = await Task.detached(priority: .userInitiated) {
-            Result { try EngineLoader.load(modelURL: modelURL, compatibilityStore: store, prependBOS: prependBOS) }
+            Result { try EngineLoader.load(modelURL: modelURL, compatibilityStore: store, prependBOS: prependBOS, profileDirectory: profileDirectory) }
         }.value
         switch result {
         case .success(let loaded):
