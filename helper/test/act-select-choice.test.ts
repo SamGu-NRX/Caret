@@ -31,8 +31,8 @@ function desk(options: readonly string[] | null = OPTIONS, kind = PAGE_WINDOW_KI
   model.apply(snap(form(options), { at: 2000, windowId: "form", kind, title: "RSVP", focused: true }));
   return model;
 }
-function cutChat(model: ScreenModel, kind: "phone" | "date" | "address"): void {
-  const labels = Array.from({ length: 60 }, (_, i) => kind === "phone" ? `(303) 555-${String(1000 + i)}` : kind === "date" ? `October ${i % 28 + 1}, ${2026 + Math.floor(i / 28)}` : `${100 + i} Larch Lane, Austin, TX 78701`);
+function cutChat(model: ScreenModel, kind: "phone" | "date" | "address" | "id"): void {
+  const labels = Array.from({ length: 60 }, (_, i) => kind === "phone" ? `(303) 555-${String(1000 + i)}` : kind === "date" ? `October ${i % 28 + 1}, ${2026 + Math.floor(i / 28)}` : kind === "id" ? `RX-${String(204400 + i)}` : `${100 + i} Larch Lane, Austin, TX 78701`);
   model.apply(snap(labels.map((label, i) => text(`chat/${i}`, `Delivery update: ${label}`)), {
     at: 1500, windowId: "chat", title: "Delivery", app: CHAT, values: labels.map((label, i) => value(kind, label, `chat/${i}`)),
   }));
@@ -118,6 +118,19 @@ describe("bounded page-select Choice", () => {
     model.apply(snap(form(["Canada", "France"]).map((n) => n.key === "meal" ? { ...n, label: "Country" } : n), { at: 2500, windowId: "form", kind: PAGE_WINDOW_KIND, title: "RSVP", focused: true }));
     cutChat(model, "address");
     const result = await run(model, { want: "France" });
+    expect(result.field).toMatchObject({ withheld: "sourceCut", value: null, handoff: null });
+    expect(result.mint).toBeUndefined();
+  });
+
+  // Greptile review on #22: a menu of reference codes, or one whose label says it takes an ID, is withheld by an ID cut.
+  it.each([
+    ["Guest meal", ["LC-204417", "LC-204418"], "LC-204418"],
+    ["Student ID", ["Alpha", "Beta"], "Beta"],
+  ] as const)("an ID cut withholds the %s menu of %j", async (label, options, want) => {
+    const model = desk(options);
+    model.apply(snap(form(options).map((n) => n.key === "meal" ? { ...n, label } : n), { at: 2500, windowId: "form", kind: PAGE_WINDOW_KIND, title: "RSVP", focused: true }));
+    cutChat(model, "id");
+    const result = await run(model, { want });
     expect(result.field).toMatchObject({ withheld: "sourceCut", value: null, handoff: null });
     expect(result.mint).toBeUndefined();
   });
@@ -227,6 +240,7 @@ describe("select option cut kinds", () => {
     [["California", "TX"], ["address"]],
     [["3:00 PM", "9:30 AM"], ["time"]],
     [["a@example.test", "b@example.test"], ["email"]],
+    [["LC-204417", "#48213", "W1234567"], ["id"]],
   ] as const)("reads %j as %j", (options, kinds) => {
     expect([...optionKinds(options)].sort()).toEqual([...kinds].sort() as ValueKind[]);
   });

@@ -187,9 +187,14 @@ export function optionKinds(options: readonly string[], part: FillPart | null = 
     if ((part === "day" || part === "month") && /^\d{1,2}$/u.test(option.trim()) && Number(option) >= 1 && Number(option) <= (part === "day" ? 31 : 12)) kinds.add("date");
     if (clockTime(option) !== null) kinds.add("time");
     if (US_STATE_CODES.has(norm(option)) || US_STATE_NAMES.has(option.trim())) kinds.add("address");
+    // A reference code is an ID, as the reader types one (TypedValues.swift: "LC-204417", "#48213", "W1234567").
+    if (ID_SHAPED.test(option.trim())) kinds.add("id");
   }
   return kinds;
 }
+
+/** The reader's ID shapes (TypedValues.swift), whole: hyphenated capitals and digits, "#" and digits, a short prefix on digits. */
+const ID_SHAPED = /^(?:(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A-Z0-9]+(?:-[A-Z0-9]+)+|#\d{4,}|[A-Z]{1,4}\d{5,})$/u;
 
 /** Options a source never names by its words: a fallback or a refusal to say ("Other", "Prefer not to say"). */
 const FALLBACK = /^(?:other|none|n\/?a|not applicable|unknown|prefer not to (?:say|answer)|decline to (?:state|answer))$/iu;

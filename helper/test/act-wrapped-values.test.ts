@@ -44,6 +44,7 @@ describe("wrapped values", () => {
     expect(unwrapValue("dana.w@example.com;", kinds("Email"))).toBe("dana.w@example.com");
     expect(unwrapValue("“555-0147”.", kinds("Phone"))).toBe("555-0147");
     expect(unwrapValue("[LC-204417]", kinds("Student ID"))).toBe("LC-204417");
+    expect(unwrapValue("<https://example.com/search?q=hello!>.", kinds("Website"))).toBe("https://example.com/search?q=hello!");
   });
 
   it("leaves whole values, and values of other kinds, alone", () => {
@@ -55,6 +56,9 @@ describe("wrapped values", () => {
       ["Student ID", "LC-204417"],
       ["Delivery instructions", "\"side door\", ring twice."],
       ["Full name", "(Dr.) Simone Achebe."],
+      // Greptile review on #22: a link's query may end in "!" or "?".
+      ["Website", "https://example.com/search?q=hello!"],
+      ["Website", "https://example.com/faq?"],
     ] as const) {
       expect(wrappedValue(text, kinds(label)), text).toBe(false);
       expect(shapeRefusal(proposed(label, text)), text).toBeNull();
