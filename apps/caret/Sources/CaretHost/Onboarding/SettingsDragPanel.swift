@@ -8,9 +8,10 @@ import SwiftUI
 /// Dropping the app there adds it with its switch on; macOS asks for the password or Touch ID itself.
 ///
 /// The panel never takes focus (non-activating, `orderFrontRegardless`), floats above System Settings, follows its
-/// window (polled every 0.5 s while System Settings is in front, 1 s otherwise), hides while System Settings is not in
-/// front, and reports when System Settings closes after it was found. Window bounds and owners come from
-/// `CGWindowListCopyWindowInfo`, which needs no permission for them. Placement is `SettingsDragPanelPlacement`.
+/// window (polled every 0.15 s while System Settings is in front, 1 s otherwise), hides while System Settings is not in
+/// front or while a sheet or password dialog sits over it (`SettingsDragPanelPlacement.somethingAsks`), and reports
+/// when System Settings closes after it was found. Window bounds and owners come from `CGWindowListCopyWindowInfo`,
+/// which needs no permission for them. Placement is `SettingsDragPanelPlacement`.
 @MainActor
 final class SettingsDragPanel {
     /// System Settings closed after the panel had found it: the caller falls back to its own window.
@@ -60,7 +61,8 @@ final class SettingsDragPanel {
     private func track() {
         let settingsApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences").first
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.systempreferences"
-        guard let settingsApp, let frame = Self.settingsFrame(pid: settingsApp.processIdentifier) else {
+        let windows = Self.windows()
+        guard let settingsApp, let frame = SettingsDragPanelPlacement.settingsWindow(in: windows, settingsPid: settingsApp.processIdentifier) else {
             hide()
             if found {
                 stop()
@@ -69,19 +71,20 @@ final class SettingsDragPanel {
             return schedule(1)
         }
         found = true
-        if frontmost { show(at: SettingsDragPanelPlacement.frame(settings: frame)) } else { hide() }
+        let asks = SettingsDragPanelPlacement.somethingAsks(in: windows, settingsPid: settingsApp.processIdentifier, settings: frame)
+        if frontmost, !asks { show(at: SettingsDragPanelPlacement.frame(settings: frame)) } else { hide() }
         // Kept on System Settings' window while it is moved: a short interval while it is in front (Permiso uses 0.15 s).
         schedule(frontmost ? 0.15 : 1)
     }
 
-    private static func settingsFrame(pid: pid_t) -> CGRect? {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        let windows = list.compactMap { info -> SettingsDragPanelPlacement.Window? in
+    private static func windows() -> [SettingsDragPanelPlacement.Window] {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+        return list.compactMap { info -> SettingsDragPanelPlacement.Window? in
             guard let owner = info[kCGWindowOwnerPID as String] as? pid_t, let layer = info[kCGWindowLayer as String] as? Int,
                   let b = info[kCGWindowBounds as String] as? [String: CGFloat] else { return nil }
-            return .init(ownerPid: owner, layer: layer, bounds: CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0))
+            return .init(ownerPid: owner, layer: layer, bounds: CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0),
+                         ownerName: info[kCGWindowOwnerName as String] as? String ?? "")
         }
-        return SettingsDragPanelPlacement.settingsWindow(in: windows, settingsPid: pid)
     }
 
     private func show(at topLeft: CGRect) {

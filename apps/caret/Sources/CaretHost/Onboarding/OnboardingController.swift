@@ -706,6 +706,7 @@ final class OnboardingController {
     ///   onboarding preview empty|fail|<n windows>  (a stand-in preview for the open request)
     ///   onboarding tab-owners none|<name...>      onboarding reply <firstLookReply json>
     ///   onboarding jev-key <text>
+    ///   onboarding trust-probe                    (this host's AXIsProcessTrusted beside a fresh `Caret --trust-probe`'s)
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -716,6 +717,7 @@ final class OnboardingController {
         guard words.count > 1 else { return reply() }
         guard testHooks else { return #"{"error":"onboarding commands are test hooks: start the host with --test-hooks"}"# }
         let rest = Array(words.dropFirst())
+        if rest == ["trust-probe"] { return Self.trustProbe() }
         if rest.first == "open" {
             let step = rest.count > 1 ? OnboardingStep(rawValue: rest[1]) : nil
             if rest.count > 1, step == nil { return #"{"error":"usage: onboarding open [hello|access|on|first]"}"# }
@@ -789,6 +791,28 @@ final class OnboardingController {
             return #"{"error":"unknown onboarding command"}"#
         }
         return reply()
+    }
+}
+
+extension OnboardingController {
+    /// This process's Accessibility answer and a fresh child's (`Caret --trust-probe`), as JSON. A test hook: it blocks
+    /// the main thread for the child's run, about a tenth of a second.
+    static func trustProbe() -> String {
+        let own = AXIsProcessTrusted()
+        guard let exe = Bundle.main.executableURL else { return #"{"error":"no executable"}"# }
+        let child = Process()
+        child.executableURL = exe
+        child.arguments = ["--trust-probe"]
+        let pipe = Pipe()
+        child.standardOutput = pipe
+        child.standardError = FileHandle.nullDevice
+        do { try child.run() } catch {
+            return "{\"error\":\(HostRuntime.jsonString(String(describing: error)))}"
+        }
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        child.waitUntilExit()
+        let answer = out == "true" ? "true" : (out == "false" ? "false" : "null")
+        return "{\"own\":\(own),\"child\":\(answer)}"
     }
 }
 
