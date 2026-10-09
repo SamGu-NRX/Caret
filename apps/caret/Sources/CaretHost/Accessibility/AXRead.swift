@@ -13,8 +13,15 @@ enum AXRead {
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), seconds)
     }
 
+    /// The focused element: the system-wide element's, else the frontmost app's own. In the macOS 26 rig guest the
+    /// system-wide element answered kAXErrorCannotComplete (-25204) for both its focused element and its focused
+    /// application, to Caret and to a separately trusted tool, while TextEdit's own element answered with its text
+    /// area (DF1 run 20261009T091737Z-83186, out/focus-probe.json). Caret then saw no field at all: no ghost text, no
+    /// writing fix, state.focus null, in every VM run since beta.1.
     static func focusedElement() -> AXUIElement? {
-        element(kAXFocusedUIElementAttribute, on: AXUIElementCreateSystemWide())
+        if let e = element(kAXFocusedUIElementAttribute, on: AXUIElementCreateSystemWide()) { return e }
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        return focusedElement(pid: app.processIdentifier)
     }
 
     /// The focused element of one app, whether or not it is frontmost. Every read that leads to a
