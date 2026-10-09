@@ -293,6 +293,11 @@ public final class OnboardingFlow {
         /// macOS shows Caret's switch on but no longer trusts this build (an update re-signed it): one button resets
         /// Caret's own entry.
         public var stale = false
+        /// Other apps on this Mac that System Settings also lists as "Caret".
+        public var otherCarets: [OtherCaret] = []
+        /// macOS said an entry changed but this Caret is still not trusted, and another Caret exists: most likely the
+        /// other one was turned on (`OtherCarets.wrongOneTurnedOn`).
+        public var wrongCaret = false
     }
 
     public enum PreviewState: Equatable, Sendable {
@@ -441,6 +446,10 @@ public final class OnboardingFlow {
         case staleGrant(Bool)
         /// "Reset Caret's entry" on the switch step.
         case resetGrant
+        /// The host found these other copies of Caret on this Mac.
+        case otherCarets([OtherCaret])
+        /// macOS said an Accessibility entry changed, and this Caret read itself still untrusted.
+        case accessChangedStillUntrusted
         /// Skip on the browser step.
         case skipBrowser
     }
@@ -645,6 +654,12 @@ public final class OnboardingFlow {
             go(to: .on)
         case .staleGrant(let stale):
             state.access.stale = stale
+        case .otherCarets(let others):
+            state.access.otherCarets = others
+        case .accessChangedStillUntrusted:
+            guard state.step == .access else { break }
+            state.access.wrongCaret = OtherCarets.wrongOneTurnedOn(changeNoticed: true, trusted: state.permissions.accessibility,
+                                                                   others: state.access.otherCarets)
         case .resetGrant:
             guard state.step == .access, state.access.stale else { break }
             state.access.stale = false
@@ -801,6 +816,7 @@ public final class OnboardingFlow {
             state.access.granted = false
             return
         }
+        state.access.wrongCaret = false
         guard !before.accessibility || !state.access.granted else { return }
         land()
     }
@@ -974,6 +990,8 @@ public final class OnboardingFlow {
         info.browsers = state.browser.trusted
         info.browserOpened = state.browser.opened
         info.browserConnected = state.browser.connected
+        info.otherCarets = state.access.otherCarets.isEmpty ? nil : state.access.otherCarets.map(\.path)
+        info.wrongCaret = state.access.wrongCaret ? true : nil
         if state.on.needsKey {
             info.jevKey = state.on.jevKey.phase.name
             info.jevKeyLength = state.on.jevKey.text.utf16Count

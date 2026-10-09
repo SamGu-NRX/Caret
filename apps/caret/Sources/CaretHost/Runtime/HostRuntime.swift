@@ -759,6 +759,9 @@ public final class HostRuntime {
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
 
+    /// The menu's "Turn on Accessibility…": the switch step on its own, with the panel in System Settings.
+    public func openAccessSwitch() { onboarding.openAccess() }
+
     /// The menu's "Jev is off. Add a key…": the key step on its own.
     public func openJevKeyStep() { onboarding.openKey() }
 
@@ -805,22 +808,54 @@ public final class HostRuntime {
 
     /// The key tap is made only once Caret has Accessibility. Asking macOS for an active keyboard tap without it raises
     /// the "would like to control this computer" alert by itself, before onboarding has said a word (PX1's VM baseline,
-    /// ~/.caret-run/evidence/access/p1-run/out/shots/009-stuck-welcome.png). Until then a once-a-second
-    /// `AXIsProcessTrusted` read waits for the switch, whether or not onboarding is open.
+    /// ~/.caret-run/evidence/access/p1-run/out/shots/009-stuck-welcome.png).
+    ///
+    /// Trust is watched for the whole run, not only during onboarding: Sam's beta ran 3.5 hours untrusted with its tap
+    /// refused and said nothing. Every 2 s (and 250 ms after macOS announces an Accessibility change) the host reads
+    /// `AXIsProcessTrusted`. When it turns true, the tap is made again; while trusted but the tap is still missing or
+    /// disabled, it retries on each read. The menu shows both states (`accessibilityTrusted`, `keyTapHealthy`).
+    public private(set) var accessibilityTrusted = false
+    public private(set) var keyTapHealthy = true
+    /// Called on main when either of the two changes.
+    public var onTrustChanged: (() -> Void)?
+    private var axObserver: NSObjectProtocol?
+
     private func startTapWhenTrusted() {
-        guard AXIsProcessTrusted() else {
-            guard trustPoll == nil else { return }
-            trustPoll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, AXIsProcessTrusted() else { return }
-                    self.trustPoll?.invalidate()
-                    self.trustPoll = nil
-                    self.startTapWhenTrusted()
-                }
-            }
-            return
+        checkTrust()
+        trustPoll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkTrust() }
         }
-        if !tap.restartIfRefused() { status.increment("tap.createFailed") }
+        axObserver = DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { MainActor.assumeIsolated { self?.checkTrust() } }
+        }
+    }
+
+    private func checkTrust() {
+        let trusted = AXIsProcessTrusted()
+        let wasTrusted = accessibilityTrusted
+        accessibilityTrusted = trusted
+        var healthy = keyTapHealthy
+        if trusted {
+            if !wasTrusted {
+                // A grant given (or given back): a tap refused or disabled while untrusted is made afresh.
+                tap.stop()
+            }
+            if !tap.isEnabled {
+                if tap.restartIfRefused(), tap.isEnabled {
+                    healthy = true
+                } else {
+                    tap.stop()
+                    healthy = tap.start() && tap.isEnabled
+                    if !healthy { status.increment("tap.createFailed") }
+                }
+            } else {
+                healthy = true
+            }
+        }
+        if trusted != wasTrusted || healthy != keyTapHealthy {
+            keyTapHealthy = healthy
+            onTrustChanged?()
+        }
     }
 
     public func start() throws {

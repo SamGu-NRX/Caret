@@ -16,6 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var browserInstallResult: ChromeBridgeInstaller.Result?
     private var statusItem: NSStatusItem?
     private let stateItem = NSMenuItem(title: "Starting", action: nil, keyEquivalent: "")
+    /// Shown whenever Caret is not trusted for Accessibility, at any time (Sam's beta ran 3.5 hours like that, silent).
+    private let accessItem = NSMenuItem(title: "Caret can't see your apps. Turn on Accessibility…", action: nil, keyEquivalent: "")
+    /// Shown when Caret is trusted but its keyboard tap still could not be made.
+    private let tapItem = NSMenuItem(title: "Caret's Tab key isn't working. Restart Caret", action: nil, keyEquivalent: "")
     /// Shown only after the helper or the reader crashed past the restart rule; choosing it starts both again.
     private let stoppedItem = NSMenuItem(title: "Caret stopped. Restart", action: nil, keyEquivalent: "")
     /// Under the state: another running app also takes Tab (`OtherTabOwners`), so Tab may never
@@ -54,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             source.resume()
             signalSources.append(source)
         }
+        runtime.onTrustChanged = { [weak self] in self?.refreshTrust() }
         runtime.onWorkingChanged = { [weak self] working in
             self?.working = working
             self?.refreshGlyph()
@@ -113,12 +118,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func shutdownAndExit() {
+    private func shutdownAndExit() { shutdownAndExitThen {} }
+
+    private func shutdownAndExitThen(_ last: @escaping () -> Void) {
         guard !isTerminating else { return }
         isTerminating = true
         Task {
             await runtime.shutdown()
             await services.stop()
+            last()
             exit(0)
         }
     }
@@ -141,6 +149,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for item in levelItems {
             item.state = item.representedObject as? String == settings.level.rawValue ? .on : .off
         }
+    }
+
+    @objc private func turnOnAccessibility(_ sender: NSMenuItem) {
+        runtime.openAccessSwitch()
+    }
+
+    @objc private func restartCaret(_ sender: NSMenuItem) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-n", Bundle.main.bundlePath]
+        shutdownAndExitThen { try? p.run() }
+    }
+
+    /// The menu and the status item say whether Caret can see the person's apps. The glyph itself is the figure lane's;
+    /// only its button is dimmed.
+    private func refreshTrust() {
+        accessItem.isHidden = runtime.accessibilityTrusted
+        tapItem.isHidden = !runtime.accessibilityTrusted || runtime.keyTapHealthy
+        statusItem?.button?.appearsDisabled = !runtime.accessibilityTrusted
+        statusItem?.button?.toolTip = runtime.accessibilityTrusted ? nil : "Caret can't see your apps. Turn on Accessibility."
     }
 
     @objc private func setUp(_ sender: NSMenuItem) {
@@ -234,6 +262,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         stateItem.isEnabled = false
         menu.addItem(stateItem)
+        accessItem.action = #selector(turnOnAccessibility(_:))
+        accessItem.target = self
+        menu.addItem(accessItem)
+        tapItem.action = #selector(restartCaret(_:))
+        tapItem.target = self
+        menu.addItem(tapItem)
+        refreshTrust()
         tabOwnerItem.isEnabled = false
         tabOwnerItem.isHidden = true
         menu.addItem(tabOwnerItem)
