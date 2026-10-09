@@ -112,7 +112,7 @@ open /Applications/Caret.app
 
 Gateway skills and Tab completions that call the Python core still need a clone of this repo and `~/.config/caret/dev.json` with `"root"` set to that path (or `CARET_PROJECT_ROOT`). Notes and skills seed from the app bundle into Application Support on first run.
 
-Maintainers: push a tag `v*` or run the **Release Caret.dmg** workflow (Actions → workflow_dispatch) to upload a fresh `Caret.dmg` to Releases.
+Maintainers: run the **Release Caret.dmg** workflow by hand (Actions → workflow_dispatch) to upload a fresh v1 `Caret.dmg` to Releases. A tag no longer starts it, since a `v2.*` tag would have published the v1 app; v2 builds come from `apps/caret/scripts/build-app.sh`.
 
 Caret.app starts pinned Screenpipe 0.4.50 on port 3031 (clipboard history on) when that port is free. It resolves the published `screenpipe` binary and bootstraps a Caret-owned launchd job (`dev.caret.hackathon.screenpipe`) so the recorder is not a Caret child. If the port is already taken, it does not start a second recorder. It writes `.local/screenpipe-lease.json` only after `/health` reports the pin version — for a job Caret started, or for an existing matching listener (lease `pid` 0). A listener that is not that pin gets no lease. The built app Info.plist carries `CaretProjectRoot` so the supervisor, skills, memories, and notes can find this repository. `python3 -m caret` can then ask for last-N windows, minutes, or clipboard, newest first. The Caret menu Debug item shows a short last-2 windows / minutes / clipboard preview of what Caret currently sees.
 
