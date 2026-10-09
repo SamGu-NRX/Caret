@@ -877,9 +877,12 @@ public final class AskCaret {
             card.stage = .ended(GoalCard.Ending(kind: .stopped, line: WorkLines.undoUnsent.text))
             return
         }
-        let goalId = card.goalId
+        let goalId = card.goalId, taskId = control.taskId
+        // Each undo waits on its own answer: the wait for the one before ends here (Greptile review on #22: its deadline
+        // ended the card while a later undo was still within its own wait).
+        undoTimer?.cancel()
         undoTimer = clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
-            guard let self, case .goal(var c) = self.phase, c.goalId == goalId, case .ended(let e) = c.stage, e.kind == .undoing else { return }
+            guard let self, case .goal(var c) = self.phase, c.goalId == goalId, case .ended(let e) = c.stage, e.kind == .undoing, c.tasks.contains(taskId) else { return }
             self.undoQueue = []
             c.lostTouch()
             self.settle(.goal(c))

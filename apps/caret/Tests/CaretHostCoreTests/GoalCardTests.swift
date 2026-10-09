@@ -331,6 +331,33 @@ final class GoalCardTests: XCTestCase {
         XCTAssertEqual(undos, [TaskControl(taskId: "goal-4-ask-32:s0", action: .undo)])
     }
 
+    /// Greptile review on #22: a three-task undo finishes all three, each answered near the end of its own wait; an
+    /// earlier task's deadline never ends the undo while a later one is still within its wait.
+    func testAThreeTaskUndoFinishesAllThree() throws {
+        let (ask, clock, sent) = try showing()
+        XCTAssertTrue(ask.tab())
+        let tasks = ["goal-4-ask-32:s0", "goal-4-ask-32:s1", "goal-4-ask-32:s2"]
+        for (i, t) in tasks.enumerated() {
+            XCTAssertTrue(ask.receive(GoalProgress(at: Int64(2 + i), goalId: "goal-4-ask-32", requestId: nil, event: .step(.init(segment: 0, taskId: t, step: 0, steps: 2, phase: .verified, says: "ok"))), toForm: { _ in false }))
+        }
+        XCTAssertTrue(ask.receive(GoalProgress(at: 6, goalId: "goal-4-ask-32", requestId: nil, event: .finished(.init(outcome: .done, verified: 3, skipped: 0, left: [], says: "Done."))), toForm: { _ in false }))
+        XCTAssertEqual(try card(ask).tasks, tasks)
+        let before = sent().count
+        XCTAssertTrue(ask.undo())
+        let wait = SurfaceMachine.stopConfirmWait
+        for t in tasks.reversed() {
+            // Each answer comes just inside its own wait, which reaches past the first task's deadline.
+            clock.advance(by: wait * 0.8)
+            XCTAssertEqual(try card(ask).stage.kind, .undoing, "still waiting on \(t)")
+            ask.receive(try Self.undone(t, restored: 1, notRestored: 0))
+        }
+        let controls = sent().dropFirst(before).compactMap { m -> TaskControl? in if case .control(let c) = m { return c } else { return nil } }
+        XCTAssertEqual(controls.map(\.taskId), tasks.reversed())
+        XCTAssertEqual(try card(ask).stage.kind, .undone)
+        clock.advance(by: wait * 2)
+        XCTAssertEqual(try card(ask).stage.kind, .undone, "no deadline ends a finished undo")
+    }
+
     /// Codex review on #22: Tab on a preview whose deadline passed before its timer ran ends it, as the timer would have,
     /// and accepts nothing; the card then shows it ended rather than a stale preview.
     func testTabOnAPreviewPastItsDeadlineEndsIt() throws {
