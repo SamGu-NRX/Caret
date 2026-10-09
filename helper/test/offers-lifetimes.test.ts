@@ -153,15 +153,38 @@ describe("offer lifetimes over the socket", () => {
   });
 
   describe("fill pop-up: until the field or the form changes", () => {
-    it("outlives any timer, and moving among the form's own fields or to a source keeps it", async () => {
+    /** The reader's walk of the source window again, as a focus or a change there sends it, `ms` from now. */
+    const sourceRead = async (ms: number): Promise<void> => {
+      const w = helper.model.windows.get(ORDER);
+      if (w === undefined) throw new Error("the source window is not in the model");
+      const again = snap([...w.nodes.values()], { at: reader.clock + ms, windowId: ORDER, title: w.window.title, app: w.app, values: w.values });
+      reader.send(again);
+      await until(() => hooks.applied(ORDER, again.at));
+    };
+
+    it("outlives any timer while its source is read again, and moving among the form's own fields or to a source keeps it", async () => {
       await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
       await host.waitFor((m) => m.type === "popup");
-      await tickAt(reader.clock + 24 * 60 * MIN);
+      // The form is the window the user is in, so its text stays; the source's stays while the reader sends it again.
+      for (let i = 0; i < DAY / (9 * MIN); i++) {
+        await sourceRead(9 * MIN);
+        helper.tick(reader.clock);
+      }
       reader.send(focus(FORM, F("textfield:email~0"), reader.clock + 10));
       reader.send(focus(ORDER, M("statictext:dana whitfield~0"), reader.clock + 20, { editable: false, empty: false, app: MAIL_APP }));
       await tickAt(reader.clock + 30);
       expect(withdrawals()).toEqual([]);
       expect(helper.offers.get("id-1")?.kind).toBe("popup");
+    });
+
+    it("is withdrawn as stale once its source goes ten minutes without a snapshot: Caret no longer holds the value's source", async () => {
+      await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+      await host.waitFor((m) => m.type === "popup");
+      await tickAt(reader.clock + 9 * MIN);
+      expect(withdrawals()).toEqual([]);
+      await tickAt(reader.clock + 2 * MIN);
+      expect(helper.model.windows.has(ORDER)).toBe(false);
+      expect(withdrawals()).toEqual([["id-1", "stale"]]);
     });
 
     it("expires when focus lands in an editable field outside the form, and an accept is then refused", async () => {
@@ -345,21 +368,81 @@ describe("offer lifetimes over the socket", () => {
     await replayDesk(events);
     const action = await host.waitFor<{ at: number; offerKey: string; actions: { id: string }[] }>((m) => m.type === "action");
     expect(action.actions.map((a) => a.id)).toEqual(["run"]);
+    // The calendar the values come from is read again meanwhile, so only the offer's own lifetime can end it.
+    reader.clock = action.at;
+    await readAgain("5150-20", 5 * MIN);
     await tickAt(action.at + 10 * MIN - 1);
     expect(withdrawals()).toEqual([]);
     await tickAt(action.at + 10 * MIN);
     expect(withdrawals()).toEqual([[action.offerKey, "expired"]]);
   });
 
-  it("open: outlives the old ten-minute hold and ends as taken when the user visits the window", async () => {
+  it("routine: is withdrawn as stale once the window its values come from goes ten minutes without a snapshot", async () => {
+    const calendar = (day: number): ListWindow => ({
+      windowId: "5150-20",
+      app: FIXTURE_APP,
+      title: "Calendar",
+      group: "Event",
+      lines: [`Design review ${day}`, `priya.raman+${day}@northwind.example`, `https://meet.example.com/day-${day}`],
+    });
+    const compose = (day: number): GridWindow => ({ windowId: `6160-${100 + day}`, app: MAIL_APP, title: `New message ${day}`, columns: ["Subject", "To", "Link"], rows: 1, values: new Map() });
+    const events = recordDesk((desk) => {
+      for (let day = 1; day <= 4; day++) {
+        desk.at += DAY;
+        const cal = calendar(day);
+        desk.showList(cal);
+        desk.advance(1000);
+        const c = compose(day);
+        desk.showGrid(c);
+        if (day === 4) return;
+        for (let i = 0; i < 3; i++) desk.fill(c, 0, i, cal.lines[i] as string);
+        desk.close(c.windowId);
+      }
+    });
+    await replayDesk(events);
+    const action = await host.waitFor<{ at: number; offerKey: string }>((m) => m.type === "action");
+    const read = helper.model.windows.get("5150-20")?.updatedAt ?? 0;
+    expect(read).toBeLessThan(action.at);
+    // One millisecond past the window's ten minutes, about a second before the offer's own run out.
+    await tickAt(read + 10 * MIN + 1);
+    expect(helper.model.windows.has("5150-20")).toBe(false);
+    expect(withdrawals()).toEqual([[action.offerKey, "stale"]]);
+  });
+
+  /** The reader's walk of `windowId` again, as a focus or a change there sends it, `ms` from now. */
+  const readAgain = async (windowId: string, ms: number): Promise<void> => {
+    const w = helper.model.windows.get(windowId);
+    if (w === undefined) throw new Error(`window ${windowId} is not in the model`);
+    const again = snap([...w.nodes.values()], { at: reader.clock + ms, windowId, title: w.window.title, app: w.app, values: w.values });
+    reader.send(again);
+    await until(() => hooks.applied(windowId, again.at));
+  };
+
+  it("open: outlives the old ten-minute hold while its window is read again, and ends as taken when the user visits the window", async () => {
     await reader.replay(loadRecording("offers-pending.ndjson"), hooks);
     await helper.pending.whenIdle();
     const action = await host.waitFor<{ at: number; offerKey: string }>((m) => m.type === "action");
-    await tickAt(action.at + 24 * 60 * MIN);
+    reader.clock = action.at;
+    for (let i = 0; i < DAY / (9 * MIN); i++) {
+      await readAgain(JOB, 9 * MIN);
+      helper.tick(reader.clock);
+    }
     expect(withdrawals()).toEqual([]);
     expect(helper.offers.get(action.offerKey)?.kind).toBe("action");
     reader.send(focus(JOB, null, reader.clock + 10, { editable: false, empty: false }));
     expect(await host.waitFor((m) => m.type === "offerWithdrawn")).toMatchObject({ id: action.offerKey, reason: "taken" });
+  });
+
+  it("open: is withdrawn as stale once its window goes ten minutes without a snapshot: Caret no longer holds its status line", async () => {
+    await reader.replay(loadRecording("offers-pending.ndjson"), hooks);
+    await helper.pending.whenIdle();
+    const action = await host.waitFor<{ at: number; offerKey: string }>((m) => m.type === "action");
+    const last = helper.model.windows.get(JOB)?.updatedAt ?? 0;
+    await tickAt(last + 10 * MIN);
+    expect(withdrawals()).toEqual([]);
+    await tickAt(last + 10 * MIN + 10_000);
+    expect(helper.model.windows.has(JOB)).toBe(false);
+    expect(withdrawals()).toContainEqual([action.offerKey, "stale"]);
   });
 
   it("open: closing the window of the field it is shown in withdraws that showing and offers it again in the next field", async () => {

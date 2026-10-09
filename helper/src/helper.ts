@@ -10,6 +10,7 @@ import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScop
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
 import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
+import { askWindows, notifyExpiry, planWindows, popupWindows, type ExpiryList } from "./expiry.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
@@ -330,6 +331,7 @@ interface CaretFill {
 }
 
 const fieldId = (windowId: string, key: string): string => `${windowId}\u0000${key}`;
+
 /** How long an offer to save an answer can be taken (S1). Assumed: as long as a fill proposal is kept. */
 const ANSWER_OFFER_KEEP_MS = PROPOSAL_KEEP_MS;
 /** Values Caret's executor wrote into one field that capture remembers, newest last. Assumed: a form is written a few times at most. */
@@ -493,7 +495,7 @@ export class Helper {
   /** Answers the host's firstLook. */
   readonly firstLookRunner: FirstLookRunner;
   /** Offers a first look found and recorded, by key, until taken, expired or withdrawn, with the engine offer each reports, if any. */
-  private readonly firstLooks = new Map<string, { at: number; family: Family; underlying: string | null }>();
+  private readonly firstLooks = new Map<string, { at: number; family: Family; underlying: string | null; windows: ReadonlySet<string> }>();
   /**
    * Planned tasks on offer, by offerKey: the draft, when it was proposed, and what each field it writes
    * held then, so a field the user changes before the run's first read stops it.
@@ -783,9 +785,9 @@ export class Helper {
       // A first look's offer runs only from the host's offerAccept.
       // The family is recorded when the offer is withdrawn as taken, just before this (withdrawFirstLook).
       run: (taskId, plan, slots, expect, guard) => this.executor.run(taskId, plan, slots, expect, { grant: true, ...(guard === undefined ? {} : { guard }) }),
-      record: (msg, family, accept, underlying) => {
+      record: (msg, family, accept, underlying, windows) => {
         this.offers.record(msg, accept);
-        this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
+        this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying, windows: new Set(windows) });
       },
       withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
       about: () => this.aboutValues(),
@@ -2686,9 +2688,12 @@ export class Helper {
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {
       this.lastPrune = now;
       this.model.prune(now);
-      // The reader skips snapshots of unchanged windows, so text still on screen is marked seen here;
-      // otherwise a window left untouched for ten minutes would drop out of the text window.
-      for (const w of this.model.windows.values()) this.text.observe(w, now);
+      // Screen text is kept ten minutes from when it was last known to be on screen (docs/privacy/chrome-extension.md).
+      // The window the user is in counts as on screen while a reader is connected to send its changes; any other window
+      // only as of its last snapshot, since the reader sends nothing for a walk that finds a window unchanged.
+      const front = this.readerConnected ? (this.model.userWindow()?.window.windowId ?? null) : null;
+      for (const id of this.model.expire(now, front)) this.windowExpired(id, now);
+      for (const w of this.model.windows.values()) this.text.observe(w, this.model.freshAt(w));
       this.text.prune(now);
       const cutoff = now - 10 * 60 * 1000;
       while ((this.recentTransfers[0]?.at ?? now) < cutoff) this.recentTransfers.shift();
@@ -3329,13 +3334,83 @@ export class Helper {
    * (privacy/read-policy.ts noteSwitchedOff).
    */
   purgeWindow(s: Snapshot): void {
-    this.model.apply(s);
-    this.checkFills(s.window.windowId);
+    const id = s.window.windowId;
+    this.model.purge(s);
+    // The removed text goes from every copy the helper keeps of the window, now: the change log (in purge), the rolling
+    // text and the privacy line table, which is read again from the purged state when next asked.
+    const w = this.model.windows.get(id);
+    if (w !== undefined) this.text.keepOnly(w);
+    forgetWindow(id);
+    this.checkFills(id);
   }
+
+  /**
+   * The model dropped a window whose text went ten minutes without a snapshot (ScreenModel.expire). Not a close: the
+   * window may still be open, so pending watches and routines don't hear of it; everything in onExpiry does.
+   */
+  private windowExpired(windowId: string, now: number): void {
+    this.opts.store.count("model.window_expired", 1, now);
+    notifyExpiry(this.onExpiry, windowId);
+  }
+
+  private readonly patternsExpired = (windowId: string): void => this.patterns.windowExpired(windowId);
+
+  /**
+   * Everything that holds state read from one window, and how each lets go of it when the window expires, in this order:
+   * copies of its text first, then the offers built on it (withdrawn as stale, since taking one would find no source to
+   * check), then the work that depends on it (revoked when its next copy or act needs the window), and the router last,
+   * to read the moment without them. The type names every offer family (expiry.ts).
+   */
+  readonly onExpiry: ExpiryList = {
+    // An edit still open there was typed over ten minutes ago, so transfers.tick has judged it; this lets go of its text.
+    transfers: (id) => this.record(this.transfers.flush(id)),
+    lineTable: forgetWindow,
+    ownerVerdicts: (id) => this.ownerVerdicts.forget(new Set([id])),
+    preFocus: (id) => {
+      if (this.preFocus?.windowId === id) this.preFocus = null;
+    },
+    // Kept: a judged transfer names its source observation for attribution and undo, and goes ten minutes after its edit
+    // (Helper.tick). Listed under t1-retention (privacy-gate.ts).
+    recentTransfers: null,
+    // Kept: answer capture reads it so a value Caret wrote is never saved as the user's own answer (S1), and dropping it
+    // would let one through once its window returned. It holds what Caret put in the field, at most MAX_WRITES_KEPT per
+    // field of MAX_FIELDS_WRITTEN. Listed under t1-retention (privacy-gate.ts).
+    caretWrites: null,
+    answerOffers: (id) => {
+      for (const [k, o] of this.answerOffers) if (o.windowId === id) this.answerOffers.delete(k);
+    },
+    askQuestions: (id) => {
+      for (const [k, q] of this.askQuestions) if (askWindows(q.draft).has(id)) this.askQuestions.delete(k);
+    },
+    // A watch waits on work in a window that can sit unchanged for long, and keeps the lines it compares against until it
+    // ends. Its window returns with the next change, which the watch then judges. Listed under t1-retention (privacy-gate.ts).
+    pendingWatches: null,
+    fill: (id) => this.checkFills(id),
+    open: (id) => this.openApp.onWindowClosed(id),
+    event: (id) => this.events.windowExpired(id),
+    routine: this.patternsExpired,
+    loopNext: this.patternsExpired,
+    loopFinish: this.patternsExpired,
+    // A keep or promote question asks about a run that just ended and quotes only the routine's own name.
+    skill: null,
+    firstLook: (id) => {
+      for (const [k, f] of [...this.firstLooks]) if (f.windows.has(id)) this.withdrawFirstLook(k, "stale");
+      this.firstLookRunner.windowExpired(id);
+    },
+    plan: (id) => {
+      for (const [k, p] of [...this.planOffers]) if (planWindows(p.draft).has(id)) this.withdrawPlan(k, "stale");
+    },
+    goalSegments: () => this.goals.onChanges([]),
+    runs: () => this.executor.recheck(),
+    router: () => {
+      this.routing?.candidatesChanged();
+      this.routing?.observe();
+    },
+  };
 
   private checkFills(windowId: string): void {
     for (const [id, { p, form }] of this.fillPopups) {
-      if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
+      if (!popupWindows(p).has(windowId)) continue;
       const w = this.model.windows.get(p.windowId);
       let changed = recheckFill(this.fillModel(id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues()) !== null;
       if (!changed && w !== undefined) {

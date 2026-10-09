@@ -5,7 +5,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { heldReason, mintOf, NOTE_PRIVATE, NOTE_UNSHOWN, proposeFill, type FillScope } from "../src/fill/fill.ts";
-import { guardFor, setTestVerifier } from "../src/fill/contract.ts";
+import { guardFor, provenanceWindows, setTestVerifier } from "../src/fill/contract.ts";
+import { popupWindows } from "../src/expiry.ts";
 import { fillPlan, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { Node } from "../src/protocol.ts";
@@ -87,6 +88,30 @@ describe("P1: the note an owner judgement saw is rechecked before the write", ()
     const { f } = await phoneOf(m);
     const mint = f === undefined ? undefined : mintOf(f);
     expect(mint?.provenance).toMatchObject({ kind: "window", owned: { units: [{ windowId: "note" }] } });
+  });
+});
+
+describe("T1: an offer depends on every note its owner judgement saw", () => {
+  it("is withdrawn once a note that also held the value expires, though that note was not the value's source", async () => {
+    const m = desk([
+      { windowId: "note", nodes: [noteNode("note/body", MINE.join("\n"))] },
+      { windowId: "note2", nodes: [noteNode("note2/body", ["Same number, for the studio:", `Phone: ${PHONE}`, ...BETWEEN, "Contact lines are mine."].join("\n"))] },
+    ]);
+    const { p, f } = await phoneOf(m);
+    expect(f?.value).toBe(PHONE);
+    const g = writtenFields(p, m.windows.get("form"));
+    const field = g.fields[0];
+    expect(field?.source?.windowId).toBe("note");
+    // The owner judgement saw both notes, so the value depends on both (contract.ts provenanceWindows).
+    expect(field === undefined ? [] : provenanceWindows(field.checked.provenance).sort()).toEqual(["note", "note2"]);
+    // Helper.checkFills rechecks a pop-up for an expired window exactly when popupWindows names it, and withdraws it as
+    // stale when the recheck fails.
+    expect(popupWindows(g).has("note2")).toBe(true);
+    expect(recheckFill(m, g, () => null, undefined, null, () => [])).toBeNull();
+    // note2 goes ten minutes without a snapshot while the note is read again.
+    setNote(m, "note", [noteNode("note/body", MINE.join("\n"))], T0 + 9 * 60_000);
+    expect(m.expire(T0 - 20_000 + 10 * 60_000 + 1, null)).toEqual(["note2"]);
+    expect(recheckFill(m, g, () => null, undefined, null, () => [])).not.toBeNull();
   });
 });
 

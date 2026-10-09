@@ -381,6 +381,35 @@ describe("event cards through the helper", () => {
     expect(published.some((m) => m.type === "offerWithdrawn" && m.id === o[0]?.offerKey && m.reason === "expired")).toBe(true);
   });
 
+  it("withdraws a card as stale once the conversation it was read from goes ten minutes unread, before its own lifetime ends", async () => {
+    const chat = "7373-2";
+    const app = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
+    const line = "dev.caret.chat/standard/statictext:m1~0";
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const inner = attendJev(() => "yes");
+    jev = Object.assign(async (r: JevRequest) => (await gate, inner(r)), { asked: inner.asked });
+    const history = ["Kofi: did the deck go out?", "Me: yes, this morning", "Kofi: great, thanks for pushing it", "Me: no problem, it was mostly done", "Kofi: are you around later this week?"].map((t, i) =>
+      text(`dev.caret.chat/standard/statictext:h${i}~0`, t),
+    );
+    send(snap(history, { at: clock, windowId: chat, app, title: "Kofi" }));
+    clock += 1000;
+    const read = clock;
+    send(snap([...history, text(line, "Lunch with Kofi Oct 6, 2026 at noon CT?")], { at: read, windowId: chat, app, title: "Kofi", values: [{ kind: "date", text: "Oct 6, 2026 at noon CT", nodeKey: line }] }));
+    // Jev answers two minutes after the line arrived, so the card's ten minutes start two minutes after the chat's.
+    clock += 2 * 60 * 1000;
+    release();
+    await helper.eventsSettled;
+    const o = offers();
+    expect(o).toHaveLength(1);
+    clock = read + 10 * 60 * 1000 + 1;
+    helper.tick(clock);
+    expect(helper.model.windows.has(chat)).toBe(false);
+    expect(helper.model.windows.has(COMPOSE)).toBe(true);
+    const ended = published.filter((m) => m.type === "offerWithdrawn" && m.id === o[0]?.offerKey);
+    expect(ended).toMatchObject([{ reason: "stale" }]);
+  });
+
   it("drops an answer to a question asked before the reader restarted", async () => {
     const s = GOLDEN.sentences[1] as Golden["sentences"][number];
     let release: () => void = () => {};

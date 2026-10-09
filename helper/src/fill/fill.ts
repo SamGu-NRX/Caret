@@ -3198,6 +3198,11 @@ export async function proposeFill(
     const title = view?.window.title || view?.app.name || r.c.source.appName;
     return `${title}: ${supportLine(r.c) ?? r.c.text}`;
   };
+  /** The windows a value option was read from: none for memory or the user's request. */
+  const rowWindows = (p: Pick): string[] => {
+    if (p.from === "choice") return p.basis.from === "memory" || p.basis.from === "instruction" ? [] : [p.basis.unit.windowId];
+    return rootsOf(p).flatMap((r) => (r.from === "memory" || r.from === "instruction" ? [] : [r.c.source.windowId]));
+  };
   const eligible = (f: Field, o: ValueOption<Member>): boolean => {
     const first = o.members[0] as Member;
     return relationalHold(f, first.pick) === null && (!fromUsersMemory(first.pick) || theUsers(f)) && !restsOnStale(first.pick);
@@ -3240,7 +3245,7 @@ export async function proposeFill(
       const unsure = askedAgain.has(f) && (o.withheld === "disagree" || o.withheld === "lowConfidence" || (o.withheld === null && a1?.choice === NONE && a2?.choice === NONE && !noneSure));
       const why = refused !== undefined ? "verifier" : unsure ? "selection" : null;
       if (why === null || offered.length === 0) return [];
-      return [{ key: f.node.key, name: f.name, kind: kindOf(f), why, options: offered.map((x) => ({ id: x.id, value: x.output, display: (x.members[0] as Member).read.display, source: rowSource((x.members[0] as Member).pick) })) }];
+      return [{ key: f.node.key, name: f.name, kind: kindOf(f), why, options: offered.map((x) => ({ id: x.id, value: x.output, display: (x.members[0] as Member).read.display, source: rowSource((x.members[0] as Member).pick), windows: rowWindows((x.members[0] as Member).pick) })) }];
     });
   /** `u` with only the values a pick of which can be sent (clarifiable), or null when none can: what an Ask may offer. */
   const sendableOf = (u: UnresolvedValue): UnresolvedValue | null => {
@@ -3365,6 +3370,8 @@ export interface ValueChoice {
   value: string;
   display: string;
   source: string;
+  /** The windows it was read from, by id (expiry.ts askWindows). */
+  windows: readonly string[];
 }
 /**
  * A field in an Ask's settled scope whose value did not settle, with every value nothing but Jev's confidence keeps out:

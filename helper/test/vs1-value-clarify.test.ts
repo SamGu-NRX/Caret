@@ -29,7 +29,7 @@ import { isSettlement, optionOutput, proposedOf, splitFirst } from "./vs1-kit.ts
 
 const unresolved = (n: number, values = 1): UnresolvedValue => ({
   key: `form/${n}`, name: `Field ${n}`, kind: "value", why: "selection",
-  options: Array.from({ length: values }, (_, i) => ({ id: `c${n}-${i}`, value: `v${n}-${i}`, display: `v${n}-${i}`, source: "Notes.txt" })),
+  options: Array.from({ length: values }, (_, i) => ({ id: `c${n}-${i}`, value: `v${n}-${i}`, display: `v${n}-${i}`, source: "Notes.txt", windows: ["notes"] })),
 });
 
 describe("the bounds (pure)", () => {
