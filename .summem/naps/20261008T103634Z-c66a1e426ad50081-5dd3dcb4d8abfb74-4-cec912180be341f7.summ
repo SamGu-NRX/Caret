@@ -1,0 +1,1 @@
+VS1: a request rebuilt after the verifier minted plan text needs 'plan' in its shape slot; Ask value options read 'Proposed value: "...". Source: ...' (builders.ts optionIs). Generation stops at MAX_GENERATOR_VISITS; close page sessions before Helper.shutdown and Store.close.

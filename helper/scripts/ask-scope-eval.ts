@@ -65,14 +65,18 @@ let rows: Row[];
 if (a.answers !== undefined) rows = JSON.parse(readFileSync(resolve(a.answers), "utf8")) as Row[];
 else {
   const fixtureIds = new Set<string>();
-  const decide = harnessEngine({ name: engineName(a.engine), canned: null, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true } });
   const limit = Number(a["spend-limit"]);
+  const decide = harnessEngine({ name: engineName(a.engine), canned: null, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, decisionsMaxUsd: limit });
   let spent = 0;
   const ask: AskJev = async (req) => {
     if (spent >= limit) throw new Error(`spend limit $${limit} reached`);
-    const r = await decide.ask(req);
-    spent += r.costUsd;
-    return r;
+    try {
+      const r = await decide.ask(req);
+      if (decide.decisionsSpend === undefined) spent += r.costUsd;
+      return r;
+    } finally {
+      if (decide.decisionsSpend !== undefined) spent = decide.decisionsSpend.run().usd;
+    }
   };
   rows = [];
   for (const x of labelled) {

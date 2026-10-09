@@ -1,0 +1,12 @@
+{
+  "about": "Synthetic replies in the documented error shape (developers.openai.com/api/docs/guides/error-codes and rate-limits, read 2026-10-09). Message text is placeholder; only error.type and error.code are read.",
+  "credit_balance_exhausted": { "status": 429, "headers": {}, "body": { "error": { "message": "placeholder", "type": "insufficient_quota", "param": null, "code": "credit_balance_exhausted" } } },
+  "insufficient_quota": { "status": 429, "headers": {}, "body": { "error": { "message": "placeholder", "type": "insufficient_quota", "param": null, "code": null } } },
+  "organization_spend_limit_exceeded": { "status": 429, "headers": {}, "body": { "error": { "message": "placeholder", "type": "insufficient_quota", "param": null, "code": "organization_spend_limit_exceeded" } } },
+  "project_spend_limit_exceeded": { "status": 429, "headers": {}, "body": { "error": { "message": "placeholder", "type": "insufficient_quota", "param": null, "code": "project_spend_limit_exceeded" } } },
+  "organization_usage_limit_exceeded": { "status": 429, "headers": {}, "body": { "error": { "message": "placeholder", "type": "insufficient_quota", "param": null, "code": "organization_usage_limit_exceeded" } } },
+  "rate_limit_exceeded": { "status": 429, "headers": { "retry-after-ms": "1500" }, "body": { "error": { "message": "placeholder", "type": "requests", "param": null, "code": "rate_limit_exceeded" } } },
+  "slow_down": { "status": 429, "headers": {}, "body": { "error": { "message": "placeholder", "type": "rate_limit_error", "param": null, "code": "slow_down" } } },
+  "server_is_overloaded": { "status": 503, "headers": { "retry-after": "2" }, "body": { "error": { "message": "placeholder", "type": "server_error", "param": null, "code": "server_is_overloaded" } } },
+  "invalid_request": { "status": 400, "headers": {}, "body": { "error": { "message": "placeholder", "type": "invalid_request_error", "param": "questions", "code": null } } }
+}

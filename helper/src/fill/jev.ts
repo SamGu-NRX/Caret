@@ -209,8 +209,9 @@ export interface JevResult {
   nouls?: Record<string, number>;
   /**
    * Each choice question's probability for every option, by question id, when the engine reports them (Jev does, as
-   * `probabilities`; docs.typesafe.ai/primitives/choice). Engines other than Jev compute `confidence` from these as Jev
-   * documents it (engines/decide/confidence.ts), so a caller's floor means the same for every engine.
+   * `probabilities`; docs.typesafe.ai/primitives/choice). The local llama engine computes Jev-style confidence from
+   * these (engines/decide/confidence.ts). The eval-only Decisions engine preserves OpenAI's raw confidence, which is
+   * not documented as comparable to Jev's; it does not recalibrate the caller's floor.
    */
   probabilities?: Record<string, Record<string, number>>;
   inputTokens: number;

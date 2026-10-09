@@ -1,0 +1,1 @@
+{"model":"gpt-6-luna","answers":[{"type":"refusal","name":"f1"},{"type":"predicate","name":"verify","probability":0.93}],"usage":{"input_tokens":42,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":42}}
