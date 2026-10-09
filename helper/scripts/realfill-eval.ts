@@ -21,6 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { proposeFill } from "../src/fill/fill.ts";
+import { DecisionsAttemptError } from "../src/engines/decide/decisions.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { engineName } from "../src/engines/decide/port.ts";
 import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
@@ -73,7 +74,12 @@ const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   // Sealed before it is sent: sent and logged from this frozen copy (PV2).
   const sent = sealRequest(req);
-  const r = await live(sent.asked);
+  let r: Awaited<ReturnType<AskJev>>;
+  try { r = await live(sent.asked); }
+  catch (e) {
+    if (e instanceof DecisionsAttemptError) spent += e.attempt.costUsd ?? 0;
+    throw e;
+  }
   spent += r.costUsd;
   calls++;
   if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { form: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers });

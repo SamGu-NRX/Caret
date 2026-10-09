@@ -356,6 +356,13 @@ describe("Decisions errors, retries, key fallback and the result cache (recorded
     expect(r.servedBy).toBe("org");
     expect(r.attempts.map((x) => [x.key, x.status, x.code, x.waitMs])).toEqual([["org", errors[name]!.status, name, wait], ["org", 200, null, 0]]);
   });
+  it("includes billed failed attempts in a successful retry's reported cost", async () => {
+    const failed = errors.server_is_overloaded!;
+    const t = scripted(() => new Response(JSON.stringify({ ...(failed.body as object), usage: { input_tokens: 17 } }), { status: failed.status, headers: failed.headers }), ok());
+    const r = await make({ OPENAI_API_KEY: key }, t.fn)(request()) as DecisionsResult;
+    expect(r.attempts.map((a) => a.costUsd)).toEqual([17 * DECISIONS_USD_PER_TOKEN, 42 * DECISIONS_USD_PER_TOKEN]);
+    expect(r.costUsd).toBe(r.attempts.reduce((sum, a) => sum + (a.costUsd ?? 0), 0));
+  });
   it("stops after MAX_ATTEMPTS attempts with doubling jittered waits", async () => {
     const t = scripted(...Array.from({ length: MAX_ATTEMPTS }, () => reply("slow_down")));
     const error = await make({ OPENAI_API_KEY: key }, t.fn)(request()).catch((e) => e);
