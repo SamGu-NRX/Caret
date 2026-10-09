@@ -376,7 +376,7 @@ export function makeDecisionsClient(o: DecisionsOptions): AskJev {
       if (err instanceof DecisionsHttpError && err.kind === "stop") {
         // A stop seen on the org key moves the run to the personal key once; a request sent on org before another
         // request switched sees the same stop, and follows the switch.
-        if (source === "org" && keys.personal !== undefined) {
+        if (o.probe !== true && source === "org" && keys.personal !== undefined) {
           active = "personal";
           if (n < MAX_ATTEMPTS && left() > MIN_ATTEMPT_MS) continue;
           throw new DecisionsAttemptError(err, summary(false), secrets, attempts);
@@ -384,7 +384,8 @@ export function makeDecisionsClient(o: DecisionsOptions): AskJev {
         stopped = `${err.code ?? err.type ?? `HTTP ${err.status}`} on the ${source} key`;
         throw new DecisionsAttemptError(err, summary(false), secrets, attempts, true);
       }
-      if (err instanceof DecisionsHttpError && err.retryable && n < MAX_ATTEMPTS) {
+      // A probe measures one attempt, with neither backoff nor a second key.
+      if (o.probe !== true && err instanceof DecisionsHttpError && err.retryable && n < MAX_ATTEMPTS) {
         const wait = err.retryAfterMs ?? backoff(n, random);
         if (wait + MIN_ATTEMPT_MS <= left()) {
           record.waitMs = wait;
