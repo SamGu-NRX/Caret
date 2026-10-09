@@ -165,6 +165,19 @@ final class FocusObserver {
 
     // MARK: - Reading
 
+    /// The first reads, one line each in the host log: which app is frontmost and whose element the read returned. DF1
+    /// found state.focus null in TextEdit in every VM run with Accessibility granted; this says where the read stops.
+    private var traced = 0
+    private func trace(_ element: AXUIElement?) {
+        guard traced < 30 else { return }
+        traced += 1
+        let front = NSWorkspace.shared.frontmostApplication
+        let owner = element.flatMap { AXRead.pid(of: $0) }
+        let role = element.flatMap { AXRead.string(kAXRoleAttribute, on: $0) }
+        let line = "caret: focus read \(traced): frontmost \(front?.bundleIdentifier ?? "none") (\(front?.processIdentifier ?? -1)), element pid \(owner.map(String.init) ?? "none"), role \(role ?? "none")\(owner == ownPID ? " (Caret's own, skipped)" : "")\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+
     private func scheduleRead() {
         guard running, pendingSince == nil else { return }
         pendingSince = DispatchTime.now().uptimeNanoseconds
@@ -177,6 +190,7 @@ final class FocusObserver {
         guard running, let notifiedAt = pendingSince else { return }
         pendingSince = nil
         let element = AXRead.focusedElement()
+        trace(element)
         if let element, AXRead.pid(of: element) == ownPID { return }
         let snapshot = element.flatMap(reader.snapshot(of:))
         onChange?(Change(snapshot: snapshot, element: element, notifiedAt: notifiedAt))

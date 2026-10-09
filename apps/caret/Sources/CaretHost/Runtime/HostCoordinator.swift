@@ -78,8 +78,13 @@ final class HostCoordinator {
     // MARK: - Focus
 
     func handle(_ change: FocusObserver.Change) {
+        // Which step of the read failed, by count: no focused element at all, an element KeyType's reader could not
+        // turn into a snapshot, or one the field reader could not read (DF1: state.focus stayed null in TextEdit in
+        // every VM run, with Accessibility granted).
+        status.increment(change.element == nil ? "focus.noElement" : change.snapshot == nil ? "focus.noSnapshot" : "focus.read")
         guard let snapshot = change.snapshot, let element = change.element,
               let field = FieldReader.read(element) else {
+            if change.element != nil, change.snapshot != nil { status.increment("focus.noField") }
             status.update { $0.focus = nil }
             onFocus?(nil)
             route?.observe(nil)
