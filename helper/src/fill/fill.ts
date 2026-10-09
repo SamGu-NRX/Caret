@@ -2088,6 +2088,11 @@ export async function proposeFill(
     const a2 = x2?.answers[q2];
     return a1 !== undefined && a2 !== undefined && a1.choice === a2.choice && a1.choice in WHOSE_CRITERIA ? a1.choice : null;
   };
+  /** Whether either ask answered a question with fixed options with `choice`, at any confidence. */
+  const eitherChoice = (q: string, choice: string): boolean => {
+    const [x1, x2] = staged ? [w1, w2] : [r1, r2];
+    return x1?.answers[q]?.choice === choice || x2?.answers[q]?.choice === choice;
+  };
   /** Both asks' answer to a question with fixed options (whose, owner), agreed at the whose cutoff, or null. */
   const agreedChoice = (q: string, q2: string = q): string | null => {
     const [x1, x2] = staged ? [w1, w2] : [r1, r2];
@@ -2148,11 +2153,13 @@ export async function proposeFill(
     // (evidence/screen/b27/b2b-probe, seed 24). The field's whose answers count at any confidence too: with both at
     // 0.49 "user", the settled `wants` was null and the colleague's phone went in (B27 second review).
     if (sameChoice(whoseId(f.id)) === "user" && c.identity === undefined && sameChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? "")) === "other") return true;
-    // The mirror: both asks calling the field someone else's, at any confidence, withholds the user's own value. W2's
-    // b-032 put the user's email in Reference 2 email, and the verifier, which judges exactness, answered "exact" at 0.85
-    // to 0.89; with the field's whose answers both "other" at 0.4, under WHOSE_CUTOFF, nothing else stopped it, even with
-    // the email in memory (test/act-b032-owner.test.ts).
-    if (sameChoice(whoseId(f.id)) === "other" && is === "user") return true;
+    // The mirror: either ask calling the field someone else's, at any confidence, withholds the user's own value; the user
+    // never finds their own detail in a field one wording took for another person's (lead decision, Oct 9). W2's b-032
+    // put the user's email in Reference 2 email, and the verifier, which judges exactness, answered "exact" at 0.85 to
+    // 0.89; with the field's whose answers both "other" at 0.4, under WHOSE_CUTOFF, or split between "other" and "user",
+    // nothing else stopped it, even with the email in memory (test/act-b032-owner.test.ts). The field is left to the user
+    // as otherPerson: an Ask's value question lists no value this veto holds (optionsOf), so there is nothing to ask.
+    if (is === "user" && eitherChoice(whoseId(f.id), "other")) return true;
     // Someone else's value goes only in a field both asks say wants someone else's: an RSVP's Phone, its whose
     // answer split at 0.48 and 0.60, took the sender's signature phone, which both asks called hers (dev-10).
     if (is === "other") return true;

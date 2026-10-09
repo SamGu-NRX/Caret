@@ -111,6 +111,15 @@ describe("b-032: the user's email offered for Reference 2 email", () => {
     }
   });
 
+  it("is withheld when the field's whose answers split between someone else and the user", async () => {
+    // Lead decision (Oct 9): never the user's own detail in a field one wording took for another person's.
+    const cases: [(ask: number) => Answer, AboutValue[]][] = [[split(OTHER, USER), []], [split(USER, OTHER), memory], [split({ choice: "other", confidence: 0.3 }, { choice: "unclear", confidence: 0.6 }), memory]];
+    for (const [whose, about] of cases) {
+      const r = await fill(whose, same(USER), about);
+      expect(r.value).toBeNull();
+    }
+  });
+
   it("writes it when both asks say the field wants the user's, so each case above differs only in the whose answers", async () => {
     // The control: the same desk, picks and owner answers. Above, where both asks say the field wants someone else's at
     // the cutoff, the veto keeps the email out of the field's options (optionsOf), so its value questions answer none;
