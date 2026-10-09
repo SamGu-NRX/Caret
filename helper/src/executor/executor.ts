@@ -607,8 +607,7 @@ export class Executor {
         const at = w.nodes.get(e.key)?.inputAt;
         if (at === undefined || at < e.sentAt) continue;
         e.mayIncludeInput = true;
-        // As in inputSeen: only a paused run's row is saved now; a running one's next save carries the flag.
-        if (task.journaled && task.finished === "paused") this.journalSave(task, null);
+        this.saveEvidence(task);
       }
       if (!open) this.timed.delete(task);
     }
@@ -624,9 +623,16 @@ export class Executor {
     watch.seen ??= why;
     if (e === null || e.mayIncludeInput === true) return;
     e.mayIncludeInput = true;
-    // A paused run's row is saved now; a running one may have its next write on its way, and a save would drop that
-    // pending row, so its next save carries the flag. An ended run has no row: its undo lives in memory.
-    if (watch.task.journaled && watch.task.finished === "paused") this.journalSave(watch.task, null);
+    this.saveEvidence(watch.task);
+  }
+
+  /**
+   * Saves input evidence to a task's journal row when nothing of it is on its way: a paused run, or a run recovered after
+   * a restart, which keeps its row (PR #33 review). A running run or an undo may have a write on its way, and a save would
+   * drop that pending row; its next save carries the flag. An ended run has no row: its undo lives in memory.
+   */
+  private saveEvidence(task: Task): void {
+    if (task.journaled && task.finished !== null && !task.undoing) this.journalSave(task, null);
   }
 
   private acting(task: Task): boolean {

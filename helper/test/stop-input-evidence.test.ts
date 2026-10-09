@@ -342,6 +342,8 @@ describe("page: the walk's record of the user's input", () => {
     // A walk after the restart reads the page's record, and keeps it for Undo past the page's 30 s.
     await r.walk();
     expect(r.helper.executor.ledger("rec")).toMatchObject([{ mayIncludeInput: true }]);
+    // Saved to the row the recovered run keeps, so a second restart keeps it too (PR #33 review).
+    expect(r.helper.journal.load(Date.now()).records.find((x) => x.taskId === "rec")?.ledger).toMatchObject([{ mayIncludeInput: true, sentAt }]);
     await vi.advanceTimersByTimeAsync(31_000);
     r.forget();
     expect(await r.helper.executor.undo("rec")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("may hold your typing") }] });

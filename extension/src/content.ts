@@ -26,7 +26,7 @@ import { clean, composedParent } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
 import { EntryTracker } from "./content/entry.ts";
-import { UserInputs, isUserInput } from "./content/user-input.ts";
+import { UserInputs, inOwnList, isUserInput } from "./content/user-input.ts";
 import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 import { docsKind, readFrameText } from "./content/text.ts";
 import { docsFocus, fieldText, trackEdits } from "./content/field-text.ts";
@@ -210,10 +210,11 @@ if (globalThis.__caretContent === undefined) {
     const at = Date.now();
     const target = e.composedPath()[0];
     if (target instanceof Element) inputs.noted(target, at);
-    // A pointer is noted at the focused control too only inside a listbox or an option, which a combobox may render
-    // elsewhere in the page (content/combobox.ts): picking there sets the control with no input event (PR #33 review).
-    if (e.type === "pointerdown" && !(target instanceof Element && target.closest('[role="option"],[role="listbox"]') !== null)) return;
     const active = deepActiveElement();
+    // A pointer is noted at the focused control too only in that control's own list of options, which a combobox may
+    // render elsewhere in the page (content/combobox.ts): picking there sets the control with no input event. A list
+    // that belongs to another control is not this one's (PR #33 review).
+    if (e.type === "pointerdown" && !(active !== null && target instanceof Element && inOwnList(active, target))) return;
     if (active !== null && active !== target) inputs.noted(active, at);
   };
   for (const type of ["keydown", "beforeinput", "input", "pointerdown"]) addEventListener(type, noteInput, { capture: true, passive: true });

@@ -1,7 +1,30 @@
 // Issue #26: which page events count as the user's own input on a field, and the time the walk reports for a control.
 // One right answer per case, so each is pinned here on its own.
 import { describe, expect, it } from "vitest";
-import { USER_INPUT_RECENT_MS, UserInputs, isUserInput } from "../src/content/user-input.ts";
+import { USER_INPUT_RECENT_MS, UserInputs, inOwnList, isUserInput, type ListElement } from "../src/content/user-input.ts";
+
+/** A stand-in element: its role, id, attributes and parent. */
+interface Fake extends ListElement<Fake> {
+  role: string | null;
+}
+function el(role: string | null, id = "", attrs: Record<string, string> = {}, parent: Fake | null = null): Fake {
+  const self: Fake = {
+    role,
+    id,
+    parentElement: parent,
+    closest(selector: string) {
+      const want = /role="(\w+)"/u.exec(selector)?.[1];
+      for (let n: Fake | null = self; n !== null; n = n.parentElement) if (n.role === want) return n;
+      return null;
+    },
+    contains(other: Fake) {
+      for (let n: Fake | null = other; n !== null; n = n.parentElement) if (n === self) return true;
+      return false;
+    },
+    getAttribute: (name: string) => attrs[name] ?? null,
+  };
+  return self;
+}
 
 describe("isUserInput", () => {
   it("counts trusted typing, pasting and keys, and never Esc, which stops Caret", () => {
@@ -92,5 +115,25 @@ describe("UserInputs", () => {
     expect(t.at(many[0] as object, 2000)).toBeUndefined();
     expect(t.at(many[69] as object, 2000)).toBe(1069);
     expect(t.at(many[6] as object, 2000)).toBe(1006);
+  });
+});
+
+describe("inOwnList", () => {
+  it("counts a pick in the list the focused combobox names, even rendered elsewhere in the page", () => {
+    const combo = el("combobox", "c1", { "aria-controls": "list-1" });
+    const list = el("listbox", "list-1");
+    expect(inOwnList(combo, el("option", "", {}, list))).toBe(true);
+    expect(inOwnList(el("combobox", "c2", { "aria-owns": "list-1" }), list)).toBe(true);
+  });
+
+  it("counts a list inside the control", () => {
+    const combo = el("combobox", "c1");
+    expect(inOwnList(combo, el("option", "", {}, el("listbox", "", {}, combo)))).toBe(true);
+  });
+
+  it("does not count another control's list, or a click outside any list", () => {
+    const field = el("textbox", "f1");
+    expect(inOwnList(field, el("option", "", {}, el("listbox", "list-2")))).toBe(false);
+    expect(inOwnList(field, el(null))).toBe(false);
   });
 });

@@ -28,6 +28,29 @@ export function isUserInput(e: { isTrusted: boolean; type: string; key?: string 
   return e.type === "beforeinput" || e.type === "input" || e.type === "pointerdown";
 }
 
+/** The parts of a DOM element inOwnList reads. */
+export interface ListElement<E> {
+  readonly id: string;
+  readonly parentElement: E | null;
+  closest(selector: string): E | null;
+  contains(other: E): boolean;
+  getAttribute(name: string): string | null;
+}
+
+/**
+ * Whether `target` sits in the list of options `control` owns: a listbox (or an option's parent) inside the control or
+ * around it, or one the control names by aria-controls or aria-owns. A combobox may render its options elsewhere in the
+ * page (content/combobox.ts), and a pick there sets the control with no input event; a list that belongs to another
+ * control is not this one's (PR #33 review).
+ */
+export function inOwnList<E extends ListElement<E>>(control: E, target: E): boolean {
+  const list = target.closest('[role="listbox"]') ?? target.closest('[role="option"]')?.parentElement ?? null;
+  if (list === null) return false;
+  if (control.contains(list) || list.contains(control)) return true;
+  const owned = `${control.getAttribute("aria-controls") ?? ""} ${control.getAttribute("aria-owns") ?? ""}`.split(/\s+/u);
+  return list.id !== "" && owned.includes(list.id);
+}
+
 export class UserInputs<E extends object> {
   /**
    * The time input last reached each element, oldest first. Held weakly, so a field the page removes is not kept
