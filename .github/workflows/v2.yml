@@ -4,7 +4,10 @@ on:
   push:
     branches: [main, 'v2/**']
   pull_request:
-    branches: [main, 'v2/next']
+    # Every PR into main or a v2 branch. Lane PRs target v2/dogfood and v2/next, and a fix/* head has no push run,
+    # so with only main and v2/next listed, PRs #15, #17, #18, #19 and #21 never ran these jobs. A v2/* head with a
+    # PR into a v2 branch runs twice (push and PR); that costs runner time, not correctness.
+    branches: [main, 'v2/**']
 
 permissions:
   contents: read
