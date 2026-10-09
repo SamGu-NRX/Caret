@@ -403,10 +403,13 @@ struct AccessPane: View {
         let granted = state.access.granted
         VStack(alignment: .leading, spacing: 0) {
             let stale = state.access.stale && !granted
-            SwappingLine(key: granted ? OnboardingCopy.Access.landedTitle : (stale ? OnboardingCopy.Access.staleTitle : OnboardingCopy.Access.title), animated: animated) {
-                ScreenTitle(title: granted ? OnboardingCopy.Access.landedTitle : (stale ? OnboardingCopy.Access.staleTitle : OnboardingCopy.Access.title))
-            }
+            let wrong = state.access.wrongCaret && !granted
+            let title = granted ? OnboardingCopy.Access.landedTitle
+                : wrong ? OnboardingCopy.Access.wrongTitle
+                : stale ? OnboardingCopy.Access.staleTitle : OnboardingCopy.Access.title
+            SwappingLine(key: title, animated: animated) { ScreenTitle(title: title) }
             Text(granted ? OnboardingCopy.Access.landedLine
+                 : wrong ? OnboardingCopy.Access.wrongLine(state.access.otherCarets)
                  : stale ? OnboardingCopy.Access.staleLine
                  : (state.access.reopened ? OnboardingCopy.Access.reopened : OnboardingCopy.Access.line))
                 .font(.system(size: 13))
@@ -427,6 +430,11 @@ struct AccessPane: View {
             }
             .padding(.top, 14)
             // The same row as the panel inside System Settings: drag it into the list there.
+            if !granted, !wrong, !state.access.otherCarets.isEmpty {
+                Text(OnboardingCopy.Access.several(state.access.otherCarets))
+                    .font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink))
+                    .fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+            }
             if stale {
                 Button(OnboardingCopy.Access.reset) { send(.resetGrant) }
                     .buttonStyle(OnboardingButtonStyle(kind: .secondary))

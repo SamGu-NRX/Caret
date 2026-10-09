@@ -34,6 +34,15 @@ enum OnboardingCopy {
             "macOS still shows Caret's switch, but it no longer applies to this version. Reset Caret's entry, then add Caret to the \(pane) list again."
         }
         static let reset = "Reset Caret's entry"
+        /// This running copy, as System Settings and Finder show it: "Caret.app in /Applications".
+        static var thisCaret: String { OtherCaret(bundleID: "", path: Bundle.main.bundlePath).place }
+        static func several(_ others: [OtherCaret]) -> String {
+            "There's more than one Caret on this Mac. Turn on the one that's open now, \(thisCaret), not \(others.map(\.place).joined(separator: " or "))."
+        }
+        static let wrongTitle = "A different Caret was turned on."
+        static func wrongLine(_ others: [OtherCaret]) -> String {
+            "The switch you turned on belongs to \(others.map(\.place).joined(separator: " or ")). This Caret is \(thisCaret): drag it into the list, or turn on the entry for it. Moving the other Caret to the Trash avoids the mix-up."
+        }
         static var row: String { pane }
         static let waiting = "Waiting for the switch…"
         static let on = "On."

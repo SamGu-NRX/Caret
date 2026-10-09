@@ -205,6 +205,7 @@ final class OnboardingController {
         flow.send(.apps(HelloAppsReader.read()))
         flow.send(.otherTabOwners(readTabOwners()))
         flow.send(Self.readBrowsers())
+        flow.send(.otherCarets(Self.readOtherCarets()))
         flow.send(.staleGrant(AccessibilityAccess.isStale(grantedSignature: progress?.grantedSignature,
                                                           currentSignature: Self.ownSignature(), trusted: permissions.accessibility)))
         flow.start()
@@ -217,6 +218,12 @@ final class OnboardingController {
         startPolling()
         guard drawsWindow else { return }
         showWindow()
+    }
+
+    /// The menu's "Caret can't see your apps": the switch step alone, which finishes when the grant lands.
+    func openAccess() {
+        open(drawing: true, opening: OnboardingLaunch.Opening(step: .access, alone: true))
+        perform(.openSystemSettings)
     }
 
     /// The menu's "Jev is off": the `on` step alone, which carries the key field.
@@ -315,6 +322,7 @@ final class OnboardingController {
                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(options)
             }
+            openedSettingsAt = Date()
             Self.openAccessibilityPane()
             startDragPanel()
         case .resetGrant:
@@ -490,6 +498,15 @@ final class OnboardingController {
     // MARK: - Instant grant detection
 
     private var detection: GrantDetection?
+    private var openedSettingsAt = Date.distantPast
+
+    /// Every other installed copy of Caret, from LaunchServices: they all show in System Settings as "Caret".
+    static func readOtherCarets() -> [OtherCaret] {
+        let installed = OtherCarets.knownIDs.flatMap { id in
+            NSWorkspace.shared.urlsForApplications(withBundleIdentifier: id).map { OtherCaret(bundleID: id, path: $0.path) }
+        }
+        return OtherCarets.others(installed: installed, runningPath: Bundle.main.bundlePath)
+    }
     private var axObserver: NSObjectProtocol?
     private var tccToken: Int32 = NOTIFY_TOKEN_INVALID
 
@@ -499,7 +516,18 @@ final class OnboardingController {
     /// stays as the backup. No private TCC call is made.
     private func startGrantDetection() {
         stopGrantDetection()
-        let detection = GrantDetection(clock: RunLoopClock()) { [weak self] in MainActor.assumeIsolated { self?.poll() } }
+        let detection = GrantDetection(clock: RunLoopClock()) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.poll()
+                // A change macOS announced that did not make this Caret trusted: if another Caret is installed, its
+                // switch was the one turned on. Not in the first seconds after Caret asked, when its own entry is added.
+                if let flow = self.flow, flow.state.step == .access, !flow.state.permissions.accessibility,
+                   Date().timeIntervalSince(self.openedSettingsAt) > 3 {
+                    flow.send(.accessChangedStillUntrusted)
+                }
+            }
+        }
         self.detection = detection
         axObserver = DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { detection.changed() }

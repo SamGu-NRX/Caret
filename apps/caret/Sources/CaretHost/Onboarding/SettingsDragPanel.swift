@@ -312,8 +312,14 @@ final class DragRowView: NSView, NSDraggingSource {
 struct DragRowContent: View {
     var body: some View {
         HStack(spacing: 10) {
-            Image(nsImage: NSApp.applicationIconImage ?? NSImage()).resizable().frame(width: 32, height: 32)
-            Text("Caret").font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink))
+            // This exact bundle, by its icon, name and folder, so it can't be mistaken for another Caret in the list.
+            Image(nsImage: NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)).resizable().frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(FileManager.default.displayName(atPath: Bundle.main.bundlePath).replacingOccurrences(of: ".app", with: ""))
+                    .font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink))
+                Text("in \(Bundle.main.bundleURL.deletingLastPathComponent().path)")
+                    .font(.system(size: 11)).foregroundStyle(Color(token: Tokens.ink2)).lineLimit(1).truncationMode(.middle)
+            }
             Spacer()
             Image(systemName: "hand.draw").font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink2))
         }
