@@ -45,7 +45,7 @@ Who receives it
 
 Caret's main model is Jev, run by TypeSafe. TypeSafe says Jev isn't trained on customer requests or responses, and its terms say it won't put them in a dataset used to train models without Caret's consent. Its terms set no limit on how long it keeps requests. They let TypeSafe keep using requests, even after you stop using Caret, to monitor for fraud and abuse, and to derive what it calls telemetry: logs, statistics, classifications and "learnings". TypeSafe may use that telemetry without restriction, including to improve its services and other products. We don't know whether TypeSafe staff read requests.
 
-Inline suggestions come from a model hosted by Groq. Groq says it doesn't keep request data by default, except reliability and abuse logs, which it keeps for up to 30 days. It also says it doesn't use your text to train models unless Caret allows it. Groq has a setting that turns those logs off, and we haven't confirmed it's on for Caret's account. We don't know whether Groq staff read requests.`;
+Inline suggestions, the next few words Caret shows as you type, are written on your Mac by a model that runs there. Nothing goes to Groq.`;
 /** The approved sentence that discloses whole owner notes when OWNER_NOTE_CHARS is above zero. */
 export const OWNER_NOTE_DISCLOSURE: string | null = "To decide whose details a value is, Caret may send the whole note it came from, if the note is 2,000 characters or shorter.";
 

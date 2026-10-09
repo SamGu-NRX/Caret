@@ -32,7 +32,7 @@ Application + clipboard + field/selection + Screenpipe history + computer observ
                     -> user selects -> workflow preview -> execution -> verified result
 ```
 
-The first decision determines whether Caret has anything useful to offer. INLINE covers a short continuation or simple grammar repair. Larger rewrites, navigation and cross-app work belong to ACTION. Jev classifies; a fast model hosted on Groq generates inline text. Use Cursor's autocomplete interaction as the reference. Keep the Groq model configurable until latency and quality are measured on representative inputs, and let code limit the edit range.
+The first decision determines whether Caret has anything useful to offer. INLINE covers a short continuation or simple grammar repair. Larger rewrites, navigation and cross-app work belong to ACTION. Jev classifies. In v2 the host's local model writes inline text on the Mac (`apps/caret/Sources/CaretHost/Engine/`), and no inline text goes to Groq; the v1 starter's Groq writer (`caret/providers/groq.py`) is not used. Use Cursor's autocomplete interaction as the reference, and let code limit the edit range.
 
 Both queries use one shared judge interface: context in, an explicit set of allowed choices in, one validated choice out. The app and individual workflows must not each build a different ambient router. Jev supplies the judgment at a decision point; code defines the available branches and carries out the selected operation. A model choice can vary between calls, so this is not a claim of deterministic model behavior.
 
