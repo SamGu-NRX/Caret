@@ -368,7 +368,8 @@ export function makeDecisionsClient(o: DecisionsOptions): AskJev {
       const r = await once(body, sealed, asked, key, hold, Math.min(TIMEOUT_MS, deadline - t0));
       const record: DecisionsAttemptRecord = { key: source, status: r.status, code: !r.ok && r.error instanceof DecisionsHttpError ? (r.error.code ?? r.error.type) : null, latencyMs: performance.now() - t0, costUsd: r.billedCost, waitMs: 0 };
       attempts.push(record);
-      if (r.ok) return { ...r.result, latencyMs: performance.now() - started, servedBy: source, attempts } satisfies DecisionsResult;
+      // Earlier retry/fallback responses can carry billed usage even when they failed.
+      if (r.ok) return { ...r.result, costUsd: summary(false).costUsd ?? r.result.costUsd, latencyMs: performance.now() - started, servedBy: source, attempts } satisfies DecisionsResult;
       const err = r.error;
       const left = (): number => deadline - performance.now();
       if (err instanceof DecisionsHttpError && err.kind === "stop") {

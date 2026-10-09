@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { parseArgs } from "node:util";
+import { DecisionsAttemptError } from "../src/engines/decide/decisions.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { engineName } from "../src/engines/decide/port.ts";
 import { positiveNumber } from "./flags.ts";
@@ -235,7 +236,11 @@ const ask: AskJev = async (req) => {
   if (real === null) r = await scripted(a.jev === "eager")(req);
   else {
     if (cost >= MAX_USD) throw new Error(`stopped: the live pass reached its $${MAX_USD} budget`);
-    r = await real(req);
+    try { r = await real(req); }
+    catch (e) {
+      if (e instanceof DecisionsAttemptError) cost += e.attempt.costUsd ?? 0;
+      throw e;
+    }
     cost += r.costUsd;
   }
   for (const [id, q] of Object.entries(req.questions)) {

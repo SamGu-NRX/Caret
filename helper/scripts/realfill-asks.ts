@@ -198,6 +198,7 @@ const jev = attributedJev(async (req, ask) => {
     r = hit === undefined ? await decide.ask(sent.asked) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   } catch (e) {
     const d = e instanceof DecisionsAttemptError ? e : null;
+    jevSpent += d?.attempt.costUsd ?? 0;
     requestErrors.push({ ask, kind: d?.kind ?? (e instanceof Error ? e.name : "error"), status: d?.status ?? null, code: d?.code ?? null });
     if (d !== null) attemptsTotal += d.attempts.length;
     if (d !== null && (d.kind === "stop" || d.kind === "cap")) runStop ??= `${d.kind}: ${d.message}`;
