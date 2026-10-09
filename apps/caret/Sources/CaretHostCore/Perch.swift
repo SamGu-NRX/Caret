@@ -92,8 +92,8 @@ public enum Perch {
             $0.0.updatedAt != $1.0.updatedAt ? $0.0.updatedAt > $1.0.updatedAt : $0.0.id < $1.0.id
         }
         let urgent: (TaskRecord, Mood)? = candidates.filter { $0.1 == Mood.needsYou }.sorted(by: newest).first
-        guard let pick = urgent ?? candidates.sorted(by: newest).first else { return nil }
-        let (record, mood) = pick
+        guard let pick: (TaskRecord, Mood) = urgent ?? candidates.sorted(by: newest).first else { return nil }
+        let (record, mood): (TaskRecord, Mood) = pick
         return Subject(
             taskId: record.id, mood: mood, pid: record.app.map { Int32(truncatingIfNeeded: $0.pid) },
             windowId: record.windowId, windowTitle: record.windowTitle,
