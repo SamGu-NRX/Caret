@@ -71,8 +71,6 @@ final class SurfaceCoordinator {
         var milliseconds: Double
     }
     private var placed: Placed?
-    /// The figure's seat in the content `placed` was last placed with (`typing`).
-    private var placedSeat: CGPoint?
     /// The placement `panelIsClear` just measured, so the draw that follows does not probe the same
     /// ground twice. Used once, and only for the same content around the same field.
     private var fitted: (content: PanelContent, field: CGRect, caret: CGRect, pid: Int32, placed: Placed)?
@@ -629,13 +627,25 @@ final class SurfaceCoordinator {
     }
 
     /// Tells the panel's figure where the caret is from its seat, so its rest glances go to the
-    /// typing (`FigureIdle`). The placed frame is the one measured for the content placed with it:
-    /// content swapped in place of another kind (a pop-up for a line) has its seat elsewhere, so it
-    /// gets no direction and only blinks until it is placed again.
+    /// typing (`FigureIdle`). Content swapped in place keeps the pinned corner but not the placed
+    /// frame's size, so its frame is measured and pinned again, as the growth check does; a line
+    /// whose figure is away (the working line, every second while work counts up) has nothing to
+    /// glance with and is not measured.
     private func typing(_ view: AnyView, content: PanelContent?, placing: Bool) -> AnyView {
-        if placing { placedSeat = Self.seat(content) }
-        guard let placed, placedSeat == Self.seat(content) else { return AnyView(view.environment(\.figureTyping, nil)) }
-        let direction = FigureIdle.typingDirection(panel: placed.choice.frame, seat: Self.seat(content), caret: placed.caret)
+        guard let placed else { return view }
+        var frame = placed.choice.frame
+        if !placing {
+            switch content {
+            case .line(let line)?, .compactLine(let line)?:
+                guard FigureIdle.allowance(state: line.figure, size: Tokens.FigureSize.line) != nil else {
+                    return AnyView(view.environment(\.figureTyping, nil))
+                }
+            case .popup?, nil:
+                break
+            }
+            frame = Self.frame(pinnedAt: placed.choice, size: panel.measure(view))
+        }
+        let direction = FigureIdle.typingDirection(panel: frame, seat: Self.seat(content), caret: placed.caret)
         return AnyView(view.environment(\.figureTyping, direction))
     }
 

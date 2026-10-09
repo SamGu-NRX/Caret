@@ -179,4 +179,24 @@ final class FigureTests: XCTestCase {
         XCTAssertGreaterThan(try alpha(working: true, at: edge), 0.8, "solid beside the bar while working")
         XCTAssertLessThan(try alpha(working: true, at: CGPoint(x: 4.7, y: 6.3)), 0.2, "the bar itself is cut out")
     }
+
+    /// The menu bar reference draws both glyphs, so its snapshot guards them: the lit one in Carrot
+    /// and the resting template one in the bar's ink. The two halves hold the same clock, so the
+    /// resting half's extra dark pixels are its glyph. The reference was once blank (the strips were
+    /// clipped to their empty middle) and passed every comparison.
+    func testTheMenuBarRenderShowsBothGlyphs() throws {
+        let item = try XCTUnwrap(Gallery.glyph().first)
+        let rep = try XCTUnwrap(Gallery.png(item.view, dark: false).flatMap(NSBitmapImageRep.init(data:)))
+        var carrot = 0, inkRest = 0, inkLit = 0
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                let (r, g, b) = (c.redComponent, c.greenComponent, c.blueComponent)
+                if r > 0.7, g > 0.25, g < 0.6, b < 0.35 { carrot += 1 }
+                if r + g + b < 0.9 { if x < rep.pixelsWide / 2 { inkRest += 1 } else { inkLit += 1 } }
+            }
+        }
+        XCTAssertGreaterThan(carrot, 100, "the lit glyph is drawn in Carrot")
+        XCTAssertGreaterThan(inkRest - inkLit, 100, "the resting glyph is drawn in the bar's ink")
+    }
 }
