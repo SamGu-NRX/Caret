@@ -223,6 +223,7 @@ const decide = a.engine === undefined ? null : harnessEngine({
   name: engineName(a.engine), canned: scripted(a.jev === "eager"),
   fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: false },
   logRequests: a["log-requests"] ?? join(OUT, "requests.ndjson"),
+  decisionsMaxUsd: MAX_USD,
 });
 const real = decide?.ask ?? (a.jev === "live" ? makeJevClient(loadJevKey) : null);
 const engine = decide?.says ?? `Jev ${a.jev}`;
@@ -238,10 +239,13 @@ const ask: AskJev = async (req) => {
     if (cost >= MAX_USD) throw new Error(`stopped: the live pass reached its $${MAX_USD} budget`);
     try { r = await real(req); }
     catch (e) {
-      if (e instanceof DecisionsAttemptError) cost += e.attempt.costUsd ?? 0;
+      if (decide?.decisionsSpend === undefined && e instanceof DecisionsAttemptError) cost += e.attempt.costUsd ?? 0;
       throw e;
+    } finally {
+      // The ledger includes unknown usage at its full reservation, including sibling attempts.
+      if (decide?.decisionsSpend !== undefined) cost = decide.decisionsSpend.run().usd;
     }
-    cost += r.costUsd;
+    if (decide?.decisionsSpend === undefined) cost += r.costUsd;
   }
   for (const [id, q] of Object.entries(req.questions)) {
     const ans = r.answers[id];

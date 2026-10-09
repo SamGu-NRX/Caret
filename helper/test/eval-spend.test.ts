@@ -3,15 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AskJev } from "../src/fill/jev.ts";
-const fake = vi.hoisted(() => ({ ask: vi.fn(), propose: vi.fn() }));
-vi.mock("../src/engines/decide/harness.ts", () => ({ harnessEngine: () => ({
-  ask: fake.ask, engine: { name: "decisions", model: "gpt-6-luna" }, says: "engine decisions (gpt-6-luna)",
-}) }));
+const fake = vi.hoisted(() => ({ ask: vi.fn(), propose: vi.fn(), config: vi.fn(), usd: 0, ledger: false }));
+vi.mock("../src/engines/decide/harness.ts", () => ({ harnessEngine: (o: unknown) => {
+  fake.config(o);
+  return { ask: fake.ask, engine: { name: "decisions", model: "gpt-6-luna" }, says: "engine decisions (gpt-6-luna)",
+    ...(fake.ledger ? { decisionsSpend: { run: () => ({ usd: fake.usd }) } } : {}) };
+} }));
 vi.mock("../src/fill/fill.ts", async (original) => ({ ...await original<typeof import("../src/fill/fill.ts")>(), proposeFill: fake.propose }));
 let dir: string;
 let argv: string[];
 beforeEach(async () => {
-  vi.resetModules(); fake.ask.mockReset(); fake.propose.mockReset();
+  vi.resetModules(); fake.ask.mockReset(); fake.propose.mockReset(); fake.config.mockClear(); fake.ledger = false; fake.usd = 0;
   dir = mkdtempSync(join(tmpdir(), "caret-eval-spend-")); argv = process.argv;
   vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
   const { minted } = await import("./minted.ts");
@@ -23,6 +25,31 @@ beforeEach(async () => {
 });
 afterEach(() => { process.argv = argv; vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }); });
 
+it.each(["about", "realfill", "scope"])("%s passes its CLI ceiling to the ledger and counts full unknown-usage reservations", async (script) => {
+  fake.ledger = true;
+  const { DecisionsAttemptError } = await import("../src/engines/decide/decisions.ts");
+  fake.ask.mockImplementation(async () => {
+    fake.usd += 0.04;
+    throw new DecisionsAttemptError(new Error("synthetic timeout"), { latencyMs: 1, inputTokens: null, costUsd: null, refused: false }, []);
+  });
+  if (script === "about") {
+    const forms = join(dir, "forms.json");
+    writeFileSync(forms, JSON.stringify([1, 2].map((id) => ({ id: `f${id}`, app: "fixture", title: "Form", open: "none", fields: [{ label: "Your name", section: null, expect: "name" }] }))));
+    process.argv = [argv[0]!, "about-fill-eval.ts", "--forms", forms, "--out", dir, "--engine", "decisions", "--max-usd", "0.03"];
+    await import("../scripts/about-fill-eval.ts");
+    expect(JSON.parse(readFileSync(join(dir, "about-fill-eval.json"), "utf8")).cost).toBe(0.04);
+    expect(fake.ask).toHaveBeenCalledOnce();
+  } else if (script === "realfill") {
+    process.argv = [argv[0]!, "realfill-eval.ts", "--out", dir, "--engine", "decisions", "--forms", "httpbin-pizza,greenhouse-apply", "--spend-limit", "0.03"];
+    await import("../scripts/realfill-eval.ts");
+    expect(JSON.parse(readFileSync(join(dir, "realfill-eval.json"), "utf8")).spent).toBe(0.04);
+    expect(fake.ask).toHaveBeenCalledOnce();
+  } else {
+    process.argv = [argv[0]!, "ask-scope-eval.ts", "--out", dir, "--engine", "decisions", "--spend-limit", "0.03"];
+    await expect(import("../scripts/ask-scope-eval.ts")).rejects.toThrow("synthetic timeout");
+  }
+  expect(fake.config.mock.calls[0]![0].decisionsMaxUsd).toBe(0.03);
+});
 it.each(["about", "realfill"])("%s counts a billed failure and stops later dispatches at its budget", async (script) => {
   const { DecisionsAttemptError } = await import("../src/engines/decide/decisions.ts");
   fake.ask.mockRejectedValue(new DecisionsAttemptError(new Error("synthetic refusal"), { latencyMs: 1, inputTokens: 10, costUsd: 0.04, refused: true }, []));
