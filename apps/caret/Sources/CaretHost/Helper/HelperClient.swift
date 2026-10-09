@@ -228,6 +228,12 @@ final class HelperClient: @unchecked Sendable {
         return sent
     }
 
+    /// Slice 1: Return in the goal card's edit field: the user's words in place of Caret's draft. True when written.
+    @discardableResult
+    func send(_ edit: GoalEdit) -> Bool {
+        sendLine(try? NDJSON.line(edit))
+    }
+
     /// H11: the answer to a `localTextRequest`: this host serves none (`LocalText`).
     @discardableResult
     func send(_ reply: LocalTextReply) -> Bool {

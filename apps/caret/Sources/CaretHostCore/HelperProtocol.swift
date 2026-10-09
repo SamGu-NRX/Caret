@@ -310,6 +310,8 @@ public struct LineFramer: Sendable {
 /// - `askScope` (I2, H1): the host decodes `outOfScope` as a withheld fill field and as a plan refusal, which it says
 ///   in the helper's words, or `AskCopy`'s for a helper that sends none. A host without it is sent `wrongKind` and
 ///   `unknownWindow` in its place.
+/// - `askTask` (slice 1): the desk lists a task question's readings, one picked with Tab, and shows a goal that is not a
+///   page's on its own card. A host without it gets such an Ask read as a fill, as before.
 /// - `routing` (D2-02, H6): only while the user's setting "Caret decides when to help" is on. The
 ///   helper then sends route decisions, and its offers wait for them.
 /// A helper from before any of these ignores the names it does not know (its hello schema is not strict).
@@ -328,8 +330,10 @@ public enum HostHello {
         // H13: pageText, so a page field arrives with the text around its caret for inline text.
         // H1: valueChecks and askScope, since CaretScreenCore's FillWithheld and PlanProposal.ErrorCode decode the
         // reasons they add; without them the helper would send this host the older, less exact reasons.
+        // Slice 1: askTask, since the desk lists a task question's readings (`AskQuestionCard`) and shows a goal that is
+        // not a page's on its own card (`GoalCard`).
         [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability, PageInline.capability,
-         valueChecksCapability, askScopeCapability]
+         valueChecksCapability, askScopeCapability, AskQuestion.taskCapability]
             + (goalFiles ? [GoalFiles.capability] : [])
             + (routing ? [Routing.capability] : [])
     }

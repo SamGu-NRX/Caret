@@ -11,8 +11,14 @@ public struct AskQuestion: Codable, Equatable, Sendable {
     public static let type = "askQuestion"
     /// Options one question lists at most (protocol.ts MAX_ASK_OPTIONS).
     public static let maxOptions = 8
+    /// A task option's label and sentence, at most (protocol.ts MAX_TASK_LABEL, MAX_TASK_SAYS).
+    public static let maxTaskLabel = 80
+    public static let maxTaskSays = 200
+    /// The hello capability for task questions (protocol.ts ASK_TASK_CAPABILITY).
+    public static let taskCapability = "askTask"
 
-    public enum Part: String, Codable, Sendable { case fields, source, person, value }
+    /// `task` (slice 1): Jev's route stopped between filling the form and a larger task; each option is one reading.
+    public enum Part: String, Codable, Sendable { case fields, source, person, value, task }
     public enum Pick: String, Codable, Sendable { case one, many }
 
     public enum Option: Codable, Equatable, Sendable {
@@ -26,10 +32,12 @@ public struct AskQuestion: Codable, Equatable, Sendable {
         case value(id: String, value: String, source: String)
         /// Leave the value question's field blank.
         case blank(id: String)
+        /// One reading of the request: a short label ("Fill To and Message") and what Caret then does and leaves to the user.
+        case task(id: String, label: String, says: String)
 
         public var id: String {
             switch self {
-            case .field(let id, _, _), .window(let id, _, _), .memory(let id), .you(let id), .person(let id, _), .value(let id, _, _), .blank(let id):
+            case .field(let id, _, _), .window(let id, _, _), .memory(let id), .you(let id), .person(let id, _), .value(let id, _, _), .blank(let id), .task(let id, _, _):
                 return id
             }
         }
@@ -43,10 +51,11 @@ public struct AskQuestion: Codable, Equatable, Sendable {
             case .person: return "person"
             case .value: return "value"
             case .blank: return "blank"
+            case .task: return "task"
             }
         }
 
-        enum CodingKeys: String, CodingKey { case kind, id, label, section, app, title, name, value, source }
+        enum CodingKeys: String, CodingKey { case kind, id, label, section, app, title, name, value, source, says }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -71,6 +80,13 @@ public struct AskQuestion: Codable, Equatable, Sendable {
                 guard !value.isEmpty, !source.isEmpty else { throw ProtocolError("a value option needs its value and where it was read") }
                 self = .value(id: id, value: value, source: source)
             case "blank": self = .blank(id: id)
+            case "task":
+                let label = try c.decode(String.self, forKey: .label)
+                let says = try c.decode(String.self, forKey: .says)
+                guard (1...AskQuestion.maxTaskLabel).contains(label.utf16.count), (1...AskQuestion.maxTaskSays).contains(says.utf16.count) else {
+                    throw ProtocolError("a task option's label is 1 to \(AskQuestion.maxTaskLabel) characters and its sentence 1 to \(AskQuestion.maxTaskSays)")
+                }
+                self = .task(id: id, label: label, says: says)
             case let other: throw ProtocolError("unknown option kind \(other)")
             }
         }
@@ -85,6 +101,7 @@ public struct AskQuestion: Codable, Equatable, Sendable {
             case .memory, .you, .blank: break
             case .person(_, let name): try c.encode(name, forKey: .name)
             case .value(_, let value, let source): try c.encode(value, forKey: .value); try c.encode(source, forKey: .source)
+            case .task(_, let label, let says): try c.encode(label, forKey: .label); try c.encode(says, forKey: .says)
             }
         }
     }
@@ -143,6 +160,7 @@ public struct AskQuestion: Codable, Equatable, Sendable {
         case .source: kinds = ["window", "memory"]
         case .person: kinds = ["you", "person"]
         case .value: kinds = ["value", "blank"]
+        case .task: kinds = ["task"]
         }
         guard pick == (part == .fields ? .many : .one) else { throw ProtocolError("a \(part.rawValue) question picks \(part == .fields ? "many" : "one")") }
         guard options.allSatisfy({ kinds.contains($0.kind) }) else { throw ProtocolError("a \(part.rawValue) question lists only \(kinds.sorted().joined(separator: " or ")) options") }
@@ -151,6 +169,7 @@ public struct AskQuestion: Codable, Equatable, Sendable {
                 throw ProtocolError("a value question lists its values, then one blank")
             }
         }
+        if part == .task, options.count < 2 { throw ProtocolError("a task question lists at least two readings") }
         guard Set(options.map(\.id)).count == options.count else { throw ProtocolError("option ids repeat") }
         if let filling {
             guard part == .fields || part == .value else { throw ProtocolError("only a fields or value question names what it is filling") }

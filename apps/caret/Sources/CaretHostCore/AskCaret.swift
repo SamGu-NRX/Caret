@@ -26,6 +26,10 @@ public final class AskCaret {
         case confirmFile(FileConfirm)
         /// Tab on a question: the user's pick (B29).
         case answer(AskAnswer)
+        /// Tab on a goal card: the segment as previewed (slice 1, `GoalCard`).
+        case goalAccept(GoalAccept)
+        /// Return in a goal card's edit field: the user's words in place of Caret's draft.
+        case goalEdit(GoalEdit)
     }
 
     /// A run's writes that ⌘Z may undo, for the arbiter's toast in the app it acted in.
@@ -138,6 +142,9 @@ public final class AskCaret {
         /// H11: the Ask was about a page, and its preview is in the page task panel at the form. The desk
         /// says so in one line and steps aside (`onAtForm`), so the browser has the keys again.
         case atForm
+        /// Slice 1: a goal that is not a page fill (a reply drafted in Mail, an event for the calendar): its segment
+        /// waits for Tab, runs, and ends on the card (`GoalCard`), which keeps its own stage.
+        case goal(GoalCard)
         /// Tab took the plan; the helper is running it.
         case running(Card)
         /// The run ended: the steps as they ended and the line that says how.
@@ -255,6 +262,13 @@ public final class AskCaret {
         self.text = text
         switch phase {
         case .asking, .proposed, .question, .failed, .ended, .atForm: settle(.idle)
+        // A goal that runs keeps its card; a preview gives way to the new instruction, as a plan's card does.
+        case .goal(let card):
+            switch card.stage {
+            case .running, .stopping: onChange()
+            case .ended(let e) where e.kind == .undoing: onChange()
+            default: settle(.idle)
+            }
         case .idle, .running: onChange()
         }
     }
@@ -265,6 +279,12 @@ public final class AskCaret {
         let instruction = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !instruction.isEmpty else { return false }
         if case .running = phase { return false }
+        if case .goal(let card) = phase {
+            switch card.stage {
+            case .running, .stopping, .editing, .editSent: return false
+            default: break
+            }
+        }
         // protocol.ts caps an instruction at 500 code points; the field says so rather than send one the helper refuses.
         guard instruction.unicodeScalars.count <= 500 else {
             settle(.failed(AskCopy.tooLong))
@@ -290,6 +310,23 @@ public final class AskCaret {
     @discardableResult
     public func tab() -> Bool {
         if case .question(let q) = phase { return answer(q) }
+        if case .goal(var card) = phase {
+            switch card.stage {
+            case .preview:
+                guard let accept = card.accept(nowMs: nowMs) else { return true }
+                guard send(.goalAccept(accept)) else {
+                    card.stage = .ended(GoalCard.Ending(kind: .notRun, line: AskCopy.helperDown))
+                    settle(.goal(card))
+                    return true
+                }
+                // The instruction is done with; the next one starts from an empty field.
+                text = ""
+                settle(.goal(card))
+            // In the edit field Tab is not a key the card takes; on a run it would mean nothing.
+            default: break
+            }
+            return true
+        }
         // The preview is at the form, and Tab there is the panel's: the desk gets out of the way at once.
         if case .atForm = phase {
             onAtForm()
@@ -389,7 +426,7 @@ public final class AskCaret {
     /// has no Choose on its rows.
     @discardableResult
     public func choose(option id: String) -> Bool {
-        guard case .question(let q) = phase, q.ask.part == .value else { return false }
+        guard case .question(let q) = phase, q.ask.part == .value || q.ask.part == .task else { return false }
         guard let row = q.ask.options.firstIndex(where: { $0.id == id }) else { return true }
         return answer(Question(ask: q.ask, highlight: row))
     }
@@ -423,6 +460,35 @@ public final class AskCaret {
     @discardableResult
     public func escape() -> Bool {
         switch phase {
+        case .goal(var card):
+            switch card.escape() {
+            case .putAway:
+                if case .ended = card.stage { text = "" }
+                settle(.idle)
+            case .editClosed:
+                settle(.goal(card))
+            case .held:
+                break
+            case .stop(let control):
+                guard send(.control(control)) else {
+                    dropSession()
+                    card.stage = .ended(GoalCard.Ending(kind: .stopped, line: WorkLines.stopUnreached.text))
+                    settle(.goal(card))
+                    return true
+                }
+                settle(.goal(card))
+                let key = control.taskId
+                stopDeadlines[key]?.cancel()
+                stopDeadlines[key] = clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
+                    guard let self, self.stopDeadlines.removeValue(forKey: key) != nil else { return }
+                    self.dropSession()
+                    if case .goal(var c) = self.phase, c.stage == .stopping {
+                        c.stage = .ended(GoalCard.Ending(kind: .stopped, line: WorkLines.stopUnreached.text))
+                        self.settle(.goal(c))
+                    }
+                }
+            }
+            return true
         case .running(var card):
             // Not delivered: the helper may still be running it, so the card says only what is
             // known, and the connection closes so the helper revokes the run (S1 audit #17).
@@ -469,6 +535,9 @@ public final class AskCaret {
         for timer in stopDeadlines.values { timer.cancel() }
         stopDeadlines.removeAll()
         switch phase {
+        case .goal(var card):
+            card.lostTouch()
+            settle(.goal(card))
         case .asking: settle(.failed(AskCopy.helperDown))
         // Its offer went with the helper: Tab could only send a key nobody holds.
         case .proposed: settle(.failed(AskCopy.planGone))
@@ -550,13 +619,26 @@ public final class AskCaret {
     /// was the desk's answer, so the caller does not treat it as anyone else's.
     @discardableResult
     public func receive(_ goal: GoalProgress, toForm: (GoalProgress) -> Bool) -> Bool {
+        // A later message of the goal on the card: a new preview, a receipt, the stop or the end.
+        if case .goal(var card) = phase, goal.goalId == card.goalId {
+            // The goal's own ending answers a stop Esc sent.
+            switch goal.event {
+            case .stopped, .finished: stopDeadlines.removeValue(forKey: card.taskId ?? "\(card.goalId):s\(card.segment)")?.cancel()
+            case .segment, .step: break
+            }
+            switch card.receive(goal) {
+            case .ignored: return false
+            case .applied: settle(.goal(card))
+            case .preview: showGoal(card)
+            }
+            return true
+        }
         guard case .asking(let id) = phase, goal.requestId == id else { return false }
         switch goal.event {
         case .segment(let p):
-            guard p.page != nil else {
-                // A goal that is not a page's needs H9's goal card, which this host does not show yet. Only a
-                // developer's plan writer makes one (L1): the helper plans a native Ask as before without one.
-                settle(.failed(AskCopy.goalNotShown))
+            // Slice 1: a goal that is not a page's is the desk's own card (`GoalCard`); a page's goes to the panel.
+            if let card = GoalCard(preview: p, goalId: goal.goalId, instruction: text) {
+                showGoal(card)
                 return true
             }
             if toForm(goal) {
@@ -576,6 +658,13 @@ public final class AskCaret {
     public func receive(_ progress: TaskProgress) {
         // Any ending answers a stop sent for this task, whether or not its card still shows.
         if [.stopped, .done, .paused, .handoff].contains(progress.phase) { stopDeadlines.removeValue(forKey: progress.taskId)?.cancel() }
+        if case .goal(var card) = phase {
+            // A goal's stop is answered by its own `stopped` message; an undo by each task's `undone`.
+            // An undo that says nothing of what it put back is not taken as all of it.
+            let left = progress.notRestored ?? (progress.restored == nil ? 1 : 0)
+            if progress.phase == .undone, card.undone(taskId: progress.taskId, restored: progress.restored ?? 0, notRestored: left) { settle(.goal(card)) }
+            return
+        }
         guard let tracking, progress.taskId == tracking else { return }
         if case .ended(var card, let line) = phase, stopping == tracking {
             // The helper's own ending for a run Esc stopped: the step it stopped before, or Done when
@@ -603,7 +692,7 @@ public final class AskCaret {
         var card: Card
         switch phase {
         case .running(let c), .ended(let c, _): card = c
-        case .idle, .asking, .proposed, .question, .failed, .atForm: return
+        case .idle, .asking, .proposed, .question, .failed, .atForm, .goal: return
         }
         if progress.steps > 0 { steps = progress.steps }
         let index = progress.step.flatMap { Self.cardIndex(ofPlanStep: $0, in: card) }
@@ -652,6 +741,79 @@ public final class AskCaret {
         }
     }
 
+    // MARK: - The goal card
+
+    /// Shows a goal's segment waiting for Tab, and puts it away as expired when its time passes with no Tab.
+    private func showGoal(_ card: GoalCard) {
+        settle(.goal(card))
+    }
+
+    /// While a goal card waits for Tab (or for the words of an edit), its preview's expiry puts it away as not run.
+    private func scheduleGoalExpiry(_ card: GoalCard) {
+        let goalId = card.goalId
+        let digest = card.digest
+        let wait = max(0, Double(card.expires - nowMs) / 1000)
+        waitTimer = clock.schedule(after: wait, repeats: false) { [weak self] in
+            guard let self, case .goal(var c) = self.phase, c.goalId == goalId, c.digest == digest else { return }
+            c.expired()
+            self.settle(.goal(c))
+        }
+    }
+
+    /// ⌘E on a goal card: opens its first drafted row for the user's words. False when there is none, so the key does
+    /// what it would.
+    @discardableResult
+    public func editGoal() -> Bool {
+        guard case .goal(var card) = phase, card.startEdit() else { return false }
+        keepGoal(card)
+        return true
+    }
+
+    /// The edit field's text changed.
+    public func goalDraftChanged(_ words: String) {
+        guard case .goal(var card) = phase, case .editing = card.stage else { return }
+        card.editText(words)
+        // The card's height can change as the words wrap; the field already shows what was typed.
+        phase = .goal(card)
+        onChange()
+    }
+
+    /// Return in the edit field: the words go to the helper, whose new preview replaces the card's.
+    @discardableResult
+    public func commitGoalEdit() -> Bool {
+        guard case .goal(var card) = phase, case .editing = card.stage else { return false }
+        if let edit = card.commitEdit(nowMs: nowMs), !send(.goalEdit(edit)) {
+            card.stage = .preview
+            card.note = AskCopy.helperDown
+        }
+        keepGoal(card)
+        return true
+    }
+
+    /// A goal card changed within its preview: its expiry timer goes on.
+    private func keepGoal(_ card: GoalCard) {
+        phase = .goal(card)
+        onChange()
+    }
+
+    /// A helper error: the edit or the acceptance the card waits on was turned down.
+    public func helperError(_ e: HelperError) {
+        guard case .goal(var card) = phase, card.refused(e.message) else { return }
+        settle(.goal(card))
+    }
+
+    /// Whether the goal card on the desk is waiting for a Tab: the card owns the desk's Tab and Esc then.
+    public var goalWaiting: Bool {
+        if case .goal(let card) = phase, card.stage == .preview { return true }
+        return false
+    }
+
+    /// Whether the goal card's edit field is open: Return keeps the words, Esc closes it.
+    public var goalEditing: Bool {
+        if case .goal(let card) = phase, case .editing = card.stage { return true }
+        return false
+    }
+
     // MARK: - Undo
 
     /// ⌘Z on a run that wrote (q1 bug 8), in the list or, through the arbiter's toast, in the app the
@@ -659,6 +821,23 @@ public final class AskCaret {
     /// there is nothing to undo, so the key does what it would.
     @discardableResult
     public func undo() -> Bool {
+        if case .goal(var card) = phase {
+            let controls = card.undo()
+            guard !controls.isEmpty else { return false }
+            for c in controls where !send(.control(c)) {
+                card.stage = .ended(GoalCard.Ending(kind: .stopped, line: WorkLines.undoUnsent.text))
+                settle(.goal(card))
+                return true
+            }
+            settle(.goal(card))
+            let goalId = card.goalId
+            undoTimer = clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
+                guard let self, case .goal(var c) = self.phase, c.goalId == goalId, case .ended(let e) = c.stage, e.kind == .undoing else { return }
+                c.lostTouch()
+                self.settle(.goal(c))
+            }
+            return true
+        }
         guard let offer = undoOffer, case .ended(let card, _) = phase else { return false }
         guard send(.control(TaskControl(taskId: offer.taskId, action: .undo))) else {
             settle(.ended(card, WorkLines.undoUnsent))
@@ -674,7 +853,10 @@ public final class AskCaret {
     }
 
     /// Whether the arbiter's toast for this task is this card's.
-    public func ownsUndo(_ taskId: String) -> Bool { undoOffer?.taskId == taskId }
+    public func ownsUndo(_ taskId: String) -> Bool {
+        if case .goal(let card) = phase, card.tasks.contains(taskId) { return true }
+        return undoOffer?.taskId == taskId
+    }
 
     // MARK: - The card
 
@@ -782,7 +964,7 @@ public final class AskCaret {
         confirming = nil
         switch next {
         case .running, .ended: break
-        case .idle, .asking, .proposed, .question, .failed, .atForm: tracking = nil
+        case .idle, .asking, .proposed, .question, .failed, .atForm, .goal: tracking = nil
         }
         var shown = next
         var offer: UndoOffer?
@@ -794,11 +976,18 @@ public final class AskCaret {
             shown = .ended(card, line)
         }
         // An undo still waiting for its answer keeps its timer only while the card shows.
-        if case .ended = next {} else {
+        if case .ended = next {} else if case .goal(let c) = next, case .ended(let e) = c.stage, e.kind == .undoing {} else {
             undoTimer?.cancel()
             undoTimer = nil
         }
         if case .failed = next { replacesOnType = true } else { replacesOnType = false }
+        // A goal card still waiting keeps an expiry timer for the preview it shows, whatever else changed.
+        if case .goal(let c) = next {
+            switch c.stage {
+            case .preview, .editing, .editSent: scheduleGoalExpiry(c)
+            case .running, .stopping, .ended: break
+            }
+        }
         phase = shown
         if offer != undoOffer {
             undoOffer = offer
@@ -821,6 +1010,36 @@ public final class AskCaret {
         public var question: AskQuestion?
         public var highlight: Int?
         public var selected: [String]?
+        /// Slice 1: the goal card showing: its goal, segment, stage, and each row's words and state.
+        public var goal: GoalDebug?
+    }
+
+    public struct GoalDebug: Codable, Equatable, Sendable {
+        public var goalId: String
+        public var segment: Int
+        public var digest: String
+        public var stage: String
+        public var rows: [String]
+        public var yours: String?
+        public var line: String?
+        public var note: String?
+
+        init(_ c: GoalCard) {
+            goalId = c.goalId
+            segment = c.segment
+            digest = c.digest
+            switch c.stage {
+            case .preview: stage = "preview"
+            case .editing(let step, _): stage = "editing \(step)"
+            case .editSent(let step): stage = "editSent \(step)"
+            case .running: stage = "running"
+            case .stopping: stage = "stopping"
+            case .ended(let e): stage = "ended \(e.kind.rawValue)"; line = e.line
+            }
+            rows = c.listed.map { "\($0.tier.rawValue) \($0.state.rawValue): \($0.says)" }
+            yours = c.consequential?.says
+            note = c.note
+        }
     }
 
     public var debugInfo: DebugInfo {
@@ -829,6 +1048,7 @@ public final class AskCaret {
         case .idle: break
         case .asking(let id): info.phase = "asking"; info.requestId = id
         case .proposed(let card): info.phase = "proposed"; info.card = card
+        case .goal(let card): info.phase = "goal"; info.goal = GoalDebug(card)
         case .question(let q):
             info.phase = "question"; info.question = q.ask; info.highlight = q.highlight
             info.selected = q.ask.options.map(\.id).filter(q.selected.contains)
@@ -850,6 +1070,8 @@ public enum AskCopy {
         switch o {
         case .value(_, let value, let source): return (value, source)
         case .blank: return (leaveBlank, nil)
+        // Slice 1: one reading of the request, and what Caret then does and leaves to the user.
+        case .task(_, let label, let says): return (label, says)
         case .field(_, let label, let section): return (label, section)
         case .window(_, let app, let title):
             let t = title.trimmingCharacters(in: .whitespaces)
@@ -917,8 +1139,6 @@ public enum AskCopy {
     /// H11: the desk's one line when an Ask's preview is at the form.
     public static let atForm = "Preview at the form"
     public static let pageBusy = "Caret is still filling this page. Ask again when it's done."
-    /// A goal that is not a page's: only with a developer's plan writer (--dev-writer), and this host shows page goals only.
-    public static let goalNotShown = "Caret can't show a plan like that here yet."
     public static let planning = "Planning"
     public static let helperDown = "My helper isn't running, so I can't plan that."
     public static let noAnswer = "I didn't hear back in time, so nothing was planned."

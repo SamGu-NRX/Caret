@@ -6,7 +6,7 @@ import XCTest
 /// offers nothing for a value whose identity entry changed; its Ask card lists the fields a plan leaves to the user
 /// (ask-left.ndjson); and the page panel shows the helper's new withheld and left-to-you sentences as withheld rows.
 final class WireH1Tests: XCTestCase {
-    static let names = ["value-checks", "ask-left"]
+    static let names = ["value-checks", "ask-left", "ask-task"]
 
     /// The repository root, five levels above Fixtures.
     static var repo: URL {
