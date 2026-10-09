@@ -7,6 +7,8 @@
 //   fill the calendar          -> calendarEvent from an event value code derived (the calendar adapter)
 //   press with a capability    -> the capability's verifier end state, reached by that press (capabilities.ts)
 //   any other press            -> handoff: the user presses it, and the goal ends there
+//   navigate a list row        -> rowSelected or itemOpened on the exact row, by Caret or by the user (navVerdict), which
+//                                 ends its segment; it must be followed directly by observe(after: it) or end the program
 // A write whose value fails fill's value gates (G2, gates.ts: a kind Caret never types, a kind that does not fit the
 // field, a value Jev does not confirm belongs there) is dropped, and the preview says why. Jev is not asked about a
 // value the helper derived with nothing to choose (G3: the To below, an event inventory.ts built). A reply's To is
@@ -25,7 +27,8 @@ import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { matchOption } from "../fill/controls.ts";
 import { MAX_FIELDS } from "../fill/fill.ts";
-import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
+import { navVerdict, pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
+import { identityOf } from "./identity.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
 import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, statedChoice, VerifierUnavailable, type CheckedValue, type Proposed, type Provenance } from "../fill/contract.ts";
@@ -171,6 +174,8 @@ function lowerFill(t: TargetBinding, v: ValueBinding, gated: boolean): Pick<Goal
       throw new GoalError("schema", `${named(t)} is a button, not a field`, t.ref);
     case "file":
       throw new GoalError("schema", `${named(t)} takes a file, which only an attach step puts there`, t.ref);
+    case "row":
+      throw new GoalError("schema", `${named(t)} is a list row, which a plan opens or selects, never fills`, t.ref);
   }
 }
 
@@ -362,8 +367,14 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   let lastPress: GoalStep | null = null;
   /** I3: a resolved date or time whose reading chose something, with the provenance that says so, for the verifier below. */
   const verifiedAs = new Map<GoalStep, Provenance>();
-  for (const s of draft.steps) {
+  for (const [at, s] of draft.steps.entries()) {
     if (steps.some((x) => x.kind === "handoff")) throw new GoalError("stepAfterHandoff", "the plan goes on after a step that is yours, and Caret cannot know what that step did", s.ref);
+    // Slice 2: an observe reads the window the navigate right before it changed; it is no step of its own.
+    if (s.kind === "observe") {
+      const before = draft.steps[at - 1];
+      if (before?.kind !== "navigate" || before.ref !== s.after) throw new GoalError("schema", "the plan reads a window again without opening a row right before it", `${s.ref} after ${s.after}`);
+      continue;
+    }
     if (s.kind === "ask") throw new GoalError("unsupportedStep", "the plan stops to ask you something, which a goal plan cannot do yet", s.ref);
     if (s.kind === "waitFor") {
       if (lastPress === null || steps.at(-1) !== lastPress || lastPress.effect !== s.effect) throw new GoalError("unsupportedStep", "the plan waits for something no press right before it causes", `${s.ref} ${s.effect}`);
@@ -449,6 +460,23 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered, ...(checked === undefined ? {} : { checked }) };
       if (verifyAs !== undefined) verifiedAs.set(step, verifyAs);
       steps.push(gate === "derived" ? markDerived(step) : step);
+      lastPress = null;
+      continue;
+    }
+    if (s.kind === "navigate") {
+      // The detail a navigation shows is what the steps after it act on: they are planned only after an observe reads it.
+      const next = draft.steps[at + 1];
+      if (next !== undefined && !(next.kind === "observe" && next.after === s.ref)) throw new GoalError("schema", "the plan acts after opening a row without reading what it shows", s.ref);
+      if (t.domain.kind !== "window" || t.control !== "row" || t.row === undefined) throw new GoalError("schema", `${named(t)} is not a list row`, t.ref);
+      const d = t.domain;
+      const r = t.row;
+      const verdict = navVerdict({ kind: r.kind, page: d.page, label: t.label, windowKind: d.windowKind, bundleId: d.bundleId, selectable: r.selectable, inForm: r.inForm, href: r.href }, s.effect);
+      if (verdict.kind === "refuse") throw new GoalError("unsupportedStep", verdict.says.charAt(0).toUpperCase() + verdict.says.slice(1), t.ref);
+      const identity = identityOf(r.cells);
+      // A row with no cell a detail would repeat cannot be checked as opened: Caret would not know it reached it.
+      if (identity === null) throw new GoalError("unsupportedStep", `Caret can't tell ${named(t)} from the rows around it by anything its detail would show`, t.ref);
+      if (verdict.capability.name === "selectRow" && r.container === null) throw new GoalError("unsupportedStep", `Caret can't find the list ${named(t)} is in`, t.ref);
+      steps.push({ ref: s.ref, index, kind: "navigate", says: verdict.capability.says(identity, verdict.actor), target: t, value: null, writes: null, effect: verdict.capability.effect, handoff: null, to: false, gate: null, nav: { capability: verdict.capability.name, actor: verdict.actor, identity, container: r.container } });
       lastPress = null;
       continue;
     }
@@ -726,7 +754,8 @@ function cut(programHash: string, steps: readonly GoalStep[], warnings: readonly
   for (const s of steps) {
     const last = groups.at(-1);
     const prev = last?.steps.at(-1);
-    const revealed = prev?.kind === "press";
+    // A press reveals fields and a navigation shows another item: either changes what the window offers (capabilities.ts endsSegment).
+    const revealed = prev?.kind === "press" || prev?.kind === "navigate";
     // C2: a step of the next part of a long page form starts its own segment.
     const next = parts?.get(s.ref);
     const nextPart = next !== undefined && part !== undefined && next !== part;
@@ -790,6 +819,17 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
       return { says, end: { kind: "valueEquals", window: sel, target, value }, ...(x.value?.memory == null ? {} : { memory: x.value.memory }) };
     }
     if (x.kind === "press") return { says, end: { kind: "fieldsRevealed", window: sel, target }, via: { kind: "press", target } };
+    if (x.kind === "navigate") {
+      const nav = x.nav;
+      if (nav === undefined) throw new GoalError("schema", "a navigate step without its capability", x.ref);
+      // Each cell is screen text, so each is a slot; the anchors are code's indexes.
+      const identity = { cells: nav.identity.cells.map((c, j) => slot(`c${i}_${j}`, c, `cell ${j + 1} of row ${i + 1}`, d.kind === "window" ? d.windowId : undefined)), anchors: nav.identity.anchors };
+      const via = { kind: "navigate" as const, target, capability: nav.capability, actor: nav.actor };
+      if (nav.capability === "openItem") return { says, end: { kind: "itemOpened", window: sel, target, identity }, via };
+      if (nav.container === null) throw new GoalError("schema", "a row selection without its list", x.ref);
+      const container = { key: slot(`ck${i}`, nav.container.key, `the key of row ${i + 1}'s list`), role: slot(`cr${i}`, nav.container.role, `the role of row ${i + 1}'s list`), describe: `{{l${i}}}`, exact: true as const };
+      return { says, end: { kind: "rowSelected", window: sel, target, container, identity }, via };
+    }
     // P3: the file the acceptance confirmed for this field, verified by the page's own file list or rendered name.
     if (x.kind === "attach") return { says, end: { kind: "fileAttached", window: sel, target, wants: slot(`w${i}`, clip(x.target.label === "" ? "a file" : x.target.label, 80), `the file control ${i + 1}`) } };
     return { says, end: { kind: "handoff", window: sel, target, why: x.handoff ?? "unverifiable" } };

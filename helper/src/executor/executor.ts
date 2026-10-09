@@ -20,6 +20,7 @@ import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink } 
 import { ConfirmedFiles } from "../engines/attach.ts";
 import { classifyPress, type RiskClass } from "./risk.ts";
 import { pressVerdict } from "../goals/capabilities.ts";
+import { itemOpened, rowSelected } from "../goals/identity.ts";
 import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
@@ -68,6 +69,8 @@ export interface ExecutorDeps {
   journal?: JournalPort;
   /** Where a failure that does not change a task's result is said: the watch a finished run cannot drop. */
   warn?: (line: string) => void;
+  /** Overrides WAIT_FOR_YOU_MS, for tests that let the wait for the user's own navigation run out. */
+  waitForYouMs?: number;
 }
 
 /** What the executor saves of a task; the helper adds the skill it counts for (journal.ts JournalRecord.skillId). */
@@ -205,6 +208,11 @@ const FALLBACKS = [
 
 /** How many re-reads a press or raise gets to show its effect, and the pause between them. Assumed, not measured. */
 const EFFECT_POLLS = 4;
+/**
+ * How long a navigate step the user makes (actor "you") waits for its end state before it is left as is. Assumed, not
+ * measured (CU-COUNSEL-R2): the act grant's own limit (GRANT_MAX_MS), as long as a preview waits for its Tab.
+ */
+export const WAIT_FOR_YOU_MS = 120_000;
 /** Extra tries for a failed walk. One cut-short walk in 20 shipping runs stopped a run on a loaded Mac. */
 const WALK_RETRIES = 2;
 const EFFECT_POLL_MS = 150;
@@ -238,6 +246,13 @@ interface Task {
   sourced: { text: string; windowId: string; window: WindowState | undefined }[];
   /** Started from an accepted offer, so it may hold an act grant. */
   granted: boolean;
+  /**
+   * Slice 2: the window a navigate step is waiting for the user to change (actor "you"), or null. Input there is the
+   * transition the step asked for, not a take-over, so it pauses nothing; a stop still ends the wait.
+   */
+  waitingIn: string | null;
+  /** Wakes a wait for the user's navigation when an interrupt arrives; null when nothing waits. */
+  wake: (() => void) | null;
   /** Started by a skill with no Tab (RunOptions.unprompted). */
   /** W2: the caller's recheck of each copied value before its dispatch (RunOptions.guard). */
   guard: ((step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null) | null;
@@ -433,6 +448,8 @@ export class Executor {
       readerId: this.readerId,
       startedAt: Date.now(),
       journaled: false,
+      waitingIn: null,
+      wake: null,
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
@@ -494,7 +511,7 @@ export class Executor {
       if (!this.acting(task)) continue;
       for (const windowId of task.windows.values()) {
         const w = this.deps.model.windows.get(windowId);
-        if (w === undefined || w.app.pid !== m.pid) continue;
+        if (w === undefined || w.app.pid !== m.pid || task.waitingIn === windowId) continue;
         const inside = m.kind === "mouse" ? m.point !== null && w.window.frame !== null && contains(w.window.frame, m.point) : w.focused;
         if (inside) this.inputIn(task, `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'`);
       }
@@ -508,7 +525,7 @@ export class Executor {
    */
   onPageInput(windowId: string, kind: "key" | "mouse"): void {
     for (const task of this.tasks.values()) {
-      if (!this.acting(task) || ![...task.windows.values()].includes(windowId)) continue;
+      if (!this.acting(task) || ![...task.windows.values()].includes(windowId) || task.waitingIn === windowId) continue;
       const title = this.deps.model.windows.get(windowId)?.window.title ?? "the page";
       this.inputIn(task, `${kind === "key" ? "typing" : "a click"} in '${title}'`);
     }
@@ -525,6 +542,7 @@ export class Executor {
     else {
       task.interrupt = { kind: "pause", by: "input", why };
       this.revokeGrant(task);
+      task.wake?.();
     }
   }
 
@@ -549,8 +567,11 @@ export class Executor {
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to pause`);
     if (task.interrupt?.kind === "stop" || (by === "input" && task.interrupt?.by === "input")) return;
+    // The host's word that the user is typing or clicking is what a navigate step the user makes waits for.
+    if (by === "input" && task.waitingIn !== null) return;
     task.interrupt = { kind: "pause", by, why: takeOver ? "you took over" : by === "input" ? "your input" : "you paused it" };
     this.revokeGrant(task);
+    task.wake?.();
   }
 
   /** Ends a running task at its next step boundary, or a paused one now. What it wrote stays; undo restores it. */
@@ -569,6 +590,7 @@ export class Executor {
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to stop`);
     task.interrupt = { kind: "stop", by: "control", why: "you stopped it" };
     this.revokeGrant(task);
+    task.wake?.();
   }
 
   /**
@@ -592,6 +614,7 @@ export class Executor {
     if (task.finished !== null || task.interrupt?.kind === "stop") return;
     task.interrupt = { kind: "stop", by: "control", why: r.why, revoked: r };
     this.revokeGrant(task);
+    task.wake?.();
   }
 
   /**
@@ -925,9 +948,11 @@ export class Executor {
       if (end.kind === "valueEquals" && node.editable === true) return this.writeStep(task, i, w, node, "value", end.value, step);
       if (end.kind === "focused" && step.via === undefined) return this.writeStep(task, i, w, node, "focused", "", step);
     }
+    if (end.kind === "rowSelected" || end.kind === "itemOpened") return this.navigateStep(task, i, w, end, step);
     if (step.via === undefined) throw StepStop.stop("unreachable", `no means to reach '${step.says}': the target is not a field and the step names no press or URL`);
     if (end.kind === "fieldsRevealed" && step.via.kind !== "press") throw StepStop.stop("unreachable", `'${step.says}' reveals fields only through a press`);
     if (step.via.kind === "press") return this.pressStep(task, i, w, step.via.target, step);
+    if (step.via.kind === "navigate") throw StepStop.stop("unreachable", `'${step.says}' navigates, but its end state is not one a navigation reaches`);
     return this.urlStep(step.via.url);
   }
 
@@ -1215,6 +1240,69 @@ export class Executor {
     throw StepStop.handoff(`open ${url} yourself`);
   }
 
+  /**
+   * Slice 2: a row selected or an item opened, which did not hold when the step started (runStep checked). The row must
+   * still be the exact one the plan named. With actor "you" the user makes the transition: the executor waits for the end
+   * state (the weak form of itemOpened), acts on nothing and journals nothing. Caret's own selection and click are slice 2
+   * steps 3 and 4 (CU-COUNSEL-R2); until they land, a step asking Caret to make them is handed to the user.
+   */
+  private async navigateStep(task: Task, i: number, w: WindowState, end: Extract<EndState, { kind: "rowSelected" | "itemOpened" }>, step: Step): Promise<void> {
+    const via = step.via;
+    if (via?.kind !== "navigate") throw StepStop.stop("unreachable", `'${step.says}' names no navigation`);
+    await this.resolve(task, i, w, via.target, step.says);
+    const verb = via.capability === "openItem" ? "open" : "select";
+    if (via.actor === "caret") throw StepStop.handoff(`Caret does not ${verb} list rows itself yet; ${verb} it yourself`);
+    return this.waitForYou(task, i, w.window.windowId, end, step);
+  }
+
+  /**
+   * Waits up to WAIT_FOR_YOU_MS for the user to reach `end` in window `windowId`, checking again on every change the model
+   * records there (never a tight poll). A stop, pause or revoke ends the wait as it ends any step; the user's own input in
+   * that window does not, since it is what the step waits for. Past the limit the step is left as is, a hand-off. Once
+   * the end state holds, what the task expects of the window's fields is read afresh: the detail may have replaced them.
+   */
+  private async waitForYou(task: Task, i: number, windowId: string, end: Extract<EndState, { kind: "rowSelected" | "itemOpened" }>, step: Step): Promise<void> {
+    this.checkInterrupt(task);
+    this.progress(task, "acting", i, `waiting for you: ${step.says}`);
+    const limit = Date.now() + (this.deps.waitForYouMs ?? WAIT_FOR_YOU_MS);
+    task.waitingIn = windowId;
+    try {
+      for (;;) {
+        this.checkSession(task);
+        this.checkInterrupt(task);
+        const now = this.window(windowId);
+        if ([...now.nodes.values()].some((n) => n.role === "AXSheet")) throw StepStop.stop("sheet", `a sheet covers '${now.window.title}'`, "screen");
+        if (await this.holds(task, i, now, end)) break;
+        const left = limit - Date.now();
+        if (left <= 0) throw StepStop.handoff(`Caret waited ${waited(this.deps.waitForYouMs ?? WAIT_FOR_YOU_MS)} for this and left it as is: ${step.says}`);
+        await this.nextChange(task, windowId, left);
+      }
+    } finally {
+      task.waitingIn = null;
+    }
+    this.expectedFor(task, windowId).clear();
+    for (const [key, text] of editableValues(this.window(windowId))) this.expectedFor(task, windowId).set(key, text);
+    await this.verified(task, i, step);
+  }
+
+  /** Resolves on the next change the model records in `windowId` (or a window closing), an interrupt, or after `ms`. */
+  private nextChange(task: Task, windowId: string, ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let timer: NodeJS.Timeout | undefined;
+      const done = (): void => {
+        off();
+        clearTimeout(timer);
+        task.wake = null;
+        resolve();
+      };
+      const off = this.deps.onChanges((cs) => {
+        if (cs.some((c) => c.windowId === windowId)) done();
+      });
+      timer = setTimeout(done, ms);
+      task.wake = done;
+    });
+  }
+
   private async calendarStep(task: Task, i: number, end: Extract<EndState, { kind: "calendarEvent" }>): Promise<void> {
     try {
       await this.calendarAct(task, i, end);
@@ -1389,6 +1477,8 @@ export class Executor {
       readerId: r.readerId,
       startedAt: r.startedAt,
       journaled: true,
+      waitingIn: null,
+      wake: null,
     });
   }
 
@@ -1574,6 +1664,12 @@ export class Executor {
       case "fileAttached":
         // A file input's contents are not in the walk: the attach runs, and the page's own file list verifies it.
         return false;
+      case "rowSelected":
+        // The exact row and container, by key and role; a look-alike row is never the one the plan named.
+        return end.target.key !== undefined && end.target.role !== undefined && end.container.key !== undefined && rowSelected(w, end.container.key, end.target.key, end.target.role);
+      case "itemOpened":
+        // The weak form: before a step acts, and while the user makes the transition (goals/identity.ts).
+        return itemOpened(w, end.identity);
       case "windowFocused":
         // The window must be the app's focused one and the app the one the user is in: a request walk
         // marks a background app's own focused window as focused, which alone would skip the raise.
@@ -1926,6 +2022,13 @@ function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult):
 function names(xs: readonly string[]): string {
   if (xs.length <= 2) return xs.join(" and ");
   return xs.every((x) => x.startsWith("'")) ? `${xs.length} controls` : `${xs.length} fields`;
+}
+
+/** A wait's length in words: "2 minutes", "30 seconds", "less than a second". */
+function waited(ms: number): string {
+  if (ms >= 60_000) return `${Math.round(ms / 60_000)} minute${Math.round(ms / 60_000) === 1 ? "" : "s"}`;
+  if (ms >= 1_000) return `${Math.round(ms / 1_000)} seconds`;
+  return "less than a second";
 }
 
 /** A hand-off's words as a sentence starts. */

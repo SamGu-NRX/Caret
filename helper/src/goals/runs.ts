@@ -17,6 +17,10 @@
 // effect other than the predicted one revokes the task's grant and stops the goal. When a replanner is configured, the
 // goal is then offered again as a fresh plan built from the screen as it is now; it needs its own acceptance. Nothing
 // here persists: a helper that crashes leaves the executor's journal row (B23), and no goal resumes on its own.
+//
+// Slice 2: a goal whose program observes after a list navigation is never replanned. Once its navigation is verified,
+// the goal reads the window and replays the same program (goals/replay.ts); the steps after what already ran become
+// further segments of the same goal, each with its own acceptance. A stop ends such a goal with the rest left to the user.
 import type { SavedReader } from "../fill/alternate.ts";
 import { fieldFingerprint } from "../fill/ask-scope.ts";
 import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
@@ -37,7 +41,10 @@ import { fieldName } from "../planner/planner.ts";
 import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
-import { effectKey, proposedFor, segmentOf, type DonePress } from "./lower.ts";
+import { effectKey, MAX_SEGMENTS, proposedFor, segmentOf, type DonePress } from "./lower.ts";
+import { itemOpened, rowCells } from "./identity.ts";
+import { retainedView, type ContinueResult, type ReplayState } from "./replay.ts";
+import type { GoalInventory } from "./plan.ts";
 import { contractStale, ContractError, exemptRefusal, guardFor, mintExempt, type Proposed, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
 import { codeGate } from "./gates.ts";
 
@@ -83,7 +90,8 @@ export interface GoalCursor {
   bindings: Record<string, { windowId: string | null; key: string; role: string; label: string }>;
 }
 
-type State = "awaiting" | "running" | "finished" | "stopped";
+/** `observing`: a navigation was verified and the goal is reading the window and replaying its program; nothing runs. */
+type State = "awaiting" | "running" | "observing" | "finished" | "stopped";
 
 interface Run {
   /** W2: each write step's write-contract mint, by `${segment}:${ref}` (GoalRuns.propose; edit replaces one). */
@@ -126,6 +134,10 @@ interface Run {
   stepMap: number[];
   /** P3: the file the acceptance confirmed, for the attach step at this index in the goal. */
   confirmed: { step: number; path: string } | null;
+  /** Slice 2: what a goal that observes replays from (goals/replay.ts); null for every other goal. */
+  replay: ReplayState | null;
+  /** Slice 2: the warnings a replay's lowering added, shown with the first segment it added (by that segment's index). */
+  laterWarnings: Map<number, string[]>;
 }
 
 /**
@@ -222,6 +234,11 @@ export interface GoalRunDeps {
   sourceModel?: (goalId: string) => ScreenModel;
   /** I6: a goal ended (finished or stopped), or a plan made for it was never offered: what it held for its plan goes. */
   ended?: (goalId: string) => void;
+  /**
+   * Slice 2: reads `windowId` after a goal's verified navigation and replays its program there (goals/replay.ts
+   * continueGoal), updating `state`. Absent: a goal that observes ends after its navigation, the rest left to the user.
+   */
+  replay?: (r: { goalId: string; instruction: string; state: ReplayState; windowId: string; inventory: GoalInventory; scopes?: ScopeSet }) => Promise<ContinueResult>;
 }
 
 const SAYS: Record<GoalStopReason, string> = {
@@ -286,6 +303,16 @@ export class GoalRuns {
     return r === undefined ? null : { state: r.state, cursor: structuredClone(r.cursor) };
   }
 
+  /**
+   * Slice 2, for evaluations: how far a goal that observes has gone (observations taken, Jev choices and steps made
+   * across its runs, whether a run waits on another observe); null for any other goal.
+   */
+  replayCounts(goalId: string): { observations: number; choices: number; newChoices: number; newSteps: number; pending: boolean } | null {
+    const r = this.runs.get(goalId)?.replay;
+    if (r === undefined || r === null) return null;
+    return { observations: r.record.observations.length, choices: r.record.choices.length, newChoices: r.used.newChoices, newSteps: r.used.newSteps, pending: r.pending !== null };
+  }
+
   /** A copy of the plan a goal was offered with, for evaluations (P2's disagreement report); a copy is never offered. */
   planOf(goalId: string): GoalPlan | null {
     const r = this.runs.get(goalId);
@@ -293,8 +320,10 @@ export class GoalRuns {
   }
 
   /** Offers a goal's first segment for acceptance, as the reply to `requestId` (or as a fresh plan replacing another). */
-  propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[]; owed: LeftItem[] } | null = null): GoalProgress {
-    if (this.runs.has(given.goalId)) throw new Error(`goal ${given.goalId} already exists`);
+  propose(offered: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[]; owed: LeftItem[] } | null = null): GoalProgress {
+    if (this.runs.has(offered.goalId)) throw new Error(`goal ${offered.goalId} already exists`);
+    // Slice 2: the replay state is the goal's by reference (a ledger, the program's source): never cloned with the plan.
+    const { replay, ...given } = offered;
     // I6: a hand-off row is a page plan's, and the goal's very last step, after its attach rows: it is never run, and the
     // executor plan stops before it (lower.ts executorPlan).
     const all = given.segments.flatMap((s) => s.steps);
@@ -303,16 +332,7 @@ export class GoalRuns {
     // Only lowering's gates (G2, gates.ts) mark a write: a plan built any other way is a bug, never offered.
     // A "derived" step skipped Jev, so it must be the very object lowering marked (gates.ts isDerived), not a copy.
     // A "fill" step (P2) carries fill's own mint for its target, which the write contract check below requires (W2).
-    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && (s.gate === null || (s.gate === "derived" && !isDerived(s)) || (s.gate === "fill" && s.checked?.verdict.by !== "verifier" && s.checked?.verdict.by !== "exempt")));
-    if (unchecked !== undefined) throw new Error(`goal ${given.goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
-    // W2: every write carries the write contract's mint for exactly what it writes, in exactly its target
-    // (fill/contract.ts); checked here, on the very objects lowering built, before the run keeps its own copy.
-    // The mints themselves, kept by segment and ref: the run's own copy below is a structuredClone, which carries none,
-    // so acceptance and the executor's guard read these (W2 review: what runs is checked against the very mint).
-    const mints = new Map<string, CheckedValue>();
-    for (const seg of given.segments) for (const s of seg.steps) if (s.kind === "write" && s.row !== true) mints.set(`${seg.index}:${s.ref}`, requireChecked(s.checked, s.writes ?? "", s.target.key, s.target.domain.kind === "window" ? s.target.domain.windowId : "", `goal ${given.goalId}: step ${s.ref}`));
-    // I2 ruling A: and every attachment carries its "attachment" mint (goals/lower.ts), for what its step wants.
-    for (const seg of given.segments) for (const s of seg.steps) if (s.kind === "attach") mints.set(`${seg.index}:${s.ref}`, requireChecked(s.checked, s.checked?.text ?? "", s.target.key, s.target.domain.kind === "window" ? s.target.domain.windowId : "", `goal ${given.goalId}: step ${s.ref}`));
+    const mints = mintsOf(given.goalId, given.segments);
     // P3: an attach step is a page plan's, into a page's file control, with the file its row offers, after every other
     // step of its segment (runs drop the ones the acceptance gives no file, which must hold up nothing after them).
     for (const seg of given.segments) {
@@ -346,6 +366,8 @@ export class GoalRuns {
       stepMap: [],
       confirmed: null,
       mints,
+      replay: replay ?? null,
+      laterWarnings: new Map(),
     };
     this.runs.set(plan.goalId, run);
     return this.segmentMessage(run, replaces === null ? undefined : "freshPlan");
@@ -524,6 +546,13 @@ export class GoalRuns {
       for (const s of seg.steps) {
         // I6: a hand-off row names what the user does next; nothing of it runs, so nothing of it is checked.
         if (s.row === true) continue;
+        // Slice 2: the row the preview named, with the cells it showed, unless the item it opens is already on screen.
+        if (s.kind === "navigate") {
+          const n = w.nodes.get(s.target.key);
+          const same = n !== undefined && n.role === s.target.role && sameCells(rowCells(w, n.key), s.target.row?.cells ?? []);
+          if (!same && !(s.nav?.capability === "openItem" && itemOpened(w, s.nav.identity))) return { reason: "targetChanged", says: `the row '${s.target.label}' in '${d.title}' changed or is gone since Caret planned this` };
+          continue;
+        }
         const n = w.nodes.get(s.target.key);
         // A button is the control its label names (the boundary checks the label again right before the press), and so is
         // a file control (P3 review: a page that relabels it to another upload question is not the row the user saw).
@@ -549,7 +578,7 @@ export class GoalRuns {
       // A To field's address must still be the From of the message the reply answers, as the windows read now (B30).
       if (s.to) {
         const reply = s.target.domain.kind === "window" ? this.deps.model.windows.get(s.target.domain.windowId) : undefined;
-        const src = v.source === null ? undefined : this.deps.model.windows.get(v.source.windowId);
+        const src = v.source === null ? undefined : this.sourcesOf(run).windows.get(v.source.windowId);
         if (reply === undefined || src === undefined || !senderOf(reply.window.title, basisText(src), v.text)) return { reason: "sourceChanged", says: `'${v.text}' is no longer the sender of the message you're answering` };
       }
       if (v.memory !== null && !this.deps.memoryHolds(v.memory, v.text)) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
@@ -576,9 +605,13 @@ export class GoalRuns {
     return null;
   }
 
-  /** The model a goal's sources are read from: the tab text its plan read (I6), else the screen. */
+  /**
+   * The model a goal's sources are read from: the tab text its plan read (I6), else the screen; with, for a goal that
+   * observes, each observation as it was read (goals/replay.ts retainedView).
+   */
   private sourcesOf(run: Run): ScreenModel {
-    return this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model;
+    const base = this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model;
+    return run.replay === null ? base : retainedView(base, run.replay.retained);
   }
 
   /**
@@ -590,7 +623,7 @@ export class GoalRuns {
     const src = v.source;
     if (src === null) return true;
     // I6: a value from the tab the user left is shown only while this goal still holds that tab's text.
-    const sw = (this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model).windows.get(src.windowId);
+    const sw = this.sourcesOf(run).windows.get(src.windowId);
     if (sw === undefined) return false;
     // A fill value always carries its provenance (goals/page-planner.ts); one without is not shown.
     if (v.fill !== undefined) return v.provenance !== undefined && provenanceStale(this.sourcesOf(run), v.provenance) === null;
@@ -611,7 +644,7 @@ export class GoalRuns {
     const moved = { reason: "sourceChanged" as const, says: `what Caret's draft for '${s.target.label}' was based on changed` };
     const windows: { title: string; text: string }[] = [];
     for (const id of d.windows) {
-      const w = this.deps.model.windows.get(id);
+      const w = this.sourcesOf(run).windows.get(id);
       if (w === undefined) return moved;
       windows.push(basisText(w));
     }
@@ -657,6 +690,12 @@ export class GoalRuns {
       if (s?.kind === "handoff") {
         this.receipt(run, seg, s, "handoff");
         this.finish(run, "handoff");
+      } else if (s?.kind === "navigate") {
+        // Slice 2: the navigation was not made (the wait for the user ran out, or Caret may not make it): nothing more
+        // runs, and no fresh plan is offered, since the steps after it depend on what it would have shown.
+        this.endTask(run);
+        this.receipt(run, seg, s, "handoff");
+        this.stop(run, "handedOff", s.index, `${m.detail ?? "Caret could not make this step"}. The rest is yours`);
       } else if (s?.kind === "attach") {
         // P3: an attach the page engine refused (the confirmation expired, the file changed since): every write before
         // it ran, and attach steps come last, so the segment ends here as one whose attach is the user's.
@@ -697,6 +736,13 @@ export class GoalRuns {
 
   private segmentDone(run: Run, seg: GoalSegment): void {
     this.endTask(run);
+    // Slice 2: a verified navigation the program observes after: read the window and replay before anything else.
+    const lastStep = seg.steps.filter((x) => x.row !== true).at(-1);
+    if (lastStep?.kind === "navigate" && run.replay?.pending?.after === lastStep.ref && seg.domain.kind === "window") {
+      run.state = "observing";
+      this.track(this.observeAndReplay(run, seg.domain.windowId));
+      return;
+    }
     const next = run.plan.segments[seg.index + 1];
     if (next !== undefined) {
       run.cursor.segment = next.index;
@@ -726,6 +772,75 @@ export class GoalRuns {
       return;
     }
     this.finish(run, "done");
+  }
+
+  /**
+   * Slice 2: after a verified navigation, the window is read into the next observation and the program replayed on its
+   * record (deps.replay). The steps after what already ran become further segments of this goal, the first previewed
+   * for its own acceptance; nothing is dispatched here. A user's stop (userStop), a host leaving or a reader restart
+   * while this runs ends the goal and no preview follows. A refused replay (another observe past the goal's limit, a
+   * divergence, a lowering refusal) ends the goal with the rest left to the user and dispatches nothing more.
+   */
+  private async observeAndReplay(run: Run, windowId: string): Promise<void> {
+    const state = run.replay;
+    const replay = this.deps.replay;
+    if (state === null || replay === undefined) return this.stop(run, "handedOff", null, "Caret cannot read what this navigation shows here. The rest is yours");
+    await this.deps.walk?.(windowId).catch(() => undefined);
+    if (run.state !== "observing") return;
+    let r: ContinueResult;
+    try {
+      r = await replay({ goalId: run.plan.goalId, instruction: run.plan.instruction, state, windowId, inventory: run.plan.inventory, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
+    } catch (e) {
+      r = { ok: false, kind: "fault", says: "something went wrong", detail: e instanceof Error ? e.message : String(e) };
+    }
+    if (run.state !== "observing") return;
+    if (!r.ok) return this.stop(run, r.kind === "observeBudget" ? "refused" : "error", null, `${r.says}. The rest is yours`);
+    if (r.plan === null) {
+      run.plan = { ...run.plan, inventory: r.inventory };
+      return this.finish(run, "done");
+    }
+    const base = run.plan.segments.length;
+    if (base + r.plan.segments.length > MAX_SEGMENTS) return this.stop(run, "refused", null, `the rest of this goal needs more than ${MAX_SEGMENTS} acceptances in all. The rest is yours`);
+    const offset = run.plan.segments.flatMap((x) => x.steps).length;
+    const warnings = [...run.plan.warnings, ...r.plan.warnings];
+    let added: GoalSegment[];
+    try {
+      // In place: the fragment is this replay's own, and a derived step must stay the very object lowering marked (gates.ts isDerived).
+      for (const g of r.plan.segments) for (const x of g.steps) x.index += offset;
+      added = r.plan.segments.map((g) => segmentOf(run.plan.programHash, { index: base + g.index, domain: g.domain, reason: g.reason, steps: g.steps }, warnings));
+      for (const [k, v] of mintsOf(run.plan.goalId, added)) run.mints.set(k, v);
+    } catch (e) {
+      return this.stop(run, "error", null, `${SAYS.error}: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}. The rest is yours`);
+    }
+    for (const g of added) deepFreeze(g);
+    const segments = [...run.plan.segments, ...added];
+    run.plan = { ...run.plan, inventory: r.inventory, segments, warnings, left: [...run.plan.left, ...r.plan.left], digest: goalDigest(run.plan.programHash, segments.map((x) => x.digest), warnings) };
+    run.owed = obligations(run.plan, run.owed);
+    for (const t of r.inventory.targets.values()) run.cursor.bindings[t.ref] = { windowId: t.domain.kind === "window" ? t.domain.windowId : null, key: t.key, role: t.role, label: t.label };
+    for (const [id, rev] of r.inventory.revisions) run.cursor.sourceRevisions[id] = rev;
+    run.cursor.planDigest = run.plan.digest;
+    run.cursor.segment = base;
+    run.laterWarnings.set(base, r.plan.warnings);
+    run.state = "awaiting";
+    run.expires = this.deps.now() + ACCEPT_MS;
+    this.deps.publish(this.segmentMessage(run));
+  }
+
+  /**
+   * Slice 2: the user stopped a goal's segment task. A task still running stops through the executor, as before. One that
+   * already ended while the goal reads and replays, or waits for the next acceptance, ends the goal: no further preview.
+   * Returns whether it ended a goal here.
+   */
+  userStop(taskId: string): boolean {
+    for (const run of this.runs.values()) {
+      const ran = [...run.accepted].some((i) => segmentTaskId(run.plan.goalId, i) === taskId);
+      if (!ran || run.task?.id === taskId) continue;
+      if (run.state === "observing" || run.state === "awaiting") {
+        this.stop(run, "you", null, SAYS.you);
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -997,7 +1112,8 @@ export class GoalRuns {
    */
   private async fresh(run: Run, why: GoalStopReason, reason: "afterReveal" | "freshPlan", revealed?: readonly string[]): Promise<GoalProgress | null> {
     const replan = this.deps.replan;
-    if (replan === undefined) return null;
+    // Slice 2: a goal that observes is never replanned, which would call the writer again; it ends with the rest left.
+    if (replan === undefined || run.replay !== null) return null;
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")];
     // Every write this goal meant and has not made goes with it: the fresh plan may leave some out, and is not done then.
     const unmade = run.plan.segments.flatMap((x) => x.steps).flatMap((x): LeftItem[] => {
@@ -1042,8 +1158,8 @@ export class GoalRuns {
       digest: seg.digest,
       expires: run.expires,
       where: d.kind === "window" ? { kind: "window", app: d.appName, title: d.title } : { kind: "calendar", calendar: d.calendar },
-      steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }), tier: tierOf(s), ...(s.kind === "attach" && s.file !== undefined ? { file: s.file } : {}) })),
-      warnings: run.cursor.segment === 0 ? run.plan.warnings : [],
+      steps: seg.steps.map((s) => ({ index: s.index, kind: wireKind(s), says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }), tier: tierOf(s), ...(s.kind === "attach" && s.file !== undefined ? { file: s.file } : {}) })),
+      warnings: run.cursor.segment === 0 ? run.plan.warnings : (run.laterWarnings.get(run.cursor.segment) ?? []),
       ...pageOf(this.deps.model, run.plan, seg),
     };
   }
@@ -1215,7 +1331,7 @@ export class GoalRuns {
 
   /** The host session a goal was offered to left: its previews end. A running segment is revoked by the helper's own binding. */
   hostGone(session: string): void {
-    for (const run of this.runs.values()) if (run.session === session && run.state === "awaiting") this.stop(run, "hostGone", null, SAYS.hostGone);
+    for (const run of this.runs.values()) if (run.session === session && (run.state === "awaiting" || run.state === "observing")) this.stop(run, "hostGone", null, SAYS.hostGone);
     for (const [windowId, c] of [...this.carries]) if (c.session === session) this.carries.delete(windowId);
     this.goneHosts.add(session);
     if (this.goneHosts.size > 256) this.goneHosts.delete(this.goneHosts.keys().next().value as string);
@@ -1228,7 +1344,7 @@ export class GoalRuns {
 
   /** A new reader numbers windows from scratch: no preview of the old session can run. */
   readerRestarted(): void {
-    for (const run of this.runs.values()) if (run.state === "awaiting") this.stop(run, "readerRestarted", null, `${SAYS.readerRestarted}, so the plan's windows no longer apply`);
+    for (const run of this.runs.values()) if (run.state === "awaiting" || run.state === "observing") this.stop(run, "readerRestarted", null, `${SAYS.readerRestarted}, so the plan's windows no longer apply`);
     this.carries.clear();
     this.carried.clear();
   }
@@ -1289,6 +1405,25 @@ function obligations(plan: GoalPlan, carried: readonly LeftItem[]): LeftItem[] {
   return out;
 }
 
+/**
+ * The write-contract mints of `segments`, by `${segment}:${ref}`, after the checks every offered segment must pass, a
+ * replay's included. Only lowering's gates (G2, gates.ts) mark a write: a plan built any other way is a bug, never
+ * offered. A "derived" step skipped Jev, so it must be the very object lowering marked (gates.ts isDerived), not a copy.
+ * A "fill" step (P2) carries fill's own mint for its target. W2: every write carries the write contract's mint for
+ * exactly what it writes, in exactly its target (fill/contract.ts), checked on the very objects lowering built, before
+ * the run keeps its own copy: that copy is a structuredClone, which carries none, so acceptance and the executor's guard
+ * read these (W2 review: what runs is checked against the very mint). I2 ruling A: every attachment carries its
+ * "attachment" mint too.
+ */
+function mintsOf(goalId: string, segments: readonly GoalSegment[]): Map<string, CheckedValue> {
+  const unchecked = segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && (s.gate === null || (s.gate === "derived" && !isDerived(s)) || (s.gate === "fill" && s.checked?.verdict.by !== "verifier" && s.checked?.verdict.by !== "exempt")));
+  if (unchecked !== undefined) throw new Error(`goal ${goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
+  const mints = new Map<string, CheckedValue>();
+  for (const seg of segments) for (const s of seg.steps) if (s.kind === "write" && s.row !== true) mints.set(`${seg.index}:${s.ref}`, requireChecked(s.checked, s.writes ?? "", s.target.key, s.target.domain.kind === "window" ? s.target.domain.windowId : "", `goal ${goalId}: step ${s.ref}`));
+  for (const seg of segments) for (const s of seg.steps) if (s.kind === "attach") mints.set(`${seg.index}:${s.ref}`, requireChecked(s.checked, s.checked?.text ?? "", s.target.key, s.target.domain.kind === "window" ? s.target.domain.windowId : "", `goal ${goalId}: step ${s.ref}`));
+  return mints;
+}
+
 function deepFreeze<T>(v: T): T {
   if (v !== null && typeof v === "object" && !Object.isFrozen(v)) {
     Object.freeze(v);
@@ -1309,8 +1444,24 @@ export function tierOf(s: Pick<GoalStep, "kind" | "target">): NonNullable<GoalSt
     case "attach":
       return "attach";
     case "press":
+    case "navigate":
       return "navigate";
     case "handoff":
       return s.target.control === "button" ? "yours" : "write";
   }
+}
+
+/**
+ * A step's kind on the wire (protocol GoalStepView.kind), whose enum predates slice 2 and which the host decodes strictly
+ * (GoalWire.swift Step.Kind): a navigation the user makes is sent as a hand-off and one Caret makes as a press, both in
+ * the navigate tier, so a host without a navigate kind still draws the row in the right tier.
+ */
+function wireKind(s: Pick<GoalStep, "kind" | "nav">): GoalStepView["kind"] {
+  if (s.kind !== "navigate") return s.kind;
+  return s.nav?.actor === "caret" ? "press" : "handoff";
+}
+
+/** Whether a row's cells as read now are the cells it was frozen with, compared as identity reads them. */
+function sameCells(now: readonly string[], frozen: readonly string[]): boolean {
+  return now.length === frozen.length && now.every((c, i) => c.replace(/\s+/gu, " ").trim() === (frozen[i] ?? "").replace(/\s+/gu, " ").trim());
 }

@@ -104,6 +104,7 @@ import { SavedFiles, type AttachedFile } from "./goals/saved-files.ts";
 import { readyOnLoad } from "./offers/ready-on-load.ts";
 import { GoalRuns, type Replan } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
+import { continueGoal } from "./goals/replay.ts";
 import { continuationScope, fileControls, planPage } from "./goals/page-planner.ts";
 import { GoalError, type DonePress } from "./goals/lower.ts";
 import type { AttachOffer, GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts";
@@ -232,6 +233,8 @@ export interface HelperOptions {
   watchMemory?: boolean;
   /** Where runs are saved before each act, for recovery after a crash (B23). Defaults to one beside `store`'s database. */
   journal?: RecoveryJournal;
+  /** Overrides the executor's WAIT_FOR_YOU_MS (a navigation the user makes), for tests that let the wait run out. */
+  waitForYouMs?: number;
   /**
    * Runs the read-only audit beside the helper (src/audit.ts). Only with shadow mode and Jev off,
    * since the audit's numbers are about what the helper would have done, not what it did.
@@ -611,6 +614,7 @@ export class Helper {
       reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
       calendar: opts.calendar === "reader" ? new ReaderCalendar(opts.readerLink ?? (this.socketLink as SocketReaderLink)) : (opts.calendar ?? null),
       askJev: this.ask,
+      ...(opts.waitForYouMs === undefined ? {} : { waitForYouMs: opts.waitForYouMs }),
       publish: (m) => {
         this.publish(m);
         this.goals.onProgress(m);
@@ -683,6 +687,22 @@ export class Helper {
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
       replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed, r.scopes) : this.replanPage(r.goalId, r.instruction, r.page, r.owed, r)),
+      // Slice 2: a goal that observes goes on by replay, never by another writer call (goals/replay.ts).
+      replay: async (r) => {
+        const out = await continueGoal(this.model, {
+          ...r,
+          askJev: this.ask,
+          clock: macClock(new Date(this.now())),
+          now: this.now(),
+          readerSession: this.readerSession,
+          ...(this.opts.pageDocument === undefined ? {} : { pageDocument: this.opts.pageDocument, documentOf: this.opts.pageDocument }),
+        });
+        if (!out.ok) {
+          this.opts.store.count(`goal.replay_${out.kind}`, 1);
+          this.opts.warn?.(`goal ${r.goalId}: replay refused: ${out.kind}: ${out.detail.slice(0, 300)}`);
+        }
+        return out;
+      },
       // P3: the file the user confirmed in a preview, read once and bound to that attach step's field for that task.
       confirmFile: (taskId, path, windowId, key) => this.files.confirm(taskId, path, ConfirmedFiles.target(windowId, key)),
       forgetFile: (taskId) => this.files.forget(taskId),
@@ -2695,6 +2715,9 @@ export class Helper {
           this.executor.pause(m.taskId, m.action === "takeOver", m.action === "pause" ? m.reason : undefined);
           return null;
         case "stop":
+          // Slice 2: a goal's segment that already ended, while the goal reads and replays or waits for the next
+          // acceptance: the stop ends the goal, and no further preview is shown.
+          if (this.goals.userStop(m.taskId)) return null;
           this.executor.stop(m.taskId);
           return null;
       }

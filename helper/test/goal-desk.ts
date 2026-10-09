@@ -2,6 +2,7 @@
 // answering the executor's verbs as caret-screen does (recheck the element, act, send a fresh snapshot), under the
 // reader's act-grant rules and its press table. Buttons run handlers that change their window. Every name, number and
 // address is invented.
+import { randomInt } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -265,11 +266,16 @@ export function cannedProgram(snapshots: readonly PlanningSnapshot[], steps: rea
   return `async function main(caret: CaretPlanAPI): Promise<PlanRef> {\n${reads.join("\n")}\n${made.join("\n")}\n  return caret.plan({ basedOn: ${JSON.stringify(snapshots[0]?.snapshot ?? "s1")} as SnapshotRef, steps: [${steps.map((_, i) => `s${i}`).join(", ")}] });\n}`;
 }
 
+/** Slice 2: a program written out whole, for plans whose later refs exist only once an observe returns them. */
+export interface SourceScript {
+  source: string;
+}
+
 /**
  * A WriterPort that answers each goal request with the next script's program over the snapshots it was sent, and
  * records each request's snapshots. An empty queue answers with no program.
  */
-export function cannedGoalWriter(scripts: CannedStep[][]): WriterPort & { requests: PlanningSnapshot[][] } {
+export function cannedGoalWriter(scripts: (CannedStep[] | SourceScript)[]): WriterPort & { requests: PlanningSnapshot[][] } {
   const requests: PlanningSnapshot[][] = [];
   return {
     route: FAKE_WRITER_ROUTE,
@@ -278,7 +284,7 @@ export function cannedGoalWriter(scripts: CannedStep[][]): WriterPort & { reques
       const input = req.input as unknown as { snapshots: PlanningSnapshot[] };
       requests.push(input.snapshots);
       const script = scripts.shift();
-      const program = script === undefined ? null : cannedProgram(input.snapshots, script);
+      const program = script === undefined ? null : "source" in script ? script.source : cannedProgram(input.snapshots, script);
       return { model: "canned", provider: "canned", output: { program, reply: program ?? "" }, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
     },
   };
@@ -352,7 +358,7 @@ export interface GoalScene {
 }
 
 export function goalScene(o: {
-  scripts: CannedStep[][];
+  scripts: (CannedStep[] | SourceScript)[];
   windows: DeskWindow[];
   pageDocument?: (windowId: string) => string | null;
   userWindow?: string;
@@ -366,6 +372,8 @@ export function goalScene(o: {
   calendar?: boolean;
   /** L1: the local model that writes drafts' words; the program's text by default. */
   drafter?: LocalModelPort;
+  /** Slice 2: how long a navigation the user makes may take (Executor WAIT_FOR_YOU_MS by default). */
+  waitForYouMs?: number;
 }): GoalScene {
   const dir = mkdtempSync(join(tmpdir(), "caret-goal-"));
   const store = new Store(join(dir, "data"));
@@ -386,6 +394,7 @@ export function goalScene(o: {
     ...(o.calendar === false ? {} : { calendar }),
     writer: o.writer === null ? null : (o.writer ?? writer),
     ...(o.drafter === undefined ? {} : { drafter: o.drafter }),
+    ...(o.waitForYouMs === undefined ? {} : { waitForYouMs: o.waitForYouMs }),
     now: () => desk.at,
     publish: (m) => {
       published.push(m);
@@ -432,4 +441,115 @@ export function goalScene(o: {
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+// MARK: - slice 2: a mailbox to navigate
+
+/** One message of the mailbox fixtures. Every name, address and code is invented. */
+export interface DeskMessage {
+  id: string;
+  sender: string;
+  subject: string;
+  time: string;
+  from: string;
+  body: string[];
+}
+
+/** An uppercase six-character code, new each call, so a test that checks for it cannot pass on a remembered value. */
+export function confirmationCode(): string {
+  const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return Array.from({ length: 6 }, () => letters[randomInt(letters.length)]).join("");
+}
+
+/**
+ * Six messages: Kayak's and Dana's both titled "Flight itinerary", a decoy "Flight itinerary (old)" from Dana carrying
+ * another code, and one timed "3m ago". Kayak's message holds `code`; the decoy holds `decoy`.
+ */
+export function mailMessages(code: string, decoy: string): DeskMessage[] {
+  return [
+    { id: "kayak", sender: "Kayak", subject: "Flight itinerary", time: "3m ago", from: "Kayak <no-reply@kayak.example>", body: ["Your flight to SFO departs Oct 14 at 7:05 AM.", `Confirmation number: ${code}`] },
+    { id: "dana", sender: "Dana Whitfield", subject: "Flight itinerary", time: "9:41 AM", from: "Dana Whitfield <dana.whitfield@example.com>", body: ["Could you send me the confirmation number for the SFO flight?"] },
+    { id: "dana-old", sender: "Dana Whitfield", subject: "Flight itinerary (old)", time: "Oct 2", from: "Dana Whitfield <dana.whitfield@example.com>", body: ["The booking we cancelled, for your records.", `Confirmation number: ${decoy}`] },
+    { id: "priya", sender: "Priya Raman", subject: "Desk lamp order", time: "Yesterday", from: "Priya Raman <priya.raman@northwind.example>", body: ["The lamp arrived with a cracked base."] },
+    { id: "support", sender: "Northwind Support", subject: "Case 4471 update", time: "Mon", from: "Northwind Support <help@northwind.example>", body: ["We received your case."] },
+    { id: "lena", sender: "Lena Ortiz", subject: "Lunch on Friday?", time: "Sep 28", from: "Lena Ortiz <lena.ortiz@example.com>", body: ["Are you free for lunch on Friday?"] },
+  ];
+}
+
+export const MAILBOX: AppRef = { pid: 6262, bundleId: "dev.caret.mailbox", name: "Mailbox Fixture" };
+const mk = (s: string): string => `${MAILBOX.bundleId}/standard/${s}`;
+export const mailboxRowKey = (id: string): string => mk(`table:messages/row:${id}`);
+export const MAILBOX_TABLE = mk("table:messages~0");
+export const MAILBOX_REPLY = mk("group:message/textarea:reply~0");
+
+/**
+ * The native Mailbox window: an AXTable of the messages, each row with sender, subject and time cells, and a detail group
+ * showing the selected message's From, Subject and body, with a Reply text area and a Send button (which only a person
+ * presses). `selected` names the open message, if any.
+ */
+export function mailboxWindow(messages: readonly DeskMessage[], selected: string | null = null): DeskWindow {
+  const nodes: Node[] = [{ key: MAILBOX_TABLE, parent: null, role: "AXTable", label: "Messages" }];
+  for (const m of messages) {
+    const row = mailboxRowKey(m.id);
+    nodes.push({ key: row, parent: MAILBOX_TABLE, role: "AXRow", ...(m.id === selected ? { states: ["selected" as const] } : {}) });
+    [m.sender, m.subject, m.time].forEach((c, i) => {
+      nodes.push({ key: `${row}/cell~${i}`, parent: row, role: "AXCell" });
+      nodes.push({ key: `${row}/cell~${i}/statictext`, parent: `${row}/cell~${i}`, role: "AXStaticText", label: c });
+    });
+  }
+  const group = mk("group:message~0");
+  nodes.push({ key: group, parent: null, role: "AXGroup", label: "Message" });
+  const open = messages.find((m) => m.id === selected);
+  if (open !== undefined) {
+    [`From: ${open.from}`, `Subject: ${open.subject}`, ...open.body].forEach((t, i) => nodes.push({ key: mk(`group:message/statictext:line ${i}~0`), parent: group, role: "AXStaticText", label: t }));
+  }
+  nodes.push({ key: MAILBOX_REPLY, parent: group, role: "AXTextArea", label: "Reply", editable: true }, { key: mk("group:message/button:send~0"), parent: group, role: "AXButton", label: "Send" });
+  return { windowId: "6262-1", app: MAILBOX, title: "Mailbox", nodes };
+}
+
+export const WEBMAIL: AppRef = { pid: 8282, bundleId: "com.google.Chrome", name: "Google Chrome" };
+export const WEBMAIL_ID = "page:e1:9";
+export const webmailRowKey = (id: string): string => `f0/row:${id}`;
+export const WEBMAIL_REPLY = "f0/textarea:reply~0";
+
+/**
+ * The Gmail-shaped page: a grid of rows (sender, subject, time), which opening a row replaces with that thread in the
+ * same document (a same-document history update), retitling the page; the thread has a reply area and Send. Below the
+ * list, a row-shaped submit button inside a form, labelled `negative`: the navigation negative, which must never be listed
+ * as a row.
+ */
+export function webmailWindow(messages: readonly DeskMessage[], open: string | null = null, o: { negative: string } = { negative: "Search flights" }): DeskWindow {
+  const thread = messages.find((m) => m.id === open);
+  const nodes: Node[] = [{ key: "f0", parent: null, role: "AXWebArea", label: "Mail" }];
+  if (thread === undefined) {
+    nodes.push({ key: "f0/grid:inbox~0", parent: "f0", role: "AXTable", label: "Inbox" });
+    for (const m of messages) {
+      const row = webmailRowKey(m.id);
+      nodes.push({ key: row, parent: "f0/grid:inbox~0", role: "AXRow" });
+      [m.sender, m.subject, m.time].forEach((c, i) => nodes.push({ key: `${row}/cell~${i}`, parent: row, role: "AXStaticText", label: c }));
+    }
+    nodes.push({ key: "f0/form:search~0", parent: "f0", role: "AXGroup", label: "Search" }, { key: "f0/form:search/button:search flights~0", parent: "f0/form:search~0", role: "AXButton", label: o.negative });
+  } else {
+    nodes.push({ key: "f0/heading:subject~0", parent: "f0", role: "AXHeading", label: thread.subject });
+    [`From: ${thread.from}`, ...thread.body].forEach((t, i) => nodes.push({ key: `f0/statictext:line ${i}~0`, parent: "f0", role: "AXStaticText", label: t }));
+    nodes.push({ key: WEBMAIL_REPLY, parent: "f0", role: "AXTextArea", label: "Reply", editable: true }, { key: "f0/button:send~0", parent: "f0", role: "AXButton", label: "Send" });
+  }
+  return { windowId: WEBMAIL_ID, app: WEBMAIL, title: thread === undefined ? "Inbox - Mail" : `${thread.subject} - Mail`, kind: "page", nodes };
+}
+
+/**
+ * The user opens a message in one of the mail fixtures (a click the desk applies as the app would): the native window
+ * selects the row and shows its detail, keeping what the reply area holds; the page shows the thread in place of the
+ * list. `messages` and the fixture builder are the window's own.
+ */
+export function userOpens(desk: GoalDesk, windowId: string, messages: readonly DeskMessage[], id: string): void {
+  const before = desk.windows.get(windowId);
+  if (before === undefined) throw new Error(`no window ${windowId}`);
+  const next = windowId === WEBMAIL_ID ? webmailWindow(messages, id) : mailboxWindow(messages, id);
+  if (windowId !== WEBMAIL_ID) {
+    const reply = before.nodes.find((n) => n.key === MAILBOX_REPLY)?.value;
+    const area = next.nodes.find((n) => n.key === MAILBOX_REPLY);
+    if (area !== undefined && reply !== undefined) area.value = reply;
+  }
+  desk.show(next);
 }

@@ -70,7 +70,7 @@ export function planUserMessage(input: PlanInput): string {
     focused: i === 0,
     title: s.title,
     snapshot: s.snapshot,
-    targets: s.targets.map((t) => ({ ref: t.ref, label: t.label, kind: t.kind, canFill: t.canFill, ...(t.options.length > 0 ? { options: t.options } : {}), ...(t.allowedPressEffects.length > 0 ? { allowedPressEffects: t.allowedPressEffects } : {}) })),
+    targets: s.targets.map((t) => ({ ref: t.ref, label: t.label, kind: t.kind, canFill: t.canFill, ...(t.options.length > 0 ? { options: t.options } : {}), ...(t.allowedPressEffects.length > 0 ? { allowedPressEffects: t.allowedPressEffects } : {}), ...((t.allowedNavigateEffects ?? []).length > 0 ? { allowedNavigateEffects: t.allowedNavigateEffects } : {}) })),
     values: s.values.map((v) => ({ ref: v.ref, display: v.display })),
     questions: s.questions,
   }));

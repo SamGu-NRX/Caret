@@ -1,4 +1,5 @@
 import { Disclosure, type Minted, type ModelText } from "../privacy/disclosure.ts";
+import type { ViewSpan } from "../privacy.ts";
 import { instructionForModel } from "../fill/redact.ts";
 import { redactWindow } from "../fill/redact.ts";
 // The frozen snapshots a goal program reads, and the bindings behind their refs (D2-06). Built from the screen model
@@ -18,7 +19,10 @@ import { frozenNotes, valueList, type Value } from "../planner/codeplan.ts";
 import { mintFieldName, writableFields } from "../planner/planner.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
-import { allowedEffects } from "./capabilities.ts";
+import { allowedEffects, allowedNavigateEffects } from "./capabilities.ts";
+import { containerOf, rowCellParts } from "./identity.ts";
+import { nodePart, wholePart } from "../privacy/ledger/source.ts";
+import { words } from "../fill/kinds.ts";
 import { markDerived } from "./gates.ts";
 import { owedFields, type OwedField } from "./left.ts";
 import { readableFields, savedValuesOf, type ReadableField } from "../fill/alternate.ts";
@@ -28,6 +32,18 @@ import type { GoalControl, GoalDomain, GoalInventory, ReadValue, TargetBinding, 
 export const MAX_GOAL_WINDOWS = 3;
 /** Buttons listed per window. Assumed: a form's own buttons, not a toolbar's. */
 const MAX_BUTTONS = 6;
+/**
+ * List rows listed per window (slice 2). Assumed: enough for the rows a mail list shows above the fold in the fixtures,
+ * and few enough that a full form, its buttons and the rows stay inside the goal shape's 40 targets (privacy/shapes.ts).
+ */
+const MAX_ROWS = 8;
+/** Roles of what holds a list's rows: a table, an outline, a list, a grid. */
+const ROW_CONTAINERS: ReadonlySet<string> = new Set(["AXTable", "AXOutline", "AXList", "AXGrid"]);
+/**
+ * A page row's kind as navVerdict reads it (an ARIA role), from the role the page engine projects it as. No page engine
+ * projects rows before slice 2 step 3; a page row until then has no qualification, so navVerdict leaves it to the user.
+ */
+const PAGE_ROW_KIND: Readonly<Record<string, string>> = { AXRow: "row", AXOption: "option", AXListItem: "listitem" };
 
 const digest = (s: string): string => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
@@ -36,7 +52,9 @@ const digest = (s: string): string => createHash("sha256").update(s).digest("hex
  */
 export function windowRevision(w: WindowState): string {
   w = redactWindow(w);
-  return digest(JSON.stringify([w.window.title, ...[...w.nodes.values()].map((n) => [n.key, n.role, n.label ?? "", n.value ?? "", n.editable === true])]));
+  // Slice 2: a selected node adds its selection, so a row selected between a preview and its Tab is another revision. A
+  // window with nothing selected hashes as it did before.
+  return digest(JSON.stringify([w.window.title, ...[...w.nodes.values()].map((n) => [n.key, n.role, n.label ?? "", n.value ?? "", n.editable === true, ...(n.states?.includes("selected") === true ? ["selected"] : [])])]));
 }
 
 /** Roles whose text is a message's own words, not a control's: what a message header is read from. */
@@ -141,13 +159,15 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
      * (PV2: located where it is cut), never the composed label, whose wording is Caret's. `said` mints the label, and
      * with it the binding's own label, which the gates name the target by (gates.ts).
      */
-    const bind = (b: Omit<TargetBinding, "ref" | "domain">, canFill: boolean, effects: string[], said: () => ModelText | null, cut: readonly string[] = [b.label]): void => {
-      if (!ledger.take(w, "descriptor", cut)) return;
+    const bind = (b: Omit<TargetBinding, "ref" | "domain">, canFill: boolean, effects: string[], said: () => ModelText | null, cut: readonly string[] = [b.label], nav: string[] | null = null, spans: readonly ViewSpan[] = []): { ref: string; label: ModelText } | null => {
+      if (!ledger.take(w, "descriptor", cut, spans)) return null;
       const label = said();
-      if (label === null) return;
+      if (label === null) return null;
       const ref = `t${++t}`;
       targets.set(ref, { ref, domain, ...b });
-      snapTargets.push({ ref: d.id(ref), label: d.slice(label, 200), kind: d.id(b.control), canFill, options: [], allowedPressEffects: effects.map((e) => d.id(e)) });
+      const shown = d.slice(label, 200);
+      snapTargets.push({ ref: d.id(ref), label: shown, kind: d.id(b.control), canFill, options: [], allowedPressEffects: effects.map((e) => d.id(e)), ...(nav === null ? {} : { allowedNavigateEffects: nav.map((e) => d.id(e)) }) });
+      return { ref, label: shown };
     };
     for (const f of writableFields(w)) {
       if ((f.node.value ?? "") !== "") continue;
@@ -175,6 +195,48 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
       buttons++;
       bind({ key: n.key, role: n.role, label, own: label, placeholder: null, control: "button", value: "", options: null }, false, allowedEffects({ label, role: n.role, windowKind: w.window.kind, bundleId: w.app.bundleId, page: domain.kind === "window" && domain.page }), () => d.descriptor(w, label));
     }
+    // Slice 2: list rows, each named by its cells, with the navigations navVerdict allows on it; and per list of two or
+    // more rows, one choice group whose options are those rows, labelled as their targets are, for choose(). A mail list
+    // is a conversation, of which one request may reveal under half (privacy.ts windowBudget), so the rows whose cells
+    // share a word with the instruction ("Dana", "Kayak") are offered to the ledger first, then the rest in order.
+    const page = domain.kind === "window" && domain.page;
+    const lists = new Map<string, { ref: string; label: ModelText }[]>();
+    const asked = new Set(words(o.instruction));
+    const rowKind = (n: Node): string | undefined => (page ? PAGE_ROW_KIND[n.role] : n.role === "AXRow" ? n.role : undefined);
+    const candidates = [...w.nodes.values()].flatMap((n, at) => {
+      const kind = rowKind(n);
+      if (kind === undefined || n.states?.includes("disabled")) return [];
+      const parts = rowCellParts(w, n.key);
+      const cells = parts.map((p) => p.raw.replace(/\s+/gu, " ").trim());
+      const score = new Set(cells.flatMap((c) => words(c)).filter((x) => asked.has(x))).size;
+      return cells.length === 0 ? [] : [{ n, kind, cells, parts, at, score }];
+    });
+    candidates.sort((a, b) => b.score - a.score || a.at - b.at);
+    let rows = 0;
+    for (const { n, kind, cells, parts } of candidates) {
+      if (rows >= MAX_ROWS) break;
+      const container = containerOf(w, n.key, ROW_CONTAINERS);
+      const label = cells.join(" · ");
+      const row = { cells, container: container === null ? null : { key: container.key, role: container.role }, selectable: false, inForm: null, href: null, kind };
+      const nav = allowedNavigateEffects({ kind, page, label, windowKind: w.window.kind, bundleId: w.app.bundleId, selectable: row.selectable, inForm: row.inForm, href: row.href });
+      if (nav.length === 0) continue;
+      // Each cell minted where it was read, so its charge is that node's text alone.
+      const at = parts.map((p) => wholePart(nodePart(p.key, p.part), p.raw));
+      const bound = bind({ key: n.key, role: n.role, label, own: label, placeholder: null, control: "row", value: "", options: null, row }, false, [], () => {
+        const minted = parts.map((p, k) => d.descriptor(w, p.raw, at[k])).filter((m): m is ModelText => m !== null);
+        return minted.length !== parts.length ? null : d.join(minted, d.own(" · "));
+      }, parts.map((p) => p.raw), nav, at.map((a) => ({ view: w, at: a })));
+      if (bound === null) continue;
+      rows++;
+      if (container !== null) lists.set(container.key, [...(lists.get(container.key) ?? []), bound]);
+    }
+    const questions: Minted<PlanningSnapshot>["questions"] = [];
+    for (const members of lists.values()) {
+      if (members.length < 2) continue;
+      const q = `q${questions.length + 1}`;
+      // Caret's own words only: a choose() request's question may carry no screen text (privacy/shapes.ts codemode.choice).
+      questions.push({ ref: d.id(`${snapshot}${q}`), text: d.own("Which row of this list does the goal mean?"), options: members.map((m, k) => ({ ref: d.id(`${snapshot}${q}o${k + 1}`), label: m.label })) });
+    }
     const own = i === 0 ? listed.filter((x) => x.window === null) : [];
     const fromHere = listed.filter((x) => x.window === w);
     const snapValues: Minted<PlanningSnapshot>["values"] = [];
@@ -183,7 +245,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
       values.set(b.ref, b);
       snapValues.push({ ref: d.id(b.ref), display: x.display, origin: mintOrigin(d, b.origin) });
     }
-    snapshots.push({ snapshot: d.id(snapshot), window: d.id(`w${i + 1}`), revision: d.id(revisions.get(w.window.windowId) ?? "none"), title: titleText, targets: snapTargets, values: snapValues, questions: [] });
+    snapshots.push({ snapshot: d.id(snapshot), window: d.id(`w${i + 1}`), revision: d.id(revisions.get(w.window.windowId) ?? "none"), title: titleText, targets: snapTargets, values: snapValues, questions });
   });
 
   // Source windows the goal does not act in, with their values and any event code finds in them.

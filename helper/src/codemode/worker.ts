@@ -8,7 +8,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import type { QuickJSContext, QuickJSDeferredPromise, QuickJSHandle, QuickJSRuntime } from "quickjs-emscripten-core";
 import { INITIAL_BYTES, newCappedModule } from "./quickjs.ts";
-import type { ChooseReply, ChooseRequest, ChoiceRecord, PlanStep, PlanningSnapshot, ProgramDraft, RefusalKind, RunStats, SandboxOutcome, WorkerInput } from "./types.ts";
+import { requestDigest, stepKey, type ChooseRequest, type ChoiceRecord, type HostReply, type ObserveRequest, type PendingObserve, type PlanStep, type PlanningSnapshot, type ProgramDraft, type RefusalKind, type RunStats, type SandboxOutcome, type WorkerInput } from "./types.ts";
 
 /** A step as an API call describes it, before the registry gives it a ref. */
 type StepBody = { [K in PlanStep["kind"]]: Omit<Extract<PlanStep, { kind: K }>, "ref"> }[PlanStep["kind"]];
@@ -16,17 +16,22 @@ type StepBody = { [K in PlanStep["kind"]]: Omit<Extract<PlanStep, { kind: K }>, 
 /** A rule the program broke. Recorded once; the run is refused even if the guest catches the error. */
 class Violation extends Error {}
 
+/** A replay that went another way than the run it replays (CU-COUNSEL-R2 D4). Latched like a violation. */
+class Diverged extends Error {}
+
 if (parentPort === null) throw new Error("codemode worker started outside a worker thread");
 const port = parentPort;
 const input = workerData as WorkerInput;
 const limits = input.limits;
+/** The steps a run before this one registered and the host then executed: each step registered here must match its own. */
+const prefix = input.recorded.prefix;
 
 // Replies from the parent, consumed in order by the pump loop. `consumed` lets the parent tell a
 // "waiting" message from a worker that has not yet seen a reply already in flight.
-const replies: ChooseReply[] = [];
+const replies: HostReply[] = [];
 let consumed = 0;
 let wake: (() => void) | null = null;
-port.on("message", (m: ChooseReply) => {
+port.on("message", (m: HostReply) => {
   replies.push(m);
   wake?.();
 });
@@ -35,11 +40,15 @@ const stats: Omit<RunStats, "wallMs"> = { guestCpuMs: 0, readWindowCalls: 0, cho
 let sliceStart: number | null = null;
 let cpuExceeded = false;
 let violation: string | null = null;
+/** A replayed step that differs from the recorded one (Diverged). */
+let diverged: string | null = null;
 /** A bug on the host side of an API call, as opposed to a rule the program broke. */
 let hostFault: string | null = null;
 
+const latched = (): boolean => hostFault !== null || violation !== null || diverged !== null || cpuExceeded;
+
 function interrupt(): boolean {
-  if (violation !== null || hostFault !== null) return true;
+  if (violation !== null || hostFault !== null || diverged !== null) return true;
   if (sliceStart !== null && stats.guestCpuMs + (performance.now() - sliceStart) > limits.guestCpuMs) cpuExceeded = true;
   return cpuExceeded;
 }
@@ -67,6 +76,7 @@ const cap = (s: string) => (s.length <= DETAIL_CHARS ? s : `${s.slice(0, DETAIL_
 /** Classifies an error that came out of the guest or out of a QuickJS call. Our own flags win. */
 function classify(name: string, message: string): [RefusalKind, string] {
   if (hostFault !== null) return ["fault", hostFault];
+  if (diverged !== null) return ["diverged", diverged];
   if (violation !== null) return ["violation", violation];
   if (cpuExceeded) return ["cpu", `guest compute passed ${limits.guestCpuMs} ms`];
   if (/out of memory/i.test(message)) return ["memory", cap(`${name}: ${message}`)];
@@ -118,12 +128,21 @@ function guestView(s: PlanningSnapshot): string {
   });
 }
 
+/**
+ * Registers a step. A step at an index the recorded prefix covers must equal the recorded one, field for field, or the
+ * run ends as diverged before it can ask Jev anything new (CU-COUNSEL-R2 D4). The per-run step budget counts only the
+ * steps after the prefix.
+ */
 function addStep(step: StepBody): string {
   if (plan !== null || planning) throw new Violation("no steps can be added after plan()");
-  if (steps.size >= limits.steps) throw new Violation(`a plan has at most ${limits.steps} steps`);
-  const ref = `step:${steps.size + 1}`;
-  steps.set(ref, { ...step, ref } as PlanStep);
-  stats.steps = steps.size;
+  const k = steps.size;
+  if (k >= prefix.length && k - prefix.length >= limits.steps) throw new Violation(`a plan has at most ${limits.steps} steps`);
+  const ref = `step:${k + 1}`;
+  const made = { ...step, ref } as PlanStep;
+  const recorded = prefix[k];
+  if (recorded !== undefined && stepKey(made) !== stepKey(recorded)) throw new Diverged(`step ${k + 1} is ${stepKey(made)}, but the run it replays registered ${stepKey(recorded)}`);
+  steps.set(ref, made);
+  stats.steps = Math.max(0, steps.size - prefix.length);
   return ref;
 }
 
@@ -191,8 +210,13 @@ const prelude = (() =>
 const helpers = vm.unwrapResult(prelude);
 const viewFn = vm.getProp(helpers, "view");
 
-const pending = new Map<number, { deferred: QuickJSDeferredPromise; question: string; offered: string[] }>();
+type PendingCall = { kind: "choose"; deferred: QuickJSDeferredPromise; question: string; offered: string[]; digest: string } | { kind: "observe"; deferred: QuickJSDeferredPromise; ref: string; after: string; index: number };
+const pending = new Map<number, PendingCall>();
 let nextCallId = 0;
+/** choose() calls made, recorded ones included: the first recorded.choices.length are answered from the record. */
+let chooseIndex = 0;
+/** observe() calls made. */
+let observeIndex = 0;
 
 /** An API body returns a handle, or a guest call's result whose error passes through to the guest. */
 type Impl = (...args: QuickJSHandle[]) => QuickJSHandle | { error: QuickJSHandle };
@@ -206,6 +230,7 @@ function api(name: string, impl: Impl): QuickJSHandle {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (e instanceof Violation) violation ??= `${name}: ${message}`;
+      else if (e instanceof Diverged) diverged ??= `${name}: ${message}`;
       else hostFault ??= `${name}: host error: ${message}`;
       return { error: vm.newError(`${name}: ${message}`) };
     }
@@ -257,6 +282,37 @@ const fns: [string, QuickJSHandle][] = [
     }),
   ],
   [
+    "navigate",
+    api("navigate", (t, e) => {
+      if (!input.navigation) throw new Violation("this plan cannot navigate");
+      const target = refArg(t, "target");
+      const effect = refArg(e, "effect");
+      const found = targets.get(target);
+      if (found === undefined) throw new Violation(`unknown target ${target}`);
+      if (!(found.target.allowedNavigateEffects ?? []).includes(effect)) throw new Violation(`target ${target} has no allowed navigate effect ${effect}`);
+      return vm.newString(addStep({ kind: "navigate", target, effect }));
+    }),
+  ],
+  [
+    "observe",
+    api("observe", (a) => {
+      if (!input.navigation) throw new Violation("this plan cannot observe");
+      if (plan !== null || planning) throw new Violation("no observe can be made after plan()");
+      const after = refArg(a, "after");
+      const last = [...steps.values()].at(-1);
+      if (last === undefined || last.ref !== after || last.kind !== "navigate") throw new Violation(`observe takes the navigate step created just before it, not ${after}`);
+      if ([...pending.values()].some((c) => c.kind === "observe")) throw new Violation("one observe at a time");
+      const index = observeIndex++;
+      const ref = addStep({ kind: "observe", after });
+      const callId = nextCallId++;
+      const request: ObserveRequest = { type: "observe", callId, after, index };
+      const deferred = vm.newPromise();
+      pending.set(callId, { kind: "observe", deferred, ref, after, index });
+      port.postMessage(request);
+      return deferred.handle.dup();
+    }),
+  ],
+  [
     "waitFor",
     api("waitFor", (e, ms) => {
       const effect = refArg(e, "effect");
@@ -280,7 +336,9 @@ const fns: [string, QuickJSHandle][] = [
   [
     "choose",
     api("choose", (o) => {
-      if (++stats.chooseCalls > limits.chooseCalls) throw new Violation(`at most ${limits.chooseCalls} choose calls`);
+      // A recorded choice is answered from the record and counts toward no budget (CU-COUNSEL-R2 D4).
+      const replayed = chooseIndex++ < input.recorded.choices.length;
+      if (!replayed && ++stats.chooseCalls > limits.chooseCalls) throw new Violation(`at most ${limits.chooseCalls} choose calls`);
       const given = refArrayArg(o, "options", limits.optionsPerChoice);
       if (given.length === 0) throw new Violation("options is empty");
       if (new Set(given).size !== given.length) throw new Violation("options repeat a ref");
@@ -302,7 +360,7 @@ const fns: [string, QuickJSHandle][] = [
         options: all.map((x) => ({ ref: x.ref, label: x.label })),
       };
       const deferred = vm.newPromise();
-      pending.set(callId, { deferred, question: group.question.ref, offered });
+      pending.set(callId, { kind: "choose", deferred, question: group.question.ref, offered, digest: requestDigest(request) });
       port.postMessage(request);
       return deferred.handle.dup();
     }),
@@ -346,7 +404,7 @@ const fns: [string, QuickJSHandle][] = [
         }
         const s = vm.getProp(d, "steps");
         try {
-          order = refArrayArg(s, "steps", limits.steps);
+          order = refArrayArg(s, "steps", limits.steps + prefix.length);
         } finally {
           s.dispose();
         }
@@ -357,13 +415,19 @@ const fns: [string, QuickJSHandle][] = [
       if (snap === undefined) throw new Violation(`basedOn ${basedOn} is not a snapshot this program read`);
       if (order.length === 0) throw new Violation("a plan needs at least one step");
       if (new Set(order).size !== order.length) throw new Violation("a step appears twice");
+      // An observe step's ref is never handed to the program: each goes right after the navigate it reads after.
+      const observes = [...steps.values()].filter((x): x is Extract<PlanStep, { kind: "observe" }> => x.kind === "observe");
       const ordered: PlanStep[] = [];
       for (const ref of order) {
         const step = steps.get(ref);
-        if (step === undefined) throw new Violation(`unknown step ${ref}`);
+        if (step === undefined || step.kind === "observe") throw new Violation(`unknown step ${ref}`);
         ordered.push(step);
+        const read = observes.find((x) => x.after === ref);
+        if (read !== undefined) ordered.push(read);
       }
       if (ordered.length !== steps.size) throw new Violation(`the plan leaves out ${steps.size - ordered.length} registered step(s)`);
+      // The executed prefix ran in the order it was registered; a plan that reorders it is not the run it replays.
+      for (const [k, x] of prefix.entries()) if (ordered[k]?.ref !== x.ref) throw new Diverged(`the plan puts ${ordered[k]?.ref ?? "nothing"} at ${k + 1}, where the run it replays ran ${x.ref}`);
       // One accepted segment is one window: targets and effects must come from the basedOn snapshot. A goal plan
       // (multiWindow) may target any snapshot this program read; the host cuts its steps into segments.
       const readable = input.multiWindow ? [...issuedSnapshots.values()] : [snap];
@@ -371,7 +435,7 @@ const fns: [string, QuickJSHandle][] = [
       const effects = new Set(readable.flatMap((x) => x.targets.flatMap((t) => t.allowedPressEffects)));
       const where = input.multiWindow ? "the snapshots this program read" : `snapshot ${basedOn}`;
       for (const step of ordered) {
-        if ((step.kind === "fill" || step.kind === "press") && !own.has(step.target)) throw new Violation(`${step.ref} targets ${step.target}, outside ${where}`);
+        if ((step.kind === "fill" || step.kind === "press" || step.kind === "navigate") && !own.has(step.target)) throw new Violation(`${step.ref} targets ${step.target}, outside ${where}`);
         if (step.kind === "waitFor" && !effects.has(step.effect)) throw new Violation(`${step.ref} waits for ${step.effect}, outside ${where}`);
       }
       plan = { ref: "plan:1", basedOn, steps: ordered };
@@ -463,17 +527,21 @@ try {
 port.postMessage({ type: "done", outcome: outcome.ok ? outcome : { ...outcome, detail: cap(outcome.detail) } });
 
 async function run(): Promise<SandboxOutcome> {
-  const done = (o: { ok: true; plan: NonNullable<typeof plan> } | { ok: false; kind: RefusalKind; detail: string }): SandboxOutcome => {
+  /**
+   * `pending`: the host asked the run to end at an observe it may not serve yet. The plan is then every step registered
+   * before that observe, in registration order, which is the order they run in (CU-COUNSEL-R2 D4).
+   */
+  const done = (o: { ok: true; plan: NonNullable<typeof plan>; pending?: PendingObserve } | { ok: false; kind: RefusalKind; detail: string }): SandboxOutcome => {
     const s = { wallMs: 0, ...stats };
     if (!o.ok) return { ok: false, kind: o.kind, detail: cap(o.detail), stats: s };
     // Last check before success: every flag a slice or API call can latch, and the plan still covers
     // every registered step.
-    if (hostFault !== null || violation !== null || cpuExceeded) {
+    if (latched()) {
       const [kind, detail] = classify("Error", "");
       return { ok: false, kind, detail: cap(detail), stats: s };
     }
-    if (o.plan.steps.length !== steps.size) return { ok: false, kind: "violation", detail: "steps were registered after plan()", stats: s };
-    return { ok: true, plan: { basedOn: o.plan.basedOn, window: issuedSnapshots.get(o.plan.basedOn)!.window, steps: o.plan.steps, choices, drafts, programDigest: input.programDigest }, stats: s };
+    if (o.plan.steps.length !== steps.size - (o.pending === undefined ? 0 : 1)) return { ok: false, kind: "violation", detail: "steps were registered after plan()", stats: s };
+    return { ok: true, plan: { basedOn: o.plan.basedOn, window: issuedSnapshots.get(o.plan.basedOn)!.window, steps: o.plan.steps, choices, drafts, programDigest: input.programDigest }, stats: s, pending: o.pending ?? null };
   };
   const fail = (name: string, message: string) => {
     const [kind, detail] = classify(name, message);
@@ -488,7 +556,7 @@ async function run(): Promise<SandboxOutcome> {
   }
   evaluated.value.dispose();
   mainFn = slice(() => vm.getProp(vm.global, "main"));
-  if (hostFault !== null || violation !== null || cpuExceeded) return fail("Error", "");
+  if (latched()) return fail("Error", "");
   if (vm.typeof(mainFn) !== "function") return done({ ok: false, kind: "violation", detail: "the program does not define main" });
   const called = slice(() => vm.callFunction(mainFn!, vm.undefined, caret));
   if (called.error !== undefined) {
@@ -505,7 +573,7 @@ async function run(): Promise<SandboxOutcome> {
       jobs.error.dispose();
       return fail(n, m);
     }
-    if (hostFault !== null || violation !== null || cpuExceeded) return fail("Error", "");
+    if (latched()) return fail("Error", "");
 
     const state = vm.getPromiseState(promise);
     if (state.type === "fulfilled") {
@@ -515,7 +583,7 @@ async function run(): Promise<SandboxOutcome> {
         // The only acceptable result is the ref plan() returned; compare without copying anything large.
         const matches = plan !== null && vm.typeof(v) === "string" && stringLength(v) === plan.ref.length && vm.getString(v) === plan.ref;
         if (!matches) return done({ ok: false, kind: "violation", detail: "main must return the result of caret.plan(...)" });
-        if (pending.size > 0) return done({ ok: false, kind: "violation", detail: "main returned while a choose call was still unanswered" });
+        if (pending.size > 0) return done({ ok: false, kind: "violation", detail: "main returned while a choose or observe call was still unanswered" });
         return done({ ok: true, plan: plan! });
       } finally {
         v.dispose();
@@ -538,6 +606,36 @@ async function run(): Promise<SandboxOutcome> {
     const call = pending.get(reply.callId);
     if (call === undefined) return done({ ok: false, kind: "fault", detail: `reply for unknown call ${reply.callId}` });
     pending.delete(reply.callId);
+    if (call.kind === "observe") {
+      if (reply.type === "observeEnd") {
+        call.deferred.dispose();
+        if (pending.size > 0) return done({ ok: false, kind: "violation", detail: "observe ended the run while a choose call was still unanswered" });
+        const registered = [...steps.values()].filter((x) => x.ref !== call.ref);
+        return done({ ok: true, plan: { ref: "plan:pending", basedOn: first.snapshot, steps: registered }, pending: { ref: call.ref, after: call.after, index: call.index } });
+      }
+      if (reply.type !== "observeResult") {
+        call.deferred.dispose();
+        return done({ ok: false, kind: "fault", detail: `observe call ${reply.callId} got a ${reply.type} reply` });
+      }
+      // A recorded observation: its refs are the guest's from now on, as a readWindow result's are.
+      issue(reply.snapshot);
+      const json = vm.newString(guestView(reply.snapshot));
+      const view = slice(() => vm.callFunction(viewFn, vm.undefined, json));
+      json.dispose();
+      if (view.error !== undefined) {
+        call.deferred.reject(view.error);
+        view.error.dispose();
+      } else {
+        call.deferred.resolve(view.value);
+        view.value.dispose();
+      }
+      call.deferred.dispose();
+      continue;
+    }
+    if (reply.type !== "chooseResult" && reply.type !== "chooseError") {
+      call.deferred.dispose();
+      return done({ ok: false, kind: "fault", detail: `choose call ${reply.callId} got a ${reply.type} reply` });
+    }
     if (reply.type === "chooseError") {
       call.deferred.dispose();
       return done({ ok: false, kind: reply.kind, detail: reply.message });
@@ -546,7 +644,7 @@ async function run(): Promise<SandboxOutcome> {
       call.deferred.dispose();
       return done({ ok: false, kind: "callbackError", detail: `choose returned ${reply.chosen}, which was not offered` });
     }
-    choices.push({ question: call.question, offered: call.offered, chosen: reply.chosen });
+    choices.push({ question: call.question, offered: call.offered, chosen: reply.chosen, requestDigest: call.digest });
     const value = reply.chosen === null ? vm.null : vm.newString(reply.chosen);
     call.deferred.resolve(value);
     if (reply.chosen !== null) value.dispose();
