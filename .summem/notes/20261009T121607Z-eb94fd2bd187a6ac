@@ -1,0 +1,1 @@
+Xcode privacy resources use writeStore: default ~/Library/Developer DerivedData is refused; use checkout-local DerivedData such as .local/xcode-ci without widening store roots.
