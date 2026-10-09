@@ -179,7 +179,7 @@ export interface RoutingOptions {
 export interface HelperOptions {
   /**
    * SC1 2a: bundle identifier prefixes of apps the user switched off, read from the reader's deny list (main.ts); their
-   * windows never enter the model. The reader's default list when absent (privacy/read-policy.ts DEFAULT_APPS_OFF).
+   * windows never enter the model. ScreenModel adds DEFAULT_APPS_OFF whether this list is absent or supplied.
    */
   appsOff?: readonly string[];
   store: Store;
