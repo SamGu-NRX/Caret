@@ -60,10 +60,17 @@ export function readerValue(v: TypedValue, texts: readonly (string | null | unde
 const WRAPPABLE: readonly ValueKind[] = ["email", "url", "phone", "id"];
 const PAIRS: Readonly<Record<string, string>> = { '"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019", "\u00ab": "\u00bb", "<": ">", "(": ")", "[": "]" };
 const TRAILING = /[.,;:!?\u3002]+$/u;
+/**
+ * A link's own last character may be "!" or "?" ("https://example.com/search?q=hello!"), so after a link only the
+ * punctuation that ends a sentence around it is a mark (Greptile review on #22).
+ */
+const LINK_TRAILING = /[.,;:\u3002]+$/u;
+const LINK = /^[<("'[\u201c\u2018\u00ab]*(?:https?:\/\/|www\.)/iu;
+const trailingOf = (t: string): RegExp => (LINK.test(t) ? LINK_TRAILING : TRAILING);
 /** Whether a text is a whole value of the kind, nothing around it. */
 const WHOLE: Readonly<Record<string, RegExp>> = {
   email: /^[^\s@<>()"'\[\],;:]+@[^\s@<>()"'\[\],;:]+\.[\p{L}]{2,}$/u,
-  url: /^(?:https?:\/\/)?[^\s<>()"'\[\]]+\.[^\s<>"'\[\]]*[^\s<>"'\[\].,;:!?)]$/u,
+  url: /^(?:https?:\/\/)?[^\s<>()"'\[\]]+\.[^\s<>"'\[\]]*[^\s<>"'\[\].,;:)]$/u,
   phone: /^\+?[\d(][\d ().-]{5,}\d$/u,
   id: /^[\p{L}\p{N}#][\p{L}\p{N}#\-_/.]*[\p{L}\p{N}]$/u,
 };
@@ -91,7 +98,7 @@ function stripMarks(text: string): string {
     changed = false;
     const close = PAIRS[core[0] ?? ""];
     if (close !== undefined && core.length > 2 && core.endsWith(close)) ((core = core.slice(1, -1).trim()), (changed = true));
-    const bare = core.replace(TRAILING, "");
+    const bare = core.replace(trailingOf(core), "");
     if (bare !== core && bare.length > 0) ((core = bare), (changed = true));
   }
   return core;
@@ -106,7 +113,7 @@ export function wrappedValue(text: string, kinds: ReadonlySet<ValueKind>): boole
   if (!WRAPPABLE.some((k) => kinds.has(k))) return false;
   const t = text.trim();
   const close = PAIRS[t[0] ?? ""];
-  return (close !== undefined && t.length > 2 && t.endsWith(close)) || TRAILING.test(t);
+  return (close !== undefined && t.length > 2 && t.endsWith(close)) || trailingOf(t).test(t);
 }
 
 /** A clock time inside a value: "3:00 PM", "15:00", "3 PM". */

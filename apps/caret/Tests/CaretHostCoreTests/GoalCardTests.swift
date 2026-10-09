@@ -277,6 +277,66 @@ final class GoalCardTests: XCTestCase {
         XCTAssertEqual(a.goalId, "goal-4-ask-32~1")
     }
 
+    /// Codex review on #22: ⌘Z after a fresh plan undoes the stopped goal's writes too, not only the fresh plan's.
+    func testAFreshPlanKeepsTheStoppedGoalsWritesForCommandZ() throws {
+        let (ask, _, sent) = try showing()
+        XCTAssertTrue(ask.tab())
+        XCTAssertTrue(ask.receive(GoalProgress(at: 2, goalId: "goal-4-ask-32", requestId: nil, event: .step(.init(segment: 0, taskId: "goal-4-ask-32:s0", step: 0, steps: 2, phase: .verified, says: "ok"))), toForm: { _ in false }))
+        XCTAssertTrue(ask.receive(GoalProgress(at: 3, goalId: "goal-4-ask-32", requestId: nil, event: .stopped(.init(segment: 0, step: 1, reason: .targetChanged, says: "The Message field changed. Caret made a fresh plan.", freshPlan: "goal-4-ask-32~1"))), toForm: { _ in false }))
+        var fresh = try Self.goal(4)
+        fresh.goalId = "goal-4-ask-32~1"
+        fresh.requestId = nil
+        guard case .segment(var p) = fresh.event else { return XCTFail() }
+        p.reason = .freshPlan
+        p.replaces = "goal-4-ask-32"
+        fresh.event = .segment(p)
+        XCTAssertTrue(ask.receive(fresh, toForm: { _ in false }))
+        XCTAssertTrue(ask.tab())
+        XCTAssertTrue(ask.receive(GoalProgress(at: 6, goalId: "goal-4-ask-32~1", requestId: nil, event: .finished(.init(outcome: .done, verified: 0, skipped: 0, left: [], says: "Done."))), toForm: { _ in false }))
+        XCTAssertTrue(try card(ask).undoable, "the fresh plan wrote nothing, but the stopped goal did")
+        let before = sent().count
+        XCTAssertTrue(ask.undo())
+        let undos = sent().dropFirst(before).compactMap { m -> TaskControl? in if case .control(let c) = m { return c } else { return nil } }
+        XCTAssertEqual(undos, [TaskControl(taskId: "goal-4-ask-32:s0", action: .undo)])
+    }
+
+    /// Codex review on #22: a segment that is only the hand-off (the last step, in another window) is accepted with Tab, so
+    /// the helper can end the goal with what the user does, rather than waiting until the preview expires.
+    func testAHandOffOnlySegmentIsAcceptedWithTab() throws {
+        guard case .segment(var p) = try Self.goal(4).event else { return XCTFail() }
+        p.steps = p.steps.filter { $0.kind == .handoff }
+        XCTAssertFalse(p.steps.isEmpty)
+        var c = try XCTUnwrap(GoalCard(preview: p, goalId: "goal-4-ask-32", instruction: "answer dana"))
+        XCTAssertEqual(c.caretSteps, 0)
+        XCTAssertTrue(c.handOffOnly)
+        XCTAssertEqual(GoalCopy.action(c), "Finish")
+        let a = try XCTUnwrap(c.accept(nowMs: c.expires - 1))
+        XCTAssertEqual(a.segment, p.segment)
+        XCTAssertEqual(c.stage, .running)
+    }
+
+    /// Greptile review on #22: a stop at the first write, whose read-back failed, still leaves ⌘Z that write's task.
+    func testAStopAtAWriteThatNeverVerifiedStillOffersItsUndo() throws {
+        let (ask, _, sent) = try showing()
+        XCTAssertTrue(ask.tab())
+        XCTAssertTrue(ask.receive(GoalProgress(at: 2, goalId: "goal-4-ask-32", requestId: nil, event: .stopped(.init(segment: 0, step: 0, reason: .targetChanged, says: "Caret couldn't read the To field back, so it stopped.", freshPlan: nil))), toForm: { _ in false }))
+        let c = try card(ask)
+        XCTAssertEqual(c.tasks, ["goal-4-ask-32:s0"])
+        XCTAssertTrue(c.undoable)
+        let before = sent().count
+        XCTAssertTrue(ask.undo())
+        let undos = sent().dropFirst(before).compactMap { m -> TaskControl? in if case .control(let c) = m { return c } else { return nil } }
+        XCTAssertEqual(undos, [TaskControl(taskId: "goal-4-ask-32:s0", action: .undo)])
+    }
+
+    /// A stop before Caret ran anything, or one that names no step, offers nothing to undo.
+    func testAStopBeforeAnyWriteOffersNoUndo() throws {
+        let (ask, _, _) = try showing()
+        XCTAssertTrue(ask.receive(GoalProgress(at: 2, goalId: "goal-4-ask-32", requestId: nil, event: .stopped(.init(segment: nil, step: nil, reason: .targetChanged, says: "The window changed.", freshPlan: nil))), toForm: { _ in false }))
+        XCTAssertEqual(try card(ask).tasks, [])
+        XCTAssertFalse(try card(ask).undoable)
+    }
+
     func testAPageGoalStillGoesToTheForm() throws {
         let (ask, _, sent) = try asked()
         guard case .plan(let request)? = sent().last else { return XCTFail() }

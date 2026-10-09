@@ -12,6 +12,7 @@ import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { HelperMessage, HelperToReader, isCalendarVerb, PROTOCOL_VERSION, ReaderMessage, TaskProgress, type CalendarBlock, type CalendarVerb, type VerbResult } from "../src/protocol.ts";
 import type { Plan } from "../src/executor/schema.ts";
+import { EVENT_CHANGED } from "../src/executor/executor.ts";
 import { CalendarBlocked, ReaderCalendar, type SocketReaderLink } from "../src/executor/means.ts";
 import { SocketReader, until } from "./socket-reader.ts";
 
@@ -19,6 +20,8 @@ import { SocketReader, until } from "./socket-reader.ts";
 class AdapterStandIn {
   granted = true;
   localSource = true;
+  /** Events the user changed after Caret added them: the reader's removal leaves them (CalendarAdapter.changedByYou). */
+  readonly changed = new Set<string>();
   readonly calendars = new Map<string, Map<string, { title: string; start: string; end: string }>>();
   /** The task that added each event: only it may remove the event, and a calendar holding another's is not disposed (B23). */
   private readonly addedBy = new Map<string, string>();
@@ -52,6 +55,7 @@ class AdapterStandIn {
         const c = owner(v.id);
         if (c === undefined) return { outcome: "notAllowed", detail: "the event is not in a calendar the reader created" };
         if (this.addedBy.get(v.id) !== v.taskId) return { outcome: "notAllowed", detail: "another task added this event; only that task removes it" };
+        if (this.changed.has(v.id)) return { outcome: "changed", detail: "You've changed this event, so Caret left it" };
         this.calendars.get(c)?.delete(v.id);
         return ok();
       }
@@ -111,6 +115,15 @@ describe("the calendar through the reader", () => {
     expect(adapter.calendars.get("Caret Test")?.size).toBe(0);
     expect(reader.verbs.map((v) => v.kind)).toEqual(["calendarFind", "calendarAdd", "calendarFind", "calendarFind", "calendarGet", "calendarRemove", "calendarGet"]);
     expect(reader.verbs.filter((v) => "taskId" in v).map((v) => ("taskId" in v ? v.taskId : ""))).toEqual(["t1", "t1"]);
+  });
+
+  it("leaves an event the user changed, and says so, when the reader's removal finds it changed", async () => {
+    // Greptile review on #13: the reader's fresh read inside the removal compares notes, place, link, alarms and people.
+    expect(await helper.executor.run("t1", plan("Coffee with Dana"), {}, undefined, { grant: true })).toMatchObject({ outcome: "done", acted: 1 });
+    const id = [...(adapter.calendars.get("Caret Test")?.keys() ?? [])][0] ?? "";
+    adapter.changed.add(id);
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 0, notRestored: [{ reason: EVENT_CHANGED }] });
+    expect(adapter.calendars.get("Caret Test")?.has(id)).toBe(true);
   });
 
   it("refuses the add for a task with no calendar grant, as a consumer's runPlan has none", async () => {

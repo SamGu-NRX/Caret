@@ -8,12 +8,12 @@ import { ScreenModel } from "../src/model.ts";
 import { ASK_CHOICES_CAPABILITY, ASK_TASK_CAPABILITY, AskQuestion, ConsumerMessage, GoalStepView, HelperMessage, MAX_TASK_LABEL } from "../src/protocol.ts";
 import type { AskJev, JevResult } from "../src/fill/jev.ts";
 import { HEAD_FLOOR, headsIntentMaker, readHead, readHeads, scopeId } from "../src/planner/intent-heads.ts";
-import { intentSnapshot } from "../src/planner/intent.ts";
+import { intentSnapshot, type IntentMaker } from "../src/planner/intent.ts";
 import { answerQuestion, AskAsks, AskRefused, planAsk, type Gate } from "../src/planner/ask.ts";
 import { taskChoices } from "../src/planner/choices.ts";
 import { TASK_PLAN_LABEL, taskFillLabel } from "../src/planner/says.ts";
 import { tierOf } from "../src/goals/runs.ts";
-import type { WriterPort } from "../src/writer/port.ts";
+import { WriterUnavailable, type WriterPort } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_ROUTE } from "../src/writer/config.ts";
 import { field, node, scopeLabel, snap } from "./builders.ts";
 
@@ -126,6 +126,26 @@ describe("the task question", () => {
       expect(head).toHaveLength(1);
       expect(head[0]?.blocking).toBe(false);
     }
+  });
+
+  it("records a planner failure the writer then tries to recover as no blocker; the writer's failure blocks", async () => {
+    // Greptile review on #22: firstGate blamed the recovered failure, which hid writerInvalid.
+    const gates: Gate[] = [];
+    const broke: WriterPort = { route: FAKE_ROUTE, async write() { throw new WriterUnavailable("budget"); } };
+    const j = jev({ plan: 0.97, some: 0.01, all: 0.01, refuse: 0.01 });
+    const plan: IntentMaker = { name: "heads", async make() { return { intent: { route: "plan", why: "none", scope: "list", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] }, use: { maker: "heads", model: "t", calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0, latencyMs: 1 } }; } };
+    // The planner's two asks answer differently (the first option, then the last), so they disagree: unsure.
+    let n = 0;
+    const split: AskJev = async (req) => {
+      if (req.purpose === "ask.heads" || req.purpose === "ask.scope") return j(req);
+      const last = n++ % 2 === 1;
+      const answers = Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: (last ? Object.keys(q.criteria).at(-1) : Object.keys(q.criteria)[0]) ?? "none", confidence: 0.95 }]));
+      return { model: "t", inputTokens: 1, latencyMs: 1, costUsd: 0, answers };
+    };
+    await planAsk("book it for me", desk(), memory, [], { askJev: split, maker: plan, writer: broke, offerKey: "k", windowId: "form", now: 2000, rand: () => 0, gate: (g) => gates.push(g) }).catch((x: unknown) => x);
+    const planner = gates.find((g) => g.gate.startsWith("plannerError:"));
+    expect(planner?.blocking).toBe(false);
+    expect(gates.find((g) => g.blocking)?.gate).toBe("writerInvalid");
   });
 
   it("continues as the fill on the fill pick, and asks no task question again", async () => {

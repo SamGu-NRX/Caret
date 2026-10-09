@@ -1537,8 +1537,10 @@ export async function proposeFill(
   // A page select's kinds are what its own option labels could be (a month is a date, a state an address), and an address
   // when its field asks for a place or a country, whose names optionKinds does not know (review: a cut address holding
   // Canada left a France option writable).
+  // A select's label kinds count too ("Student ID" takes an ID, whatever its options look like): Greptile review on #22,
+  // a menu of reference codes had no kind, so a cut of the window's IDs left it writable.
   const selectKinds = new Map(fields.filter(pageSelect).map((f) => {
-    const kinds = optionKinds(f.form.options, f.part);
+    const kinds = new Set([...optionKinds(f.form.options, f.part), ...fieldKinds(f.labelWords)]);
     if (asksCountry(f.form.label) || asksPlace(f.form.label)) kinds.add("address");
     return [f.id, kinds] as const;
   }));
