@@ -2686,9 +2686,12 @@ export class Helper {
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {
       this.lastPrune = now;
       this.model.prune(now);
-      // The reader skips snapshots of unchanged windows, so text still on screen is marked seen here;
-      // otherwise a window left untouched for ten minutes would drop out of the text window.
-      for (const w of this.model.windows.values()) this.text.observe(w, now);
+      // Screen text is kept ten minutes from when it was last known to be on screen (docs/privacy/chrome-extension.md).
+      // The window the user is in counts as on screen while a reader is connected to send its changes; any other window
+      // only as of its last snapshot, since the reader sends nothing for a walk that finds a window unchanged.
+      const front = this.readerConnected ? (this.model.userWindow()?.window.windowId ?? null) : null;
+      for (const id of this.model.expire(now, front)) this.windowExpired(id, now);
+      for (const w of this.model.windows.values()) this.text.observe(w, this.model.freshAt(w));
       this.text.prune(now);
       const cutoff = now - 10 * 60 * 1000;
       while ((this.recentTransfers[0]?.at ?? now) < cutoff) this.recentTransfers.shift();
@@ -3329,8 +3332,29 @@ export class Helper {
    * (privacy/read-policy.ts noteSwitchedOff).
    */
   purgeWindow(s: Snapshot): void {
-    this.model.apply(s);
-    this.checkFills(s.window.windowId);
+    const id = s.window.windowId;
+    this.model.purge(s);
+    // The removed text goes from every copy the helper keeps of the window, now: the change log (in purge), the rolling
+    // text and the privacy line table, which is read again from the purged state when next asked.
+    const w = this.model.windows.get(id);
+    if (w !== undefined) this.text.keepOnly(w);
+    forgetWindow(id);
+    this.checkFills(id);
+  }
+
+  /**
+   * The model dropped a window whose text went ten minutes without a snapshot (ScreenModel.expire). Not a close: the
+   * window may still be open, so nothing that ends work in a closed window hears of it. What keeps a copy of its text
+   * lets it go, and a fill pop-up that showed a value from it is withdrawn as stale.
+   */
+  private windowExpired(windowId: string, now: number): void {
+    this.opts.store.count("model.window_expired", 1, now);
+    // An edit still open there was typed over ten minutes ago, so transfers.tick has judged it; this lets go of its text.
+    this.record(this.transfers.flush(windowId));
+    forgetWindow(windowId);
+    this.ownerVerdicts.forget(new Set([windowId]));
+    this.checkFills(windowId);
+    this.routing?.candidatesChanged();
   }
 
   private checkFills(windowId: string): void {

@@ -153,15 +153,38 @@ describe("offer lifetimes over the socket", () => {
   });
 
   describe("fill pop-up: until the field or the form changes", () => {
-    it("outlives any timer, and moving among the form's own fields or to a source keeps it", async () => {
+    /** The reader's walk of the source window again, as a focus or a change there sends it, `ms` from now. */
+    const sourceRead = async (ms: number): Promise<void> => {
+      const w = helper.model.windows.get(ORDER);
+      if (w === undefined) throw new Error("the source window is not in the model");
+      const again = snap([...w.nodes.values()], { at: reader.clock + ms, windowId: ORDER, title: w.window.title, app: w.app, values: w.values });
+      reader.send(again);
+      await until(() => hooks.applied(ORDER, again.at));
+    };
+
+    it("outlives any timer while its source is read again, and moving among the form's own fields or to a source keeps it", async () => {
       await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
       await host.waitFor((m) => m.type === "popup");
-      await tickAt(reader.clock + 24 * 60 * MIN);
+      // The form is the window the user is in, so its text stays; the source's stays while the reader sends it again.
+      for (let i = 0; i < DAY / (9 * MIN); i++) {
+        await sourceRead(9 * MIN);
+        helper.tick(reader.clock);
+      }
       reader.send(focus(FORM, F("textfield:email~0"), reader.clock + 10));
       reader.send(focus(ORDER, M("statictext:dana whitfield~0"), reader.clock + 20, { editable: false, empty: false, app: MAIL_APP }));
       await tickAt(reader.clock + 30);
       expect(withdrawals()).toEqual([]);
       expect(helper.offers.get("id-1")?.kind).toBe("popup");
+    });
+
+    it("is withdrawn as stale once its source goes ten minutes without a snapshot: Caret no longer holds the value's source", async () => {
+      await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+      await host.waitFor((m) => m.type === "popup");
+      await tickAt(reader.clock + 9 * MIN);
+      expect(withdrawals()).toEqual([]);
+      await tickAt(reader.clock + 2 * MIN);
+      expect(helper.model.windows.has(ORDER)).toBe(false);
+      expect(withdrawals()).toEqual([["id-1", "stale"]]);
     });
 
     it("expires when focus lands in an editable field outside the form, and an accept is then refused", async () => {
