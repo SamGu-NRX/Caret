@@ -40,6 +40,10 @@ interface Rig {
   /** The user puts `value` in the field, as typing does: the page records when (PageControl.inputAt); the reader's
    * report of it is the test's to send. */
   type: (value: string) => void;
+  /** Page only: walks the tab, as the helper does when the page reports typing or focus. */
+  walk: () => Promise<unknown>;
+  /** Page only: the page drops its record of the user's input, as it does 30 s after the grant ends. */
+  forget: () => void;
 }
 
 /** `landed`: Caret's write reaches the field. `user`: what the user does, `at` ms after the send. */
@@ -73,6 +77,8 @@ function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act
   let held: () => string;
   let show: () => void | Promise<unknown>;
   let type: (value: string) => void;
+  let walk: () => Promise<unknown> = () => Promise.resolve();
+  let forget = (): void => {};
   if (mean === "AX") {
     const app = new FakeApp(executorWindow());
     app.setValue(key, ORIGINAL);
@@ -130,12 +136,14 @@ function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act
     // The content script's record of the user's own input (content/user-input.ts), reported by the next walk.
     type = (value) => { page.find("e1").value = value; page.find("e1").inputAt = Date.now(); };
     show = () => engine.run({ kind: "walk", pid: 4100, windowId: PAGE_WIN });
+    walk = () => engine.run({ kind: "walk", pid: 4100, windowId: PAGE_WIN });
+    forget = () => { delete page.find("e1").inputAt; };
     cleanups.push(() => { engine.cancelTrailingWalks(); page.session.close(); });
   }
   helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => { published.push(m); } });
   cleanups.push(() => { helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   Object.assign(self, {
-    helper, plan, key, held, published, type,
+    helper, plan, key, held, published, type, walk, forget,
     ready: Promise.resolve(show()),
     dispatchAt: () => dispatchAt,
     reader: (m: unknown) => { void helper.handleReader(ReaderMessage.parse(m)); },
@@ -293,7 +301,19 @@ describe("page: the walk's record of the user's input", () => {
     const r = rig("page", { landed: false, failRead: true, user: typesAfterStop("page") });
     const result = await run(r);
     expect(result.detail).toContain("may have been written");
-    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("you typed in the field after Caret sent its write") }] });
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("may hold your typing") }] });
+    expect(r.held()).toBe(INTENDED);
+  });
+
+  it("keeps Undo off the field after the page forgets the input, once a later walk saw it (PR #33 review)", async () => {
+    const r = rig("page", { landed: false, failRead: true, user: typesAfterStop("page") });
+    expect((await run(r)).detail).toContain("may have been written");
+    // The page reports the typing, and the helper walks the tab; then Undo comes after the page's 30 s record is gone.
+    await r.walk();
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ mayIncludeInput: true }]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    r.forget();
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("may hold your typing") }] });
     expect(r.held()).toBe(INTENDED);
   });
 
