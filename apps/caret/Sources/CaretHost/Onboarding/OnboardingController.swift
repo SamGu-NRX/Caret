@@ -43,7 +43,7 @@ final class OnboardingController {
 
     let mode: Mode
     private let testHooks: Bool
-    private let store: SettingsStore
+    let store: SettingsStore
     /// Where `OnboardingProgress` is kept: beside the settings file, so a test run with its own settings never reads
     /// or writes the user's.
     private let progressPath: String?
@@ -129,16 +129,25 @@ final class OnboardingController {
     /// that ask the cloud model are held (written down first, so a relaunch holds the same ones) and given back on
     /// Send. Returns the roles the flow looks with.
     private func holdCloudRoles() -> Set<CaretRole> {
-        if let held = progress?.heldRoles ?? heldRoles { return Set(held.compactMap(CaretRole.init(rawValue:))) }
-        let roles = store.settings.roles
-        // Kept here as well as in the file, so a run whose progress cannot be written never loses the roles.
-        heldRoles = roles.map(\.rawValue).sorted()
-        updateProgress { $0.heldRoles = roles.map(\.rawValue).sorted() }
+        let roles: Set<CaretRole>
+        if let held = progress?.heldRoles ?? heldRoles {
+            roles = Set(held.compactMap(CaretRole.init(rawValue:)))
+        } else {
+            roles = store.settings.roles
+            // Kept here as well as in the file, so a run whose progress cannot be written never loses the roles.
+            heldRoles = roles.map(\.rawValue).sorted()
+            updateProgress { $0.heldRoles = roles.map(\.rawValue).sorted() }
+        }
+        // Always, even when resuming from a saved snapshot: Caret may have stopped after saving progress but before
+        // saving settings, and the live roles must be words only until the person decides (Greptile on PR #17).
         store.update(source: .onboarding) { $0.roles = $0.roles.intersection([.words]) }
         return roles
     }
 
     private func decided(sent: Bool) {
+        // Keep means the cloud roles are off, with or without a held snapshot: an onboarded person reopening the pane
+        // from the menu was never held, and Keep left their cloud roles on while the pane said off (Greptile on PR #17).
+        if !sent { store.update(source: .onboarding) { $0.roles = $0.roles.intersection([.words]) } }
         guard let held = progress?.heldRoles ?? heldRoles else { return }
         if sent { store.update(source: .onboarding) { $0.roles = Set(held.compactMap(CaretRole.init(rawValue:))) } }
         heldRoles = nil
