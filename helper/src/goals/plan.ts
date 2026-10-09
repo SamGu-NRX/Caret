@@ -32,6 +32,8 @@ export type GoalControl = "text" | "select" | "combobox" | "radio" | "date" | "t
  */
 export interface RowBinding {
   cells: string[];
+  /** The anchor cells of every other row of the same list, read from the window whether or not it was listed (Identity.others). */
+  others: string[][];
   container: { key: string; role: string } | null;
   selectable: boolean;
   inForm: boolean | null;

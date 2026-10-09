@@ -210,7 +210,7 @@ const prelude = (() =>
 const helpers = vm.unwrapResult(prelude);
 const viewFn = vm.getProp(helpers, "view");
 
-type PendingCall = { kind: "choose"; deferred: QuickJSDeferredPromise; question: string; offered: string[]; digest: string } | { kind: "observe"; deferred: QuickJSDeferredPromise; ref: string; after: string; index: number };
+type PendingCall = { kind: "choose"; at: number; deferred: QuickJSDeferredPromise; question: string; offered: string[]; digest: string } | { kind: "observe"; deferred: QuickJSDeferredPromise; ref: string; after: string; index: number };
 const pending = new Map<number, PendingCall>();
 let nextCallId = 0;
 /** choose() calls made, recorded ones included: the first recorded.choices.length are answered from the record. */
@@ -343,7 +343,8 @@ const fns: [string, QuickJSHandle][] = [
     "choose",
     api("choose", (o) => {
       // A recorded choice is answered from the record and counts toward no budget (CU-COUNSEL-R2 D4).
-      const replayed = chooseIndex++ < input.recorded.choices.length;
+      const at = chooseIndex++;
+      const replayed = at < input.recorded.choices.length;
       if (!replayed && ++stats.chooseCalls > limits.chooseCalls) throw new Violation(`at most ${limits.chooseCalls} choose calls`);
       const given = refArrayArg(o, "options", limits.optionsPerChoice);
       if (given.length === 0) throw new Violation("options is empty");
@@ -366,7 +367,7 @@ const fns: [string, QuickJSHandle][] = [
         options: all.map((x) => ({ ref: x.ref, label: x.label })),
       };
       const deferred = vm.newPromise();
-      pending.set(callId, { kind: "choose", deferred, question: group.question.ref, offered, digest: requestDigest(request) });
+      pending.set(callId, { kind: "choose", at, deferred, question: group.question.ref, offered, digest: requestDigest(request) });
       port.postMessage(request);
       return deferred.handle.dup();
     }),
@@ -650,7 +651,8 @@ async function run(): Promise<SandboxOutcome> {
       call.deferred.dispose();
       return done({ ok: false, kind: "callbackError", detail: `choose returned ${reply.chosen}, which was not offered` });
     }
-    choices.push({ question: call.question, offered: call.offered, chosen: reply.chosen, requestDigest: call.digest });
+    // In request order, whatever order the answers come back in: a replay answers its choices in the order it asks them.
+    choices[call.at] = { question: call.question, offered: call.offered, chosen: reply.chosen, requestDigest: call.digest };
     const value = reply.chosen === null ? vm.null : vm.newString(reply.chosen);
     call.deferred.resolve(value);
     if (reply.chosen !== null) value.dispose();

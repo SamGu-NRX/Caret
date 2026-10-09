@@ -99,20 +99,30 @@ export function textsByKey(w: WindowState): Map<string, string> {
   return out;
 }
 
+/** What of an anchor is matched: its first ANCHOR_PREFIX characters. */
+export const anchorPart = (a: string): string => a.slice(0, ANCHOR_PREFIX);
+
 /**
  * Whether the item `id` names is shown outside its list: each anchor's first ANCHOR_PREFIX characters are in the text of
- * one node that is not a row, option or list item (nor inside one) and is not editable. Weak form without `since`: the
+ * one node that is not a row, option or list item (nor inside one) and is not editable, and no anchor's match is a
+ * longer anchor of another row of the list (Identity.others) that the detail shows. Weak form without `since`: the
  * pre-act no-op check and the hold condition while the user makes the transition. Strong form with `since` (the read
  * right before Caret's act): only nodes new or changed since then count, so a detail already on screen for another item
  * cannot verify Caret's act.
  *
- * A sidebar or header that happens to repeat every anchor makes the weak form hold falsely; that fails safe: Caret skips
- * the step, the observation lacks the value, and the fill that needed it refuses.
+ * The other rows matter because a substring is no boundary: Dana's "Flight itinerary (old)" holds the anchor of her
+ * "Flight itinerary" (review of 49901539), so a detail showing the longer subject is the old booking's. Two rows whose
+ * anchors are the same cannot be told apart at all, and lowering refuses them (goals/lower.ts). A sidebar or header that
+ * happens to repeat every anchor still makes the weak form hold falsely; that fails safe: Caret skips the step, the
+ * observation lacks the value, and the fill that needed it refuses.
  */
 export function itemOpened(w: WindowState, id: Identity, since?: ReadonlyMap<string, string>): boolean {
   const texts = detailTexts(w, since);
-  const anchors = anchorsOf(id);
-  return anchors.length > 0 && anchors.every((a) => texts.some((t) => t.includes(a.slice(0, ANCHOR_PREFIX))));
+  const has = (a: string): boolean => texts.some((t) => t.includes(anchorPart(a)));
+  const mine = anchorsOf(id);
+  if (mine.length === 0 || !mine.every(has)) return false;
+  const longer = (id.others ?? []).flat();
+  return !mine.some((a) => longer.some((b) => anchorPart(b) !== anchorPart(a) && b.includes(anchorPart(a)) && has(b)));
 }
 
 /** The rows under `container` in `w`, in document order: nodes of `role` whose parent chain reaches the container. */

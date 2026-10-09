@@ -66,6 +66,11 @@ export const Identity = z
   .object({
     cells: z.array(z.string().min(1).max(200)).min(1).max(8),
     anchors: z.array(z.number().int().nonnegative()).min(1),
+    /**
+     * The anchor cells of the list's other rows, as the plan read them (goals/identity.ts itemOpened): a detail that
+     * shows one of them at least as fully as this row's anchors is not this row's item. Absent: no other row was read.
+     */
+    others: z.array(z.array(z.string().min(1).max(200)).min(1).max(8)).max(50).optional(),
   })
   .strict()
   .refine((id) => id.anchors.every((a) => a < id.cells.length) && new Set(id.anchors).size === id.anchors.length, { message: "each anchor names a different cell" });

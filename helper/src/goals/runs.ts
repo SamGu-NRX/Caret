@@ -42,7 +42,7 @@ import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
 import { effectKey, MAX_SEGMENTS, proposedFor, segmentOf, type DonePress } from "./lower.ts";
-import { itemOpened, rowCells } from "./identity.ts";
+import { itemOpened, rowCells, rowSelected } from "./identity.ts";
 import { retainedView, type ContinueResult, type ReplayState } from "./replay.ts";
 import type { GoalInventory } from "./plan.ts";
 import { contractStale, ContractError, exemptRefusal, guardFor, mintExempt, type Proposed, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
@@ -238,7 +238,7 @@ export interface GoalRunDeps {
    * Slice 2: reads `windowId` after a goal's verified navigation and replays its program there (goals/replay.ts
    * continueGoal), updating `state`. Absent: a goal that observes ends after its navigation, the rest left to the user.
    */
-  replay?: (r: { goalId: string; instruction: string; state: ReplayState; windowId: string; inventory: GoalInventory; scopes?: ScopeSet }) => Promise<ContinueResult>;
+  replay?: (r: { goalId: string; instruction: string; state: ReplayState; windowId: string; stillShows: (w: WindowState) => boolean; inventory: GoalInventory; scopes?: ScopeSet }) => Promise<ContinueResult>;
 }
 
 const SAYS: Record<GoalStopReason, string> = {
@@ -740,7 +740,7 @@ export class GoalRuns {
     const lastStep = seg.steps.filter((x) => x.row !== true).at(-1);
     if (lastStep?.kind === "navigate" && run.replay?.pending?.after === lastStep.ref && seg.domain.kind === "window") {
       run.state = "observing";
-      this.track(this.observeAndReplay(run, seg.domain.windowId));
+      this.track(this.observeAndReplay(run, seg.domain.windowId, lastStep));
       return;
     }
     const next = run.plan.segments[seg.index + 1];
@@ -781,7 +781,7 @@ export class GoalRuns {
    * while this runs ends the goal and no preview follows. A refused replay (another observe past the goal's limit, a
    * divergence, a lowering refusal) ends the goal with the rest left to the user and dispatches nothing more.
    */
-  private async observeAndReplay(run: Run, windowId: string): Promise<void> {
+  private async observeAndReplay(run: Run, windowId: string, step: GoalStep): Promise<void> {
     const state = run.replay;
     const replay = this.deps.replay;
     if (state === null || replay === undefined) return this.stop(run, "handedOff", null, "Caret cannot read what this navigation shows here. The rest is yours");
@@ -789,7 +789,7 @@ export class GoalRuns {
     if (run.state !== "observing") return;
     let r: ContinueResult;
     try {
-      r = await replay({ goalId: run.plan.goalId, instruction: run.plan.instruction, state, windowId, inventory: run.plan.inventory, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
+      r = await replay({ goalId: run.plan.goalId, instruction: run.plan.instruction, state, windowId, stillShows: (w) => navigationHolds(w, step), inventory: run.plan.inventory, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
     } catch (e) {
       r = { ok: false, kind: "fault", says: "something went wrong", detail: e instanceof Error ? e.message : String(e) };
     }
@@ -1063,7 +1063,7 @@ export class GoalRuns {
     const title = seg.domain.kind === "window" ? seg.domain.title : seg.domain.calendar;
     if (seg.domain.kind === "window") {
       const doc = run.plan.inventory.documents.get(seg.domain.windowId);
-      if (doc !== undefined && this.deps.pageDocument?.(seg.domain.windowId) !== doc) return { reason: "reload", says: `'${title}' reloaded or went to another page` };
+      if (doc !== undefined && !this.sameDocument(seg, doc, this.deps.pageDocument?.(seg.domain.windowId) ?? null)) return { reason: "reload", says: `'${title}' reloaded or went to another page` };
     }
     switch (reason) {
       case "you":
@@ -1225,7 +1225,7 @@ export class GoalRuns {
     if (seg.domain.kind === "window") {
       const d = seg.domain;
       const doc = run.plan.inventory.documents.get(d.windowId);
-      if (doc !== undefined && this.deps.pageDocument?.(d.windowId) !== doc) return { reason: "reload", says: `'${d.title}' reloaded or went to another page` };
+      if (doc !== undefined && !this.sameDocument(seg, doc, this.deps.pageDocument?.(d.windowId) ?? null)) return { reason: "reload", says: `'${d.title}' reloaded or went to another page` };
       const opened = [...this.deps.model.windows.values()].find((w) => ((task.pid !== null && w.app.pid === task.pid) || (task.bundleId !== null && w.app.bundleId === task.bundleId)) && !task.windows.has(w.window.windowId));
       if (opened !== undefined) return { reason: "dialog", says: `a new window '${opened.window.title}' opened in ${opened.app.name}` };
       const w = this.deps.model.windows.get(d.windowId);
@@ -1243,6 +1243,18 @@ export class GoalRuns {
       if (!this.sourceShows(run, s.value)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
     return null;
+  }
+
+  /**
+   * Whether a running segment's page still shows the document it was planned on. Exactly, as before, unless the segment
+   * opens an item: CU-COUNSEL-R2 D2 allows openItem a same-document history update, which moves a frame's navigation
+   * generation (engines/registry.ts documentOf: frameId:documentId:navGen per frame) and keeps its documents.
+   */
+  private sameDocument(seg: GoalSegment, planned: string, now: string | null): boolean {
+    if (now === planned) return true;
+    if (now === null || !seg.steps.some((s) => s.kind === "navigate" && s.nav?.capability === "openItem")) return false;
+    const documents = (x: string): string => x.split("|").map((f) => f.slice(0, f.lastIndexOf(":"))).join("|");
+    return documents(now) === documents(planned);
   }
 
   private revoke(run: Run, reason: GoalStopReason, says: string): void {
@@ -1459,6 +1471,14 @@ export function tierOf(s: Pick<GoalStep, "kind" | "target">): NonNullable<GoalSt
 function wireKind(s: Pick<GoalStep, "kind" | "nav">): GoalStepView["kind"] {
   if (s.kind !== "navigate") return s.kind;
   return s.nav?.actor === "caret" ? "press" : "handoff";
+}
+
+/** Whether a verified navigate step's end state still holds in `w` (the weak form of itemOpened, or rowSelected). */
+function navigationHolds(w: WindowState, s: GoalStep): boolean {
+  const nav = s.nav;
+  if (nav === undefined) return false;
+  if (nav.capability === "openItem") return itemOpened(w, nav.identity);
+  return nav.container !== null && rowSelected(w, nav.container.key, s.target.key, s.target.role);
 }
 
 /** Whether a row's cells as read now are the cells it was frozen with, compared as identity reads them. */

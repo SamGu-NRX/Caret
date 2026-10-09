@@ -75,6 +75,8 @@ export class GoalDesk implements ReaderLink {
   readonly writes: { windowId: string; key: string; value: string }[] = [];
   /** Called after each act lands and before its answer goes back. */
   afterAct: ((v: ReaderVerb) => void) | null = null;
+  /** Slice 2: called when a walk of a window arrives, before the desk answers it with the window as it then is. */
+  beforeWalk: ((windowId: string) => void) | null = null;
   /** Keys whose value writes answer focusMoved and write nothing, as caret-screen does when a page moves focus away. */
   readonly focusMovesOn = new Set<string>();
 
@@ -127,7 +129,8 @@ export class GoalDesk implements ReaderLink {
     if (w === undefined) return answer("noWindow");
     if (verb.pid !== w.app.pid) return answer("notAllowed", `window ${w.windowId} is not process ${verb.pid}'s`);
     if (verb.kind === "walk") {
-      this.show(w);
+      this.beforeWalk?.(verb.windowId);
+      this.show(this.windows.get(verb.windowId) ?? w);
       return answer("ok");
     }
     if (verb.kind === "raise") return answer("notAllowed", "the desk does not raise windows");

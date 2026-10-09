@@ -20,7 +20,7 @@ import { mintFieldName, writableFields } from "../planner/planner.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects, allowedNavigateEffects } from "./capabilities.ts";
-import { containerOf, rowCellParts } from "./identity.ts";
+import { anchorsOf, containerOf, identityOf, rowCellParts } from "./identity.ts";
 import { nodePart, wholePart } from "../privacy/ledger/source.ts";
 import { words } from "../fill/kinds.ts";
 import { markDerived } from "./gates.ts";
@@ -212,12 +212,20 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
       return cells.length === 0 ? [] : [{ n, kind, cells, parts, at, score }];
     });
     candidates.sort((a, b) => b.score - a.score || a.at - b.at);
+    // Every row's anchors, by its list: what each row's identity must show more fully than (identity.ts itemOpened).
+    const anchorsBy = new Map<string, { key: string; anchors: string[] }[]>();
+    for (const c of candidates) {
+      const list = containerOf(w, c.n.key, ROW_CONTAINERS)?.key ?? "";
+      const id = identityOf(c.cells);
+      if (id !== null) anchorsBy.set(list, [...(anchorsBy.get(list) ?? []), { key: c.n.key, anchors: anchorsOf(id) }]);
+    }
     let rows = 0;
     for (const { n, kind, cells, parts } of candidates) {
       if (rows >= MAX_ROWS) break;
       const container = containerOf(w, n.key, ROW_CONTAINERS);
       const label = cells.join(" · ");
-      const row = { cells, container: container === null ? null : { key: container.key, role: container.role }, selectable: false, inForm: null, href: null, kind };
+      const others = (anchorsBy.get(container?.key ?? "") ?? []).filter((x) => x.key !== n.key).slice(0, 50).map((x) => x.anchors);
+      const row = { cells, others, container: container === null ? null : { key: container.key, role: container.role }, selectable: false, inForm: null, href: null, kind };
       const nav = allowedNavigateEffects({ kind, page, label, windowKind: w.window.kind, bundleId: w.app.bundleId, selectable: row.selectable, inForm: row.inForm, href: row.href });
       if (nav.length === 0) continue;
       // Each cell minted where it was read, so its charge is that node's text alone.

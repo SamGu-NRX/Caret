@@ -70,6 +70,15 @@ describe("itemOpened", () => {
     expect(itemOpened(mail({ detail: ["Your flight to SFO dep"] }), long)).toBe(false);
   });
 
+  test("an anchor matched only as part of another row's longer anchor does not count for this row", () => {
+    // The old booking's date is an anchor its detail need not show: what decides is the longer subject.
+    const dana = { cells: ["Dana Whitfield", "Flight itinerary", "9:41 AM"], anchors: [0, 1], others: [["Kayak", "Flight itinerary"], ["Dana Whitfield", "Flight itinerary (old)", "Oct 2"]] };
+    expect(itemOpened(mail({ detail: ["From: Dana Whitfield", "Subject: Flight itinerary"] }), dana)).toBe(true);
+    expect(itemOpened(mail({ detail: ["From: Dana Whitfield", "Subject: Flight itinerary (old)"] }), dana)).toBe(false);
+    // Another row's anchors shown beside this row's (Kayak, mentioned in Dana's message) leave the detail Dana's.
+    expect(itemOpened(mail({ detail: ["From: Dana Whitfield", "Subject: Flight itinerary", "Is this the Kayak booking?"] }), dana)).toBe(true);
+  });
+
   test("the strong form counts only nodes new or changed since the read before the act", () => {
     const before = mail({ detail: ["From: Kayak", "Subject: Flight itinerary"] });
     expect(itemOpened(before, KAYAK, textsByKey(before))).toBe(false);

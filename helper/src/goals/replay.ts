@@ -215,6 +215,12 @@ export interface ContinueOptions {
   state: ReplayState;
   /** The window the verified navigation changed. */
   windowId: string;
+  /**
+   * Whether the window still shows what the navigation was verified to show (its end state, as the executor checked it).
+   * Asked right before the window is read into the observation, in the same turn, so an item the user switched away from
+   * after the check is never what the steps after it read (review of 49901539: Dana's old booking, and its code).
+   */
+  stillShows: (w: WindowState) => boolean;
   /** The goal's inventory so far (gen 0 and every observation before this one). */
   inventory: GoalInventory;
   askJev: AskJev | null;
@@ -242,6 +248,8 @@ export async function continueGoal(model: ScreenModel, o: ContinueOptions): Prom
   const pending = state.pending;
   if (pending === null) return { ok: false, kind: "goal", says: "Caret has nothing left to read for this goal", detail: "no pending observe" };
   const n = state.record.observations.length + 1;
+  const now = model.windows.get(o.windowId);
+  if (now === undefined || !o.stillShows(now)) return { ok: false, kind: "goal", says: "the window no longer showed the item Caret opened when Caret went to read it", detail: o.windowId };
   let obs: Observation;
   try {
     obs = observe(model, o.windowId, n, { instruction: o.instruction, clock: o.clock, now: o.now, readerSession: o.readerSession, ...(o.pageDocument === undefined ? {} : { pageDocument: o.pageDocument }) });

@@ -200,6 +200,72 @@ describe("native task: open Kayak's message, then Dana's, and draft the reply (m
     expect(sc.helper.goals.replayCounts(first.goalId)).toMatchObject({ observations: 0 });
   });
 
+  it("opening Dana's old booking when her current message was asked for never verifies: nothing is written", async () => {
+    // Review of 49901539: "Flight itinerary (old)" shows both anchors of "Flight itinerary", so the old thread verified.
+    const { code, decoy } = codes();
+    const messages = mailMessages(code, decoy);
+    const sc = scene({ scripts: [NATIVE], windows: [mailboxWindow(messages)], userWindow: "6262-1", askJev: jev(), waitForYouMs: 2_000 });
+    const first = await sc.request(INSTRUCTION);
+    await acceptAndDo(sc, first.goalId, () => userOpens(sc.desk, "6262-1", messages, "kayak"));
+    expect(segments(sc, first.goalId)).toHaveLength(2);
+    await acceptAndDo(sc, first.goalId, () => userOpens(sc.desk, "6262-1", messages, "dana-old"));
+    expect(last(sc, "stopped")).toMatchObject({ reason: "handedOff" });
+    expect(segments(sc, first.goalId)).toHaveLength(2);
+    expect(acts(sc)).toEqual([]);
+  });
+
+  it("an item the user switches away from after it verified is never read: the goal stops, and nothing is written", async () => {
+    // Review of 49901539: the observation's walk read Dana's old booking, and its code reached the reply.
+    const { code, decoy } = codes();
+    const messages = mailMessages(code, decoy);
+    const sc = scene({ scripts: [NATIVE], windows: [mailboxWindow(messages)], userWindow: "6262-1", askJev: jev() });
+    const first = await sc.request(INSTRUCTION);
+    await acceptAndDo(sc, first.goalId, () => {
+      userOpens(sc.desk, "6262-1", messages, "kayak");
+      // The executor has verified Kayak's message; the user opens another before the goal reads it.
+      sc.desk.beforeWalk = (id) => {
+        sc.desk.beforeWalk = null;
+        sc.desk.windows.set(id, mailboxWindow(messages, "dana-old"));
+      };
+    });
+    expect(last(sc, "stopped")?.says).toBe("The window no longer showed the item Caret opened when Caret went to read it. The rest is yours.");
+    expect(sc.helper.goals.replayCounts(first.goalId)).toMatchObject({ observations: 0 });
+    expect(acts(sc)).toEqual([]);
+  });
+
+  it("a row selected by the user verifies within about a second, though a selection alone records no change", async () => {
+    const { code, decoy } = codes();
+    const messages = mailMessages(code, decoy);
+    const SELECT = {
+      source: `async function main(caret: CaretPlanAPI): Promise<PlanRef> {
+  const box = await caret.readWindow();
+  const s = caret.navigate(box.targets.find((t) => t.kind === "row" && t.label.startsWith("Kayak · ")).ref, "e:select");
+  return caret.plan({ basedOn: box.snapshot, steps: [s] });
+}`,
+    };
+    const sc = scene({ scripts: [SELECT], windows: [mailboxWindow(messages)], userWindow: "6262-1", askJev: jev() });
+    const first = await sc.request(INSTRUCTION);
+    expect(first.event === "segment" && first.steps.map((x) => x.says)).toEqual(["Select 'Flight itinerary' (Kayak) yourself. Caret continues once it is selected"]);
+    const t0 = Date.now();
+    await acceptAndDo(sc, first.goalId, () => {
+      // Only the row's selected state changes: the detail stays as it was.
+      const w = mailboxWindow(messages);
+      for (const n of w.nodes) if (n.key === mailboxRowKey("kayak")) n.states = ["selected"];
+      sc.desk.show(w);
+    });
+    expect(Date.now() - t0).toBeLessThan(20_000);
+    expect(last(sc, "finished")).toMatchObject({ outcome: "done" });
+  });
+
+  it("a row with the same name as another row of its list, told apart only by time, is refused before anything is offered", async () => {
+    const { code, decoy } = codes();
+    const messages = mailMessages(code, decoy).map((m) => (m.id === "priya" ? { ...m, sender: "Kayak", subject: "Flight itinerary", time: "Yesterday" } : m));
+    const sc = scene({ scripts: [NATIVE], windows: [mailboxWindow(messages)], userWindow: "6262-1", askJev: jev() });
+    const first = await sc.request(INSTRUCTION);
+    expect(first).toMatchObject({ event: "stopped", reason: "refused", says: "Caret can't tell 'Kayak · Flight itinerary · 3m ago' from another row of its list with the same name" });
+    expect(acts(sc)).toEqual([]);
+  });
+
   it("stale card: a row whose cells changed between the preview and Tab stops the goal, and nothing runs", async () => {
     const { code, decoy } = codes();
     const messages = mailMessages(code, decoy);
@@ -327,6 +393,30 @@ describe("page task: open Kayak's thread in a Gmail-shaped page and draft the re
     expect(sc.writer.requests).toHaveLength(1);
     expect(sc.helper.goals.replayCounts(goalId)).toMatchObject({ observations: 1, newChoices: 0 });
     expect(askJev.chooses).toBe(0);
+  });
+
+  it("an open that moves only the page's navigation generation goes on; one that replaces its document stops", async () => {
+    // Review of 49901539: engines/registry.ts documentOf carries each frame's navigation generation, which a same-document
+    // history update moves (CU-COUNSEL-R2 D2 allows openItem one).
+    for (const replaced of [false, true]) {
+      const { code, decoy } = codes();
+      const messages = mailMessages(code, decoy);
+      let generation = 0;
+      let documentId = "doc-1";
+      const sc = scene({ scripts: [PAGE], windows: [webmailWindow(messages)], userWindow: WEBMAIL_ID, askJev: jev(), pageDocument: (id) => (id === WEBMAIL_ID ? `0:${documentId}:${generation}` : null) });
+      const first = await sc.request(PAGE_INSTRUCTION);
+      await acceptAndDo(sc, first.goalId, () => {
+        generation++;
+        if (replaced) documentId = "doc-2";
+        userOpens(sc.desk, WEBMAIL_ID, messages, "kayak");
+      });
+      if (replaced) expect(last(sc, "stopped")).toMatchObject({ reason: "reload" });
+      else {
+        expect(segments(sc, first.goalId)).toHaveLength(2);
+        await sc.accept(first.goalId);
+        expect(sc.desk.writes).toEqual([{ windowId: WEBMAIL_ID, key: WEBMAIL_REPLY, value: `Thanks, the confirmation number is ${code}.` }]);
+      }
+    }
   });
 
   it("20 runs with a new code each write exactly that run's code", async () => {

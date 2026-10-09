@@ -28,7 +28,7 @@ import type { AskJev } from "../fill/jev.ts";
 import { matchOption } from "../fill/controls.ts";
 import { MAX_FIELDS } from "../fill/fill.ts";
 import { navVerdict, pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
-import { identityOf } from "./identity.ts";
+import { anchorPart, anchorsOf, identityOf } from "./identity.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
 import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, statedChoice, VerifierUnavailable, type CheckedValue, type Proposed, type Provenance } from "../fill/contract.ts";
@@ -472,9 +472,14 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       const r = t.row;
       const verdict = navVerdict({ kind: r.kind, page: d.page, label: t.label, windowKind: d.windowKind, bundleId: d.bundleId, selectable: r.selectable, inForm: r.inForm, href: r.href }, s.effect);
       if (verdict.kind === "refuse") throw new GoalError("unsupportedStep", verdict.says.charAt(0).toUpperCase() + verdict.says.slice(1), t.ref);
-      const identity = identityOf(r.cells);
+      const own = identityOf(r.cells);
+      const identity = own === null ? null : { ...own, ...(r.others.length === 0 ? {} : { others: r.others }) };
       // A row with no cell a detail would repeat cannot be checked as opened: Caret would not know it reached it.
       if (identity === null) throw new GoalError("unsupportedStep", `Caret can't tell ${named(t)} from the rows around it by anything its detail would show`, t.ref);
+      // Another row of the list with the same anchors (two "Flight itinerary" rows from Kayak, told apart only by time)
+      // opens a detail that fits both, so neither can be verified as the one the plan named.
+      const key = (xs: readonly string[]): string => [...xs].map(anchorPart).sort().join("\u0000");
+      if (r.others.some((o) => key(o) === key(anchorsOf(identity)))) throw new GoalError("unsupportedStep", `Caret can't tell ${named(t)} from another row of its list with the same name`, t.ref);
       if (verdict.capability.name === "selectRow" && r.container === null) throw new GoalError("unsupportedStep", `Caret can't find the list ${named(t)} is in`, t.ref);
       steps.push({ ref: s.ref, index, kind: "navigate", says: verdict.capability.says(identity, verdict.actor), target: t, value: null, writes: null, effect: verdict.capability.effect, handoff: null, to: false, gate: null, nav: { capability: verdict.capability.name, actor: verdict.actor, identity, container: r.container } });
       lastPress = null;
@@ -823,7 +828,9 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
       const nav = x.nav;
       if (nav === undefined) throw new GoalError("schema", "a navigate step without its capability", x.ref);
       // Each cell is screen text, so each is a slot; the anchors are code's indexes.
-      const identity = { cells: nav.identity.cells.map((c, j) => slot(`c${i}_${j}`, c, `cell ${j + 1} of row ${i + 1}`, d.kind === "window" ? d.windowId : undefined)), anchors: nav.identity.anchors };
+      const from = d.kind === "window" ? d.windowId : undefined;
+      const others = nav.identity.others?.map((o, k) => o.map((c, j) => slot(`o${i}_${k}_${j}`, c, `anchor ${j + 1} of another row of row ${i + 1}'s list`, from)));
+      const identity = { cells: nav.identity.cells.map((c, j) => slot(`c${i}_${j}`, c, `cell ${j + 1} of row ${i + 1}`, from)), anchors: nav.identity.anchors, ...(others === undefined ? {} : { others }) };
       const via = { kind: "navigate" as const, target, capability: nav.capability, actor: nav.actor };
       if (nav.capability === "openItem") return { says, end: { kind: "itemOpened", window: sel, target, identity }, via };
       if (nav.container === null) throw new GoalError("schema", "a row selection without its list", x.ref);

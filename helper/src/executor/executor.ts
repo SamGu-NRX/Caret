@@ -216,6 +216,8 @@ const EFFECT_POLLS = 4;
  * measured (CU-COUNSEL-R2): the act grant's own limit (GRANT_MAX_MS), as long as a preview waits for its Tab.
  */
 export const WAIT_FOR_YOU_MS = 120_000;
+/** How often a wait for the user's navigation checks again without a change to wake it. Assumed: a second reads as prompt. */
+const SELECTION_RECHECK_MS = 1_000;
 /** Extra tries for a failed walk. One cut-short walk in 20 shipping runs stopped a run on a loaded Mac. */
 const WALK_RETRIES = 2;
 const EFFECT_POLL_MS = 150;
@@ -1288,7 +1290,11 @@ export class Executor {
     await this.verified(task, i, step);
   }
 
-  /** Resolves on the next change the model records in `windowId` (or a window closing), an interrupt, or after `ms`. */
+  /**
+   * Resolves on the next change the model records in `windowId` (or a window closing), an interrupt, or after `ms`, and
+   * at least every SELECTION_RECHECK_MS: a snapshot that only changes a row's selection records no change (model.ts
+   * compares text and membership), so rowSelected would otherwise be checked again only when the wait ran out.
+   */
   private nextChange(task: Task, windowId: string, ms: number): Promise<void> {
     return new Promise<void>((resolve) => {
       let timer: NodeJS.Timeout | undefined;
@@ -1301,7 +1307,7 @@ export class Executor {
       const off = this.deps.onChanges((cs) => {
         if (cs.some((c) => c.windowId === windowId)) done();
       });
-      timer = setTimeout(done, ms);
+      timer = setTimeout(done, Math.min(ms, SELECTION_RECHECK_MS));
       task.wake = done;
     });
   }

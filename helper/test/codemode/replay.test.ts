@@ -178,6 +178,24 @@ describe("a replay on the record", () => {
     expect(refusal(await runCodePlan(program, [INBOX], counting(), { multiWindow: true, navigation: true }))).toMatchObject({ kind: "violation", detail: expect.stringMatching(/an observe is unanswered/) });
   });
 
+  test("choices are recorded in the order the program asked them, whatever order their answers came in", async () => {
+    // Review of 49901539: a slower first answer recorded the second choice first, and the replay then diverged.
+    const program = `async function main(caret: CaretPlanAPI): Promise<PlanRef> {
+  const box = await caret.readWindow();
+  const q = box.questions[0].options.map((o) => o.ref);
+  const [a, b] = await Promise.all([caret.choose(q), caret.choose(q)]);
+  return caret.plan({ basedOn: box.snapshot, steps: [caret.navigate(a === b ? "t1" : "t2", "e:open")] });
+}`;
+    let n = 0;
+    const slowFirst: ChooserPort = async () => {
+      const mine = n++;
+      if (mine === 0) await new Promise((r) => setTimeout(r, 50));
+      return mine === 0 ? "s1q1o1" : "s1q1o2";
+    };
+    const out = ok(await runCodePlan(program, [INBOX], slowFirst, { multiWindow: true, navigation: true }));
+    expect(out.plan.choices.map((c) => c.chosen)).toEqual(["s1q1o1", "s1q1o2"]);
+  });
+
   test("an observation whose refs repeat a snapshot's is refused as input", async () => {
     const { record } = await firstRun();
     const clash = { ...OPENED, targets: [{ ...OPENED.targets[0]!, ref: "t1" }] };
