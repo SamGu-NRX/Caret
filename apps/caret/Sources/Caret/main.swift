@@ -44,7 +44,7 @@ if CommandLine.arguments.dropFirst().first == "--probe-typing", CommandLine.argu
     RunLoop.main.run()
 }
 
-// Dev mode: `Caret --probe-length <cases.txt> <out.ndjson> [--caps 4,8,16] [--extend 28]` times suggestions by
+// Dev mode: `Caret --probe-length <cases.txt> <out.ndjson> [--caps 4,8,16] [--extend 28] [--normalized 4]` times suggestions by
 // length while typing each line key by key.
 if CommandLine.arguments.dropFirst().first == "--probe-length", CommandLine.arguments.count >= 4 {
     let args = CommandLine.arguments
@@ -53,10 +53,11 @@ if CommandLine.arguments.dropFirst().first == "--probe-length", CommandLine.argu
     func value(_ flag: String) -> String? { args.firstIndex(of: flag).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
     let caps = (value("--caps") ?? "4,8,12,16,24,32").split(separator: ",").compactMap { Int($0) }
     let extend = value("--extend").flatMap(Int.init) ?? 28
+    let normalized = (value("--normalized") ?? "").split(separator: ",").compactMap { Int($0) }
     let modelURL = configuration.modelURL
     MainActor.assumeIsolated {
         Task {
-            print(await DevProbe.length(modelURL: modelURL, cases: cases, out: out, caps: caps, extend: extend), terminator: "")
+            print(await DevProbe.length(modelURL: modelURL, cases: cases, out: out, caps: caps, extend: extend, normalized: normalized), terminator: "")
             exit(0)
         }
     }

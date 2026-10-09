@@ -99,11 +99,14 @@ public enum DevProbe {
         /// A short request shown at once, then a second request from the end of the shown text that
         /// extends it. The first visible word is the first request's.
         case extend(first: Int, then: Int)
+        /// One request with this cap, candidates ordered by mean log probability per token (`normalizesLength`).
+        case normalized(Int)
 
         var description: String {
             switch self {
             case .single(let n): return "single-\(n)"
             case .extend(let a, let b): return "extend-\(a)+\(b)"
+            case .normalized(let n): return "norm-\(n)"
             }
         }
     }
@@ -114,7 +117,7 @@ public enum DevProbe {
     /// one JSON row per keystroke and mode, and prints p50/p95 by suggestion length in words.
     /// Model time only: no AX read, presentation gate or paint, and no keystroke cancels a request.
     @MainActor
-    public static func length(modelURL: URL, cases: URL, out: URL, caps: [Int], extend: Int) async -> String {
+    public static func length(modelURL: URL, cases: URL, out: URL, caps: [Int], extend: Int, normalized: [Int] = []) async -> String {
         guard let corpus = try? String(contentsOf: cases, encoding: .utf8) else { return "cannot read \(cases.path)\n" }
         let lines = corpus.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty }
         let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
@@ -123,6 +126,7 @@ public enum DevProbe {
         // The width cap must not be what stops a long suggestion; the token cap under test does.
         engine.displayWidth = 400
         let modes = caps.map(LengthMode.single) + (extend > 0 ? [.extend(first: GhostTextEngine.maxCompletionTokens, then: extend)] : [])
+            + normalized.map(LengthMode.normalized)
         var rows: [LengthRow] = []
         for mode in modes {
             for (index, line) in lines.enumerated() {
@@ -187,8 +191,10 @@ public enum DevProbe {
                 detectedLanguage: "en"
             )
         }
-        func timed(_ tokens: Int, _ text: String) async -> (GhostTextEngine.Outcome, Double) {
+        func timed(_ tokens: Int, _ text: String, normalize: Bool = false) async -> (GhostTextEngine.Outcome, Double) {
             engine.completionTokens = tokens
+            engine.normalizesLength = normalize
+            defer { engine.normalizesLength = false }
             let started = DispatchTime.now().uptimeNanoseconds
             let outcome = (try? await engine.suggest(for: context(text))) ?? .suppressed("cancelled")
             return (outcome, Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
@@ -200,8 +206,8 @@ public enum DevProbe {
                              firstMs: first, fullMs: full, words: words, sentenceEnd: ends)
         }
         switch mode {
-        case .single(let cap):
-            let (outcome, ms) = await timed(cap, before)
+        case .single(let cap), .normalized(let cap):
+            let (outcome, ms) = await timed(cap, before, normalize: mode == .normalized(cap))
             switch outcome {
             case .suggestion(let s): return row(s.text, reason: nil, first: ms, full: ms)
             case .suppressed(let why): return row(nil, reason: why, first: ms, full: ms)
