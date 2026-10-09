@@ -4,6 +4,7 @@
 // requests are not the ones Jev answered on 2026-10-07, so its Jev replay lookups miss.
 //
 //   node scripts/decisions-frozen.ts --set B24 --max-usd USD --out DIR [--recorded-at PREFIX] [--no-cache] [--dry-run]
+// --jev-requests is the original Jev harness request log. Canonical cache entries cannot recover wire order.
 // --dry-run lists the matched requests by recording hour with their size, and sends nothing.
 //
 // Every cache entry is fixture text (cache.ts records only fixture requests). Keys come from OPENAI_API_KEY,
@@ -18,7 +19,7 @@ import { DecisionsAttemptError, type DecisionsResult } from "../src/engines/deci
 import { processEnv } from "../src/host-env.ts";
 import { appendStoreJson, writeStore } from "../src/privacy/send.ts";
 import type { JevRequest } from "../src/fill/jev.ts";
-import { minted } from "../test/minted.ts";
+import { frozenRequestOf, originalRequests, type FrozenEntry } from "./decisions-frozen-input.ts";
 import { loadAsks, loadCorpus, type CorpusAsk } from "./realfill-corpus.ts";
 import { labelQuestion } from "./decisions-labels.ts";
 
@@ -28,6 +29,7 @@ const { values: a } = parseArgs({
     set: { type: "string" },
     out: { type: "string" },
     "max-usd": { type: "string" },
+    "jev-requests": { type: "string" },
     "recorded-at": { type: "string", default: "" },
     "no-cache": { type: "boolean", default: false },
     "dry-run": { type: "boolean", default: false },
@@ -45,13 +47,6 @@ mkdirSync(OUT, { recursive: true });
 const corpus = loadCorpus(resolve(a.corpus));
 const asks = loadAsks(resolve(a.corpus), corpus, file);
 
-interface Entry {
-  engine: string;
-  canonical: { exact: boolean; state: unknown; questions: { id?: string; type: "choice" | "noul"; instructions: string; criteria: [string, string | null][] | { true: string; false: string } | null }[] };
-  answers: Record<string, { choice: string; confidence: number }>;
-  probabilities: Record<string, Record<string, number>>;
-  recordedAt: string;
-}
 /** The ask a recorded request belongs to: the longest instruction it quotes, narrowed by the form's window title. */
 function askOf(text: string): CorpusAsk | null {
   const quoted = asks.filter((x) => text.includes(JSON.stringify(x.instruction).slice(1, -1)));
@@ -62,11 +57,11 @@ function askOf(text: string): CorpusAsk | null {
 }
 
 const cacheDir = cacheFromEnv(processEnv(), HARNESS_CACHE_DIR)?.dir ?? HARNESS_CACHE_DIR;
-const frozen: { ask: CorpusAsk; entry: Entry }[] = [];
+const frozen: { ask: CorpusAsk; entry: FrozenEntry }[] = [];
 let unmatched = 0;
 for (const sub of readdirSync(cacheDir).filter((d) => /^[0-9a-f]{2}$/u.test(d)).sort()) {
   for (const name of readdirSync(join(cacheDir, sub)).filter((f) => f.endsWith(".json")).sort()) {
-    const entry = JSON.parse(readFileSync(join(cacheDir, sub, name), "utf8")) as Entry;
+    const entry = JSON.parse(readFileSync(join(cacheDir, sub, name), "utf8")) as FrozenEntry;
     if (entry.engine !== "jev" || !entry.recordedAt.startsWith(a["recorded-at"])) continue;
     // Only exact entries keep the request's own question and option ids, which Jev's answers name.
     if (!entry.canonical.exact) { unmatched++; continue; }
@@ -90,26 +85,20 @@ if (a["dry-run"]) {
   process.exit(0);
 }
 
-/** The recorded request as it was sent: every text minted as fixture wording (test/minted.ts), ids unchanged. */
-function requestOf(e: Entry): JevRequest {
-  const questions: Record<string, unknown> = {};
-  const nouls: Record<string, unknown> = {};
-  for (const q of e.canonical.questions) {
-    if (q.id === undefined) throw new Error("an exact cache entry has a question without its id");
-    if (q.type === "choice") questions[q.id] = { type: "choice", instructions: q.instructions, criteria: Object.fromEntries(q.criteria as [string, string | null][]) };
-    else nouls[q.id] = { type: "noul", instructions: q.instructions, ...(q.criteria === null ? {} : { criteria: q.criteria }) };
-  }
-  return minted({ state: e.canonical.state, questions, ...(Object.keys(nouls).length === 0 ? {} : { nouls }), snippets: [], charged: {} }) as unknown as JevRequest;
-}
+// Validate the entire input before any paid call. Never guess missing or ambiguous original order.
+if (a["jev-requests"] === undefined) throw new Error("--jev-requests is required: supply the original order-preserving Jev request log; canonical cache entries cannot recover the original wire");
+const originals = originalRequests(readFileSync(resolve(a["jev-requests"]), "utf8"));
+const requests = frozen.map(({ ask, entry }) => ({ ask, entry, req: frozenRequestOf(entry, originals) }));
 
 const decide = harnessEngine({ name: "decisions", canned: null, fixture: { windows: () => false, memory: false, plan: false }, logRequests: join(OUT, "requests.ndjson"), decisionsMaxUsd: MAX_USD, noCache: a["no-cache"] });
 const scored = join(OUT, "scored.ndjson");
+// This file describes the current run; retaining earlier samples would weight reruns more heavily in the sweep.
+writeStore(scored, "");
 const liveMs: number[] = [];
 const served = new Map<string, number>();
 const errors: string[] = [];
 let stop: string | null = null;
-for (const { ask, entry } of frozen) {
-  const req = requestOf(entry);
+for (const { ask, entry, req } of requests) {
   let r: Awaited<ReturnType<typeof decide.ask>>;
   try { r = await decide.ask(req); }
   catch (e) {
