@@ -71,6 +71,8 @@ final class SurfaceCoordinator {
         var milliseconds: Double
     }
     private var placed: Placed?
+    /// The figure's seat in the content `placed` was last placed with (`typing`).
+    private var placedSeat: CGPoint?
     /// The placement `panelIsClear` just measured, so the draw that follows does not probe the same
     /// ground twice. Used once, and only for the same content around the same field.
     private var fitted: (content: PanelContent, field: CGRect, caret: CGRect, pid: Int32, placed: Placed)?
@@ -583,7 +585,7 @@ final class SurfaceCoordinator {
         }
         switch placement {
         case .inPlace:
-            panel.setContent(typing(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil), content: content), growing: growing)
+            panel.setContent(typing(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil), content: content, placing: false), growing: growing)
             panel.text = text
             if !panel.isVisible { panel.enter() }
         case .atField(let field, let caret, let pid, let entering):
@@ -620,24 +622,30 @@ final class SurfaceCoordinator {
             if enter || panel.anchor.point != Self.cocoaPoint(chosen) || panel.anchor.corner != Self.corner(chosen.spot.corner) {
                 panel.pin(HostedPanel.Anchor(corner: Self.corner(chosen.spot.corner), point: Self.cocoaPoint(chosen)))
             }
-            panel.setContent(typing(view(chosen.spot.isNarrow ? PopupView.minWidth : nil), content: content), growing: growing)
+            panel.setContent(typing(view(chosen.spot.isNarrow ? PopupView.minWidth : nil), content: content, placing: true), growing: growing)
             panel.text = text
             if enter { panel.enter() }
         }
     }
 
     /// Tells the panel's figure where the caret is from its seat, so its rest glances go to the
-    /// typing (`FigureIdle`). Nothing before the panel is placed.
-    private func typing(_ view: AnyView, content: PanelContent?) -> AnyView {
-        guard let placed else { return view }
-        let seat: CGPoint
-        switch content {
-        case .popup?: seat = CGPoint(x: 12 + PopupView.figureSize / 2, y: 20)
-        case .compactLine?: seat = CGPoint(x: 5 + Tokens.FigureSize.compact / 2, y: Tokens.Shape.compactHeight / 2)
-        case .line?, nil: seat = CGPoint(x: Tokens.Shape.slipLeading + Tokens.FigureSize.line / 2, y: Tokens.Shape.slipHeight / 2)
-        }
-        let direction = FigureIdle.typingDirection(panel: placed.choice.frame, seat: seat, caret: placed.caret)
+    /// typing (`FigureIdle`). The placed frame is the one measured for the content placed with it:
+    /// content swapped in place of another kind (a pop-up for a line) has its seat elsewhere, so it
+    /// gets no direction and only blinks until it is placed again.
+    private func typing(_ view: AnyView, content: PanelContent?, placing: Bool) -> AnyView {
+        if placing { placedSeat = Self.seat(content) }
+        guard let placed, placedSeat == Self.seat(content) else { return AnyView(view.environment(\.figureTyping, nil)) }
+        let direction = FigureIdle.typingDirection(panel: placed.choice.frame, seat: Self.seat(content), caret: placed.caret)
         return AnyView(view.environment(\.figureTyping, direction))
+    }
+
+    /// The middle of the figure's seat from the panel's top-left corner.
+    private static func seat(_ content: PanelContent?) -> CGPoint {
+        switch content {
+        case .popup?: return CGPoint(x: 12 + PopupView.figureSize / 2, y: 20)
+        case .compactLine?: return CGPoint(x: 5 + Tokens.FigureSize.compact / 2, y: Tokens.Shape.compactHeight / 2)
+        case .line?, nil: return CGPoint(x: Tokens.Shape.slipLeading + Tokens.FigureSize.line / 2, y: Tokens.Shape.slipHeight / 2)
+        }
     }
 
     private func place(

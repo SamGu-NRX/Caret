@@ -468,7 +468,7 @@ struct FigureView: View {
             if state == .absent {
                 Color.clear
             } else if plan.posture == nil {
-                FigureFace(drawing: drawing, pose: pose, crossfade: plan.crossfade)
+                FigureFace(drawing: drawing, pose: pose, crossfade: plan.crossfade, freezesPose: true)
                     .shadow(color: Color(token: Tokens.glow).opacity(glow > 0 ? 1 : 0), radius: glow / 2)
                     .scaleEffect(x: mirrored ? -1 : 1, y: 1)
                     .animation(nil, value: mirrored)
@@ -485,23 +485,31 @@ struct FigureView: View {
     }
 }
 
-/// The body in its skin. With a crossfade, the lit and the Graphite skins are both drawn and the
-/// light fades between them; without one the pose's own skin is drawn alone.
+/// The body in its skin. With a crossfade, the lit and the Graphite skins are both drawn and only
+/// their opacity takes the crossfade's curve, so the pose keeps its own (the posture spring, Error's
+/// ease, or a jump). Without one the pose's own skin is drawn alone.
 private struct FigureFace: View {
     let drawing: FigureDrawing
     let pose: FigurePose
     let crossfade: Double?
+    /// Reduce Motion: the pose jumps even inside a surrounding animated transaction.
+    var freezesPose = false
 
     var body: some View {
         if let crossfade {
             ZStack {
-                drawing.body(pose, skin: FigureSkin(graphite: false)).opacity(pose.graphite ? 0 : 1)
-                drawing.body(pose, skin: FigureSkin(graphite: true)).opacity(pose.graphite ? 1 : 0)
+                layer(graphite: false, crossfade: crossfade)
+                layer(graphite: true, crossfade: crossfade)
             }
-            .animation(.linear(duration: crossfade), value: pose.graphite)
         } else {
             drawing.body(pose, skin: FigureSkin(graphite: pose.graphite))
         }
+    }
+
+    private func layer(graphite: Bool, crossfade: Double) -> some View {
+        drawing.body(pose, skin: FigureSkin(graphite: graphite))
+            .transaction { if freezesPose { $0.animation = nil } }
+            .animation(.linear(duration: crossfade)) { $0.opacity(pose.graphite == graphite ? 1 : 0) }
     }
 }
 
@@ -582,6 +590,7 @@ private struct LiveFigure: View {
                 blinks &+= 1
             case .glance(let hold):
                 guard let toward = typingNow else {
+                    doubleBlink = false
                     blinks &+= 1
                     continue
                 }
