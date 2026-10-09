@@ -1,1 +1,0 @@
-Tests can await PageFocus.moved for the walk/focus completion; EngineSession.onFocus discards that promise.
