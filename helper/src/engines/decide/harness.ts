@@ -13,7 +13,8 @@ import { appendStoredLine, seal, type StoreRecord } from "../../privacy/send.ts"
 import { withholdValues } from "../../privacy/exclude.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { accessSync, constants, mkdirSync } from "node:fs";
+import { closeSync, mkdirSync } from "node:fs";
+import { assertLocalStorePath, openLocalFile } from "../../privacy/store-path.ts";
 import { frozenRequest, HOIST_SHARED_OPTIONS, JEV_MODEL, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
 import { DailySpend } from "./daily-cap.ts";
 import { DECISIONS_MODEL, DECISIONS_POLICY_VERSION, DecisionsAttemptError, DecisionsCredentialError, assertDecisionsCredentialAbsent, assertDecisionsResult, configuredDecisionsKeys, makeDecisionsClient, refuseDecisionsApp, type DecisionsResult } from "./decisions.ts";
@@ -216,8 +217,8 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
     if (engine.name === "decisions") {
       // A first failure or a cache-off success must not lose billed telemetry to a missing log parent.
       try {
-        mkdirSync(dirname(log), { recursive: true, mode: 0o700 });
-        accessSync(dirname(log), constants.W_OK);
+        mkdirSync(dirname(assertLocalStorePath(log)), { recursive: true, mode: 0o700 });
+        closeSync(openLocalFile(log, { append: true, mode: 0o600 }));
       } catch (e) {
         engine.close?.();
         throw e;
