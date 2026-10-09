@@ -210,10 +210,11 @@ if (globalThis.__caretContent === undefined) {
     const at = Date.now();
     const target = e.composedPath()[0];
     if (target instanceof Element) inputs.noted(target, at);
+    if (e.type === "pointerdown") return;
     const active = deepActiveElement();
     if (active !== null && active !== target) inputs.noted(active, at);
   };
-  for (const type of ["keydown", "beforeinput", "input"]) addEventListener(type, noteInput, { capture: true, passive: true });
+  for (const type of ["keydown", "beforeinput", "input", "pointerdown"]) addEventListener(type, noteInput, { capture: true, passive: true });
 
   // H13 review: an inline insert never lands inside an input method's composition (content/insert.ts).
   trackComposition();

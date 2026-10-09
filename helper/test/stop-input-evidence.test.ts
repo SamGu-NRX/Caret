@@ -44,7 +44,8 @@ interface Rig {
 
 /** `landed`: Caret's write reaches the field. `user`: what the user does, `at` ms after the send. */
 /** `inputBefore`: page only, the user's last input on the field that many ms before the run starts. */
-function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act: (r: Rig) => void }; failRead?: boolean; inputBefore?: number }): Rig {
+/** `answer`: the write's late answer, refused by default. `failRead`: the recovery read fails (on a page, only that one). */
+function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act: (r: Rig) => void }; failRead?: boolean; inputBefore?: number; answer?: "ok" | "notAllowed" }): Rig {
   vi.useFakeTimers();
   const dir = mkdtempSync(join(tmpdir(), "caret-stop-input-"));
   const store = new Store(join(dir, "data"));
@@ -85,7 +86,7 @@ function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act
         app.dropWrites = !o.landed;
         const r = await run(verb);
         app.dropWrites = false;
-        return new Promise<VerbResult>((resolve) => setTimeout(() => resolve({ ...r, outcome: "notAllowed" }), ANSWER_AT));
+        return new Promise<VerbResult>((resolve) => setTimeout(() => resolve({ ...r, outcome: o.answer ?? "notAllowed" }), ANSWER_AT));
       },
     };
     held = () => app.node(key)?.value ?? "";
@@ -99,7 +100,7 @@ function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act
       if (verb.kind !== "pageWrite" || verb.sameAs !== undefined) return null;
       dispatch();
       if (o.landed) page.find("e1").value = verb.value;
-      return { outcome: "notAllowed", detail: "answer after Stop" };
+      return { outcome: o.answer ?? "notAllowed", detail: "answer after Stop" };
     };
     const receive = page.session.receive.bind(page.session);
     page.session.receive = (m) => {
@@ -113,9 +114,14 @@ function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act
       return receive(m);
     };
     const engine = new PageEngineLink(page.session, (s) => { void helper.handleReader(s); });
+    let readFailed = false;
     link = {
       grant: (m) => engine.grant(m),
       run(verb) {
+        if (verb.kind === "walk" && dispatched && o.failRead === true && !readFailed) {
+          readFailed = true;
+          return Promise.resolve({ type: "verbResult", v: 1, id: "read", at: Date.now(), outcome: "axError", detail: "injected read failure" });
+        }
         if (verb.kind === "watchInput") return Promise.resolve({ type: "verbResult", v: 1, id: "watch", at: Date.now(), outcome: "ok", detail: null });
         return engine.run(verb);
       },
@@ -174,7 +180,28 @@ describe.each(["AX", "page"] as const)("%s: the user's input on the field betwee
   });
 });
 
+describe.each(["AX", "page"] as const)("%s: input on the field when the answer comes back ok after Stop (PR #33 review)", (mean) => {
+  it("still restores a write that answered ok when nobody touched the field", async () => {
+    const r = rig(mean, { landed: true, answer: "ok" });
+    await run(r);
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED }]);
+    expect(r.helper.executor.ledger("t")[0]).not.toHaveProperty("mayIncludeInput");
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1 });
+    expect(r.held()).toBe(ORIGINAL);
+  });
+});
+
 describe("AX: which reader input counts", () => {
+  // A page's ok carries the content script's own read-back, taken as it wrote (PageEngineLink.patched), so it cannot be
+  // the user's later typing; the reader's ok is followed by a walk, which can.
+  it("keeps Undo off a value the user typed while Caret's write was dropped and the answer came back ok (PR #33 review)", async () => {
+    const r = rig("AX", { landed: false, answer: "ok", user: typesAfterStop("AX") });
+    await run(r);
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, mayIncludeInput: true }]);
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("may hold your typing") }] });
+    expect(r.held()).toBe(INTENDED);
+  });
+
   it("does not count the Esc that stops the run: the reader sends it as window-level userInput only", async () => {
     // caret-screen sends no fieldInput for Esc (ScreenReader.inputSeen); its userInput still reaches the executor.
     const r = rig("AX", { landed: true, user: { at: STOP_AT - 5, act: (x) => x.reader({ type: "userInput", v: 1, at: Date.now(), pid: AX_PID, kind: "key", point: null }) } });
@@ -254,6 +281,22 @@ describe("AX: which reader input counts", () => {
 });
 
 describe("page: the walk's record of the user's input", () => {
+  // pageInput names no control, and a key there may be the Esc that stops the run; a click on the field itself reaches
+  // its inputAt (extension content/user-input.ts). W3's revoked pick keeps its Undo (page-w3.test.ts 1d).
+  it.each(["key", "mouse"] as const)("does not count a %s the page reports without naming a control", async (kind) => {
+    const r = rig("page", { landed: true, user: { at: STOP_AT - 10, act: (x) => x.helper.executor.onPageInput(PAGE_WIN, kind) } });
+    expect(await run(r)).toMatchObject({ acted: 1 });
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1 });
+  });
+
+  it("refuses Undo after a failed recovery read when the page's walk at Undo shows the user's input (PR #33 review)", async () => {
+    const r = rig("page", { landed: false, failRead: true, user: typesAfterStop("page") });
+    const result = await run(r);
+    expect(result.detail).toContain("may have been written");
+    expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("you typed in the field after Caret sent its write") }] });
+    expect(r.held()).toBe(INTENDED);
+  });
+
   it("does not count input from before the write was sent, such as the key that accepted the fill", async () => {
     const r = rig("page", { landed: true, inputBefore: 1000 });
     expect(await run(r)).toMatchObject({ outcome: "stopped", acted: 1, detail: expect.stringContaining("Written before stop") });

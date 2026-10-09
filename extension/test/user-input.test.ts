@@ -16,8 +16,13 @@ describe("isUserInput", () => {
     for (const type of ["keydown", "beforeinput", "input"]) expect(isUserInput({ isTrusted: false, type, key: "D" })).toBe(false);
   });
 
-  it("does not count a click or a focus change: they change no text", () => {
-    for (const type of ["pointerdown", "click", "focusin", "change"]) expect(isUserInput({ isTrusted: true, type })).toBe(false);
+  it("counts a trusted pointer going down, which can set a custom control with no input event (PR #33 review)", () => {
+    expect(isUserInput({ isTrusted: true, type: "pointerdown" })).toBe(true);
+    expect(isUserInput({ isTrusted: false, type: "pointerdown" })).toBe(false);
+  });
+
+  it("does not count the events that follow a press or a focus change, which the press already counted", () => {
+    for (const type of ["click", "focusin", "change"]) expect(isUserInput({ isTrusted: true, type })).toBe(false);
   });
 });
 

@@ -368,6 +368,8 @@ export class Executor {
   private readonly heardAfterInterrupt = new WeakSet<Change>();
   /** The value writes on their way, and those a lost answer left in a ledger, whose field's input is watched (InputWatch). */
   private readonly inputWatches = new Set<InputWatch>();
+  /** When each watched write was sent, for Undo's check of a page field's input time (PageControl.inputAt). */
+  private readonly sentAt = new WeakMap<LedgerEntry, number>();
   /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
   readonly targetChoices: { taskId: string; step: number; chose: string | null; jev: JevTrace }[] = [];
   /** Bumped on every reader connection: a running task stops at its next act when it changes. */
@@ -1032,6 +1034,8 @@ export class Executor {
     const mark = attribute === "value" ? randomUUID() : undefined;
     const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value, taskId: task.id, ...(mark === undefined ? {} : { mark }) };
     await this.deps.beforeAct?.(task.id, i);
+    // Every value write this step sends, with the input seen on its field (InputWatch).
+    const watches: InputWatch[] = [];
     const sent = async (v: ReaderVerb): Promise<Change[]> => {
       // A value from memory must still be what its entry holds at each dispatch, the insert fallback's
       // included, after everything awaited before it: the user may forget or pause the entry mid-run.
@@ -1049,7 +1053,10 @@ export class Executor {
       let answered = false;
       // Registered right before the send, which act makes before its first await.
       const watch: InputWatch | null = attribute === "value" ? { task, pid: w.app.pid, windowId: w.window.windowId, key: node.key, since: Date.now(), seen: null, entry: null } : null;
-      if (watch !== null) this.inputWatches.add(watch);
+      if (watch !== null) {
+        this.inputWatches.add(watch);
+        watches.push(watch);
+      }
       try {
         const changes = await this.act(task, v, w.window.windowId);
         answered = true;
@@ -1086,6 +1093,7 @@ export class Executor {
           const entry: Extract<LedgerEntry, { kind: "write" }> = { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true };
           if (watch !== null) {
             watch.entry = entry;
+            this.sentAt.set(entry, watch.since);
             if (watch.seen !== null) entry.mayIncludeInput = true;
           }
           this.addLedger(task, entry);
@@ -1175,8 +1183,24 @@ export class Executor {
       // An earlier exact read-back remains evidence that the full write landed, even if the user
       // shortened it before the answer arrived. That later prefix is not an interrupted Caret write.
       const recorded = seen.some((c) => (c.kind === "value" || (c.kind === "added" && seen.some((r) => r.kind === "removed" && r.key === node.key))) && c.key === node.key && c.after === value);
+      // Issue #26, PR #33 review: the user's input on the field since the first send makes whatever it holds possibly
+      // theirs, a read-back of exactly Caret's value included, so Undo leaves it.
+      const since = watches[0]?.since;
+      const typed = watches.some((x) => x.seen !== null) || (since !== undefined && now?.inputAt !== undefined && now.inputAt >= since);
+      const kept = (entry: Extract<LedgerEntry, { kind: "write" }>): void => {
+        if (typed) entry.mayIncludeInput = true;
+        this.addLedger(task, entry);
+        if (since === undefined) return;
+        this.sentAt.set(entry, since);
+        // Under a pause or stop the reader's input can still arrive after this read (B29): the watch stays with the entry.
+        const last = watches.at(-1);
+        if (task.interrupt !== null && last !== undefined) {
+          last.entry = entry;
+          this.inputWatches.add(last);
+        }
+      };
       if (now === undefined) {
-        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true });
+        kept({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true });
       } else if ((now.value ?? "") !== before) {
         const held = now.value ?? "";
         const ours = sameValue(node, held, value);
@@ -1185,8 +1209,8 @@ export class Executor {
         const reading = seen.findLast((c) => c.key === node.key && (c.kind === "value" || c.kind === "added"));
         const heard = reading !== undefined && reading.after === held && !this.heardAfterInterrupt.has(reading);
         // Successful numeric read-back keeps its existing equivalence rule, not S1's faulted-prefix rule.
-        const partial = !recorded && !ours && heard && partialReplacement(before, value, held);
-        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, ...(partial ? { unconfirmed: true, partialWrite: held } : ours ? {} : { mayIncludeInput: true }) });
+        const partial = !typed && !recorded && !ours && heard && partialReplacement(before, value, held);
+        kept({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, ...(partial ? { unconfirmed: true, partialWrite: held } : ours ? {} : { mayIncludeInput: true }) });
       }
       if (now === undefined || (now.value ?? "") !== value || !recorded) {
         const detail = `mismatch: expected ${prediction}; ${now === undefined ? `the field is gone; before the write it held ${JSON.stringify(before)}` : fieldContents(before, now.value ?? "")}`;
@@ -1852,6 +1876,10 @@ export class Executor {
     // The reader rechecks this exact held value and the recorded element right before restoring it.
     const contents = field === undefined ? "the field is gone" : fieldContents(e.before, field.value ?? "");
     if (e.mayIncludeInput === true) return final(`the field changed while Caret wrote it and may hold your typing, so Caret left it as it is; ${contents}`);
+    // A page field's own record of the user's input since the write was sent, which a recovery read that failed could
+    // not see (PR #33 review). The page keeps that record for 30 s after Caret's grant ends.
+    const sentAt = this.sentAt.get(e);
+    if (field?.inputAt !== undefined && sentAt !== undefined && field.inputAt >= sentAt) return final(`you typed in the field after Caret sent its write, so it may hold your typing and Caret left it as it is; ${contents}`);
     const shown = field?.value ?? "";
     // A prefix is put back only while the field holds exactly the one Caret read before the window was the user's
     // again (readUnconfirmed). A prefix first read here may be the user's typing (PR #21 review). A legacy `true`

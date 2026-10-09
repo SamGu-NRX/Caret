@@ -3,13 +3,14 @@
 // the same whether Caret wrote it or the user typed it after Stop. The walker reports this time as
 // PageControl.inputAt, so the read that decides carries its own evidence: no message can arrive after it.
 //
-// What counts: a trusted beforeinput or input event (typing, a paste, a drop, an autofill, an input method), and a
-// trusted key going down other than Esc, which types nothing and is Caret's Stop key. The executor's writes are
-// untrusted events (content/dom.ts), and so are a page script's; Caret's inline insert goes in as trusted typing
-// (content/insert.ts) and is noted like the user's, which can only make a later read more careful. Each is noted at the
-// element the event names and at the element with focus, which reaches inside a closed shadow root the event's path
-// does not. Only the time is kept, never the key or the text, and only while a grant covers the frame and for
-// USER_INPUT_RECENT_MS after it ends (`armed`): a frame Caret is not filling keeps nothing.
+// What counts: a trusted beforeinput or input event (typing, a paste, a drop, an autofill, an input method), a trusted
+// key going down other than Esc, which types nothing and is Caret's Stop key, and a trusted pointer going down. The
+// executor's writes are untrusted events (content/dom.ts), and so are a page script's; Caret's inline insert goes in as
+// trusted typing (content/insert.ts) and is noted like the user's, which can only make a later read more careful. Each
+// is noted at the element the event names and, for a key or an input event, at the element with focus, which reaches
+// inside a closed shadow root the event's path does not. A pointer is noted only where it went down: focus is still on
+// the field the user is leaving. Only the time is kept, never the key or the text, and only while a grant covers the
+// frame and for USER_INPUT_RECENT_MS after it ends (`armed`): a frame Caret is not filling keeps nothing.
 
 /** How long a time is kept and reported. Assumed, not measured: twice the longest span from a write's send to the read
  * after Stop that judges it (the page link's 5 s act deadline, Stop's 5 s wait, the walk's 5 s deadline). */
@@ -17,11 +18,14 @@ export const USER_INPUT_RECENT_MS = 30_000;
 /** At most this many elements are kept; the oldest go first. A form has one focused field at a time. */
 const MAX_KEPT = 64;
 
-/** Whether an event is the user's own input on a field: trusted, and not the Esc that stops Caret. */
+/**
+ * Whether an event is the user's own input on a field: trusted, and not the Esc that stops Caret. A pointer going down
+ * counts too: a custom checkbox or select changes its value from a click handler with no input event (PR #33 review).
+ */
 export function isUserInput(e: { isTrusted: boolean; type: string; key?: string }): boolean {
   if (!e.isTrusted) return false;
   if (e.type === "keydown") return e.key !== "Escape";
-  return e.type === "beforeinput" || e.type === "input";
+  return e.type === "beforeinput" || e.type === "input" || e.type === "pointerdown";
 }
 
 export class UserInputs<E extends object> {
