@@ -33,7 +33,6 @@ case "${1:-release}" in
   debug | acceptance) export CARET_INTERNAL_BUILD=1 ;;
   *) unset CARET_INTERNAL_BUILD ;;
 esac
-CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" /bin/sh "$root/scripts/privacy_gate.sh"
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 mode="${1:-release}"
@@ -76,6 +75,9 @@ echo "$NODE_SHA256  $node_tar" | shasum -a 256 -c - >/dev/null || {
 }
 [[ -x "$node" ]] || tar -xzf "$node_tar" -C "$node_dist"
 node="$PWD/$node"
+
+# The privacy gate runs on the pinned Node, put first on PATH, so a clean Mac with no node of its own can build.
+CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" PATH="$(dirname "$node"):$PATH" /bin/sh "$root/scripts/privacy_gate.sh"
 
 # Swift: the host, the reader and the bridge.
 swiftflags=()

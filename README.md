@@ -10,8 +10,8 @@ This branch holds v2. The v1 hackathon starter is still in the tree and is descr
 | --- | --- | --- |
 | Reader | `apps/screen-reader/` (Swift) | Reads every open window through Accessibility, compacts it, gives each element a stable key and streams the result to the helper. It acts (writes a field, presses a safe button, adds a calendar event) only under a live grant from the helper, and rechecks its target right before each call. [README](apps/screen-reader/README.md) |
 | Helper | `helper/` (TypeScript, Node 24) | Holds the screen model and the transfer log, proposes fills and plans, and runs the executor: each step is an end state, checked before and after it acts, with undo. Also skills, memory and the recovery journal. [README](helper/README.md) |
-| Host app | the `v2/host` branch (Swift) | Owns input and acceptance: the key tap, Tab, the overlay at the caret and text insertion. |
-| Browser control | the `v2/browser` branch | Its own layer, still being decided. An extension with a native-messaging bridge is being built there. |
+| Host app | `apps/caret/` (Swift) | Owns input and acceptance: the key tap, Tab, the overlay at the caret and text insertion. [README](apps/caret/README.md) |
+| Browser control | `extension/` (TypeScript) and `bridge/` (Swift) | Caret for Chrome, the MV3 extension that reads and fills web pages, and caret-bridge, the native-messaging host that carries its messages to the helper. [extension](extension/README.md), [bridge](bridge/README.md) |
 
 The parts talk over one local socket in NDJSON. `helper/src/protocol.ts` is the contract; the Swift side mirrors it, and both test against `helper/fixtures/golden/`.
 

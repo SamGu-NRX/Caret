@@ -1,10 +1,16 @@
 name: Caret v2
 
-# The helper merge gate also applies to fix branches and PRs into non-main bases.
 on:
+  # A lane with a PR runs once, on the PR; the integration branches run on push. Push runs on every v2/* branch ran
+  # each lane twice (push and PR) and queued 16 runs on 5 macOS runners on 2026-10-09.
   push:
-    branches: ['v2/**', 'fix/**']
+    branches: [main, 'v2/dogfood', 'v2/next']
   pull_request:
+    # Every PR into main or a v2 branch. Lane PRs target v2/dogfood and v2/next, and a fix/* head has no push run,
+    # so with only main and v2/next listed, PRs #15, #17, #18, #19 and #21 never ran these jobs.
+    branches: [main, 'v2/**']
+  # A lane without a PR runs CI by hand (Actions > Caret v2 > Run workflow).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -104,6 +110,8 @@ jobs:
           python-version: '3.11'
       - run: python3 -m unittest discover -s tests
       - run: python3 scripts/check_sources.py
+      # Preserve the legacy Core checks CLI smoke test alongside its unittest suite.
+      - run: python3 -m caret preview --fixture fixtures/meeting.json
 
   screen-reader:
     name: screen-reader
