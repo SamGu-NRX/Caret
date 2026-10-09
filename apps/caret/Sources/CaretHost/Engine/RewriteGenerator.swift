@@ -83,7 +83,7 @@ struct RewriteGenerator {
 
     /// A draw from the top 40 logits at `temperature`.
     static func sample(_ logits: [TokenLogit], temperature: Double, rng: inout SplitMix) -> TokenID? {
-        let top = logits.sorted { $0.logit > $1.logit }.prefix(40)
+        let top = Self.top(40, of: logits)
         guard let best = top.first else { return nil }
         let weights = top.map { exp(Double($0.logit - best.logit) / max(temperature, 0.01)) }
         let total = weights.reduce(0, +)
@@ -93,6 +93,22 @@ struct RewriteGenerator {
             if draw <= 0 { return entry.tokenID }
         }
         return top.last?.tokenID
+    }
+}
+
+extension RewriteGenerator {
+    /// The `k` highest logits, highest first, in one pass: the runtime returns the whole
+    /// vocabulary (262,144 entries for Gemma), too many to sort at every step.
+    static func top(_ k: Int, of logits: [TokenLogit]) -> [TokenLogit] {
+        var top: [TokenLogit] = []
+        top.reserveCapacity(k + 1)
+        for entry in logits {
+            if top.count == k, let last = top.last, entry.logit <= last.logit { continue }
+            let at = top.firstIndex { $0.logit < entry.logit } ?? top.count
+            top.insert(entry, at: at)
+            if top.count > k { top.removeLast() }
+        }
+        return top
     }
 }
 

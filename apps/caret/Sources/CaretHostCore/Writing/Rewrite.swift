@@ -52,9 +52,12 @@ public enum RewritePrompt {
     /// Whether the continuation holds a complete answer: three finished rewrite lines, or the
     /// start of the next example.
     public static func isComplete(continuation: String) -> Bool {
-        let lines = ("Rewrite 1:" + continuation).split(separator: "\n", omittingEmptySubsequences: false)
+        var lines = ("Rewrite 1:" + continuation).split(separator: "\n", omittingEmptySubsequences: false)
+        // The line being written: an empty one after a newline has not started yet.
+        let current = lines.removeLast()
         if lines.dropFirst().contains(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty || $0.hasPrefix("Sentence:") }) { return true }
-        return lines.count > 3
+        if current.hasPrefix("Sentence:") { return true }
+        return lines.count >= 3
     }
 }
 
@@ -77,16 +80,27 @@ public enum RewriteFilter {
         return out
     }
 
-    /// Every number and every capitalized word after the first in `rewrite` is in `original`:
-    /// a rewrite never brings a name or a figure the user didn't write.
+    /// The rewrite and the original hold the same names and numbers: a rewrite never brings a name
+    /// or a figure the user didn't write, and never drops one they did ("March" to "next month").
+    /// A name is a capitalized word that doesn't start a sentence; a word starting one counts only
+    /// as a known word.
     public static func keepsFacts(_ rewrite: String, original: String) -> Bool {
-        let known = Set(words(original).map { $0.word.lowercased() })
-        for (word, startsSentence) in words(rewrite) {
+        let (rewriteFacts, rewriteWords) = facts(rewrite)
+        let (originalFacts, originalWords) = facts(original)
+        return rewriteFacts.isSubset(of: originalWords) && originalFacts.isSubset(of: rewriteWords)
+    }
+
+    /// The names and numbers in `text`, and all its words, lowercased.
+    static func facts(_ text: String) -> (facts: Set<String>, words: Set<String>) {
+        var facts: Set<String> = [], all: Set<String> = []
+        for (word, startsSentence) in words(text) {
+            let lower = word.lowercased()
+            all.insert(lower)
             let isNumber = word.contains(where: \.isNumber)
             let isName = !startsSentence && word.first?.isUppercase == true && word != "I" && !word.hasPrefix("I'") && !word.hasPrefix("I\u{2019}")
-            if (isNumber || isName), !known.contains(word.lowercased()) { return false }
+            if isNumber || isName { facts.insert(lower) }
         }
-        return true
+        return (facts, all)
     }
 
     /// The words of `text`, each with whether it starts a sentence (first, or after . ! ? or :).
