@@ -38,6 +38,10 @@ final class GhostTextEngine {
 
     static let maxCompletionTokens = 4
     static let maxDisplayWidth = 60
+    /// The caps this engine requests with. `Caret --probe-length` varies them to time longer
+    /// suggestions; a normal run keeps the defaults above.
+    var completionTokens = GhostTextEngine.maxCompletionTokens
+    var displayWidth = GhostTextEngine.maxDisplayWidth
     /// Candidates looked at, best first, when the better ones are refused at the seam or do not
     /// fit the text after the caret. KeyType's own filter still decides about the first.
     static let candidatesTried = 3
@@ -213,15 +217,15 @@ final class GhostTextEngine {
         let healSlack = heal?.heal.count ?? 0
         let healTokens = healSlack > 0 ? 1 : 0
         let tokens = Self.shouldUseCapsule(for: context)
-            ? min(Self.maxCompletionTokens, 3) + healTokens
-            : Self.maxCompletionTokens + healTokens
+            ? min(completionTokens, 3) + healTokens
+            : completionTokens + healTokens
         return CompletionRequest(
             context: context,
             prompt: prompt,
             requiredPrefixBytes: heal.map { Array($0.heal.utf8) } ?? [],
             mode: policy.completionMode,
             maxCompletionTokens: tokens,
-            maxDisplayWidth: Self.maxDisplayWidth + healSlack
+            maxDisplayWidth: displayWidth + healSlack
         )
     }
 
