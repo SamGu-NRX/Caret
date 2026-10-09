@@ -1,0 +1,1 @@
+Decisions spend ledger is ~/Library/Application Support/CaretV2/decisions-spend unless CARET_DECISIONS_SPEND_DIR is set; ~/.caret-run/decisions-spend held only the 2026-10-09 org probe hold, now copied in. Run without that env so one file carries the $0.50 lifetime.
