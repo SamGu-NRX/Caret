@@ -911,8 +911,11 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }), ...(nativeFields === undefined ? {} : { fields: nativeFields }), ...asked });
       return onlyPress(d) ?? { ...d, ...extra, route: "plan", leftToYou: withUnnamed(d.leftToYou ?? null, w), ...withUnsure(d.checked.writes.map((x) => x.node.key)) };
     } catch (e) {
-      if (e instanceof PlannerError) gate((e.code === "unsure" || e.code === "nothingToDo") && o.writer === null ? "planNoWriter" : `plannerError:${e.code}`, `planner: ${e.message}`);
-      if (!(e instanceof PlannerError) || (e.code !== "unsure" && e.code !== "nothingToDo") || o.writer === null) return refused(saidWithUnnamed(e, w));
+      // A failure the plan writer then tries to recover is no blocker of its own: the writer's outcome decides, and a
+      // failed recovery records writerInvalid (Greptile review on #22: firstGate blamed the recovered failure).
+      const recovers = e instanceof PlannerError && (e.code === "unsure" || e.code === "nothingToDo") && o.writer !== null;
+      if (e instanceof PlannerError) gate((e.code === "unsure" || e.code === "nothingToDo") && o.writer === null ? "planNoWriter" : `plannerError:${e.code}`, `planner: ${e.message}`, !recovers);
+      if (!recovers || o.writer === null) return refused(saidWithUnnamed(e, w));
       try {
         const d = await planWithCode(instruction, model, memory, { writer: o.writer, askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(nativeFields === undefined ? {} : { fields: nativeFields }), ...asked });
         return onlyPress(d) ?? { ...d, ...extra, route: "plan", leftToYou: withUnnamed(d.leftToYou ?? null, w), ...withUnsure(d.checked.writes.map((x) => x.node.key)) };
