@@ -248,9 +248,15 @@ export interface VerifyAsk {
 }
 
 /**
- * Lowest confidence, the lower of two wordings, at which "exact" mints. 0.75 is FILL_CUTOFF's value, inherited because it
- * is the only calibrated floor the helper has; no run has calibrated this question. The dev set
- * (fixtures/verify/dev.json, scripts/verifier-eval.ts) is its first evidence.
+ * Lowest confidence, the lower of two wordings, at which "exact" mints. 0.75 is FILL_CUTOFF's value, inherited, and kept
+ * after a sweep from 0.50 to 0.75 over W2's run of the dev set (fixtures/verify/dev.json, scripts/verifier-eval.ts: 371
+ * cases, 3 passes, at W2's wording, before the requests gained provenance notes; table in
+ * ~/.caret-run/evidence/act/slice2/floor/w2-sweep.txt). Below 0.65, wrong values were answered "exact" twice: a value with
+ * more than the field takes at 0.61 to 0.62, and another person's value at 0.53 to 0.64. From 0.65 up, none was, but only
+ * 32 wrong answers of any verdict fell between 0.65 and 0.75, none of them exact twice. That is too few to show that a
+ * lower floor stays wrong-free beyond these cases; the bar was about 100. Replaying B24 to B31's recorded Asks with no
+ * floor gains 14 fields and 0 wrong, but those are fixtures and cannot settle it alone. The floor does not keep out
+ * b-032, another person's email, which the verifier answered exact at 0.85 to 0.89.
  */
 export const VERIFY_CUTOFF = 0.75;
 
