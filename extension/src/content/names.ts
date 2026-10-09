@@ -1,6 +1,9 @@
 // Accessible names, the way a person reads the control: aria-labelledby, aria-label, the <label>, title, then
 // placeholder for fields and text for buttons and links. ID references resolve in the element's own tree (document
-// or shadow root). Text is whitespace-collapsed and clipped; nothing here reads body prose beyond a label.
+// or shadow root). Text is whitespace-collapsed and clipped; nothing here reads body prose beyond a label. Every text is
+// read without the secret fields inside it (secret-dom.ts safeText), so a label wrapped around a one-time-code box
+// doesn't carry its code.
+import { safeText } from "./secret-dom.ts";
 
 const MAX_NAME = 200;
 
@@ -21,7 +24,7 @@ function byIds(el: Element, ids: string): Element[] {
 
 /** A label's text without the text of the control inside it (a select's options, a field's own value). */
 function labelText(label: Element, control: Element): string {
-  if (!label.contains(control)) return label.textContent ?? "";
+  if (!label.contains(control)) return safeText(label);
   const clone = label.cloneNode(true) as Element;
   // `control` may be an element around the control (W4: an upload widget inside its label): its text goes too. Found
   // in the clone by its path of child indices, taken before anything is removed.
@@ -33,7 +36,7 @@ function labelText(label: Element, control: Element): string {
     if (at !== clone) at?.remove();
   }
   for (const c of clone.querySelectorAll("input, select, textarea, button")) c.remove();
-  return clone.textContent ?? "";
+  return safeText(clone);
 }
 
 export function accessibleName(el: Element): string {
@@ -47,7 +50,7 @@ export type NameSource = "labelledby" | "label" | "labels" | "value" | "title" |
 export function named(el: Element): { name: string; from: NameSource } {
   const labelledby = el.getAttribute("aria-labelledby");
   if (labelledby !== null) {
-    const t = clean(byIds(el, labelledby).map((e) => e.textContent ?? "").join(" "));
+    const t = clean(byIds(el, labelledby).map((e) => safeText(e)).join(" "));
     if (t !== "") return { name: t, from: "labelledby" };
   }
   const aria = clean(el.getAttribute("aria-label"));
@@ -71,7 +74,7 @@ export function named(el: Element): { name: string; from: NameSource } {
   }
   const role = el.getAttribute("role");
   if (el instanceof HTMLButtonElement || el instanceof HTMLAnchorElement || role === "button" || role === "link" || role === "checkbox" || role === "radio" || role === "switch" || role === "option") {
-    return { name: clean(el.textContent), from: "text" };
+    return { name: clean(safeText(el)), from: "text" };
   }
   return { name: "", from: "none" };
 }
@@ -117,7 +120,7 @@ export function groupNames(el: Element): string[] {
   for (let p = composedParent(el); p !== null; p = composedParent(p)) {
     if (p instanceof HTMLFieldSetElement) {
       const legend = p.querySelector(":scope > legend");
-      if (legend !== null) out.push(clean(legend.textContent));
+      if (legend !== null) out.push(clean(safeText(legend)));
     }
     const role = p.getAttribute("role");
     if (role === "group" || role === "radiogroup") {

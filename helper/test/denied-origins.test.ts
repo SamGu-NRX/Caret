@@ -15,6 +15,8 @@ describe("DENIED_HOSTS", () => {
 
   it("denies account pages and vaults, and no ordinary site", () => {
     for (const o of ["https://accounts.google.com", "https://vault.bitwarden.com", "https://my.1password.eu", "https://appleid.apple.com"]) expect(deniedOrigin(o), o).toBe(true);
+    // Review round 2, #1: a fully qualified host with its trailing dot is the same site.
+    for (const o of ["https://accounts.google.com.", "https://vault.bitwarden.com.", "https://ACCOUNTS.google.com."]) expect(deniedOrigin(o), o).toBe(true);
     for (const o of ["https://docs.google.com", "https://jobs.example.test", "http://127.0.0.1:4310", "https://notbitwarden.com"]) expect(deniedOrigin(o), o).toBe(false);
   });
 });
@@ -52,6 +54,11 @@ describe("an engine session and the deny list", () => {
     expect(a.snapshot).toBeNull();
     expect(session.tabs.size).toBe(0);
     expect(seen).toEqual([]);
+  });
+
+  it("answers a walk of a tab on the deny list with a trailing-dot host as siteOff (review round 2, #1)", async () => {
+    const { session } = rig([frame(0, "https://accounts.google.com.")], 0);
+    expect((await session.command({ kind: "pageWalk", tabId: 4 })).result.outcome).toBe("siteOff");
   });
 
   it("drops a frame on the deny list from a snapshot, with focus in it, and keeps the rest", async () => {

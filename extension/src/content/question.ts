@@ -13,6 +13,7 @@
 // reported is checked against the page as it is then.
 import { accessibleName, clean, groupNames, named, textOfLabel } from "./names.ts";
 import { visible } from "./walker.ts";
+import { inSecret, safeText } from "./secret-dom.ts";
 
 /** How far up from a control the question may be looked for. Assumed from the markup: Lever's is 3 levels up, Ashby's 2. */
 const QUESTION_LEVELS = 4;
@@ -56,7 +57,8 @@ function textAround(scope: Element, members: readonly Element[], skip: readonly 
   const ok = (el: Element): boolean => {
     let v = seen.get(el);
     if (v === undefined) {
-      v = !el.closest(NOT_QUESTION) && !skip.some((s) => s.contains(el)) && visible(el, { opacity: true });
+      // A secret field's own text (a one-time-code editor's digits) is never a question's.
+      v = !el.closest(NOT_QUESTION) && !skip.some((s) => s.contains(el)) && !inSecret(el) && visible(el, { opacity: true });
       seen.set(el, v);
     }
     return v;
@@ -163,7 +165,7 @@ export function fileOwner(input: HTMLInputElement): Element | null {
     const buttons = [...a.querySelectorAll("button, [role=button], input[type=button]")].filter((b) => visible(b));
     if (buttons.length === 0) continue;
     // The button's visible text, not an aria-label that could say something else.
-    const text = (b: Element): string => clean(b instanceof HTMLInputElement ? b.value : b.textContent);
+    const text = (b: Element): string => clean(b instanceof HTMLInputElement ? b.value : safeText(b));
     const owners = buttons.filter((b) => ATTACH_WORDS.test(text(b)) && said.some((t) => same(t, text(b))));
     return owners.length === 1 ? (owners[0] as Element) : null;
   }
@@ -184,7 +186,7 @@ function dropzoneOwner(input: HTMLInputElement): Element | null {
     const role = a.getAttribute("role");
     const isGroup = role === "group" ? accessibleName(a) !== "" : a instanceof HTMLFieldSetElement && clean(a.querySelector(":scope > legend")?.textContent) !== "";
     if (!isGroup) continue;
-    const text = (b: Element): string => clean(b instanceof HTMLInputElement ? b.value : b.textContent);
+    const text = (b: Element): string => clean(b instanceof HTMLInputElement ? b.value : safeText(b));
     const owners = [...a.querySelectorAll("button, [role=button], input[type=button]")].filter((b) => visible(b) && ATTACH_WORDS.test(text(b)));
     return owners.length === 1 ? (owners[0] as Element) : null;
   }

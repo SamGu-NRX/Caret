@@ -9,6 +9,10 @@
 // writes, content/dom.ts), or a value that changed with no input event this script saw: text already in the field
 // before an edit that the last edit did not leave there (a page's prefill, a script's silent change). The worst kind
 // seen sticks until the field is emptied by an edit.
+//
+// The text itself is never kept: only a salted SHA-256 of it and its length, enough to tell whether the field still
+// holds what the last edit left.
+import { sha256Hex } from "../shared/sha256.ts";
 
 export type Entry = "typed" | "pasted" | "other";
 
@@ -41,17 +45,44 @@ export function entryKind(isTrusted: boolean, inputType: string): Entry {
   return TYPING.has(inputType) ? "typed" : "pasted";
 }
 
+/** What the tracker keeps per field: how its text was entered, and a salted digest and the length of that text, never the text. */
+interface Seen {
+  entry: Entry;
+  digest: string;
+  length: number;
+}
+
 export class EntryTracker {
   /**
    * `isSecret`: whether an element is a password, one-time-code or card field (walker.ts secretOf), asked at every event,
    * since a field can turn secret after its first edit. `seen` is passed in by tests only, to see what is kept.
    */
   private readonly isSecret: (el: object) => boolean;
-  private readonly seen: WeakMap<object, { entry: Entry; value: string }>;
+  private readonly seen: WeakMap<object, unknown>;
+  /** Random per tracker, so a digest kept in the page's memory can't be matched against a list of common values. */
+  private readonly salt: string;
 
-  constructor(isSecret: (el: object) => boolean = () => false, seen: WeakMap<object, { entry: Entry; value: string }> = new WeakMap()) {
+  constructor(isSecret: (el: object) => boolean = () => false, seen: WeakMap<object, unknown> = new WeakMap()) {
     this.isSecret = isSecret;
     this.seen = seen;
+    this.salt = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  private get(el: object): Seen | undefined {
+    return this.seen.get(el) as Seen | undefined;
+  }
+
+  private set(el: object, entry: Entry, value: string): void {
+    this.seen.set(el, { entry, digest: this.digest(value), length: value.length } satisfies Seen);
+  }
+
+  private digest(value: string): string {
+    return sha256Hex(`${this.salt}\u0000${value}`);
+  }
+
+  /** Whether `el` holds `value` as last seen; an unseen field holds the empty text. */
+  private holds(s: Seen | undefined, value: string): boolean {
+    return s === undefined ? value === "" : s.length === value.length && s.digest === this.digest(value);
   }
 
   /** Whether `el` is secret; anything kept for it from before it became secret is dropped. */
@@ -61,14 +92,18 @@ export class EntryTracker {
     return true;
   }
 
+  /** Drops what is kept for `el`: the walk found it secret (content.ts). */
+  forget(el: object): void {
+    this.seen.delete(el);
+  }
+
   /**
    * A beforeinput on `el`, with the value just before the edit. It must be what the last edit left, or empty when no
    * edit was seen: anything else got there unseen, and one keystroke after a script's prefill must not make it typed.
    */
   onBefore(el: object, value: string): void {
     if (this.secret(el)) return;
-    const s = this.seen.get(el);
-    if (value !== (s?.value ?? "")) this.seen.set(el, { entry: "other", value });
+    if (!this.holds(this.get(el), value)) this.set(el, "other", value);
   }
 
   /**
@@ -83,20 +118,20 @@ export class EntryTracker {
       return;
     }
     let kind = entryKind(isTrusted, inputType);
-    const grew = value.length - (this.seen.get(el)?.value.length ?? 0);
+    const was = this.get(el);
+    const grew = value.length - (was?.length ?? 0);
     if (kind === "typed" && grew > (inputType.startsWith("insert") ? (data?.length ?? 1) : 0)) kind = "other";
-    const was = this.seen.get(el)?.entry;
-    this.seen.set(el, { entry: was !== undefined && RANK[was] > RANK[kind] ? was : kind, value });
+    this.set(el, was !== undefined && RANK[was.entry] > RANK[kind] ? was.entry : kind, value);
   }
 
   /** What the walker reports for `el` holding `value` now: undefined when no edit was seen, "other" when it changed unseen. */
   entryOf(el: object, value: string): Entry | undefined {
     if (this.secret(el)) return undefined;
-    const s = this.seen.get(el);
+    const s = this.get(el);
     if (s === undefined) return undefined;
-    if (s.value === value) return s.entry;
+    if (this.holds(s, value)) return s.entry;
     // Changed with no event: kept as other, so the next keystroke cannot make it typed again.
-    this.seen.set(el, { entry: "other", value });
+    this.set(el, "other", value);
     return "other";
   }
 }

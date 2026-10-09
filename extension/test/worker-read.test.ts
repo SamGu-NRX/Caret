@@ -5,10 +5,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sha256Hex } from "../src/shared/sha256.ts";
 import { fakeChrome, settle, type Frame } from "./fake-chrome.ts";
+import { deniedOrigin } from "../src/worker/left-tab.ts";
 
 const MAIL = "https://mail.example.test";
 const self = (origin: string, viewport: [number, number], iframes: { src: string; rect: number[]; inner: [number, number] }[] = []) => ({ origin, viewport, iframes });
-const text = (blocks: string[]) => ({ selection: [], blocks, cut: false, docsText: null });
+const text = (blocks: string[]) => ({ selection: [], blocks, cut: false, docsText: null, title: "" });
 
 let f: ReturnType<typeof fakeChrome>;
 
@@ -157,6 +158,85 @@ describe("the worker's read of the tab the user just left", () => {
     expect(snap?.frames.map((x) => x.frameId)).toEqual([0]);
     expect(snap?.missing).toContainEqual({ frameId: 2, reason: "Caret never reads this site" });
     expect(JSON.stringify(f.sentToHelper)).not.toContain("Logins");
+  });
+});
+
+/** Asks the worker to walk tab 1 and waits for its pageResult. */
+async function walkTab(id: string): Promise<Record<string, unknown>> {
+  await f.fire("port.message", { type: "pageCommand", v: 1, id, expires: Date.now() + 5000, verb: { kind: "pageWalk", tabId: 1 } });
+  for (let i = 0; i < 30; i++) {
+    const r = f.sentToHelper.find((m) => m.type === "pageResult" && m.id === id);
+    if (r !== undefined) return r;
+    await settle();
+  }
+  throw new Error("no pageResult");
+}
+
+const report = (origin: string, path: string, title: string) => ({ origin, path, title, headings: [], controls: [], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: null, hasFocus: true, walkMs: 1 });
+
+describe("the deny list and the walk, review round 2", () => {
+  it("denies a host written with a trailing dot (#1)", async () => {
+    expect(deniedOrigin("https://accounts.google.com.")).toBe(true);
+    expect(deniedOrigin("https://vault.bitwarden.com.")).toBe(true);
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "V0", url: "https://accounts.google.com./signin" }]);
+    expect((await walkTab("t1")).outcome).toBe("siteOff");
+    expect(f.asked).toEqual([]);
+  });
+
+  it("never reads the tab left when its host has a trailing dot (#1)", async () => {
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "V0", url: "https://vault.bitwarden.com./#/vault" }]);
+    await leaveMail();
+    expect((await read(1)).outcome).toBe("siteOff");
+    expect(f.asked).toEqual([]);
+  });
+
+  it("refuses a walk whose top frame has no http(s) origin, asking no frame (#6)", async () => {
+    await start([
+      { frameId: 0, parentFrameId: -1, documentId: "B0", url: "about:blank" },
+      { frameId: 3, parentFrameId: 0, documentId: "B3", url: "https://forms.example.test/embed" },
+    ]);
+    f.answers.set("1:3:walk", report("https://forms.example.test", "/embed", "Embedded"));
+    const r = await walkTab("t2");
+    expect(r.outcome).toBe("siteOff");
+    expect(f.asked).toEqual([]);
+  });
+
+  it("takes the snapshot's title from the walked document, not from the tab (#3)", async () => {
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "P0", url: "https://shop.example.test/checkout" }]);
+    f.answers.set("1:0:walk", report("https://shop.example.test", "/checkout", "Checkout"));
+    f.state.titles.set(1, "Bitwarden Web Vault");
+    expect((await walkTab("t3")).outcome).toBe("ok");
+    const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot");
+    expect(snap?.title).toBe("Checkout");
+    expect(JSON.stringify(f.sentToHelper)).not.toContain("Bitwarden");
+  });
+
+  it("discards a walk whose tab navigated while its frames answered (#3)", async () => {
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "P0", url: "https://shop.example.test/checkout" }]);
+    f.answers.set("1:0:walk", report("https://shop.example.test", "/checkout", "Checkout"));
+    f.setDuring((op) => {
+      if (op !== "walk") return;
+      // The tab goes to a vault while the frame answers.
+      f.frames.set(1, [{ frameId: 0, parentFrameId: -1, documentId: "V1", url: "https://vault.bitwarden.com/#/vault" }]);
+      f.state.titles.set(1, "Bitwarden Web Vault");
+      void f.fire("nav.committed", { tabId: 1, frameId: 0, documentId: "V1" });
+    });
+    const r = await walkTab("t4");
+    expect(r.outcome).toBe("stale");
+    expect(f.sentToHelper.some((m) => m.type === "pageSnapshot")).toBe(false);
+    expect(JSON.stringify(f.sentToHelper)).not.toMatch(/Bitwarden|Checkout/u);
+  });
+
+  it("takes the read text's title from the document it read, not from the tab (#3)", async () => {
+    await start(MAIL_FRAMES);
+    f.answers.set("1:0:frame", self(MAIL, [1280, 900]));
+    f.answers.set("1:0:text", { ...text(["Inbox"]), title: "Inbox - Mail" });
+    f.state.titles.set(1, "Bitwarden Web Vault");
+    await leaveMail();
+    const r = await read(1);
+    expect(r.outcome).toBe("ok");
+    expect((r.text as { title: string }).title).toBe("Inbox - Mail");
+    expect(JSON.stringify(f.sentToHelper)).not.toContain("Bitwarden");
   });
 });
 

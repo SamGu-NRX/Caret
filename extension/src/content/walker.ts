@@ -8,7 +8,9 @@ import { clean, composedParent, groupNames, labelledBy } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
 import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
-import { secretKind, type SecretKind } from "./secret.ts";
+import type { SecretKind } from "./secret.ts";
+import { safeText, secretOfElement } from "./secret-dom.ts";
+import { watchPasswords } from "./password-watch.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -84,19 +86,9 @@ function ariaHidden(el: Element): boolean {
   return false;
 }
 
-/** Control kinds that hold what the user types or picks, whose name and label can mark a secret (content/secret.ts). */
-const VALUE_KINDS: ReadonlySet<PageControlKind> = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea", "select", "combobox", "contenteditable"]);
-
 /** Why `el`, called `name`, holds a password, a one-time code or card details, or null (content/secret.ts). */
 export function secretOf(el: Element, name: string): SecretKind | null {
-  const kind = kindOf(el);
-  return secretKind(el, {
-    role: kind !== null && VALUE_KINDS.has(kind) ? "field" : "other",
-    type: el instanceof HTMLInputElement ? el.type : "",
-    autocomplete: el.getAttribute("autocomplete") ?? "",
-    nameAndId: `${el.getAttribute("name") ?? ""} ${el.id}`,
-    label: name,
-  });
+  return secretOfElement(el, name);
 }
 
 /** Why a control must not leave the frame, or null. */
@@ -273,7 +265,11 @@ export function* candidates(root: Document | ShadowRoot = document, shadow: "ope
       if (kind !== null) yield { el, kind, name: controlName(el, kind), shadow };
     }
     const sr = shadowRootOf(el);
-    if (sr !== null) yield* candidates(sr, sr.mode);
+    if (sr !== null) {
+      // Its password inputs stay secret from now on, whatever their type becomes (password-watch.ts).
+      watchPasswords(sr);
+      yield* candidates(sr, sr.mode);
+    }
   }
 }
 
@@ -309,6 +305,8 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     shadowRoot: shadowRootOf,
     assigned: (el) => (el instanceof HTMLSlotElement ? slotted(el) : null),
     excluded: (name) => SELF_IDENTIFICATION.test(name),
+    // A heading or label that holds a secret field is read without it (secret-dom.ts).
+    text: safeText,
   });
   for (const f of candidates()) {
     const why = exclusionOf(f.el, f.name);

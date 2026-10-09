@@ -29,6 +29,7 @@ export function deniedOrigin(origin: string): boolean {
     return true;
   }
   if (u.protocol !== "http:" && u.protocol !== "https:") return true;
-  const host = u.hostname.toLowerCase();
+  // "accounts.google.com." is the same host as "accounts.google.com": a fully qualified name's trailing dot goes.
+  const host = u.hostname.toLowerCase().replace(/\.$/u, "");
   return DENIED_HOSTS.some((h) => h.test(host));
 }

@@ -240,6 +240,8 @@ export interface FrameTextAnswer {
   blocks: string[];
   cut: boolean;
   docsText: "on" | "off" | null;
+  /** The document's own title, clipped: the read's title comes from the document read, never from the tab. */
+  title: string;
 }
 
 /** Content script to worker, on its own: the document moved in history (pageshow from the back-forward cache, popstate, hashchange). */

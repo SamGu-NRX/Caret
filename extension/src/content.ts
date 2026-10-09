@@ -1,5 +1,6 @@
 // Caret's content script, in every http(s) frame and the about:blank and srcdoc frames they own. It stays dormant:
-// no observer, no timer and no walk until the worker asks. It answers only the extension's own worker (a message
+// no timer and no walk until the worker asks, and one observer, of input type attributes only, so a password field
+// stays secret after a "show password" button (content/password-watch.ts). It answers only the extension's own worker (a message
 // with no tab, from this extension's id), never window.postMessage or the page. On its own it tells the worker two
 // things, neither naming an element: that the document moved in history, so the worker bumps the frame's
 // navigation generation at once; and that focus moved while this document is visible and focused, so the helper
@@ -24,7 +25,8 @@ import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
-import { deepActiveElement, kindOf, secretOf, visible, walkControls } from "./content/walker.ts";
+import { deepActiveElement, kindOf, secretOf, shadowRootOf, visible, walkControls } from "./content/walker.ts";
+import { watchPasswords } from "./content/password-watch.ts";
 import { controlName } from "./content/question.ts";
 import { notePassword } from "./content/secret.ts";
 import { EntryTracker } from "./content/entry.ts";
@@ -94,10 +96,10 @@ function selfOf(): FrameSelfAnswer {
  * judged it visible.
  */
 function textOf(until: number): FrameTextAnswer {
-  if (Date.now() > until || window.innerWidth <= 1 || window.innerHeight <= 1) return { selection: [], blocks: [], cut: false, docsText: null };
+  if (Date.now() > until || window.innerWidth <= 1 || window.innerHeight <= 1) return { selection: [], blocks: [], cut: false, docsText: null, title: "" };
   const path = location.protocol === "about:" ? location.href : location.pathname;
   const t = readFrameText(self.origin, path, window.self === window.top);
-  return { selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText };
+  return { selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText, title: clean(document.title, 200) };
 }
 
 function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
@@ -106,7 +108,11 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
   const nav = navigationEntry();
   const out = walkControls(
     (el) => reg.idOf(el),
-    (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form }),
+    (el, c) => {
+      reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form });
+      // A field the walk marked secret keeps nothing in the tracker, even with no edit since it turned secret.
+      if (c.excluded !== undefined) entries?.forget(el);
+    },
     (el, value) => entries?.entryOf(el, value),
   );
   const active = deepActiveElement();
@@ -178,10 +184,26 @@ if (globalThis.__caretContent === undefined) {
    * arrived were never seen, so no field there can be shown to hold only the user's typing.
    */
   const entries = late ? null : new EntryTracker((el) => el instanceof Element && secretOf(el, controlName(el, kindOf(el) ?? "")) !== null);
-  // A password field stays secret after a "show password" toggle makes it type=text (content/secret.ts). Focus and the
-  // first keystroke both come before any toggle the user can press.
-  const seenPassword = (e: Event): void => {
-    const el = e.composedPath()[0];
+  // A password field stays secret after a "show password" toggle makes it type=text (content/secret.ts): its type
+  // attribute is watched in the document from now on, and in each shadow root met at load, in a walk or by focus.
+  watchPasswords(document);
+  const watchShadows = (root: Document | ShadowRoot): void => {
+    for (const el of root.querySelectorAll("*")) {
+      const sr = shadowRootOf(el);
+      if (sr === null) continue;
+      watchPasswords(sr);
+      watchShadows(sr);
+    }
+  };
+  if (document.readyState === "loading") addEventListener("DOMContentLoaded", () => watchShadows(document), { once: true });
+  else watchShadows(document);
+  // Focus and the first keystroke land on the input itself, found through closed shadow roots too (an event's
+  // composedPath stops at a closed root's host in this world).
+  const seenPassword = (): void => {
+    const el = deepActiveElement();
+    if (el === null) return;
+    const root = el.getRootNode();
+    if (root instanceof ShadowRoot) watchPasswords(root);
     if (el instanceof HTMLInputElement && el.type === "password") notePassword(el);
   };
   addEventListener("focusin", seenPassword, { capture: true, passive: true });

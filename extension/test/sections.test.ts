@@ -14,6 +14,7 @@ interface El extends OutlineElement<El> {
   readonly kids: El[];
   shadow: El[] | null;
   readonly name: string;
+  readonly textContent: string | null;
 }
 
 /** An element: its tag, attributes (`name` marks a control by name in the result), own text and children. */
@@ -62,6 +63,7 @@ function walk(...body: El[]) {
       return got.length > 0 ? got : e.kids;
     },
     excluded: (text) => SELF_IDENTIFICATION.test(text),
+    text: (e) => e.textContent ?? "",
   };
   const r = sectionOutline(doc, reader);
   const text = new Map(r.occurrences.map((o) => [o.id, o.text ?? "(excluded)"]));

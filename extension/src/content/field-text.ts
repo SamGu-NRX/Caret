@@ -5,9 +5,12 @@
 // The walk calls it only for the focused control it kept, so every control the walker excludes (password, card and
 // one-time-code fields, hidden inputs, self-identification and consent groups) and every frame on a site Caret is off
 // for never reaches here. Input and textarea read their value around selectionStart and selectionEnd. A contenteditable
-// reads the document's Selection inside it, with a line break for each line break and block, as a person sees it.
+// reads the document's Selection inside it, with a line break for each line break and block, as a person sees it. A
+// field inside a secret one, an editor whose host is secret, and any secret field inside an editor give no text
+// (secret-dom.ts): the walker's own check covers only the element it kept.
 import type { FieldText } from "../shared/messages.ts";
 import { docsParagraphs, docsTextbox, type DocsKind } from "./text.ts";
+import { inSecret, secretOfElement } from "./secret-dom.ts";
 
 /** Characters before the caret the host gets: a few sentences, enough to continue the one being typed. Brief item 7. */
 export const BEFORE_MAX = 2000;
@@ -36,6 +39,8 @@ export function around(value: string, start: number, end: number): FieldText {
  */
 export function serialize(range: Range): string {
   const root = range.commonAncestorContainer;
+  // The walker below never filters its own root: a range wholly inside a secret field reads as nothing.
+  if (inSecret(root)) return "";
   const doc = root.ownerDocument ?? document;
   let out = "";
   // By nodeType, not instanceof: a Docs editor lives in a same-origin iframe, another realm (text.ts isHtml).
@@ -44,7 +49,7 @@ export function serialize(range: Range): string {
     acceptNode: (n) => {
       if (n.nodeType === Node.ELEMENT_NODE) {
         const el = n as Element;
-        if (el.getAttribute("aria-hidden") === "true" || view.getComputedStyle(el).display === "none") return NodeFilter.FILTER_REJECT;
+        if (el.getAttribute("aria-hidden") === "true" || view.getComputedStyle(el).display === "none" || secretOfElement(el) !== null) return NodeFilter.FILTER_REJECT;
       }
       return range.intersectsNode(n) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
     },
@@ -65,6 +70,7 @@ export function serialize(range: Range): string {
 
 /** The text before, inside and after the selection of a contenteditable editor `host`, or null when its selection is elsewhere. */
 export function editorText(host: HTMLElement): FieldText | null {
+  if (inSecret(host)) return null;
   const doc = host.ownerDocument;
   // A shadow root has its own selection in Chrome; the document's selection is the editor's otherwise.
   const root = host.getRootNode();
@@ -97,6 +103,7 @@ function editingHost(el: HTMLElement): HTMLElement {
  * text the user types (a checkbox, a select, a button) or whose caret Chrome does not expose.
  */
 export function fieldText(el: Element): FieldText | null {
+  if (inSecret(el)) return null;
   if (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type))) {
     const s = el.selectionStart;
     const e = el.selectionEnd;

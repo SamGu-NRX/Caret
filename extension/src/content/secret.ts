@@ -1,8 +1,11 @@
 // Which page fields hold a secret: a password, a one-time code or a card's details. Such a field's value, text and
 // typing history never leave the content script (walker.ts sends it marked, without its value; content/entry.ts keeps
 // nothing for it). When in doubt a field counts as secret: a missed fill costs the user a few keystrokes, a secret
-// sent to the app cannot be taken back. Pure, over the facts walker.ts reads off the element, so it is tested without
-// a DOM (test/secret.test.ts).
+// sent to the app cannot be taken back. Pure, over the facts secret-dom.ts reads off the element, so it is tested
+// without a DOM (test/secret.test.ts).
+//
+// A secret field's text must not reach Caret by another road either: a heading, label, description or error message
+// that holds the field (or that an aria reference points at) is read without it (textWithoutSecrets).
 
 export type SecretKind = "password" | "payment" | "oneTimeCode";
 
@@ -15,8 +18,12 @@ export interface FieldFacts {
   autocomplete: string;
   /** The element's name and id attributes. */
   nameAndId: string;
-  /** What the walker calls the field: its label, aria-label or question (question.ts controlName). */
-  label: string;
+  /**
+   * Every text the page gives as the field's label, each tested on its own whatever the accessible name chose: the
+   * walker's name for it, aria-label, aria-labelledby, each <label>, placeholder and title. A generic aria-label must
+   * not hide a visible "Password" label.
+   */
+  labels: readonly string[];
 }
 
 /** Card fields by name or id, which a page keeps stable across languages. */
@@ -45,6 +52,11 @@ export function notePassword(el: object): void {
   wasPassword.add(el);
 }
 
+/** An input's type attribute changed from `from` to `to` (a MutationObserver record, content.ts): a password once stays one. */
+export function noteTypeChange(el: object, from: string | null, to: string | null): void {
+  if (from?.trim().toLowerCase() === "password" || to?.trim().toLowerCase() === "password") wasPassword.add(el);
+}
+
 /** Why the field `el` holds a secret, or null. */
 export function secretKind(el: object, f: FieldFacts): SecretKind | null {
   if (f.type === "password") {
@@ -60,8 +72,28 @@ export function secretKind(el: object, f: FieldFacts): SecretKind | null {
   // Names and labels count on fields only: a "Forgot password?" link or a "Resend code" button holds no secret.
   if (f.role !== "field") return null;
   const name = words(f.nameAndId);
-  if (PASSWORD.test(name) || PASSWORD.test(f.label)) return "password";
-  if (PAYMENT_NAME.test(f.nameAndId) || PAYMENT_NAME.test(name) || PAYMENT_LABEL.test(f.label)) return "payment";
-  if (ONE_TIME_CODE.test(name) || ONE_TIME_CODE.test(f.label)) return "oneTimeCode";
+  const said = (re: RegExp): boolean => f.labels.some((l) => re.test(l));
+  if (PASSWORD.test(name) || said(PASSWORD)) return "password";
+  if (PAYMENT_NAME.test(f.nameAndId) || PAYMENT_NAME.test(name) || said(PAYMENT_LABEL)) return "payment";
+  if (ONE_TIME_CODE.test(name) || said(ONE_TIME_CODE)) return "oneTimeCode";
   return null;
+}
+
+/** What textWithoutSecrets reads of a node tree. A DOM node has all of it (secret-dom.ts). */
+export interface TextTree<N> {
+  /** A text node's characters, or null for any other node. */
+  text(n: N): string | null;
+  childNodes(n: N): ArrayLike<N>;
+  /** Whether the node is a secret field, whose own text and everything under it never count. */
+  secret(n: N): boolean;
+}
+
+/** The text under `root`, as textContent gives it, with every secret field and its contents left out; "" for a secret root. */
+export function textWithoutSecrets<N>(root: N, t: TextTree<N>): string {
+  const own = t.text(root);
+  if (own !== null) return own;
+  if (t.secret(root)) return "";
+  let out = "";
+  for (const c of Array.from(t.childNodes(root))) out += textWithoutSecrets(c, t);
+  return out;
 }
