@@ -19,7 +19,9 @@ public enum EngineLoader {
 
         var description: String {
             switch self {
-            case .modelMissing(let path): return "No GGUF at \(path)"
+            // The menu's first line shows this as "Unavailable: …"; it is the only sign a user gets that inline text
+            // is off, so it says what is missing in words (DF1).
+            case .modelMissing(let path): return "inline text needs the Gemma model file at \(path), and it isn't there"
             }
         }
     }
