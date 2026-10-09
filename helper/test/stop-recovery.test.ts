@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { PAGE_SUBROLE, type HelperMessage } from "../src/protocol.ts";
+import { PAGE_SUBROLE, PROTOCOL_VERSION, type HelperMessage } from "../src/protocol.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN } from "./fake-app.ts";
 
@@ -525,6 +525,41 @@ describe("reconciliation after Stop attributes only what Caret read while it hel
     };
     const result = await helper.executor.run("t", { ...plan, steps: [write(NAME, "Yes")] }, {}, undefined, { grant: true });
     expect(result.detail).toContain("may have been pressed");
+    expect(result.detail).not.toContain("Undo can put it back");
+  });
+  it("says Undo cannot put back the earlier choice of a recovered radio write", async () => {
+    // A page radio group: undo may only clear Caret's own pick (PageEngineLink.checkRadio), never choose "No" again.
+    app.nodes = app.nodes.map((node) => node.key === NAME ? { ...node, role: "AXGroup", subrole: "AXFieldset", value: "No" } : node);
+    app.timeoutAfterWrite = true;
+    app.afterVerb = (a, v) => {
+      if (v.kind !== "write" || v.key !== NAME) return;
+      a.afterVerb = null;
+      helper.executor.stop("t");
+    };
+    const result = await helper.executor.run("t", { ...plan, steps: [write(NAME, "Yes"), write(EMAIL, "d@example.com")] }, {}, undefined, { grant: true });
+    expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
+    expect(result.detail).toContain('Written before stop: Name. Undo cannot put back the earlier choice "No"');
+    expect(result.detail).not.toContain("Undo puts it back");
+  });
+
+  it("promises no Undo when the window closed before the recovery read", async () => {
+    app.timeoutAfterWrite = true;
+    let wrote = false;
+    const run = app.run.bind(app);
+    app.run = async (verb) => {
+      if (verb.kind === "walk" && wrote) return { type: "verbResult", v: PROTOCOL_VERSION, id: "w", at: 0, outcome: "noWindow", detail: null };
+      const r = await run(verb);
+      if (verb.kind === "write" && verb.sameAs === undefined) {
+        wrote = true;
+        helper.executor.stop("t");
+        await helper.handleReader({ type: "windowClosed", v: PROTOCOL_VERSION, at: 9000, windowId: WIN });
+      }
+      return r;
+    };
+    const result = await helper.executor.run("t", plan, {}, undefined, { grant: true });
+    expect(result.outcome).toBe("stopped");
+    expect(result.detail).toContain("may have been written");
+    expect(result.detail).toContain("window is gone");
     expect(result.detail).not.toContain("Undo can put it back");
   });
 });

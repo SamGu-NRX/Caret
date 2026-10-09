@@ -6,7 +6,7 @@ import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { PageEngineLink } from "../src/engines/page-link.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
-import type { HelperMessage, VerbResult } from "../src/protocol.ts";
+import { PAGE_CHECKED, type HelperMessage, type VerbResult } from "../src/protocol.ts";
 import type { Plan } from "../src/executor/schema.ts";
 import { executorWindow, FakeApp, K, TITLE as AX_TITLE } from "./fake-app.ts";
 import { FakePage, KEY, TITLE as PAGE_TITLE, WIN as PAGE_WIN } from "./fake-page.ts";
@@ -414,5 +414,39 @@ describe("a read still on its way when Stop's wait ends", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(await result).toMatchObject({ outcome: "stopped", acted: 0 });
     expect(reads).toBe(1);
+  });
+});
+
+describe("a refusal that says Caret wrote nothing", () => {
+  it("leaves the user's own tick alone when they tick the box during Stop", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caret-stop-own-tick-"));
+    const store = new Store(join(dir, "data"));
+    const page = new FakePage();
+    let helper: Helper;
+    // The user ticks the box and presses Stop while Caret's tick is on its way: the page finds it already ticked.
+    page.onAct = (v, p) => {
+      if (v.kind !== "pageSetChecked" || v.sameAs !== undefined) return null;
+      p.find("e6").checked = true;
+      helper.executor.stop("t");
+      return { outcome: "alreadyTrue", detail: null };
+    };
+    const engine = new PageEngineLink(page.session, (snap) => { void helper.handleReader(snap); });
+    const link: ReaderLink = {
+      grant: (m) => engine.grant(m),
+      run: (verb) => verb.kind === "watchInput" ? Promise.resolve({ type: "verbResult", v: 1, id: "watch", at: Date.now(), outcome: "ok", detail: null }) : engine.run(verb),
+    };
+    helper = new Helper({ store, readerLink: link, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+    cleanups.push(() => { engine.cancelTrailingWalks(); page.session.close(); helper.shutdown(); helper.memory.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+    await engine.run({ kind: "walk", pid: 4100, windowId: PAGE_WIN });
+    const key = KEY("e6");
+    const plan: Plan = { id: "tick", title: "Tick", slots: {}, steps: [
+      { says: "Driving license", end: { kind: "valueEquals", window: { title: PAGE_TITLE }, target: { key, describe: "Driving license" }, value: PAGE_CHECKED } },
+    ] };
+    const result = await helper.executor.run("t", plan, {}, undefined, { grant: true });
+    expect(result).toMatchObject({ outcome: "stopped", acted: 0, step: 0 });
+    expect(result.detail).not.toContain("Written before stop");
+    expect(helper.executor.ledger("t")).toEqual([]);
+    expect(await helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [] });
+    expect(page.find("e6").checked).toBe(true);
   });
 });

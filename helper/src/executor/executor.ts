@@ -1015,9 +1015,12 @@ export class Executor {
         if (attribute === "value" && (answered || e instanceof UnconfirmedAct)) {
           const entry: Extract<LedgerEntry, { kind: "write" }> = { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true };
           this.addLedger(task, entry);
-          // A Yes/No question is answered by a press, which undo cannot take back (PageEngineLink.pressAnswer).
-          const undoable = node.subrole !== PAGE_SUBROLE.pressGroup;
-          const recovery = await this.readUnconfirmed(task, entry, undoable);
+          // What Undo will do, so the report promises no more. A Yes/No question is answered by a press, which undo
+          // cannot take back (PageEngineLink.pressAnswer); a page radio group's undo only clears Caret's own pick, so it
+          // cannot choose an earlier answer again (PageEngineLink.checkRadio).
+          const pressed = node.subrole === PAGE_SUBROLE.pressGroup;
+          const noUndo = pressed ? "Caret cannot take back a press, so change the answer yourself if it is wrong" : node.subrole === "AXFieldset" && before !== "" ? `Undo cannot put back the earlier choice ${JSON.stringify(before)}, so change it yourself if needed` : null;
+          const recovery = await this.readUnconfirmed(task, entry, noUndo, pressed);
           if (task.interrupt !== null) {
             if (recovery.state === "landed") {
               delete entry.unconfirmed;
@@ -1027,7 +1030,7 @@ export class Executor {
               this.journalSave(task, null);
               const when = task.interrupt.kind === "stop" ? "stop" : "pause";
               const what = node.label?.trim() || step.says;
-              throw new Interrupted(undoable ? `Written before ${when}: ${what}. Undo puts it back.` : `Answered before ${when}: ${what}. Caret cannot take back a press, so change the answer yourself if it is wrong.`);
+              throw new Interrupted(`${pressed ? "Answered" : "Written"} before ${when}: ${what}. ${noUndo ?? "Undo puts it back"}.`);
             }
             if (recovery.state === "untouched") {
               task.ledger.splice(task.ledger.indexOf(entry), 1);
@@ -1336,11 +1339,12 @@ export class Executor {
       }
       // The page left or submitted after a press: nothing more runs, whatever else came in meanwhile (B28).
       if (r.pageChanged !== undefined) throw new PageChanged(`${r.pageChanged.join(", ")}${r.detail === null ? "" : ` (${r.detail})`}`);
-      // An interruption wins over a refusal as the reason the run ends. A dispatched value write still needs
-      // reconciliation: the refusal may describe a later stage, after the value went in.
+      // An interruption wins over a refusal as the reason the run ends. Only notAllowed can follow a value that went in
+      // (the grant ended after the setter ran), so only it goes to reconciliation. changed, noElement, notSameElement and
+      // the rest mean Caret wrote nothing: a tick the user made meanwhile reads as changed (PageEngineLink.notUnderIt),
+      // and reconciling it would let Undo clear their own tick (PR #21 review).
       if (r.outcome !== "ok" && r.outcome !== "axError" && task.interrupt !== null) {
-        // Revocation refuses new dispatch, but an answer after Stop cannot prove an already-dispatched write did nothing.
-        if (verb.kind === "write" && verb.attribute !== "focused") throw new UnconfirmedAct(`the reader answered ${r.outcome} after interruption`);
+        if (verb.kind === "write" && verb.attribute !== "focused" && r.outcome === "notAllowed") throw new UnconfirmedAct(`the reader answered ${r.outcome} after interruption`);
         throw new Interrupted();
       }
       if (r.outcome === "focusMoved") throw new FocusMoved(r.detail ?? "focus moved");
@@ -1694,7 +1698,7 @@ export class Executor {
    * the write or the user typed it: the journal holds only the original and the intended value (PR #21 review). Such
    * a read is unknown and Undo leaves it.
    */
-  private async readUnconfirmed(task: Task, e: Extract<LedgerEntry, { kind: "write" }>, undoable: boolean): Promise<{ state: "landed" | "untouched" | "unknown"; detail: string | null }> {
+  private async readUnconfirmed(task: Task, e: Extract<LedgerEntry, { kind: "write" }>, noUndo: string | null, pressed: boolean): Promise<{ state: "landed" | "untouched" | "unknown"; detail: string | null }> {
     try {
       this.checkSession(task);
       const w = this.window(e.windowId);
@@ -1708,8 +1712,12 @@ export class Executor {
     } catch (error) {
       // Undo is refused under a reader launched since (undoRefusal), so this outcome promises none.
       if (task.session !== this.session) return { state: "unknown", detail: `The field may have been written. The reader restarted before Caret could read it back; before the write it held ${JSON.stringify(e.before)}` };
-      if (!undoable) return { state: "unknown", detail: `The answer may have been pressed, and Caret cannot take back a press. Caret could not read it afterwards; before, it was ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}` };
-      return { state: "unknown", detail: `The field may have been written. Undo can put it back. Caret could not read the field after writing it; before the write it held ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}` };
+      const why = error instanceof Error ? error.message : String(error);
+      const may = pressed ? "The answer may have been pressed" : "The field may have been written";
+      // Undo refuses a window the model no longer has (undoWrite), so a closed window or tab gets no promise.
+      if (this.deps.model.windows.get(e.windowId) === undefined) return { state: "unknown", detail: `${may}, but its window is gone, so Undo cannot reach it; before, it held ${JSON.stringify(e.before)}: ${why}` };
+      if (noUndo !== null) return { state: "unknown", detail: `${may}; ${noUndo}. Caret could not read it afterwards; before, it held ${JSON.stringify(e.before)}: ${why}` };
+      return { state: "unknown", detail: `The field may have been written. Undo can put it back. Caret could not read the field after writing it; before the write it held ${JSON.stringify(e.before)}: ${why}` };
     }
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (field === undefined) return { state: "unknown", detail: `The field may have been written; the field is gone; before the write it held ${JSON.stringify(e.before)}` };
