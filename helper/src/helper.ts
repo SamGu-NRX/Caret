@@ -10,7 +10,7 @@ import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScop
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
 import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
-import { askWindows, notifyExpiry, planWindows, type ExpiryList } from "./expiry.ts";
+import { askWindows, notifyExpiry, planWindows, popupWindows, type ExpiryList } from "./expiry.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
@@ -3410,7 +3410,7 @@ export class Helper {
 
   private checkFills(windowId: string): void {
     for (const [id, { p, form }] of this.fillPopups) {
-      if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
+      if (!popupWindows(p).has(windowId)) continue;
       const w = this.model.windows.get(p.windowId);
       let changed = recheckFill(this.fillModel(id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues()) !== null;
       if (!changed && w !== undefined) {

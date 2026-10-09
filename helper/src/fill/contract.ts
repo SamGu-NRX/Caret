@@ -1201,10 +1201,14 @@ const norm = (t: string): string => t.replace(/\s+/gu, " ").trim();
  * is checked by the executor's memoryHolds, and an identity, a saved answer and a memory value by the preview's own
  * recheck (fill-popup.ts valueStale); an instruction has no screen source.
  */
-/** The windows a provenance was read from: what a holder of the value depends on (Helper.onExpiry). */
+/**
+ * The windows a provenance depends on: where it was read, and every window holding a note an owner judgement saw
+ * (ownedStale requires each of them still there). What a holder of the value depends on (Helper.onExpiry).
+ */
 export function provenanceWindows(pr: Provenance): string[] {
   switch (pr.kind) {
     case "window":
+      return [...new Set([pr.windowId, ...(pr.owned?.units.map((u) => u.windowId) ?? [])])];
     case "unit":
       return [pr.windowId];
     case "transfer":

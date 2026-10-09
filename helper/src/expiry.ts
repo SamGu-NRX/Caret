@@ -44,3 +44,13 @@ export function askWindows(d: {
   for (const u of step?.queue ?? []) for (const o of u.options) for (const id of o.windows) out.add(id);
   return out;
 }
+
+/** The windows a fill pop-up depends on: its form, each value's source, and every window its mint depends on (provenanceWindows). */
+export function popupWindows(p: { windowId: string; fields: readonly { source: Source; checked: Read }[] }): Set<string> {
+  const out = new Set([p.windowId]);
+  for (const f of p.fields) {
+    if (f.source !== null) out.add(f.source.windowId);
+    for (const id of provenanceWindows(f.checked.provenance)) out.add(id);
+  }
+  return out;
+}
