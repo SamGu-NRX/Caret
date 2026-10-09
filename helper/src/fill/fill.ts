@@ -2148,6 +2148,11 @@ export async function proposeFill(
     // (evidence/screen/b27/b2b-probe, seed 24). The field's whose answers count at any confidence too: with both at
     // 0.49 "user", the settled `wants` was null and the colleague's phone went in (B27 second review).
     if (sameChoice(whoseId(f.id)) === "user" && c.identity === undefined && sameChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? "")) === "other") return true;
+    // The mirror: both asks calling the field someone else's, at any confidence, withholds the user's own value. W2's
+    // b-032 put the user's email in Reference 2 email, and the verifier, which judges exactness, answered "exact" at 0.85
+    // to 0.89; with the field's whose answers both "other" at 0.4, under WHOSE_CUTOFF, nothing else stopped it, even with
+    // the email in memory (test/act-b032-owner.test.ts).
+    if (sameChoice(whoseId(f.id)) === "other" && is === "user") return true;
     // Someone else's value goes only in a field both asks say wants someone else's: an RSVP's Phone, its whose
     // answer split at 0.48 and 0.60, took the sender's signature phone, which both asks called hers (dev-10).
     if (is === "other") return true;
