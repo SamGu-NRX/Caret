@@ -70,22 +70,27 @@ final class PressIndex: @unchecked Sendable {
         var id: String
         var number: Int?
         var keys: [AXRef: String]
+        /// Every kept element's key, pressable or not: where the user's keys go (fieldInput, issue #26).
+        var fields: [AXRef: String]
         var controls: [Control]
         var defaultButton: DefaultButton?
     }
     private let lock = NSLock()
     private var byWindow: [AXRef: Entry] = [:]
     private var focus: Focused?
+    /// A key that moves focus (Tab) went down since the latest focus change was read: the focused element is unknown.
+    private var focusMoved = false
 
     /// After a full walk: the window's keys, its pressable controls with their frames, and its default button.
     func set(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext], nodes: [Node], defaultButton: DefaultButton?) {
         let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
+        let fields = contexts.mapValues(\.key)
         let controls = nodes.compactMap { n -> Control? in
             guard Roles.pressable.contains(n.role), let f = n.frame else { return nil }
             return Control(key: n.key, role: n.role, label: (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines), frame: f)
         }
         lock.lock(); defer { lock.unlock() }
-        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls, defaultButton: defaultButton)
+        byWindow[w] = Entry(id: id, number: number, keys: keys, fields: fields, controls: controls, defaultButton: defaultButton)
     }
 
     /// After a walk of part of the window: its keys; the last full walk's controls, with every pressable node this
@@ -94,6 +99,7 @@ final class PressIndex: @unchecked Sendable {
     /// must not be reported as it was, nor a sibling that took its old key).
     func setKeys(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext], nodes: [Node]) {
         let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
+        let fields = contexts.mapValues(\.key)
         let read = Dictionary(nodes.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         let label = { (n: Node) in (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
         lock.lock(); defer { lock.unlock() }
@@ -107,12 +113,25 @@ final class PressIndex: @unchecked Sendable {
             d = read[k].map { DefaultButton(element: old.element, key: k, role: $0.role, label: label($0), enabled: !$0.states.contains(.disabled)) }
                 ?? DefaultButton(element: old.element, key: k, role: old.role, label: old.label, enabled: old.enabled)
         }
-        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls, defaultButton: d)
+        byWindow[w] = Entry(id: id, number: number, keys: keys, fields: fields, controls: controls, defaultButton: d)
     }
 
     func setFocus(_ f: Focused?) {
         lock.lock(); defer { lock.unlock() }
         focus = f
+        focusMoved = false
+    }
+
+    /// The fieldInput for a key going down now (FieldInputs), placed at the focused element as last read; nil for Esc.
+    /// A Tab leaves the element unknown until the next focus change is read, so the keys after it count against the
+    /// whole window. A focus change read before the Tab's own report leaves it unknown until the one after.
+    func fieldInput(keyCode: UInt16, at: Int64, pid: Int) -> FieldInput? {
+        lock.lock(); defer { lock.unlock() }
+        let entry = focus.flatMap { byWindow[$0.window] }
+        let key = focus.flatMap { entry?.fields[$0.element] }
+        let report = FieldInputs.report(keyCode: keyCode, at: at, pid: pid, windowId: entry?.id, key: key, focusMoved: focusMoved)
+        if FieldInputs.movesFocus(keyCode: keyCode) { focusMoved = true }
+        return report
     }
 
     /// What a press key pressed (KeyPresses), from the focus and the focused window's walk as last recorded: the
@@ -729,6 +748,9 @@ public final class AppWorker: @unchecked Sendable {
 
     /// The window the user's key went to: the app's focused window as the reader last saw it. Readable from any thread.
     func keyWindowId() -> String? { pressIndex.focusedWindowId() }
+
+    /// The user's key going down in this app now, as fieldInput (issue #26); nil for Esc. Readable from any thread.
+    func fieldInput(keyCode: UInt16, at: Int64) -> FieldInput? { pressIndex.fieldInput(keyCode: keyCode, at: at, pid: Int(pid)) }
 
     /// The window with this window-server number, as the reader last walked it. Readable from any thread.
     func windowId(number: Int) -> String? { pressIndex.windowId(number: number) }

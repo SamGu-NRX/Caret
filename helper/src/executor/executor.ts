@@ -13,7 +13,7 @@
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt, randomUUID } from "node:crypto";
-import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type FieldInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
@@ -278,6 +278,30 @@ interface Task {
 }
 
 /**
+ * The user's input that may have reached one value write's field since Caret sent the write (issue #26). A write whose
+ * answer was lost is judged by a read made once the window is the user's again, and a field holding exactly Caret's
+ * value reads the same whether Caret's write landed or the user typed that value. Input on the field from the moment
+ * the write was sent decides it: Caret then leaves the field as it is, and Undo leaves it too.
+ *
+ * It starts at the send, not at the interrupt, because the pause a keystroke causes reaches the executor after the
+ * keystroke did. A watch whose write answered ends with the write; one whose write left an unconfirmed entry stays with
+ * that entry, since the reader's input can arrive after the recovery read (B29), and is dropped once the entry leaves
+ * the ledger.
+ */
+interface InputWatch {
+  task: Task;
+  pid: number;
+  windowId: string;
+  key: string;
+  /** When the write was sent, on the same wall clock the reader's and the page's input times use. */
+  since: number;
+  /** What the user did, in words, once input was seen; null before. */
+  seen: string | null;
+  /** The ledger entry the lost answer left, once there is one. */
+  entry: Extract<LedgerEntry, { kind: "write" }> | null;
+}
+
+/**
  * Lets go of the source windows a task kept, once it can no longer ask a target question: tasks stay in
  * the executor's map for undo, which needs only the write ledger, and a kept window holds all its nodes.
  */
@@ -342,6 +366,8 @@ export class Executor {
   private readonly interruptDeadlines = new Map<string, () => void>();
   /** Changes a write's act or read-back delivered once a pause or stop was pending: the user may have typed them. */
   private readonly heardAfterInterrupt = new WeakSet<Change>();
+  /** The value writes on their way, and those a lost answer left in a ledger, whose field's input is watched (InputWatch). */
+  private readonly inputWatches = new Set<InputWatch>();
   /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
   readonly targetChoices: { taskId: string; step: number; chose: string | null; jev: JevTrace }[] = [];
   /** Bumped on every reader connection: a running task stops at its next act when it changes. */
@@ -500,6 +526,17 @@ export class Executor {
    * step boundary (S1 audit #3): a write already queued in the reader behind a slow call is refused there.
    */
   onUserInput(m: UserInput): void {
+    // A click in the window of a watched write counts as input on its field (InputWatch): a click can put text in with
+    // no key (a suggestion list, a context menu's Paste), and it moves focus before the reader reads the move, so the
+    // keys that follow may still name the field that had focus before. Keys count only through fieldInput, which
+    // leaves out the Esc that stops a run.
+    if (m.kind === "mouse" && m.point !== null) {
+      for (const watch of this.inputWatches) {
+        if (watch.pid !== m.pid || m.at < watch.since) continue;
+        const frame = this.deps.model.windows.get(watch.windowId)?.window.frame ?? null;
+        if (frame !== null && contains(frame, m.point)) this.inputSeen(watch, "you clicked in its window");
+      }
+    }
     for (const task of this.tasks.values()) {
       if (!this.acting(task)) continue;
       for (const windowId of task.windows.values()) {
@@ -522,6 +559,34 @@ export class Executor {
       const title = this.deps.model.windows.get(windowId)?.window.title ?? "the page";
       this.inputIn(task, `${kind === "key" ? "typing" : "a click"} in '${title}'`);
     }
+  }
+
+  /**
+   * A key the user pressed that may have changed text (protocol.ts FieldInput): input on every watched write's field it
+   * may have reached. A key the reader could not place in a window or at an element counts for every field it could
+   * have reached. Watches are kept per write, not per running task, so a stopped run's write still hears it.
+   */
+  onFieldInput(m: FieldInput): void {
+    for (const watch of this.inputWatches) {
+      if (watch.pid !== m.pid || m.at < watch.since) continue;
+      if ((m.windowId !== null && m.windowId !== watch.windowId) || (m.key !== null && m.key !== watch.key)) continue;
+      this.inputSeen(watch, m.key === null ? "you typed in its window" : "you typed in it");
+    }
+  }
+
+  /** Input on a watched write's field: noted for its recovery read, and an entry already in the ledger is kept from Undo. */
+  private inputSeen(watch: InputWatch, why: string): void {
+    const e = watch.entry;
+    if (e !== null && !watch.task.ledger.includes(e)) {
+      this.inputWatches.delete(watch);
+      return;
+    }
+    watch.seen ??= why;
+    if (e === null || e.mayIncludeInput === true) return;
+    e.mayIncludeInput = true;
+    // A paused run's row is saved now; a running one may have its next write on its way, and a save would drop that
+    // pending row, so its next save carries the flag. An ended run has no row: its undo lives in memory.
+    if (watch.task.journaled && watch.task.finished === "paused") this.journalSave(watch.task, null);
   }
 
   private acting(task: Task): boolean {
@@ -783,6 +848,7 @@ export class Executor {
       task.ledger = remaining.reverse();
     } finally {
       task.undoing = false;
+      for (const watch of this.inputWatches) if (watch.task === task && (watch.entry === null || !task.ledger.includes(watch.entry))) this.inputWatches.delete(watch);
       this.revokeGrant(task);
       // A run a crash interrupted keeps its row while some of it may still be restored: what this undo was stopped
       // before, or could not restore for a passing reason (B23 review). What it found changed or replaced stays in
@@ -980,6 +1046,9 @@ export class Executor {
       const stale = attribute === "value" ? (task.guard?.(i, value, { windowId: nowW.window.windowId, node: nowNode ?? node, window: nowW }) ?? null) : null;
       if (stale !== null) throw StepStop.stop("changed", `${stale}, so Caret did not write it`);
       let answered = false;
+      // Registered right before the send, which act makes before its first await.
+      const watch: InputWatch | null = attribute === "value" ? { task, pid: w.app.pid, windowId: w.window.windowId, key: node.key, since: Date.now(), seen: null, entry: null } : null;
+      if (watch !== null) this.inputWatches.add(watch);
       try {
         const changes = await this.act(task, v, w.window.windowId);
         answered = true;
@@ -1014,13 +1083,17 @@ export class Executor {
         // second failure keeps undo. S1 recognizes only original, intended, or a proper intended prefix.
         if (attribute === "value" && (answered || e instanceof UnconfirmedAct)) {
           const entry: Extract<LedgerEntry, { kind: "write" }> = { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true };
+          if (watch !== null) {
+            watch.entry = entry;
+            if (watch.seen !== null) entry.mayIncludeInput = true;
+          }
           this.addLedger(task, entry);
           // What Undo will do, so the report promises no more. A Yes/No question is answered by a press, which undo
           // cannot take back (PageEngineLink.pressAnswer); a page radio group's undo only clears Caret's own pick, so it
           // cannot choose an earlier answer again (PageEngineLink.checkRadio).
           const pressed = node.subrole === PAGE_SUBROLE.pressGroup;
           const noUndo = pressed ? "Caret cannot take back a press, so change the answer yourself if it is wrong" : node.subrole === "AXFieldset" && before !== "" ? `Undo cannot put back the earlier choice ${JSON.stringify(before)}, so change it yourself if needed` : null;
-          const recovery = await this.readUnconfirmed(task, entry, noUndo, pressed);
+          const recovery = await this.readUnconfirmed(task, entry, noUndo, pressed, watch);
           if (task.interrupt !== null) {
             if (recovery.state === "landed") {
               delete entry.unconfirmed;
@@ -1041,6 +1114,9 @@ export class Executor {
           throw StepStop.stop("reader", `${e instanceof Error ? e.message : String(e)}${recovery.detail === null ? "" : `; ${recovery.detail}`}`);
         }
         throw e;
+      } finally {
+        // A watch stays only with an entry a lost answer left (InputWatch).
+        if (watch !== null && (watch.entry === null || !task.ledger.includes(watch.entry))) this.inputWatches.delete(watch);
       }
     };
     let seen: Change[];
@@ -1697,8 +1773,11 @@ export class Executor {
    * the window is the user's, and a proper prefix of the intended value reads the same whether the app took part of
    * the write or the user typed it: the journal holds only the original and the intended value (PR #21 review). Such
    * a read is unknown and Undo leaves it.
+   *
+   * The same holds for a whole value once the user's input may have reached the field since the write was sent
+   * (InputWatch): whatever the read shows, other than the field as it was, is left to the user, and Undo leaves it.
    */
-  private async readUnconfirmed(task: Task, e: Extract<LedgerEntry, { kind: "write" }>, noUndo: string | null, pressed: boolean): Promise<{ state: "landed" | "untouched" | "unknown"; detail: string | null }> {
+  private async readUnconfirmed(task: Task, e: Extract<LedgerEntry, { kind: "write" }>, noUndo: string | null, pressed: boolean, watch: InputWatch | null): Promise<{ state: "landed" | "untouched" | "unknown"; detail: string | null }> {
     try {
       this.checkSession(task);
       const w = this.window(e.windowId);
@@ -1716,6 +1795,8 @@ export class Executor {
       const may = pressed ? "The answer may have been pressed" : "The field may have been written";
       // Undo refuses a window the model no longer has (undoWrite), so a closed window or tab gets no promise.
       if (this.deps.model.windows.get(e.windowId) === undefined) return { state: "unknown", detail: `${may}, but its window is gone, so Undo cannot reach it; before, it held ${JSON.stringify(e.before)}: ${why}` };
+      // The entry already carries mayIncludeInput (inputSeen), so Undo leaves the field.
+      if (watch?.seen != null) return { state: "unknown", detail: `${may}, but ${watch.seen} after Caret sent it, so Undo leaves it; before, it held ${JSON.stringify(e.before)}: ${why}` };
       if (noUndo !== null) return { state: "unknown", detail: `${may}; ${noUndo}. Caret could not read it afterwards; before, it held ${JSON.stringify(e.before)}: ${why}` };
       return { state: "unknown", detail: `The field may have been written. Undo can put it back. Caret could not read the field after writing it; before the write it held ${JSON.stringify(e.before)}: ${why}` };
     }
@@ -1723,15 +1804,19 @@ export class Executor {
     if (field === undefined) return { state: "unknown", detail: `The field may have been written; the field is gone; before the write it held ${JSON.stringify(e.before)}` };
     const held = field.value ?? "";
     if (held === e.before) return { state: "untouched", detail: null };
+    // Before any reading of the value as Caret's, a whole one or a prefix (issue #26).
+    const input = watch === null ? null : (watch.seen ?? (field.inputAt !== undefined && field.inputAt >= watch.since ? "you typed in it" : null));
+    if (input !== null) {
+      e.mayIncludeInput = true;
+      this.journalSave(task, null);
+      return { state: "unknown", detail: `${fieldContents(e.before, held)}; ${input} after Caret sent its write, so Caret cannot tell its write from your input and left it as it is` };
+    }
     if (sameValue(field, held, e.after)) {
       // A combobox shows the filter text Caret types before it presses the option, and a walk carries no sign of the
       // pick: only the content script's own answer does (content/combobox.ts), and that answer is what was lost.
       if (pageCombobox(field.role, e.windowId)) return { state: "unknown", detail: `Caret cannot tell whether the option was picked; ${fieldContents(e.before, held)}` };
-      // Known risk (PR #21 lead decision B): a user who types exactly this value after Stop, within the deadline and
-      // before this read, is counted as Caret's write, and a later Undo deletes the identical text. Reader input events
-      // name a window, not a field or key, and stop reaching a stopped task, so they cannot rule it out; the input
-      // watch can also arrive late (B29). The window is at most STOP_RECONCILE_MS, the text equals Caret's value, and
-      // Undo is the user's own request. Field-level input evidence would close it (issue #26).
+      // No input on the field was seen since the send. Reader input that arrives after this read still keeps the entry
+      // from Undo (inputSeen), though this report has promised it.
       return { state: "landed", detail: null };
     }
     if (partialReplacement(e.before, e.after, held)) {

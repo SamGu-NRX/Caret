@@ -1057,6 +1057,9 @@ export class Helper {
       case "userInput":
         this.executor.onUserInput(m);
         return null;
+      case "fieldInput":
+        this.executor.onFieldInput(m);
+        return null;
       case "userPress":
         this.patterns.onUserPress(m);
         return null;

@@ -110,6 +110,12 @@ export function radioGroupFor(s: PageSnapshot | undefined, key: string): { frame
   return null;
 }
 
+/** Issue #26: a radio or press group's node carries its buttons' latest input (PageControl.inputAt), since a write targets the group. */
+function latestInput(members: readonly PageControl[]): { inputAt?: number } {
+  const at = Math.max(...members.map((m) => m.inputAt ?? -1));
+  return at < 0 ? {} : { inputAt: at };
+}
+
 /** The node key of a press group (W4): one per group container, by the registry id the walk gave it. */
 const pressGroupKey = (frameId: number, groupId: string): string => `${frameKey(frameId)}/pressgroup:${groupId}`;
 
@@ -247,7 +253,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
           groups.add(parent);
           const members = radioMembers(f, parent);
           const checked = members.find((m) => m.checked === true);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }), value: checked?.name ?? "", editable: true, ...sectionsOf(f.frameId, c), ...groupFrame(members) });
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }), value: checked?.name ?? "", editable: true, ...sectionsOf(f.frameId, c), ...groupFrame(members), ...latestInput(members) });
         }
       }
       const press = isPressOption(c);
@@ -256,7 +262,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         if (!groups.has(parent)) {
           groups.add(parent);
           const options = f.controls.filter((o) => isPressOption(o) && o.group.id === c.group.id);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: c.group.name, value: pressedValue(options), editable: true, ...sectionsOf(f.frameId, c), ...groupFrame(options) });
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: c.group.name, value: pressedValue(options), editable: true, ...sectionsOf(f.frameId, c), ...groupFrame(options), ...latestInput(options) });
         }
       }
       const states: NodeState[] = [];
@@ -289,6 +295,8 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         // S1: what saved answers need: the field's maxlength, and whether the user typed its text themselves.
         ...(c.maxLength === undefined ? {} : { maxLength: c.maxLength }),
         ...(c.entry === undefined ? {} : { entry: c.entry }),
+        // Issue #26: the user's own input on it, which a recovery read after Stop checks (executor.ts readUnconfirmed).
+        ...(c.inputAt === undefined ? {} : { inputAt: c.inputAt }),
         // H14: the types a file control's chooser may offer, for its attach row.
         ...(c.accept === undefined ? {} : { accept: c.accept }),
         // W2: a text input's own kind, which the write contract checks a value's shape against (fill/contract.ts).
