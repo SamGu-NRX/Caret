@@ -198,11 +198,13 @@ const jev = attributedJev(async (req, ask) => {
     r = hit === undefined ? await decide.ask(sent.asked) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   } catch (e) {
     const d = e instanceof DecisionsAttemptError ? e : null;
-    jevSpent += d?.attempt.costUsd ?? 0;
+    if (decide.decisionsSpend === undefined) jevSpent += d?.attempt.costUsd ?? 0;
     requestErrors.push({ ask, kind: d?.kind ?? (e instanceof Error ? e.name : "error"), status: d?.status ?? null, code: d?.code ?? null });
     if (d !== null) attemptsTotal += d.attempts.length;
     if (d !== null && (d.kind === "stop" || d.kind === "cap")) runStop ??= `${d.kind}: ${d.message}`;
     throw e;
+  } finally {
+    if (decide.decisionsSpend !== undefined) jevSpent = decide.decisionsSpend.run().usd;
   }
   if (a.engine === "decisions") {
     const live = "servedBy" in r ? (r as DecisionsResult) : null;
@@ -225,7 +227,7 @@ const jev = attributedJev(async (req, ask) => {
     }));
     appendStoreJson(SCORED, { set: SET, ask, purpose: sent.asked.purpose ?? null, source: "live", servedBy: by, latencyMs: r.latencyMs, costUsd: r.costUsd, questions });
   }
-  jevSpent += r.costUsd;
+  if (decide.decisionsSpend === undefined) jevSpent += r.costUsd;
   jevModels.add(r.model);
   requestMs.push(r.latencyMs);
   return r;

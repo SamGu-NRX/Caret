@@ -67,6 +67,7 @@ const decide = a.engine === "jev" ? null : harnessEngine({
   name: engineName(a.engine), canned: null,
   fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true },
   logRequests: a["log-requests"] ?? join(OUT, "requests.ndjson"),
+  decisionsMaxUsd: SPEND_LIMIT,
 });
 const live = decide?.ask ?? makeJevClient(loadJevKey);
 const engine = decide?.says ?? "live Jev";
@@ -77,10 +78,13 @@ const askJev: AskJev = async (req) => {
   let r: Awaited<ReturnType<AskJev>>;
   try { r = await live(sent.asked); }
   catch (e) {
-    if (e instanceof DecisionsAttemptError) spent += e.attempt.costUsd ?? 0;
+    if (decide?.decisionsSpend === undefined && e instanceof DecisionsAttemptError) spent += e.attempt.costUsd ?? 0;
     throw e;
+  } finally {
+    // The ledger includes unknown usage at its full reservation, including sibling attempts.
+    if (decide?.decisionsSpend !== undefined) spent = decide.decisionsSpend.run().usd;
   }
-  spent += r.costUsd;
+  if (decide?.decisionsSpend === undefined) spent += r.costUsd;
   calls++;
   if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { form: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers });
   return r;
