@@ -113,6 +113,11 @@ export class FirstLookRunner {
   private readonly deps: FirstLookDeps;
   private readonly previews = new FirstLookPreviews();
 
+  /** A window's text expired: the saved previews let go of the lines they read from it (FirstLookPreviews.windowExpired). */
+  windowExpired(windowId: string): void {
+    this.previews.windowExpired(windowId);
+  }
+
   constructor(deps: FirstLookDeps) {
     this.deps = deps;
   }
@@ -189,7 +194,10 @@ export class FirstLookRunner {
     if (late()) return reply("error", null, "the look did not finish before the deadline");
     if (!this.deps.live()) return reply("error", null, "the helper is in shadow mode");
     if (this.deps.paused()) return reply("error", null, "Caret is paused");
-    const all = settled.flatMap((s) => (s.ok ? s.found : []));
+    // A candidate whose window, or a window its values came from, expired while the look ran is no offer: taking it would
+    // find nothing to check (ScreenModel.expire).
+    const held = (c: Candidate): boolean => [c.window.window.windowId, ...(c.sources ?? [])].every((id) => this.deps.model.windows.has(id));
+    const all = settled.flatMap((s) => (s.ok ? s.found : [])).filter(held);
     const best = all.sort((a, b) => a.rank - b.rank || b.weight - a.weight)[0];
     if (best === undefined) {
       const problems = settled.flatMap((s) => (s.ok ? [] : [`${s.family}: ${s.reason}`]));

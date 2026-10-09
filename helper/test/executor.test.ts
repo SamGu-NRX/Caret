@@ -418,6 +418,24 @@ describe("executor", () => {
     expect(acts().filter((v) => v.kind === "write" && v.key === K("textfield:email~0"))).toEqual([]);
   });
 
+  it("revokes a paused run when the window it acts in expires, though no value it writes is copied (retention)", async () => {
+    app.afterVerb = (_, v) => {
+      if (v.kind === "write" && v.key === K("textfield:name~0")) {
+        void helper.handleReader({ type: "userInput", v: PROTOCOL_VERSION, at: 5, pid: FIXTURE_APP.pid, kind: "mouse", point: [50, 50] });
+      }
+    };
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
+    expect(r).toMatchObject({ outcome: "paused", step: 1 });
+    app.afterVerb = null;
+    // The user goes to another app, so the form is no longer the window they are in, and nothing reads it again.
+    void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: Date.now(), from: FIXTURE_APP, to: MAIL_APP });
+    helper.tick((helper.model.windows.get(WIN)?.updatedAt ?? 0) + 10 * 60 * 1000 + 10_000);
+    expect(helper.model.windows.has(WIN)).toBe(false);
+    expect(progress("t1").at(-1)).toMatchObject({ phase: "stopped", step: 1 });
+    expect(progress("t1").at(-1)?.detail).toMatch(/no longer reads the window it acts in/);
+    expect(acts().filter((v) => v.kind === "write" && v.key === K("textfield:email~0"))).toEqual([]);
+  });
+
   it("ignores input in other processes and clicks outside the window", async () => {
     app.afterVerb = (_, v) => {
       if (v.kind !== "write") return;

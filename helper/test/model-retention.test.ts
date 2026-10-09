@@ -186,7 +186,7 @@ describe("the helper's copies of a window's text", () => {
   it("are listed in one place, every offer family included, which a new family can't be left out of", () => {
     expect(Object.keys(h.onExpiry).sort()).toEqual([...Object.keys(OFFER_LIFETIMES), ...WINDOW_STATE_HOLDERS].sort());
     // Holders that let go of nothing, each for the reason given beside it in the list.
-    expect(Object.entries(h.onExpiry).flatMap(([k, f]) => (f === null ? [k] : [])).sort()).toEqual(["caretWrites", "pendingWatches", "skill"]);
+    expect(Object.entries(h.onExpiry).flatMap(([k, f]) => (f === null ? [k] : [])).sort()).toEqual(["caretWrites", "pendingWatches", "recentTransfers", "skill"]);
   });
 
   it("drop it from the model at once when its window closes", () => {
@@ -258,9 +258,10 @@ describe("the windows an offer depends on", () => {
     expect([...planWindows({ checked: { ...checked, mints: new Map(), writes: [], attach: null } })]).toEqual(["form"]);
   });
 
-  it("askWindows: an Ask question's form, and every window a value its fill proposed was read from", () => {
-    const fields = [{ source: { windowId: "note" } }, { source: null }];
-    expect([...askWindows({ window: { windowId: "form" }, resume: { windowId: "form", values: { proposal: { fields } } } })].sort()).toEqual(["form", "note"]);
+  it("askWindows: an Ask question's form, and every window a value it proposed, hands off or still asks about was read from", () => {
+    const fields = [{ source: { windowId: "note" }, handoff: null }, { source: null, handoff: { source: { windowId: "mail" } } }, { source: null, handoff: null }];
+    const queue = [{ options: [{ windows: ["chat"] }, { windows: [] }] }];
+    expect([...askWindows({ window: { windowId: "form" }, resume: { windowId: "form", values: { proposal: { fields }, queue } } })].sort()).toEqual(["chat", "form", "mail", "note"]);
     expect([...askWindows({ window: { windowId: "form" }, resume: { windowId: "form" } })]).toEqual(["form"]);
   });
 });

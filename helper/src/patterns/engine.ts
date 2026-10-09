@@ -579,12 +579,19 @@ export class PatternEngine {
   }
 
   /**
-   * The screen model let go of a window's text without its closing (ScreenModel.expire): a loop's prediction stops
-   * quoting it, and the offers that read it go as they would on a close. Routines and edit watches are left alone, since
-   * the window has not closed.
+   * The screen model let go of a window's text without its closing (ScreenModel.expire): a loop stops predicting from
+   * it, and the offers that read it go as they would on a close. Routines and edit watches are left alone, since the
+   * window has not closed.
    */
   windowExpired(windowId: string): void {
     this.loops.sourceClosed(windowId);
+    // A loop whose main source expired with no other fit to take its place ends: unlike a closed source, which the loop
+    // keeps until its next transfer, its prediction would quote text the model no longer holds.
+    const loop = this.loops.active;
+    if (loop !== null && loop.srcWindowId === windowId) {
+      const ev = this.loops.invalidate(loop.id);
+      if (ev !== null) this.onLoop(ev);
+    }
     this.withdrawOffersFrom(windowId);
     // An offer held for the router reads the window too: it goes unshown, as one whose ground changed.
     for (const [id, { o }] of [...this.held]) {

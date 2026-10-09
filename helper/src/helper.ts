@@ -3369,6 +3369,9 @@ export class Helper {
     preFocus: (id) => {
       if (this.preFocus?.windowId === id) this.preFocus = null;
     },
+    // Kept: a judged transfer names its source observation for attribution and undo, and goes ten minutes after its edit
+    // (Helper.tick). Listed under t1-retention (privacy-gate.ts).
+    recentTransfers: null,
     // Kept: answer capture reads it so a value Caret wrote is never saved as the user's own answer (S1), and dropping it
     // would let one through once its window returned. It holds what Caret put in the field, at most MAX_WRITES_KEPT per
     // field of MAX_FIELDS_WRITTEN. Listed under t1-retention (privacy-gate.ts).
@@ -3392,6 +3395,7 @@ export class Helper {
     skill: null,
     firstLook: (id) => {
       for (const [k, f] of [...this.firstLooks]) if (f.windows.has(id)) this.withdrawFirstLook(k, "stale");
+      this.firstLookRunner.windowExpired(id);
     },
     plan: (id) => {
       for (const [k, p] of [...this.planOffers]) if (planWindows(p.draft).has(id)) this.withdrawPlan(k, "stale");

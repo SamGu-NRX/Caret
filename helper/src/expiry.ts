@@ -6,7 +6,7 @@ import { provenanceWindows, type Provenance } from "./fill/contract.ts";
 import type { OfferProducer } from "./offers/lifetimes.ts";
 
 /** Holders of state read from a window that are not offer families. */
-export const WINDOW_STATE_HOLDERS = ["transfers", "lineTable", "ownerVerdicts", "preFocus", "caretWrites", "answerOffers", "askQuestions", "pendingWatches", "goalSegments", "runs", "router"] as const;
+export const WINDOW_STATE_HOLDERS = ["transfers", "lineTable", "ownerVerdicts", "preFocus", "recentTransfers", "caretWrites", "answerOffers", "askQuestions", "pendingWatches", "goalSegments", "runs", "router"] as const;
 
 export type WindowStateHolder = OfferProducer | (typeof WINDOW_STATE_HOLDERS)[number];
 
@@ -28,9 +28,19 @@ export function planWindows(d: { checked: { window: { window: { windowId: string
   return out;
 }
 
-/** The windows an Ask question is about or quotes: its form, and each window a value its fill proposed was read from. */
-export function askWindows(d: { window: { windowId: string }; resume: { windowId: string; values?: { proposal: { fields: readonly { source: { windowId: string } | null }[] } } } }): Set<string> {
+type Source = { windowId: string } | null;
+
+/**
+ * The windows an Ask question is about or quotes: its form, each window a value its fill proposed or handed off was read
+ * from, and each window a value it still asks about was read from.
+ */
+export function askWindows(d: {
+  window: { windowId: string };
+  resume: { windowId: string; values?: { proposal: { fields: readonly { source: Source; handoff: { source: Source } | null }[] }; queue: readonly { options: readonly { windows: readonly string[] }[] }[] } };
+}): Set<string> {
   const out = new Set([d.window.windowId, d.resume.windowId]);
-  for (const f of d.resume.values?.proposal.fields ?? []) if (f.source !== null) out.add(f.source.windowId);
+  const step = d.resume.values;
+  for (const f of step?.proposal.fields ?? []) for (const s of [f.source, f.handoff?.source ?? null]) if (s !== null) out.add(s.windowId);
+  for (const u of step?.queue ?? []) for (const o of u.options) for (const id of o.windows) out.add(id);
   return out;
 }

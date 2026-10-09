@@ -634,6 +634,9 @@ export class Executor {
       }
       const windowId = task.windows.get(JSON.stringify(end.window));
       if (windowId !== undefined) {
+        // The model no longer holds the window a remaining step acts in (closed, or expired: ScreenModel.expire), so no
+        // act there can be checked; the run's grant goes now rather than at that step.
+        if (!this.deps.model.windows.has(windowId)) return { why: "Caret no longer reads the window it acts in", by: "screen" };
         const r = ask(this.actionIn(windowId));
         if (r !== null) return r;
       }

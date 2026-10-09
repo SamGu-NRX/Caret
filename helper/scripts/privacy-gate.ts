@@ -16,8 +16,8 @@ const required = [
   ["pv2-sites-send", "PV2's Sites and send-boundary fixes aren't accepted yet; the promise's switched-off sentence isn't backed", "It sends nothing from an app or website you've switched off."],
   ["ha2-copied-conversation", "HA2's copied-conversation fix isn't accepted yet", "No request takes more than half of any one conversation."],
   // T1 (#32) bounds the screen model, its change log, the rolling text and every offer built on them (Helper.onExpiry).
-  // Pending watches, the values Caret wrote per field, paused runs' source views, routine values, finished task records
-  // and the page engine's last tab walks still keep pieces of screen text longer.
+  // Pending watches, judged transfers' source observations, the values Caret wrote per field, paused runs' source views,
+  // routine values, finished task records and the page engine's last tab walks still keep pieces of screen text longer.
   ["t1-retention", "T1's retention fixes aren't accepted yet; the promise's ten-minute sentence isn't backed", "Caret keeps what it reads from your screen for ten minutes after it last reads it, then forgets it."],
 ] as const;
 // Internal VM and test builds use synthetic data and are never distributed, so the release acceptance records don't
