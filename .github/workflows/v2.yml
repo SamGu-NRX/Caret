@@ -16,7 +16,9 @@ concurrency:
 jobs:
   helper:
     name: helper
-    runs-on: ubuntu-24.04
+    # The Ubuntu trial failed 13 calendar/goal tests, also reproduced on the local Mac.
+    # Use the requested macOS fallback; it also executes fixture-bundle and case-insensitive path checks.
+    runs-on: macos-26
     timeout-minutes: 20
     defaults:
       run:
@@ -27,7 +29,7 @@ jobs:
         shell: bash
         run: |
           for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
-            if [[ -v "$name" ]]; then
+            if printenv "$name" > /dev/null; then
               echo "::error::$name must not be set in fixture-only CI"
               exit 1
             fi
@@ -58,7 +60,7 @@ jobs:
         shell: bash
         run: |
           for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
-            if [[ -v "$name" ]]; then
+            if printenv "$name" > /dev/null; then
               echo "::error::$name must not be set in fixture-only CI"
               exit 1
             fi
@@ -71,20 +73,27 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
-          cache-dependency-path: extension/pnpm-lock.yaml
+          cache-dependency-path: |
+            extension/pnpm-lock.yaml
+            helper/pnpm-lock.yaml
+      # Extension tests import the helper's protocol schemas, which resolve zod from helper/node_modules.
+      - name: Install helper schema dependencies
+        working-directory: helper
+        run: pnpm install --frozen-lockfile
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
 
   python:
     name: python
-    runs-on: ubuntu-24.04
+    # test_release_host_environment executes Swift filters that import Apple's os module.
+    runs-on: macos-26
     timeout-minutes: 10
     steps:
       - name: Refuse credentials and external environment files
         shell: bash
         run: |
           for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
-            if [[ -v "$name" ]]; then
+            if printenv "$name" > /dev/null; then
               echo "::error::$name must not be set in fixture-only CI"
               exit 1
             fi
@@ -109,7 +118,7 @@ jobs:
         shell: bash
         run: |
           for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
-            if [[ -v "$name" ]]; then
+            if printenv "$name" > /dev/null; then
               echo "::error::$name must not be set in fixture-only CI"
               exit 1
             fi
@@ -139,7 +148,7 @@ jobs:
         shell: bash
         run: |
           for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
-            if [[ -v "$name" ]]; then
+            if printenv "$name" > /dev/null; then
               echo "::error::$name must not be set in fixture-only CI"
               exit 1
             fi
@@ -193,7 +202,7 @@ jobs:
         shell: bash
         run: |
           for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
-            if [[ -v "$name" ]]; then
+            if printenv "$name" > /dev/null; then
               echo "::error::$name must not be set in fixture-only CI"
               exit 1
             fi
@@ -209,7 +218,8 @@ jobs:
           cache-dependency-path: helper/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Set evidence directory
-        run: echo "EVIDENCE=$RUNNER_TEMP/caret-v2-guards" >> "$GITHUB_ENV"
+        # RUNNER_TEMP on Ubuntu is outside Node's tmpdir and the helper's allowed local store roots.
+        run: echo "EVIDENCE=$(mktemp -d /tmp/caret-v2-guards.XXXXXX)" >> "$GITHUB_ENV"
       - name: Guard adversary, refuse verifier
         run: node scripts/guard-adversary.ts --out "$EVIDENCE/refuse" --verifier refuse
       - name: Guard adversary, accept verifier
