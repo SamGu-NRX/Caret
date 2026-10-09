@@ -211,6 +211,8 @@ struct SettingsDragPanelView: View {
     @ObservedObject var model: SettingsDragPanelModel
     var close: () -> Void
     @State private var hovering = false
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControl
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -220,7 +222,9 @@ struct SettingsDragPanelView: View {
                     .foregroundStyle(Color(token: Tokens.ink))
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                if hovering, !model.landed {
+                // The mouse reveals the close by hover; VoiceOver and Switch Control cannot hover, so the button
+                // stays in their trees always (the panel's window never takes the keyboard: System Settings keeps it).
+                if hovering || voiceOver || switchControl, !model.landed {
                     Button(action: close) {
                         Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color(token: Tokens.ink2))
                             .frame(width: 20, height: 20)
@@ -266,6 +270,8 @@ struct DragSource: NSViewRepresentable {
 final class DragRowView: NSView, NSDraggingSource {
     private var downAt: NSPoint?
     private var dragging = false
+    /// What a press does; the default reveals this bundle in Finder. Tests stand a counter in.
+    var onPress: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -275,6 +281,31 @@ final class DragRowView: NSView, NSDraggingSource {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    /// Keyboard focusable, so Full Keyboard Access reaches the row, with the system's own ring around it (the row draws
+    /// nothing itself, so the mask is its bounds).
+    override var acceptsFirstResponder: Bool { true }
+
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10).fill()
+    }
+
+    override var focusRingMaskBounds: NSRect {
+        get { bounds }
+        set { super.focusRingMaskBounds = newValue }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // Space or Return press the row, as its VoiceOver action does; other keys stay the window's.
+        switch event.keyCode {
+        case 49, 36, 76: press()
+        default: super.keyDown(with: event)
+        }
+    }
+
+    private func press() {
+        if let onPress { onPress() } else { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
+    }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
@@ -300,11 +331,11 @@ final class DragRowView: NSView, NSDraggingSource {
     override func mouseUp(with event: NSEvent) {
         defer { downAt = nil }
         guard !dragging else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+        press()
     }
 
     override func accessibilityPerformPress() -> Bool {
-        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+        press()
         return true
     }
 

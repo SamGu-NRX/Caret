@@ -690,9 +690,10 @@ final class OnboardingController {
         }
     }
 
-    /// Return is the primary everywhere, including in the Hello field (an input method's composition excepted). Esc is
-    /// Not now on the first step and nothing elsewhere. Tab is the Hello field's while a ghost shows and the offer's while
-    /// it is takeable; otherwise it moves focus.
+    /// Return is the primary everywhere, including in the Hello field (an input method's composition excepted), except
+    /// when Full Keyboard Access has focused another button: then Return presses it. Esc is Not now on the first step
+    /// and nothing elsewhere. Tab is the Hello field's while a ghost shows and the offer's while it is takeable;
+    /// otherwise it moves focus.
     private func installKeys() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             MainActor.assumeIsolated {
@@ -700,7 +701,9 @@ final class OnboardingController {
                 let state = flow.state
                 let composing = (event.window?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
                 if state.step != .first, let action = Self.editAction(for: event), NSApp.sendAction(action, to: nil, from: nil) { return nil }
-                guard let mapped = Self.event(for: event, state: state, composing: composing) else { return event }
+                // A Return press while a button holds Full Keyboard Access's focus belongs to that button, not the primary.
+                let focusedButton = event.keyCode == 36 || event.keyCode == 76 ? Self.focusedElementIsButton() : false
+                guard let mapped = Self.event(for: event, state: state, composing: composing, focusedButton: focusedButton) else { return event }
                 flow.send(mapped)
                 return nil
             }
@@ -719,7 +722,7 @@ final class OnboardingController {
         }
     }
 
-    static func event(for event: NSEvent, state: OnboardingFlow.State, composing: Bool = false) -> OnboardingFlow.Event? {
+    static func event(for event: NSEvent, state: OnboardingFlow.State, composing: Bool = false, focusedButton: Bool = false) -> OnboardingFlow.Event? {
         if composing { return nil }
         let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
         let keys = state.firstLookKeys
@@ -734,7 +737,7 @@ final class OnboardingController {
         }
         guard mods.subtracting(.shift).isEmpty else { return nil }
         switch event.keyCode {
-        case 36, 76: return .next
+        case 36, 76: return focusedButton ? nil : .next
         case 53: return state.step == .first ? .key(.escape) : nil
         case 48 where !mods.contains(.shift):
             switch state.step {
@@ -744,6 +747,21 @@ final class OnboardingController {
             }
         default: return nil
         }
+    }
+
+    /// Whether the app's own accessibility-focused element is a pressable button: Full Keyboard Access moves the focus
+    /// through the pane's controls and reports it here (the responder chain says nothing about SwiftUI's focus). False
+    /// when nothing, a text field or a static element holds it, so Return stays the primary there. A read on our own
+    /// process needs no permission.
+    static func focusedElementIsButton() -> Bool {
+        let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        var focused: AnyObject?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let element = focused as? AXUIElement else { return false }
+        var role: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success,
+              let name = role as? CFString else { return false }
+        return name as String == (kAXButtonRole as String)
     }
 
     // MARK: - Debug socket

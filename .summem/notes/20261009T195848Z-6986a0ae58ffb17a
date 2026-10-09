@@ -1,0 +1,1 @@
+Onboarding key tap must not swallow Return when Full Keyboard Access focuses a button: focusedElementIsButton() decides; Space never mapped. AX-walk tests skip off-screen unless CARET_AX_ONSCREEN=1.

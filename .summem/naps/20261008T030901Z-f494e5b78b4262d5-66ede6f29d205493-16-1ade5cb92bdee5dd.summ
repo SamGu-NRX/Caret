@@ -1,0 +1,1 @@
+Builds: double-hyphen Info.plist comment refuses; cp -cR breaks symlinked node_modules. Disclosure caps at 8 ways, rebuilds need 'plan'. Privacy copy: bundled PrivacyPromise.txt (verify gate); scope stand-ins: builders.scopeLabel; envs: processEnv/HELPER_ONLY_ENV.
