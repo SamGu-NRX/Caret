@@ -310,6 +310,7 @@ configuration.helperSocketPath = MainActor.assumeIsolated { services.helperSocke
 
 // The engine's token profiles follow the home: a test run's --home keeps them out of the user's Library.
 configuration.profileDirectory = URL(fileURLWithPath: home.profilesDirectory(userHome: NSHomeDirectory()), isDirectory: true)
+configuration.modelDownloadDirectory = URL(fileURLWithPath: home.modelsDirectory(userHome: NSHomeDirectory()), isDirectory: true)
 let launchConfiguration = configuration
 let launchStatusItem = showsStatusItem
 let launchManifestDirectory = manifestDirectory

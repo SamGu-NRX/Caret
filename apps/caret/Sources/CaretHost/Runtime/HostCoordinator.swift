@@ -56,6 +56,10 @@ final class HostCoordinator {
     private var inFlight: [UInt64: Task<Void, Never>] = [:]
     /// The one extension of the shown suggestion (`GhostExtend`), cancelled with the generation.
     private var extending: Task<Void, Never>?
+    /// Every extension request until it finishes, cancelled or not, so shutdown waits for each before the model
+    /// goes (PR #16 review: `drain` used to await only the current one, which `cancelGeneration` had just cleared).
+    private var extensionsInFlight: [UInt64: Task<Void, Never>] = [:]
+    private var extensionSerial: UInt64 = 0
     private var isShuttingDown = false
     /// The key-down whose paint was last measured, so one keystroke yields at most one sample.
     private var measuredKeySequence: UInt64 = 0
@@ -240,7 +244,9 @@ final class HostCoordinator {
         for task in Array(inFlight.values) {
             await task.value
         }
-        await extending?.value
+        for task in Array(extensionsInFlight.values) {
+            await task.value
+        }
     }
 
     private func finishGeneration(
@@ -322,7 +328,10 @@ final class HostCoordinator {
         let context = held.snapshot.context.replacingBeforeCursor(held.snapshot.context.beforeCursor + offer.text)
         let engine = self.engine
         extending?.cancel()
+        extensionSerial &+= 1
+        let serial = extensionSerial
         extending = Task { [weak self] in
+            defer { self?.extensionsInFlight.removeValue(forKey: serial) }
             let outcome = try? await engine.suggest(for: context, tokens: GhostExtend.tokens)
             guard let self, !Task.isCancelled else { return }
             guard case .suggestion(let more)? = outcome else { return self.status.increment("ghost.extend.none") }
@@ -347,6 +356,7 @@ final class HostCoordinator {
             self.anchor = GhostSuggestion(text: full, context: held.suggestion.context, generationMs: held.suggestion.generationMs)
             self.status.increment("ghost.extended")
         }
+        extensionsInFlight[serial] = extending
     }
 
     /// The snapshot an extension draws at: the latest read of the same field (same element and value), which has the

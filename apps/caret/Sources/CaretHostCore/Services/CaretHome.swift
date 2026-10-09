@@ -41,6 +41,12 @@ public struct CaretHome: Equatable, Sendable {
 
     /// Where the engine keeps its token profiles. The user's Caret keeps the folder it has always used, so no profile
     /// is rebuilt; a run with its own home keeps its profiles there, and writes nothing into the user's Library.
+    /// Where a model download goes (`ModelKeeper`): the user's Caret's own models folder, or `<home>/Models` for a run
+    /// with its own home, so a test run never writes the 3.4 GB file into the user's Library (PR #16 review).
+    public func modelsDirectory(userHome: String) -> String {
+        isOverride ? root + "/Models" : Self.trimmed(userHome) + "/" + ModelFiles.caretFolder
+    }
+
     public func profilesDirectory(userHome: String) -> String {
         isOverride ? root + "/Profiles" : Self.trimmed(userHome) + "/Library/Application Support/Caret/v2-host/Profiles"
     }

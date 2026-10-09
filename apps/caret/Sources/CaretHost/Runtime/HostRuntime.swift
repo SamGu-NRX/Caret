@@ -17,6 +17,8 @@ public final class HostRuntime {
         /// Where the engine keeps its token profiles (`CaretHome.profilesDirectory`): a run with its own `--home`
         /// keeps them there, not in the user's Library.
         public var profileDirectory: URL = EngineLoader.profileDirectory
+        /// Where a model download goes (`CaretHome.modelsDirectory`); nil is the user's Caret's models folder.
+        public var modelDownloadDirectory: URL?
         /// When set, offers are made only in these apps. For test runs on a shared Mac, so the host
         /// never draws over or takes Tab from windows it did not create. Nil means every app.
         public var allowedBundleIDs: Set<String>?
@@ -264,7 +266,7 @@ public final class HostRuntime {
         let activity = ActivityCenter()
         self.activity = activity
         let memory = MemoryController(testHooks: configuration.testHooks)
-        let modelKeeper = ModelKeeper(configured: configuration.modelURL)
+        let modelKeeper = ModelKeeper(configured: configuration.modelURL, downloadFolder: configuration.modelDownloadDirectory)
         self.modelKeeper = modelKeeper
         let showModel: () -> Void = { [weak memory, unowned modelKeeper] in
             memory?.showModel(WritingPage.ModelPanel(line: modelKeeper.line, action: modelKeeper.action(menu: false), status: modelKeeper.status))
@@ -641,7 +643,8 @@ public final class HostRuntime {
             },
             rewrite: { pid in
                 DispatchQueue.main.async { MainActor.assumeIsolated { writing.requestRewrite(pid: pid) } }
-            }
+            },
+            takesRewrite: { pid in AppSwitch.shared.takesRewriteKey(pid: pid) }
         ), keyHold: keyHold)
         let fixMethods = executor.writeMethods
         writing.fixesStopped = { pid in fixMethods.fixesStopped(pid: pid) }

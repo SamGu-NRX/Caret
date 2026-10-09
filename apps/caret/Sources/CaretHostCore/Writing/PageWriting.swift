@@ -184,8 +184,12 @@ public final class PageWritingMachine {
             let merged = WritingCheck.merged(WritingCheck.check(value, sentence: p.check.span, language: language), found)
             candidates = merged.filter { !$0.needsChoice && ($0.kind != .spelling || WordFix.offersLive($0)) }
         }
-        // The page replaces only text just before its caret, and at most what it reports there.
-        let fixable = candidates.filter { $0.span.end <= caret && caret - $0.span.start <= UTF16Text.length(text.before) }
+        // The page replaces only text just before its caret, and at most what it reports there; in a rich editor only
+        // when nothing but a just-typed closer follows the error (`tailAllowed`).
+        let fixable = candidates.filter {
+            $0.span.end <= caret && caret - $0.span.start <= UTF16Text.length(text.before)
+                && Self.tailAllowed(UTF16Text.slice(value, start: $0.span.end, end: caret) ?? "", kind: f.fieldKind)
+        }
         guard !fixable.isEmpty else { return note(candidates.isEmpty ? "clean" : "afterCaret") }
         let live = RangeEdit.Live(target: t, value: value, selection: .caret(caret))
         guard let writing = WritingOffer.correction(marks: fixable, checkedRevision: UTF16Text.digest(value), live: live, language: language) else {
@@ -266,9 +270,21 @@ public final class PageWritingMachine {
 
     /// The settings stopped writing help, or the page went: what is shown goes.
     public func gateClosed() {
+        // A check waiting out a rich editor's quiet must not bring the closed field back (PR #16 review).
+        quietTimer?.cancel()
+        quietTimer = nil
+        current = nil
         previous = nil
         pending = nil
         withdraw()
+    }
+
+    /// Whether a fix may be sent in a field of `kind` when `tail` sits between the error and the caret. The page
+    /// insert puts the fix and the tail back as plain text, so in a rich editor a tail could lose its bold or its
+    /// link (PR #16 review): there only a closer the user just typed may follow, at most two spaces or marks.
+    public static func tailAllowed(_ tail: String, kind: PageField.FieldKind?) -> Bool {
+        guard kind == .contenteditable else { return true }
+        return UTF16Text.length(tail) <= 2 && tail.allSatisfy { $0 == " " || $0 == "\u{A0}" || ".,;:!?)]}\"\u{201D}\u{2019}".contains($0) }
     }
 
     /// A newer offer took the slot from this machine's fix: its line goes, since Tab now belongs to the newer one.
