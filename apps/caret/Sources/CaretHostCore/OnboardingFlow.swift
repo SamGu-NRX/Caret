@@ -657,9 +657,12 @@ public final class OnboardingFlow {
         case .otherCarets(let others):
             state.access.otherCarets = others
         case .accessChangedStillUntrusted:
-            guard state.step == .access else { break }
+            guard state.step == .access, !state.permissions.accessibility else { break }
             state.access.wrongCaret = OtherCarets.wrongOneTurnedOn(changeNoticed: true, trusted: state.permissions.accessibility,
                                                                    others: state.access.otherCarets)
+            // No other Caret installed: the entry turned on is this bundle id's, from an earlier copy signed differently
+            // (the rig VM's golden image had one; very likely Sam's beta.1 too). Offer to reset it.
+            if !state.access.wrongCaret { state.access.stale = true }
         case .resetGrant:
             guard state.step == .access, state.access.stale else { break }
             state.access.stale = false

@@ -316,6 +316,12 @@ final class OnboardingController {
             onAddToBrowser()
         case .openSystemSettings:
             guard drawsWindow else { return suppressed.append("openSystemSettings") }
+            // An entry this build isn't trusted under is another copy's or none: reset it first, so the drag adds one
+            // bound to this build (AccessibilityAccess.resetsBeforeAsking). Then macOS's alert puts Caret in the list.
+            if resetOwnEntries(AccessibilityAccess.resetsBeforeAsking(accessibility: AXIsProcessTrusted(), listenEvents: CGPreflightListenEventAccess(),
+                                                                       postEvents: CGPreflightPostEventAccess()), why: "before asking") {
+                updateProgress { $0.axAsked = nil; $0.grantedSignature = nil }
+            }
             // macOS's alert is what first puts Caret in the list; after that it shows nothing, so only the pane opens.
             if AccessibilityAccess.shouldPrompt(asked: progress?.axAsked == true, trusted: AXIsProcessTrusted()) {
                 updateProgress { $0.axAsked = true }
@@ -426,20 +432,34 @@ final class OnboardingController {
     /// Removes Caret's own Accessibility entry (never another app's: `AccessibilityAccess.resetArguments`), forgets
     /// that macOS was asked, and opens the pane again, alert first, so Caret goes back into the list.
     private func resetOwnGrant() {
-        guard let args = try? AccessibilityAccess.resetArguments(bundleID: Bundle.main.bundleIdentifier) else { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        p.arguments = args
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        do {
-            try p.run()
-            p.waitUntilExit()
-        } catch {
-            FileHandle.standardError.write(Data("caret: tccutil reset failed: \(error.localizedDescription)\n".utf8))
-        }
+        _ = resetOwnEntries(AccessibilityAccess.ownServices, why: "stale entry")
         updateProgress { $0.axAsked = nil; $0.grantedSignature = nil }
         perform(.openSystemSettings)
+    }
+
+    /// `tccutil reset SERVICE dev.caret.host` for each service (Caret's own entries only:
+    /// `AccessibilityAccess.resetArguments`), each exit status in the host log. True when one ran and exited 0. A
+    /// failure only logs: the flow carries on as before.
+    @discardableResult
+    private func resetOwnEntries(_ services: [String], why: String) -> Bool {
+        var any = false
+        for service in services {
+            guard let args = try? AccessibilityAccess.resetArguments(service: service, bundleID: Bundle.main.bundleIdentifier) else { continue }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            p.arguments = args
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            do {
+                try p.run()
+                p.waitUntilExit()
+                FileHandle.standardError.write(Data("caret: tccutil reset \(service) (\(why)) exited \(p.terminationStatus)\n".utf8))
+                if p.terminationStatus == 0 { any = true }
+            } catch {
+                FileHandle.standardError.write(Data("caret: tccutil reset \(service) (\(why)) failed: \(error.localizedDescription)\n".utf8))
+            }
+        }
+        return any
     }
 
     /// Hands the switch step to the panel inside System Settings: Caret's own window steps out of the way. If System
@@ -522,9 +542,15 @@ final class OnboardingController {
                 self.poll()
                 // A change macOS announced that did not make this Caret trusted: if another Caret is installed, its
                 // switch was the one turned on. Not in the first seconds after Caret asked, when its own entry is added.
-                if let flow = self.flow, flow.state.step == .access, !flow.state.permissions.accessibility,
-                   Date().timeIntervalSince(self.openedSettingsAt) > 3 {
-                    flow.send(.accessChangedStillUntrusted)
+                // Still untrusted 2 s after the notice (AccessibilityAccess.staleAfterNotice): the entry that changed is
+                // another Caret's, or an older copy of this one.
+                guard let flow = self.flow, flow.state.step == .access, !flow.state.permissions.accessibility,
+                      Date().timeIntervalSince(self.openedSettingsAt) > 3 else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + AccessibilityAccess.staleAfterNotice) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, let flow = self.flow, flow.state.step == .access, !AXIsProcessTrusted() else { return }
+                        flow.send(.accessChangedStillUntrusted)
+                    }
                 }
             }
         }
