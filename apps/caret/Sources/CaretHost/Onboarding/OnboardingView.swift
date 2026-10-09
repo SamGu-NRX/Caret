@@ -37,7 +37,7 @@ struct OnboardingView: View {
                 pane.id(state.step).transition(transition)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .animation(animated ? Motion.curve(Motion.easeOut, reduceMotion ? Motion.Duration.reduced : 0.16) : nil, value: state.step)
+            .animation(animated ? OnboardingMotion.curve(OnboardingMotion.out, 0.16, reduce: reduceMotion) : nil, value: state.step)
             OnboardingBar(state: state, send: send)
         }
         .frame(width: size.width, height: size.height)
@@ -61,6 +61,18 @@ struct OnboardingView: View {
     }
 }
 
+/// HANDOFF §4's curves (v41): out for entrances and swaps, in-out for the window's frame and the drawn toggle.
+enum OnboardingMotion {
+    static let out = (0.22, 1.0, 0.36, 1.0)
+    static let inOut = (0.83, 0.0, 0.17, 1.0)
+    /// Reduce Motion: fades only, linear.
+    static let reduced = Animation.linear(duration: 0.12)
+
+    static func curve(_ c: (Double, Double, Double, Double), _ duration: Double, reduce: Bool) -> Animation {
+        reduce ? reduced : Motion.curve(c, duration)
+    }
+}
+
 /// The footer: the quiet choice at the left, the step dots in the middle, the primary at the right (HANDOFF §5 order).
 struct OnboardingBar: View {
     var state: OnboardingFlow.State
@@ -68,9 +80,9 @@ struct OnboardingBar: View {
 
     var body: some View {
         ZStack {
-            if state.steps.count > 1 { StepDots(current: state.stepIndex, count: state.steps.count) }
+            if state.steps.count > 1 { StepDots(current: state.stepIndex, count: state.steps.count).accessibilitySortPriority(2) }
             HStack {
-                if let quiet { Button(quiet.title) { send(quiet.event) }.buttonStyle(QuietButtonStyle(size: 13)) }
+                if let quiet { Button(quiet.title) { send(quiet.event) }.buttonStyle(QuietButtonStyle(size: 13)).accessibilitySortPriority(3) }
                 Spacer()
                 if let primary {
                     // The flow decides what the primary does on each step (Return sends the same event).
@@ -78,12 +90,14 @@ struct OnboardingBar: View {
                         .buttonStyle(OnboardingButtonStyle(kind: .primary))
                         .disabled(!state.canContinue)
                         .keyboardShortcut(.defaultAction)
+                        .accessibilitySortPriority(1)
                 }
             }
         }
         .padding(.horizontal, 28)
         .padding(.bottom, 22)
         .padding(.top, 8)
+        .accessibilityElement(children: .contain)
     }
 
     private var quiet: (title: String, event: OnboardingFlow.Event)? {
@@ -206,7 +220,10 @@ struct AppIcon: View {
 /// changes swap at once).
 struct SwappingLine<Content: View>: View {
     var key: String
+    /// False for a change a key caused (Tab took the ghost): it swaps at once.
     var animated: Bool
+    /// What VoiceOver hears for the new line; the key when nil.
+    var announcement: String? = nil
     @ViewBuilder var content: Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -214,12 +231,12 @@ struct SwappingLine<Content: View>: View {
         ZStack(alignment: .topLeading) {
             content.id(key).transition(.opacity)
         }
-        .animation(animated ? Motion.curve(Motion.easeOut, reduceMotion ? Motion.Duration.reduced : 0.14) : nil, value: key)
+        .animation(animated ? OnboardingMotion.curve(OnboardingMotion.out, 0.14, reduce: reduceMotion) : nil, value: key)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.updatesFrequently)
-        .onChange(of: key) { _, _ in
-            guard animated else { return }
-            AccessibilityNotification.Announcement(key).post()
+        .onChange(of: key) { _, new in
+            guard !new.isEmpty else { return }
+            AccessibilityNotification.Announcement(announcement ?? new).post()
         }
     }
 }
@@ -242,7 +259,8 @@ struct HelloPane: View {
         let hello = state.hello
         VStack(alignment: .leading, spacing: 0) {
             Spacer(minLength: 0)
-            FigureView(character: character, state: .noticed, size: Tokens.FigureSize.onboarding, animated: animated && !reduceMotion,
+            // Drawn still: its arrival and nod below are the whole performance (no breath or blink loop).
+            FigureView(character: character, state: .noticed, size: Tokens.FigureSize.onboarding, animated: false,
                        gaze: CGVector(dx: 0, dy: 0.8))
                 .scaleEffect(x: nod ? 1.06 : 1, y: nod ? 0.92 : 1, anchor: .bottom)
                 .offset(y: nod ? 1 : 0)
@@ -253,7 +271,8 @@ struct HelloPane: View {
             ScreenTitle(title: OnboardingCopy.Hello.title, detail: OnboardingCopy.Hello.line)
             FieldLabel(text: OnboardingCopy.Hello.fieldLabel).padding(.top, 26)
             HelloField(hello: hello, enabled: hello.model == .ready, send: send).padding(.top, 8)
-            SwappingLine(key: coachKey, animated: animated) { coach }
+            SwappingLine(key: coachKey, animated: animated && !state.hello.taken,
+                         announcement: state.hello.ghost != nil ? "Tab \(OnboardingCopy.Hello.coachShown)" : nil) { coach }
                 .frame(minHeight: 22, alignment: .topLeading)
                 .padding(.top, 8)
             if let notice = OtherTabOwners.notice(state.otherTabOwners) {
@@ -275,11 +294,11 @@ struct HelloPane: View {
         .padding(.top, OnboardingView.top)
         .task {
             guard !still, !arrived else { return }
-            withAnimation(Motion.curve(Motion.easeOut, Motion.Duration.figureEnter)) { arrived = true }
-            try? await Task.sleep(for: .milliseconds(720))
-            withAnimation(Motion.curve(Motion.easeOut, 0.12)) { nod = true }
-            try? await Task.sleep(for: .milliseconds(120))
-            withAnimation(Motion.curve(Motion.easeOut, 0.12)) { nod = false }
+            withAnimation(Motion.curve(OnboardingMotion.out, Motion.Duration.figureEnter)) { arrived = true }
+            guard (try? await Task.sleep(for: .milliseconds(720))) != nil else { return }
+            withAnimation(Motion.curve(OnboardingMotion.out, 0.12)) { nod = true }
+            guard (try? await Task.sleep(for: .milliseconds(120))) != nil else { return }
+            withAnimation(Motion.curve(OnboardingMotion.out, 0.12)) { nod = false }
         }
     }
 
@@ -375,10 +394,16 @@ struct AccessPane: View {
         let granted = state.access.granted
         VStack(alignment: .leading, spacing: 0) {
             SwappingLine(key: granted ? OnboardingCopy.Access.landedTitle : OnboardingCopy.Access.title, animated: animated) {
-                ScreenTitle(title: granted ? OnboardingCopy.Access.landedTitle : OnboardingCopy.Access.title,
-                            detail: granted ? OnboardingCopy.Access.landedLine : (state.access.reopened ? OnboardingCopy.Access.reopened : OnboardingCopy.Access.line))
+                ScreenTitle(title: granted ? OnboardingCopy.Access.landedTitle : OnboardingCopy.Access.title)
             }
-            CarrotRule(drawn: granted, animated: animated && !reduceMotion).padding(.top, 6)
+            Text(granted ? OnboardingCopy.Access.landedLine : (state.access.reopened ? OnboardingCopy.Access.reopened : OnboardingCopy.Access.line))
+                .font(.system(size: 13))
+                .foregroundStyle(Color(token: Tokens.ink2))
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 7)
+            // No rule under Reduce Motion (HANDOFF §4).
+            if !reduceMotion { CarrotRule(drawn: granted, animated: animated).padding(.top, 6) }
             HStack(spacing: 12) {
                 GrantMark(granted: granted, animated: animated)
                 VStack(alignment: .leading, spacing: 2) {
@@ -409,6 +434,10 @@ struct AccessPane: View {
         }
         .padding(.horizontal, 30)
         .padding(.top, 34)
+        .onAppear {
+            guard animated, !state.access.granted else { return }
+            AccessibilityNotification.Announcement(OnboardingCopy.Access.waiting).post()
+        }
     }
 }
 
@@ -448,14 +477,14 @@ struct CarrotRule: View {
     var body: some View {
         Capsule()
             .fill(Color(token: Tokens.carrot))
-            .frame(width: 120 * (drawn ? (animated ? progress : 1) : 0), height: 2)
-            .frame(width: 120, alignment: .leading)
+            .frame(width: 120, height: 2)
+            .scaleEffect(x: drawn ? (animated ? max(progress, 0.001) : 1) : 0.001, y: 1, anchor: .leading)
             .opacity(drawn ? 1 : 0)
             .onChange(of: drawn) { _, now in
                 guard now, animated else { return }
                 // One frame after the headline's swap.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) {
-                    withAnimation(Motion.curve(Motion.easeOut, 0.32)) { progress = 1 }
+                    withAnimation(Motion.curve(OnboardingMotion.out, 0.32)) { progress = 1 }
                 }
             }
             .accessibilityHidden(true)
@@ -480,12 +509,12 @@ struct SettingsRowDrawing: View {
         .frame(height: 44)
         .background(Color(token: Tokens.card), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(token: Tokens.rule), lineWidth: 1) }
-        .animation(animated ? Motion.curve(Motion.easeInOut, 0.32) : nil, value: on || demo)
+        .animation(animated ? Motion.curve(OnboardingMotion.inOut, 0.32) : nil, value: on || demo)
         .task {
             guard animated, !on else { return }
-            try? await Task.sleep(for: .milliseconds(700))
+            guard (try? await Task.sleep(for: .milliseconds(700))) != nil else { return }
             demo = true
-            try? await Task.sleep(for: .milliseconds(800))
+            guard (try? await Task.sleep(for: .milliseconds(800))) != nil else { return }
             demo = false
         }
         .accessibilityHidden(true)
@@ -654,7 +683,7 @@ struct PreviewCrop: View {
         .offset(y: still || shown || reduceMotion ? 0 : 2)
         .onAppear {
             guard !still else { return }
-            withAnimation(Motion.curve(Motion.easeOut, reduceMotion ? Motion.Duration.reduced : 0.16).delay(delay)) { shown = true }
+            withAnimation(OnboardingMotion.curve(OnboardingMotion.out, 0.16, reduce: reduceMotion).delay(delay)) { shown = true }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(voiceOver)
@@ -697,10 +726,14 @@ struct LookingRing: View {
             .trim(from: 0, to: animated && !reduceMotion ? 0.7 : 1)
             .stroke(Color(token: Tokens.ink2), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
             .frame(width: 12, height: 12)
-            .rotationEffect(.degrees(turning ? 360 : 0))
+            .rotationEffect(.degrees(turning && !reduceMotion ? 360 : 0))
             .onAppear {
                 guard animated, !reduceMotion else { return }
                 withAnimation(.linear(duration: 0.7).repeatForever(autoreverses: false)) { turning = true }
+            }
+            .onChange(of: reduceMotion) { _, reduce in
+                // Reduce Motion turned on: the loop stops (a still ring); off again: it turns.
+                withAnimation(reduce || !animated ? nil : .linear(duration: 0.7).repeatForever(autoreverses: false)) { turning = !reduce && animated }
             }
             .accessibilityHidden(true)
     }
@@ -905,19 +938,19 @@ struct FoundOffer: View {
         VStack(alignment: .leading, spacing: 10) {
             PopupView(
                 spec: run == nil ? Self.takeable(found.spec) : Self.withoutActions(found.spec), character: character,
-                figure: run == nil ? nil : .absent, animated: animated, showsEsc: false
+                figure: run == nil ? nil : .absent, animated: false, showsEsc: false
             )
                 .accessibilityElement(children: .combine)
             if let line {
-                LineView(content: line.content, character: character, animated: animated)
-                    .transition(animated && !reduceMotion ? .opacity.combined(with: .offset(y: 2)) : .opacity)
+                // Still: onboarding allows one loop (the spinner), and the line appears because a key was pressed.
+                LineView(content: line.content, character: character, animated: false)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(line.text)
             }
         }
-        .animation(animated ? Motion.curve(Motion.easeOut, 0.16) : nil, value: line == nil)
-        .onChange(of: line?.text) { _, text in
-            guard animated, let text else { return }
+        // Once per phase, not every second of its counter.
+        .onChange(of: run?.phase.name) { _, _ in
+            guard animated, let text = run?.line()?.text else { return }
             AccessibilityNotification.Announcement(text).post()
         }
     }

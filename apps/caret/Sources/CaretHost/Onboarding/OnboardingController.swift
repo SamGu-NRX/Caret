@@ -415,17 +415,28 @@ final class OnboardingController {
             let size = OnboardingView.size(for: .main)
             let screen = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
             let content = NSRect(x: screen.midX - size.width / 2, y: screen.midY - size.height / 2, width: size.width, height: size.height)
-            window.setFrame(window.frameRect(forContentRect: content), display: true, animate: animate)
+            Self.move(window, to: window.frameRect(forContentRect: content), animate: animate)
         case .guide:
             window.level = .floating
             let size = OnboardingView.size(for: .guide)
             let content = guide.placement(for: size, screen: nil)
             let target = window.frameRect(forContentRect: content)
             if shownFrame != .guide || target.origin.distance(to: window.frame.origin) > 1 {
-                window.setFrame(target, display: true, animate: animate && shownFrame != .guide)
+                // Following System Settings as it moves is a jump; only stepping aside from the main window animates.
+                Self.move(window, to: target, animate: animate && shownFrame != .guide)
             }
         }
         shownFrame = frame
+    }
+
+    /// The window steps between its two frames in 220 ms with HANDOFF §4's in-out curve; under Reduce Motion it jumps.
+    private static func move(_ window: NSWindow, to frame: NSRect, animate: Bool) {
+        guard animate else { return window.setFrame(frame, display: true) }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.22
+            context.timingFunction = Motion.caCurve(OnboardingMotion.inOut)
+            window.animator().setFrame(frame, display: true)
+        }
     }
 
     /// Return is the primary everywhere, including in the Hello field (an input method's composition excepted). Esc is
