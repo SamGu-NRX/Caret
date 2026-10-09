@@ -44,6 +44,10 @@ final class GhostTextEngine {
     /// Probe only (`Caret --probe-length`, mode `norm-4`): order the beam's candidates by mean log probability per
     /// token instead of KeyType's cumulative score, which favors short candidates. A re-rank of what the beam returned,
     /// not a different beam: KeyType's search and early stop (pinned upstream) still decide which candidates exist.
+    /// Not the default: it lengthened the first paint (mean 2.8 words against 2.4) at no extra model work, but on 60
+    /// positions where the two picked differently, a blind judge (pairs shuffled, labels hidden) preferred it 18 times,
+    /// the cumulative score 31 times, and tied 11: 48 % won or tied, under the 50 % bar set for adopting it
+    /// (~/.caret-run/evidence/host/inline/norm-judge, probe run length-norm-d9f6b6e1).
     var normalizesLength = false
     var displayWidth = GhostTextEngine.maxDisplayWidth
     /// The user's personal instructions for a field (brief item 4, `PersonalInstructions.lines`). They replace KeyType's
