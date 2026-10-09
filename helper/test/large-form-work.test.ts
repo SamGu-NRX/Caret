@@ -5,11 +5,12 @@ import { ScreenModel } from "../src/model.ts";
 import { Disclosure } from "../src/privacy/disclosure.ts";
 import { FirstLookAllowList, withFirstLookAllowList } from "../src/privacy/first-look-allow-list.ts";
 import { spansOf, type ViewSpan } from "../src/privacy.ts";
-import { inventoryOf, reveal, spanKey, UnitIndex, UnitProbe } from "../src/privacy/ledger/measure.ts";
+import { inventoryOf, spanKey, UnitProbe } from "../src/privacy/ledger/measure.ts";
 import { normalizedUnits } from "../src/privacy/ledger/account.ts";
 import { ledgerNormalizeV1 } from "../src/privacy/ledger/normalize.ts";
 import { windowProvenance, type DigestMemo } from "../src/fill/contract.ts";
 import { snap, text } from "./builders.ts";
+import { refReveal } from "./ledger-reference.ts";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -29,14 +30,20 @@ describe("normalizedUnits", () => {
 });
 
 describe("UnitProbe over repeated units", () => {
-  it("reveals what an index of every unit, repeats and all, reveals", () => {
+  it("marks what the reference measure marks over every copy", () => {
     const lines = ["Ask about the long common criterion here", "short", "exact", "Name: Dana Whitfield", "unrelated text that stays"];
     const inv = inventoryOf(lines);
-    const repeated = normalizedUnits(["the long common criterion", "exact", "the long common criterion", "Name: Dana Whitfield", "exact"]);
+    const texts = ["the long common criterion", "exact", "the long common criterion", "Name: Dana Whitfield", "exact"];
+    const repeated = normalizedUnits(texts);
     if (repeated === null) throw new Error("refused measurable texts");
     expect(new Set(repeated).size).toBe(3);
-    expect(new UnitProbe(repeated).reveal(inv)).toEqual(reveal(new UnitIndex(repeated), inv));
-    expect(new UnitProbe(repeated).reveal(inv).charged).toBeGreaterThan(0);
+    const got = new UnitProbe(repeated).reveal(inv);
+    // ledger-reference.ts shares no code with the automaton or its dedupe, and searches every unit as given.
+    const keys = lines.flatMap((l, li) => Array.from({ length: l.length }, (_, k) => k).filter((k) => got.positions[inv.starts[li]! + k] === 1).map((k) => `${li}:${k}`));
+    const ref = refReveal(texts, lines);
+    expect(keys.sort()).toEqual([...ref.positions].sort());
+    expect(got.charged).toBe(ref.charged);
+    expect(got.charged).toBeGreaterThan(0);
   });
 });
 
