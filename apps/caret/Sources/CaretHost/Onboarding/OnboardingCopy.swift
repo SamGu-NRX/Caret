@@ -23,8 +23,10 @@ enum OnboardingCopy {
         static let title = "Drag Caret into the list."
         /// The list's name on this Mac: "Accessibility", or "Device Control and Data Access" from macOS 27.
         static var pane: String { AccessibilityAccess.paneName(osMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion) }
+        /// Shown while macOS's own alert may still be up and System Settings not yet open (after-run a25c13e,
+        /// shots/027-stale-what-caret-says.png), so it names where to go rather than saying System Settings is open.
         static var line: String {
-            "System Settings is open at Privacy & Security, \(pane). Turn on Caret there, or drag it in from here. macOS asks for your password or Touch ID."
+            "Turn on Caret in Privacy & Security, \(pane), or drag it in from here. macOS asks for your password or Touch ID."
         }
         static var reopened: String {
             "Caret opened again, and it isn't on yet. Open System Settings, then turn on Caret in the \(pane) list."
