@@ -22,6 +22,10 @@ jobs:
           xcodebuild -version
           swift --version
       - run: swift test --package-path apps/mac
-      # No Xcode packaging build here: scripts/privacy_gate.sh invokes
-      # helper/scripts/privacy-gate.ts, which intentionally refuses release packaging
-      # while the pv2-sites-send and ha2-copied-conversation acceptance records are null.
+      # Check the packaged app's project under the Debug-only internal exemption in
+      # scripts/privacy_gate.sh and helper/scripts/privacy-gate.ts. Release packaging
+      # still waits for the pv2-sites-send and ha2-copied-conversation acceptance records.
+      - name: Build the packaged app in internal mode
+        env:
+          CARET_INTERNAL_BUILD: '1'
+        run: xcodebuild -quiet -project Caret.xcodeproj -scheme Caret -configuration Debug -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
