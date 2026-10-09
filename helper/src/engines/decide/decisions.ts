@@ -233,7 +233,8 @@ export class DecisionsAttemptError extends Error {
     this.status = reason instanceof DecisionsHttpError ? reason.status : null;
     this.retryAfterMs = reason instanceof DecisionsHttpError ? reason.retryAfterMs : null;
     this.code = reason instanceof DecisionsHttpError ? (reason.code ?? reason.type) : null;
-    this.kind = stopped ? "stop" : reason instanceof DecisionsHttpError ? reason.kind : reason instanceof DecisionsBudgetError ? "cap" : "service";
+    // An org billing stop can defer the personal fallback to the next request without stopping the run.
+    this.kind = stopped ? "stop" : reason instanceof DecisionsHttpError ? (reason.kind === "stop" ? "service" : reason.kind) : reason instanceof DecisionsBudgetError ? "cap" : "service";
   }
 }
 
@@ -279,7 +280,7 @@ export function makeDecisionsClient(o: DecisionsOptions): AskJev {
       let response: Response;
       let text: string;
       try {
-        response = await transport(DECISIONS_URL, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, body: sendable(sealed), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
+        response = await transport(DECISIONS_URL, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, body: sendable(sealed), signal: AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs))), redirect: "error" });
         status = response.status;
         text = await response.text();
       } catch { throw new Error("Decisions network request failed; answer withheld and worst-case reservation retained"); }
@@ -290,7 +291,12 @@ export function makeDecisionsClient(o: DecisionsOptions): AskJev {
         throw new Error("Decisions returned malformed JSON; answer withheld and worst-case reservation retained");
       }
       const usage = Usage.safeParse(json);
-      if (usage.success) { billedTokens = usage.data.usage.input_tokens; billedCost = hold.settle(billedTokens); }
+      if (usage.success) {
+        billedTokens = usage.data.usage.input_tokens;
+        // Settlement records the charge before throwing on an underestimated hold; retain that known cost in telemetry.
+        billedCost = billedTokens * DECISIONS_USD_PER_TOKEN;
+        hold.settle(billedTokens);
+      }
       if (!response.ok) {
         const err = ErrorBody.safeParse(json);
         // A documented error reply without usage processed no input: its hold settles at $0.

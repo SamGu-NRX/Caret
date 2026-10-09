@@ -67,6 +67,22 @@ describe("Decisions adapter, recorded official-schema responses, no network", ()
     ] });
     expect(init?.body).not.toContain(key);
   });
+  it("retains known billed cost when settlement blocks an underestimated reservation", async () => {
+    const s = spend();
+    const json = JSON.parse(recorded());
+    json.usage.input_tokens = 200_001;
+    const fetchFn = response(JSON.stringify(json));
+    const ask = client(fetchFn, s);
+    const error = await ask(request()).catch((e) => e);
+    expect(error).toBeInstanceOf(DecisionsAttemptError);
+    expect(error.kind).toBe("cap");
+    expect(error.attempt.costUsd).toBe(200_001 * DECISIONS_USD_PER_TOKEN);
+    expect(error.attempts[0].costUsd).toBe(error.attempt.costUsd);
+    expect(s.run().billedUsd).toBe(error.attempt.costUsd);
+    expect(s.run().unsettledUsd).toBe(0);
+    await expect(ask(request())).rejects.toThrow(/blocked/);
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
   it("maps a predicate without true/false descriptions without adding semantics", () => {
     const wire = wireBody(minted({ state: "Synthetic", questions: {}, nouls: { p: { type: "noul", instructions: "True?" } }, snippets: [], charged: {} }));
     expect(decisionsBody(wire).questions).toEqual([{ type: "predicate", name: "p", instructions: "True?" }]);
@@ -394,6 +410,29 @@ describe("Decisions errors, retries, key fallback and the result cache (recorded
     await expect(make({ OPENAI_API_KEY: key }, t.fn)(request())).rejects.toThrow(/429/);
     expect(t.fn).toHaveBeenCalledTimes(1);
     expect(waits).toEqual([]);
+  });
+  it("sends a retry when its remaining timeout has fractional milliseconds", async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const t = scripted(() => new Response(JSON.stringify(errors.rate_limit_exceeded!.body), { status: 429, headers: { "retry-after-ms": "55500.25" } }), ok());
+    const s = spend();
+    try {
+      const ask = makeDecisionsClient({ fixture, env: { OPENAI_API_KEY: key }, fetchFn: t.fn, spend: s, sleep: async (ms) => { now += ms; } });
+      await expect(ask(request())).resolves.toMatchObject({ servedBy: "org" });
+      expect(t.fn).toHaveBeenCalledTimes(2);
+      expect(s.run().unsettledUsd).toBe(0);
+    } finally { clock.mockRestore(); }
+  });
+  it("keeps a deferred personal fallback nonterminal for the next request", async () => {
+    const t = scripted(reply("slow_down"), reply("slow_down"), reply("slow_down"), reply("credit_balance_exhausted"), ok());
+    const ask = make(both, t.fn);
+    const error = await ask(request()).catch((e) => e);
+    expect(error.kind).toBe("service");
+    expect(error.code).toBe("credit_balance_exhausted");
+    expect(error.status).toBe(429);
+    expect(error.attempts).toHaveLength(MAX_ATTEMPTS);
+    await expect(ask(request())).resolves.toMatchObject({ servedBy: "personal" });
+    expect(t.keys).toEqual(["org", "org", "org", "org", "personal"]);
   });
   it("does not retry an error outside the retry rule", async () => {
     const t = scripted(reply("invalid_request"));

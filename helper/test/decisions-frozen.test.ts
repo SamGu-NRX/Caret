@@ -25,7 +25,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "caret-frozen-")); argv = process.argv; exitCode = process.exitCode;
   fake.cache = join(dir, "cache"); mkdirSync(join(fake.cache, "aa"), { recursive: true });
   const c = canonicalRequest(req(), "jev", "synthetic");
-  writeFileSync(join(fake.cache, "aa", "entry.json"), JSON.stringify({ engine: "jev", canonical: { exact: c.exact, state: req().state, questions: c.questions }, answers: { 0: { choice: "first", confidence: 0.9 }, 1: { choice: "first", confidence: 0.9 } }, probabilities: { 0: { first: 0.9, second: 0.1, none: 0 }, 1: { first: 0.9, second: 0.1, none: 0 } }, recordedAt: "2026-10-07T09:00:00Z" }));
+  writeFileSync(join(fake.cache, "aa", "entry.json"), JSON.stringify({ engine: "jev", model: "jev-latest", canonical: { exact: c.exact, state: req().state, questions: c.questions }, answers: { 0: { choice: "first", confidence: 0.9 }, 1: { choice: "first", confidence: 0.9 } }, probabilities: { 0: { first: 0.9, second: 0.1, none: 0 }, 1: { first: 0.9, second: 0.1, none: 0 } }, recordedAt: "2026-10-07T09:00:00Z" }));
   writeFileSync(join(dir, "jev.ndjson"), JSON.stringify({ body: wireBody(req(), "synthetic") }) + "\n");
   process.argv = [argv[0]!, "decisions-frozen.ts", "--set", "B24", "--out", dir, "--max-usd", "0.05"];
   fake.ask.mockImplementation(async (asked: ReturnType<typeof req>) => ({ model: "gpt-6-luna", answers: Object.fromEntries(Object.keys(asked.questions).map((id) => [id, { choice: "first", confidence: 0.9 }])), probabilities: Object.fromEntries(Object.keys(asked.questions).map((id) => [id, { first: 0.9, second: 0.1, none: 0 }])), costUsd: 0, latencyMs: 0, inputTokens: 0 }));
@@ -42,6 +42,16 @@ it("preserves original question and option order from the request log", async ()
   const sent = fake.ask.mock.calls[0]![0];
   expect(Object.keys(sent.questions)).toEqual(["z", "a"]);
   expect(Object.keys(sent.questions.z.criteria)).toEqual(["second", "first", "none"]);
+});
+it("excludes alternate Jev models from the frozen baseline", async () => {
+  const path = join(fake.cache, "aa", "entry.json");
+  const entry = JSON.parse(readFileSync(path, "utf8"));
+  entry.model = "synthetic-alternate-jev";
+  writeFileSync(path, JSON.stringify(entry));
+  process.argv.push("--jev-requests", join(dir, "jev.ndjson"));
+  await import("../scripts/decisions-frozen.ts");
+  expect(fake.ask).not.toHaveBeenCalled();
+  expect(readFileSync(join(dir, "scored.ndjson"), "utf8")).toBe("");
 });
 it("rejects a missing original request before opening the engine", async () => {
   writeFileSync(join(dir, "jev.ndjson"), "");
