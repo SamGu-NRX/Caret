@@ -13,7 +13,7 @@
 // reported is checked against the page as it is then.
 import { accessibleName, clean, groupNames, named, textOfLabel } from "./names.ts";
 import { visible } from "./walker.ts";
-import { inSecret, safeText } from "./secret-dom.ts";
+import { plainTextAt, safeText } from "./secret-dom.ts";
 
 /** How far up from a control the question may be looked for. Assumed from the markup: Lever's is 3 levels up, Ashby's 2. */
 const QUESTION_LEVELS = 4;
@@ -57,8 +57,8 @@ function textAround(scope: Element, members: readonly Element[], skip: readonly 
   const ok = (el: Element): boolean => {
     let v = seen.get(el);
     if (v === undefined) {
-      // A secret field's own text (a one-time-code editor's digits) is never a question's.
-      v = !el.closest(NOT_QUESTION) && !skip.some((s) => s.contains(el)) && !inSecret(el) && visible(el, { opacity: true });
+      // A field's own text (a one-time-code editor's digits, a draft) is never a question's.
+      v = !el.closest(NOT_QUESTION) && !skip.some((s) => s.contains(el)) && plainTextAt(el) && visible(el, { opacity: true });
       seen.set(el, v);
     }
     return v;

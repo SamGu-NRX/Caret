@@ -4,7 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { DENIED_HOSTS as EXTENSION_HOSTS } from "../../extension/src/worker/left-tab.ts";
 import { DENIED_HOSTS, deniedOrigin } from "../src/privacy/denied-origins.ts";
-import { EngineSession } from "../src/engines/session.ts";
+import { EngineSession, screenReadings } from "../src/engines/session.ts";
+import { toVerbOutcome } from "../src/engines/page-link.ts";
 import { PROTOCOL_VERSION, type HelperToEngine, type PageFrame, type PageSnapshot } from "../src/protocol.ts";
 import { X, chrome } from "./fake-page.ts";
 
@@ -83,5 +84,26 @@ describe("an engine session and the deny list", () => {
     const a = await session.command({ kind: "pageWalk", tabId: 4 });
     expect(a.snapshot?.frames[0]?.controls[0]?.value).toBe("ines@example.test");
     expect((await session.readText(4)).text?.blocks).toEqual(["Recovery code: 1111-2222"]);
+  });
+});
+
+describe("an act's readings (review round 3)", () => {
+  it("drops a write's readings when a value in them is one Caret never carries, so the write reads as unverified", async () => {
+    const session: EngineSession = new EngineSession({ engine: "eng1", browser: chrome, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m: HelperToEngine) => {
+      queueMicrotask(() => {
+        if (m.type === "pageCommand") session.receive({ type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: Date.now(), outcome: "failed", detail: "the page holds another value than Caret wrote", readings: { before: "", afterInput: "4111 1111 1111 1111", afterBlur: "4111 1111 1111 1111", invalid: true, error: "Code swordfish expired" } });
+      });
+      return true;
+    }, 500);
+    const a = await session.command({ kind: "pageWrite", taskId: "t1", tabId: 4, frameId: 0, documentId: "D0", id: "e1", control: "text", name: "Name", value: "Ines", expect: "" });
+    expect(a.result.outcome).toBe("failed");
+    expect(a.result.readings).toBeUndefined();
+    expect(JSON.stringify(a.result)).not.toMatch(/swordfish|4111/u);
+    expect(toVerbOutcome(a.result).outcome).toBe("axError");
+  });
+
+  it("never keeps the page's error or description text, and keeps ordinary values for the write's check", () => {
+    const r = screenReadings({ type: "pageResult", v: PROTOCOL_VERSION, id: "w", at: 0, outcome: "failed", detail: null, readings: { before: "", afterInput: "Ines", afterBlur: "", invalid: true, error: "Your recovery code swordfish expired" } });
+    expect(r.readings).toEqual({ before: "", afterInput: "Ines", afterBlur: "", invalid: true, error: null });
   });
 });

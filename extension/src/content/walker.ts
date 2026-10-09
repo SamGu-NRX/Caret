@@ -9,8 +9,9 @@ import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
 import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
 import type { SecretKind } from "./secret.ts";
-import { safeText, secretOfElement } from "./secret-dom.ts";
-import { watchPasswords } from "./password-watch.ts";
+import { safeText, secretFieldOf } from "./secret-dom.ts";
+import { valueWithheld, watchPasswords } from "./password-watch.ts";
+import { shadowRootOf } from "./shadow.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -32,16 +33,7 @@ export const SELF_IDENTIFICATION = /\b(self[- ]identif\w*|gender|sex|race|racial
  */
 export const selfIdentifying = (text: string): boolean => SELF_IDENTIFICATION.test(sectionName(text));
 
-/** An element's shadow root, open or closed. chrome.dom takes HTML elements only and throws on others (SVG). */
-export function shadowRootOf(el: Element): ShadowRoot | null {
-  if (el.shadowRoot !== null) return el.shadowRoot;
-  if (!(el instanceof HTMLElement) || typeof chrome === "undefined" || chrome.dom?.openOrClosedShadowRoot === undefined) return null;
-  try {
-    return (chrome.dom.openOrClosedShadowRoot(el) as ShadowRoot | null) ?? null;
-  } catch {
-    return null;
-  }
-}
+export { shadowRootOf } from "./shadow.ts";
 
 /** The control kind of an element, or null when it is not one Caret reads. */
 export function kindOf(el: Element): PageControlKind | null {
@@ -88,7 +80,7 @@ function ariaHidden(el: Element): boolean {
 
 /** Why `el`, called `name`, holds a password, a one-time code or card details, or null (content/secret.ts). */
 export function secretOf(el: Element, name: string): SecretKind | null {
-  return secretOfElement(el, name);
+  return secretFieldOf(el, name);
 }
 
 /** Why a control must not leave the frame, or null. */
@@ -267,7 +259,7 @@ export function* candidates(root: Document | ShadowRoot = document, shadow: "ope
     const sr = shadowRootOf(el);
     if (sr !== null) {
       // Its password inputs stay secret from now on, whatever their type becomes (password-watch.ts).
-      watchPasswords(sr);
+      watchPasswords(sr, false);
       yield* candidates(sr, sr.mode);
     }
   }
@@ -333,7 +325,8 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       continue;
     }
     const ident = authorIdentifier({ name: f.el.getAttribute("name"), id: f.el.getAttribute("id"), automationId: f.el.getAttribute("data-automation-id") });
-    const value = valueOf(f.el);
+    // A text input whose type history Caret could not watch may be a revealed password: no value (password-watch.ts).
+    const value = valueWithheld(f.el) ? undefined : valueOf(f.el);
     const checked = checkedOf(f.el);
     const c: PageControl = {
       id: idOf(f.el),

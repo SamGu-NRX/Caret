@@ -5,6 +5,8 @@
 // every grant when its port closes, so a new session starts with none.
 import { randomUUID } from "node:crypto";
 import { deniedOrigin } from "../privacy/denied-origins.ts";
+import { excludedValue } from "../privacy/exclude.ts";
+import { secretText } from "../memory/sensitive.ts";
 import { PROTOCOL_VERSION, type AppRef, type EngineMessage, type HelperToEngine, type PageFocusMoved, type PageHello, type PageInput, type PagePong, type PageResult, type PageSnapshot, type PageVerb, type ScopedActGrant } from "../protocol.ts";
 
 export interface EngineInfo {
@@ -170,7 +172,7 @@ export class EngineSession {
         clearTimeout(p.timer);
         // The deny list again: the text of a tab with a frame on it is never handed on.
         const denied = m.text !== undefined && m.text.frames.some((f) => deniedOrigin(f.origin));
-        p.resolve({ result: denied ? { type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: m.at, outcome: "siteOff", detail: "Caret never reads this site" } : m, snapshot: p.snapshot });
+        p.resolve({ result: denied ? { type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: m.at, outcome: "siteOff", detail: "Caret never reads this site" } : screenReadings(m), snapshot: p.snapshot });
         return null;
       }
       case "pageFocus": {
@@ -205,6 +207,21 @@ export class EngineSession {
     this.pongs.clear();
     for (const w of this.helloWaiters.splice(0)) w(null);
   }
+}
+
+/**
+ * An act result with its readings screened before anyone reads them. The page's error and description text after a
+ * write is never kept: nothing reads it, and it is page text no exclusion screened. The field's values before and
+ * after are kept only when none holds a value Caret never carries or a secret marker (privacy/exclude.ts,
+ * memory/sensitive.ts); otherwise every reading goes, and a failed write reads as unverified ("may have landed",
+ * page-link.ts toVerbOutcome) and an ok write's value as the one Caret wrote.
+ */
+export function screenReadings(r: PageResult): PageResult {
+  if (r.readings === undefined) return r;
+  const { readings, ...rest } = r;
+  const values = [readings.before, readings.afterInput, readings.afterBlur];
+  if (values.some((v) => excludedValue(v) !== null || secretText(v))) return rest;
+  return { ...rest, readings: { ...readings, error: null } };
 }
 
 /**

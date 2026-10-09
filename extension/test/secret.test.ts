@@ -2,13 +2,14 @@
 // field marked and without its value, and EntryTracker keeps nothing for it. Plain objects stand in for elements; the
 // facts are what walker.ts secretOf reads off a real one. Every label and name is invented.
 import { describe, expect, it } from "vitest";
-import { notePassword, noteTypeChange, secretKind, textWithoutSecrets, type FieldFacts, type TextTree } from "../src/content/secret.ts";
+import { notePassword, noteTypeChange, readableFrom, secretKind, secretWithin, textWithoutSecrets, withheldForHistory, type FieldFacts, type TextTree, type UpTree } from "../src/content/secret.ts";
+import { skippedInEditor } from "../src/content/field-text.ts";
 import { EntryTracker } from "../src/content/entry.ts";
 import { sectionOutline, type OutlineElement, type OutlineReader } from "../src/content/sections.ts";
 import { typeRecords } from "../src/content/password-watch.ts";
 
 type Over = Partial<Omit<FieldFacts, "labels">> & { label?: string; labels?: string[] };
-const field = ({ label, labels, ...over }: Over): FieldFacts => ({ role: "field", type: "text", autocomplete: "", nameAndId: " ", labels: labels ?? (label === undefined ? [] : [label]), ...over });
+const field = ({ label, labels, ...over }: Over): FieldFacts => ({ role: "field", type: "text", autocomplete: "", nameAndId: " ", identity: [], labels: labels ?? (label === undefined ? [] : [label]), ...over });
 
 describe("secretKind", () => {
   it("keeps a revealed password secret: a field once type=password stays one after a show-password toggle", () => {
@@ -195,5 +196,63 @@ describe("EntryTracker keeps no plaintext (review round 2, #7)", () => {
     tr.onInput(el, true, "insertText", "1", "1");
     tr.forget(el);
     expect(seen.has(el)).toBe(false);
+  });
+});
+
+// Review round 3. A plain tree walked upward: each node's parent, whether it is a secret field, whether it is a field.
+type Up = { name: string; parent: Up | null; secret?: boolean; field?: boolean };
+const up = (name: string, parent: Up | null, o: { secret?: boolean; field?: boolean } = {}): Up => ({ name, parent, ...o });
+const upTree: UpTree<Up> = { parent: (n) => n.parent, secret: (n) => n.secret === true, field: (n) => n.field === true || n.secret === true };
+
+describe("text read from inside a field (review round 3, #1)", () => {
+  it("refuses a reference into a secret editor: a span inside <div contenteditable aria-label=Password>", () => {
+    const editor = up("editor", up("body", null), { secret: true, field: true });
+    const hint = up("hint", editor);
+    expect(readableFrom(hint, upTree)).toBe(false);
+    expect(readableFrom(up("deeper", hint), upTree)).toBe(false);
+  });
+
+  it("refuses text inside any field, and a secret root itself, but reads an ordinary label or a non-secret field root", () => {
+    const body = up("body", null);
+    expect(readableFrom(up("span", up("draft", body, { field: true })), upTree)).toBe(false);
+    expect(readableFrom(up("pw", body, { secret: true }), upTree)).toBe(false);
+    expect(readableFrom(up("label", up("form", body)), upTree)).toBe(true);
+    expect(readableFrom(up("combobox", body, { field: true }), upTree)).toBe(true);
+  });
+});
+
+describe("controls inside a secret widget (review round 3, #2)", () => {
+  it("makes each digit input of a role=textbox 'Verification code' widget secret, through its ancestors", () => {
+    const body = up("body", null);
+    const widget = up("widget", body, { secret: true });
+    const digit = up("Digit 1", up("cell", widget));
+    expect(secretWithin(digit, upTree)).toBe(true);
+    expect(secretWithin(up("Email", body), upTree)).toBe(false);
+  });
+});
+
+describe("password history across a replaced input (review round 3, #4)", () => {
+  it("keeps a clone of a known password input secret by its id or name, though it arrives as text", () => {
+    expect(secretKind({}, field({ type: "password", identity: ["id:pw-9", "name:pass_word"] }))).toBe("password");
+    // The page clones the input, sets type=text while detached, and swaps the clone in: a new object, no type history.
+    expect(secretKind({}, field({ type: "text", identity: ["id:pw-9"], label: "Shown" }))).toBe("password");
+    expect(secretKind({}, field({ type: "text", identity: ["name:pass_word"], label: "Shown" }))).toBe("password");
+    expect(secretKind({}, field({ type: "text", identity: ["id:email"], label: "Email" }))).toBeNull();
+  });
+
+  it("withholds a text input's value and caret where Caret could not watch its type from the start", () => {
+    expect(withheldForHistory({ tag: "input", type: "text" }, false)).toBe(true);
+    expect(withheldForHistory({ tag: "input", type: "email" }, false)).toBe(true);
+    expect(withheldForHistory({ tag: "input", type: "text" }, true)).toBe(false);
+    expect(withheldForHistory({ tag: "textarea", type: "" }, false)).toBe(false);
+    expect(withheldForHistory({ tag: "input", type: "checkbox" }, false)).toBe(false);
+  });
+});
+
+describe("an editor's text leaves out embedded controls (review round 3, #3)", () => {
+  const el = (tagName: string, attrs: Record<string, string> = {}) => ({ tagName, getAttribute: (n: string) => attrs[n] ?? null });
+  it("skips an input, textarea or select, and a nested textbox, inside a contenteditable", () => {
+    for (const e of [el("TEXTAREA"), el("INPUT"), el("SELECT"), el("OPTION"), el("BUTTON"), el("DIV", { role: "textbox" }), el("SPAN", { role: "combobox" })]) expect(skippedInEditor(e), e.tagName).toBe(true);
+    for (const e of [el("SPAN"), el("P"), el("DIV", { contenteditable: "false" }), el("B")]) expect(skippedInEditor(e), e.tagName).toBe(false);
   });
 });

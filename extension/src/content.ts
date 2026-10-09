@@ -1,6 +1,6 @@
 // Caret's content script, in every http(s) frame and the about:blank and srcdoc frames they own. It stays dormant:
-// no timer and no walk until the worker asks, and one observer, of input type attributes only, so a password field
-// stays secret after a "show password" button (content/password-watch.ts). It answers only the extension's own worker (a message
+// no timer and no walk until the worker asks, and one observer, of input type attributes and added nodes only, so a
+// password field stays secret after a "show password" button or a replacement (content/password-watch.ts). It answers only the extension's own worker (a message
 // with no tab, from this extension's id), never window.postMessage or the page. On its own it tells the worker two
 // things, neither naming an element: that the document moved in history, so the worker bumps the frame's
 // navigation generation at once; and that focus moved while this document is visible and focused, so the helper
@@ -26,7 +26,7 @@ import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, kindOf, secretOf, shadowRootOf, visible, walkControls } from "./content/walker.ts";
-import { watchPasswords } from "./content/password-watch.ts";
+import { valueWithheld, watchPasswords } from "./content/password-watch.ts";
 import { controlName } from "./content/question.ts";
 import { notePassword } from "./content/secret.ts";
 import { EntryTracker } from "./content/entry.ts";
@@ -130,7 +130,8 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
       // H13: the caret's rect with its text, for the host's inline text. A site on the deny list is never walked
       // (worker.ts). SC1 2a: a marked secret field says only that it has focus, never its text, selection, caret or
       // whether it is empty.
-      focused = c.excluded !== undefined
+      // A text input whose type history Caret could not watch gives no text, caret or selection either (password-watch.ts).
+      focused = c.excluded !== undefined || valueWithheld(active)
         ? { id: c.id, selection: null, text: null, caret: null }
         : { id: c.id, selection, look: lookOf(active), text: fieldText(active), caret: caretRect(active) };
     }
@@ -186,12 +187,14 @@ if (globalThis.__caretContent === undefined) {
   const entries = late ? null : new EntryTracker((el) => el instanceof Element && secretOf(el, controlName(el, kindOf(el) ?? "")) !== null);
   // A password field stays secret after a "show password" toggle makes it type=text (content/secret.ts): its type
   // attribute is watched in the document from now on, and in each shadow root met at load, in a walk or by focus.
-  watchPasswords(document);
+  // Known from the start only when this script ran at document_start; a late one can't know what changed before it.
+  watchPasswords(document, !late);
   const watchShadows = (root: Document | ShadowRoot): void => {
     for (const el of root.querySelectorAll("*")) {
       const sr = shadowRootOf(el);
       if (sr === null) continue;
-      watchPasswords(sr);
+      // Met here, not as its host arrived: what happened in it before is unknown (password-watch.ts).
+      watchPasswords(sr, false);
       watchShadows(sr);
     }
   };
@@ -203,7 +206,7 @@ if (globalThis.__caretContent === undefined) {
     const el = deepActiveElement();
     if (el === null) return;
     const root = el.getRootNode();
-    if (root instanceof ShadowRoot) watchPasswords(root);
+    if (root instanceof ShadowRoot) watchPasswords(root, false);
     if (el instanceof HTMLInputElement && el.type === "password") notePassword(el);
   };
   addEventListener("focusin", seenPassword, { capture: true, passive: true });

@@ -2,7 +2,8 @@
 // secret fields. Every reader of page text that could hold a field (a heading, a label, an aria description or error,
 // an editor's range, a question around a control) goes through safeText or inSecret, so a value Caret never sends as a
 // field's value can't leave the frame as part of some other text.
-import { secretKind, textWithoutSecrets, type SecretKind, type TextTree } from "./secret.ts";
+import { readableFrom, secretKind, secretWithin, textWithoutSecrets, type SecretKind, type TextTree, type UpTree } from "./secret.ts";
+import { identityOf } from "./password-watch.ts";
 
 /** Input types that hold no typed text: their name and label can't mark a secret. */
 const NO_VALUE_TYPES = new Set(["submit", "button", "reset", "image", "checkbox", "radio", "file", "range", "color", "hidden"]);
@@ -43,6 +44,7 @@ export function secretOfElement(el: Element, name = ""): SecretKind | null {
     type: el instanceof HTMLInputElement ? el.type : "",
     autocomplete: el.getAttribute("autocomplete") ?? "",
     nameAndId: `${el.getAttribute("name") ?? ""} ${el.id}`,
+    identity: identityOf(el),
     labels: field ? labelTexts(el, name) : [],
   });
 }
@@ -58,12 +60,59 @@ function ownField(el: Element): boolean {
   return (role !== undefined && VALUE_ROLES.has(role)) || el.hasAttribute("contenteditable");
 }
 
+/** The element above `n` in the composed tree: through a shadow root to its host. */
+function elementAbove(n: Node): Element | null {
+  for (let p: Node | null = n instanceof ShadowRoot ? n.host : n.parentNode; p !== null; p = p instanceof ShadowRoot ? p.host : p.parentNode) {
+    if (p.nodeType === Node.ELEMENT_NODE) return p as Element;
+  }
+  return null;
+}
+
+/** A field of any kind: by its own markup, or inside an editable region. */
+function anyField(el: Element): boolean {
+  return ownField(el) || (el instanceof HTMLElement && el.isContentEditable);
+}
+
+const UP: UpTree<Element> = { parent: elementAbove, secret: (e) => secretOfElement(e) !== null, field: anyField };
+
+/** The element a read starts at: `n` itself, or the element holding a text node. */
+const startOf = (n: Node): Element | null => (n.nodeType === Node.ELEMENT_NODE ? (n as Element) : elementAbove(n));
+
 /**
- * `n.textContent` without the text of any field below it, and "" when `n` itself is a secret field or is missing. The
- * root may be a field (a combobox's shown value): only a secret one gives nothing.
+ * Why the control `el`, called `name`, holds a secret, or null: its own facts, else those of any element above it in the
+ * composed tree. A secret widget makes every control inside it secret (the six digit boxes of a "Verification code"
+ * textbox). The one rule the walker, acts and the entry tracker share (walker.ts secretOf).
+ */
+export function secretFieldOf(el: Element, name = ""): SecretKind | null {
+  const own = secretOfElement(el, name);
+  if (own !== null) return own;
+  for (let p = elementAbove(el); p !== null; p = elementAbove(p)) {
+    const k = secretOfElement(p);
+    if (k !== null) return k;
+  }
+  return null;
+}
+
+/**
+ * Whether text may be read from `n` at all: it is no secret field and nothing above it is a field. A span inside a
+ * password editor is the password, whatever aria reference points at it (secret.ts readableFrom).
+ */
+export function readable(n: Node | null | undefined): boolean {
+  const el = n === null || n === undefined ? null : startOf(n);
+  return el !== null && readableFrom(el, UP);
+}
+
+/** Whether a text node under `el` may count as page text around a control: `el` is no field and is readable. */
+export function plainTextAt(el: Element): boolean {
+  return !anyField(el) && readableFrom(el, UP);
+}
+
+/**
+ * `n.textContent` without the text of any field below it; "" when `n` itself is a secret field, sits inside any field,
+ * or is missing. The root may be a field that isn't secret (a combobox's shown value).
  */
 export function safeText(n: Node | null | undefined): string {
-  if (n === null || n === undefined) return "";
+  if (n === null || n === undefined || !readable(n)) return "";
   const tree: TextTree<Node> = {
     text: (x) => (x.nodeType === Node.TEXT_NODE || x.nodeType === Node.CDATA_SECTION_NODE ? ((x as CharacterData).data ?? "") : null),
     childNodes: (x) => x.childNodes,
@@ -72,10 +121,8 @@ export function safeText(n: Node | null | undefined): string {
   return textWithoutSecrets(n, tree);
 }
 
-/** Whether `n` is inside a secret field, or is one: its parents up through shadow roots to their hosts. */
+/** Whether `n` is a secret field or inside one, up through shadow roots to their hosts. */
 export function inSecret(n: Node | null): boolean {
-  for (let p: Node | null = n; p !== null; p = p instanceof ShadowRoot ? p.host : p.parentNode) {
-    if (p.nodeType === Node.ELEMENT_NODE && secretOfElement(p as Element) !== null) return true;
-  }
-  return false;
+  const el = n === null ? null : startOf(n);
+  return el !== null && secretWithin(el, UP);
 }

@@ -22,6 +22,17 @@ export const SELECTION_MAX = 2000;
 /** Inputs whose selection offsets Chrome exposes (selectionStart is null on email and number inputs). */
 const TEXT_INPUT_TYPES = new Set(["text", "search", "url", "tel"]);
 
+/** Controls an editor may embed (a widget, a form in a rich message): their values are never the editor's text. */
+const EMBEDDED_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT", "OPTION", "BUTTON"]);
+const EMBEDDED_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton", "listbox", "option"]);
+
+/** Whether an element inside an editor is left out of its text with all it holds: an embedded control, as text.ts leaves them out. */
+export function skippedInEditor(el: { tagName: string; getAttribute(name: string): string | null }): boolean {
+  if (EMBEDDED_TAGS.has(el.tagName.toUpperCase())) return true;
+  const role = el.getAttribute("role")?.trim().toLowerCase();
+  return role !== undefined && EMBEDDED_ROLES.has(role);
+}
+
 /** Block elements a person sees on a line of their own inside an editor. */
 const BLOCK_TAGS = new Set(["DIV", "P", "LI", "UL", "OL", "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE", "PRE", "TR", "TABLE", "SECTION", "ARTICLE", "HEADER", "FOOTER"]);
 
@@ -49,7 +60,7 @@ export function serialize(range: Range): string {
     acceptNode: (n) => {
       if (n.nodeType === Node.ELEMENT_NODE) {
         const el = n as Element;
-        if (el.getAttribute("aria-hidden") === "true" || view.getComputedStyle(el).display === "none" || secretOfElement(el) !== null) return NodeFilter.FILTER_REJECT;
+        if (el.getAttribute("aria-hidden") === "true" || view.getComputedStyle(el).display === "none" || skippedInEditor(el) || secretOfElement(el) !== null) return NodeFilter.FILTER_REJECT;
       }
       return range.intersectsNode(n) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
     },
