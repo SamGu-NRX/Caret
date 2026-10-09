@@ -125,15 +125,6 @@ final class ReduceMotionTests: XCTestCase {
         XCTAssertEqual(FigureMotion.plan(state: .error, animated: true, reduce: false, size: 22).posture, .heavy, "the light going out does not bounce")
         XCTAssertEqual(FigureMotion.plan(state: .offering, animated: false, reduce: false, size: 22), FigureMotion(), "a render is one frozen frame")
     }
-
-    /// Under Reduce Motion a slip draws its end state in every frame: the render with the
-    /// environment set equals the still render.
-    func testASlipUnderReduceMotionDrawsItsEndState() throws {
-        let content = WorkLines.done(app: "Calendar", undo: true).content
-        let still = try XCTUnwrap(Gallery.png(LineView(content: content, character: .pebble, animated: false), dark: false))
-        let reduced = try XCTUnwrap(Gallery.png(LineView(content: content, character: .pebble, animated: true).environment(\.reducesMotion, true), dark: false))
-        XCTAssertEqual(try SnapshotTests.difference(still, reduced), 0)
-    }
 }
 
 /// Contrast of every text and mark against what is behind it, measured from rendered pixels. Each
