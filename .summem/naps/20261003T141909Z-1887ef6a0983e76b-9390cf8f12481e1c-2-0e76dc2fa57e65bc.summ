@@ -1,0 +1,1 @@
+A11: host-only memory contracts (add op, permission uses) live in Tests/CaretHostCoreTests/Fixtures/memory.ndjson; typed values wait in MemoryBook. ImageRenderer can't draw TextField/ScrollView: use EntryField and ScrollingColumn, which draw stand-ins off screen.

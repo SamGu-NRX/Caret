@@ -1,0 +1,108 @@
+{
+  "page": "forty",
+  "sources": {
+    "note": "Riverside Food Bank volunteer signup: stuff the form will ask\nName: Josephine Abernathy-Cole, but everyone calls me Jo. Pronouns she/her.\nMobile 555-0164 (no landline anymore).\nBackup email: jabernathy.cole@example.org\nAddress: 2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214\nEmergency contact: my husband Marcus Cole, 555-0171, marcus.cole@example.net\nAvailability: weekends only (weekdays I'm at work), mornings preferred, about 4 hours a week.\nLanguages: English, Spanish\nMy friend Tamsin is the one who told me about Riverside.\nReference #2: still need to ask someone.",
+    "email": {
+      "from": "Elena Varga <elena.varga@example.org>",
+      "to": "Jo Abernathy-Cole <jo.abernathycole@example.com>",
+      "subject": "Re: Reference for Riverside Food Bank",
+      "body": "Hi Jo,\n\nOf course, I'd be glad to be your reference. Put me down as Elena Varga; the best way to reach me is my cell, 555-0139, or this email.\n\nAlso, the coordinator there told me orientation for new volunteers is Sunday, October 18, 2026, so that's the earliest you could start.\n\nWarmly,\nElena\nGarden Coordinator, Hollis Street Community Garden"
+    },
+    "memory": [
+      {
+        "key": "primary email",
+        "value": "jo.abernathycole@example.com"
+      },
+      {
+        "key": "date of birth",
+        "value": "March 14, 1990"
+      },
+      {
+        "key": "t-shirt size",
+        "value": "M"
+      },
+      {
+        "key": "diet",
+        "value": "vegetarian"
+      },
+      {
+        "key": "LinkedIn",
+        "value": "https://www.linkedin.com/in/example-jo-abernathy-cole"
+      }
+    ]
+  },
+  "expected": {
+    "first_name": "Josephine",
+    "middle_name": "none",
+    "last_name": "Abernathy-Cole",
+    "preferred_name": "Jo",
+    "pronouns": "She/her",
+    "birth_date": "1990-03-14",
+    "email": "jo.abernathycole@example.com",
+    "alt_email": "jabernathy.cole@example.org",
+    "phone": "555-0164",
+    "alt_phone": "none",
+    "street1": "2210 Willow Bend Drive",
+    "street2": "Apt 5B",
+    "city": "Portland",
+    "state": "Oregon",
+    "postal": "97214",
+    "country": "United States",
+    "em_name": "Marcus Cole",
+    "em_relation": "Spouse or partner",
+    "em_phone": "555-0171",
+    "em_email": "marcus.cole@example.net",
+    "ref1_name": "Elena Varga",
+    "ref1_phone": "555-0139",
+    "ref1_email": "elena.varga@example.org",
+    "ref2_name": "none",
+    "ref2_phone": "none",
+    "ref2_email": "none",
+    "tshirt": "M",
+    "dietary": "Vegetarian",
+    "allergies": "none",
+    "weekdays": "none",
+    "weekends": "true",
+    "shift": "Morning",
+    "start_date": "2026-10-18",
+    "hours": "4",
+    "languages": "English, Spanish",
+    "skills": "none",
+    "linkedin": "https://www.linkedin.com/in/example-jo-abernathy-cole",
+    "website": "none",
+    "heard": "Friend",
+    "photo_consent": "none"
+  },
+  "basis": {
+    "first_name": "note: 'Name: Josephine Abernathy-Cole'",
+    "last_name": "note: 'Name: Josephine Abernathy-Cole'",
+    "preferred_name": "note: 'everyone calls me Jo'",
+    "pronouns": "note: 'Pronouns she/her'",
+    "birth_date": "memory 'date of birth': 'March 14, 1990'",
+    "email": "memory 'primary email': 'jo.abernathycole@example.com'",
+    "alt_email": "note: 'Backup email: jabernathy.cole@example.org'",
+    "phone": "note: 'Mobile 555-0164'",
+    "street1": "note: 'Address: 2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214'",
+    "street2": "note: '2210 Willow Bend Drive, Apt 5B'",
+    "city": "note: 'Apt 5B, Portland, Oregon 97214'",
+    "state": "note: 'Portland, Oregon 97214'",
+    "postal": "note: 'Portland, Oregon 97214'",
+    "country": "note: address in 'Portland, Oregon 97214'",
+    "em_name": "note: 'Emergency contact: my husband Marcus Cole'",
+    "em_relation": "note: 'my husband Marcus Cole'",
+    "em_phone": "note: 'Marcus Cole, 555-0171'",
+    "em_email": "note: 'Marcus Cole, 555-0171, marcus.cole@example.net'",
+    "ref1_name": "email: 'Put me down as Elena Varga'",
+    "ref1_phone": "email: 'my cell, 555-0139'",
+    "ref1_email": "email: 'or this email', sent from elena.varga@example.org",
+    "tshirt": "memory 't-shirt size': 'M'",
+    "dietary": "memory 'diet': 'vegetarian'",
+    "weekends": "note: 'weekends only (weekdays I'm at work)'",
+    "shift": "note: 'mornings preferred'",
+    "start_date": "email: 'orientation ... is Sunday, October 18, 2026, so that's the earliest you could start'",
+    "hours": "note: 'about 4 hours a week'",
+    "languages": "note: 'Languages: English, Spanish'",
+    "linkedin": "memory 'LinkedIn'",
+    "heard": "note: 'My friend Tamsin is the one who told me about Riverside'"
+  }
+}

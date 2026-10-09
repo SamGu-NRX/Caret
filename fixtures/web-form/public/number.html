@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply: Number fields</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+  label { display: inline-block; min-width: 180px; }
+  p { margin: 6px 0; }
+</style>
+</head>
+<body>
+<h1>Apply: Number fields</h1>
+<!-- B29: three fields whose own script shows a whole number with two decimals ("1" becomes "1.00") as it is typed. Two
+     are number fields (type=number, and a text input with inputmode=decimal), whose undo compares values as numbers;
+     the third is a text field, which never does. Every name and value is invented. -->
+<form id="numbers" action="/submit" method="post">
+  <p><label for="n_guests">Guests</label><input id="n_guests" name="guests" type="number" step="0.01"></p>
+  <p><label for="n_amount">Amount</label><input id="n_amount" name="amount" inputmode="decimal"></p>
+  <p><label for="n_code">Code</label><input id="n_code" name="code"></p>
+</form>
+<script>
+  for (const el of document.querySelectorAll("#numbers input")) {
+    el.addEventListener("input", () => {
+      if (/^\d+$/.test(el.value)) el.value = Number(el.value).toFixed(2);
+    });
+  }
+</script>
+<script src="/fixture.js"></script>
+</body>
+</html>

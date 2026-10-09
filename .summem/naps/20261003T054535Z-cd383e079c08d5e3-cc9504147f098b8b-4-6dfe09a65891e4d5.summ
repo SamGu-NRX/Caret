@@ -1,0 +1,1 @@
+A3-A10: gate, surfaces, perch need caretRectAX (caretRect is bottom-left); fill_acceptance popup needs reader --act-pids; SurfaceGate skips elevated windows covering a display (Snipaste); KeyType's single-line caret sits at the field bottom, so fit checks add nothing below.

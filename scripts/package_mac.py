@@ -1,5 +1,6 @@
 """Build a Release Caret.app, optional DMG, and optional /Applications install."""
 
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,7 +18,40 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+# Packaging is distribution: an inherited internal-build flag must not waive the release acceptance records.
+def distribution_env(**extra: str) -> dict:
+    return {**{k: v for k, v in os.environ.items() if k not in {"CARET_INTERNAL_BUILD", "CARET_PRIVACY_RESOURCE"}}, **extra}
+
+
+def privacy_gate(runner=subprocess.run) -> None:
+    """Run the same gate as the Xcode target before any packaging side effects."""
+    result = runner(
+        ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")],
+        capture_output=True,
+        text=True,
+        env=distribution_env(),
+    )
+    if result.returncode != 0:
+        raise SystemExit((result.stderr or result.stdout or "privacy gate: refusing to package").strip())
+
+
+def verify_privacy_resource(app: Path, runner=subprocess.run) -> None:
+    """Refuse an app whose PrivacyPromise.txt is missing, empty or not PRIVACY_PROMISE; onboarding shows that file."""
+    result = runner(
+        ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")],
+        capture_output=True,
+        text=True,
+        # Without CARET_PRIVACY_RESOURCE too: a verification run must not write the file it checks.
+        # The copied app's own Info.plist, so its LSEnvironment is checked too, not only the Xcode source plist.
+        env=distribution_env(CARET_VERIFY_PRIVACY_RESOURCE=str(app / "Contents" / "Resources" / "PrivacyPromise.txt"),
+                             CARET_BUILD_PLIST=str(app / "Contents" / "Info.plist"), CARET_REQUIRE_PROCESSED_PLIST="1"),
+    )
+    if result.returncode != 0:
+        raise SystemExit((result.stderr or result.stdout or "privacy gate: refusing to package").strip())
+
+
 def build() -> None:
+    privacy_gate()
     run([
         "xcodebuild",
         "-project", str(root / "Caret.xcodeproj"),
@@ -41,6 +75,7 @@ def build() -> None:
             shutil.rmtree(seed_dst)
         shutil.copytree(seed_src, seed_dst)
     stamp_project_root(dist_app, root=root, release=_release_mode())
+    verify_privacy_resource(dist_app)
     adhoc_sign(dist_app)
     print(f"Built {dist_app}")
 

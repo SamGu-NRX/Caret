@@ -1,0 +1,849 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "f792108f-4d71-4ae1-b7d4-6e95ca803a75",
+ "at": 1791185525126,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "New Patient Registration | Harbor Family Clinic",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "BB4CCC869867FB5EA4B1EFEC71CCD38A",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/clinic-intake.html",
+   "navGen": 7,
+   "title": "New Patient Registration | Harbor Family Clinic",
+   "headings": [
+    "Harbor Family Clinic",
+    "Patient information",
+    "Contact details",
+    "Emergency contact",
+    "Acknowledgements"
+   ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Harbor Family Clinic",
+     "name": "6de0313bbd87e8eb50ce32f78cab038794f36bbd55aae04f78de9e5bdc965bd3"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Patient information",
+     "name": "ee2a0332fdda95110363ec4094b20e5caa46b195cc480bb67756df7694b0289f"
+    },
+    {
+     "id": "o3",
+     "heading": true,
+     "text": "Contact details",
+     "name": "d383a46422539baf23e830ced0469318c978637367a738296523220960be5dbf"
+    },
+    {
+     "id": "o4",
+     "heading": false,
+     "text": "How should we contact you? (required)",
+     "name": "0f2ba10f5028aabed41950f7423ad72943f7436b79a375fce00a3b40e9c14b66"
+    },
+    {
+     "id": "o5",
+     "heading": true,
+     "text": "Emergency contact",
+     "name": "956a02f1d0b04e2df335e8e48c79b49a7b184e3ab691b7d23aa25290ab201e06"
+    },
+    {
+     "id": "o6",
+     "heading": true,
+     "text": "Acknowledgements",
+     "name": "514a9b94a6ff4cf4a45fec5962999b1464fc952a947bcdebd9856eabe7066723"
+    }
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:patient full name (legal) (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=pname\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Patient full name (legal) (required)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      290,
+      173.3,
+      700,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:preferred name (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=pref\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Preferred name (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      290,
+      242.3,
+      343,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:date of birth (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=dob\",\"date\"]",
+     "kind": "date",
+     "role": "textbox",
+     "name": "Date of birth (required)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      647,
+      242.3,
+      343,
+      40
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/combobox:preferred language (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=lang\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Preferred language (required)",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select...",
+       "selected": true
+      },
+      {
+       "value": "English",
+       "label": "English",
+       "selected": false
+      },
+      {
+       "value": "Spanish",
+       "label": "Spanish",
+       "selected": false
+      },
+      {
+       "value": "Portuguese",
+       "label": "Portuguese",
+       "selected": false
+      },
+      {
+       "value": "Haitian Creole",
+       "label": "Haitian Creole",
+       "selected": false
+      },
+      {
+       "value": "Chinese (Mandarin)",
+       "label": "Chinese (Mandarin)",
+       "selected": false
+      },
+      {
+       "value": "Vietnamese",
+       "label": "Vietnamese",
+       "selected": false
+      },
+      {
+       "value": "Other",
+       "label": "Other",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      290,
+      314.3,
+      700,
+      39
+     ],
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/textbox:email (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=email\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email (required)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      290,
+      432.5,
+      700,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o3"
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/textbox:mobile phone (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=mobile\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Mobile phone (required)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      290,
+      501.5,
+      343,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o3"
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/textbox:home phone (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=home\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Home phone (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      647,
+      501.5,
+      343,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o3"
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/textbox:street address (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=street\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Street address (required)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      290,
+      570.5,
+      457.3,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o3"
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/textbox:apartment or unit (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=apt\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Apartment or unit (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      761.3,
+      570.5,
+      228.7,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o3"
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/textbox:city (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=city\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "City (required)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      290,
+      639.5,
+      336,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o3"
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/combobox:state (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=state\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "State (required)",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select...",
+       "selected": true
+      },
+      {
+       "value": "AL",
+       "label": "AL",
+       "selected": false
+      },
+      {
+       "value": "AK",
+       "label": "AK",
+       "selected": false
+      },
+      {
+       "value": "AZ",
+       "label": "AZ",
+       "selected": false
+      },
+      {
+       "value": "AR",
+       "label": "AR",
+       "selected": false
+      },
+      {
+       "value": "CA",
+       "label": "CA",
+       "selected": false
+      },
+      {
+       "value": "CO",
+       "label": "CO",
+       "selected": false
+      },
+      {
+       "value": "CT",
+       "label": "CT",
+       "selected": false
+      },
+      {
+       "value": "DE",
+       "label": "DE",
+       "selected": false
+      },
+      {
+       "value": "DC",
+       "label": "DC",
+       "selected": false
+      },
+      {
+       "value": "FL",
+       "label": "FL",
+       "selected": false
+      },
+      {
+       "value": "GA",
+       "label": "GA",
+       "selected": false
+      },
+      {
+       "value": "HI",
+       "label": "HI",
+       "selected": false
+      },
+      {
+       "value": "ID",
+       "label": "ID",
+       "selected": false
+      },
+      {
+       "value": "IL",
+       "label": "IL",
+       "selected": false
+      },
+      {
+       "value": "IN",
+       "label": "IN",
+       "selected": false
+      },
+      {
+       "value": "IA",
+       "label": "IA",
+       "selected": false
+      },
+      {
+       "value": "KS",
+       "label": "KS",
+       "selected": false
+      },
+      {
+       "value": "KY",
+       "label": "KY",
+       "selected": false
+      },
+      {
+       "value": "LA",
+       "label": "LA",
+       "selected": false
+      },
+      {
+       "value": "ME",
+       "label": "ME",
+       "selected": false
+      },
+      {
+       "value": "MD",
+       "label": "MD",
+       "selected": false
+      },
+      {
+       "value": "MA",
+       "label": "MA",
+       "selected": false
+      },
+      {
+       "value": "MI",
+       "label": "MI",
+       "selected": false
+      },
+      {
+       "value": "MN",
+       "label": "MN",
+       "selected": false
+      },
+      {
+       "value": "MS",
+       "label": "MS",
+       "selected": false
+      },
+      {
+       "value": "MO",
+       "label": "MO",
+       "selected": false
+      },
+      {
+       "value": "MT",
+       "label": "MT",
+       "selected": false
+      },
+      {
+       "value": "NE",
+       "label": "NE",
+       "selected": false
+      },
+      {
+       "value": "NV",
+       "label": "NV",
+       "selected": false
+      },
+      {
+       "value": "NH",
+       "label": "NH",
+       "selected": false
+      },
+      {
+       "value": "NJ",
+       "label": "NJ",
+       "selected": false
+      },
+      {
+       "value": "NM",
+       "label": "NM",
+       "selected": false
+      },
+      {
+       "value": "NY",
+       "label": "NY",
+       "selected": false
+      },
+      {
+       "value": "NC",
+       "label": "NC",
+       "selected": false
+      },
+      {
+       "value": "ND",
+       "label": "ND",
+       "selected": false
+      },
+      {
+       "value": "OH",
+       "label": "OH",
+       "selected": false
+      },
+      {
+       "value": "OK",
+       "label": "OK",
+       "selected": false
+      },
+      {
+       "value": "OR",
+       "label": "OR",
+       "selected": false
+      },
+      {
+       "value": "PA",
+       "label": "PA",
+       "selected": false
+      },
+      {
+       "value": "RI",
+       "label": "RI",
+       "selected": false
+      },
+      {
+       "value": "SC",
+       "label": "SC",
+       "selected": false
+      },
+      {
+       "value": "SD",
+       "label": "SD",
+       "selected": false
+      },
+      {
+       "value": "TN",
+       "label": "TN",
+       "selected": false
+      },
+      {
+       "value": "TX",
+       "label": "TX",
+       "selected": false
+      },
+      {
+       "value": "UT",
+       "label": "UT",
+       "selected": false
+      },
+      {
+       "value": "VT",
+       "label": "VT",
+       "selected": false
+      },
+      {
+       "value": "VA",
+       "label": "VA",
+       "selected": false
+      },
+      {
+       "value": "WA",
+       "label": "WA",
+       "selected": false
+      },
+      {
+       "value": "WV",
+       "label": "WV",
+       "selected": false
+      },
+      {
+       "value": "WI",
+       "label": "WI",
+       "selected": false
+      },
+      {
+       "value": "WY",
+       "label": "WY",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      640,
+      639.5,
+      168,
+      39
+     ],
+     "sections": [
+      "o1",
+      "o3"
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/textbox:zip code (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=zip\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "ZIP code (required)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      822,
+      639.5,
+      168,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o3"
+     ]
+    },
+    {
+     "id": "e13",
+     "key": "form@0/radio:phone call~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=contact\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Phone call",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      295,
+      719.5,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e13",
+      "name": "How should we contact you? (required)"
+     },
+     "sections": [
+      "o1",
+      "o3",
+      "o4"
+     ]
+    },
+    {
+     "id": "e14",
+     "key": "form@0/radio:text message~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=contact\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Text message",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      295,
+      744.5,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e13",
+      "name": "How should we contact you? (required)"
+     },
+     "sections": [
+      "o1",
+      "o3",
+      "o4"
+     ]
+    },
+    {
+     "id": "e15",
+     "key": "form@0/radio:email~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=contact\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Email",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      295,
+      769.5,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e13",
+      "name": "How should we contact you? (required)"
+     },
+     "sections": [
+      "o1",
+      "o3",
+      "o4"
+     ]
+    },
+    {
+     "id": "e16",
+     "key": "form@0/textbox:emergency contact name (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ecname\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Emergency contact name (required)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      290,
+      882.8,
+      343,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o5"
+     ]
+    },
+    {
+     "id": "e17",
+     "key": "form@0/combobox:relationship to patient (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ecrel\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Relationship to patient (required)",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select...",
+       "selected": true
+      },
+      {
+       "value": "Spouse or partner",
+       "label": "Spouse or partner",
+       "selected": false
+      },
+      {
+       "value": "Parent",
+       "label": "Parent",
+       "selected": false
+      },
+      {
+       "value": "Child",
+       "label": "Child",
+       "selected": false
+      },
+      {
+       "value": "Sibling",
+       "label": "Sibling",
+       "selected": false
+      },
+      {
+       "value": "Friend",
+       "label": "Friend",
+       "selected": false
+      },
+      {
+       "value": "Other",
+       "label": "Other",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      647,
+      882.8,
+      343,
+      39
+     ],
+     "sections": [
+      "o1",
+      "o5"
+     ]
+    },
+    {
+     "id": "e18",
+     "key": "form@0/textbox:emergency contact phone (required)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ecphone\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Emergency contact phone (required)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      290,
+      953.8,
+      700,
+      37
+     ],
+     "sections": [
+      "o1",
+      "o5"
+     ]
+    },
+    {
+     "id": "e19",
+     "key": "form@0/checkbox:i have read the notice of privacy practices.~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=privacy\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "I have read the Notice of Privacy Practices.",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      294,
+      1053.1,
+      13,
+      13
+     ],
+     "sections": [
+      "o1",
+      "o6"
+     ]
+    },
+    {
+     "id": "e20",
+     "key": "form@0/checkbox:sign me up for the harbor health newsletter.~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=newsletter\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Sign me up for the Harbor Health newsletter.",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      294,
+      1083.1,
+      13,
+      13
+     ],
+     "sections": [
+      "o1",
+      "o6"
+     ]
+    },
+    {
+     "id": "e21",
+     "key": "form@0/button:save and continue~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Save and continue",
+     "form": "form@0",
+     "rect": [
+      290,
+      1132.1,
+      180.5,
+      42
+     ],
+     "sections": [
+      "o1",
+      "o6"
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

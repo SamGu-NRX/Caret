@@ -202,6 +202,9 @@ def gateway_answer(content, model="amazon/nova-micro"):
 
 class GatewayWriterTests(unittest.TestCase):
     def setUp(self):
+        opt_in = mock.patch.dict("os.environ", {"CARET_DEV_VERCEL_GEMINI": "1", "CARET_RELEASE_HOST": "0"})
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         self.writer = GatewayWriter(api_key="test-key")
 
     def test_the_request_matches_the_documented_gateway_shape(self):
@@ -249,6 +252,9 @@ class GatewayJudgeTests(unittest.TestCase):
     against Caret's own choice IDs before it becomes a verdict."""
 
     def setUp(self):
+        opt_in = mock.patch.dict("os.environ", {"CARET_DEV_VERCEL_GEMINI": "1", "CARET_RELEASE_HOST": "0"})
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         self.judge = GatewayJudge(api_key="test-key")
 
     def ask(self, body, question=None):

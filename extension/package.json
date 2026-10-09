@@ -1,0 +1,26 @@
+{
+  "name": "@caret/extension",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Caret for Chrome: the MV3 page engine (browser layer W1). Builds to dist/ for --load-extension.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:store": "node build.mjs --store",
+    "verify:store": "node verify-store.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && vitest run"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.3.4",
+    "@types/node": "26.6.4",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

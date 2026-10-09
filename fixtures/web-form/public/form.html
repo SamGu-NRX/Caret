@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Synthetic application</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+  section { border-top: 1px solid #ccc; padding: 8px 0 16px; }
+  label { display: inline-block; min-width: 180px; }
+  p { margin: 6px 0; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .offscreen { position: absolute; left: -9999px; top: 0; }
+  #dept-listbox { position: absolute; background: #fff; border: 1px solid #888; margin: 0; padding: 4px; list-style: none; }
+  #dropzone { border: 2px dashed #888; padding: 16px; width: 280px; }
+  iframe { width: 520px; height: 90px; border: 1px solid #aaa; }
+</style>
+</head>
+<body>
+<h1>Apply: Synthetic Role</h1>
+<!-- Every name and value here is invented. -->
+<form id="apply" action="/submit" method="post">
+  <section>
+    <h2>Basics</h2>
+    <p><label for="first_name">First name</label><input id="first_name" name="first_name" type="text" required></p>
+    <p><label for="email">Email</label><input id="email" name="email" type="email"></p>
+    <p><label for="start">Start date</label><input id="start" name="start_date" type="date"></p>
+    <p><label for="country">Country</label>
+      <select id="country" name="country">
+        <option value="">Choose a country</option>
+        <option value="us">United States</option>
+        <option value="ca">Canada</option>
+        <option value="mx">Mexico</option>
+      </select></p>
+    <p><label for="remote">Remote OK</label><input id="remote" name="remote" type="checkbox"></p>
+    <fieldset><legend>Shift</legend>
+      <label><input type="radio" name="shift" value="day"> Day</label>
+      <label><input type="radio" name="shift" value="night"> Night</label>
+    </fieldset>
+    <p><label for="note">Cover note</label><textarea id="note" name="cover_note" rows="3" cols="40"></textarea></p>
+    <p><label for="dept">Department</label><input id="dept" name="department" role="combobox" aria-expanded="false" aria-controls="dept-listbox" aria-autocomplete="list" autocomplete="off"></p>
+    <p><button type="button" id="more">Show more</button> <span id="more-state">collapsed</span></p>
+  </section>
+  <section>
+    <h2>Never read</h2>
+    <p><label for="pw">Password</label><input id="pw" name="password" type="password"></p>
+    <input type="hidden" name="csrf" value="synthetic-token">
+    <p><label for="card">Card number</label><input id="card" name="card" autocomplete="cc-number"></p>
+    <p><label for="otp">One-time code</label><input id="otp" name="otp" autocomplete="one-time-code"></p>
+    <p><label for="vh">Visually hidden</label><input id="vh" name="vh" class="visually-hidden"></p>
+    <p><label for="off">Off screen</label><input id="off" name="off" class="offscreen"></p>
+    <p style="display:none"><label for="dn">Not displayed</label><input id="dn" name="dn"></p>
+    <div aria-hidden="true"><label for="ah">Hidden from assistive tech</label><input id="ah" name="ah"></div>
+    <fieldset><legend>Voluntary self-identification</legend>
+      <label for="gender">Gender</label><select id="gender" name="gender"><option value="">Decline</option><option value="x">Other</option></select>
+    </fieldset>
+    <p><label><input type="checkbox" name="agree"> I agree to the terms of service</label></p>
+    <p><label for="transparent">Transparent</label><input id="transparent" name="transparent" style="opacity:0"></p>
+    <div style="overflow:hidden; width:200px; height:30px"><div style="margin-left:400px"><label for="clipped">Clipped away</label><input id="clipped" name="clipped"></div></div>
+    <p><label for="expmonth">Expiry month</label><select id="expmonth" name="exp" autocomplete="cc-exp-month"><option>01</option><option>02</option></select></p>
+    <fieldset><legend>Do you identify as transgender?</legend><x-yesno></x-yesno></fieldset>
+    <iframe id="hidden-frame" title="Hidden" src="/frame/hidden" style="display:none"></iframe>
+    <iframe id="hidden-dup" title="Referral again" src="/frame/same" style="display:none"></iframe>
+    <iframe id="sandboxed" title="Sandboxed" sandbox="allow-scripts" srcdoc="<label for=sb>Sandboxed field</label> <input id=sb>"></iframe>
+    <x-gender><label><input type="radio" name="g2" value="self"> Prefer to self-describe</label></x-gender>
+  </section>
+  <section>
+    <h2>Elsewhere on the page</h2>
+    <p><x-badge></x-badge></p>
+    <p><label for="resume">Resume</label><input id="resume" name="resume" type="file"> <span id="resume-name"></span></p>
+    <div id="dropzone" role="button" tabindex="0" aria-label="Drop your resume here">Drop your resume here <span id="dropped"></span><input type="file" id="dz-input" hidden></div>
+    <p><iframe id="same" title="Referral" src="/frame/same"></iframe></p>
+    <p><iframe id="cross" title="Portfolio" src="__EMBED_ORIGIN__/frame/embed"></iframe></p>
+    <p><iframe id="inline" title="Inline" srcdoc="<label for=inl>Inline frame field</label> <input id=inl>"></iframe></p>
+  </section>
+  <section><button type="submit">Submit</button></section>
+</form>
+<section><div id="react-root"></div></section>
+<script src="/fixture.js"></script>
+<script src="/app.bundle.js"></script>
+</body>
+</html>
