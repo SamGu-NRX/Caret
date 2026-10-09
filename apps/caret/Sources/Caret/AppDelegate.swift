@@ -65,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.addToBrowser()
         }
         services.onChange = { [weak self] in self?.refreshStopped() }
+        let services = self.services
+        runtime.deferLoginItem({ services.registersAfterOnboarding }, due: { [weak self] in self?.handOffToLoginItem() })
         do {
             // The debug socket is how a second host is refused; take it before starting any helper or reader.
             try runtime.start()
@@ -86,6 +88,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    /// Onboarding is done (or the browser step needs the bridge): register the login item, which launchd starts, and
+    /// stop this copy. Services stop first, so the agent's copy finds the sockets free. If the hand-off fails, a fresh
+    /// copy opens and runs in-process as before.
+    private func handOffToLoginItem() {
+        guard !isTerminating else { return }
+        isTerminating = true
+        Task {
+            await runtime.shutdown()
+            await services.stop()
+            switch LoginAgent.handOff(onboarded: true) {
+            case .handedOff(let why):
+                FileHandle.standardError.write(Data("caret: \(why); this copy exits\n".utf8))
+            case .runHere(let why):
+                FileHandle.standardError.write(Data("caret: \(why); opening a fresh copy\n".utf8))
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                p.arguments = ["-n", Bundle.main.bundlePath]
+                try? p.run()
+            }
+            exit(0)
+        }
     }
 
     private func shutdownAndExit() {

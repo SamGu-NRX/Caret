@@ -246,7 +246,8 @@ acceptance.runIfAsked(home: home)
 
 let services: CaretServices
 switch CaretServices.plan(home: home, namedHelperSocket: namedHelperSocket, legacyHelperSocket: configuration.helperSocketPath,
-                          bundle: Bundle.main.bundleURL, environment: environment) {
+                          bundle: Bundle.main.bundleURL, environment: environment,
+                          onboarded: MainActor.assumeIsolated { SettingsStore.shared.settings.onboarded }) {
 case .exit(let why):
     FileHandle.standardError.write(Data("caret: \(why); this copy exits\n".utf8))
     exit(0)

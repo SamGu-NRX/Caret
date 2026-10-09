@@ -3,6 +3,8 @@ import ApplicationServices
 import CaretHostCore
 import CaretScreenCore
 import CoreGraphics
+import notify
+import Security
 import SwiftUI
 
 /// Onboarding's window and the system side of `OnboardingFlow`: it reads the grant, raises macOS's Accessibility alert
@@ -71,6 +73,10 @@ final class OnboardingController {
     private var calendarHeld: String?
     /// Add to your browser (`ChromeBridgeInstaller.run`), which the app shell owns.
     var onAddToBrowser: () -> Void = {}
+    /// This copy runs in-process until onboarding ends (`CaretServices.registersAfterOnboarding`).
+    var registersLoginItemLater: () -> Bool = { false }
+    /// Register the login item and hand off to it (the app shell stops this copy).
+    var onLoginItemDue: () -> Void = {}
     /// A grant changed while the flow runs (the runtime retries a key tap the system refused).
     var onPermissionsChanged: (OnboardingPermissions) -> Void = { _ in }
     /// What the window refused to do because it is hidden, for the debug state.
@@ -199,7 +205,14 @@ final class OnboardingController {
         flow.send(.apps(HelloAppsReader.read()))
         flow.send(.otherTabOwners(readTabOwners()))
         flow.send(Self.readBrowsers())
+        flow.send(.staleGrant(AccessibilityAccess.isStale(grantedSignature: progress?.grantedSignature,
+                                                          currentSignature: Self.ownSignature(), trusted: permissions.accessibility)))
         flow.start()
+        startGrantDetection()
+        if progress?.pendingBrowserAdd == true, flow.state.step == .browser, !registersLoginItemLater() {
+            updateProgress { $0.pendingBrowserAdd = nil }
+            flow.send(.next)
+        }
         model.state = flow.state
         startPolling()
         guard drawsWindow else { return }
@@ -214,6 +227,7 @@ final class OnboardingController {
     /// Ends the window and polling. An unfinished flow is dropped; its progress file says where to resume.
     func close() {
         stopPolling()
+        stopGrantDetection()
         completion?.cancel()
         completion = nil
         dragPanel.stop()
@@ -282,15 +296,30 @@ final class OnboardingController {
             followFrame()
         case .finished:
             store.update(source: .onboarding) { $0.onboarded = true }
+            if drawsWindow, registersLoginItemLater() { onLoginItemDue() }
         case .saveProgress(let step):
             saveProgress(step)
         case .addToBrowser:
             guard drawsWindow else { return suppressed.append("addToBrowser") }
+            if registersLoginItemLater() {
+                // Only the agent can vend the bridge the extension connects to: hand off now, and its copy adds.
+                updateProgress { $0.pendingBrowserAdd = true }
+                return onLoginItemDue()
+            }
             onAddToBrowser()
         case .openSystemSettings:
             guard drawsWindow else { return suppressed.append("openSystemSettings") }
+            // macOS's alert is what first puts Caret in the list; after that it shows nothing, so only the pane opens.
+            if AccessibilityAccess.shouldPrompt(asked: progress?.axAsked == true, trusted: AXIsProcessTrusted()) {
+                updateProgress { $0.axAsked = true }
+                let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+                _ = AXIsProcessTrustedWithOptions(options)
+            }
             Self.openAccessibilityPane()
             startDragPanel()
+        case .resetGrant:
+            guard drawsWindow else { return suppressed.append("resetGrant") }
+            resetOwnGrant()
         case .bringForward:
             guard drawsWindow, let window else { return }
             NSApp.activate(ignoringOtherApps: true)
@@ -365,17 +394,52 @@ final class OnboardingController {
         if !sendAccept(sent) { flow?.send(.sendFailed(.accept)) }
     }
 
-    /// The pane itself, with no macOS alert: the person drags Caret into the list (`SettingsDragPanel`), which is how T3
-    /// Code saves the alert's click.
+    /// The pane: each address in turn until one opens (`NSWorkspace.open` reports whether it did), then System Settings
+    /// itself as the last resort.
     private static func openAccessibilityPane() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        for url in AccessibilityAccess.paneURLs where NSWorkspace.shared.open(url) { return }
+        if let settings = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.systempreferences") {
+            NSWorkspace.shared.openApplication(at: settings, configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+
+    /// This build's code signature (its cdhash, hex), which macOS's Accessibility entry is bound to.
+    static func ownSignature() -> String? {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any], let unique = dict[kSecCodeInfoUnique as String] as? Data else { return nil }
+        return unique.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Removes Caret's own Accessibility entry (never another app's: `AccessibilityAccess.resetArguments`), forgets
+    /// that macOS was asked, and opens the pane again, alert first, so Caret goes back into the list.
+    private func resetOwnGrant() {
+        guard let args = try? AccessibilityAccess.resetArguments(bundleID: Bundle.main.bundleIdentifier) else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do {
+            try p.run()
+            p.waitUntilExit()
+        } catch {
+            FileHandle.standardError.write(Data("caret: tccutil reset failed: \(error.localizedDescription)\n".utf8))
+        }
+        updateProgress { $0.axAsked = nil; $0.grantedSignature = nil }
+        perform(.openSystemSettings)
     }
 
     /// Hands the switch step to the panel inside System Settings: Caret's own window steps out of the way. If System
     /// Settings has not shown its window within 6 s, or closes before the switch, the window comes back as the guide.
     private func startDragPanel() {
         dragPanel.onSettingsClosed = { [weak self] in self?.showGuideWindow() }
-        dragPanel.start()
+        // The panel's first appearance travels from where Caret's window was.
+        dragPanel.start(from: window?.isVisible == true ? window?.frame : nil)
         window?.orderOut(nil)
         settingsWait?.invalidate()
         settingsWait = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
@@ -423,6 +487,37 @@ final class OnboardingController {
         pollTimer = nil
     }
 
+    // MARK: - Instant grant detection
+
+    private var detection: GrantDetection?
+    private var axObserver: NSObjectProtocol?
+    private var tccToken: Int32 = NOTIFY_TOKEN_INVALID
+
+    /// macOS posts `com.apple.accessibility.api` when the Accessibility list changes, and `com.apple.tcc.access.changed`
+    /// (public libnotify, as AltTab uses it) when any TCC entry does. Either one reads `AXIsProcessTrusted` after it has
+    /// settled (`GrantDetection`), so the switch lands in about a quarter second instead of at the next poll, which
+    /// stays as the backup. No private TCC call is made.
+    private func startGrantDetection() {
+        stopGrantDetection()
+        let detection = GrantDetection(clock: RunLoopClock()) { [weak self] in MainActor.assumeIsolated { self?.poll() } }
+        self.detection = detection
+        axObserver = DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { detection.changed() }
+        }
+        notify_register_dispatch("com.apple.tcc.access.changed", &tccToken, DispatchQueue.main) { _ in
+            MainActor.assumeIsolated { detection.changed() }
+        }
+    }
+
+    private func stopGrantDetection() {
+        detection?.cancel()
+        detection = nil
+        if let axObserver { DistributedNotificationCenter.default().removeObserver(axObserver) }
+        axObserver = nil
+        if tccToken != NOTIFY_TOKEN_INVALID { notify_cancel(tccToken) }
+        tccToken = NOTIFY_TOKEN_INVALID
+    }
+
     private func poll() {
         guard let flow, !flow.state.finished else { return stopPolling() }
         let owners = readTabOwners()
@@ -433,6 +528,9 @@ final class OnboardingController {
         if now != flow.state.permissions {
             flow.send(.permissions(now))
             onPermissionsChanged(now)
+            if now.accessibility, permissionsOverride == nil, let signature = Self.ownSignature() {
+                updateProgress { $0.grantedSignature = signature }
+            }
         }
         if flow.state.frame == .guide { followFrame() }
     }

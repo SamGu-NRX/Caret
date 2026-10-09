@@ -1,4 +1,5 @@
 import CaretHostCore
+import Foundation
 
 /// Every word onboarding shows, in one place, so the copy can change without touching a view (HANDOFF §3; Sam has not
 /// reviewed it yet). Third person, sentence case, no dashes as punctuation, no exclamation marks.
@@ -20,9 +21,20 @@ enum OnboardingCopy {
 
     enum Access {
         static let title = "Drag Caret into the list."
-        static let line = "System Settings is open at Privacy & Security, Accessibility. Drag Caret from here into the list there. macOS asks for your password or Touch ID."
-        static let reopened = "Caret opened again, and it isn't on yet. Open System Settings, then drag Caret into the Accessibility list."
-        static let row = "Accessibility"
+        /// The list's name on this Mac: "Accessibility", or "Device Control and Data Access" from macOS 27.
+        static var pane: String { AccessibilityAccess.paneName(osMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion) }
+        static var line: String {
+            "System Settings is open at Privacy & Security, \(pane). Turn on Caret there, or drag it in from here. macOS asks for your password or Touch ID."
+        }
+        static var reopened: String {
+            "Caret opened again, and it isn't on yet. Open System Settings, then turn on Caret in the \(pane) list."
+        }
+        static let staleTitle = "Caret was updated."
+        static var staleLine: String {
+            "macOS still shows Caret's switch, but it no longer applies to this version. Reset Caret's entry, then add Caret to the \(pane) list again."
+        }
+        static let reset = "Reset Caret's entry"
+        static var row: String { pane }
         static let waiting = "Waiting for the switch…"
         static let on = "On."
         static let help = "Caret isn't in the list?"
@@ -90,13 +102,15 @@ enum OnboardingCopy {
         static func add(_ name: String) -> String { "Add to \(name)" }
         static func untrusted(_ name: String) -> String { "Caret can't connect to \(name) yet." }
         static let stepsHead = "In the Extensions page:"
+        /// What Skip costs, said before the person chooses (AltTab states each optional permission's cost).
+        static func cost(_ name: String) -> String { "Without it, Caret can't read or fill web pages in \(name). You can add it later from the menu bar." }
         static let skip = "Skip"
         static let next = "Continue"
     }
 
     /// The panel inside System Settings' Accessibility pane.
     enum Drag {
-        static let header = "Drag Caret into the list above"
+        static let header = "Turn on Caret in the list above. Not there? Drag it in."
         static let voiceOver = "Drag Caret to System Settings, or press to show it in Finder"
         static let close = "Close"
     }

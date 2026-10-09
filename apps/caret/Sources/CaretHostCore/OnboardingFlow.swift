@@ -79,12 +79,23 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
     /// The roles the person had before onboarding held the cloud ones (`CaretRole` raw values), until they send the
     /// first look or keep everything on the Mac. Nil when nothing is held.
     public var heldRoles: [String]?
+    /// macOS's Accessibility alert has been shown once (`AccessibilityAccess.shouldPrompt`).
+    public var axAsked: Bool?
+    /// Caret's code signature (cdhash) when Accessibility was last seen granted, to notice a re-signed update that
+    /// macOS no longer trusts (`AccessibilityAccess.isStale`).
+    public var grantedSignature: String?
+    /// "Add to <browser>" was pressed while the login item still waited for onboarding: this copy handed off to the
+    /// agent (which alone can vend the bridge), and the agent's copy runs the add when it reopens the step.
+    public var pendingBrowserAdd: Bool?
 
-    public init(step: OnboardingStep, at: Int64, coachShown: Bool = false, heldRoles: [String]? = nil) {
+    public init(step: OnboardingStep, at: Int64, coachShown: Bool = false, heldRoles: [String]? = nil,
+                axAsked: Bool? = nil, grantedSignature: String? = nil) {
         self.step = step
         self.at = at
         self.coachShown = coachShown
         self.heldRoles = heldRoles
+        self.axAsked = axAsked
+        self.grantedSignature = grantedSignature
     }
 
     /// A file that is missing, unreadable or of another shape reads as no progress: onboarding starts at the
@@ -279,6 +290,9 @@ public final class OnboardingFlow {
         public var helpOpen = false
         /// System Settings was opened for the switch (`openSystemSettings`).
         public var alertShown = false
+        /// macOS shows Caret's switch on but no longer trusts this build (an update re-signed it): one button resets
+        /// Caret's own entry.
+        public var stale = false
     }
 
     public enum PreviewState: Equatable, Sendable {
@@ -423,6 +437,10 @@ public final class OnboardingFlow {
         case browsers(trusted: [String], untrusted: [String])
         /// The extension's engine said hello through the bridge (the helper's `pageEngine` connected).
         case browserConnected
+        /// The host found Caret's grant stale (`AccessibilityAccess.isStale`), or no longer.
+        case staleGrant(Bool)
+        /// "Reset Caret's entry" on the switch step.
+        case resetGrant
         /// Skip on the browser step.
         case skipBrowser
     }
@@ -438,6 +456,9 @@ public final class OnboardingFlow {
         case openSystemSettings
         /// Write the native host for the trusted browsers and open the extension's page (`ChromeBridgeInstaller`).
         case addToBrowser
+        /// Remove Caret's own Accessibility entry (`tccutil reset Accessibility dev.caret.host`), then open the pane
+        /// again so the person drags Caret back in.
+        case resetGrant
         /// The grant landed and the flow moved on: Caret takes the focus back from System Settings, once.
         case bringForward
         /// Ask the local model for the next words after `text`.
@@ -622,6 +643,12 @@ public final class OnboardingFlow {
         case .skipBrowser:
             guard state.step == .browser else { break }
             go(to: .on)
+        case .staleGrant(let stale):
+            state.access.stale = stale
+        case .resetGrant:
+            guard state.step == .access, state.access.stale else { break }
+            state.access.stale = false
+            output(.resetGrant)
         }
         output(.changed)
     }

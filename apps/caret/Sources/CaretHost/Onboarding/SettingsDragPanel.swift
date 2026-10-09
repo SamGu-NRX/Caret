@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import CaretHostCore
 import SwiftUI
 
@@ -26,15 +27,22 @@ final class SettingsDragPanel {
         set { model.landed = newValue }
     }
 
-    func start() {
+    /// Where the panel's first appearance travels from (Caret's own window, in AppKit coordinates), if anywhere.
+    private var source: NSRect?
+    private var flight: Timer?
+
+    func start(from source: NSRect? = nil) {
         guard timer == nil else { return }
         found = false
+        self.source = source
         track()
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        flight?.invalidate()
+        flight = nil
         panel?.orderOut(nil)
         panel = nil
         isShown = false
@@ -62,7 +70,8 @@ final class SettingsDragPanel {
         }
         found = true
         if frontmost { show(at: SettingsDragPanelPlacement.frame(settings: frame)) } else { hide() }
-        schedule(frontmost ? 0.5 : 1)
+        // Kept on System Settings' window while it is moved: a short interval while it is in front (Permiso uses 0.15 s).
+        schedule(frontmost ? 0.15 : 1)
     }
 
     private static func settingsFrame(pid: pid_t) -> CGRect? {
@@ -79,18 +88,72 @@ final class SettingsDragPanel {
         let primary = NSScreen.screens.first?.frame.height ?? 0
         let frame = NSRect(x: topLeft.minX, y: primary - topLeft.maxY, width: topLeft.width, height: topLeft.height)
         let panel = self.panel ?? makePanel()
-        if panel.frame != frame { panel.setFrame(frame, display: true) }
+        target = frame
+        if flight == nil, panel.frame != frame { panel.setFrame(frame, display: true) }
         guard !isShown else { return }
         isShown = true
-        // Arrives with a 160 ms fade (state change the person did not cause by a key); Reduce Motion keeps the fade.
-        panel.alphaValue = 0
         panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.12 : 0.16
-            ctx.timingFunction = Motion.caCurve(OnboardingMotion.out)
-            panel.animator().alphaValue = 1
-        }
         NSAccessibility.post(element: panel, notification: .created)
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if let source, !reduce {
+            // The first time, the row travels from Caret's window into System Settings along a short arc, so the eye
+            // follows it to where it is needed (spatial continuity). Critically damped spring, no bounce; it retargets
+            // each frame if System Settings moves meanwhile.
+            self.source = nil
+            fly(panel, from: source)
+        } else {
+            // Reduce Motion, or no window to come from: a fade in place.
+            panel.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = reduce ? 0.12 : 0.16
+                ctx.timingFunction = Motion.caCurve(OnboardingMotion.out)
+                panel.animator().alphaValue = 1
+            }
+        }
+    }
+
+    private var target: NSRect = .zero
+    /// The spring's response: about 0.55 s to settle, which reads as one deliberate move.
+    static let response: Double = 0.55
+
+    private func fly(_ panel: NSPanel, from start: NSRect) {
+        flight?.invalidate()
+        let began = CACurrentMediaTime()
+        panel.alphaValue = 0.9
+        panel.setFrame(start, display: true)
+        flight = Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self else { return t.invalidate() }
+                let p = Self.springProgress(CACurrentMediaTime() - began)
+                panel.setFrame(Self.arc(from: start, to: self.target, progress: p), display: true)
+                panel.alphaValue = 0.9 + 0.1 * p
+                if p >= 0.999 {
+                    t.invalidate()
+                    self.flight = nil
+                    panel.setFrame(self.target, display: true)
+                    panel.alphaValue = 1
+                }
+            }
+        }
+    }
+
+    /// A critically damped spring's progress (0 to 1) at `t` seconds: 1 − e^(−ωt)(1 + ωt), ω = 2π / response.
+    static func springProgress(_ t: Double) -> CGFloat {
+        let w = 2 * Double.pi / response
+        return CGFloat(min(1, max(0, 1 - exp(-w * t) * (1 + w * t))))
+    }
+
+    /// The frame `progress` of the way from `a` to `b`: size eases straight across, the centre follows a quadratic arc
+    /// that lifts by a fraction of the distance (44 to 140 pt), so the move reads as a toss rather than a slide.
+    static func arc(from a: NSRect, to b: NSRect, progress p: CGFloat) -> NSRect {
+        let w = a.width + (b.width - a.width) * p, h = a.height + (b.height - a.height) * p
+        let s = CGPoint(x: a.midX, y: a.midY), e = CGPoint(x: b.midX, y: b.midY)
+        let lift = min(140, max(44, hypot(e.x - s.x, e.y - s.y) * 0.18))
+        let c = CGPoint(x: (s.x + e.x) / 2, y: max(s.y, e.y) + lift)
+        let q = 1 - p
+        let x = q * q * s.x + 2 * q * p * c.x + p * p * e.x
+        let y = q * q * s.y + 2 * q * p * c.y + p * p * e.y
+        return NSRect(x: x - w / 2, y: y - h / 2, width: w, height: h)
     }
 
     private func hide() {
@@ -102,7 +165,8 @@ final class SettingsDragPanel {
     private func makePanel() -> DragPanelWindow {
         let p = DragPanelWindow(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         p.isFloatingPanel = true
-        p.level = .floating
+        // Above System Settings' own sheets and popovers, as the Codex and Permiso panels sit.
+        p.level = .statusBar
         p.backgroundColor = .clear
         p.isOpaque = false
         p.hasShadow = true

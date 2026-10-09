@@ -786,6 +786,12 @@ public final class HostRuntime {
 
     /// Add to your browser, which the app shell runs (`ChromeBridgeInstaller`), from the page line ("Caret can't see
     /// this page yet"). Onboarding no longer asks for it; it is offered at first need.
+    /// The login item waits for the end of onboarding (`CaretServices.registersAfterOnboarding`); `due` hands off.
+    public func deferLoginItem(_ later: @escaping () -> Bool, due: @escaping () -> Void) {
+        onboarding.registersLoginItemLater = later
+        onboarding.onLoginItemDue = due
+    }
+
     public var onAddToChrome: () -> Void {
         get { pageSight.onAddToChrome }
         set {

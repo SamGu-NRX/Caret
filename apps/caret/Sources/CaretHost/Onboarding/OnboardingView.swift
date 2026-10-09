@@ -400,10 +400,13 @@ struct AccessPane: View {
     var body: some View {
         let granted = state.access.granted
         VStack(alignment: .leading, spacing: 0) {
-            SwappingLine(key: granted ? OnboardingCopy.Access.landedTitle : OnboardingCopy.Access.title, animated: animated) {
-                ScreenTitle(title: granted ? OnboardingCopy.Access.landedTitle : OnboardingCopy.Access.title)
+            let stale = state.access.stale && !granted
+            SwappingLine(key: granted ? OnboardingCopy.Access.landedTitle : (stale ? OnboardingCopy.Access.staleTitle : OnboardingCopy.Access.title), animated: animated) {
+                ScreenTitle(title: granted ? OnboardingCopy.Access.landedTitle : (stale ? OnboardingCopy.Access.staleTitle : OnboardingCopy.Access.title))
             }
-            Text(granted ? OnboardingCopy.Access.landedLine : (state.access.reopened ? OnboardingCopy.Access.reopened : OnboardingCopy.Access.line))
+            Text(granted ? OnboardingCopy.Access.landedLine
+                 : stale ? OnboardingCopy.Access.staleLine
+                 : (state.access.reopened ? OnboardingCopy.Access.reopened : OnboardingCopy.Access.line))
                 .font(.system(size: 13))
                 .foregroundStyle(Color(token: Tokens.ink2))
                 .lineSpacing(2)
@@ -422,7 +425,11 @@ struct AccessPane: View {
             }
             .padding(.top, 14)
             // The same row as the panel inside System Settings: drag it into the list there.
-            if granted {
+            if stale {
+                Button(OnboardingCopy.Access.reset) { send(.resetGrant) }
+                    .buttonStyle(OnboardingButtonStyle(kind: .secondary))
+                    .padding(.top, 14)
+            } else if granted {
                 SettingsRowDrawing(on: true, animated: false).padding(.top, 14)
             } else {
                 DragRow().frame(height: 52).padding(.top, 14)
@@ -580,6 +587,10 @@ struct BrowserPane: View {
                     }
                     .padding(.top, 16)
                 }
+            }
+            if let target = b.target, !b.connected {
+                Text(OnboardingCopy.Browser.cost(target)).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink2))
+                    .fixedSize(horizontal: false, vertical: true).padding(.top, 14)
             }
             ForEach(b.untrusted, id: \.self) { name in
                 Text(OnboardingCopy.Browser.untrusted(name)).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink2)).padding(.top, 10)
