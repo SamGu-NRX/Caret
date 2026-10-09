@@ -106,13 +106,20 @@ public final class PageWritingMachine {
         else {
             previous = nil
             pending = nil
-            return hide()
+            return withdraw()
         }
         let focus = Self.focusKey(f)
         let value = text.before + text.after
-        if let s = shown, !(s.value.utf16.elementsEqual(value.utf16) && s.target.windowID == f.windowId && s.target.elementID == f.key) {
-            arbiter.invalidate(offerID: s.offerID)
-            hide()
+        // The line belongs to the exact field state it was offered on: the same element, and the same text on each side
+        // of the caret (a click that moved the caret changes the split, not the value).
+        if let s = shown, !(s.before.utf16.elementsEqual(text.before.utf16) && s.value.utf16.elementsEqual(value.utf16)
+                             && s.target.windowID == f.windowId && s.target.elementID == f.key && s.token == f.token) {
+            withdraw()
+        } else if let s = shown, let caret = f.caret, PageInlineMachine.rect(caret) != s.caret, let offer = arbiter.snapshot().current,
+                  offer.id == s.offerID, let writing = offer.kind.writing {
+            // Only the caret's place moved (a scroll): the line follows it.
+            shown?.caret = PageInlineMachine.rect(caret)
+            output(.drawLine(writing, caret: PageInlineMachine.rect(caret)))
         }
         let last = previous?.focus == focus ? previous?.value : nil
         previous = (focus, value)
@@ -164,11 +171,17 @@ public final class PageWritingMachine {
         }
         let offer = Offer(text: "", source: .page, kind: .writing(writing), target: t, fieldValue: value, caretUTF16: caret,
                           createdAt: clock.now, maxAgeSeconds: RangeEdit.defaultMaxAge)
-        guard let offerID = arbiter.publish(offer) else { return note("refused") }
+        // Published unshown, drawn, then revealed: Tab takes only a fix whose line is on screen.
+        guard let offerID = arbiter.publish(offer, shown: false) else { return note("refused") }
         let caretRect = PageInlineMachine.rect(caretFrame)
         shown = Shown(offerID: offerID, target: t, token: token, before: text.before, value: value, caret: caretRect,
                       frame: f.frame.map(PageInlineMachine.rect) ?? caretRect, page: f.ownSuggestions)
         output(.drawLine(writing, caret: caretRect))
+        guard arbiter.reveal(offerID: offerID) else {
+            shown = nil
+            output(.hideLine)
+            return note("keyBeforeDrawn")
+        }
         note("offered")
     }
 
@@ -231,9 +244,20 @@ public final class PageWritingMachine {
 
     /// The settings stopped writing help, or the page went: what is shown goes.
     public func gateClosed() {
-        if let s = shown { arbiter.invalidate(offerID: s.offerID) }
         previous = nil
         pending = nil
+        withdraw()
+    }
+
+    /// A newer offer took the slot from this machine's fix: its line goes, since Tab now belongs to the newer one.
+    public func displaced(_ offer: Offer) {
+        guard let s = shown, s.offerID == offer.id else { return }
+        hide()
+    }
+
+    /// The fix goes from the arbiter and the screen together, so Tab never takes one that is not drawn.
+    private func withdraw() {
+        if let s = shown { arbiter.invalidate(offerID: s.offerID) }
         hide()
     }
 

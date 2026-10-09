@@ -114,6 +114,10 @@ final class PersonalInstructionsTests: XCTestCase {
         i.aboutMe = "Mine."
         i.importCotypist("From Cotypist again.")
         XCTAssertEqual(i.aboutMe, "Mine.", "the user's own words stay")
+        var long = PersonalInstructions()
+        long.importCotypist(String(repeating: "a", count: PersonalInstructions.maxCharacters + 1))
+        XCTAssertEqual(long.aboutMe, "", "too long for the settings file: not saved unseen")
+        XCTAssertTrue(long.cotypistChecked)
         var none = PersonalInstructions()
         none.importCotypist(nil)
         XCTAssertTrue(none.cotypistChecked, "an absent key is checked once and offers an empty field")

@@ -53,7 +53,7 @@ final class PageWritingTests: XCTestCase {
         }
 
         func press(_ key: KeyStroke) -> OfferArbiter.Decision {
-            let d = arbiter.handleKeyDown(key)
+            let d = arbiter.handleKeyDown(key, now: clock.now)
             if case .consume(let claim) = d { machine.claimed(claim) }
             if case .pass(let reason) = d { machine.offerChanged(reason) }
             if case .navigate(let id, let ui) = d { machine.navigated(offerID: id, ui: ui) }
@@ -195,5 +195,48 @@ final class PageWritingTests: XCTestCase {
         r.field(f)
         XCTAssertTrue(r.checks.isEmpty)
         XCTAssertNil(r.arbiter.snapshot().current)
+    }
+
+    // MARK: - A fix is on screen exactly while Tab can take it (review)
+
+    func offered(_ r: Rig) {
+        r.field(Self.field("I like teh"))
+        r.field(Self.field("I like teh "))
+        r.answer("teh", "the")
+    }
+
+    func testASelectionWithdrawsTheFixSoTabPasses() {
+        let r = Rig()
+        offered(r)
+        var selected = Self.field("I like teh ")
+        selected.text?.selection = "teh"
+        r.field(selected)
+        XCTAssertTrue(r.lineHidden)
+        XCTAssertEqual(r.press(.tab(to: Self.chrome)), .pass(.noOffer))
+    }
+
+    func testACaretMovedByAClickWithdrawsTheFix() {
+        let r = Rig()
+        offered(r)
+        r.field(Self.field("I like", after: " teh "))
+        XCTAssertTrue(r.lineHidden)
+        XCTAssertNil(r.arbiter.snapshot().current)
+    }
+
+    func testAnotherElementWithTheSameTextWithdrawsTheFix() {
+        let r = Rig()
+        offered(r)
+        var replaced = Self.field("I like teh ")
+        replaced.token = "0:D0:e9"
+        r.field(replaced)
+        XCTAssertNil(r.arbiter.snapshot().current)
+    }
+
+    func testADisplacedFixTakesItsLineDown() throws {
+        let r = Rig()
+        offered(r)
+        let offer = try XCTUnwrap(r.arbiter.snapshot().current)
+        r.machine.displaced(offer)
+        XCTAssertTrue(r.lineHidden)
     }
 }

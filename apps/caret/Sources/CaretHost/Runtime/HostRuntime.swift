@@ -192,7 +192,8 @@ public final class HostRuntime {
         }
         // First run: Sam's Cotypist instructions fill an empty "about me", read once from the one key (approved
         // 2026-10-09). The text is never logged.
-        if !SettingsStore.shared.settings.instructions.cotypistChecked {
+        // Not over a settings file that could not be read: the defaults stand in for it, and saving them would replace it.
+        if SettingsStore.shared.loadError == nil, !SettingsStore.shared.settings.instructions.cotypistChecked {
             let imported = CotypistInstructions.read()
             SettingsStore.shared.update(source: .menu) { $0.instructions.importCotypist(imported) }
         }

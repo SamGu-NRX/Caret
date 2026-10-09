@@ -35,10 +35,12 @@ public struct PersonalInstructions: Codable, Equatable, Sendable {
     }
 
     /// First run: Cotypist's instructions fill an empty "about me". The user's own words are never replaced, and an
-    /// absent key leaves the field empty. Either way it is not looked for again.
+    /// absent key leaves the field empty, as does text longer than `maxCharacters`, which the settings file would refuse
+    /// on the next launch (Import from Cotypist still shows it in the editor). Either way it is not looked for again.
     public mutating func importCotypist(_ text: String?) {
         cotypistChecked = true
-        guard aboutMe.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let text = text.flatMap(Self.kept) else { return }
+        guard aboutMe.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let text = text.flatMap(Self.kept),
+              text.count <= Self.maxCharacters else { return }
         aboutMe = text
     }
 

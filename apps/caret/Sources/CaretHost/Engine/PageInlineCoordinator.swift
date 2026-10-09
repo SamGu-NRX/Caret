@@ -100,7 +100,8 @@ final class PageInlineCoordinator {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         lastField = field
         tabOwner = owner
-        let focus = "\(field.windowId)|\(field.key ?? "")"
+        // The token names the walked element in its document, so a navigation to another site re-reads the origin.
+        let focus = "\(field.windowId)|\(field.key ?? "")|\(field.token ?? "")"
         if focus != originFocus {
             originFocus = focus
             origin = BrowserPage.frontOrigin()
@@ -114,6 +115,8 @@ final class PageInlineCoordinator {
     /// The user left the browser, or its page has no field: what is shown goes.
     func focusLeft() {
         lastField = nil
+        origin = nil
+        originFocus = nil
         machine.field(nil, gate: PageInlineMachine.Gate(allowed: false, contentEditable: false, settings: SettingsStore.shared.settings.pageInline))
         writing.gateClosed()
         publish()
@@ -136,7 +139,10 @@ final class PageInlineCoordinator {
         writing.navigated(offerID: offerID, ui: ui)
     }
 
-    func displaced(_ offer: Offer) { machine.displaced(offer) }
+    func displaced(_ offer: Offer) {
+        machine.displaced(offer)
+        writing.displaced(offer)
+    }
     func sourceOff(_ app: String, says: String) {
         machine.sourceOff(app, says: says)
         publish()

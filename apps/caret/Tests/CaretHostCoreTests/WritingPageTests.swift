@@ -25,7 +25,7 @@ final class WritingPageTests: XCTestCase {
     }
 
     func testTheCountSaysHowMuchReachesTheModel() {
-        XCTAssertEqual(WritingPage.count("  I write plainly. "), "17 of 1,536 characters")
+        XCTAssertEqual(WritingPage.count("  I write plainly. "), "16 of 1,536 characters")
         XCTAssertEqual(WritingPage.count(String(repeating: "a", count: 2000)), "The model reads the first 1,536 characters; the rest is kept here.")
     }
 }

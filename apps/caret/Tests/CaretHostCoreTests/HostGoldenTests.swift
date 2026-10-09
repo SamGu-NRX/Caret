@@ -193,6 +193,8 @@ final class PageSightTests: XCTestCase {
         XCTAssertEqual(take(), [PageSight.Line(browserPID: 6200, browserName: "Brave", canAdd: false)])
         sight.receive(state(.missing, AppRef(pid: 6300, bundleId: "net.imput.helium", name: "Helium")), frontmostPID: 6300, paused: false)
         XCTAssertEqual(take().last??.canAdd, true)
+        sight.frontmostChanged(6100, paused: false)
+        XCTAssertEqual(take(), [nil], "Helium's line goes with Helium")
         sight.receive(state(.missing), frontmostPID: 6100, paused: true)
         XCTAssertEqual(take(), [])
         sight.helperGone()
