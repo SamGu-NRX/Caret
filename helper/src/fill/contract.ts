@@ -1141,11 +1141,28 @@ export function contractStale(node: Node, f: FieldContract, text: string): strin
  * digests of the lines around it in `text`, its source node's text as Jev was shown it (fill passes the text it took
  * before its asks, G2's `judged`); by default the node's text in `w` now.
  */
-export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }, text?: string): Provenance {
+export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }, text?: string, memo?: DigestMemo): Provenance {
   w = w === undefined ? undefined : redactWindow(w);
   const node = w?.nodes.get(c.source.nodeKey);
   const read = text ?? (node === undefined ? undefined : nodeText(node));
-  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, lines: read === undefined ? [] : lineDigests(read, c.text), sentences: read === undefined ? [] : sentenceDigests(read, c.text) };
+  const digests = read === undefined ? null : digestsOf(read, c.text, memo);
+  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, lines: digests === null ? [] : [...digests.lines], sentences: digests === null ? [] : [...digests.sentences] };
+}
+
+/**
+ * A source text's line and sentence digests by span, kept by one caller for its own run (fill.ts proposeFill). A
+ * 50-field fill took 2,546 provenances of one note with 50 distinct spans, and their digests were a sixth of its CPU.
+ */
+export type DigestMemo = Map<string, { readonly lines: readonly string[]; readonly sentences: readonly string[] }>;
+
+function digestsOf(read: string, span: string, memo: DigestMemo | undefined): { readonly lines: readonly string[]; readonly sentences: readonly string[] } {
+  const key = `${span.length}:${span}${read}`;
+  let d = memo?.get(key);
+  if (d === undefined) {
+    d = { lines: lineDigests(read, span), sentences: sentenceDigests(read, span) };
+    memo?.set(key, d);
+  }
+  return d;
 }
 
 /**

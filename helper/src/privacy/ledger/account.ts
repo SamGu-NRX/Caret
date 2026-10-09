@@ -148,8 +148,15 @@ export interface Breach {
 
 /** Normalizes measured texts; null when one holds an unpaired surrogate (refused, never measured as zero). */
 export function normalizedUnits(texts: readonly string[]): Normalized[] | null {
+  // A request repeats its wording in every question: a 50-field preview's seal held 148k scalars in 150 distinct units.
+  // Each distinct text is normalized once, and its repeats share that object (UnitProbe indexes each object once).
+  const once = new Map<string, Normalized>();
   try {
-    return texts.map(ledgerNormalizeV1);
+    return texts.map((t) => {
+      let n = once.get(t);
+      if (n === undefined) once.set(t, (n = ledgerNormalizeV1(t)));
+      return n;
+    });
   } catch (e) {
     if (e instanceof LedgerEncodingError) return null;
     throw e;
