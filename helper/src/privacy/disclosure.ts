@@ -66,12 +66,17 @@ function nodeSpans(view: WindowState, key: string): ViewSpan[] {
  * that value was read from, whole. The one rule for a candidate (fromView), a derivation's basis (basis) and plan text
  * (planSpans): a derivation from a typed value charged nothing when only candidate() applied it.
  */
-function textSpans(view: WindowState, text: string, at?: SourceAt | null): ViewSpan[] {
+function textSpans(view: WindowState, text: string, cache: WeakMap<WindowState, Map<string, ViewSpan[]>>, at?: SourceAt | null): ViewSpan[] {
   if (at !== undefined && at !== null) return [{ view, at }];
+  let known = cache.get(view);
+  const hit = known?.get(text);
+  if (hit !== undefined) return hit;
   const spans: ViewSpan[] = [{ view, text }];
   const lines = viewInventory(view).lines;
   const pieces = sourcePieces(text);
   if (!pieces.every((p) => lines.some((l) => l.includes(p)))) for (const v of view.values) if (sourceLines(v.text).some((l) => pieces.some((p) => l.includes(p)))) spans.push(...nodeSpans(view, v.nodeKey));
+  if (known === undefined) cache.set(view, (known = new Map()));
+  known.set(text, spans);
   return spans;
 }
 
@@ -327,6 +332,10 @@ export class Disclosure extends SnippetLedger {
     if (origins.size > 0) this.originsOf.set(text, origins);
   }
 
+  // Whole-note fallback lookup took 31% of sampled product CPU in the 100-field preview. Its result depends only
+  // on the immutable view and text. Keep it for this Disclosure, not admission decisions or mutable ledger charges.
+  private readonly sourceSpans = new WeakMap<WindowState, Map<string, ViewSpan[]>>();
+
   /** Adds declared spans to a minted text. */
   private declareSpans(text: string, spans: Iterable<ViewSpan>): void {
     let l = this.spans.get(text);
@@ -453,7 +462,7 @@ export class Disclosure extends SnippetLedger {
     if (text === "" || !viewHolds(view, text)) return null;
     if (at !== undefined && !rangeHolds(view, at, text)) throw new Error(`a ${reason}'s recorded source range [${at.start}, ${at.end}) of ${JSON.stringify(at.part)} does not hold its text`);
     this.know(view);
-    const spans = textSpans(view, text, at);
+    const spans = textSpans(view, text, this.sourceSpans, at);
     if (!this.admitTexts([text], { under: view.window.windowId, kind: reason === "descriptor" ? "descriptor" : "candidate", spans })) return null;
     this.declareSpans(text, spans);
     return this.record(text, [reason]);
@@ -592,7 +601,7 @@ export class Disclosure extends SnippetLedger {
    * them that holds a line of it (whatever its length) is charged whole (ledger/measure.ts spanPositions).
    */
   private planSpans(text: string): ViewSpan[] {
-    return this.measuredWindows().flatMap((w) => textSpans(w.view, text));
+    return this.measuredWindows().flatMap((w) => textSpans(w.view, text, this.sourceSpans));
   }
 
 
@@ -776,7 +785,7 @@ export class Disclosure extends SnippetLedger {
     if (!viewHolds(view, text)) return null;
     if (at !== undefined && !rangeHolds(view, at, text)) throw new Error(`a basis's recorded source range [${at.start}, ${at.end}) of ${JSON.stringify(at.part)} does not hold its text`);
     this.know(view);
-    return new Basis(BASIS_TOKEN, this, text, view, textSpans(view, text, at));
+    return new Basis(BASIS_TOKEN, this, text, view, textSpans(view, text, this.sourceSpans, at));
   }
 
   /**
