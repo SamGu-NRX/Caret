@@ -26,6 +26,10 @@ final class GhostOverlay {
     private let placementResolver: OverlayPlacementResolver
     private let compatibilityStore: AppCompatibilityStore
     private(set) var presentation: Presentation?
+    /// Ghost text went on screen at this caret (AppKit coordinates), and went away: onboarding's one-time coach slip
+    /// follows it (`CoachSlip`).
+    var onShown: ((CGRect?) -> Void)?
+    var onHidden: (() -> Void)?
     private(set) var shownText: String?
     /// The last attempt to draw, shown or not, for the debug state.
     private(set) var lastFit: GhostFit.Record?
@@ -145,6 +149,7 @@ final class GhostOverlay {
         if drawnText != text { lastFit?.truncated = true }
         presentation = shown
         shownText = text
+        onShown?(snapshot.caretRect)
         return shown
     }
 
@@ -206,6 +211,7 @@ final class GhostOverlay {
     }
 
     func hide() {
+        onHidden?()
         presenter.hide()
         presentation = nil
         shownText = nil

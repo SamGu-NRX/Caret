@@ -57,23 +57,22 @@ final class ShipsRenderTests: XCTestCase {
         XCTAssertEqual(failures, [], table.joined(separator: "\n"))
     }
 
-    /// The key step's words, pinned like the know step's: what Jev is for, what happens to the key, and the coordinator's
-    /// sentence for a key whose account has no credits.
-    func testTheKeyStepsWordingIsPinned() {
-        XCTAssertEqual(JevKeyScreen.title, "Add your Jev key.")
-        XCTAssertEqual(JevKeyScreen.detail, "Jev is the cloud model that decides what Caret offers, like which value goes in a field. Paste your TypeSafe API key to turn it on.")
+    /// The key field's words: what happens to the key, and the coordinator's sentence for a key whose account has no
+    /// credits.
+    func testTheKeyFieldsWordingIsPinned() {
+        XCTAssertEqual(OnboardingCopy.On.keyNote, "For now the cloud model needs a key. Caret keeps it in your login keychain and checks it with one small request.")
         var draft = OnboardingFlow.JevKeyDraft()
         draft.phase = .checked(.noCredits, saved: true)
-        XCTAssertEqual(JevKeyScreen.line(draft)?.text, "This key works, but its account has no credits. Add credits at console.typesafe.ai.")
+        XCTAssertEqual(KeyBlock.line(draft)?.text, "This key works, but its account has no credits. Add credits at console.typesafe.ai.")
         draft.phase = .checked(.rejected, saved: false)
-        XCTAssertEqual(JevKeyScreen.line(draft)?.problem, true)
+        XCTAssertEqual(KeyBlock.line(draft)?.problem, true)
         draft.phase = .checked(.unreachable, saved: false)
-        XCTAssertTrue(JevKeyScreen.line(draft)?.text.contains("try again") ?? false)
-        var lines = [JevKeyScreen.title, JevKeyScreen.detail, JevKeyScreen.footnote, JevKeyScreen.storedLine]
+        XCTAssertTrue(KeyBlock.line(draft)?.text.contains("try again") ?? false)
+        var lines = [OnboardingCopy.On.keyNote, OnboardingCopy.On.keyPlaceholder]
         for phase in [OnboardingFlow.JevKeyDraft.Phase.malformed, .checking, .checked(.works, saved: true), .checked(.works, saved: false),
                       .checked(.unclear(status: 500), saved: false)] {
             draft.phase = phase
-            lines.append(JevKeyScreen.line(draft)?.text ?? "")
+            lines.append(KeyBlock.line(draft)?.text ?? "")
         }
         for line in lines {
             XCTAssertFalse(line.contains("\u{2014}") || line.contains("\u{2013}") || line.contains("!"), line)

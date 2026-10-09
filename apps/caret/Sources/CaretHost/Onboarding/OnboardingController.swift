@@ -5,41 +5,33 @@ import CaretScreenCore
 import CoreGraphics
 import SwiftUI
 
-/// Onboarding's window, the one Caret window that may become key, and the system side of
-/// `OnboardingFlow`: it reads the grants, opens System Settings, sends `firstLook`, writes the
-/// choices to settings, and turns the window's keys into the flow's events.
+/// Onboarding's window and the system side of `OnboardingFlow`: it reads the grant, raises macOS's Accessibility alert
+/// and opens the pane, keeps the window beside System Settings as a guide while the switch is off, asks the local model
+/// for the Hello field and the helper for the preview and the first look, records progress so a relaunch resumes, and
+/// turns the window's keys into the flow's events.
 ///
-/// `hidden` runs the same flow with no window, for socket-level runs while someone is using the
-/// Mac: nothing is ordered on screen and System Settings is never opened.
+/// `hidden` runs the same flow with no window, for socket-level runs while someone is using the Mac: nothing is ordered
+/// on screen and System Settings is never opened.
 @MainActor
 final class OnboardingController {
     enum Mode: String {
-        /// Never opens by itself; the menu's Set Up Caret opens it. A test run's default, so test
-        /// runs of the host never put a window up (`OnboardingLaunch.defaultMode`).
+        /// Never opens by itself; the menu's Set Up Caret opens it. A test run's default.
         case off
-        /// Opens at launch until onboarding has reached its end once, and after that on its
-        /// permissions step alone while Accessibility is off (`OnboardingLaunch.auto`). The user's
-        /// own Caret's default since H12.
+        /// The user's own Caret: at launch until finished, resuming where it was (`OnboardingLaunch.auto`).
         case auto
-        /// Opens at launch.
+        /// Opens at launch, from the start.
         case show
         /// Runs without a window; only the debug socket drives it.
         case hidden
-
     }
 
-    /// The key step's system side (H12): whether Caret has a key, the check with Jev, the keychain, and the helper's
-    /// restart. The app shell fills it from `CaretServices`; the default has a key already, so a runtime built without
-    /// services (a test) never shows the step or touches a keychain.
+    /// The key field's system side (H12), filled from `CaretServices` by the app shell. The default has a key already,
+    /// so a runtime built without services never shows the field or touches a keychain.
     struct JevKeyHooks {
-        /// The helper has a key from anywhere: the keychain, or a development run's environment.
         var available: () -> Bool = { true }
-        /// The keychain holds one.
         var stored: () -> Bool = { false }
         var check: (String) async -> JevKeyCheck.Outcome = { _ in .unreachable }
-        /// Saves to the keychain; false when the keychain refused.
         var save: (String) -> Bool = { _ in false }
-        /// After a save: start the helper again with the key.
         var saved: () -> Void = {}
     }
 
@@ -50,79 +42,107 @@ final class OnboardingController {
     let mode: Mode
     private let testHooks: Bool
     private let store: SettingsStore
+    /// Where `OnboardingProgress` is kept: beside the settings file, so a test run with its own settings never reads
+    /// or writes the user's.
+    private let progressPath: String?
     private let model = Model()
     private var flow: OnboardingFlow?
     private var window: NSWindow?
     private var keyMonitor: Any?
     private var pollTimer: Timer?
     private var closeObserver: NSObjectProtocol?
-    /// A test run's stand-in for the grants (`onboarding permissions`), read instead of the system.
+    private var completion: Task<Void, Never>?
+    /// Test stand-ins (`onboarding permissions`, `onboarding model`, `onboarding tab-owners`).
     var permissionsOverride: OnboardingPermissions?
-    /// A test run's stand-in for the running apps that also take Tab (`onboarding tab-owners`).
+    private var modelOverride: ModelReadiness?
     private var tabOwnersOverride: [String]?
     /// Sends a request to the helper; false when it is not connected.
     var sendFirstLook: (FirstLookRequest) -> Bool = { _ in false }
-    /// Take, stop and undo the first look's offer; each false when the helper is not connected.
+    /// Asks the helper for the preview; false when it is not connected or does not speak it yet.
+    var sendPreview: (_ requestId: String, _ families: [String], _ level: CaretLevel) -> Bool = { _, _, _ in false }
     var sendAccept: (OfferAccept) -> Bool = { _ in false }
     var sendStop: (OfferStop) -> Bool = { _ in false }
     var sendControl: (TaskControl) -> Bool = { _ in false }
-    /// H8: asks for Calendar access before a found event card's accept goes, as at the caret (`SurfaceMachine`).
+    /// The person kept everything on the Mac: the helper asks at first need before anything goes.
+    var onKeepOnMac: () -> Void = {}
+    /// The local model's next words after `text`, or nil.
+    var complete: (String) async -> String? = { _ in nil }
+    var modelReadiness: () -> ModelReadiness = { .unavailable }
+    /// H8: asks for Calendar access before a found event's accept goes.
     var calendars: CalendarAccessAsking = EventKitCalendars.shared
-    /// The found event card's key while its accept waits on macOS's Calendar prompt.
     private var calendarHeld: String?
-    /// The name and email typed on the `know` screen, for memory to keep.
-    var onRemember: ([TypedAbout]) -> Void = { _ in }
-    /// Skip after an earlier Continue: those values are not to be kept.
-    var onForgetTyped: ([String]) -> Void = { _ in }
     /// A grant changed while the flow runs (the runtime retries a key tap the system refused).
     var onPermissionsChanged: (OnboardingPermissions) -> Void = { _ in }
-    /// The permissions screen's Add to Chrome (H4); the app shell runs `ChromeBridgeInstaller`.
-    var onAddToChrome: () -> Void = {}
-    /// Whether the helper keeps typed values (`MemoryBook.State.acceptsAdd`), read when a flow opens.
-    var knowAvailable: () -> Bool = { false }
     /// What the window refused to do because it is hidden, for the debug state.
     private var suppressed: [String] = []
     var jevKey = JevKeyHooks()
-    /// Bumped by every key check this controller starts, in any flow. Only the newest may save: a check from a flow
-    /// closed and opened again must not write over a key saved after it (H12 review).
     private var jevKeyGeneration = 0
+    private let guide = GuidePlacement()
 
-    init(mode: Mode, testHooks: Bool, store: SettingsStore = .shared) {
+    init(mode: Mode, testHooks: Bool, store: SettingsStore = .shared, progressPath: String? = nil) {
         self.mode = mode
         self.testHooks = testHooks
         self.store = store
+        self.progressPath = progressPath
         store.observe { [weak self] settings in self?.flow?.send(.settingsChanged(settings)) }
     }
 
-    /// The open flow has a window. False for a hidden run, and for a flow the debug socket opened.
     private var drawsWindow = false
 
-    /// At launch: opens when the mode says so.
-    func launch() {
-        guard let opening = launchOpening() else { return }
-        let drawing = mode != .hidden
-        switch opening {
-        case .all: open(drawing: drawing)
-        case .only(let step): open(drawing: drawing, only: step)
-        }
+    // MARK: - Progress
+
+    var progress: OnboardingProgress? {
+        guard let progressPath else { return nil }
+        return OnboardingProgress.decode(FileManager.default.contents(atPath: progressPath))
     }
 
-    /// What `launch` opens, from the mode, the finished flag in Caret's settings and the grants.
+    private func saveProgress(_ step: OnboardingStep) {
+        guard let progressPath else { return }
+        let coach = progress?.coachShown ?? false
+        try? OnboardingProgress(step: step, at: Int64(Date().timeIntervalSince1970 * 1000), coachShown: coach).encoded()
+            .write(to: URL(fileURLWithPath: progressPath), options: .atomic)
+    }
+
+    private var coachShownCache: Bool?
+
+    /// The coach slip has been shown on this install. Read from the file once, then kept, since it is asked on every
+    /// ghost text.
+    var coachShown: Bool {
+        if let coachShownCache { return coachShownCache }
+        let shown = progress?.coachShown == true
+        coachShownCache = shown
+        return shown
+    }
+
+    /// The coach slip was shown: never again on this install.
+    func markCoachShown() {
+        coachShownCache = true
+        guard let progressPath else { return }
+        var p = progress ?? OnboardingProgress(step: .first, at: 0)
+        p.coachShown = true
+        p.at = Int64(Date().timeIntervalSince1970 * 1000)
+        try? p.encoded().write(to: URL(fileURLWithPath: progressPath), options: .atomic)
+    }
+
+    // MARK: - Opening
+
+    /// At launch: opens when the mode says so, where the last run left off.
+    func launch() {
+        guard let opening = launchOpening() else { return }
+        open(drawing: mode != .hidden, opening: opening)
+    }
+
     func launchOpening() -> OnboardingLaunch.Opening? {
         switch mode {
         case .off: return nil
-        case .auto: return OnboardingLaunch.auto(onboarded: store.settings.onboarded, permissions: readPermissions())
-        case .show, .hidden: return .all
+        case .auto: return OnboardingLaunch.auto(onboarded: store.settings.onboarded, permissions: readPermissions(), progress: progress)
+        case .show, .hidden: return OnboardingLaunch.Opening(step: .hello)
         }
     }
 
-    /// Starts the flow from the current settings and grants, with its window when `drawing` (the
-    /// menu's Set Up Caret) and never on a hidden run. An open flow is brought forward rather than
-    /// restarted. `only`: the flow is that one step (a returning user missing Accessibility, the
-    /// menu's "Jev is off").
-    func open(drawing: Bool, only: OnboardingStep? = nil) {
+    /// Starts the flow with its window when `drawing`. An open flow is brought forward rather than restarted.
+    func open(drawing: Bool, opening: OnboardingLaunch.Opening? = nil) {
         if let flow, !flow.state.finished {
-            // Only the menu brings a window forward; the socket never shows one.
             if drawing, drawsWindow, let window {
                 NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
@@ -130,25 +150,35 @@ final class OnboardingController {
             return
         }
         drawsWindow = drawing && mode != .hidden
+        let permissions = readPermissions()
+        let start = opening ?? OnboardingLaunch.Opening(step: permissions.accessibility ? .on : .hello)
         let flow = OnboardingFlow(
-            settings: store.settings, permissions: readPermissions(), clock: RunLoopClock(),
-            token: String(UUID().uuidString.prefix(8)).lowercased(), showsKnow: only == nil && knowAvailable(),
-            jevKeyAvailable: jevKey.available(), jevKeyStored: jevKey.stored(), only: only
+            settings: store.settings, permissions: permissions, clock: RunLoopClock(),
+            token: String(UUID().uuidString.prefix(8)).lowercased(), opening: start,
+            jevKeyAvailable: jevKey.available(), jevKeyStored: jevKey.stored()
         )
         flow.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
-        flow.send(.otherTabOwners(readTabOwners()))
         self.flow = flow
+        flow.send(.model(readModel()))
+        flow.send(.apps(HelloAppsReader.read()))
+        flow.send(.otherTabOwners(readTabOwners()))
+        flow.start()
         model.state = flow.state
         startPolling()
         guard drawsWindow else { return }
         showWindow()
     }
 
-    /// Ends the flow's window and polling. A finished flow is kept for the debug state; an
-    /// unfinished one is dropped, so the next open starts it again (the choices already made are
-    /// saved). The window's close button ends up here too.
+    /// The menu's "Jev is off": the `on` step alone, which carries the key field.
+    func openKey() {
+        open(drawing: true, opening: OnboardingLaunch.Opening(step: .on, alone: true))
+    }
+
+    /// Ends the window and polling. An unfinished flow is dropped; its progress file says where to resume.
     func close() {
         stopPolling()
+        completion?.cancel()
+        completion = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
@@ -164,73 +194,80 @@ final class OnboardingController {
         model.state = flow?.state
     }
 
-    /// The helper's memory list said, again or anew, whether it keeps typed values.
-    func knowAvailableChanged(_ available: Bool) {
-        guard let flow, flow.state.showsKnow != available else { return }
-        flow.send(.knowAvailable(available))
-    }
+    func receive(_ reply: FirstLookReply) { flow?.send(.firstLookReply(reply)) }
+    func receive(_ withdrawn: OfferWithdrawn) { flow?.send(.offerWithdrawn(withdrawn)) }
 
-    func receive(_ reply: FirstLookReply) {
-        flow?.send(.firstLookReply(reply))
-    }
-
-    /// Every withdrawal; the flow acts only on its found offer's.
-    func receive(_ withdrawn: OfferWithdrawn) {
-        flow?.send(.offerWithdrawn(withdrawn))
-    }
-
-    /// Progress of every task; the flow keeps the one it took (the first look's offer).
     func receive(_ progress: TaskProgress) {
-        guard flow?.state.firstLookRun != nil else { return }
+        guard flow?.state.first.run != nil else { return }
         flow?.send(.taskProgress(progress))
+    }
+
+    /// The helper's preview, in the screen's terms: a line that stays carries no text at all, whatever the wire held.
+    func receive(_ preview: FirstLookPreview) {
+        flow?.send(.previewReady(requestId: preview.requestId, Self.screenPreview(preview)))
+    }
+
+    static func screenPreview(_ p: FirstLookPreview) -> OnboardingPreview {
+        OnboardingPreview(previewId: p.previewId, windows: p.windows.map { w in
+            OnboardingPreview.Window(bundleId: w.bundleId, appName: w.appName, title: w.title,
+                                     lines: w.lines.map { .init(text: $0.sent ? $0.text : nil) }, chars: w.charsSent)
+        }, chars: p.totalChars)
     }
 
     // MARK: - The flow's commands
 
     private func perform(_ command: OnboardingFlow.Command) {
         switch command {
-        case .changed: model.state = flow?.state
-        case .saveChoices(let roles, let level, let onboarded):
-            store.update(source: .onboarding) { s in
-                s.roles = roles
-                s.level = level
-                if onboarded { s.onboarded = true }
+        case .changed:
+            model.state = flow?.state
+            followFrame()
+        case .finished:
+            store.update(source: .onboarding) { $0.onboarded = true }
+        case .saveProgress(let step):
+            saveProgress(step)
+        case .openSystemSettings:
+            guard drawsWindow else { return suppressed.append("openSystemSettings") }
+            Self.openAccessibilityPane()
+        case .bringForward:
+            guard drawsWindow, let window else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        case .complete(let id, let text):
+            completion?.cancel()
+            let complete = self.complete
+            completion = Task { @MainActor [weak self] in
+                let ghost = await complete(text)
+                guard !Task.isCancelled else { return }
+                self?.flow?.send(.ghost(requestId: id, text: ghost))
             }
-        case .remember(let items): onRemember(items)
-        case .forgetTyped(let labels): onForgetTyped(labels)
-        case .openSystemSettings(let pane):
-            guard drawsWindow else { return suppressed.append("openSystemSettings.\(pane.rawValue)") }
-            Self.openSettings(pane)
-        case .addToChrome:
-            guard drawsWindow else { return suppressed.append("addToChrome") }
-            onAddToChrome()
+        case .askPreview(let id, let families, let level):
+            if !sendPreview(id, families, level) { flow?.send(.previewFailed(requestId: id, "helperNotConnected")) }
         case .checkJevKey(let key):
             checkJevKey(key)
-        case .askFirstLook(let request):
+        case .askFirstLook(var request, let previewId):
+            request.previewId = previewId
             if !sendFirstLook(request) { flow?.send(.firstLookUnsent) }
+        case .keepOnMac:
+            onKeepOnMac()
         case .accept(let accept):
             if foundFamily(accept.offerId) == "event", calendars.access == .notDetermined {
-                // H8: the first event card accepted asks for Calendar access first, here as at the caret.
+                // H8: the first event accepted asks for Calendar access first.
                 calendarHeld = accept.offerId
-                calendars.requestAccess { [weak self] _ in MainActor.assumeIsolated { self?.calendarAnswered(accept) } }
+                flow?.send(.calendarAsking)
+                calendars.requestAccess { [weak self] granted in MainActor.assumeIsolated { () -> Void in self?.calendarAnswered(accept, granted: granted.granted) } }
                 return
             }
             if !sendAccept(accept) { flow?.send(.sendFailed(.accept)) }
         case .stop(let stop):
-            // An accept still waiting on the Calendar prompt never reached the helper: nothing to stop there.
             if calendarHeld == stop.offerId { calendarHeld = nil; return }
-            // A stop that cannot be written leaves nothing to stop: the helper and its run are gone.
             _ = sendStop(stop)
         case .undo(let control):
             if !sendControl(control) { flow?.send(.sendFailed(.undo)) }
-        case .filled: break
-        case .close: close()
+        case .close:
+            close()
         }
     }
 
-    /// One request to Jev, then the keychain on an answer that keeps the key, then the helper. The save goes ahead even
-    /// if the window closed meanwhile, since the user pressed Continue to keep it, unless a newer check has started
-    /// since. Only the flow that asked hears the answer.
     private func checkJevKey(_ key: SecretText) {
         let hooks = jevKey
         let asking = flow
@@ -248,46 +285,44 @@ final class OnboardingController {
         }
     }
 
-    /// The first look's found offer's family, when `offerKey` is its key.
     private func foundFamily(_ offerKey: String) -> String? {
-        guard case .found(let found)? = flow?.state.firstLook, found.offerKey == offerKey else { return nil }
+        guard let found = flow?.state.firstLookFound, found.offerKey == offerKey else { return nil }
         return found.family
     }
 
-    /// macOS answered: the held accept goes only while its run is still the one on screen (not stopped,
-    /// not closed with the flow).
-    private func calendarAnswered(_ accept: OfferAccept) {
-        guard calendarHeld == accept.offerId, let run = flow?.state.firstLookRun, run.offerKey == accept.offerId, run.working else {
-            calendarHeld = nil
-            return
-        }
+    /// macOS answered. Denied: the run ends with its line (`calendarAnswered(false)`). Granted: the held accept goes
+    /// while its run is still the one on screen.
+    private func calendarAnswered(_ accept: OfferAccept, granted: Bool) {
+        guard calendarHeld == accept.offerId else { return }
         calendarHeld = nil
+        flow?.send(.calendarAnswered(granted))
+        guard granted, let run = flow?.state.first.run, run.offerKey == accept.offerId, run.working else { return }
         var sent = accept
         sent.at = Int64(Date().timeIntervalSince1970 * 1000)
         if !sendAccept(sent) { flow?.send(.sendFailed(.accept)) }
     }
 
-    /// The system's own prompt where there is one, then the pane itself.
-    private static func openSettings(_ pane: OnboardingFlow.Pane) {
-        switch pane {
-        case .accessibility:
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-        case .inputMonitoring:
-            _ = CGRequestListenEventAccess()
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
-        }
+    /// The alert that puts Caret in the Accessibility list (macOS has no quieter way), then the pane itself.
+    private static func openAccessibilityPane() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
-    // MARK: - Grants
+    // MARK: - Reading the system
 
     private func readPermissions() -> OnboardingPermissions {
         permissionsOverride ?? OnboardingPermissions(accessibility: AXIsProcessTrusted(), inputMonitoring: CGPreflightListenEventAccess())
     }
 
-    /// Twice a second while the flow runs, so the screen moves on when the grant appears. The
-    /// trust flags cost a syscall each; nothing reads the screen.
+    private func readModel() -> ModelReadiness { modelOverride ?? modelReadiness() }
+
+    private func readTabOwners() -> [String] {
+        tabOwnersOverride ?? OtherTabOwners.running(in: NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+    }
+
+    /// Twice a second while the flow runs (HANDOFF §2: `AXIsProcessTrusted` at 2 Hz), so the guide moves on by itself
+    /// when the switch lands. Each read is one call; nothing reads the screen.
     private func startPolling() {
         stopPolling()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -300,70 +335,92 @@ final class OnboardingController {
         pollTimer = nil
     }
 
-    /// `NSWorkspace.runningApplications` is kept current by AppKit, so reading it costs no walk.
-    private func readTabOwners() -> [String] {
-        tabOwnersOverride ?? OtherTabOwners.running(in: NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-    }
-
     private func poll() {
         guard let flow, !flow.state.finished else { return stopPolling() }
-        // An app quit or launched while the flow runs: the try-it line follows it.
         let owners = readTabOwners()
         if owners != flow.state.otherTabOwners { flow.send(.otherTabOwners(owners)) }
+        let readiness = readModel()
+        if readiness != flow.state.hello.model { flow.send(.model(readiness)) }
         let now = readPermissions()
-        guard now != flow.state.permissions else { return }
-        flow.send(.permissions(now))
-        onPermissionsChanged(now)
+        if now != flow.state.permissions {
+            flow.send(.permissions(now))
+            onPermissionsChanged(now)
+        }
+        if flow.state.frame == .guide { followFrame() }
     }
 
     // MARK: - The window
 
+    private var shownFrame: OnboardingFlow.Frame?
+
     private func showWindow() {
         let hosting = NSHostingView(rootView: OnboardingRoot(model: model) { [weak self] event in self?.flow?.send(event) })
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: OnboardingView.size),
-            styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false
-        )
+        let size = OnboardingView.size(for: model.state?.frame ?? .main)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.title = "Set up Caret"
         window.contentView = hosting
-        window.setContentSize(OnboardingView.size)
+        window.setContentSize(size)
         window.center()
         self.window = window
         closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
-            // Closed with the window button: the choices made so far are already saved; the flow
-            // is left unfinished, and Set Up Caret starts it again.
+            // The close button: set aside like Set up later; the progress file says where to resume.
             MainActor.assumeIsolated { self?.close() }
         }
         installKeys()
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        followFrame()
     }
 
-    /// Return continues and Esc goes back on every screen; on the try-it screen Tab, Delete and
-    /// typed characters go to the staged field. These are the window's own key events (the app's
-    /// local monitor), so the try-it completes only on a real Tab pressed in this window.
+    /// Keeps the window's frame what the step asks: the main window centred, or the guide beside System Settings,
+    /// floating so it stays in view while System Settings is in front (HANDOFF §4: 220 ms in-out between them; a jump
+    /// under Reduce Motion).
+    private func followFrame() {
+        guard drawsWindow, let window, let state = flow?.state else { return }
+        let frame = state.frame
+        let animate = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && shownFrame != nil && shownFrame != frame
+        switch frame {
+        case .main:
+            window.level = .normal
+            guard shownFrame != .main else { return }
+            let size = OnboardingView.size(for: .main)
+            let screen = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+            let content = NSRect(x: screen.midX - size.width / 2, y: screen.midY - size.height / 2, width: size.width, height: size.height)
+            window.setFrame(window.frameRect(forContentRect: content), display: true, animate: animate)
+        case .guide:
+            window.level = .floating
+            let size = OnboardingView.size(for: .guide)
+            let content = guide.placement(for: size, screen: window.screen ?? NSScreen.main)
+            let target = window.frameRect(forContentRect: content)
+            if shownFrame != .guide || target.origin.distance(to: window.frame.origin) > 1 {
+                window.setFrame(target, display: true, animate: animate && shownFrame != .guide)
+            }
+        }
+        shownFrame = frame
+    }
+
+    /// Return is the primary everywhere, including in the Hello field (an input method's composition excepted). Esc is
+    /// Not now on the first step and nothing elsewhere. Tab is the Hello field's while a ghost shows and the offer's while
+    /// it is takeable; otherwise it moves focus.
     private func installKeys() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             MainActor.assumeIsolated {
                 guard let self, let flow = self.flow, event.window === self.window else { return event }
                 let state = flow.state
-                // Return that commits an input method's composition (Japanese, Chinese) in the name
-                // field belongs to the field, not to Continue.
                 let composing = (event.window?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
-                // Caret has no main menu, which is where ⌘V, ⌘C, ⌘X and ⌘A reach a text field from in other apps;
-                // without this, the key step's field could not take a paste.
-                if state.step != .firstLook, let action = Self.editAction(for: event), NSApp.sendAction(action, to: nil, from: nil) { return nil }
-                guard let mapped = Self.event(for: event, step: state.step, offerVisible: state.tryIt.offerVisible, firstLook: state.firstLookKeys, composing: composing) else { return event }
+                if state.step != .first, let action = Self.editAction(for: event), NSApp.sendAction(action, to: nil, from: nil) { return nil }
+                guard let mapped = Self.event(for: event, state: state, composing: composing) else { return event }
                 flow.send(mapped)
                 return nil
             }
         }
     }
 
-    /// ⌘V, ⌘C, ⌘X and ⌘A as the Edit menu would send them, or nil for any other key.
+    /// ⌘V, ⌘C, ⌘X and ⌘A as the Edit menu would send them (Caret has no main menu).
     static func editAction(for event: NSEvent) -> Selector? {
         guard event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command else { return nil }
         switch event.charactersIgnoringModifiers {
@@ -375,40 +432,30 @@ final class OnboardingController {
         }
     }
 
-    /// Tab is the staged field's only while its offer shows; otherwise it moves focus as usual. On
-    /// the first look, Tab, ⌘1 to ⌘3, ⌘Z and Esc go to the offer and its line only while they
-    /// take them (`FirstLookKeys`); otherwise they keep the window's meaning.
-    static func event(for event: NSEvent, step: OnboardingStep, offerVisible: Bool, firstLook: FirstLookKeys = .none, composing: Bool = false) -> OnboardingFlow.Event? {
-        // Keys that finish or cancel an input method's composition are the text field's.
+    static func event(for event: NSEvent, state: OnboardingFlow.State, composing: Bool = false) -> OnboardingFlow.Event? {
         if composing { return nil }
         let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        if step == .firstLook, mods == .command {
+        let keys = state.firstLookKeys
+        if state.step == .first, mods == .command {
             switch event.keyCode {
-            case 6 where firstLook.undo: return .key(.undo)
+            case 6 where keys.undo: return .key(.undo)
             case 18, 19, 20:
                 let digit = Int(event.keyCode) - 17
-                return firstLook.digits.contains(digit) ? .key(.commandDigit(digit)) : nil
+                return keys.digits.contains(digit) ? .key(.commandDigit(digit)) : nil
             default: return nil
             }
         }
         guard mods.subtracting(.shift).isEmpty else { return nil }
         switch event.keyCode {
         case 36, 76: return .next
-        case 53: return step == .firstLook && firstLook.stop ? .key(.escape) : .back
-        case 48 where step == .firstLook: return firstLook.tab && !mods.contains(.shift) ? .key(.tab) : nil
-        default: break
-        }
-        guard step == .tryIt else { return nil }
-        switch event.keyCode {
-        case 48: return event.modifierFlags.contains(.shift) || !offerVisible ? nil : .key(.tab)
-        case 51, 117: return .key(.delete)
-        default:
-            // Arrows and other function keys arrive as private-use characters (U+F700 to U+F8FF).
-            let typed = { (u: Unicode.Scalar) in !CharacterSet.controlCharacters.contains(u) && !(0xF700...0xF8FF).contains(u.value) }
-            guard let text = event.characters, !text.isEmpty, text.unicodeScalars.allSatisfy(typed) else {
-                return .key(.other)
+        case 53: return state.step == .first ? .key(.escape) : nil
+        case 48 where !mods.contains(.shift):
+            switch state.step {
+            case .hello: return state.hello.ghost != nil ? .key(.tab) : nil
+            case .first: return keys.tab ? .key(.tab) : nil
+            case .access, .on: return nil
             }
-            return .key(.character(text))
+        default: return nil
         }
     }
 
@@ -422,14 +469,14 @@ final class OnboardingController {
     }
 
     /// `onboarding` reads the flow. With test hooks, the rest drive it as the window would:
-    ///   onboarding open | close | next | back
-    ///   onboarding role fill|repeat|watch|calendar|words on|off      onboarding level quiet|balanced|eager
-    ///   onboarding key tab|delete|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other|char:<c>
-    ///   onboarding permissions on|off on|off   (Accessibility, Input Monitoring: the run's own grants)
-    ///   onboarding tab-owners none|<name...>   (the running apps that also take Tab, as the run says)
-    ///   onboarding reply <firstLookReply json>              onboarding look-again
-    ///   onboarding about name|email <text...>               onboarding skip
-    ///   onboarding jev-key <text>                           (the key field's text, as pasting it would)
+    ///   onboarding open [hello|access|on|first] | close | next | later | keep | help | accept | not-now
+    ///   onboarding type <text...>                  (the Hello field's whole text)
+    ///   onboarding key tab|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other
+    ///   onboarding permissions on|off on|off      (Accessibility, Input Monitoring)
+    ///   onboarding model ready|loading|unavailable
+    ///   onboarding preview empty|fail|<n windows>  (a stand-in preview for the open request)
+    ///   onboarding tab-owners none|<name...>      onboarding reply <firstLookReply json>
+    ///   onboarding jev-key <text>
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -440,9 +487,10 @@ final class OnboardingController {
         guard words.count > 1 else { return reply() }
         guard testHooks else { return #"{"error":"onboarding commands are test hooks: start the host with --test-hooks"}"# }
         let rest = Array(words.dropFirst())
-        if rest == ["open"] {
-            // The socket never puts a window up: it drives the flow as the window would.
-            open(drawing: false)
+        if rest.first == "open" {
+            let step = rest.count > 1 ? OnboardingStep(rawValue: rest[1]) : nil
+            if rest.count > 1, step == nil { return #"{"error":"usage: onboarding open [hello|access|on|first]"}"# }
+            open(drawing: false, opening: step.map { OnboardingLaunch.Opening(step: $0) })
             return reply()
         }
         guard let flow else { return #"{"error":"onboarding is not open"}"# }
@@ -450,38 +498,50 @@ final class OnboardingController {
         switch (rest[0], rest.count) {
         case ("close", 1): close()
         case ("next", 1): flow.send(.next)
-        case ("back", 1): flow.send(.back)
-        case ("look-again", 1): flow.send(.lookAgain)
-        case ("skip", 1): flow.send(.skip)
-        case ("jev-key", 2):
-            flow.send(.setJevKey(rest[1]))
-        case ("about", _) where rest.count >= 2:
-            guard let field = AboutField(rawValue: rest[1]) else { return #"{"error":"usage: onboarding about name|email <text>"}"# }
-            flow.send(.setAbout(field, rest.dropFirst(2).joined(separator: " ")))
-        case ("role", 3):
-            guard let role = CaretRole(rawValue: rest[1]), let on = onOff(rest[2]) else { return #"{"error":"usage: onboarding role fill|repeat|watch|calendar|words on|off"}"# }
-            flow.send(.setRole(role, on))
-        case ("level", 2):
-            guard let level = CaretLevel(rawValue: rest[1]) else { return #"{"error":"usage: onboarding level quiet|balanced|eager"}"# }
-            flow.send(.setLevel(level))
+        case ("later", 1): flow.send(.setUpLater)
+        case ("keep", 1): flow.send(.keep)
+        case ("help", 1): flow.send(.toggleHelp)
+        case ("accept", 1): flow.send(.accept)
+        case ("not-now", 1): flow.send(.notNow)
+        case ("type", _): flow.send(.typed(rest.dropFirst().joined(separator: " ")))
+        case ("jev-key", 2): flow.send(.setJevKey(rest[1]))
         case ("key", 2):
             let key: TryItKey
             switch rest[1] {
             case "tab": key = .tab
-            case "delete": key = .delete
             case "return": key = .returnKey
             case "esc": key = .escape
             case "cmd-z": key = .undo
             case "cmd-1", "cmd-2", "cmd-3": key = .commandDigit(Int(String(rest[1].last!))!)
             case "other": key = .other
-            case let k where k.hasPrefix("char:") && k.count == 6: key = .character(String(k.suffix(1)))
-            default: return #"{"error":"usage: onboarding key tab|delete|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other|char:<c>"}"#
+            default: return #"{"error":"usage: onboarding key tab|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other"}"#
             }
             flow.send(.key(key))
         case ("permissions", 3):
             guard let ax = onOff(rest[1]), let im = onOff(rest[2]) else { return #"{"error":"usage: onboarding permissions on|off on|off"}"# }
             permissionsOverride = OnboardingPermissions(accessibility: ax, inputMonitoring: im)
             poll()
+        case ("model", 2):
+            switch rest[1] {
+            case "ready": modelOverride = .ready
+            case "loading": modelOverride = .loading(nil)
+            case "unavailable": modelOverride = .unavailable
+            default: return #"{"error":"usage: onboarding model ready|loading|unavailable"}"#
+            }
+            poll()
+        case ("preview", 2):
+            guard case .building(let id) = flow.state.on.preview else { return #"{"error":"no preview is being built"}"# }
+            switch rest[1] {
+            case "empty": flow.send(.previewReady(requestId: id, OnboardingPreview(previewId: "test", windows: [], chars: 0)))
+            case "fail": flow.send(.previewFailed(requestId: id, "test"))
+            default:
+                guard let n = Int(rest[1]), n > 0, n < 10 else { return #"{"error":"usage: onboarding preview empty|fail|<1-9>"}"# }
+                let windows = (0..<n).map { i in
+                    OnboardingPreview.Window(bundleId: "com.apple.mail", appName: "Mail", title: "Synthetic \(i + 1)",
+                                             lines: [.init(text: "Thursday at 3 for coffee?"), .init(text: nil)], chars: 25)
+                }
+                flow.send(.previewReady(requestId: id, OnboardingPreview(previewId: "test-\(n)", windows: windows, chars: 25 * n)))
+            }
         case ("tab-owners", _) where rest.count >= 2:
             tabOwnersOverride = rest[1] == "none" ? [] : Array(rest.dropFirst())
             poll()
@@ -499,7 +559,75 @@ final class OnboardingController {
     }
 }
 
-/// The window's root: redraws the view whenever the flow's state changes.
+/// Where the guide sits while System Settings is open: beside its window, on the side with room, vertically aligned to
+/// its top; at the left of the screen when System Settings has no window on screen. Window bounds and owner come from
+/// `CGWindowListCopyWindowInfo`, which needs no permission for them.
+@MainActor
+final class GuidePlacement {
+    /// System Settings' frontmost window, in AppKit screen coordinates (origin bottom left).
+    static func settingsWindowFrame() -> NSRect? {
+        guard let pid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences").first?.processIdentifier,
+              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        for info in list {
+            guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid, (info[kCGWindowLayer as String] as? Int) == 0,
+                  let b = info[kCGWindowBounds as String] as? [String: CGFloat], let w = b["Width"], let h = b["Height"], w > 320, h > 240 else { continue }
+            return NSRect(x: b["X"] ?? 0, y: primaryHeight - (b["Y"] ?? 0) - h, width: w, height: h)
+        }
+        return nil
+    }
+
+    /// The guide's content rect: 24 pt from System Settings, left of it when that fits on its screen, else right of
+    /// it, else the screen's left edge; never off the visible frame.
+    func placement(for size: CGSize, screen: NSScreen?) -> NSRect {
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let gap: CGFloat = 24
+        var origin: CGPoint
+        if let settings = Self.settingsWindowFrame() {
+            let top = settings.maxY - size.height
+            if settings.minX - gap - size.width >= visible.minX {
+                origin = CGPoint(x: settings.minX - gap - size.width, y: top)
+            } else if settings.maxX + gap + size.width <= visible.maxX {
+                origin = CGPoint(x: settings.maxX + gap, y: top)
+            } else {
+                origin = CGPoint(x: visible.minX + gap, y: top)
+            }
+        } else {
+            origin = CGPoint(x: visible.minX + 80, y: visible.midY - size.height / 2)
+        }
+        origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
+        origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
+        return NSRect(origin: origin, size: size)
+    }
+}
+
+private extension CGPoint {
+    func distance(to other: CGPoint) -> CGFloat { hypot(x - other.x, y - other.y) }
+}
+
+/// The apps the Hello line names, read before any permission (HANDOFF §2): LaunchServices and the running apps.
+@MainActor
+enum HelloAppsReader {
+    static func read() -> [HelloApp] {
+        let ws = NSWorkspace.shared
+        func app(_ url: URL?) -> HelloApp? {
+            guard let url, let bundle = Bundle(url: url), let id = bundle.bundleIdentifier else { return nil }
+            return HelloApp(bundleId: id, name: FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: ""))
+        }
+        let running = ws.runningApplications.filter { $0.activationPolicy == .regular }.compactMap { r -> HelloApp? in
+            guard let id = r.bundleIdentifier, let name = r.localizedName else { return nil }
+            return HelloApp(bundleId: id, name: name)
+        }
+        let installed = HelloApps.wellKnown.compactMap { app(ws.urlForApplication(withBundleIdentifier: $0)) }
+        return HelloApps.pick(
+            defaultMail: app(ws.urlForApplication(toOpen: URL(string: "mailto:a@example.com")!)),
+            defaultBrowser: app(ws.urlForApplication(toOpen: URL(string: "https://example.com")!)),
+            running: running, installed: installed, excluded: { ExcludedApps.excludes(bundleID: $0) }
+        )
+    }
+}
+
+/// The window's root: redraws whenever the flow's state changes.
 private struct OnboardingRoot: View {
     @ObservedObject var model: OnboardingController.Model
     @ObservedObject private var figure = FigureSettings.shared

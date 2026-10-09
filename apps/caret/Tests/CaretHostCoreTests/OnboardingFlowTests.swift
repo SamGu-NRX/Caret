@@ -2,22 +2,24 @@ import CaretScreenCore
 import XCTest
 @testable import CaretHostCore
 
-/// Every onboarding transition, against a manual clock: no window, no screen.
+/// Every onboarding transition against a manual clock: no window, no screen, no System Settings.
 final class OnboardingFlowTests: XCTestCase {
     final class Rig {
         let clock = ManualClock()
         let flow: OnboardingFlow
         private(set) var commands: [OnboardingFlow.Command] = []
 
-        /// `showsKnow` on: most tests here walk the know step, as a helper that keeps typed values
-        /// has it. `testWithoutAddTheKnowStepIsSkipped` covers today's helper.
-        init(settings: CaretSettings = CaretSettings(), ax: Bool = false, input: Bool = true, showsKnow: Bool = true) {
-            flow = OnboardingFlow(settings: settings, permissions: OnboardingPermissions(accessibility: ax, inputMonitoring: input), clock: clock, showsKnow: showsKnow)
+        init(opening: OnboardingLaunch.Opening = .init(step: .hello), ax: Bool = false, model: ModelReadiness = .ready,
+             settings: CaretSettings = CaretSettings(), key: Bool = true) {
+            flow = OnboardingFlow(settings: settings, permissions: OnboardingPermissions(accessibility: ax, inputMonitoring: false),
+                                  clock: clock, opening: opening, jevKeyAvailable: key)
             flow.output = { [unowned self] in if $0 != .changed { self.commands.append($0) } }
+            flow.start()
+            flow.send(.model(model))
         }
 
+        var state: OnboardingFlow.State { flow.state }
         var step: OnboardingStep { flow.state.step }
-
         func send(_ events: OnboardingFlow.Event...) { for e in events { flow.send(e) } }
 
         @discardableResult
@@ -26,570 +28,376 @@ final class OnboardingFlowTests: XCTestCase {
             return commands
         }
 
-        /// The last first-look request sent.
-        var request: FirstLookRequest? {
-            for case .askFirstLook(let r) in commands.reversed() { return r }
+        func grant(_ on: Bool = true) { send(.permissions(OnboardingPermissions(accessibility: on, inputMonitoring: false))) }
+
+        var previewAsk: String? {
+            for case .askPreview(let id, _, _) in commands.reversed() { return id }
             return nil
         }
 
-        /// Welcome, work, what Caret knows (skipped) and permissions passed with Accessibility
-        /// already on.
-        static func atTryIt() -> Rig {
-            let rig = Rig(ax: true)
-            rig.send(.next, .next, .next, .next)
-            XCTAssertEqual(rig.step, .tryIt)
-            rig.take()
+        var lookAsk: (FirstLookRequest, String?)? {
+            for case .askFirstLook(let r, let p) in commands.reversed() { return (r, p) }
+            return nil
+        }
+
+        /// Hello, the switch flipped, and the grant landed: on `on` with a preview being built.
+        static func atOn(key: Bool = true) -> Rig {
+            let rig = Rig(key: key)
+            rig.send(.next)
+            rig.grant()
+            rig.clock.advance(by: OnboardingFlow.grantLanding)
+            XCTAssertEqual(rig.step, .on)
             return rig
         }
 
-        static func atFirstLook(settings: CaretSettings = CaretSettings()) -> Rig {
-            let rig = Rig(settings: settings, ax: true)
-            rig.send(.next, .next, .next, .next, .key(.tab), .next)
-            XCTAssertEqual(rig.step, .firstLook)
+        static func preview(_ id: String = "pv-1", windows: Int = 2) -> OnboardingPreview {
+            OnboardingPreview(previewId: id, windows: (0..<windows).map {
+                .init(bundleId: "com.apple.mail", appName: "Mail", title: "Thursday? \($0)", lines: [.init(text: "Thursday at 3"), .init(text: nil)], chars: 13)
+            }, chars: 13 * windows)
+        }
+
+        /// The look asked straight from `on` (opened there, as after a relaunch with the grant), so the clock has not
+        /// moved: requests are stamped 1_790_000_000_000.
+        static func atLook(settings: CaretSettings = CaretSettings()) -> Rig {
+            let rig = Rig(opening: .init(step: .on), ax: true, settings: settings)
+            rig.send(.previewReady(requestId: rig.previewAsk!, preview()), .next)
+            XCTAssertNotNil(rig.lookAsk)
+            return rig
+        }
+
+        var request: FirstLookRequest? { lookAsk?.0 }
+
+        /// `on` with a ready preview, sent: the look is out.
+        static func sent() -> Rig {
+            let rig = atOn()
+            let id = rig.previewAsk!
+            rig.send(.previewReady(requestId: id, preview()), .next)
+            XCTAssertEqual(rig.state.on.decision, .sent)
             return rig
         }
     }
 
-    private func reply(_ id: String, _ outcome: FirstLookReply.Outcome, family: String = "fill", error: String? = nil) throws -> FirstLookReply {
+    private func reply(_ id: String, _ outcome: FirstLookReply.Outcome, kind: FirstLookReply.Found.Kind? = nil, family: String = "fill") throws -> FirstLookReply {
         let lines = try String(contentsOf: FirstLookTests.fixture, encoding: .utf8).split(separator: "\n")
         var r = try FirstLookReply.decode(Data(lines[outcome == .found ? 1 : (outcome == .nothing ? 3 : 4)].utf8))
         r.requestId = id
+        r.found?.offerKey = FirstLookReply.offerKey(requestId: id)
         r.found?.family = family
-        if let error { r.error = error }
+        if let kind { r.found?.kind = kind }
         return r
     }
 
-    // MARK: - Welcome and work
+    // MARK: - Launch
 
-    func testWelcomeOnlyGoesForward() {
+    func testAutoOpeningsByGrantAndProgress() {
+        let off = OnboardingPermissions(accessibility: false, inputMonitoring: false)
+        let on = OnboardingPermissions(accessibility: true, inputMonitoring: false)
+        XCTAssertEqual(OnboardingLaunch.auto(onboarded: false, permissions: off, progress: nil), .init(step: .hello))
+        XCTAssertEqual(OnboardingLaunch.auto(onboarded: false, permissions: off, progress: .init(step: .hello, at: 1)), .init(step: .hello))
+        XCTAssertEqual(OnboardingLaunch.auto(onboarded: false, permissions: off, progress: .init(step: .access, at: 1)), .init(step: .access, reopened: true))
+        // Granted earlier, or relaunched after the grant: no welcome again.
+        XCTAssertEqual(OnboardingLaunch.auto(onboarded: false, permissions: on, progress: nil), .init(step: .on))
+        XCTAssertEqual(OnboardingLaunch.auto(onboarded: false, permissions: on, progress: .init(step: .access, at: 1)), .init(step: .on, reopened: true))
+        XCTAssertEqual(OnboardingLaunch.auto(onboarded: true, permissions: off, progress: nil), .init(step: .access, alone: true))
+        XCTAssertNil(OnboardingLaunch.auto(onboarded: true, permissions: on, progress: nil))
+    }
+
+    func testProgressRoundTripsAndGarbageReadsAsNone() {
+        let p = OnboardingProgress(step: .on, at: 42, coachShown: true)
+        XCTAssertEqual(OnboardingProgress.decode(p.encoded()), p)
+        XCTAssertNil(OnboardingProgress.decode(nil))
+        XCTAssertNil(OnboardingProgress.decode(Data("{\"step\":\"welcome\",\"at\":1,\"coachShown\":false}".utf8)))
+        XCTAssertNil(OnboardingProgress.decode(Data("not json".utf8)))
+    }
+
+    func testReopenedSwitchSaysSo() {
+        let rig = Rig(opening: .init(step: .access, reopened: true))
+        XCTAssertTrue(rig.state.access.reopened)
+        XCTAssertEqual(rig.state.frame, .guide)
+        XCTAssertEqual(rig.state.steps.count, 4)
+    }
+
+    // MARK: - Hello
+
+    func testAsksTheModelOnlyAfterQuietAndTwoWords() {
         let rig = Rig()
-        XCTAssertFalse(rig.flow.state.canGoBack)
-        rig.send(.back)
-        XCTAssertEqual(rig.step, .welcome)
-        rig.send(.next)
-        XCTAssertEqual(rig.step, .work)
-        XCTAssertEqual(rig.flow.state.direction, .forward)
+        rig.send(.typed("Hi"))
+        rig.clock.advance(by: 1)
+        XCTAssertTrue(rig.take().isEmpty, "one word asks nothing")
+        rig.send(.typed("Hi Dana, thanks"))
+        rig.clock.advance(by: OnboardingFlow.completionIdle - 0.01)
+        XCTAssertTrue(rig.take().isEmpty, "not before the idle wait")
+        rig.clock.advance(by: 0.02)
+        guard case .complete(let id, let text)? = rig.take().first else { return XCTFail("no completion asked") }
+        XCTAssertEqual(text, "Hi Dana, thanks")
+        rig.send(.ghost(requestId: id, text: " for getting back to me."))
+        XCTAssertEqual(rig.state.hello.ghost, " for getting back to me.")
     }
 
-    func testTheWorkScreenStartsFromTheSettingsAndChangesThem() {
-        var s = CaretSettings()
-        s.roles = [.fill]
-        s.level = .quiet
-        let rig = Rig(settings: s)
-        rig.send(.next)
-        XCTAssertEqual(rig.flow.state.roles, [.fill])
-        rig.send(.toggleRole(.watch), .setRole(.fill, false), .setLevel(.eager))
-        XCTAssertEqual(rig.flow.state.roles, [.watch])
-        XCTAssertEqual(rig.flow.state.level, .eager)
-    }
-
-    func testLeavingTheWorkScreenWritesTheChoicesToSettings() {
+    func testTypingClearsTheGhostAndDropsALateAnswer() {
         let rig = Rig()
-        rig.send(.next, .setRole(.repeats, false), .setLevel(.quiet), .next)
-        XCTAssertEqual(rig.step, .know)
-        XCTAssertEqual(rig.take(), [.saveChoices(roles: [.fill, .watch, .calendar, .words], level: .quiet, onboarded: false)])
+        rig.send(.typed("Hi Dana, thanks"))
+        rig.clock.advance(by: 1)
+        guard case .complete(let id, _)? = rig.take().first else { return XCTFail("no completion asked") }
+        rig.send(.ghost(requestId: id, text: " for that."))
+        rig.send(.typed("Hi Dana, thanks s"))
+        XCTAssertNil(rig.state.hello.ghost, "typing says no at once")
+        rig.send(.ghost(requestId: id, text: " late"))
+        XCTAssertNil(rig.state.hello.ghost, "an answer to an older text is dropped")
     }
 
-    func testWithNoRoleChosenTheWorkScreenWaits() {
+    func testNoAskAfterASentenceEndsOrWhileTheModelLoads() {
+        XCTAssertFalse(OnboardingFlow.asksCompletion(after: "Thanks so much."))
+        XCTAssertFalse(OnboardingFlow.asksCompletion(after: "Are you free?"))
+        XCTAssertTrue(OnboardingFlow.asksCompletion(after: "Are you free "))
+        let rig = Rig(model: .loading(0.4))
+        rig.send(.typed("Hi Dana, thanks"))
+        rig.clock.advance(by: 2)
+        XCTAssertTrue(rig.take().isEmpty)
+    }
+
+    func testTabTakesTheGhostOnlyWhileShown() {
+        let rig = Rig()
+        rig.send(.key(.tab))
+        XCTAssertFalse(rig.state.hello.taken)
+        rig.send(.typed("Hi Dana, thanks"))
+        rig.clock.advance(by: 1)
+        guard case .complete(let id, _)? = rig.take().first else { return XCTFail("no completion asked") }
+        rig.send(.ghost(requestId: id, text: " for that."), .key(.tab))
+        XCTAssertEqual(rig.state.hello.text, "Hi Dana, thanks for that.")
+        XCTAssertNil(rig.state.hello.ghost)
+        XCTAssertTrue(rig.state.hello.taken)
+    }
+
+    func testTurnOnCaretAsksMacOSAndBecomesTheGuide() {
+        let rig = Rig()
+        rig.take()
+        rig.send(.key(.returnKey))
+        XCTAssertEqual(rig.step, .access)
+        XCTAssertEqual(rig.state.frame, .guide)
+        XCTAssertEqual(rig.take(), [.openSystemSettings, .saveProgress(.access)])
+        XCTAssertFalse(rig.state.canContinue, "the guide has no primary; the switch moves it")
+    }
+
+    func testSetUpLaterRemembersTheSwitchAndCloses() {
+        let rig = Rig()
+        rig.take()
+        rig.send(.setUpLater)
+        XCTAssertEqual(rig.take(), [.saveProgress(.access), .close])
+    }
+
+    // MARK: - The switch: poll and continue
+
+    func testGrantMovesOnByItselfAfterTheLanding() {
         let rig = Rig()
         rig.send(.next)
-        for role in CaretRole.allCases { rig.send(.setRole(role, false)) }
-        XCTAssertFalse(rig.flow.state.canContinue)
-        rig.send(.next)
-        XCTAssertEqual(rig.step, .work)
-        XCTAssertEqual(rig.take(), [])
+        rig.take()
+        rig.grant()
+        XCTAssertTrue(rig.state.access.granted)
+        XCTAssertEqual(rig.step, .access, "the check shows on the guide first")
+        rig.clock.advance(by: OnboardingFlow.grantLanding - 0.01)
+        XCTAssertEqual(rig.step, .access)
+        rig.clock.advance(by: 0.02)
+        XCTAssertEqual(rig.step, .on)
+        XCTAssertEqual(rig.state.frame, .main)
+        let commands = rig.take()
+        XCTAssertTrue(commands.contains(.saveProgress(.on)))
+        XCTAssertTrue(commands.contains(.bringForward))
+        XCTAssertNotNil(rig.previewAsk ?? commands.compactMap { if case .askPreview(let id, _, _) = $0 { return id } else { return nil } }.first,
+                        "the preview is asked as the pane crosses in")
     }
 
-    func testChoicesAreOnlyChangedOnTheWorkScreen() {
+    func testRepeatedPollsDoNotRestartTheLanding() {
         let rig = Rig()
-        rig.send(.setLevel(.eager), .toggleRole(.fill))
-        XCTAssertEqual(rig.flow.state.level, .balanced)
-        XCTAssertTrue(rig.flow.state.roles.contains(.fill))
-    }
-
-    // MARK: - Permissions
-
-    /// Add to Chrome (H4) is the user's to start, from the permissions screen only; nothing sends it by itself.
-    func testAddToChromeIsOfferedOnlyOnThePermissionsScreenAndOnlyWhenChosen() {
-        let rig = Rig(ax: false, input: true)
-        rig.send(.addToChrome)
-        XCTAssertEqual(rig.step, .welcome)
-        XCTAssertFalse(rig.take().contains(.addToChrome), "not on the welcome screen")
-        rig.send(.next, .next, .next)
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertFalse(rig.take().contains(.addToChrome), "reaching the screen starts nothing")
-        rig.send(.addToChrome)
-        XCTAssertEqual(rig.take().last, .addToChrome)
-        XCTAssertEqual(rig.step, .permissions, "the screen stays where it was")
-    }
-
-    func testPermissionsWaitForAccessibilityThenMoveOnByThemselves() {
-        let rig = Rig(ax: false, input: true)
-        rig.send(.next, .next, .next)
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertFalse(rig.flow.state.canContinue)
-        XCTAssertFalse(rig.flow.state.showsInputMonitoring, "Input Monitoring is not asked for when it is already on")
         rig.send(.next)
-        XCTAssertEqual(rig.step, .permissions, "Continue waits for the grant")
-        rig.send(.openSystemSettings(.accessibility))
-        XCTAssertEqual(rig.take().last, .openSystemSettings(.accessibility))
-        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
-        XCTAssertTrue(rig.flow.state.advancingAfterGrant)
-        XCTAssertEqual(rig.step, .permissions, "the check shows first")
-        rig.clock.advance(by: OnboardingFlow.advanceAfterGrant)
-        XCTAssertEqual(rig.step, .tryIt)
-        XCTAssertFalse(rig.flow.state.advancingAfterGrant)
+        rig.grant()
+        rig.clock.advance(by: 0.5)
+        rig.grant()
+        rig.grant()
+        rig.clock.advance(by: OnboardingFlow.grantLanding - 0.5 + 0.01)
+        XCTAssertEqual(rig.step, .on, "later polls with the same answer leave the first landing alone")
     }
 
-    func testAGrantTakenBackBeforeTheMoveKeepsTheScreen() {
-        let rig = Rig(ax: false)
-        rig.send(.next, .next, .next)
-        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
-        rig.send(.permissions(OnboardingPermissions(accessibility: false, inputMonitoring: true)))
-        rig.clock.advance(by: 2)
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertFalse(rig.flow.state.canContinue)
-    }
-
-    func testAlreadyGrantedMeansNoJumpButContinueWorks() {
-        let rig = Rig(ax: true)
-        rig.send(.next, .next, .next)
-        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
-        rig.clock.advance(by: 2)
-        XCTAssertEqual(rig.step, .permissions, "nothing appeared, so nothing moves")
+    func testAGrantTakenBackBeforeTheLandingStays() {
+        let rig = Rig()
         rig.send(.next)
-        XCTAssertEqual(rig.step, .tryIt)
+        rig.grant()
+        rig.clock.advance(by: 0.3)
+        rig.grant(false)
+        XCTAssertFalse(rig.state.access.granted)
+        rig.clock.advance(by: 5)
+        XCTAssertEqual(rig.step, .access)
+        rig.grant()
+        rig.clock.advance(by: OnboardingFlow.grantLanding)
+        XCTAssertEqual(rig.step, .on)
     }
 
-    func testInputMonitoringIsAskedWhenMissingAndTheMoveWaitsForEveryShownRow() {
-        let rig = Rig(ax: false, input: false)
-        rig.send(.next, .next, .next)
-        XCTAssertTrue(rig.flow.state.showsInputMonitoring)
-        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: false)))
-        rig.clock.advance(by: 2)
-        XCTAssertEqual(rig.step, .permissions, "Input Monitoring is still off")
-        XCTAssertTrue(rig.flow.state.canContinue, "but it is optional")
-        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
-        XCTAssertTrue(rig.flow.state.showsInputMonitoring, "the row stays, reading On")
-        rig.clock.advance(by: OnboardingFlow.advanceAfterGrant)
-        XCTAssertEqual(rig.step, .tryIt)
+    func testTheSwitchAloneFinishesOnTheGrant() {
+        let rig = Rig(opening: .init(step: .access, alone: true))
+        rig.take()
+        XCTAssertEqual(rig.state.steps, [.access])
+        rig.grant()
+        rig.clock.advance(by: OnboardingFlow.grantLanding)
+        XCTAssertTrue(rig.state.finished)
+        XCTAssertEqual(rig.take(), [.finished, .close])
     }
 
-    func testLeavingThePermissionsScreenCancelsTheMove() {
-        let rig = Rig(ax: false)
-        rig.send(.next, .next, .next)
-        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)), .back)
-        rig.clock.advance(by: 2)
-        XCTAssertEqual(rig.step, .know)
+    func testGrantOnAnotherStepChangesNothingButTheReading() {
+        let rig = Rig()
+        rig.grant()
+        rig.clock.advance(by: 5)
+        XCTAssertEqual(rig.step, .hello)
+        XCTAssertTrue(rig.state.permissions.accessibility)
     }
 
-    // MARK: - Try it
+    // MARK: - On: the preview and the decision
 
-    func testTryItCompletesOnTab() {
-        let rig = Rig.atTryIt()
-        XCTAssertTrue(rig.flow.state.tryIt.offerVisible)
-        XCTAssertFalse(rig.flow.state.canContinue)
-        rig.send(.key(.tab))
-        XCTAssertEqual(rig.flow.state.tryIt.value, TryItSample.value)
-        XCTAssertTrue(rig.flow.state.tryIt.completed)
-        XCTAssertFalse(rig.flow.state.tryIt.offerVisible)
-        XCTAssertTrue(rig.flow.state.canContinue)
-        XCTAssertEqual(rig.take(), [.filled])
-        rig.send(.key(.tab))
-        XCTAssertEqual(rig.take(), [], "a second Tab takes nothing")
+    func testSendAsksTheLookInsideThePreview() throws {
+        let rig = Rig.atOn()
+        let id = try XCTUnwrap(rig.previewAsk)
+        XCTAssertFalse(rig.state.canContinue, "nothing to send until the preview is built")
+        rig.send(.previewReady(requestId: "someone-else", Rig.preview()))
+        XCTAssertEqual(rig.state.on.preview, .building(requestId: id))
+        rig.send(.previewReady(requestId: id, Rig.preview("pv-9")))
+        XCTAssertTrue(rig.state.canContinue)
+        rig.take()
+        rig.send(.next)
+        let (request, previewId) = try XCTUnwrap(rig.lookAsk)
+        XCTAssertEqual(previewId, "pv-9")
+        XCTAssertEqual(rig.state.on.decision, .sent)
+        XCTAssertEqual(rig.step, .on, "the looking line shows here until the reply")
+        rig.send(.firstLookReply(try reply(request.requestId, .nothing)))
+        XCTAssertEqual(rig.step, .first)
+        XCTAssertEqual(rig.state.first.look, .nothing)
     }
 
-    /// CodeRabbit on PR #8: the debug socket's onboarding reply said what was typed into the try-it
-    /// field. It says how long it is, and whether it is the sample, and never the text.
-    func testTheDebugReplyNeverCarriesTheTryItText() throws {
-        let rig = Rig.atTryIt()
-        rig.send(.key(.character("hunter2")))
-        let typed = try XCTUnwrap(rig.flow.debugInfo().tryIt)
-        XCTAssertEqual(typed.valueLength, "hunter2".utf16.count)
-        XCTAssertFalse(typed.isSample)
-        let json = String(decoding: try JSONEncoder().encode(rig.flow.debugInfo()), as: UTF8.self)
-        XCTAssertFalse(json.contains("hunter2"), json)
-        for _ in 0..<7 { rig.send(.key(.delete)) }
-        rig.send(.key(.tab))
-        let sample = try XCTUnwrap(rig.flow.debugInfo().tryIt)
-        XCTAssertTrue(sample.isSample)
-        XCTAssertEqual(sample.valueLength, TryItSample.value.utf16.count)
+    func testNothingToSendAndKeepBothFinishOnDone() {
+        let empty = Rig.atOn()
+        empty.send(.previewReady(requestId: empty.previewAsk!, Rig.preview(windows: 0)))
+        XCTAssertEqual(empty.state.on.preview, .empty)
+        empty.take()
+        empty.send(.next)
+        XCTAssertEqual(empty.take(), [.finished, .close])
+
+        let kept = Rig.atOn()
+        kept.send(.previewReady(requestId: kept.previewAsk!, Rig.preview()))
+        kept.take()
+        kept.send(.keep)
+        XCTAssertEqual(kept.state.on.decision, .kept)
+        kept.send(.next)
+        XCTAssertEqual(kept.take(), [.keepOnMac, .finished, .close])
+        XCTAssertNil(kept.lookAsk, "keeping sends no look")
     }
 
-    /// Q1 (A18): Cotypist's Tab took words before Caret saw the key. The try-it step names any
-    /// running app known to take Tab, follows it quitting, and says what to do in one line.
-    func testTryItNamesAnotherAppThatTakesTab() {
-        let rig = Rig.atTryIt()
-        XCTAssertEqual(rig.flow.state.otherTabOwners, [])
-        XCTAssertNil(rig.flow.debugInfo().otherTabOwners)
-        rig.send(.otherTabOwners(["Cotypist"]))
-        XCTAssertEqual(rig.flow.state.otherTabOwners, ["Cotypist"])
-        XCTAssertEqual(rig.flow.debugInfo().otherTabOwners, ["Cotypist"])
-        XCTAssertEqual(OtherTabOwners.notice(rig.flow.state.otherTabOwners), "Cotypist also uses Tab. Quit it or change its shortcut so Tab reaches Caret.")
-        rig.send(.otherTabOwners([]))
-        XCTAssertNil(OtherTabOwners.notice(rig.flow.state.otherTabOwners), "the line goes when the app quits")
-        XCTAssertFalse(rig.flow.state.tryIt.completed, "it changes nothing else")
-        XCTAssertEqual(OtherTabOwners.notice(["Cotypist", "Other"]), "Cotypist and Other also use Tab. Quit them or change their shortcuts so Tab reaches Caret.")
-        XCTAssertEqual(OtherTabOwners.notice(["A", "B", "C"]), "A, B and C also use Tab. Quit them or change their shortcuts so Tab reaches Caret.")
+    func testAPreviewThatNeverComesLetsThePersonGoOn() {
+        let rig = Rig.atOn()
+        rig.clock.advance(by: OnboardingFlow.previewDeadline + 0.1)
+        XCTAssertEqual(rig.state.on.preview, .failed("timedOut"))
+        XCTAssertTrue(rig.state.canContinue)
     }
 
-    func testNothingButTabCompletesTryIt() {
-        let others: [(String, [OnboardingFlow.Event])] = [
-            ("Continue", [.next]),
-            ("Return", [.key(.returnKey)]),
-            ("another key", [.key(.other)]),
-            ("Delete", [.key(.delete)]),
-            ("typing", [.key(.character("4"))]),
-            ("typing, then deleting it", [.key(.character("4")), .key(.delete)]),
-        ]
-        for (name, events) in others {
-            let rig = Rig.atTryIt()
-            for e in events { rig.send(e) }
-            XCTAssertFalse(rig.flow.state.tryIt.completed, name)
-            XCTAssertEqual(rig.step, .tryIt, name)
-            XCTAssertFalse(rig.take().contains(.filled), name)
-        }
+    func testAKeyIsCheckedThenTheLookGoesWithoutASecondPress() throws {
+        let rig = Rig.atOn(key: false)
+        rig.send(.previewReady(requestId: rig.previewAsk!, Rig.preview()))
+        XCTAssertTrue(rig.state.on.needsKey)
+        XCTAssertFalse(rig.state.canContinue, "Send waits for a pasted key")
+        rig.send(.setJevKey("not a key"), .next)
+        XCTAssertEqual(rig.state.on.jevKey.phase, .malformed)
+        rig.take()
+        rig.send(.setJevKey("tsk_0123456789abcdef0123"), .next)
+        guard case .checkJevKey(let key)? = rig.take().first else { return XCTFail("the key is checked first") }
+        XCTAssertEqual(key.reveal, "tsk_0123456789abcdef0123")
+        XCTAssertFalse(rig.state.canContinue, "no second press while the check runs")
+        rig.send(.jevKeyChecked(.works, saved: true))
+        XCTAssertTrue(rig.state.on.jevKey.stored)
+        XCTAssertEqual(rig.state.on.decision, .sent)
+        XCTAssertNotNil(rig.lookAsk)
+        XCTAssertTrue(rig.state.on.jevKey.text.isEmpty, "the key is not held once saved")
     }
 
-    func testTypingSaysNoAndDeletingBringsTheOfferBack() {
-        let rig = Rig.atTryIt()
-        rig.send(.key(.character("1")))
-        XCTAssertFalse(rig.flow.state.tryIt.offerVisible)
-        XCTAssertTrue(rig.flow.state.tryIt.declined)
-        rig.send(.key(.tab))
-        XCTAssertFalse(rig.flow.state.tryIt.completed, "Tab with no offer showing takes nothing")
-        XCTAssertEqual(rig.flow.state.tryIt.tabs, 1)
-        rig.send(.key(.delete))
-        XCTAssertTrue(rig.flow.state.tryIt.offerVisible)
-        rig.send(.key(.tab))
-        XCTAssertTrue(rig.flow.state.tryIt.completed)
-    }
+    // MARK: - First
 
-    func testReturnContinuesOnlyOnceTryItIsDone() {
-        let rig = Rig.atTryIt()
-        rig.send(.key(.tab), .key(.returnKey))
-        XCTAssertEqual(rig.step, .firstLook)
-    }
-
-    func testEscapeInTheFieldGoesBack() {
-        let rig = Rig.atTryIt()
-        rig.send(.key(.escape))
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertEqual(rig.flow.state.direction, .back)
-    }
-
-    func testKeysForTheFieldDoNothingOnOtherScreens() {
-        let rig = Rig(ax: true)
-        rig.send(.next, .key(.tab))
-        XCTAssertFalse(rig.flow.state.tryIt.completed)
-        XCTAssertEqual(rig.flow.state.tryIt.tabs, 0)
-    }
-
-    // MARK: - First look
-
-    func testTheFirstLookAsksForTheChosenFamiliesAndShowsWhatItFound() throws {
-        var s = CaretSettings()
-        s.roles = [.fill, .watch, .words]
-        let rig = Rig.atFirstLook(settings: s)
-        let request = try XCTUnwrap(rig.request)
-        XCTAssertEqual(request.families, ["fill", "pending"])
-        XCTAssertEqual(request.level, .balanced)
-        XCTAssertEqual(rig.flow.state.firstLook, .asking(requestId: request.requestId))
+    func testFoundOfferTakesTabAndFinishesOnDone() throws {
+        let rig = Rig.sent()
+        let (request, _) = try XCTUnwrap(rig.lookAsk)
         rig.send(.firstLookReply(try reply(request.requestId, .found)))
-        guard case .found(let found) = rig.flow.state.firstLook else { return XCTFail("not found: \(rig.flow.state.firstLook)") }
-        XCTAssertEqual(found.title, "Fill 4 fields")
-        XCTAssertEqual(rig.flow.debugInfo().firstLookKind, "fill")
-    }
-
-    func testNothingFoundSaysNothingYet() throws {
-        let rig = Rig.atFirstLook()
-        rig.send(.firstLookReply(try reply(rig.request!.requestId, .nothing)))
-        XCTAssertEqual(rig.flow.state.firstLook, .nothing)
-        XCTAssertEqual(rig.flow.debugInfo().firstLook, "nothing")
-    }
-
-    func testAnErrorReplyFailsTheLookAndLookAgainAsksAfresh() throws {
-        let rig = Rig.atFirstLook()
-        let first = rig.request!.requestId
-        rig.send(.firstLookReply(try reply(first, .error)))
-        XCTAssertEqual(rig.flow.state.firstLook, .failed("reader not connected"))
-        rig.send(.lookAgain)
-        let second = rig.request!.requestId
-        XCTAssertNotEqual(first, second)
-        XCTAssertEqual(rig.flow.state.firstLook, .asking(requestId: second))
-        rig.send(.firstLookReply(try reply(first, .found)))
-        XCTAssertEqual(rig.flow.state.firstLook, .asking(requestId: second), "the old look's late answer is ignored")
-    }
-
-    func testNoAnswerByTheDeadlineFailsTheLook() {
-        let rig = Rig.atFirstLook()
-        let wait = Double(FirstLookRequest.defaultDeadlineMs) / 1000 + OnboardingFlow.firstLookGrace
-        rig.clock.advance(by: wait - 0.1)
-        XCTAssertEqual(rig.flow.debugInfo().firstLook, "asking")
-        rig.clock.advance(by: 0.2)
-        XCTAssertEqual(rig.flow.state.firstLook, .failed("timedOut"))
-    }
-
-    func testAHelperThatIsNotConnectedFailsTheLookAtOnce() {
-        let rig = Rig.atFirstLook()
-        rig.send(.firstLookUnsent)
-        XCTAssertEqual(rig.flow.state.firstLook, .failed("helperNotConnected"))
-        XCTAssertEqual(rig.clock.live, 0, "no deadline left running")
-    }
-
-    func testAnOfferFromAFamilyNotAskedForIsRefused() throws {
-        var s = CaretSettings()
-        s.roles = [.watch]
-        let rig = Rig.atFirstLook(settings: s)
-        rig.send(.firstLookReply(try reply(rig.request!.requestId, .found, family: "fill")))
-        XCTAssertEqual(rig.flow.state.firstLook, .failed("familyNotRequested"))
-    }
-
-    func testWithOnlyWordsChosenThereIsNothingToLookFor() {
-        var s = CaretSettings()
-        s.roles = [.words]
-        let rig = Rig.atFirstLook(settings: s)
-        XCTAssertNil(rig.request)
-        XCTAssertEqual(rig.flow.state.firstLook, .nothing)
-    }
-
-    func testAReplyAfterLeavingTheScreenIsIgnoredAndComingBackAsksAgain() throws {
-        let rig = Rig.atFirstLook()
-        let first = rig.request!.requestId
-        rig.send(.back)
-        rig.send(.firstLookReply(try reply(first, .found)))
-        XCTAssertEqual(rig.flow.state.firstLook, .idle)
-        rig.send(.next)
-        XCTAssertNotEqual(rig.request!.requestId, first)
-        rig.clock.advance(by: 30)
-        XCTAssertEqual(rig.flow.state.firstLook, .failed("timedOut"), "only the new look's deadline counts")
-    }
-
-    func testRequestIdsNameTheFlowSoALateReplyToAnEarlierFlowNeverMatches() throws {
-        let clock = ManualClock()
-        func flow(_ token: String) -> (OnboardingFlow, () -> FirstLookRequest?) {
-            let f = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: true, inputMonitoring: true), clock: clock, token: token)
-            var asked: FirstLookRequest?
-            f.output = { if case .askFirstLook(let r) = $0 { asked = r } }
-            for e: OnboardingFlow.Event in [.next, .next, .next, .next, .key(.tab), .next] { f.send(e) }
-            return (f, { asked })
-        }
-        let (first, firstAsked) = flow("a")
-        let (second, secondAsked) = flow("b")
-        XCTAssertNotEqual(firstAsked()?.requestId, secondAsked()?.requestId)
-        second.send(.firstLookReply(try reply(firstAsked()!.requestId, .found)))
-        XCTAssertEqual(second.debugInfo().firstLook, "asking", "the earlier flow's answer is not this flow's")
-        XCTAssertEqual(first.debugInfo().firstLook, "asking")
-    }
-
-    func testWhilePausedTheFirstLookAsksForNothing() {
-        var s = CaretSettings()
-        s.paused = true
-        let rig = Rig.atFirstLook(settings: s)
-        XCTAssertNil(rig.request)
-        XCTAssertEqual(rig.flow.state.firstLook, .nothing)
-    }
-
-    func testUnpausingFromTheMenuLetsTheNextLookAsk() {
-        var s = CaretSettings()
-        s.paused = true
-        let rig = Rig.atFirstLook(settings: s)
-        s.paused = false
-        rig.send(.settingsChanged(s), .back, .next)
-        XCTAssertNotNil(rig.request)
-        XCTAssertEqual(rig.flow.debugInfo().firstLook, "asking")
-    }
-
-    func testTakingInputMonitoringBackDuringTheMoveStops() {
-        let rig = Rig(ax: false, input: false)
-        rig.send(.next, .next, .next)
-        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
-        XCTAssertTrue(rig.flow.state.advancingAfterGrant)
-        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: false)))
-        XCTAssertFalse(rig.flow.state.advancingAfterGrant)
-        rig.clock.advance(by: 2)
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertTrue(rig.flow.state.canContinue, "Input Monitoring is optional; Continue still works")
-    }
-
-    // MARK: - What Caret knows so far
-
-    private func atKnow() -> Rig {
-        let rig = Rig(ax: true)
-        rig.send(.next, .next)
-        XCTAssertEqual(rig.step, .know)
+        XCTAssertEqual(rig.step, .first)
+        XCTAssertEqual(rig.state.firstLookKeys.tab, true)
         rig.take()
-        return rig
+        rig.send(.key(.tab))
+        guard case .accept(let accept)? = rig.take().first else { return XCTFail("Tab sends the accept") }
+        XCTAssertEqual(accept.offerId, FirstLookReply.offerKey(requestId: request.requestId))
+        XCTAssertTrue(rig.state.canContinue, "Done closes the window while the run goes on in the helper")
     }
 
-    func testWithoutAddTheKnowStepIsSkipped() {
-        // Today's helper keeps no typed values, so nothing would keep a name typed here.
-        let rig = Rig(ax: true, showsKnow: false)
-        XCTAssertEqual(rig.flow.state.steps, [.welcome, .work, .permissions, .tryIt, .firstLook])
-        rig.send(.next, .next)
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertEqual(rig.flow.state.stepIndex, 2)
-        XCTAssertEqual(rig.flow.debugInfo().stepCount, 5)
-        XCTAssertEqual(rig.flow.debugInfo().showsKnow, false)
-        rig.send(.back)
-        XCTAssertEqual(rig.step, .work, "Back skips it too")
-        rig.send(.setAbout(.name, "Dana"))
-        XCTAssertEqual(rig.flow.state.about.name, "", "the step's events do nothing off the step")
+    func testNotNowLeavesAnEventAloneAndClosesAFill() throws {
+        let event = Rig.sent()
+        event.send(.firstLookReply(try reply(event.lookAsk!.0.requestId, .found, kind: .action, family: "event")))
+        event.take()
+        event.send(.key(.escape))
+        XCTAssertTrue(event.state.first.declined)
+        XCTAssertFalse(event.state.finished, "the Left alone. pane shows")
+
+        let fill = Rig.sent()
+        fill.send(.firstLookReply(try reply(fill.lookAsk!.0.requestId, .found)))
+        fill.take()
+        fill.send(.notNow)
+        XCTAssertEqual(fill.take(), [.finished, .close])
     }
 
-    func testTheKnowStepJoinsWhenTheHelperSaysItKeepsTypedValues() {
-        let rig = Rig(ax: true, showsKnow: false)
-        rig.send(.next, .knowAvailable(true), .next)
-        XCTAssertEqual(rig.step, .know)
-        XCTAssertEqual(rig.flow.state.stepIndex, 2)
-        XCTAssertEqual(rig.flow.state.steps.count, 6)
+    func testCalendarDeniedEndsTheRun() throws {
+        let rig = Rig.sent()
+        rig.send(.firstLookReply(try reply(rig.lookAsk!.0.requestId, .found, kind: .action, family: "event")))
+        rig.send(.key(.tab), .calendarAsking)
+        XCTAssertEqual(rig.state.firstLookKeys, .none, "nothing takes keys while macOS asks")
+        rig.send(.calendarAnswered(false))
+        XCTAssertEqual(rig.state.first.calendar, .denied)
+        XCTAssertNil(rig.state.first.run)
+        XCTAssertTrue(rig.state.canContinue)
     }
 
-    func testAUserOnTheKnowStepStaysWhenTheHelperStopsSayingSo() {
-        let rig = atKnow()
-        rig.send(.knowAvailable(false))
-        XCTAssertEqual(rig.step, .know, "the screen does not vanish under the user")
-        XCTAssertEqual(rig.flow.state.steps.count, 6, "its dot stays while the user is on it")
-        rig.send(.next)
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertEqual(rig.flow.state.steps.count, 5)
-        rig.send(.back)
-        XCTAssertEqual(rig.step, .work)
+    func testALookThatNeverAnswersFailsToTheFirstStep() {
+        let rig = Rig.sent()
+        rig.clock.advance(by: Double(FirstLookRequest.defaultDeadlineMs) / 1000 + OnboardingFlow.firstLookGrace + 0.1)
+        XCTAssertEqual(rig.step, .first)
+        XCTAssertEqual(rig.state.first.look, .failed("timedOut"))
     }
 
-    func testTheKnowScreenSitsBetweenWorkAndPermissions() {
-        let rig = atKnow()
-        // H12: the Jev key step comes after permissions; it shows only when Caret has no key (ShipsCoreTests).
-        XCTAssertEqual(OnboardingStep.allCases, [.welcome, .work, .know, .permissions, .jevKey, .tryIt, .firstLook])
-        rig.send(.back)
-        XCTAssertEqual(rig.step, .work)
-        rig.send(.next, .next)
-        XCTAssertEqual(rig.step, .permissions)
-        rig.send(.back)
-        XCTAssertEqual(rig.step, .know)
-        XCTAssertEqual(rig.flow.state.direction, .back)
-    }
-
-    func testContinueKeepsWhatWasTypedTrimmed() {
-        let rig = atKnow()
-        rig.send(.setAbout(.name, "  Dana Whitfield"), .setAbout(.email, "dana.whitfield@example.com "), .next)
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertEqual(rig.take(), [.remember([TypedAbout(label: "Name", value: "Dana Whitfield"), TypedAbout(label: "Email", value: "dana.whitfield@example.com")])])
-    }
-
-    func testEmptyFieldsContinueWithoutKeepingAnything() {
-        let rig = atKnow()
-        rig.send(.setAbout(.name, "   "), .next)
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertEqual(rig.take(), [])
-    }
-
-    func testSkipDropsWhatWasTyped() {
-        let rig = atKnow()
-        rig.send(.setAbout(.name, "Dana Whitfield"), .setAbout(.email, "not an email"), .skip)
-        XCTAssertEqual(rig.step, .permissions)
-        XCTAssertEqual(rig.take(), [], "Skip keeps nothing, even a value that would pass")
-        XCTAssertEqual(rig.flow.state.about.name, "")
-    }
-
-    func testSkipAfterAnEarlierContinueDropsWhatThatContinueHandedOver() {
-        let rig = atKnow()
-        rig.send(.setAbout(.name, "Dana"), .next)
+    func testAWithdrawnOfferIsLookedForAgainInsideTheSamePreview() throws {
+        let rig = Rig.sent()
+        let (first, previewId) = try XCTUnwrap(rig.lookAsk)
+        rig.send(.firstLookReply(try reply(first.requestId, .found)))
         rig.take()
-        rig.send(.back, .skip)
-        XCTAssertEqual(rig.take(), [.forgetTyped(["Name"])])
-        rig.send(.back, .setAbout(.name, "Dana"), .next)
-        XCTAssertEqual(rig.take(), [.remember([TypedAbout(label: "Name", value: "Dana")])], "kept was cleared, so it is handed over again")
+        rig.send(.offerWithdrawn(OfferWithdrawn(at: 1, id: FirstLookReply.offerKey(requestId: first.requestId), reason: .reoffered)))
+        let (again, againPreview) = try XCTUnwrap(rig.lookAsk)
+        XCTAssertNotEqual(again.requestId, first.requestId)
+        XCTAssertEqual(againPreview, previewId)
     }
 
-    func testAProblemNamesItsField() {
-        var d = AboutDraft()
-        d.name = String(repeating: "n", count: 501)
-        XCTAssertEqual(d.problemField, .name)
-        d.name = "Dana"
-        d.email = "dana@"
-        XCTAssertEqual(d.problemField, .email)
-    }
-
-    func testAnIncompleteEmailHoldsContinueAndSaysWhyUntilTheNextKeystroke() {
-        let rig = atKnow()
-        rig.send(.setAbout(.email, "dana@example"))
-        XCTAssertFalse(rig.flow.state.about.showsProblem, "no problem shown while typing")
-        XCTAssertTrue(rig.flow.state.canContinue)
-        rig.send(.next)
-        XCTAssertEqual(rig.step, .know)
-        XCTAssertEqual(rig.flow.debugInfo().aboutProblem, "That email looks incomplete.")
-        XCTAssertEqual(rig.take(), [])
-        rig.send(.setAbout(.email, "dana@example.com"))
-        XCTAssertNil(rig.flow.debugInfo().aboutProblem)
-        rig.send(.next)
-        XCTAssertEqual(rig.step, .permissions)
-    }
-
-    func testTheEmailCheckCatchesTyposOnly() {
-        for good in ["a@b.co", "dana.whitfield+caret@example.com", "x@sub.example.org"] {
-            XCTAssertTrue(AboutDraft.looksLikeEmail(good), good)
-        }
-        for bad in ["dana", "dana@", "@example.com", "dana@example", "dana@example.", "dana@.com", "da na@example.com", "a@b@c.com"] {
-            XCTAssertFalse(AboutDraft.looksLikeEmail(bad), bad)
-        }
-    }
-
-    func testGoingBackAndOnAgainKeepsOnlyWhatChanged() {
-        let rig = atKnow()
-        rig.send(.setAbout(.name, "Dana"), .setAbout(.email, "dana@example.com"), .next)
-        rig.take()
-        rig.send(.back, .setAbout(.name, "Dana Whitfield"), .next)
-        XCTAssertEqual(rig.take(), [.remember([TypedAbout(label: "Name", value: "Dana Whitfield")])])
-        rig.send(.back, .next)
-        XCTAssertEqual(rig.take(), [], "nothing changed, nothing sent")
-    }
-
-    func testTheKnowScreensEventsDoNothingElsewhere() {
-        let rig = Rig(ax: true)
-        rig.send(.next, .setAbout(.name, "Dana"), .skip)
-        XCTAssertEqual(rig.step, .work)
-        XCTAssertEqual(rig.flow.state.about.name, "")
-    }
-
-    func testTheDebugStateGivesLengthsNotValues() throws {
-        let rig = atKnow()
-        rig.send(.setAbout(.name, "Dana"))
+    func testDebugInfoCarriesLengthsNotText() {
+        let rig = Rig()
+        rig.send(.typed("Hi Dana, thanks"))
         let info = rig.flow.debugInfo()
-        XCTAssertEqual(info.about, ["name": 4, "email": 0])
-        let json = String(decoding: try JSONEncoder().encode(info), as: UTF8.self)
+        XCTAssertEqual(info.hello?.textLength, 15)
+        XCTAssertEqual(info.step, "hello")
+        XCTAssertEqual(info.stepCount, 4)
+        let json = String(decoding: try! JSONEncoder().encode(info), as: UTF8.self)
         XCTAssertFalse(json.contains("Dana"))
     }
 
-    // MARK: - The end
+    // MARK: - The apps the Hello line names
 
-    func testStartFinishesWritesTheChoicesAndClosesEvenWhileTheLookRuns() {
-        let rig = Rig.atFirstLook()
-        rig.take()
-        rig.send(.next)
-        XCTAssertTrue(rig.flow.state.finished)
-        XCTAssertEqual(rig.take(), [.saveChoices(roles: Set(CaretRole.allCases), level: .balanced, onboarded: true), .close])
-        XCTAssertEqual(rig.clock.live, 0)
-        rig.send(.back, .next)
-        XCTAssertEqual(rig.take(), [], "a finished flow takes no more events")
-    }
-
-    func testTheWholeWalkInOrder() throws {
-        let rig = Rig(ax: false, input: false)
-        rig.send(.next, .setRole(.watch, false), .setLevel(.eager), .next)
-        rig.send(.setAbout(.name, " Dana Whitfield "), .next)
-        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
-        rig.clock.advance(by: OnboardingFlow.advanceAfterGrant)
-        rig.send(.key(.character("x")), .key(.delete), .key(.tab), .next)
-        let asked = try XCTUnwrap(rig.request)
-        rig.send(.firstLookReply(try reply(asked.requestId, .nothing)), .next)
-        XCTAssertEqual(rig.take(), [
-            .saveChoices(roles: [.fill, .repeats, .calendar, .words], level: .eager, onboarded: false),
-            .remember([TypedAbout(label: "Name", value: "Dana Whitfield")]),
-            .filled,
-            .askFirstLook(FirstLookRequest(requestId: asked.requestId, at: asked.at, families: ["fill", "loop", "routine", "event"], level: .eager)),
-            .saveChoices(roles: [.fill, .repeats, .calendar, .words], level: .eager, onboarded: true),
-            .close,
-        ])
+    func testHelloAppsOrderExclusionAndFloor() {
+        let mail = HelloApp(bundleId: "com.apple.mail", name: "Mail")
+        let chrome = HelloApp(bundleId: "com.google.Chrome", name: "Chrome")
+        let slack = HelloApp(bundleId: "com.tinyspeck.slackmacgap", name: "Slack")
+        let terminal = HelloApp(bundleId: "com.apple.Terminal", name: "Terminal")
+        let caret = HelloApp(bundleId: "dev.caret.host", name: "Caret")
+        let picked = HelloApps.pick(defaultMail: mail, defaultBrowser: chrome, running: [terminal, caret, slack, mail], installed: [],
+                                    excluded: { ["com.apple.Terminal", "dev.caret.host"].contains($0) })
+        XCTAssertEqual(picked.map(\.name), ["Mail", "Chrome", "Slack", "Notes"])
+        XCTAssertEqual(HelloApps.list(picked), "Mail, Chrome, Slack and Notes")
+        let bare = HelloApps.pick(defaultMail: nil, defaultBrowser: nil, running: [], installed: [], excluded: { _ in false })
+        XCTAssertEqual(bare.map(\.name), ["Notes", "Mail", "Safari"], "never fewer than three names")
     }
 }

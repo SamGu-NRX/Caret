@@ -1,15 +1,14 @@
 import CaretScreenCore
 import Foundation
 
-/// The six screens of onboarding, in order (`SURFACES.md` section 7, reordered by the A7 brief:
-/// how you want to work comes before permissions, so the permission screen can say what the
-/// chosen help needs). `know` is the Fable plan's minute two, "What I know so far" (A11): the
-/// first view of memory, typed by hand. It is shown only when the helper says it keeps typed
-/// values (`State.showsKnow`); until then nothing would keep them, so the step is skipped.
-/// `jevKey` (H12) asks for the key of Jev, the cloud model the helper asks; it shows when Caret has no key yet
-/// (`State.showsJevKey`), and the menu's "Jev is off" opens it on its own.
+/// Onboarding's four steps (~/.caret-run/design/onboard2/HANDOFF.md §1). Everything before the switch needs no
+/// permission, and everything after it happens by itself:
+/// - `hello`: the person types into Caret's own field and the local model offers the next words. Turn on Caret.
+/// - `access`: System Settings is open; the window shrinks to a guide beside it and waits for the one switch.
+/// - `on`: what is now on, and, before anything leaves the Mac, the lines a first look may send. Send, or keep.
+/// - `first`: what the first look found, taken with Tab, or nothing.
 public enum OnboardingStep: String, CaseIterable, Codable, Sendable {
-    case welcome, work, know, permissions, jevKey, tryIt, firstLook
+    case hello, access, on, first
 
     public var index: Int { Self.allCases.firstIndex(of: self)! }
 }
@@ -27,7 +26,7 @@ public struct SecretText: Equatable, Sendable, CustomStringConvertible, CustomDe
     public var customMirror: Mirror { Mirror(self, children: ["length": value.utf16.count]) }
 }
 
-/// When onboarding opens at launch (H12, lead decision 2).
+/// When onboarding opens at launch (H12, lead decision 2), and where.
 public enum OnboardingLaunch {
     /// What `--onboarding` or `CARET_ONBOARDING` gives when neither is set: `auto` for the user's own Caret, `off` for
     /// a run that named its own home or settings, which is a test run (scripts that predate H12 name neither flag
@@ -36,94 +35,69 @@ public enum OnboardingLaunch {
         homeOverridden || settingsNamed ? "off" : "auto"
     }
 
-    public enum Opening: Equatable, Sendable {
-        /// Every step, from the first.
-        case all
-        /// One step on its own: Continue on it finishes.
-        case only(OnboardingStep)
-    }
+    public struct Opening: Equatable, Sendable {
+        public var step: OnboardingStep
+        /// Caret opened again partway through (`OnboardingProgress`): the switch step says the switch is still off
+        /// rather than introducing itself.
+        public var reopened: Bool
+        /// The flow is this one step and finishes when it is done: a person who finished onboarding and later lost
+        /// Accessibility, or the menu's "Jev is off".
+        public var alone: Bool
 
-    /// `auto` at launch: the whole flow until it has been finished once; after that only the permissions step, and only
-    /// while Accessibility, which Caret cannot work without, is off. Input Monitoring is optional, so its absence alone
-    /// opens nothing.
-    public static func auto(onboarded: Bool, permissions: OnboardingPermissions) -> Opening? {
-        if !onboarded { return .all }
-        return permissions.accessibility ? nil : .only(.permissions)
-    }
-}
-
-/// The two values onboarding asks for by hand (no Contacts in A11).
-public enum AboutField: String, CaseIterable, Codable, Sendable {
-    case name, email
-
-    /// The About-you label the helper stores it under.
-    public var label: String {
-        switch self {
-        case .name: return "Name"
-        case .email: return "Email"
+        public init(step: OnboardingStep, reopened: Bool = false, alone: Bool = false) {
+            self.step = step
+            self.reopened = reopened
+            self.alone = alone
         }
     }
-}
 
-/// What the user typed on the `know` screen.
-public struct AboutDraft: Equatable, Sendable {
-    public var name = ""
-    public var email = ""
-    /// Continue was pressed with a problem; the problem shows until the next keystroke.
-    public var showsProblem = false
-    /// What Continue last handed to memory, by label, so Back and Continue again sends only a
-    /// change.
-    public var kept: [String: String] = [:]
-
-    public init() {}
-
-    public subscript(field: AboutField) -> String {
-        get { field == .name ? name : email }
-        set { if field == .name { name = newValue } else { email = newValue } }
-    }
-
-    /// Why Continue cannot keep these, in words; nil when it can. Empty is fine: the step can be
-    /// skipped. Lengths follow the helper's About value limit (500).
-    public var problem: String? { check?.text }
-
-    /// The field the problem is about, so focus can go there.
-    public var problemField: AboutField? { check?.field }
-
-    private var check: (field: AboutField, text: String)? {
-        let n = name.trimmed, e = email.trimmed
-        if n.utf16.count > 500 { return (.name, "That name is too long.") }
-        if !e.isEmpty && !Self.looksLikeEmail(e) { return (.email, "That email looks incomplete.") }
-        if e.utf16.count > 500 { return (.email, "That email is too long.") }
-        return nil
-    }
-
-    /// Something@something.something, no spaces. A check for typos, not a validator.
-    static func looksLikeEmail(_ s: String) -> Bool {
-        guard !s.contains(where: \.isWhitespace) else { return false }
-        let parts = s.split(separator: "@", omittingEmptySubsequences: false)
-        guard parts.count == 2, !parts[0].isEmpty else { return false }
-        let domain = parts[1]
-        guard let dot = domain.lastIndex(of: "."), dot != domain.startIndex, domain.index(after: dot) != domain.endIndex else { return false }
-        return true
-    }
-
-    /// The values Continue would keep that differ from what was kept already.
-    public var toKeep: [TypedAbout] {
-        AboutField.allCases.compactMap { f in
-            let v = self[f].trimmed
-            guard !v.isEmpty, kept[f.label] != v else { return nil }
-            return TypedAbout(label: f.label, value: v)
-        }
+    /// `auto` at launch. Not finished: Accessibility already on opens at `on` (granted earlier, or Caret relaunched
+    /// after the grant, so no welcome again); a recorded step past `hello` (a relaunch, or Set up later) reopens at the
+    /// switch; else `hello`. Finished: only the switch, alone, while Accessibility is off. Input Monitoring is not
+    /// asked here at all.
+    public static func auto(onboarded: Bool, permissions: OnboardingPermissions, progress: OnboardingProgress?) -> Opening? {
+        if onboarded { return permissions.accessibility ? nil : Opening(step: .access, alone: true) }
+        if permissions.accessibility { return Opening(step: .on, reopened: progress != nil) }
+        if let progress, progress.step != .hello { return Opening(step: .access, reopened: true) }
+        return Opening(step: .hello)
     }
 }
 
-/// The grants onboarding asks for, as the host reads them.
+/// How far onboarding got, written at every step change so a relaunch (macOS's own, a crash, or the person quitting
+/// halfway) resumes where it was. One small file in Caret's home; no settings key, so the settings schema is untouched.
+public struct OnboardingProgress: Codable, Equatable, Sendable {
+    public var step: OnboardingStep
+    /// Milliseconds since the epoch.
+    public var at: Int64
+    /// The one-time coach slip at the first ghost text in another app has been shown (HANDOFF §3, After).
+    public var coachShown: Bool
+
+    public init(step: OnboardingStep, at: Int64, coachShown: Bool = false) {
+        self.step = step
+        self.at = at
+        self.coachShown = coachShown
+    }
+
+    /// A file that is missing, unreadable or of another shape reads as no progress: onboarding starts at the
+    /// beginning, which is safe.
+    public static func decode(_ data: Data?) -> OnboardingProgress? {
+        guard let data else { return nil }
+        return try? JSONDecoder().decode(OnboardingProgress.self, from: data)
+    }
+
+    public func encoded() -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return (try? encoder.encode(self)) ?? Data()
+    }
+}
+
+/// The grants onboarding reads. Only Accessibility moves the flow; Input Monitoring is read for the host's own tap
+/// retry and is asked for, if ever, at first need (v2/access).
 public struct OnboardingPermissions: Codable, Equatable, Sendable {
-    /// `AXIsProcessTrusted()`: required. Caret reads the field and the windows around it, and the
-    /// key tap that takes Tab needs it.
+    /// `AXIsProcessTrusted()`.
     public var accessibility: Bool
-    /// `CGPreflightListenEventAccess()`: the listen-only mouse tap that pauses Caret's work on a
-    /// click. Optional; asked only when it is missing.
+    /// `CGPreflightListenEventAccess()`.
     public var inputMonitoring: Bool
 
     public init(accessibility: Bool, inputMonitoring: Bool) {
@@ -132,70 +106,106 @@ public struct OnboardingPermissions: Codable, Equatable, Sendable {
     }
 }
 
-/// The staged try-it: a sample source window Caret draws itself, and one empty field it offers a
-/// value for. Synthetic content only.
-public enum TryItSample {
-    public static let sourceApp = "Mail"
-    public static let sourceTitle = "Invoice 2041"
-    public static let sender = "Northline"
-    public static let fieldLabel = "Amount"
-    public static let value = "$1,240.00"
-    /// The line by the field, as a real fill names its source (`FillOrigin.sourceCaption`).
-    public static var caption: String { "from \(sourceApp), \(sourceTitle)" }
+/// Whether the local writing model can answer the Hello field yet.
+public enum ModelReadiness: Equatable, Sendable {
+    case ready
+    /// Loading; the fraction done when the loader reports one.
+    case loading(Double?)
+    /// No model on this Mac, or it failed to load: the field is off and says so.
+    case unavailable
+
+    public var name: String {
+        switch self {
+        case .ready: return "ready"
+        case .loading: return "loading"
+        case .unavailable: return "unavailable"
+        }
+    }
 }
 
-/// A key on an onboarding screen that takes keys: the try-it's staged field, and the first look's
-/// offer and its line. Only the keys a step cares about are named.
+/// An app the Hello line names (`HelloApps`).
+public struct HelloApp: Equatable, Sendable {
+    public var bundleId: String
+    public var name: String
+
+    public init(bundleId: String, name: String) {
+        self.bundleId = bundleId
+        self.name = name
+    }
+}
+
+/// What the `on` step shows before anything leaves the Mac: per window, the lines the first look may send and
+/// placeholders for the lines that stay. The host builds it from the helper's `FirstLookPreview`; placeholders carry no
+/// text, so this type cannot show what stays.
+public struct OnboardingPreview: Equatable, Sendable {
+    public struct Line: Equatable, Sendable {
+        /// Nil for a line that stays on the Mac; the screen draws it as a hatch bar.
+        public var text: String?
+
+        public init(text: String?) { self.text = text }
+    }
+
+    public struct Window: Equatable, Sendable {
+        public var bundleId: String
+        public var appName: String
+        public var title: String
+        public var lines: [Line]
+        public var chars: Int
+
+        public init(bundleId: String, appName: String, title: String, lines: [Line], chars: Int) {
+            self.bundleId = bundleId
+            self.appName = appName
+            self.title = title
+            self.lines = lines
+            self.chars = chars
+        }
+    }
+
+    public var previewId: String
+    public var windows: [Window]
+    /// At most this many characters may go (the helper's allow-list; a look may send fewer).
+    public var chars: Int
+
+    public init(previewId: String, windows: [Window], chars: Int) {
+        self.previewId = previewId
+        self.windows = windows
+        self.chars = chars
+    }
+}
+
+/// A key on an onboarding screen that takes keys: the Hello field and the first step's offer and its line. Only the keys
+/// a step cares about are named.
 public enum TryItKey: Equatable, Sendable {
     case tab
-    case character(String)
-    case delete
     case returnKey
     case escape
     /// ⌘1 to ⌘3: the first look's action bound to that digit.
     case commandDigit(Int)
-    /// ⌘Z on the first look's fill result.
+    /// ⌘Z on the first look's result.
     case undo
     case other
 }
 
-/// Onboarding as a pure state machine: each screen's transitions, the choices it writes to
-/// settings, the try-it that completes only on a real Tab, and the first look's request, reply
-/// and timeout. The window (`OnboardingWindow`) draws `state` and turns clicks and keys into
-/// `Event`s; the debug socket sends the same events while the window is hidden. Time comes from a
-/// `SurfaceClock`, so the auto-advance and the first look's deadline take no real time in tests.
+/// Onboarding as a pure state machine. The window (`OnboardingWindow`) draws `state` and turns clicks and keys into
+/// `Event`s; the debug socket sends the same events while the window is hidden. Time comes from a `SurfaceClock`, so
+/// the Hello field's idle wait, the grant's landing and the first look's deadline take no real time in tests.
 ///
 /// Not thread-safe: the app calls it on the main thread only, and its clock fires there.
 public final class OnboardingFlow {
     public enum Direction: String, Codable, Sendable { case forward, back }
 
+    /// The window's frame: the main 640×660 window, or the 420×392 guide beside System Settings on `access`.
+    public enum Frame: String, Sendable { case main, guide }
+
     public enum FirstLookState: Equatable, Sendable {
-        /// Not asked yet in this visit to the step.
         case idle
         case asking(requestId: String)
         case found(FirstLookReply.Found)
         case nothing
-        /// The look could not run, timed out or came back malformed; the reason is for the debug
-        /// state, never shown as is.
+        /// The look could not run, timed out or came back malformed; the reason is for the debug state only.
         case failed(String)
     }
 
-    public struct TryIt: Equatable, Sendable {
-        /// What the staged field holds.
-        public var value = ""
-        /// A Tab took the offer. Sticky: typing afterwards does not undo it.
-        public var completed = false
-        /// The user typed while the offer was up, so it went away ("typing says no").
-        public var declined = false
-        /// Tab presses that reached the field, taken or not.
-        public var tabs = 0
-
-        /// The ghost value shows while the field is empty and nothing has been taken.
-        public var offerVisible: Bool { !completed && value.isEmpty }
-    }
-
-    /// The key step's field and what the check said. The pasted text is held only until it is saved: a saved key lives
-    /// in the login keychain, not here.
     public struct JevKeyDraft: Equatable, Sendable {
         public enum Phase: Equatable, Sendable {
             case editing
@@ -230,7 +240,7 @@ public final class OnboardingFlow {
 
         public var text = SecretText("")
         public var phase = Phase.editing
-        /// Continue presses that sent a check or found the text was no key: each one gives the field focus again.
+        /// Continue presses that sent a check or found the text was no key: each gives the field focus again.
         public var submits = 0
         /// A key was in the keychain when the flow opened, or the check saved one.
         public var stored = false
@@ -238,184 +248,233 @@ public final class OnboardingFlow {
         public init(stored: Bool = false) { self.stored = stored }
     }
 
+    public struct Hello: Equatable, Sendable {
+        /// The field's text. Never logged or sent to the debug socket (its length is).
+        public var text = ""
+        /// The local model's next words for `text`, shown after the caret; nil while none.
+        public var ghost: String?
+        public var model: ModelReadiness = .loading(nil)
+        public var apps: [HelloApp] = []
+        /// A Tab took a ghost here: the coach line says so, and the `first` step's nothing state does not ask for
+        /// typing again.
+        public var taken = false
+        /// The completion asked for and not yet answered; a later answer for an older id is dropped.
+        public var asking: String?
+    }
+
+    public struct Access: Equatable, Sendable {
+        public var granted = false
+        /// Caret opened again with the switch still off.
+        public var reopened = false
+        /// "Caret isn't in the list?" is open.
+        public var helpOpen = false
+        /// The macOS alert was raised (with `openSystemSettings`).
+        public var alertShown = false
+    }
+
+    public enum PreviewState: Equatable, Sendable {
+        case idle
+        case building(requestId: String)
+        case ready(OnboardingPreview)
+        /// Nothing on screen may go.
+        case empty
+        case failed(String)
+    }
+
+    public enum Decision: String, Equatable, Sendable { case pending, sent, kept }
+
+    public struct On: Equatable, Sendable {
+        public var preview: PreviewState = .idle
+        public var decision: Decision = .pending
+        /// The preview the person sent: a look asked again (the offer was withdrawn) stays inside it.
+        public var sentPreviewId: String?
+        /// The cloud model needs a key and Caret has none (H12's draft, unchanged).
+        public var needsKey = false
+        public var jevKey = JevKeyDraft()
+    }
+
+    /// macOS's Calendar prompt around the first event accepted here (H8).
+    public enum CalendarAsk: Equatable, Sendable { case asking, denied }
+
+    public struct First: Equatable, Sendable {
+        public var look: FirstLookState = .idle
+        /// The found offer, taken: its work and result (`FirstLookRun`).
+        public var run: FirstLookRun?
+        public var calendar: CalendarAsk?
+        /// Esc or Not now on the found offer.
+        public var declined = false
+    }
+
     public struct State: Equatable, Sendable {
-        public var step: OnboardingStep = .welcome
+        public var step: OnboardingStep
         public var direction: Direction = .forward
+        public var hello = Hello()
+        public var access = Access()
+        public var on = On()
+        public var first = First()
+        public var permissions: OnboardingPermissions
+        /// Settings' roles and level: not asked in onboarding any more; they decide the first look's families.
         public var roles: Set<CaretRole>
         public var level: CaretLevel
-        public var permissions: OnboardingPermissions
-        /// The Input Monitoring row: shown when it was missing as the screen opened, and kept
-        /// (reading On) once granted, so the screen does not jump.
-        public var showsInputMonitoring = false
-        /// A grant appeared and every shown row is on: the screen moves on by itself shortly.
-        public var advancingAfterGrant = false
-        public var about = AboutDraft()
-        /// The `know` step is in the flow: the helper said it accepts `memoryRequest` op `add`
-        /// (`MemoryBook.State.acceptsAdd`). Without that, what is typed there would be kept by nothing.
-        public var showsKnow = false
-        public var tryIt = TryIt()
-        /// Running apps that also take Tab for their own completions (`OtherTabOwners`), by name.
-        /// The try-it step says so, since their Tab can reach the app before Caret's does.
+        /// Running apps that also take Tab (`OtherTabOwners`): their Tab can reach the Hello field first.
         public var otherTabOwners: [String] = []
-        public var firstLook: FirstLookState = .idle
-        /// The first look's offer, taken: its work and result (`FirstLookRun`).
-        public var firstLookRun: FirstLookRun?
+        /// This step only; finishing it finishes the flow (`OnboardingLaunch.Opening.alone`).
+        public var alone = false
         public var finished = false
-        /// The `jevKey` step is in the flow: Caret had no Jev key when the flow opened.
-        public var showsJevKey = false
-        public var jevKey = JevKeyDraft()
-        /// The flow shows this one step and finishes when it is done (`OnboardingLaunch.Opening.only`).
-        public var only: OnboardingStep?
 
+        public var frame: Frame { step == .access ? .guide : .main }
+
+        /// The primary button is enabled.
         public var canContinue: Bool {
             switch step {
-            case .welcome: return true
-            case .work: return !roles.isEmpty
-            // A problem is shown when Continue is pressed, not by greying the button while the
-            // user is still typing.
-            case .know: return true
-            case .permissions: return permissions.accessibility
-            // An empty field continues without a key; a filled one is checked first.
-            case .jevKey: return jevKey.phase != .checking
-            case .tryIt: return tryIt.completed
-            case .firstLook: return true
+            case .hello: return true
+            // The switch moves the flow by itself; the guide has no primary.
+            case .access: return false
+            case .on:
+                switch on.decision {
+                case .sent: return false
+                case .kept: return true
+                case .pending:
+                    switch on.preview {
+                    case .idle, .building: return false
+                    // With a key needed, the primary checks the pasted key and then sends; it waits for text.
+                    case .ready: return !on.needsKey || on.jevKey.stored || (!on.jevKey.text.isEmpty && on.jevKey.phase != .checking)
+                    case .empty, .failed: return true
+                    }
+                }
+            case .first:
+                // Done closes the window even while a taken offer works: the run goes on in the helper and the
+                // activity list reports it.
+                if case .asking = first.look { return false }
+                return true
             }
         }
 
-        public var canGoBack: Bool { step != .welcome && only == nil }
-
-        /// The steps this flow shows, in order: every step but `know` while the helper keeps no
-        /// typed values, and but `jevKey` while Caret has a key. The step dots count these.
-        public var steps: [OnboardingStep] {
-            if let only { return [only] }
-            return OnboardingStep.allCases.filter {
-                ($0 != .know || showsKnow || step == .know) && ($0 != .jevKey || showsJevKey || step == .jevKey)
-            }
-        }
-
-        /// The current step's place among `steps`.
+        public var steps: [OnboardingStep] { alone ? [step] : OnboardingStep.allCases }
         public var stepIndex: Int { steps.firstIndex(of: step) ?? step.index }
     }
 
     public enum Event: Equatable, Sendable {
-        /// Continue, or Return.
+        /// The primary: Turn on Caret, Send these and look, Done; or Return.
         case next
-        /// Back, or Esc.
-        case back
-        case toggleRole(CaretRole)
-        case setRole(CaretRole, Bool)
-        case setLevel(CaretLevel)
-        /// A keystroke in the name or email field: the field's whole text.
-        case setAbout(AboutField, String)
-        /// Skip on the `know` screen: what was typed is not kept.
-        case skip
-        /// The host read the grants again (it polls while the window is up).
-        case permissions(OnboardingPermissions)
-        case openSystemSettings(Pane)
-        /// Add to Chrome on the permissions screen (H4): the host explains, then installs on the user's yes.
-        case addToChrome
+        /// Set up later, on `hello` and `access`.
+        case setUpLater
+        /// The Hello field's whole text after a change.
+        case typed(String)
+        /// The local model answered the completion asked as `requestId`; nil for no offer.
+        case ghost(requestId: String, text: String?)
+        case model(ModelReadiness)
+        case apps([HelloApp])
         case key(TryItKey)
-        case firstLookReply(FirstLookReply)
-        /// Progress of the first look's taken offer, whose task id is its key.
-        case taskProgress(TaskProgress)
-        /// A message for the taken offer could not be written: the helper is not connected.
-        case sendFailed(SendFailure)
-        /// The request could not be written: the helper is not connected.
-        case firstLookUnsent
-        case lookAgain
-        /// The helper withdrew an offer (`offerWithdrawn`); the flow acts on its found one only.
-        case offerWithdrawn(OfferWithdrawn)
-        /// The settings changed outside the flow (the menu's Pause). Roles and level stay the
-        /// flow's own; the rest applies to what it asks for next.
-        case settingsChanged(CaretSettings)
-        /// What the helper's last memory list said about keeping typed values. The `know` step
-        /// joins or leaves the flow; a user already on it stays there.
-        case knowAvailable(Bool)
-        /// The host read the running apps that also take Tab (`OtherTabOwners.running`).
-        case otherTabOwners([String])
-        /// A change in the key field: its whole text.
+        /// The host read the grants again (it polls while the flow runs).
+        case permissions(OnboardingPermissions)
+        /// "Caret isn't in the list?"
+        case toggleHelp
+        /// Open the pane again (the guide's link, when System Settings was closed).
+        case openSystemSettings
+        case previewReady(requestId: String, OnboardingPreview)
+        case previewFailed(requestId: String, String)
+        /// Keep everything on this Mac.
+        case keep
         case setJevKey(String)
-        /// The host checked the key with Jev and, when the answer keeps it, tried to save it (`saved`).
         case jevKeyChecked(JevKeyCheck.Outcome, saved: Bool)
+        case firstLookReply(FirstLookReply)
+        case taskProgress(TaskProgress)
+        case sendFailed(SendFailure)
+        case firstLookUnsent
+        case offerWithdrawn(OfferWithdrawn)
+        /// The found offer's primary button, as Tab would take it.
+        case accept
+        /// Not now on the found offer, as Esc.
+        case notNow
+        /// The host is asking macOS for Calendar access before the accept goes (H8).
+        case calendarAsking
+        case calendarAnswered(Bool)
+        case settingsChanged(CaretSettings)
+        case otherTabOwners([String])
     }
-
-    public enum Pane: String, Codable, Sendable { case accessibility, inputMonitoring }
 
     public enum SendFailure: Equatable, Sendable { case accept, undo }
 
     public enum Command: Equatable, Sendable {
-        /// Write the choices to settings (`SettingsStore`, source `onboarding`).
-        case saveChoices(roles: Set<CaretRole>, level: CaretLevel, onboarded: Bool)
-        /// Hand typed values to memory (`MemoryBook.remember`), which keeps them through the helper.
-        case remember([TypedAbout])
-        /// Skip after an earlier Continue: drop the values for these labels not kept yet
-        /// (`MemoryBook.dropTyped(labels:)`).
-        case forgetTyped([String])
-        case openSystemSettings(Pane)
-        /// Start Add to your browser (`ChromeBridgeInstaller`). Never sent at launch, only on the user's click.
-        case addToChrome
-        /// Check this key with Jev; on an answer that keeps it, save it to the keychain and start the helper again with
-        /// it. The host answers with `jevKeyChecked`.
+        /// Onboarding finished: settings' `onboarded` (roles and level stay as they are).
+        case finished
+        /// Write `OnboardingProgress` for this step.
+        case saveProgress(OnboardingStep)
+        /// Ask macOS (the alert that puts Caret in the list) and open Privacy & Security, Accessibility.
+        case openSystemSettings
+        /// The grant landed and the flow moved on: Caret takes the focus back from System Settings, once.
+        case bringForward
+        /// Ask the local model for the next words after `text`.
+        case complete(requestId: String, text: String)
+        /// Ask the helper which lines a first look may send.
+        case askPreview(requestId: String, families: [String], level: CaretLevel)
+        /// Check this key with Jev; on an answer that keeps it, save it and restart the helper (H12).
         case checkJevKey(SecretText)
-        case askFirstLook(FirstLookRequest)
-        /// Take the first look's offer: the helper runs it as the task named by its key.
+        /// The look itself, limited to the preview the person saw.
+        case askFirstLook(FirstLookRequest, previewId: String?)
+        /// The person kept everything on the Mac: the helper asks at first need before anything goes.
+        case keepOnMac
         case accept(OfferAccept)
         case stop(OfferStop)
-        /// ⌘Z on the first look's fill result.
         case undo(TaskControl)
-        /// The staged value went in: the field flashes the Carrot wash once.
-        case filled
-        /// The flow is done; close the window.
+        /// The flow is done or set aside; close the window.
         case close
         /// The state changed; redraw and republish.
         case changed
     }
 
-    /// How long the screen shows the new check mark before it moves on. Assumed: long enough to
-    /// read "On", short enough not to wait on it.
-    public static let advanceAfterGrant: TimeInterval = 0.6
+    /// How long Hello waits after the last keystroke before asking the model (HANDOFF §1).
+    public static let completionIdle: TimeInterval = 0.45
+    /// How long "Caret is on." stays on the guide before the window grows back and moves on (HANDOFF §4).
+    public static let grantLanding: TimeInterval = 0.9
     /// Grace after the request's own deadline before the host gives up on the reply.
     public static let firstLookGrace: TimeInterval = 1
+    /// The preview is local work; past this the screen offers to go on without it. Assumed, not measured.
+    public static let previewDeadline: TimeInterval = 10
 
     let clock: SurfaceClock
-    /// The settings the flow started from: pause and anything else it does not ask about still
-    /// apply to what it requests (the first look's families).
     private(set) var base: CaretSettings
-    /// Names this flow in its first-look request ids, so a late reply to an earlier flow (closed
-    /// and opened again) never matches a request of this one.
+    /// Names this flow in its request ids, so a late reply to an earlier flow never matches this one.
     let token: String
     public internal(set) var state: State
     public var output: (Command) -> Void = { _ in }
-    private var advanceTimer: SurfaceTimer?
-    /// The taken offer's figure and seconds timers.
-    var runTimers: [SurfaceTimer] = []
+    private var idleTimer: SurfaceTimer?
+    private var landingTimer: SurfaceTimer?
+    private var previewTimer: SurfaceTimer?
     private var firstLookTimer: SurfaceTimer?
+    var runTimers: [SurfaceTimer] = []
     private var requests = 0
     private var asked: FirstLookRequest?
 
-    /// `jevKeyStored`: a key is in the keychain. `jevKeyAvailable`: the helper has a key from anywhere (the keychain, or
-    /// a development run's environment); without one the flow shows the key step. `only`: show that step alone.
-    public init(settings: CaretSettings, permissions: OnboardingPermissions, clock: SurfaceClock, token: String = "1", showsKnow: Bool = false,
-                jevKeyAvailable: Bool = true, jevKeyStored: Bool = false, only: OnboardingStep? = nil) {
+    /// `jevKeyAvailable`: the helper has a key from anywhere; without one the `on` step shows the key field.
+    public init(settings: CaretSettings, permissions: OnboardingPermissions, clock: SurfaceClock, token: String = "1",
+                opening: OnboardingLaunch.Opening = OnboardingLaunch.Opening(step: .hello),
+                jevKeyAvailable: Bool = true, jevKeyStored: Bool = false) {
         self.clock = clock
         base = settings
         self.token = token
-        state = State(roles: settings.roles, level: settings.level, permissions: permissions)
-        state.showsKnow = showsKnow
-        state.showsJevKey = !jevKeyAvailable
-        state.jevKey = JevKeyDraft(stored: jevKeyStored)
-        state.only = only
-        if let only { go(to: only, .forward) }
+        state = State(step: opening.step, permissions: permissions, roles: settings.roles, level: settings.level)
+        state.alone = opening.alone
+        state.access.reopened = opening.reopened && opening.step == .access
+        state.on.needsKey = !jevKeyAvailable
+        state.on.jevKey = JevKeyDraft(stored: jevKeyStored)
+    }
+
+    /// Starts what the opening step does on its own (the preview on `on`). The window calls it once it is wired.
+    public func start() {
+        enter(state.step)
+        output(.changed)
     }
 
     var nowMs: Int64 { Int64((clock.now.timeIntervalSince1970 * 1000).rounded()) }
 
-    /// Cancels every timer the flow has scheduled. The window calls it when it drops an unfinished
-    /// flow, whose repeating timers would otherwise outlive it.
+    /// Cancels every timer. The window calls it when it drops an unfinished flow.
     public func cancelTimers() {
-        advanceTimer?.cancel()
-        advanceTimer = nil
-        firstLookTimer?.cancel()
+        for t in [idleTimer, landingTimer, previewTimer, firstLookTimer] { t?.cancel() }
+        idleTimer = nil
+        landingTimer = nil
+        previewTimer = nil
         firstLookTimer = nil
         endRunTimers()
     }
@@ -426,73 +485,73 @@ public final class OnboardingFlow {
         guard !state.finished else { return }
         switch event {
         case .next: next()
-        case .back: back()
-        case .toggleRole(let role):
-            guard state.step == .work else { return }
-            if state.roles.contains(role) { state.roles.remove(role) } else { state.roles.insert(role) }
-        case .setRole(let role, let on):
-            guard state.step == .work else { return }
-            if on { state.roles.insert(role) } else { state.roles.remove(role) }
-        case .setLevel(let level):
-            guard state.step == .work else { return }
-            state.level = level
-        case .setAbout(let field, let text):
-            guard state.step == .know else { return }
-            state.about[field] = text
-            state.about.showsProblem = false
-        case .skip where state.step == .jevKey:
-            guard state.jevKey.phase != .checking else { return }
-            state.jevKey.text = SecretText("")
-            state.jevKey.phase = .editing
-            leaveJevKey()
-        case .skip:
-            guard state.step == .know else { return }
-            state.about.name = ""
-            state.about.email = ""
-            state.about.showsProblem = false
-            // An earlier Continue may have handed values over: Skip means keep none of them.
-            if !state.about.kept.isEmpty {
-                output(.forgetTyped(Array(state.about.kept.keys).sorted()))
-                state.about.kept = [:]
-            }
-            go(to: .permissions, .forward)
+        case .setUpLater:
+            guard state.step == .hello || state.step == .access else { return }
+            // The next launch reopens at the switch (`OnboardingLaunch.auto`).
+            output(.saveProgress(.access))
+            cancelTimers()
+            output(.close)
+        case .typed(let text): typed(text)
+        case .ghost(let id, let text):
+            guard state.step == .hello, state.hello.asking == id else { return }
+            state.hello.asking = nil
+            state.hello.ghost = text.flatMap { $0.isEmpty ? nil : $0 }
+        case .model(let readiness):
+            state.hello.model = readiness
+            if readiness != .ready { state.hello.ghost = nil }
+        case .apps(let apps): state.hello.apps = apps
+        case .key(let key): self.key(key)
         case .permissions(let p): permissionsChanged(p)
-        case .openSystemSettings(let pane):
-            guard state.step == .permissions else { return }
-            output(.openSystemSettings(pane))
-        case .addToChrome:
-            guard state.step == .permissions else { return }
-            output(.addToChrome)
-        case .key(let key):
-            switch state.step {
-            case .tryIt: tryItKey(key)
-            case .firstLook: firstLookKey(key)
-            case .welcome, .work, .know, .permissions, .jevKey: return
-            }
+        case .toggleHelp:
+            guard state.step == .access else { return }
+            state.access.helpOpen.toggle()
+        case .openSystemSettings:
+            guard state.step == .access else { return }
+            output(.openSystemSettings)
+        case .previewReady(let id, let preview):
+            guard case .building(let asking) = state.on.preview, asking == id else { return }
+            previewTimer?.cancel()
+            previewTimer = nil
+            state.on.preview = preview.windows.isEmpty ? .empty : .ready(preview)
+        case .previewFailed(let id, let why):
+            guard case .building(let asking) = state.on.preview, asking == id else { return }
+            previewTimer?.cancel()
+            previewTimer = nil
+            state.on.preview = .failed(why)
+        case .keep:
+            guard state.step == .on, state.on.decision == .pending else { return }
+            state.on.decision = .kept
+            output(.keepOnMac)
+        case .setJevKey(let text):
+            guard state.step == .on, state.on.needsKey, state.on.jevKey.phase != .checking else { return }
+            state.on.jevKey.text = SecretText(text)
+            state.on.jevKey.phase = .editing
+        case .jevKeyChecked(let outcome, let saved): jevKeyChecked(outcome, saved: saved)
         case .firstLookReply(let reply): firstLookReplied(reply)
         case .taskProgress(let progress): firstLookProgress(progress)
         case .sendFailed(let what): firstLookUnsent(what)
         case .firstLookUnsent:
-            guard case .asking = state.firstLook else { return }
+            guard asked != nil else { return }
             failFirstLook("helperNotConnected")
-        case .lookAgain:
-            guard state.step == .firstLook, case .failed = state.firstLook else { return }
-            askFirstLook()
         case .offerWithdrawn(let withdrawn): firstLookWithdrawn(withdrawn)
+        case .accept:
+            guard state.step == .first else { return }
+            take(state.firstLookFound?.takeable.first { $0.key == .tab } ?? state.firstLookFound?.takeable.first)
+        case .notNow: notNow()
+        case .calendarAsking:
+            guard state.step == .first else { return }
+            state.first.calendar = .asking
+        case .calendarAnswered(let granted):
+            guard state.first.calendar == .asking else { return }
+            state.first.calendar = granted ? nil : .denied
+            if !granted {
+                endRunTimers()
+                state.first.run = nil
+            }
         case .settingsChanged(let settings):
             base = settings
-        case .knowAvailable(let available):
-            state.showsKnow = available
         case .otherTabOwners(let names):
-            guard state.otherTabOwners != names else { return }
             state.otherTabOwners = names
-        case .setJevKey(let text):
-            // The field is disabled while a check runs; a change that arrives anyway waits for the answer.
-            guard state.step == .jevKey, state.jevKey.phase != .checking else { return }
-            state.jevKey.text = SecretText(text)
-            state.jevKey.phase = .editing
-        case .jevKeyChecked(let outcome, let saved):
-            jevKeyChecked(outcome, saved: saved)
         }
         output(.changed)
     }
@@ -500,275 +559,292 @@ public final class OnboardingFlow {
     func next() {
         guard state.canContinue else { return }
         switch state.step {
-        case .welcome: go(to: .work, .forward)
-        case .work:
-            // The choices count from here, even if onboarding stops before its end.
-            output(.saveChoices(roles: state.roles, level: state.level, onboarded: false))
-            go(to: state.showsKnow ? .know : .permissions, .forward)
-        case .know:
-            guard state.about.problem == nil else {
-                state.about.showsProblem = true
-                return
+        case .hello:
+            state.access.alertShown = true
+            output(.openSystemSettings)
+            go(to: .access)
+        case .access:
+            break
+        case .on:
+            switch (state.on.decision, state.on.preview) {
+            case (.pending, .ready(let preview)): send(preview: preview)
+            case (.pending, .building), (.pending, .idle), (.sent, _): break
+            case (.pending, .empty), (.pending, .failed), (.kept, _): finish()
             }
-            let keep = state.about.toKeep
-            if !keep.isEmpty {
-                for item in keep { state.about.kept[item.label] = item.value }
-                output(.remember(keep))
-            }
-            go(to: .permissions, .forward)
-        case .permissions: leavePermissions()
-        case .jevKey: jevKeyNext()
-        case .tryIt: go(to: .firstLook, .forward)
-        case .firstLook: finish()
+        case .first:
+            finish()
         }
     }
 
-    func back() {
-        guard state.only == nil else { return }
-        switch state.step {
-        case .welcome: return
-        case .work: go(to: .welcome, .back)
-        case .know: go(to: .work, .back)
-        case .permissions: go(to: state.showsKnow ? .know : .work, .back)
-        case .jevKey:
-            guard state.jevKey.phase != .checking else { return }
-            go(to: .permissions, .back)
-        case .tryIt: go(to: state.showsJevKey ? .jevKey : .permissions, .back)
-        case .firstLook: go(to: .tryIt, .back)
-        }
-    }
-
-    /// Past the permissions step: the key step when Caret has no key, else the try-it; a flow showing the permissions
-    /// step alone finishes.
-    func leavePermissions() {
-        if state.only == .permissions { return finish() }
-        go(to: state.showsJevKey ? .jevKey : .tryIt, .forward)
-    }
-
-    func leaveJevKey() {
-        if state.only == .jevKey { return finish() }
-        go(to: .tryIt, .forward)
-    }
-
-    func go(to step: OnboardingStep, _ direction: Direction) {
+    func go(to step: OnboardingStep, _ direction: Direction = .forward) {
         leave(state.step)
         state.step = step
         state.direction = direction
+        output(.saveProgress(step))
+        enter(step)
+    }
+
+    private func enter(_ step: OnboardingStep) {
         switch step {
-        case .permissions:
-            state.showsInputMonitoring = state.showsInputMonitoring || !state.permissions.inputMonitoring
-        case .firstLook:
-            askFirstLook()
-        case .welcome, .work, .know, .jevKey, .tryIt:
+        case .on:
+            if case .idle = state.on.preview { askPreview() }
+        case .hello, .access, .first:
             break
         }
     }
 
-    func leave(_ step: OnboardingStep) {
+    private func leave(_ step: OnboardingStep) {
         switch step {
-        case .permissions, .jevKey:
-            advanceTimer?.cancel()
-            advanceTimer = nil
-            state.advancingAfterGrant = false
-            guard step == .jevKey else { break }
+        case .hello:
+            idleTimer?.cancel()
+            idleTimer = nil
+            state.hello.asking = nil
+        case .access:
+            landingTimer?.cancel()
+            landingTimer = nil
+        case .on:
             // A key is held here only until it is saved or the step is left.
-            state.jevKey.text = SecretText("")
-            if !state.jevKey.phase.saved { state.jevKey.phase = .editing }
-        case .firstLook:
-            // A reply after leaving is for a look nobody is watching. A taken offer's run goes on
-            // in the helper; the activity list reports it from here.
-            firstLookTimer?.cancel()
-            firstLookTimer = nil
-            asked = nil
-            state.firstLook = .idle
-            endRunTimers()
-            state.firstLookRun = nil
-        case .welcome, .work, .know, .tryIt:
+            state.on.jevKey.text = SecretText("")
+        case .first:
             break
-        }
-    }
-
-    // MARK: - Jev key
-
-    /// Continue on the key step. An empty field goes on without a key (Caret runs without Jev and the menu says so); a
-    /// saved key goes on; anything else is checked first, and the host's answer decides.
-    func jevKeyNext() {
-        let draft = state.jevKey
-        if draft.phase.saved || draft.text.isEmpty { return leaveJevKey() }
-        switch draft.phase {
-        case .checking: return
-        case .editing, .malformed, .checked:
-            state.jevKey.submits += 1
-            guard let key = JevKeyCheck.cleaned(draft.text.reveal) else {
-                state.jevKey.phase = .malformed
-                return
-            }
-            state.jevKey.phase = .checking
-            output(.checkJevKey(SecretText(key)))
-        }
-    }
-
-    func jevKeyChecked(_ outcome: JevKeyCheck.Outcome, saved: Bool) {
-        guard state.step == .jevKey, state.jevKey.phase == .checking else { return }
-        state.jevKey.phase = .checked(outcome, saved: saved)
-        guard outcome.keepsKey, saved else { return }
-        state.jevKey.stored = true
-        state.jevKey.text = SecretText("")
-        // A key that works moves on by itself, as a grant does; one with no credits stays so its line can be read.
-        guard outcome == .works, advanceTimer == nil else { return }
-        state.advancingAfterGrant = true
-        advanceTimer = clock.schedule(after: Self.advanceAfterGrant, repeats: false) { [weak self] in
-            guard let self else { return }
-            self.advanceTimer = nil
-            self.state.advancingAfterGrant = false
-            if self.state.step == .jevKey, self.state.jevKey.phase.saved { self.leaveJevKey() }
-            self.output(.changed)
         }
     }
 
     func finish() {
-        leave(state.step)
+        cancelTimers()
         state.finished = true
-        output(.saveChoices(roles: state.roles, level: state.level, onboarded: true))
+        output(.finished)
         output(.close)
     }
 
-    // MARK: - Permissions
+    // MARK: - Hello
 
-    func permissionsChanged(_ p: OnboardingPermissions) {
-        let before = state.permissions
-        state.permissions = p
-        guard state.step == .permissions else { return }
-        let appeared = (p.accessibility && !before.accessibility) || (p.inputMonitoring && !before.inputMonitoring)
-        let allShownOn = p.accessibility && (!state.showsInputMonitoring || p.inputMonitoring)
-        let revoked = (!p.accessibility && before.accessibility) || (!p.inputMonitoring && before.inputMonitoring && state.showsInputMonitoring)
-        if !p.accessibility || (revoked && !allShownOn) {
-            // A grant taken back while the screen is up: stay.
-            advanceTimer?.cancel()
-            advanceTimer = nil
-            state.advancingAfterGrant = false
-            return
-        }
-        guard appeared, allShownOn, advanceTimer == nil else { return }
-        state.advancingAfterGrant = true
-        advanceTimer = clock.schedule(after: Self.advanceAfterGrant, repeats: false) { [weak self] in
-            guard let self else { return }
-            self.advanceTimer = nil
-            self.state.advancingAfterGrant = false
-            let now = self.state.permissions
-            if self.state.step == .permissions, now.accessibility, !self.state.showsInputMonitoring || now.inputMonitoring {
-                self.leavePermissions()
-            }
+    /// Any typing clears the ghost at once; the model is asked again after `completionIdle` of quiet, for text of two
+    /// or more words that does not end a sentence.
+    func typed(_ text: String) {
+        guard state.step == .hello else { return }
+        state.hello.text = text
+        state.hello.ghost = nil
+        state.hello.asking = nil
+        idleTimer?.cancel()
+        idleTimer = nil
+        guard Self.asksCompletion(after: text), state.hello.model == .ready else { return }
+        idleTimer = clock.schedule(after: Self.completionIdle, repeats: false) { [weak self] in
+            guard let self, self.state.step == .hello, self.state.hello.text == text else { return }
+            self.idleTimer = nil
+            self.requests += 1
+            let id = "hello-\(self.token)-\(self.requests)"
+            self.state.hello.asking = id
+            self.output(.complete(requestId: id, text: text))
             self.output(.changed)
         }
     }
 
-    // MARK: - Try it
+    /// Two or more words, and no closing punctuation at the end.
+    public static func asksCompletion(after text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = trimmed.last, !".!?…".contains(last) else { return false }
+        return trimmed.split(whereSeparator: \.isWhitespace).count >= 2
+    }
 
-    /// Only a Tab takes the offer, and only while it is visible: Return, Continue, typing and
-    /// clicks never complete the step.
-    func tryItKey(_ key: TryItKey) {
-        guard state.step == .tryIt else { return }
-        switch key {
-        case .tab:
-            state.tryIt.tabs += 1
-            guard state.tryIt.offerVisible else { return }
-            state.tryIt.value = TryItSample.value
-            state.tryIt.completed = true
-            output(.filled)
-        case .character(let text):
-            if state.tryIt.offerVisible { state.tryIt.declined = true }
-            state.tryIt.value += text
-        case .delete:
-            if !state.tryIt.value.isEmpty { state.tryIt.value.removeLast() }
-        case .returnKey: next()
-        case .escape: back()
-        case .commandDigit, .undo, .other: break
+    // MARK: - Keys
+
+    func key(_ key: TryItKey) {
+        switch state.step {
+        case .hello:
+            switch key {
+            case .tab:
+                guard let ghost = state.hello.ghost else { return }
+                state.hello.text += ghost
+                state.hello.ghost = nil
+                state.hello.taken = true
+            case .returnKey: next()
+            case .escape, .commandDigit, .undo, .other: break
+            }
+        case .access:
+            break
+        case .on:
+            if key == .returnKey { next() }
+        case .first:
+            firstLookKey(key)
         }
     }
 
-    // MARK: - First look
+    // MARK: - Access
 
-    func askFirstLook() {
-        firstLookTimer?.cancel()
+    /// The switch. A grant shows "Caret is on." on the guide for `grantLanding`, then the window grows back and the
+    /// flow moves to `on` (or finishes, when the switch was all it had to do). A grant taken back before that stays.
+    func permissionsChanged(_ p: OnboardingPermissions) {
+        let before = state.permissions
+        state.permissions = p
+        guard state.step == .access else { return }
+        if !p.accessibility {
+            landingTimer?.cancel()
+            landingTimer = nil
+            state.access.granted = false
+            return
+        }
+        guard !before.accessibility || !state.access.granted, landingTimer == nil else { return }
+        state.access.granted = true
+        landingTimer = clock.schedule(after: Self.grantLanding, repeats: false) { [weak self] in
+            guard let self else { return }
+            self.landingTimer = nil
+            guard self.state.step == .access, self.state.permissions.accessibility else { return }
+            if self.state.alone { return self.finish() }
+            self.go(to: .on)
+            self.output(.bringForward)
+            self.output(.changed)
+        }
+    }
+
+    // MARK: - On
+
+    func askPreview() {
         requests += 1
+        let id = "preview-\(token)-\(requests)"
+        let families = FirstLookRequest.families(for: settingsForLook)
+        guard !families.isEmpty else {
+            // Words only, or paused: nothing would be looked for, so nothing would go.
+            state.on.preview = .empty
+            return
+        }
+        state.on.preview = .building(requestId: id)
+        previewTimer = clock.schedule(after: Self.previewDeadline, repeats: false) { [weak self] in
+            guard let self, case .building(let asking) = self.state.on.preview, asking == id else { return }
+            self.previewTimer = nil
+            self.state.on.preview = .failed("timedOut")
+            self.output(.changed)
+        }
+        output(.askPreview(requestId: id, families: families, level: state.level))
+    }
+
+    /// The person saw the preview and pressed Send: a key typed into the key field is checked first.
+    func send(preview: OnboardingPreview) {
+        if state.on.needsKey, !state.on.jevKey.phase.saved, !state.on.jevKey.stored {
+            guard let key = JevKeyCheck.cleaned(state.on.jevKey.text.reveal) else {
+                state.on.jevKey.submits += 1
+                state.on.jevKey.phase = .malformed
+                return
+            }
+            state.on.jevKey.submits += 1
+            state.on.jevKey.phase = .checking
+            output(.checkJevKey(SecretText(key)))
+            return
+        }
+        state.on.decision = .sent
+        state.on.sentPreviewId = preview.previewId
+        askFirstLook(previewId: preview.previewId)
+    }
+
+    func jevKeyChecked(_ outcome: JevKeyCheck.Outcome, saved: Bool) {
+        guard state.step == .on, state.on.jevKey.phase == .checking else { return }
+        state.on.jevKey.phase = .checked(outcome, saved: saved)
+        guard outcome.keepsKey, saved else { return }
+        state.on.jevKey.stored = true
+        state.on.jevKey.text = SecretText("")
+        // A key with no credits is kept, and the step stays so its line can be read (the coordinator's rule,
+        // 2026-10-05). A key that works: the key alone (the menu's "Jev is off") is done; otherwise the person pressed
+        // Send, so the look goes with no second press.
+        guard outcome == .works else { return }
+        if state.alone { return finish() }
+        if state.on.decision == .pending, case .ready(let preview) = state.on.preview { send(preview: preview) }
+    }
+
+    var settingsForLook: CaretSettings {
         var settings = base
         settings.roles = state.roles
         settings.level = state.level
+        return settings
+    }
+
+    func askFirstLook(previewId: String?) {
+        firstLookTimer?.cancel()
+        requests += 1
         let request = FirstLookRequest(
             requestId: "first-look-\(token)-\(requests)", at: nowMs,
-            families: FirstLookRequest.families(for: settings), level: state.level
+            families: FirstLookRequest.families(for: settingsForLook), level: state.level
         )
-        asked = request
-        state.firstLook = .asking(requestId: request.requestId)
         guard !request.families.isEmpty else {
-            // Words only, or paused: there is nothing for the helper to run.
+            // Paused, or words only: nothing to look for.
             asked = nil
-            state.firstLook = .nothing
+            state.first.look = .nothing
+            if state.step == .on { go(to: .first) }
             return
         }
+        asked = request
+        state.first.look = .asking(requestId: request.requestId)
         let wait = Double(request.deadlineMs) / 1000 + Self.firstLookGrace
         firstLookTimer = clock.schedule(after: wait, repeats: false) { [weak self] in
-            guard let self, case .asking(let id) = self.state.firstLook, id == request.requestId else { return }
+            guard let self, case .asking(let id) = self.state.first.look, id == request.requestId else { return }
             self.firstLookTimer = nil
             self.failFirstLook("timedOut")
             self.output(.changed)
         }
-        output(.askFirstLook(request))
+        output(.askFirstLook(request, previewId: previewId))
     }
 
+    // MARK: - First
+
     func firstLookReplied(_ reply: FirstLookReply) {
-        guard let asked, case .asking(let id) = state.firstLook, id == reply.requestId, id == asked.requestId else { return }
+        guard let asked, case .asking(let id) = state.first.look, id == reply.requestId, id == asked.requestId else { return }
         firstLookTimer?.cancel()
         firstLookTimer = nil
         self.asked = nil
         switch reply.outcome {
         case .found:
-            guard let found = reply.found, asked.families.contains(found.family) else {
-                return failFirstLook("familyNotRequested")
-            }
-            state.firstLook = .found(found)
+            guard let found = reply.found, asked.families.contains(found.family) else { return failFirstLook("familyNotRequested") }
+            state.first.look = .found(found)
         case .nothing:
-            state.firstLook = .nothing
+            state.first.look = .nothing
         case .error:
-            state.firstLook = .failed(reply.error ?? "error")
+            state.first.look = .failed(reply.error ?? "error")
         }
+        if state.step == .on { go(to: .first) }
     }
 
     func failFirstLook(_ reason: String) {
         firstLookTimer?.cancel()
         firstLookTimer = nil
         asked = nil
-        state.firstLook = .failed(reason)
+        state.first.look = .failed(reason)
+        if state.step == .on { go(to: .first) }
+    }
+
+    /// Esc or Not now on a found offer nobody took: an event is left alone with its own line; a fill closes.
+    func notNow() {
+        guard state.step == .first, case .found(let found) = state.first.look, state.first.run == nil else { return }
+        state.first.declined = true
+        if found.kind == .fill { finish() }
     }
 
     // MARK: - Debug state
 
     public func debugInfo() -> DebugState.OnboardingInfo {
-        var info = DebugState.OnboardingInfo(
-            step: state.step.rawValue, stepIndex: state.stepIndex, roles: CaretRole.allCases.filter(state.roles.contains).map(\.rawValue),
-            level: state.level.rawValue, canContinue: state.canContinue, finished: state.finished
-        )
-        info.permissions = state.permissions
-        info.showsKnow = state.showsKnow
+        var info = DebugState.OnboardingInfo(step: state.step.rawValue, stepIndex: state.stepIndex, canContinue: state.canContinue, finished: state.finished)
         info.stepCount = state.steps.count
-        info.about = Dictionary(uniqueKeysWithValues: AboutField.allCases.map { ($0.rawValue, state.about[$0].utf16.count) })
-        info.aboutProblem = state.about.showsProblem ? state.about.problem : nil
-        info.showsInputMonitoring = state.showsInputMonitoring
-        info.advancingAfterGrant = state.advancingAfterGrant ? true : nil
+        info.frame = state.frame.rawValue
+        info.permissions = state.permissions
+        info.alone = state.alone ? true : nil
         info.otherTabOwners = state.otherTabOwners.isEmpty ? nil : state.otherTabOwners
-        info.showsJevKey = state.showsJevKey
-        info.only = state.only?.rawValue
-        if state.steps.contains(.jevKey) {
-            info.jevKey = state.jevKey.phase.name
-            info.jevKeyLength = state.jevKey.text.utf16Count
-            info.jevKeyStored = state.jevKey.stored
-        }
-        info.tryIt = DebugState.OnboardingInfo.TryItInfo(
-            valueLength: state.tryIt.value.utf16.count, isSample: state.tryIt.value == TryItSample.value, offerVisible: state.tryIt.offerVisible, completed: state.tryIt.completed,
-            declined: state.tryIt.declined, tabs: state.tryIt.tabs
+        info.hello = DebugState.OnboardingInfo.HelloInfo(
+            textLength: state.hello.text.utf16.count, ghostLength: state.hello.ghost?.utf16.count, model: state.hello.model.name,
+            apps: state.hello.apps.map(\.name), taken: state.hello.taken
         )
-        switch state.firstLook {
+        info.access = DebugState.OnboardingInfo.AccessInfo(granted: state.access.granted, reopened: state.access.reopened, helpOpen: state.access.helpOpen)
+        switch state.on.preview {
+        case .idle: info.preview = "idle"
+        case .building: info.preview = "building"
+        case .ready(let p): info.preview = "ready"; info.previewWindows = p.windows.count; info.previewChars = p.chars
+        case .empty: info.preview = "empty"
+        case .failed: info.preview = "failed"
+        }
+        info.decision = state.on.decision.rawValue
+        if state.on.needsKey {
+            info.jevKey = state.on.jevKey.phase.name
+            info.jevKeyLength = state.on.jevKey.text.utf16Count
+            info.jevKeyStored = state.on.jevKey.stored
+        }
+        switch state.first.look {
         case .idle: info.firstLook = "idle"
         case .asking(let id): info.firstLook = "asking"; info.firstLookRequest = id
         case .found(let found):
@@ -778,13 +854,52 @@ public final class OnboardingFlow {
             let keys = state.firstLookKeys
             info.firstLookKeys = (keys.tab ? ["tab"] : []) + keys.digits.sorted().map { "cmd-\($0)" }
                 + (keys.undo ? ["cmd-z"] : []) + (keys.stop ? ["esc"] : [])
-            if let run = state.firstLookRun {
+            if let run = state.first.run {
                 info.firstLookRun = run.phase.name
                 info.firstLookLine = run.line()?.text
             }
         case .nothing: info.firstLook = "nothing"
         case .failed(let reason): info.firstLook = "failed"; info.firstLookError = reason
         }
+        info.declined = state.first.declined ? true : nil
+        info.calendar = state.first.calendar.map { $0 == .asking ? "asking" : "denied" }
         return info
+    }
+}
+
+/// The apps the Hello line names (HANDOFF §2): the default mail app and browser first, then running apps, then a short
+/// list of installed ones; never Caret, terminals, password managers or System Settings (`excluded`); at most four;
+/// at least three, which Notes, Mail and Safari guarantee on any Mac.
+public enum HelloApps {
+    /// The installed apps looked for, in order.
+    public static let wellKnown = [
+        "com.apple.mail", "com.apple.Notes", "com.apple.Safari", "com.google.Chrome", "com.tinyspeck.slackmacgap",
+        "com.hnc.Discord", "notion.id", "com.microsoft.VSCode", "com.apple.MobileSMS", "us.zoom.xos",
+    ]
+    /// Always present on macOS, so the line never has fewer than three names.
+    public static let fallback = [
+        HelloApp(bundleId: "com.apple.Notes", name: "Notes"), HelloApp(bundleId: "com.apple.mail", name: "Mail"),
+        HelloApp(bundleId: "com.apple.Safari", name: "Safari"),
+    ]
+
+    public static func pick(defaultMail: HelloApp?, defaultBrowser: HelloApp?, running: [HelloApp], installed: [HelloApp],
+                            excluded: (String) -> Bool, limit: Int = 4) -> [HelloApp] {
+        var out: [HelloApp] = []
+        for app in [defaultMail, defaultBrowser].compactMap({ $0 }) + running + installed + fallback {
+            guard out.count < limit, !app.name.isEmpty, !excluded(app.bundleId),
+                  !out.contains(where: { $0.bundleId == app.bundleId || $0.name == app.name }) else { continue }
+            out.append(app)
+        }
+        return out
+    }
+
+    /// "Mail, Slack, Notes and Chrome".
+    public static func list(_ apps: [HelloApp]) -> String {
+        let names = apps.map(\.name)
+        switch names.count {
+        case 0: return ""
+        case 1: return names[0]
+        default: return names.dropLast().joined(separator: ", ") + " and " + names.last!
+        }
     }
 }

@@ -52,7 +52,7 @@ if (resource) {
   if (readFileSync(resource, "utf8") !== PRIVACY_PROMISE) throw new Error(`${resource}: generated privacy resource differs from PRIVACY_PROMISE`);
 }
 // The finished app's copy, checked after every step that could drop or replace it and before the app is signed or
-// handed on. Onboarding has no text of its own to show in its place (OnboardingView.swift, PermissionsScreen).
+// handed on. Onboarding has no text of its own to show in its place (OnboardingView.swift, PrivacyPromiseText).
 const shipped = env[ENV.caret_verify_privacy_resource];
 if (shipped) {
   const checked = shippedApp(shipped);
