@@ -1,0 +1,1 @@
+Builds and rigs: debug socket is full only with --test-hooks or CARET_DEBUG_SOCKET=full; store build's extension ID differs until its key lands; v2/access lacks v2 CI files; old realfill logs can't replay routeBetween; macOS 26 rig needs a memory file for Gemma.

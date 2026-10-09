@@ -1,0 +1,1 @@
+caret-heavy prune deletes inputs/vm-job/runs: copy guest evidence out first. Ask has one maker (heads); tests needing a stated intent use HelperOptions.ask {maker:'scripted'}; heads never gives scope 'all', so next-page carry only comes from a scripted intent.

@@ -1,1 +1,0 @@
-Acceptance builds gate debug-socket commands behind --test-hooks/CARET_DEBUG_SOCKET=full; uninstall leaves dev.caret.host's shader cache. Chrome store build's ID differs until the store key lands. FigureView freezes off screen; rest beats read figureLife.

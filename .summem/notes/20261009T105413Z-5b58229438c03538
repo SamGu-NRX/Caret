@@ -1,1 +1,0 @@
-Ask has one maker (heads). Tests needing a stated intent use HelperOptions.ask {maker:'scripted'} (page-rig.ts scriptedIntent); heads never gives scope 'all', so page kind 'all' and next-page carry only arise from a scripted intent.

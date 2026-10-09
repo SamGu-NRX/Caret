@@ -1,1 +1,0 @@
-A branch off v2/access lacks v2.yml/record-snapshots.yml (on sam/v2/ci). realfill-asks records firstGate (planner/ask.ts Gate) and logs Jev's probabilities; replays of logs before 2026-10-09 can't show routeBetween.
