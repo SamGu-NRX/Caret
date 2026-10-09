@@ -1,4 +1,5 @@
 import AppCompatibility
+import AutocompleteCore
 import AppKit
 import CaretHostCore
 import CaretScreenCore
@@ -152,6 +153,7 @@ public final class HostRuntime {
     /// activity record arrives. Assumed: activity follows an accept within a second on this Mac.
     static let rehelloAcceptGrace: TimeInterval = 30
     private var engineTask: Task<Void, Never>?
+    private var trustPoll: Timer?
     private let servicesBox = ServicesBox()
     private var sessionLock: SessionLockWatch?
 
@@ -246,7 +248,10 @@ public final class HostRuntime {
                 writing.displaced(offer)
             }
         }
-        let onboarding = OnboardingController(mode: OnboardingController.Mode(rawValue: configuration.onboarding ?? "off") ?? .off, testHooks: configuration.testHooks)
+        // Progress sits beside the settings file, so a test run with its own settings never touches the user's.
+        let progressPath = ((SettingsStore.path as NSString).deletingLastPathComponent as NSString).appendingPathComponent("onboarding-progress.json")
+        let onboarding = OnboardingController(mode: OnboardingController.Mode(rawValue: configuration.onboarding ?? "off") ?? .off,
+                                              testHooks: configuration.testHooks, progressPath: progressPath)
         self.onboarding = onboarding
         let activity = ActivityCenter()
         self.activity = activity
@@ -284,8 +289,7 @@ public final class HostRuntime {
             }
             // Memory is the user's to see and change whatever the gate holds.
             if case .memoryReply(let reply) = message {
-                memory.receive(reply)
-                return onboarding.knowAvailableChanged(memory.book.state.acceptsAdd)
+                return memory.receive(reply)
             }
             if case .memoryDocumentReply(let reply) = message { return memory.receive(reply) }
             if case .savedFilesReply(let reply) = message { return memory.receive(reply) }
@@ -344,12 +348,14 @@ public final class HostRuntime {
             // An offer the memory row asked for ("Let it run on its own…") is shown there, not at the caret.
             case .skillOffer(let offer): if !memory.book.claim(offer) { surface.skillOffer(offer) }
             case .firstLookReply(let reply): onboarding.receive(reply)
+            case .firstLookPreview(let preview): onboarding.receive(preview)
             // Where the noticed facts behind an offer or a plan came from, for its "Not right".
             case .memoryProvenance(let provenance):
                 surface.provenance(provenance)
                 perch.ask.provenance(provenance)
             // W2: whether Caret can see the front browser's pages.
             case .pageEngine(let m):
+                if m.state == .connected { onboarding.browserConnected() }
                 pageSight.receive(m)
                 status.update { $0.pageSight = pageSight.sight.debugInfo }
             default: break
@@ -393,8 +399,30 @@ public final class HostRuntime {
             fill.toastChanged()
             writing.toastChanged()
         }
+        // The one-time coach slip under the first ghost text in another app, once onboarding is done.
+        let coach = CoachSlip()
+        coach.eligible = { [weak onboarding] in SettingsStore.shared.settings.onboarded && onboarding?.coachShown == false }
+        coach.onShown = { [weak onboarding] in onboarding?.markCoachShown() }
+        overlay.onShown = { caret in coach.ghostShown(caret: caret) }
+        overlay.onHidden = { coach.dismiss() }
         let firstLookClient = helper
+        let ghostEngine = engine
+        onboarding.complete = { text in
+            let context = TextFieldContext(beforeCursor: text, afterCursor: "", target: AppTarget(bundleIdentifier: "dev.caret.host", appName: "Caret"))
+            guard case .suggestion(let s)? = try? await ghostEngine.suggest(for: context) else { return nil }
+            return s.text
+        }
+        onboarding.modelReadiness = {
+            switch ghostEngine.state {
+            case .ready: return .ready
+            case .loading: return .loading(nil)
+            case .unavailable: return .unavailable
+            }
+        }
         onboarding.sendFirstLook = { firstLookClient.send($0) }
+        onboarding.sendPreview = { id, families, level in
+            firstLookClient.send(FirstLookPreviewRequest(requestId: id, at: Int64(Date().timeIntervalSince1970 * 1000), families: families, level: level))
+        }
         onboarding.sendAccept = { firstLookClient.send($0) }
         onboarding.sendStop = { firstLookClient.send($0) }
         onboarding.sendControl = { firstLookClient.send($0) }
@@ -409,9 +437,6 @@ public final class HostRuntime {
         surface.sendNotRight = { [weak memory] id, key, correction, answered in
             memory?.book.notRight(memoryId: id, offerKey: key, correction: correction, answered: answered) ?? false
         }
-        onboarding.onRemember = { [weak memory] in memory?.remember($0) }
-        onboarding.onForgetTyped = { [weak memory] in memory?.forgetTyped(labels: $0) }
-        onboarding.knowAvailable = { [weak memory] in memory?.book.state.acceptsAdd ?? false }
         perch.onOpenMemory = { [weak memory] in memory?.open() }
         perch.sendNotRight = { [weak memory] id, key, correction, answered in
             memory?.book.notRight(memoryId: id, offerKey: key, correction: correction, answered: answered) ?? false
@@ -597,7 +622,8 @@ public final class HostRuntime {
         let tap = self.tap
         // Accessibility granted in onboarding: a key tap the system refused at launch is made now.
         onboarding.onPermissionsChanged = { granted in
-            if granted.accessibility, !tap.restartIfRefused() { status.increment("tap.createFailed") }
+            // Never before the grant: an active tap asked for without it raises macOS's alert (startTapWhenTrusted).
+            if granted.accessibility, AXIsProcessTrusted(), !tap.restartIfRefused() { status.increment("tap.createFailed") }
         }
         let helper = self.helper
         let writeMethods = executor.writeMethods
@@ -764,7 +790,7 @@ public final class HostRuntime {
     public func openOnboarding() { onboarding.open(drawing: true) }
 
     /// The menu's "Jev is off. Add a key…": the key step on its own.
-    public func openJevKeyStep() { onboarding.open(drawing: true, only: .jevKey) }
+    public func openJevKeyStep() { onboarding.openKey() }
 
     /// The key step's keychain, check and helper restart (H12), from the app shell's services. Set before `start`, which
     /// is when onboarding first opens.
@@ -788,13 +814,19 @@ public final class HostRuntime {
         )
     }
 
-    /// Onboarding's Add to your browser, which the app shell runs (`ChromeBridgeInstaller`).
+    /// Add to your browser, which the app shell runs (`ChromeBridgeInstaller`), from the page line ("Caret can't see
+    /// this page yet"). Onboarding no longer asks for it; it is offered at first need.
+    /// The login item waits for the end of onboarding (`CaretServices.registersAfterOnboarding`); `due` hands off.
+    public func deferLoginItem(_ later: @escaping () -> Bool, due: @escaping () -> Void) {
+        onboarding.registersLoginItemLater = later
+        onboarding.onLoginItemDue = due
+    }
+
     public var onAddToChrome: () -> Void {
-        get { onboarding.onAddToChrome }
+        get { pageSight.onAddToChrome }
         set {
-            onboarding.onAddToChrome = newValue
-            // "Caret can't see this page yet" names the same next step.
             pageSight.onAddToChrome = newValue
+            onboarding.onAddToBrowser = newValue
         }
     }
 
@@ -809,10 +841,30 @@ public final class HostRuntime {
     /// Starts Caret's model download, or stops the one running. Only ever from a user's choice.
     public func toggleModelDownload() { modelKeeper.toggle() }
 
+    /// The key tap is made only once Caret has Accessibility. Asking macOS for an active keyboard tap without it raises
+    /// the "would like to control this computer" alert by itself, before onboarding has said a word (PX1's VM baseline,
+    /// ~/.caret-run/evidence/access/p1-run/out/shots/009-stuck-welcome.png). Until then a once-a-second
+    /// `AXIsProcessTrusted` read waits for the switch, whether or not onboarding is open.
+    private func startTapWhenTrusted() {
+        guard AXIsProcessTrusted() else {
+            guard trustPoll == nil else { return }
+            trustPoll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, AXIsProcessTrusted() else { return }
+                    self.trustPoll?.invalidate()
+                    self.trustPoll = nil
+                    self.startTapWhenTrusted()
+                }
+            }
+            return
+        }
+        if !tap.restartIfRefused() { status.increment("tap.createFailed") }
+    }
+
     public func start() throws {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
-        if !tap.start() { status.increment("tap.createFailed") }
+        startTapWhenTrusted()
         InputMethodState.shared.start()
         // The perch no longer follows focus: it sits on the task's window (v3 rim and perch).
         focus.onChange = { [coordinator, writing] change in

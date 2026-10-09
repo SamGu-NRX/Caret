@@ -167,6 +167,13 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? request.line())
     }
 
+    /// `firstLookPreviewRequest`: which lines a first look may send, built without sending anything. The preview comes
+    /// back to this connection only.
+    @discardableResult
+    func send(_ request: FirstLookPreviewRequest) -> Bool {
+        sendLine(try? request.line())
+    }
+
     /// `planRequest`: what the user asked Caret to do. The proposal comes back to this connection
     /// only. False when the helper is not connected; the ask field then says so.
     @discardableResult
@@ -416,7 +423,7 @@ final class HelperClient: @unchecked Sendable {
             case .alternatives, .action, .popup: s.offers &+= 1
             case .offerWithdrawn: s.withdrawals &+= 1
             case .taskProgress: s.progress &+= 1
-            case .firstLookReply: s.firstLookReplies &+= 1
+            case .firstLookReply, .firstLookPreview: s.firstLookReplies &+= 1
             case .memoryReply, .memoryDocumentReply: s.memoryReplies &+= 1
             case .memoryProvenance: s.provenances &+= 1
             case .planProposal: s.planProposals &+= 1

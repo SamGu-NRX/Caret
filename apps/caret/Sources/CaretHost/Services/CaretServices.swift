@@ -48,8 +48,10 @@ public final class CaretServices {
     /// Decides the launch role (`LaunchRole`), hands off to the agent when that is the role, and picks the mode.
     /// `namedHelperSocket`: `--helper-socket` or `CARET_SCREEN_SOCKET`, when given. `legacyHelperSocket`: where a
     /// build without a bundled helper connects, as before H4.
+    /// `onboarded`: Caret's settings say onboarding has finished; until then a first launch runs in-process and
+    /// registers its login item at the end of onboarding (`LoginItemPlan`).
     public nonisolated static func plan(home: CaretHome, namedHelperSocket: String?, legacyHelperSocket: String, bundle: URL,
-                            environment: [String: String]) -> Launch {
+                            environment: [String: String], onboarded: Bool = true) -> Launch {
         let facts = LaunchRole.Facts(
             agentMarker: environment[LaunchRole.agentMarker] == "1", parentIsLaunchd: getppid() == 1,
             openedByLaunchServices: environment[LaunchRole.launchServicesMarker] == "1",
@@ -57,7 +59,7 @@ public final class CaretServices {
         )
         var role = LaunchRole.decide(facts)
         if role == .handOffToAgent {
-            switch LoginAgent.handOff() {
+            switch LoginAgent.handOff(onboarded: onboarded) {
             case .handedOff(let why): return .exit(why)
             case .runHere(let why): role = .inProcess(reason: why)
             }
@@ -108,6 +110,12 @@ public final class CaretServices {
     }
 
     /// The launchd agent, which is the only copy whose menu offers "Stop Opening at Login".
+    /// This copy runs in-process only because its login item waits for the end of onboarding: then it hands off.
+    public var registersAfterOnboarding: Bool {
+        if case .launch(_, _, .inProcess(let reason)) = mode { return reason == LoginItemPlan.deferredReason }
+        return false
+    }
+
     public var isLoginAgent: Bool {
         if case .launch(_, _, .agent) = mode { return true }
         return false

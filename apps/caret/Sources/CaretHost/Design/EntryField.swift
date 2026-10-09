@@ -130,6 +130,8 @@ struct EntryField: View {
 /// the stand-in takes the height offered and never asks for more: a `GeometryReader` does that, where
 /// a fixed-size stack inside a flexible frame still pushed what came after it out of the window.
 struct ScrollingColumn<Content: View>: View {
+    /// `.visible` where the column must read as a scroll region at a glance (onboarding's privacy promise).
+    var indicators: ScrollIndicatorVisibility = .automatic
     @ViewBuilder var content: Content
     @Environment(\.rendersOffscreen) private var offscreen
     @Environment(\.offscreenScrolledToEnd) private var atEnd
@@ -145,7 +147,7 @@ struct ScrollingColumn<Content: View>: View {
             .clipped()
         } else {
             ScrollView(.vertical) { content }
-                .scrollIndicators(.automatic)
+                .scrollIndicators(indicators)
         }
     }
 }

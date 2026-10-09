@@ -199,18 +199,4 @@ final class PerchSnapshotTests: XCTestCase {
     func testActivityListMatchesItsReferences() throws {
         try SnapshotTests.check(Gallery.activity())
     }
-
-    func testOtherCharactersRenderForReview() throws {
-        guard let out = ProcessInfo.processInfo.environment["CARET_SNAPSHOT_OUT"].map({ URL(fileURLWithPath: $0) }) else { return }
-        for character in [FigureCharacter.seed, .wren] {
-            for item in Gallery.perch(character) {
-                for dark in [false, true] {
-                    let data = try XCTUnwrap(Gallery.png(item.view, dark: dark))
-                    let url = out.appendingPathComponent("\(character.rawValue)/\(item.name)-\(dark ? "dark" : "light").png")
-                    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try data.write(to: url)
-                }
-            }
-        }
-    }
 }

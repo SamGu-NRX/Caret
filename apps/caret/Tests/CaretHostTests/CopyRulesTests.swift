@@ -8,6 +8,7 @@ final class CopyRulesTests: XCTestCase {
     /// The files whose string literals are shown to people. Debug and log strings live elsewhere.
     private static let shownIn = [
         "CaretHost/Onboarding/OnboardingView.swift",
+        "CaretHost/Onboarding/OnboardingCopy.swift",
         "CaretHost/Perch/PerchViews.swift",
         "CaretHost/Perch/PerchController.swift",
         "CaretHost/Design/PopupView.swift",

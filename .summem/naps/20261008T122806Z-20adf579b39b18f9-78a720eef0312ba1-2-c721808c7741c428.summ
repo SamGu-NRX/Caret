@@ -1,0 +1,1 @@
+Candidate generation stops at MAX_GENERATOR_VISITS, not elapsed time (no budgetMs or generator clock); a visit-cap stop still marks a partial window cut. Tests wiring page sessions into Helper close them before Helper.shutdown and Store.close.

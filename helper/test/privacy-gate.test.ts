@@ -100,7 +100,7 @@ describe("privacy build gate", () => {
   it("refuses an onboarding view that shows other words than the resource", () => {
     for (const [original, edit] of [
       ["return PrivacyPromise(text)", "return nil"],
-      ["var promise = PermissionsScreen.privacyLine\n", 'var promise = PermissionsScreen.privacyLine ?? PrivacyPromise("")\n'],
+      ["var promise = PrivacyPromiseText.bundled\n", 'var promise = PrivacyPromiseText.bundled ?? PrivacyPromise("")\n'],
       ["Text(text)\n", 'Text("It sends nothing from an app or website you\'ve switched off.")\n'],
     ] as const) {
       const path = fixture(); acceptAll(path);

@@ -22,30 +22,38 @@ public enum LoginAgent {
     /// The agent's SMAppService. Only the shipped paths (`--unregister`, the menu) construct it.
     public static func system() -> Service { SMAppService.agent(plistName: plistName) }
 
-    enum HandOff: Equatable {
+    public enum HandOff: Equatable {
         /// The agent is registered and running, or was just started: this copy exits.
         case handedOff(String)
         /// Run here instead, without the page bridge.
         case runHere(String)
     }
 
-    static func handOff() -> HandOff {
+    /// `onboarded`: registration waits for the end of onboarding (`LoginItemPlan`), so macOS's "Background Items Added"
+    /// does not compete with the first win. `runHere` then carries `LoginItemPlan.deferredReason`.
+    public static func handOff(onboarded: Bool) -> HandOff {
         let service = SMAppService.agent(plistName: plistName)
+        let status: LoginItemPlan.Status
         switch service.status {
-        case .enabled:
+        case .enabled: status = .enabled
+        case .requiresApproval: status = .requiresApproval
+        case .notRegistered: status = .notRegistered
+        case .notFound: status = .notFound
+        @unknown default: status = .unknown
+        }
+        switch LoginItemPlan.decide(status: status, onboarded: onboarded) {
+        case .kickstart:
             // Registered already; the user quit it (exit 0 keeps launchd from restarting it). Start it again.
             return kickstart()
-        case .requiresApproval:
-            return .runHere("Caret's login item is turned off in System Settings › Login Items")
-        case .notRegistered, .notFound:
+        case .runHere(let reason, _):
+            return .runHere(reason)
+        case .register:
             do {
                 try service.register()
                 return confirmStarted(after: "registered \(label); launchd starts it now and at each login")
             } catch {
                 return .runHere("could not register \(label): \(error.localizedDescription)")
             }
-        @unknown default:
-            return .runHere("unknown login item status \(service.status.rawValue)")
         }
     }
 

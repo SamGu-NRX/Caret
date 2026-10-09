@@ -548,40 +548,51 @@ public struct DebugState: Codable, Equatable, Sendable {
         }
     }
 
-    /// The debug socket's `onboarding` reply (`OnboardingFlow.debugInfo`).
+    /// The debug socket's `onboarding` reply (`OnboardingFlow.debugInfo`). Nothing typed or pasted appears here,
+    /// only lengths (CodeRabbit #8).
     public struct OnboardingInfo: Codable, Equatable, Sendable {
-        public struct TryItInfo: Codable, Equatable, Sendable {
-            /// How long the staged field's text is, in UTF-16 units. The text itself never leaves the
-            /// host: what a person types during onboarding can be anything (CodeRabbit #8).
-            public var valueLength: Int
-            /// The field holds exactly the synthetic sample value, which is what Tab puts there.
-            public var isSample: Bool
-            public var offerVisible: Bool
-            public var completed: Bool
-            public var declined: Bool
-            public var tabs: Int
+        public struct HelloInfo: Codable, Equatable, Sendable {
+            public var textLength: Int
+            public var ghostLength: Int?
+            /// `ready`, `loading` or `unavailable`.
+            public var model: String
+            public var apps: [String]
+            public var taken: Bool
         }
 
+        public struct AccessInfo: Codable, Equatable, Sendable {
+            public var granted: Bool
+            public var reopened: Bool
+            public var helpOpen: Bool
+        }
+
+        /// `hello`, `access`, `on` or `first`.
         public var step: String
         /// The step's place among the steps this flow shows (`stepCount` of them).
         public var stepIndex: Int
         public var stepCount: Int?
-        /// The `know` step is in the flow (the helper keeps typed values).
-        public var showsKnow: Bool?
-        public var roles: [String]
-        public var level: String
         public var canContinue: Bool
         public var finished: Bool
+        /// `main` or `guide`.
+        public var frame: String?
+        /// The flow is one step on its own.
+        public var alone: Bool?
         public var permissions: OnboardingPermissions?
-        public var showsInputMonitoring: Bool?
-        public var advancingAfterGrant: Bool?
-        public var tryIt: TryItInfo?
-        /// Running apps that also take Tab (`OnboardingFlow.State.otherTabOwners`); nil when none.
+        /// Running apps that also take Tab; nil when none.
         public var otherTabOwners: [String]?
-        /// The `know` screen: how long each typed value is (never the value), and the problem
-        /// Continue showed.
-        public var about: [String: Int]?
-        public var aboutProblem: String?
+        public var hello: HelloInfo?
+        public var access: AccessInfo?
+        /// `idle`, `building`, `ready`, `empty` or `failed`, with the ready preview's window and character counts.
+        public var preview: String?
+        public var previewWindows: Int?
+        public var previewChars: Int?
+        /// `pending`, `sent` or `kept`.
+        public var decision: String?
+        /// The browser step: trusted installed browsers by name, whether the extension's page was opened, and whether
+        /// the extension has connected.
+        public var browsers: [String]?
+        public var browserOpened: Bool?
+        public var browserConnected: Bool?
         /// `idle`, `asking`, `found`, `nothing` or `failed`.
         public var firstLook: String?
         public var firstLookRequest: String?
@@ -590,28 +601,25 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var firstLookError: String?
         /// The keys the found offer or its line take now: `tab`, `cmd-1`, `cmd-z`, `esc`.
         public var firstLookKeys: [String]?
-        /// The taken offer's phase (`FirstLookRun.Phase.name`) and its line, as the pebble says it.
+        /// The taken offer's phase (`FirstLookRun.Phase.name`) and its line.
         public var firstLookRun: String?
         public var firstLookLine: String?
-        /// H12: the Jev key step is in the flow (no key was available when it opened); the flow shows only one step
-        /// (`OnboardingFlow.State.only`), as a returning user missing a grant or the menu's key item sees it.
-        public var showsJevKey: Bool?
-        public var only: String?
-        /// The key step: its phase (`OnboardingFlow.JevKeyDraft.Phase.name`), how long the pasted text is (never the
-        /// text), and whether a key is saved.
+        public var declined: Bool?
+        /// `asking` or `denied`: macOS's Calendar prompt around the first event taken here.
+        public var calendar: String?
+        /// The key field (when the cloud model needs a key): its phase, the pasted length (never the text), and
+        /// whether a key is saved.
         public var jevKey: String?
         public var jevKeyLength: Int?
         public var jevKeyStored: Bool?
         /// The window is on screen. False on a run with `--onboarding hidden`.
         public var windowShown: Bool?
-        /// What a flow without a window did not do (`openSystemSettings.accessibility`).
+        /// What a flow without a window did not do (`openSystemSettings`).
         public var suppressed: [String]?
 
-        public init(step: String, stepIndex: Int, roles: [String], level: String, canContinue: Bool, finished: Bool) {
+        public init(step: String, stepIndex: Int, canContinue: Bool, finished: Bool) {
             self.step = step
             self.stepIndex = stepIndex
-            self.roles = roles
-            self.level = level
             self.canContinue = canContinue
             self.finished = finished
         }

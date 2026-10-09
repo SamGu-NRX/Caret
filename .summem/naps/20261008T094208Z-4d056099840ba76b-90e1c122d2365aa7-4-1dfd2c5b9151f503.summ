@@ -1,0 +1,1 @@
+New helper script env names go in privacy-gate.ts processEnv()/HELPER_ONLY_ENV. Await PageFocus.moved in tests. Before loosening a fill guard, diff guard-adversary --verifier vs base. Value questions need askValues in hello; realfill-asks scores AskAsks.fallback as automatic.

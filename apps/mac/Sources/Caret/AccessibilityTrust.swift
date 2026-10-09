@@ -59,11 +59,9 @@ enum AccessibilityTrust {
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
         ]
+        // NSWorkspace.open reports whether the URL opened; go on to the next address only when it did not.
         for string in urls {
-            if let url = URL(string: string) {
-                NSWorkspace.shared.open(url)
-                return
-            }
+            if let url = URL(string: string), NSWorkspace.shared.open(url) { return }
         }
     }
 }

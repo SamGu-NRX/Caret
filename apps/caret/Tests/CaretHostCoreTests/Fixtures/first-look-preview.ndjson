@@ -1,0 +1,3 @@
+{"at":1790000000000,"families":["fill","event"],"level":"balanced","requestId":"preview-1","type":"firstLookPreviewRequest","v":1}
+{"at":1790000000000,"previewId":"preview-local-1","requestId":"preview-1","totalChars":18,"type":"firstLookPreview","v":1,"windows":[{"appName":"Notes","bundleId":"com.apple.Notes","charsSent":18,"lines":[{"sent":true,"text":"About me"},{"sent":true,"text":"Name: Dana"},{"sent":false,"text":""}],"title":"About me"}]}
+{"at":1790000000000,"previewId":"preview-local-2","requestId":"preview-2","totalChars":0,"type":"firstLookPreview","v":1,"windows":[]}

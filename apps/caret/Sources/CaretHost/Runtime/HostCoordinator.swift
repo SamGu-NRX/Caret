@@ -1,6 +1,7 @@
 import ApplicationServices
 import AutocompleteCore
 import CaretHostCore
+import Carbon
 import Foundation
 import MacContextCapture
 import QuartzCore
@@ -99,6 +100,7 @@ final class HostCoordinator {
               policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
               !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
               !SecretField.holdsSecret(field, traits: context.traits),
+              ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()),
               field.selection.isEmpty
         else { return reset() }
         guard Self.fieldAgrees(field, with: context) else {
@@ -370,6 +372,12 @@ final class HostCoordinator {
         let anchors = snapshot.caretRectAX.map { [CGPoint(x: $0.midX, y: $0.midY)] } ?? []
         if let hold = Visibility.hold(for: field.identity, anchors: anchors, covered: noteCover) {
             status.increment("held.ghost.\(hold.rawValue)")
+            overlay.hide()
+            return false
+        }
+        // Secure input may have come on while the engine worked: checked again just before drawing.
+        guard ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) else {
+            status.increment("held.ghost.secureInput")
             overlay.hide()
             return false
         }
