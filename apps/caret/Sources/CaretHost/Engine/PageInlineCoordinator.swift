@@ -35,8 +35,14 @@ final class PageInlineCoordinator {
     private var lastField: PageField?
     /// The web origin of the page the user types in, read once per page field (`BrowserPage.frontOrigin` walks
     /// Accessibility, too slow for every keystroke), for that site's personal instructions.
-    private(set) var origin: String?
+    private var origin: String?
     private var originFocus: String?
+
+    /// The site's origin for a field in the browser `bundleID`: only when the page field the helper last reported is
+    /// in that browser.
+    func origin(forBundleID bundleID: String) -> String? {
+        lastField?.app.bundleId == bundleID ? origin : nil
+    }
     private var tabOwner: String?
     private var activation: NSObjectProtocol?
     private var inputMethod: NSObjectProtocol?

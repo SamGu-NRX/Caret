@@ -185,12 +185,14 @@ final class PageSightTests: XCTestCase {
         XCTAssertEqual(take().count, 1)
     }
 
-    /// Add to Chrome is the next step for Chrome only; paused, Caret says nothing; a helper that
-    /// goes away takes what it said with it.
-    func testOnlyChromeAndNotWhilePausedOrAfterTheHelperGoes() {
+    /// Every Chromium browser hears it; Add to Chrome is offered where the installer can add it
+    /// (Chrome, Helium); paused, Caret says nothing; a helper that goes away takes what it said with it.
+    func testEveryBrowserHearsItAddOnlyWhereItCanNotWhilePausedOrAfterTheHelperGoes() {
         let (sight, _, take) = rig()
         sight.receive(state(.missing, AppRef(pid: 6200, bundleId: "com.brave.Browser", name: "Brave")), frontmostPID: 6200, paused: false)
-        XCTAssertEqual(take(), [])
+        XCTAssertEqual(take(), [PageSight.Line(browserPID: 6200, browserName: "Brave", canAdd: false)])
+        sight.receive(state(.missing, AppRef(pid: 6300, bundleId: "net.imput.helium", name: "Helium")), frontmostPID: 6300, paused: false)
+        XCTAssertEqual(take().last??.canAdd, true)
         sight.receive(state(.missing), frontmostPID: 6100, paused: true)
         XCTAssertEqual(take(), [])
         sight.helperGone()

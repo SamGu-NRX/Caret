@@ -188,8 +188,7 @@ public final class HostRuntime {
         // Brief item 4: the user's personal instructions in every completion prompt; a page's site from the page path.
         engine.instructions = { [weak pageInline] context in
             let id = context.target.bundleIdentifier
-            let origin = PageSight.isChrome(bundleID: id) ? pageInline?.origin : nil
-            return SettingsStore.shared.settings.instructions.lines(bundleID: id, origin: origin)
+            return SettingsStore.shared.settings.instructions.lines(bundleID: id, origin: pageInline?.origin(forBundleID: id))
         }
         // First run: Sam's Cotypist instructions fill an empty "about me", read once from the one key (approved
         // 2026-10-09). The text is never logged.
