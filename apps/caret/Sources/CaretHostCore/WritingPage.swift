@@ -25,7 +25,7 @@ public enum WritingPage {
 
     public struct State: Equatable, Sendable {
         public var keys = GhostKeys.caret
-        /// The About you editor's text, and the saved text it started from.
+        /// The How you write editor's text, and the saved text it started from.
         public var aboutDraft = ""
         public var aboutSaved = ""
         public var entries: [Entry] = []
@@ -35,7 +35,7 @@ public enum WritingPage {
         public var hereApp: App?
         public var herePage: String?
         public var appsOff: [App] = []
-        /// A line under the About you editor: an import that found nothing.
+        /// A line under the How you write editor: an import that found nothing.
         public var problem: String?
 
         public init() {}
@@ -68,7 +68,7 @@ public enum WritingPage {
         return sites.sorted { $0.name < $1.name } + apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    /// The count under About you: how much of it reaches the model with nothing else beside it.
+    /// The count under How you write: how much of it reaches the model with nothing else beside it.
     public static func count(_ text: String) -> String {
         let n = PersonalInstructions.kept(text)?.count ?? 0
         let limit = PersonalInstructions.promptCharacters
@@ -87,14 +87,15 @@ public enum WritingPageCopy {
     public static let tab = "Writing"
     /// The window's line under its title on this tab.
     public static let intro = "How Caret writes with you: what it knows about you, its keys, and where it stays out."
-    public static let aboutHead = "About you"
+    /// Not "About you": the Memory tab's first section has that name and holds facts, not writing instructions.
+    public static let aboutHead = "How you write"
     public static let aboutIntro = "Caret's suggestions follow this in every app. Only the model on this Mac reads it."
     public static let aboutPlaceholder = "Who you are and how you write. For example: I'm a student. I write short, plain sentences."
     public static let importCotypist = "Import from Cotypist"
     public static let nothingToImport = "Cotypist has no instructions to import."
     public static let save = "Save"
     public static let entriesHead = "In one app or site"
-    public static let entriesIntro = "Used with About you when you write there."
+    public static let entriesIntro = "Used with How you write, in that app or on that site."
     public static let entriesEmpty = "None yet. Add some for the app or page you were in."
     public static func add(_ name: String) -> String { "Add for \(name)" }
     public static let edit = "Edit"

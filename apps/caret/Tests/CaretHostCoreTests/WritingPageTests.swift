@@ -2,7 +2,7 @@ import CaretScreenCore
 import XCTest
 @testable import CaretHostCore
 
-/// The Writing tab's state: which entries show, what can be added, and the count under About you.
+/// The Writing tab's state: which entries show, what can be added, and the count under How you write.
 final class WritingPageTests: XCTestCase {
     func testEntriesListSitesThenAppsByName() {
         var i = PersonalInstructions()

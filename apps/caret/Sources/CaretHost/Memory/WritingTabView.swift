@@ -4,7 +4,7 @@ import SwiftUI
 /// What Caret knows' Writing tab (brief items 4, 6 and 7), in the window's own parts: groups under small heads, rows on
 /// hairlines, no cards, choices in pop-ups, buttons in the window's two kinds.
 ///
-/// About you first, since it shapes every suggestion; then instructions for one app or site; then the accept keys;
+/// How you write first, since it shapes every suggestion; then instructions for one app or site; then the accept keys;
 /// then the apps Caret is off in, shaped as the Sites tab's list. Saving is explicit (Save, ⌘S) because the settings
 /// file is written and every observer told on each change. Motion: an entry or an app added or removed fades over
 /// 120 ms, as a site's row does; editors open and close with no motion, since each follows a click the user is
@@ -27,7 +27,7 @@ struct WritingTabView: View {
         .probed("writing")
     }
 
-    // MARK: - About you
+    // MARK: - How you write
 
     private var about: some View {
         VStack(alignment: .leading, spacing: 8) {
