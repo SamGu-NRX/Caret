@@ -274,9 +274,13 @@ interface Task {
 /**
  * Lets go of the source windows a task kept, once it can no longer ask a target question: tasks stay in
  * the executor's map for undo, which needs only the write ledger, and a kept window holds all its nodes.
+ * The guard goes too: its checked provenances hold the redacted view of every source window they were read from
+ * (fill/contract.ts READS), past the model's expiry and a site's switch-off. Undo never calls it, and no step runs
+ * after this; a guard that refuses, not none, so a step that somehow did would not write unchecked.
  */
-function releaseSources(task: Task): void {
+export function releaseSources(task: Pick<Task, "sourced" | "guard">): void {
   task.sourced = task.sourced.map((v) => ({ ...v, window: undefined }));
+  if (task.guard !== null) task.guard = () => "the run has ended";
 }
 
 class StepStop extends Error {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { releaseSources } from "../src/executor/executor.ts";
 import { Helper } from "../src/helper.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
@@ -177,5 +178,24 @@ describe("the helper's copies of a window's text", () => {
     h.purgeWindow(snap([text("n/kept~0", "Inbox")], { at: 2, windowId: NOTE, app: MAIL_APP }));
     expect(holds(h.model, PLANTED)).toBe(false);
     expect(found(2)).toBeNull();
+  });
+});
+
+describe("a finished task's hold on its source windows", () => {
+  it("lets go of the source window and of the guard that holds its checked view, and the guard left refuses", () => {
+    const m = new ScreenModel();
+    planted(m, 0);
+    const window = m.windows.get(NOTE);
+    const task = { sourced: [{ text: "4471 Larkspur Lane", windowId: NOTE, window }], guard: (): string | null => (window === undefined ? "gone" : null) };
+    expect(task.guard()).toBeNull();
+    releaseSources(task);
+    expect(task.sourced).toEqual([{ text: "4471 Larkspur Lane", windowId: NOTE, window: undefined }]);
+    expect(task.guard()).toBe("the run has ended");
+  });
+
+  it("leaves a task with no guard without one", () => {
+    const task = { sourced: [], guard: null };
+    releaseSources(task);
+    expect(task.guard).toBeNull();
   });
 });
