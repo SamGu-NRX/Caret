@@ -64,6 +64,20 @@ if CommandLine.arguments.dropFirst().first == "--probe-length", CommandLine.argu
     RunLoop.main.run()
 }
 
+// Dev mode: `Caret --probe-rewrite <sentences.txt> <out.ndjson>` times the rewrite generator's modes.
+if CommandLine.arguments.dropFirst().first == "--probe-rewrite", CommandLine.arguments.count >= 4 {
+    let sentences = URL(fileURLWithPath: CommandLine.arguments[2])
+    let out = URL(fileURLWithPath: CommandLine.arguments[3])
+    let modelURL = configuration.modelURL
+    MainActor.assumeIsolated {
+        Task {
+            print(await DevProbe.rewrite(modelURL: modelURL, sentences: sentences, out: out), terminator: "")
+            exit(0)
+        }
+    }
+    RunLoop.main.run()
+}
+
 // Dev mode: `Caret --probe-replay <cases.json> <out.json>` records the engine's outcome for each
 // case as a `--ghost-replay` file, and prints every candidate's refusal and fit scores.
 if CommandLine.arguments.dropFirst().first == "--probe-replay", CommandLine.arguments.count >= 4 {

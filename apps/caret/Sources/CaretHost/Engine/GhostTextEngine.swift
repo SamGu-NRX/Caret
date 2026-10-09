@@ -76,6 +76,8 @@ final class GhostTextEngine {
     private(set) var lastFitMs: Double?
     private var engine: ConstrainedGenerationEngine?
     private var scorer: SuffixScorer?
+    /// The runtime the engine decodes with, shared with `RewriteGenerator`.
+    private var runtime: LocalModelRuntime?
     /// `Caret --probe-replay`: every candidate is scored, refused or not, for calibration. The
     /// outcome is decided as in a normal run.
     var diagnostic = false
@@ -101,6 +103,7 @@ final class GhostTextEngine {
         case .success(let loaded):
             engine = loaded.engine
             scorer = SuffixScorer(runtime: loaded.runtime)
+            runtime = loaded.runtime
             state = .ready
             await warmUp(loaded.engine)
         case .failure(let error):
@@ -119,9 +122,16 @@ final class GhostTextEngine {
         state = .unavailable("disabled")
     }
 
+    /// Rewrites of `sentence` with the same model (`RewriteGenerator`); nil when it isn't loaded.
+    func rewrites(of sentence: String, mode: RewriteGenerator.Mode) async throws -> RewriteGenerator.Output? {
+        guard let runtime else { return nil }
+        return try await RewriteGenerator(runtime: runtime).rewrites(of: sentence, mode: mode)
+    }
+
     func shutdown() async {
         let engine = self.engine
         self.engine = nil
+        runtime = nil
         state = .unavailable("shut down")
         await engine?.shutdown()
     }
