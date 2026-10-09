@@ -368,8 +368,6 @@ export class Executor {
   private readonly heardAfterInterrupt = new WeakSet<Change>();
   /** The value writes on their way, and those a lost answer left in a ledger, whose field's input is watched (InputWatch). */
   private readonly inputWatches = new Set<InputWatch>();
-  /** When each watched write was sent, for Undo's check of a page field's input time (PageControl.inputAt). */
-  private readonly sentAt = new WeakMap<LedgerEntry, number>();
   /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
   readonly targetChoices: { taskId: string; step: number; chose: string | null; jev: JevTrace }[] = [];
   /** Bumped on every reader connection: a running task stops at its next act when it changes. */
@@ -584,7 +582,7 @@ export class Executor {
    */
   private keepWatch(watch: InputWatch, entry: Extract<LedgerEntry, { kind: "write" }>): void {
     watch.entry = entry;
-    this.sentAt.set(entry, watch.since);
+    entry.sentAt ??= watch.since;
     this.inputWatches.add(watch);
   }
 
@@ -1214,7 +1212,6 @@ export class Executor {
         if (typed) entry.mayIncludeInput = true;
         this.addLedger(task, entry);
         if (since === undefined) return;
-        this.sentAt.set(entry, since);
         // Under a pause or stop the reader's input can still arrive after this read (B29): the watch stays with the entry.
         const last = watches.at(-1);
         if (task.interrupt !== null && last !== undefined) {
@@ -1444,7 +1441,7 @@ export class Executor {
     if (verb.kind === "write" || verb.kind === "press" || verb.kind === "raise") this.authorizeAct(task, windowId);
     // Saved before the reader gets it: a crash while it is on its way leaves a row that says what may have landed.
     if (verb.kind === "write" && verb.mark !== undefined) {
-      this.journalSave(task, { kind: "write", step: task.next, pid: verb.pid, windowId: verb.windowId, key: verb.key, role: verb.role, before: verb.expect, value: verb.value, mark: verb.mark });
+      this.journalSave(task, { kind: "write", step: task.next, pid: verb.pid, windowId: verb.windowId, key: verb.key, role: verb.role, before: verb.expect, value: verb.value, mark: verb.mark, ...(verb.attribute === "focused" ? {} : { sentAt: Date.now() }) });
     } else if (verb.kind === "press") this.journalSave(task, { kind: "press", step: task.next, label: verb.label, windowId: verb.windowId });
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
@@ -1560,7 +1557,7 @@ export class Executor {
     // any write that may include the user's input. A write whose answer was lost always kept the value it was writing.
     const ledger: LedgerEntry[] = r.ledger.map((e) => (r.afterIntended === true || e.kind !== "write" || e.unconfirmed === true ? e : { ...e, mayIncludeInput: true }));
     const p = r.pending;
-    if (p?.kind === "write") ledger.push({ kind: "write", step: p.step, pid: p.pid, windowId: p.windowId, key: p.key, role: p.role, before: p.before, after: p.value, mark: p.mark, unconfirmed: true });
+    if (p?.kind === "write") ledger.push({ kind: "write", step: p.step, pid: p.pid, windowId: p.windowId, key: p.key, role: p.role, before: p.before, after: p.value, mark: p.mark, unconfirmed: true, ...(p.sentAt === undefined ? {} : { sentAt: p.sentAt }) });
     else if (p?.kind === "press") ledger.push({ kind: "press", step: p.step, label: p.label, windowId: p.windowId });
     else if (p?.kind === "calendar") ledger.push({ kind: "calendar", step: p.step, eventId: null, calendar: p.calendar, title: p.title, start: p.start, end: p.end });
     const windows = new Map<string, string>();
@@ -1901,8 +1898,7 @@ export class Executor {
     if (e.mayIncludeInput === true) return final(`the field changed while Caret wrote it and may hold your typing, so Caret left it as it is; ${contents}`);
     // A page field's own record of the user's input since the write was sent, which a recovery read that failed could
     // not see (PR #33 review). The page keeps that record for 30 s after Caret's grant ends.
-    const sentAt = this.sentAt.get(e);
-    if (field?.inputAt !== undefined && sentAt !== undefined && field.inputAt >= sentAt) return final(`you typed in the field after Caret sent its write, so it may hold your typing and Caret left it as it is; ${contents}`);
+    if (field?.inputAt !== undefined && e.sentAt !== undefined && field.inputAt >= e.sentAt) return final(`you typed in the field after Caret sent its write, so it may hold your typing and Caret left it as it is; ${contents}`);
     const shown = field?.value ?? "";
     // A prefix is put back only while the field holds exactly the one Caret read before the window was the user's
     // again (readUnconfirmed). A prefix first read here may be the user's typing (PR #21 review). A legacy `true`

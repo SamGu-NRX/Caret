@@ -330,6 +330,18 @@ describe("page: the walk's record of the user's input", () => {
     expect(r.held()).toBe(INTENDED);
   });
 
+  it("keeps the send time across a helper restart, so a recovered write's Undo still reads the page's input (PR #33 review)", async () => {
+    const r = rig("page", { landed: false });
+    await r.ready;
+    const sentAt = Date.now() - 1000;
+    // The row a crash left with the write on its way; the content script outlived the helper and saw the user type.
+    r.helper.executor.recover({ taskId: "rec", startedAt: sentAt - 100, savedAt: sentAt, plan: r.plan, unprompted: false, granted: true, readerId: null, next: 0, ledger: [], pending: { kind: "write", step: 0, pid: 4100, windowId: PAGE_WIN, key: r.key, role: "AXTextField", before: ORIGINAL, value: INTENDED, mark: "m-rec", sentAt }, skillId: null, window: null, afterIntended: true });
+    expect(r.helper.executor.ledger("rec")).toMatchObject([{ unconfirmed: true, sentAt }]);
+    r.type(INTENDED);
+    expect(await r.helper.executor.undo("rec")).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringContaining("may hold your typing") }] });
+    expect(r.held()).toBe(INTENDED);
+  });
+
   it("does not count input from before the write was sent, such as the key that accepted the fill", async () => {
     const r = rig("page", { landed: true, inputBefore: 1000 });
     expect(await run(r)).toMatchObject({ outcome: "stopped", acted: 1, detail: expect.stringContaining("Written before stop") });
