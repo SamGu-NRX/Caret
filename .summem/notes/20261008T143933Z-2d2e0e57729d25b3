@@ -1,1 +1,0 @@
-realfill-asks seals each request before the canned oracle answers it, so FillTrace.owns(req) is false there: the oracle reads fill questions by their text on the scoreboard but by the trace in the vs1 kit (runB31). Don't make oracle rules depend on the trace.

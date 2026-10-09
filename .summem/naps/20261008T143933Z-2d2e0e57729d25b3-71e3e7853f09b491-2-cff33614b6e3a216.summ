@@ -1,0 +1,1 @@
+realfill-asks seals requests before the oracle answers, so FillTrace.owns(req) is false there; keep oracle rules text-based. v2/choices: only Asks naming the source window get unit-based choices (whole unit sent); the user's request is always a basis.
