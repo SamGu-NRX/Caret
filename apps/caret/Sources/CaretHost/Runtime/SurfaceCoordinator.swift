@@ -588,7 +588,7 @@ final class SurfaceCoordinator {
         }
         switch placement {
         case .inPlace:
-            panel.setContent(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil), growing: growing)
+            panel.setContent(typing(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil), content: content, placing: false), growing: growing)
             panel.text = text
             if !panel.isVisible { panel.enter() }
         case .atField(let field, let caret, let pid, let entering):
@@ -625,9 +625,41 @@ final class SurfaceCoordinator {
             if enter || panel.anchor.point != Self.cocoaPoint(chosen) || panel.anchor.corner != Self.corner(chosen.spot.corner) {
                 panel.pin(HostedPanel.Anchor(corner: Self.corner(chosen.spot.corner), point: Self.cocoaPoint(chosen)))
             }
-            panel.setContent(view(chosen.spot.isNarrow ? PopupView.minWidth : nil), growing: growing)
+            panel.setContent(typing(view(chosen.spot.isNarrow ? PopupView.minWidth : nil), content: content, placing: true), growing: growing)
             panel.text = text
             if enter { panel.enter() }
+        }
+    }
+
+    /// Tells the panel's figure where the caret is from its seat, so its rest glances go to the
+    /// typing (`FigureIdle`). Content swapped in place keeps the pinned corner but not the placed
+    /// frame's size, so its frame is measured and pinned again, as the growth check does; a line
+    /// whose figure is away (the working line, every second while work counts up) has nothing to
+    /// glance with and is not measured.
+    private func typing(_ view: AnyView, content: PanelContent?, placing: Bool) -> AnyView {
+        guard let placed else { return view }
+        var frame = placed.choice.frame
+        if !placing {
+            switch content {
+            case .line(let line)?, .compactLine(let line)?:
+                guard FigureIdle.allowance(state: line.figure, size: Tokens.FigureSize.line) != nil else {
+                    return AnyView(view.environment(\.figureTyping, nil))
+                }
+            case .popup?, nil:
+                break
+            }
+            frame = Self.frame(pinnedAt: placed.choice, size: panel.measure(view))
+        }
+        let direction = FigureIdle.typingDirection(panel: frame, seat: Self.seat(content), caret: placed.caret)
+        return AnyView(view.environment(\.figureTyping, direction))
+    }
+
+    /// The middle of the figure's seat from the panel's top-left corner.
+    private static func seat(_ content: PanelContent?) -> CGPoint {
+        switch content {
+        case .popup?: return CGPoint(x: 12 + PopupView.figureSize / 2, y: 20)
+        case .compactLine?: return CGPoint(x: 5 + Tokens.FigureSize.compact / 2, y: Tokens.Shape.compactHeight / 2)
+        case .line?, nil: return CGPoint(x: Tokens.Shape.slipLeading + Tokens.FigureSize.line / 2, y: Tokens.Shape.slipHeight / 2)
         }
     }
 

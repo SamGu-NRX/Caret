@@ -110,17 +110,20 @@ final class ReduceMotionTests: XCTestCase {
         XCTAssertEqual(Motion.exit(0.22, reduce: false), 0.22)
     }
 
-    /// The figure's breath, blink, squash and bob stop, and postures jump.
-    func testTheFiguresRepeatingMotionAndGesturesStop() {
-        for state in FigureState.allCases {
-            XCTAssertEqual(FigureMotion.plan(state: state, animated: true, reduce: true, perched: false), FigureMotion(), "\(state)")
+    /// Under Reduce Motion the figure's gestures, rest beats and moves stop and postures jump; only
+    /// the light's crossfade stays, at 0.12 s.
+    func testTheFiguresGesturesAndRestStopUnderReduceMotion() {
+        for state in FigureState.allCases where state != .absent {
+            XCTAssertEqual(FigureMotion.plan(state: state, animated: true, reduce: true, size: 22),
+                           FigureMotion(crossfade: Motion.Duration.reduced), "\(state)")
         }
-        let offering = FigureMotion.plan(state: .offering, animated: true, reduce: false, perched: false)
-        XCTAssertTrue(offering.breathes && offering.blinks)
-        XCTAssertEqual(offering.posture, Motion.Duration.glance)
-        let done = FigureMotion.plan(state: .done, animated: true, reduce: false, perched: false)
+        let offering = FigureMotion.plan(state: .offering, animated: true, reduce: false, size: 14)
+        XCTAssertEqual(offering.posture, .settle)
+        XCTAssertEqual(offering.rest, FigureIdle.Allowance(small: true, glances: true))
+        let done = FigureMotion.plan(state: .done, animated: true, reduce: false, size: 14)
         XCTAssertTrue(done.gesture && done.glowPulse)
-        XCTAssertFalse(FigureMotion.plan(state: .offering, animated: true, reduce: false, perched: true).breathes, "the perch never breathes")
+        XCTAssertEqual(FigureMotion.plan(state: .error, animated: true, reduce: false, size: 22).posture, .heavy, "the light going out does not bounce")
+        XCTAssertEqual(FigureMotion.plan(state: .offering, animated: false, reduce: false, size: 22), FigureMotion(), "a render is one frozen frame")
     }
 
     /// Under Reduce Motion a slip draws its end state in every frame: the render with the
