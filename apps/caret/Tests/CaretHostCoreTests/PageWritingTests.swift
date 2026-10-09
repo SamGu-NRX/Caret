@@ -250,4 +250,31 @@ final class PageWritingTests: XCTestCase {
         XCTAssertTrue(r.checks.isEmpty)
         XCTAssertEqual(r.machine.lastOutcome, "afterEdit")
     }
+
+    /// PR #16 review: the check waits for the quiet period, then runs on the settled field.
+    func testTheCheckRunsOnceTheQuietPeriodPasses() {
+        let r = Rig()
+        r.gate = PageWritingMachine.Gate(allowed: true, contentEditable: true, settings: PageInlineSettings(), language: "en")
+        r.field(Self.field("I like teh", kind: .contenteditable))
+        var f = Self.field("I like teh ", kind: .contenteditable)
+        f.text?.quietMs = 200
+        r.field(f)
+        r.clock.advance(by: Double(PageInlineMachine.editQuietMs - 200) / 1000 - 0.05)
+        XCTAssertTrue(r.checks.isEmpty, "not before the quiet ends")
+        r.clock.advance(by: 0.1)
+        XCTAssertEqual(r.checks.count, 1)
+        XCTAssertEqual(r.checks.first?.word, true)
+    }
+
+    func testAnotherReportDuringTheQuietReplacesTheWaitingCheck() {
+        let r = Rig()
+        r.gate = PageWritingMachine.Gate(allowed: true, contentEditable: true, settings: PageInlineSettings(), language: "en")
+        r.field(Self.field("I like teh", kind: .contenteditable))
+        var f = Self.field("I like teh ", kind: .contenteditable)
+        f.text?.quietMs = 200
+        r.field(f)
+        r.field(nil)
+        r.clock.advance(by: 1)
+        XCTAssertTrue(r.checks.isEmpty, "the user left the field: nothing runs later")
+    }
 }

@@ -68,6 +68,8 @@ public final class PageWritingMachine {
     /// The text the field last reported, by focus: a check runs on the change from it.
     private var previous: (focus: String, value: String)?
     private var pending: (check: Check, focus: String)?
+    /// The check once `PageInlineMachine.editQuietMs` has passed since a non-typing edit in a rich editor.
+    private var quietTimer: SurfaceTimer?
     private var checks: UInt64 = 0
 
     private struct Shown {
@@ -101,6 +103,8 @@ public final class PageWritingMachine {
 
     /// The page field the user is in, after each walk; nil when they left the page.
     public func field(_ f: PageField?, gate g: Gate) {
+        quietTimer?.cancel()
+        quietTimer = nil
         current = f
         gate = g
         guard let f, let text = f.text, text.selection.isEmpty, f.key != nil, f.caret != nil,
@@ -129,7 +133,19 @@ public final class PageWritingMachine {
         previous = (focus, value)
         guard let last else { return }
         // Item 3: right after a paste, drop, undo or redo in a rich editor, its undo would group our fix with that edit.
-        if f.fieldKind == .contenteditable, let quiet = text.quietMs, quiet < PageInlineMachine.editQuietMs { return note("afterEdit") }
+        // So the check waits for the quiet to pass, against the same baseline, and runs on the settled field then
+        // unless another report came first (PR #16 review: it used to be dropped for good).
+        if f.fieldKind == .contenteditable, let quiet = text.quietMs, quiet < PageInlineMachine.editQuietMs {
+            previous = (focus, last)
+            var settled = f
+            settled.text?.quietMs = nil
+            quietTimer = clock.schedule(after: Double(PageInlineMachine.editQuietMs - quiet) / 1000, repeats: false) { [weak self] in
+                guard let self else { return }
+                self.quietTimer = nil
+                self.field(settled, gate: g)
+            }
+            return note("afterEdit")
+        }
         let caret = UTF16Selection.caret(UTF16Text.length(text.before))
         if let sentence = WritingMarks.boundary(previous: last, value: value, selection: caret) {
             ask(Check(id: next(), value: value, span: sentence, word: false), focus: focus)
