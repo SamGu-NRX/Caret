@@ -79,6 +79,21 @@ enum OnboardingCopy {
         static let done = "Done"
     }
 
+    enum Browser {
+        static let title = "Add Caret to your browser."
+        static func line(_ names: String) -> String {
+            "In \(names), Caret reads and fills web pages through a small extension. It's optional: Caret already works in your apps."
+        }
+        static let none = "Caret's extension works in Google Chrome and Helium, and neither is on this Mac. Caret already works in your apps; add the extension later from the menu bar."
+        static let waiting = "Waiting for Caret for Chrome to connect…"
+        static func connected(_ name: String) -> String { "Caret is in \(name)." }
+        static func add(_ name: String) -> String { "Add to \(name)" }
+        static func untrusted(_ name: String) -> String { "Caret can't connect to \(name) yet." }
+        static let stepsHead = "In the Extensions page:"
+        static let skip = "Skip"
+        static let next = "Continue"
+    }
+
     /// The panel inside System Settings' Accessibility pane.
     enum Drag {
         static let header = "Drag Caret into the list above"

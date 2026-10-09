@@ -46,6 +46,8 @@ final class OnboardingFlowTests: XCTestCase {
             rig.send(.next)
             rig.grant()
             rig.clock.advance(by: OnboardingFlow.grantLanding)
+            XCTAssertEqual(rig.step, .browser)
+            rig.send(.next)  // no browser on this rig: Continue goes on
             XCTAssertEqual(rig.step, .on)
             return rig
         }
@@ -114,7 +116,7 @@ final class OnboardingFlowTests: XCTestCase {
         let rig = Rig(opening: .init(step: .access, reopened: true))
         XCTAssertTrue(rig.state.access.reopened)
         XCTAssertEqual(rig.state.frame, .guide)
-        XCTAssertEqual(rig.state.steps.count, 4)
+        XCTAssertEqual(rig.state.steps.count, 5)
     }
 
     // MARK: - Hello
@@ -198,13 +200,11 @@ final class OnboardingFlowTests: XCTestCase {
         rig.clock.advance(by: OnboardingFlow.grantLanding - 0.01)
         XCTAssertEqual(rig.step, .access)
         rig.clock.advance(by: 0.02)
-        XCTAssertEqual(rig.step, .on)
+        XCTAssertEqual(rig.step, .browser)
         XCTAssertEqual(rig.state.frame, .main)
         let commands = rig.take()
-        XCTAssertTrue(commands.contains(.saveProgress(.on)))
+        XCTAssertTrue(commands.contains(.saveProgress(.browser)))
         XCTAssertTrue(commands.contains(.bringForward))
-        XCTAssertNotNil(rig.previewAsk ?? commands.compactMap { if case .askPreview(let id, _, _) = $0 { return id } else { return nil } }.first,
-                        "the preview is asked as the pane crosses in")
     }
 
     func testRepeatedPollsDoNotRestartTheLanding() {
@@ -215,7 +215,7 @@ final class OnboardingFlowTests: XCTestCase {
         rig.grant()
         rig.grant()
         rig.clock.advance(by: OnboardingFlow.grantLanding - 0.5 + 0.01)
-        XCTAssertEqual(rig.step, .on, "later polls with the same answer leave the first landing alone")
+        XCTAssertEqual(rig.step, .browser, "later polls with the same answer leave the first landing alone")
     }
 
     func testAGrantTakenBackBeforeTheLandingStays() {
@@ -229,7 +229,7 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(rig.step, .access)
         rig.grant()
         rig.clock.advance(by: OnboardingFlow.grantLanding)
-        XCTAssertEqual(rig.step, .on)
+        XCTAssertEqual(rig.step, .browser)
     }
 
     func testTheSwitchAloneFinishesOnTheGrant() {
@@ -248,6 +248,63 @@ final class OnboardingFlowTests: XCTestCase {
         rig.clock.advance(by: 5)
         XCTAssertEqual(rig.step, .hello)
         XCTAssertTrue(rig.state.permissions.accessibility)
+    }
+
+    // MARK: - The browser step
+
+    private func atBrowser(_ trusted: [String]) -> Rig {
+        let rig = Rig(opening: .init(step: .browser), ax: true)
+        rig.send(.browsers(trusted: trusted, untrusted: []))
+        rig.take()
+        return rig
+    }
+
+    func testAddToBrowserOpensTheExtensionThenItsConnectionMovesOn() {
+        let rig = atBrowser(["Google Chrome", "Helium"])
+        XCTAssertEqual(rig.state.browser.target, "Google Chrome")
+        rig.send(.next)
+        XCTAssertEqual(rig.take(), [.addToBrowser], "the native host is written and the extension's page opened")
+        XCTAssertTrue(rig.state.browser.opened)
+        XCTAssertEqual(rig.step, .browser, "it waits for the extension")
+        rig.send(.browserConnected)
+        XCTAssertTrue(rig.state.browser.connected)
+        rig.clock.advance(by: OnboardingFlow.grantLanding)
+        XCTAssertEqual(rig.step, .on, "the first connection moves on by itself")
+        XCTAssertTrue(rig.take().contains(.bringForward))
+    }
+
+    func testTheBrowserStepIsSkippableAndContinuesWithoutWaiting() {
+        let skip = atBrowser(["Helium"])
+        skip.send(.skipBrowser)
+        XCTAssertEqual(skip.step, .on)
+        let opened = atBrowser(["Helium"])
+        opened.send(.next, .next)
+        XCTAssertEqual(opened.step, .on, "after opening the page, Continue goes on without the connection")
+    }
+
+    func testWithNoBrowserContinueGoesOnAndAddsNothing() {
+        let rig = atBrowser([])
+        XCTAssertNil(rig.state.browser.target)
+        rig.send(.next)
+        XCTAssertEqual(rig.step, .on)
+        XCTAssertFalse(rig.take().contains(.addToBrowser))
+    }
+
+    func testAnExtensionConnectedEarlierNeedsNoClick() {
+        let rig = Rig(opening: .init(step: .access), ax: false)
+        rig.send(.browsers(trusted: ["Google Chrome"], untrusted: []), .browserConnected)
+        rig.grant()
+        rig.clock.advance(by: OnboardingFlow.grantLanding)
+        XCTAssertEqual(rig.step, .browser)
+        rig.take()
+        rig.send(.next)
+        XCTAssertEqual(rig.step, .on, "already connected: the primary is Continue")
+        XCTAssertFalse(rig.take().contains(.addToBrowser))
+    }
+
+    func testARelaunchOnTheBrowserStepComesBackToIt() {
+        let on = OnboardingPermissions(accessibility: true, inputMonitoring: false)
+        XCTAssertEqual(OnboardingLaunch.auto(onboarded: false, permissions: on, progress: .init(step: .browser, at: 1)), .init(step: .browser, reopened: true))
     }
 
     // MARK: - On: the preview and the decision
@@ -343,7 +400,7 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(rig.step, .access)
         XCTAssertTrue(rig.state.access.granted)
         rig.clock.advance(by: OnboardingFlow.grantLanding)
-        XCTAssertEqual(rig.step, .on, "no poll change is needed to move on")
+        XCTAssertEqual(rig.step, .browser, "no poll change is needed to move on")
     }
 
     // MARK: - First
@@ -428,7 +485,7 @@ final class OnboardingFlowTests: XCTestCase {
         let info = rig.flow.debugInfo()
         XCTAssertEqual(info.hello?.textLength, 15)
         XCTAssertEqual(info.step, "hello")
-        XCTAssertEqual(info.stepCount, 4)
+        XCTAssertEqual(info.stepCount, 5)
         let json = String(decoding: try! JSONEncoder().encode(info), as: UTF8.self)
         XCTAssertFalse(json.contains("Dana"))
     }

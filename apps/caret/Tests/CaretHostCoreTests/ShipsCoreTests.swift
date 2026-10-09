@@ -124,7 +124,7 @@ final class ShipsCoreTests: XCTestCase {
         XCTAssertFalse(with.flow.state.on.needsKey)
         with.send(.next)
         XCTAssertEqual(with.looks, 1, "with a key, Send sends")
-        XCTAssertEqual(with.flow.state.steps.count, 4)
+        XCTAssertEqual(with.flow.state.steps.count, 5)
     }
 
     func testSendWaitsForAKeyAndKeepGoesOnWithoutOne() {

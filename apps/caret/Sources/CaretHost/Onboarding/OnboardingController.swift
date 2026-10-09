@@ -69,6 +69,8 @@ final class OnboardingController {
     /// H8: asks for Calendar access before a found event's accept goes.
     var calendars: CalendarAccessAsking = EventKitCalendars.shared
     private var calendarHeld: String?
+    /// Add to your browser (`ChromeBridgeInstaller.run`), which the app shell owns.
+    var onAddToBrowser: () -> Void = {}
     /// A grant changed while the flow runs (the runtime retries a key tap the system refused).
     var onPermissionsChanged: (OnboardingPermissions) -> Void = { _ in }
     /// What the window refused to do because it is hidden, for the debug state.
@@ -196,6 +198,7 @@ final class OnboardingController {
         flow.send(.model(readModel()))
         flow.send(.apps(HelloAppsReader.read()))
         flow.send(.otherTabOwners(readTabOwners()))
+        flow.send(Self.readBrowsers())
         flow.start()
         model.state = flow.state
         startPolling()
@@ -232,6 +235,19 @@ final class OnboardingController {
     }
 
     func receive(_ reply: FirstLookReply) { flow?.send(.firstLookReply(reply)) }
+
+    /// The helper heard a page engine say hello: the extension is connected through the bridge.
+    func browserConnected() { flow?.send(.browserConnected) }
+
+    /// Installed Chromium browsers, the default one first: those Caret's bridge trusts and those it does not yet.
+    static func readBrowsers() -> OnboardingFlow.Event {
+        let ws = NSWorkspace.shared
+        let defaultID = ws.urlForApplication(toOpen: URL(string: "https://example.com")!).flatMap { Bundle(url: $0)?.bundleIdentifier }
+        let installed = BridgeBrowser.allCases.filter { ws.urlForApplication(withBundleIdentifier: $0.bundleIdentifier) != nil }
+            .sorted { ($0.bundleIdentifier == defaultID ? 0 : 1) < ($1.bundleIdentifier == defaultID ? 0 : 1) }
+        return .browsers(trusted: installed.filter(\.isTrustedByBridge).map(\.displayName),
+                         untrusted: installed.filter { !$0.isTrustedByBridge }.map(\.displayName))
+    }
     func receive(_ withdrawn: OfferWithdrawn) { flow?.send(.offerWithdrawn(withdrawn)) }
 
     func receive(_ progress: TaskProgress) {
@@ -268,6 +284,9 @@ final class OnboardingController {
             store.update(source: .onboarding) { $0.onboarded = true }
         case .saveProgress(let step):
             saveProgress(step)
+        case .addToBrowser:
+            guard drawsWindow else { return suppressed.append("addToBrowser") }
+            onAddToBrowser()
         case .openSystemSettings:
             guard drawsWindow else { return suppressed.append("openSystemSettings") }
             Self.openAccessibilityPane()
@@ -536,7 +555,7 @@ final class OnboardingController {
             switch state.step {
             case .hello: return state.hello.ghost != nil ? .key(.tab) : nil
             case .first: return keys.tab ? .key(.tab) : nil
-            case .access, .on: return nil
+            case .access, .browser, .on: return nil
             }
         default: return nil
         }
@@ -557,6 +576,7 @@ final class OnboardingController {
     ///   onboarding key tab|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other
     ///   onboarding permissions on|off on|off      (Accessibility, Input Monitoring)
     ///   onboarding model ready|loading|unavailable
+    ///   onboarding browsers none|<name...>       onboarding browser-connected    onboarding skip-browser
     ///   onboarding preview empty|fail|<n windows>  (a stand-in preview for the open request)
     ///   onboarding tab-owners none|<name...>      onboarding reply <firstLookReply json>
     ///   onboarding jev-key <text>
@@ -584,6 +604,10 @@ final class OnboardingController {
         case ("later", 1): flow.send(.setUpLater)
         case ("keep", 1): flow.send(.keep)
         case ("help", 1): flow.send(.toggleHelp)
+        case ("skip-browser", 1): flow.send(.skipBrowser)
+        case ("browser-connected", 1): flow.send(.browserConnected)
+        case ("browsers", _) where rest.count >= 2:
+            flow.send(.browsers(trusted: rest[1] == "none" ? [] : Array(rest.dropFirst()), untrusted: []))
         case ("accept", 1): flow.send(.accept)
         case ("not-now", 1): flow.send(.notNow)
         case ("type", _): flow.send(.typed(rest.dropFirst().joined(separator: " ")))

@@ -4,11 +4,13 @@ import Foundation
 /// Onboarding's four steps (~/.caret-run/design/onboard2/HANDOFF.md §1). Everything before the switch needs no
 /// permission, and everything after it happens by itself:
 /// - `hello`: the person types into Caret's own field and the local model offers the next words. Turn on Caret.
-/// - `access`: System Settings is open; the window shrinks to a guide beside it and waits for the one switch.
+/// - `access`: System Settings is open, with the panel to drag Caret into its list; the flow waits for the switch.
+/// - `browser`: optional, "Add Caret to your browser": the native host is written and the extension's page opened;
+///   the first connection from the extension moves the flow on by itself.
 /// - `on`: what is now on, and, before anything leaves the Mac, the lines a first look may send. Send, or keep.
 /// - `first`: what the first look found, taken with Tab, or nothing.
 public enum OnboardingStep: String, CaseIterable, Codable, Sendable {
-    case hello, access, on, first
+    case hello, access, browser, on, first
 
     public var index: Int { Self.allCases.firstIndex(of: self)! }
 }
@@ -57,7 +59,10 @@ public enum OnboardingLaunch {
     /// asked here at all.
     public static func auto(onboarded: Bool, permissions: OnboardingPermissions, progress: OnboardingProgress?) -> Opening? {
         if onboarded { return permissions.accessibility ? nil : Opening(step: .access, alone: true) }
-        if permissions.accessibility { return Opening(step: .on, reopened: progress != nil) }
+        if permissions.accessibility {
+            // Relaunched on the browser step: back there; otherwise straight to what is on.
+            return Opening(step: progress?.step == .browser ? .browser : .on, reopened: progress != nil)
+        }
         if let progress, progress.step != .hello { return Opening(step: .access, reopened: true) }
         return Opening(step: .hello)
     }
@@ -309,11 +314,25 @@ public final class OnboardingFlow {
         public var declined = false
     }
 
+    /// The browser step: which installed browsers Caret's bridge can serve, whether the extension's page was opened,
+    /// and whether the extension has connected.
+    public struct Browser: Equatable, Sendable {
+        /// Installed browsers the bridge trusts, by name, the default browser first.
+        public var trusted: [String] = []
+        /// Installed Chromium browsers the bridge does not trust yet, by name.
+        public var untrusted: [String] = []
+        public var opened = false
+        public var connected = false
+
+        public var target: String? { trusted.first }
+    }
+
     public struct State: Equatable, Sendable {
         public var step: OnboardingStep
         public var direction: Direction = .forward
         public var hello = Hello()
         public var access = Access()
+        public var browser = Browser()
         public var on = On()
         public var first = First()
         public var permissions: OnboardingPermissions
@@ -334,6 +353,7 @@ public final class OnboardingFlow {
             case .hello: return true
             // The switch moves the flow by itself; the guide has no primary.
             case .access: return false
+            case .browser: return true
             case .on:
                 if on.jevKey.phase == .checking { return false }
                 // With a key needed, the primary checks a pasted key first; it waits for text.
@@ -399,6 +419,12 @@ public final class OnboardingFlow {
         case calendarAnswered(Bool)
         case settingsChanged(CaretSettings)
         case otherTabOwners([String])
+        /// The host read the installed Chromium browsers: those the bridge trusts and those it does not.
+        case browsers(trusted: [String], untrusted: [String])
+        /// The extension's engine said hello through the bridge (the helper's `pageEngine` connected).
+        case browserConnected
+        /// Skip on the browser step.
+        case skipBrowser
     }
 
     public enum SendFailure: Equatable, Sendable { case accept, undo }
@@ -410,6 +436,8 @@ public final class OnboardingFlow {
         case saveProgress(OnboardingStep)
         /// Open Privacy & Security, Accessibility, with the panel to drag Caret into its list (no macOS alert).
         case openSystemSettings
+        /// Write the native host for the trusted browsers and open the extension's page (`ChromeBridgeInstaller`).
+        case addToBrowser
         /// The grant landed and the flow moved on: Caret takes the focus back from System Settings, once.
         case bringForward
         /// Ask the local model for the next words after `text`.
@@ -575,6 +603,25 @@ public final class OnboardingFlow {
             base = settings
         case .otherTabOwners(let names):
             state.otherTabOwners = names
+        case .browsers(let trusted, let untrusted):
+            state.browser.trusted = trusted
+            state.browser.untrusted = untrusted
+        case .browserConnected:
+            guard !state.browser.connected else { break }
+            state.browser.connected = true
+            guard state.step == .browser, landingTimer == nil else { break }
+            // As the switch lands: "Caret is in Chrome." for a moment, then on by itself.
+            landingTimer = clock.schedule(after: Self.grantLanding, repeats: false) { [weak self] in
+                guard let self else { return }
+                self.landingTimer = nil
+                guard self.state.step == .browser else { return }
+                self.go(to: .on)
+                self.output(.bringForward)
+                self.output(.changed)
+            }
+        case .skipBrowser:
+            guard state.step == .browser else { break }
+            go(to: .on)
         }
         output(.changed)
     }
@@ -588,6 +635,14 @@ public final class OnboardingFlow {
             go(to: .access)
         case .access:
             break
+        case .browser:
+            // The first press adds Caret to the browser; after that (or with no browser to add to) it goes on.
+            if state.browser.target != nil, !state.browser.opened, !state.browser.connected {
+                state.browser.opened = true
+                output(.addToBrowser)
+            } else {
+                go(to: .on)
+            }
         case .on:
             if state.alone {
                 // The menu's key item: check a pasted key, or close once one is saved.
@@ -623,7 +678,7 @@ public final class OnboardingFlow {
         case .access:
             // Granted before the guide opened (in System Settings, or by an earlier run): land it now.
             if state.permissions.accessibility { land() }
-        case .hello, .first:
+        case .hello, .first, .browser:
             break
         }
     }
@@ -634,7 +689,7 @@ public final class OnboardingFlow {
             idleTimer?.cancel()
             idleTimer = nil
             state.hello.asking = nil
-        case .access:
+        case .access, .browser:
             landingTimer?.cancel()
             landingTimer = nil
         case .on:
@@ -698,7 +753,7 @@ public final class OnboardingFlow {
             }
         case .access:
             break
-        case .on:
+        case .browser, .on:
             if key == .returnKey { next() }
         case .first:
             firstLookKey(key)
@@ -731,7 +786,7 @@ public final class OnboardingFlow {
             self.landingTimer = nil
             guard self.state.step == .access, self.state.permissions.accessibility else { return }
             if self.state.alone { return self.finish() }
-            self.go(to: .on)
+            self.go(to: .browser)
             self.output(.bringForward)
             self.output(.changed)
         }
@@ -889,6 +944,9 @@ public final class OnboardingFlow {
         case .failed: info.preview = "failed"
         }
         info.decision = state.on.decision.rawValue
+        info.browsers = state.browser.trusted
+        info.browserOpened = state.browser.opened
+        info.browserConnected = state.browser.connected
         if state.on.needsKey {
             info.jevKey = state.on.jevKey.phase.name
             info.jevKeyLength = state.on.jevKey.text.utf16Count

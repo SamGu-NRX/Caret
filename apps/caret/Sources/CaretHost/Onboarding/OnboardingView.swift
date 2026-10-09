@@ -55,6 +55,7 @@ struct OnboardingView: View {
         switch state.step {
         case .hello: HelloPane(state: state, character: character, animated: animated, send: send)
         case .access: AccessPane(state: state, animated: animated, send: send)
+        case .browser: BrowserPane(state: state, animated: animated)
         case .on: OnPane(state: state, promise: promise, animated: animated, send: send)
         case .first: FirstPane(state: state, character: character, animated: animated)
         }
@@ -103,6 +104,8 @@ struct OnboardingBar: View {
     private var quiet: (title: String, event: OnboardingFlow.Event)? {
         switch state.step {
         case .hello, .access: return state.alone ? nil : (OnboardingCopy.Hello.later, .setUpLater)
+        case .browser:
+            return state.browser.target != nil && !state.browser.connected ? (OnboardingCopy.Browser.skip, .skipBrowser) : nil
         case .on:
             if case .ready = state.on.preview, state.on.decision == .pending { return (OnboardingCopy.On.keep, .keep) }
             return nil
@@ -116,6 +119,9 @@ struct OnboardingBar: View {
         switch state.step {
         case .hello: return OnboardingCopy.Hello.primary
         case .access: return nil
+        case .browser:
+            if let target = state.browser.target, !state.browser.opened, !state.browser.connected { return OnboardingCopy.Browser.add(target) }
+            return OnboardingCopy.Browser.next
         case .on:
             if case .ready = state.on.preview, state.on.decision != .kept { return OnboardingCopy.On.send }
             return OnboardingCopy.On.done
@@ -536,6 +542,52 @@ struct DrawnSwitch: View {
             Circle().fill(.white).shadow(color: .black.opacity(0.2), radius: 1, y: 0.5).padding(2)
         }
         .frame(width: 38, height: 22)
+    }
+}
+
+// MARK: - 2b. The browser
+
+/// Optional: Caret writes its native host for the browsers its bridge trusts and opens the extension's page; the
+/// extension's first connection moves the step on by itself (`OnboardingFlow.Event.browserConnected`). With no such
+/// browser, the step says so and Continue goes on.
+struct BrowserPane: View {
+    var state: OnboardingFlow.State
+    var animated: Bool
+
+    var body: some View {
+        let b = state.browser
+        VStack(alignment: .leading, spacing: 0) {
+            ScreenTitle(title: OnboardingCopy.Browser.title,
+                        detail: b.target == nil ? OnboardingCopy.Browser.none : OnboardingCopy.Browser.line(HelloApps.list(b.trusted.map { HelloApp(bundleId: $0, name: $0) })))
+            if let target = b.target {
+                HStack(spacing: 12) {
+                    GrantMark(granted: b.connected, animated: animated)
+                    SwappingLine(key: b.connected ? OnboardingCopy.Browser.connected(target) : (b.opened ? OnboardingCopy.Browser.waiting : target), animated: animated) {
+                        Text(b.connected ? OnboardingCopy.Browser.connected(target) : (b.opened ? OnboardingCopy.Browser.waiting : target))
+                            .font(.system(size: 13, weight: b.connected || !b.opened ? .semibold : .regular))
+                            .foregroundStyle(Color(token: b.opened && !b.connected ? Tokens.ink2 : Tokens.ink))
+                    }
+                }
+                .padding(.top, 20)
+                // Until the store listing exists: the three steps of loading the extension from the folder Caret shows.
+                if b.opened, !b.connected, BrowserExtension.storeURL == nil {
+                    VStack(alignment: .leading, spacing: 6) {
+                        GroupHead(text: OnboardingCopy.Browser.stepsHead)
+                        ForEach(Array(ChromeBridgeInstaller.steps.enumerated()), id: \.offset) { i, step in
+                            Text("\(i + 1). \(step)").font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink2))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 16)
+                }
+            }
+            ForEach(b.untrusted, id: \.self) { name in
+                Text(OnboardingCopy.Browser.untrusted(name)).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink2)).padding(.top, 10)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, OnboardingView.inset)
+        .padding(.top, OnboardingView.top)
     }
 }
 

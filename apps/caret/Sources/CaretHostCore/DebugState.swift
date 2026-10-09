@@ -575,6 +575,11 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var previewChars: Int?
         /// `pending`, `sent` or `kept`.
         public var decision: String?
+        /// The browser step: trusted installed browsers by name, whether the extension's page was opened, and whether
+        /// the extension has connected.
+        public var browsers: [String]?
+        public var browserOpened: Bool?
+        public var browserConnected: Bool?
         /// `idle`, `asking`, `found`, `nothing` or `failed`.
         public var firstLook: String?
         public var firstLookRequest: String?

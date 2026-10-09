@@ -122,9 +122,10 @@ public enum ChromeBridgeInstaller {
         }
         if let page = pageBrowser(among: added, defaultBundleID: defaultBrowser),
            let app = workspace.urlForApplication(withBundleIdentifier: page.bundleIdentifier) {
-            workspace.open([page.extensionsPage], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+            // The store listing when there is one; until then the Extensions page and the folder to load unpacked.
+            workspace.open([BrowserExtension.storeURL ?? page.extensionsPage], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
         }
-        workspace.activateFileViewerSelecting([bundled.extensionFolder])
+        if BrowserExtension.storeURL == nil { workspace.activateFileViewerSelecting([bundled.extensionFolder]) }
         let message = added.isEmpty ? "Caret wrote this run's browser manifest." : "Caret's manifest is installed for \(names(added))."
         return Result(message: message, detail: (refused + plan.notices).joined(separator: "\n"), manualSteps: steps)
     }

@@ -340,6 +340,7 @@ public final class HostRuntime {
                 perch.ask.provenance(provenance)
             // W2: whether Caret can see the front browser's pages.
             case .pageEngine(let m):
+                if m.state == .connected { onboarding.browserConnected() }
                 pageSight.receive(m)
                 status.update { $0.pageSight = pageSight.sight.debugInfo }
             default: break
@@ -787,7 +788,10 @@ public final class HostRuntime {
     /// this page yet"). Onboarding no longer asks for it; it is offered at first need.
     public var onAddToChrome: () -> Void {
         get { pageSight.onAddToChrome }
-        set { pageSight.onAddToChrome = newValue }
+        set {
+            pageSight.onAddToChrome = newValue
+            onboarding.onAddToBrowser = newValue
+        }
     }
 
     /// The menu's What Caret Knows: the memory window.
