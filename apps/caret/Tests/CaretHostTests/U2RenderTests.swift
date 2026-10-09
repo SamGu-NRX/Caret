@@ -47,9 +47,9 @@ final class U2RenderTests: XCTestCase {
         func alpha(_ x: CGFloat, _ y: CGFloat) -> CGFloat {
             rep.colorAt(x: Int(x * 4), y: Int(y * 4))?.alphaComponent ?? 0
         }
-        // The pebble in a 16 pt square, 13 wide: x from 1.5, y from about 2.04; eyes at viewBox (3.9, 5) and (8.1, 5).
+        // The crest in a 16 pt square, 13 wide: x from 1.5, y from about 2.04; eyes at viewBox (4.7, 6.3) and (8.5, 6.3).
         let k: CGFloat = 13 / 12
-        let left = (1.5 + 3.9 * k, 2.04 + 5 * k), right = (1.5 + 8.1 * k, 2.04 + 5 * k), body = (8.0, 12.0)
+        let left = (1.5 + 4.7 * k, 2.04 + 6.3 * k), right = (1.5 + 8.5 * k, 2.04 + 6.3 * k), body = (8.0, 12.0)
         XCTAssertLessThan(alpha(left.0, left.1), 0.2, "left eye cut out")
         XCTAssertLessThan(alpha(right.0, right.1), 0.2, "right eye cut out")
         XCTAssertGreaterThan(alpha(body.0, body.1), 0.8, "the body is solid")

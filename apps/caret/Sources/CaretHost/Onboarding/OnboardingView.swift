@@ -267,8 +267,8 @@ struct HelloPane: View {
         let hello = state.hello
         VStack(alignment: .leading, spacing: 0) {
             Spacer(minLength: 0)
-            // Drawn still: its arrival and nod below are the whole performance (no breath or blink loop).
-            FigureView(character: character, state: .noticed, size: Tokens.FigureSize.onboarding, animated: false,
+            // Its arrival and nod below are the performance; after them it rests alive (irregular blinks, FigureIdle).
+            FigureView(character: character, state: .noticed, size: Tokens.FigureSize.onboarding, animated: animated,
                        gaze: CGVector(dx: 0, dy: 0.8))
                 .scaleEffect(x: nod ? 1.06 : 1, y: nod ? 0.92 : 1, anchor: .bottom)
                 .offset(y: nod ? 1 : 0)
