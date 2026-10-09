@@ -432,9 +432,11 @@ public final class PageInlineMachine {
         guard let token = f.token else { return note("noToken") }
         let caret = Self.rect(caretFrame)
         let box = Self.rect(frame)
-        // The ghost stays inside the field, short of its right padding (the left inset stands in for it).
-        let width = measure(text, CGFloat(f.look?.fontSize ?? 13))
-        guard caret.maxX + width <= box.maxX - CGFloat(f.look?.inset ?? 4) else { return note("noRoom") }
+        // The ghost stays inside the field, short of its right padding (the left inset stands in for it). A suggestion
+        // wider than that offers the whole words that fit (`GhostFit.wordsThatFit`); none fitting is no room.
+        let size = CGFloat(f.look?.fontSize ?? 13)
+        let room = box.maxX - CGFloat(f.look?.inset ?? 4) - caret.maxX
+        guard let text = GhostFit.wordsThatFit(text, fits: { measure($0, size) <= room }) else { return note("noRoom") }
         let offer = Offer(text: text, source: .page, kind: .ghost, target: t, fieldValue: r.before + r.after,
                           caretUTF16: UTF16Text.length(r.before), createdAt: clock.now, maxAgeSeconds: Self.offerAge)
         // Published unshown, drawn, then revealed: Tab takes only text that is on screen.

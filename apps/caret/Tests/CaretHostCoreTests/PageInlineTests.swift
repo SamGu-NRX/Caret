@@ -136,6 +136,21 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(r.machine.lastOutcome, "noRoom")
     }
 
+    /// Brief item 1: a suggestion that runs to the end of the sentence is often wider than the room left. The words that
+    /// fit are offered, and Tab takes exactly those.
+    func testALongSuggestionOffersTheWordsThatFit() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        let long = "Field Robotics Technician role" + String(repeating: " and", count: 40)
+        r.suggest(long)
+        let shown = try XCTUnwrap(r.ghosts.last?.0)
+        XCTAssertTrue(long.hasPrefix(shown) && shown.count < long.count, shown)
+        XCTAssertTrue(shown.hasPrefix("Field Robotics Technician role and"), shown)
+        XCTAssertTrue(shown.hasSuffix(" and"), "cut at a word end: \(shown)")
+        XCTAssertEqual(r.arbiter.snapshot().current?.text, shown, "the offer is what is drawn")
+        XCTAssertEqual(r.machine.lastOutcome, "shown")
+    }
+
     // MARK: - Accept through pageInsert, guarded by the text before the caret
 
     func testTabInsertsThroughPageInsertGuardedByTheTextBeforeTheCaret() throws {
