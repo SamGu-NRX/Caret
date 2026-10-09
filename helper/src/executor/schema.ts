@@ -110,6 +110,7 @@ export type EndState = z.infer<typeof EndState>;
  */
 export const Via = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("press"), target: Target }),
+  /** G2: kept so journal rows saved before it still parse; the executor hands every URL to the user ("open <url> yourself"). */
   z.object({ kind: z.literal("openUrl"), url: z.url() }),
 ]);
 export type Via = z.infer<typeof Via>;
