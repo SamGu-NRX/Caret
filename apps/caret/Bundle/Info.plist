@@ -6,6 +6,9 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>Caret</string>
+	<!-- The crest app icon, AppIcon.icns in Contents/Resources (scripts/make-app-icon.sh builds it from Bundle/AppIcon/AppIcon.svg). -->
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.caret.host</string>
 	<key>CFBundleInfoDictionaryVersion</key>
