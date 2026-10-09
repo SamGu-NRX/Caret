@@ -574,7 +574,14 @@ public final class OnboardingFlow {
         case .model(let readiness):
             let was = state.hello.model
             state.hello.model = readiness
-            if readiness != .ready { state.hello.ghost = nil }
+            if readiness != .ready {
+                // A request still out, or one about to go, is dropped with the model: its answer would show beside
+                // the line saying the field is quiet (Greptile on #30).
+                state.hello.ghost = nil
+                state.hello.asking = nil
+                idleTimer?.cancel()
+                idleTimer = nil
+            }
             // Text left in the field while the model was off or loading (Complete words turned back on) is asked
             // about as if just typed, so the field doesn't stay quiet until the next edit (Codex on #30).
             else if was != .ready, state.step == .hello { typed(state.hello.text) }
