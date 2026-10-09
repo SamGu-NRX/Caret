@@ -4,7 +4,7 @@ import CaretHostCore
 
 /// A minimal menu-bar shell: the figure as the status item (Carrot while work runs), the engine
 /// state, pause, the activity list, the perch toggle, the settings (what Caret helps with, how
-/// often it speaks up, the character), and Quit.
+/// often it speaks up), and Quit.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let runtime: HostRuntime
@@ -13,8 +13,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let home: CaretHome
     /// `--nmh-dir`: where Add to Chrome writes in a run with its own home.
     private let manifestDirectory: String?
+    private var browserInstallResult: ChromeBridgeInstaller.Result?
     private var statusItem: NSStatusItem?
     private let stateItem = NSMenuItem(title: "Starting", action: nil, keyEquivalent: "")
+    /// Shown whenever Caret is not trusted for Accessibility, at any time (Sam's beta ran 3.5 hours like that, silent).
+    private let accessItem = NSMenuItem(title: "Caret can't see your apps. Turn on Accessibility…", action: nil, keyEquivalent: "")
+    /// Shown when Caret is trusted but its keyboard tap still could not be made.
+    private let tapItem = NSMenuItem(title: "Caret's Tab key isn't working. Restart Caret", action: nil, keyEquivalent: "")
     /// Shown only after the helper or the reader crashed past the restart rule; choosing it starts both again.
     private let stoppedItem = NSMenuItem(title: "Caret stopped. Restart", action: nil, keyEquivalent: "")
     /// Under the state: another running app also takes Tab (`OtherTabOwners`), so Tab may never
@@ -23,9 +28,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var signalSources: [DispatchSourceSignal] = []
     private var isTerminating = false
     private var working = false
-    private var characterItems: [NSMenuItem] = []
     private let perchItem = NSMenuItem(title: "Show Perch", action: nil, keyEquivalent: "")
     private let pauseItem = NSMenuItem(title: "Pause Caret", action: nil, keyEquivalent: "")
+    /// Brief item 7: Caret off or back on in the app in front, named. Hidden when no other app is in front.
+    private let appItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    /// Brief item 8: the model file in use (a line, not a choice), and the download of Caret's own copy when it helps.
+    private let modelItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let modelActionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    /// Brief item 6: which keys take ghost text, one item per preset.
+    private var keysItems: [NSMenuItem] = []
     private var roleItems: [NSMenuItem] = []
     private var levelItems: [NSMenuItem] = []
     /// Under the state while the helper runs without Jev because Caret has no key (H12); choosing it opens the key step.
@@ -54,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             source.resume()
             signalSources.append(source)
         }
+        runtime.onTrustChanged = { [weak self] in self?.refreshTrust() }
         runtime.onWorkingChanged = { [weak self] working in
             self?.working = working
             self?.refreshGlyph()
@@ -62,9 +74,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runtime.useJevKeys(services)
         runtime.onAddToChrome = { [weak self] in
             guard let self else { return }
-            ChromeBridgeInstaller.run(home: self.home, manifestOverride: self.manifestDirectory)
+            self.addToBrowser()
         }
         services.onChange = { [weak self] in self?.refreshStopped() }
+        let services = self.services
+        runtime.deferLoginItem({ services.registersAfterOnboarding }, due: { [weak self] in self?.handOffToLoginItem() })
         do {
             // The debug socket is how a second host is refused; take it before starting any helper or reader.
             try runtime.start()
@@ -88,29 +102,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .terminateLater
     }
 
-    private func shutdownAndExit() {
+    /// Onboarding is done (or the browser step needs the bridge): register the login item, which launchd starts, and
+    /// stop this copy. Services stop first, so the agent's copy finds the sockets free. If the hand-off fails, a fresh
+    /// copy opens and runs in-process as before.
+    private func handOffToLoginItem() {
         guard !isTerminating else { return }
         isTerminating = true
         Task {
             await runtime.shutdown()
             await services.stop()
+            switch LoginAgent.handOff(onboarded: true) {
+            case .handedOff(let why):
+                FileHandle.standardError.write(Data("caret: \(why); this copy exits\n".utf8))
+            case .runHere(let why):
+                FileHandle.standardError.write(Data("caret: \(why); opening a fresh copy\n".utf8))
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                p.arguments = ["-n", Bundle.main.bundlePath]
+                try? p.run()
+            }
+            exit(0)
+        }
+    }
+
+    private func shutdownAndExit() { shutdownAndExitThen {} }
+
+    private func shutdownAndExitThen(_ last: @escaping () -> Void) {
+        guard !isTerminating else { return }
+        isTerminating = true
+        Task {
+            await runtime.shutdown()
+            await services.stop()
+            last()
             exit(0)
         }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        stateItem.title = runtime.engineSummary
+        stateItem.title = browserInstallResult?.message ?? runtime.engineSummary
+        // Show the install result on one menu opening, then resume reporting the engine state.
+        browserInstallResult = nil
+        modelItem.title = runtime.modelLine
+        modelItem.toolTip = runtime.modelStatus
+        if let action = runtime.modelAction {
+            modelActionItem.title = action
+            modelActionItem.toolTip = runtime.modelStatus
+            modelActionItem.isHidden = false
+        } else {
+            modelActionItem.isHidden = true
+        }
         let notice = OtherTabOwners.notice(OtherTabOwners.running(in: NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)))
         tabOwnerItem.title = notice ?? ""
         tabOwnerItem.isHidden = notice == nil
         jevOffItem.isHidden = !services.jevOff
         perchItem.state = runtime.perchHidden ? .off : .on
-        let current = FigureSettings.shared.character
-        for item in characterItems {
-            item.state = item.representedObject as? String == current.rawValue ? .on : .off
-        }
         let settings = SettingsStore.shared.settings
         pauseItem.title = settings.paused ? "Resume Caret" : "Pause Caret"
+        // The status menu opens without taking the front, so the frontmost app is the one the user was in.
+        let front = NSWorkspace.shared.frontmostApplication
+        if let front, front.processIdentifier != ProcessInfo.processInfo.processIdentifier, let id = front.bundleIdentifier {
+            let name = front.localizedName ?? id
+            appItem.title = settings.isOff(id) ? "Turn Back On in \(name)" : "Turn Off in \(name)"
+            appItem.representedObject = id
+            appItem.isHidden = false
+        } else {
+            appItem.isHidden = true
+        }
+        for item in keysItems {
+            item.state = item.representedObject as? String == settings.ghostKeys.rawValue ? .on : .off
+        }
         for item in roleItems {
             let role = (item.representedObject as? String).flatMap(CaretRole.init(rawValue:))
             item.state = role.map(settings.roles.contains) == true ? .on : .off
@@ -118,6 +178,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for item in levelItems {
             item.state = item.representedObject as? String == settings.level.rawValue ? .on : .off
         }
+    }
+
+    @objc private func turnOnAccessibility(_ sender: NSMenuItem) {
+        runtime.openAccessSwitch()
+    }
+
+    @objc private func restartCaret(_ sender: NSMenuItem) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-n", Bundle.main.bundlePath]
+        shutdownAndExitThen { try? p.run() }
+    }
+
+    /// The menu and the status item say whether Caret can see the person's apps. The glyph itself is the figure lane's;
+    /// only its button is dimmed.
+    private func refreshTrust() {
+        accessItem.isHidden = runtime.accessibilityTrusted
+        tapItem.isHidden = !runtime.accessibilityTrusted || runtime.keyTapHealthy
+        statusItem?.button?.appearsDisabled = !runtime.accessibilityTrusted
+        statusItem?.button?.toolTip = runtime.accessibilityTrusted ? nil : "Caret can't see your apps. Turn on Accessibility."
     }
 
     @objc private func setUp(_ sender: NSMenuItem) {
@@ -129,7 +209,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func addToChrome(_ sender: NSMenuItem) {
-        ChromeBridgeInstaller.run(home: home, manifestOverride: manifestDirectory)
+        addToBrowser()
+    }
+
+    private func addToBrowser() {
+        let result = ChromeBridgeInstaller.run(home: home, manifestOverride: manifestDirectory)
+        browserInstallResult = result
+        stateItem.title = result.message
+        stateItem.toolTip = ([result.detail].filter { !$0.isEmpty } + result.manualSteps.enumerated().map { "\($0.offset + 1). \($0.element)" }).joined(separator: "\n")
     }
 
     @objc private func addJevKey(_ sender: NSMenuItem) {
@@ -164,6 +251,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SettingsStore.shared.update(source: .menu) { $0.paused.toggle() }
     }
 
+    @objc private func toggleModelDownload(_ sender: NSMenuItem) {
+        runtime.toggleModelDownload()
+    }
+
+    @objc private func toggleApp(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        SettingsStore.shared.update(source: .menu) { $0.setApp(id, off: !$0.isOff(id)) }
+    }
+
+    @objc private func chooseKeys(_ sender: NSMenuItem) {
+        guard let keys = (sender.representedObject as? String).flatMap(GhostKeys.init(rawValue:)) else { return }
+        SettingsStore.shared.update(source: .menu) { $0.ghostKeys = keys }
+    }
+
     @objc private func toggleRole(_ sender: NSMenuItem) {
         guard let role = (sender.representedObject as? String).flatMap(CaretRole.init(rawValue:)) else { return }
         SettingsStore.shared.update(source: .menu) { s in
@@ -178,12 +279,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refreshGlyph() {
         statusItem?.button?.image = FigureGlyph.image(FigureSettings.shared.character, working: working)
-    }
-
-    @objc private func chooseCharacter(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let character = FigureCharacter(rawValue: raw) else { return }
-        FigureSettings.shared.character = character
-        refreshGlyph()
     }
 
     @objc private func showActivity(_ sender: NSMenuItem) {
@@ -210,6 +305,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         stateItem.isEnabled = false
         menu.addItem(stateItem)
+        modelItem.isEnabled = false
+        menu.addItem(modelItem)
+        modelActionItem.action = #selector(toggleModelDownload(_:))
+        modelActionItem.target = self
+        menu.addItem(modelActionItem)
+        accessItem.action = #selector(turnOnAccessibility(_:))
+        accessItem.target = self
+        menu.addItem(accessItem)
+        tapItem.action = #selector(restartCaret(_:))
+        tapItem.target = self
+        menu.addItem(tapItem)
+        refreshTrust()
         tabOwnerItem.isEnabled = false
         tabOwnerItem.isHidden = true
         menu.addItem(tabOwnerItem)
@@ -225,6 +332,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseItem.action = #selector(togglePause(_:))
         pauseItem.target = self
         menu.addItem(pauseItem)
+        appItem.action = #selector(toggleApp(_:))
+        appItem.target = self
+        menu.addItem(appItem)
         menu.addItem(.separator())
         // Asking needs no shortcut to remember: it is here and at the top of the perch's list.
         let askItem = NSMenuItem(title: "Ask Caret…", action: #selector(askCaret(_:)), keyEquivalent: "")
@@ -249,15 +359,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         perchItem.target = self
         menu.addItem(perchItem)
         menu.addItem(.separator())
-        // The pebble is the default (Sam, 2026-10-02); seed and wren stay as choices.
-        let characterMenu = NSMenu()
-        for character in FigureCharacter.allCases {
-            let choice = NSMenuItem(title: character.displayName, action: #selector(chooseCharacter(_:)), keyEquivalent: "")
-            choice.target = self
-            choice.representedObject = character.rawValue
-            characterMenu.addItem(choice)
-            characterItems.append(choice)
-        }
         // The same choices onboarding asks for, here to change later.
         let roleMenu = NSMenu()
         for role in CaretRole.allCases {
@@ -283,9 +384,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let levelItem = NSMenuItem(title: CaretLevel.question.capitalized, action: nil, keyEquivalent: "")
         levelItem.submenu = levelMenu
         menu.addItem(levelItem)
-        let characterItem = NSMenuItem(title: "Character", action: nil, keyEquivalent: "")
-        characterItem.submenu = characterMenu
-        menu.addItem(characterItem)
+        let keysMenu = NSMenu()
+        for keys in GhostKeys.allCases {
+            let item = NSMenuItem(title: GhostKeysCopy.title(keys), action: #selector(chooseKeys(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = keys.rawValue
+            item.toolTip = GhostKeysCopy.detail(keys)
+            keysMenu.addItem(item)
+            keysItems.append(item)
+        }
+        let keysItem = NSMenuItem(title: GhostKeysCopy.menuTitle, action: nil, keyEquivalent: "")
+        keysItem.submenu = keysMenu
+        menu.addItem(keysItem)
         menu.addItem(.separator())
         // Only the launchd agent is a login item to remove; a development or test run never offers it (and must not
         // unregister the developer's own Caret).

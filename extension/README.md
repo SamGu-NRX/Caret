@@ -8,11 +8,14 @@ The MV3 extension that is Caret's page engine: a second reader, beside the Swift
 - `src/worker.ts`: the service worker. The only holder of the Native Messaging port to `caret-bridge`. It keeps the grant table (`shared/grants.ts`) and each frame's navigation generation (`worker/frames.ts`), checks every mutating verb's grant, document, generation and origin, and hands it to the frame's content script pinned to the exact document. It keeps the helper's "Not on this site" list: no walk, act or focus report for a frame at one of those origins, and `siteOff` for a tab whose top frame is.
 - `src/content/text.ts` and `src/worker/left-tab.ts` (P4): the one read of a tab's text, only of the tab the user just left, once, when a fill needs its source (`pageReadText`). The worker notes which tab that is and its frames' documents as the user leaves it, and reads it only within two minutes, only while unchanged, never on a site that is off or denied. The content script reads the main region's visible text, never a control or a hidden element, selection first, at most 16 KB; for a Google Docs or Sheets editor, the document's own text for assistive technology when the user turned it on. The rules and their reasons are in `~/.caret-run/plans/browser-layer.md` (lead decision P4).
 - `src/content/field-text.ts` and `src/content/insert.ts` (P4): a walk reports the text around the caret of the focused field it kept (before, after, selection), for the host's inline text; `pageInsertText` types accepted text at that caret with `execCommand("insertText")`, so the page's own Undo takes it back.
-- `manifest.json` carries a fixed `key`, so the id is always `EXTENSION_ID` (`idbkbnaepbamcdecogahbinlcodkbmmj`). The private key is not in the repository. `storage` holds a random per-profile id, so two profiles of one browser are two engines. `scripting` gives tabs open before install a content script.
+- The source `manifest.json` carries a fixed `key`, so the unpacked dev build's id is `EXTENSION_ID` (`idbkbnaepbamcdecogahbinlcodkbmmj`). The store build strips the key because the Web Store assigns its own ID. The private key is not in the repository. Both builds copy `icons/`. `storage` holds a random per-profile id, so two profiles of one browser are two engines. `scripting` gives tabs open before install a content script.
 
 ```
-pnpm install && pnpm build    # dist/, for --load-extension
-pnpm test                     # tsc, then the unit tests
+pnpm install --offline       # dependencies from the local cache
+pnpm build                   # dist/, for --load-extension, with the fixed dev key
+pnpm build:store             # dist-store/caret-for-chrome-<version>.zip, no key; prints SHA-256
+pnpm verify:store            # checks the store ZIP; accepts an alternate ZIP path
+pnpm test                    # tsc, then the unit tests
 ```
 
 The browser checks are in `fixtures/web-form/accept.ts`.

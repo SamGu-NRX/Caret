@@ -33,6 +33,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .offerWithdrawn: return "offerWithdrawn"
             case .taskProgress: return "taskProgress"
             case .firstLookReply: return "firstLookReply"
+            case .firstLookPreview: return "firstLookPreview"
             case .memoryReply: return "memoryReply"
             case .planProposal: return "planProposal"
             case .skillOffer: return "skillOffer"
@@ -162,7 +163,6 @@ final class HelperProtocolGoldenTests: XCTestCase {
         quiet.roles = [.watch]
         quiet.level = .quiet
         quiet.paused = true
-        quiet.character = .wren
         quiet.onboarded = true
         let paused = GateSettings(quiet, at: 1_790_000_131_000)
         XCTAssertEqual(try object(NDJSON.line(paused)), try object(lines[32]), "line 33: the character and onboarding stay on the host")
@@ -175,9 +175,8 @@ final class HelperProtocolGoldenTests: XCTestCase {
         var s = CaretSettings()
         let base = GateSettings(s, at: 1)
         XCTAssertTrue(base.sameGate(as: GateSettings(s, at: 2)), "a new stamp alone")
-        s.character = .seed
         s.onboarded = true
-        XCTAssertTrue(base.sameGate(as: GateSettings(s, at: 3)), "the character and onboarding are the host's")
+        XCTAssertTrue(base.sameGate(as: GateSettings(s, at: 3)), "onboarding is the host's")
         for change in [{ (x: inout CaretSettings) in x.roles.remove(.fill) }, { $0.level = .eager }, { $0.paused = true }] {
             var t = CaretSettings()
             change(&t)

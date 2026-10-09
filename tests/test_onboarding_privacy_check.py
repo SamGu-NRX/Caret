@@ -18,7 +18,7 @@ SWITCHED_OFF = "It sends nothing from an app or website you've switched off."
 MUTATIONS = [
     ("a promise sentence pasted into the view", "Text(text)\n", f'Text("{SWITCHED_OFF}")\n'),
     ("the retired promise pasted back", "Text(text)\n", 'Text("Never a whole document or conversation.")\n'),
-    ("a fallback for the missing promise", "var promise = PermissionsScreen.privacyLine\n", 'var promise = PermissionsScreen.privacyLine ?? PrivacyPromise("")\n'),
+    ("a fallback for the missing promise", "var promise = PrivacyPromiseText.bundled\n", 'var promise = PrivacyPromiseText.bundled ?? PrivacyPromise("")\n'),
     ("the load returns nothing", "return PrivacyPromise(text)", "return nil"),
     ("the load returns other words", "return PrivacyPromise(text)", 'return PrivacyPromise("Caret sends very little.")'),
 ]

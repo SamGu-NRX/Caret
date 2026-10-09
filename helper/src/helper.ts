@@ -39,6 +39,8 @@ import {
   type FillRequest,
   type FirstLook,
   type FirstLookReply,
+  type FirstLookPreview,
+  type FirstLookPreviewRequest,
   type Focus,
   type MemoryDocument,
   type MemoryDocumentReply,
@@ -1275,6 +1277,10 @@ export class Helper {
     if (session !== undefined && refusal === null) this.taskHosts.set(taskId, new Set([session]));
   }
 
+  handleFirstLookPreview(m: FirstLookPreviewRequest): FirstLookPreview {
+    return this.firstLookRunner.preview(m);
+  }
+
   /** The host's first look: the best offer across the windows open now, answered to the asker only. */
   async handleFirstLook(m: FirstLook): Promise<FirstLookReply> {
     this.opts.store.count("firstLook.request", 1);
@@ -2414,7 +2420,7 @@ export class Helper {
     const pid = this.model.windows.get(m.windowId)?.app.pid ?? 0;
     link.grant?.({ type: "actGrant", v: PROTOCOL_VERSION, taskId, pid, windowId: m.windowId, at, expires: at + INLINE_GRANT_MS });
     try {
-      const r = await link.insertText(m.windowId, m.key, m.expect, m.text, taskId, m.token);
+      const r = await link.insertText(m.windowId, m.key, m.expect, m.text, taskId, m.token, m.replace);
       if (r.outcome === "ok") return reply("inserted", "inserted");
       // H13 review: the write was tried and the field reads as it did before it.
       if (r.insert === "unchanged") return reply("failed", "the page did not keep the insert; the field reads as before");

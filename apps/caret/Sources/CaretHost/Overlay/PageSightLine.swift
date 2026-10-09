@@ -10,6 +10,8 @@ import SwiftUI
 struct PageSightView: View {
     var character: FigureCharacter
     var animated = true
+    /// The installer can add Caret for Chrome here; otherwise the row says where Caret reads pages.
+    var canAdd = true
     var onAdd: () -> Void = {}
 
     static let content = LineContent(figure: .still, text: PageSight.text, emphasis: .plain)
@@ -23,14 +25,16 @@ struct PageSightView: View {
         VStack(alignment: .leading, spacing: 0) {
             Rectangle().fill(Color(token: Tokens.rule)).frame(height: 1)
             HStack(spacing: 12) {
-                Text(Self.why)
+                Text(canAdd ? Self.why : PageSight.notYet)
                     .font(Tokens.Font.chromeSmall)
                     .foregroundStyle(Color(token: Tokens.ink2))
                     .fixedSize()
                 Spacer(minLength: 0)
-                Button(PageSight.action, action: onAdd)
-                    .buttonStyle(WindowButtonStyle(kind: .key, small: true))
-                    .accessibilityHint("Installs Caret for Chrome, after you confirm.")
+                if canAdd {
+                    Button(PageSight.action, action: onAdd)
+                        .buttonStyle(WindowButtonStyle(kind: .key, small: true))
+                        .accessibilityHint("Installs Caret's browser connection and opens the Extensions page.")
+                }
             }
             .padding(.leading, LineView.textIndent(compact: false))
             .padding(.trailing, Tokens.Shape.slipTrailing)
@@ -48,6 +52,8 @@ final class PageSightCoordinator {
     private var observer: NSObjectProtocol?
     /// Whether Caret is paused now.
     var paused: () -> Bool = { false }
+    /// Whether Caret is turned off in this browser process (`AppSwitch`).
+    var appOff: (Int32) -> Bool = { _ in false }
     /// Add to Chrome (H4's `ChromeBridgeInstaller`, run by the app shell).
     var onAddToChrome: () -> Void = {}
     /// Off screen in a headless run: decided and reported, never drawn.
@@ -70,10 +76,16 @@ final class PageSightCoordinator {
     }
 
     func receive(_ m: PageEngineState) {
-        sight.receive(m, frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier, paused: paused())
+        let pid = Int32(truncatingIfNeeded: m.browser.pid)
+        sight.receive(m, frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier, paused: paused() || appOff(pid))
     }
 
-    func frontmostChanged(_ pid: Int32?) { sight.frontmostChanged(pid, paused: paused()) }
+    func frontmostChanged(_ pid: Int32?) { sight.frontmostChanged(pid, paused: paused() || pid.map(appOff) == true) }
+
+    /// The apps Caret is off in changed: a line over a browser now off goes (PR #16 review).
+    func appSwitchChanged() {
+        if let pid = sight.shown?.browserPID, appOff(pid) { sight.turnedOff(pid) }
+    }
 
     func shutdown() {
         if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
@@ -89,17 +101,17 @@ final class PageSightCoordinator {
         guard let line else { return panel.exit(duration: 0.22) }
         // The browser's front window, as the window server lists it (top-left global points).
         guard let window = Visibility.windows().first(where: { $0.pid == line.browserPID && $0.layer == 0 }) else { return }
-        let view = PageSightView(character: FigureSettings.shared.character, onAdd: { [weak self] in
+        let view = PageSightView(character: FigureSettings.shared.character, canAdd: line.canAdd, onAdd: { [weak self] in
             self?.sight.addToChromeChosen()
             self?.onAddToChrome()
         })
         let topRight = Screen.cocoa(CGRect(x: window.bounds.maxX - Self.inset.width, y: window.bounds.minY + Self.inset.height, width: 0, height: 0))
         panel.pin(HostedPanel.Anchor(corner: .topRight, point: NSPoint(x: topRight.minX, y: topRight.maxY)))
         panel.setContent(view)
-        panel.text = PageSight.text + " " + PageSight.action
+        panel.text = PageSight.text + " " + (line.canAdd ? PageSight.action : PageSight.notYet)
         panel.enter()
         // A slip takes no focus, so its words are announced (`SlipAnnouncer`), as every slip's are.
-        SlipAnnouncer.post("\(PageSight.text) \(PageSightView.why)")
+        SlipAnnouncer.post("\(PageSight.text) \(line.canAdd ? PageSightView.why : PageSight.notYet)")
     }
 
     /// Whether the line is on screen, for the debug socket.

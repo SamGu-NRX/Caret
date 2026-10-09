@@ -179,7 +179,9 @@ private final class FillWorldAdapter: FillWorld {
         lastRead.flatMap { $0.id == readID ? $0.element : nil }
     }
 
-    nonisolated func allows(pid: Int32, bundleID: String?) -> Bool { policy.allows(pid: pid, bundleID: bundleID) }
+    nonisolated func allows(pid: Int32, bundleID: String?) -> Bool {
+        policy.allows(pid: pid, bundleID: bundleID) && !AppSwitch.shared.isOff(bundleID: bundleID ?? NSRunningApplicationBundle.id(of: pid))
+    }
 
     nonisolated func bundleID(pid: Int32) -> String? { NSRunningApplicationBundle.id(of: pid) }
 

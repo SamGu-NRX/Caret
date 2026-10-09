@@ -34,6 +34,12 @@ final class WritingCoordinator {
     private var offerWhenRouted = false
     /// This coordinator's toast took the arbiter's toast slot; the other owners take theirs down.
     var onToastShown: (() -> Void)?
+    /// True for an app whose fixes stopped this session (`WriteMethodTable.stopFixes`).
+    var fixesStopped: ((pid_t) -> Bool)?
+    /// Rewrites of a sentence from the local model (`GhostTextEngine.rewrites`); nil when the model
+    /// isn't loaded.
+    var rewriter: ((String) async -> [String]?)?
+    private var rewriteTask: Task<Void, Never>?
 
     private var marks = WritingMarks()
     private var element: AXUIElement?
@@ -101,12 +107,15 @@ final class WritingCoordinator {
         }
         if sameElement, field.role == nil { return status.increment("writing.readFailed") }
         guard policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
-              !field.secure, Self.isProse(element, field: field)
+              !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
+              fixesStopped?(field.identity.pid) != true,
+              !SecretField.holdsSecret(field, traits: change.snapshot?.context.traits), Self.isProse(element, field: field)
         else { return leaveField() }
         if marks.observe(field: field.identity, value: field.value) {
             previousValue = nil
             takeLineDown(exit: 0)
             checkTask?.cancel()
+            sentenceCheck = nil
             // A result reports on the field it came from; its ⌘Z goes with it.
             endResult(exit: 0)
             ownWrite = nil
@@ -114,6 +123,8 @@ final class WritingCoordinator {
         }
         let previous = previousValue
         previousValue = field.value
+        // Typing while the model writes drops the rewrite: it was for the text as it was.
+        if rewriteTask != nil, let previous, !previous.utf16.elementsEqual(field.value.utf16) { cancelRewrite() }
         self.element = element
         self.field = field
         caretRect = change.snapshot?.caretRectAX
@@ -132,6 +143,9 @@ final class WritingCoordinator {
             }
         } else if let sentence = WritingMarks.boundary(previous: previous, value: field.value, selection: field.selection) {
             check(sentence, in: field)
+        } else if let word = WordFix.closedWord(previous: previous, value: field.value, selection: field.selection),
+                  WordFix.eligible(word, in: field.value) {
+            checkWord(word, in: field)
         }
         drawMarks()
     }
@@ -151,8 +165,10 @@ final class WritingCoordinator {
     }
 
     private func leaveField() {
+        cancelRewrite()
         offerWhenRouted = false
         checkTask?.cancel()
+        sentenceCheck = nil
         takeLineDown(exit: 0)
         endResult(exit: 0)
         ownWrite = nil
@@ -187,12 +203,41 @@ final class WritingCoordinator {
             return finishCheck(rules, sentence: sentence, value: value, offering: offering)
         }
         let key = NativeChecker.FieldKey(field.identity)
+        let token = checks
+        sentenceCheck = token
         checkTask = Task { [weak self, checker] in
             let outcome = await checker.check(value, sentence: sentence, language: language, field: key)
+            if self?.sentenceCheck == token { self?.sentenceCheck = nil }
             guard let self, !Task.isCancelled else { return }
             guard case .corrections(let found) = outcome else { return self.noteCheck("stale") }
             self.noteCheck("checked")
             self.finishCheck(WritingCheck.merged(rules, found), sentence: sentence, value: value, offering: offering)
+        }
+    }
+
+    /// The sentence check waiting for the system checker, by its number in `checks`. A word check
+    /// started now would make its answer stale (`NativeChecker` keeps only a field's newest check), so
+    /// none starts. Cleared when that check answers or is cancelled.
+    private var sentenceCheck: Int?
+
+    /// Brief item 5: the word just closed, checked for spelling alone. Only a fix `WordFix.offersLive`
+    /// accepts becomes a mark, bound to the word's own span so typing on after it keeps it
+    /// (`WritingMarks.rebase`); the sentence check later replaces it with what it finds there.
+    private func checkWord(_ word: UTF16Span, in field: FieldState) {
+        guard sentenceCheck == nil else { return noteCheck("wordSkippedForSentence") }
+        if InputMethodState.shared.composes { return noteCheck("skippedComposing") }
+        guard let language, NativeChecker.supports(language) else { return }
+        let value = field.value
+        let key = NativeChecker.FieldKey(field.identity)
+        checkTask?.cancel()
+        checkTask = Task { [weak self, checker] in
+            let outcome = await checker.check(value, sentence: word, language: language, field: key)
+            guard let self, !Task.isCancelled else { return }
+            guard case .corrections(let found) = outcome else { return self.noteCheck("wordStale") }
+            let live = found.filter { word.contains($0.span) && WordFix.offersLive($0) }
+            self.noteCheck(live.isEmpty ? "wordClean" : "wordFix")
+            guard !live.isEmpty else { return }
+            self.finishCheck(live, sentence: word, value: value, offering: true)
         }
     }
 
@@ -441,6 +486,101 @@ final class WritingCoordinator {
         overlay.hidePanel(exit: 0)
     }
 
+    // MARK: - Rewrite
+
+    /// The rewrite key (⌃⌥R) went to `pid`: other ways to say the selection, or the sentence at
+    /// the caret (`RewriteSpan`), from the local model, in the open alternatives list
+    /// (`WritingOffer.rewrite`). The same gates as a fix; the same guard and routes when Tab takes one.
+    ///
+    /// Nothing moves while the model writes (p50 0.8 s for three on an M4 Pro, `--probe-rewrite`):
+    /// a quiet working line sits where the list will open, at once, since a key asked for it. Typing,
+    /// a click or another key that changes the field drops the request.
+    func requestRewrite(pid: pid_t) {
+        cancelRewrite()
+        status.increment("rewrite.requested")
+        guard allowed(), let (element, field) = FieldReader.readFocused(pid: pid) else { return status.increment("rewrite.noField") }
+        guard policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
+              !AppSwitch.shared.isOff(bundleID: field.identity.bundleID), fixesStopped?(pid) != true,
+              !SecretField.holdsSecret(field, traits: nil), Self.isProse(element, field: field)
+        else { return status.increment("rewrite.notHere") }
+        self.element = element
+        self.field = field
+        guard let span = RewriteSpan.at(value: field.value, selection: field.selection),
+              let original = UTF16Text.slice(field.value, start: span.start, end: span.end)
+        else {
+            if let placement = resultPlacement() {
+                overlay.showResult(WritingCopy.error(WritingCopy.rewriteNothingHere), at: placement, role: .error)
+                scheduleResultEnd(after: Self.errorSeconds)
+            }
+            return status.increment("rewrite.nothingHere")
+        }
+        guard let rewriter, let placement = rewritePlacement(span, element: element) else { return status.increment("rewrite.noPlacement") }
+        takeLineDown(exit: 0)
+        endResult(exit: 0)
+        overlay.showResult(LineContent(figure: .working, text: WritingCopy.rewriting, emphasis: .secondary), at: placement, role: .working)
+        publishStatus()
+        rewriteTask = Task { [weak self] in
+            let rewrites = await rewriter(original)
+            guard let self, !Task.isCancelled else { return }
+            self.rewriteTask = nil
+            self.finishRewrite(rewrites, span: span, original: original, element: element, asked: field, placement: placement)
+        }
+    }
+
+    private func finishRewrite(
+        _ rewrites: [String]?, span: UTF16Span, original: String, element: AXUIElement, asked: FieldState, placement: WritingOverlay.Placement
+    ) {
+        // The field must read as it did when the key was pressed: the offer is bound to that text.
+        guard let field = FieldReader.read(element), field.identity == asked.identity,
+              field.value.utf16.elementsEqual(asked.value.utf16), field.selection == asked.selection
+        else {
+            if overlay.role == .working { overlay.hidePanel(exit: 0.08) }
+            return status.increment("rewrite.stale")
+        }
+        guard let rewrites else {
+            overlay.showResult(WritingCopy.error(WritingCopy.rewriteNeedsModel), at: placement, role: .error)
+            scheduleResultEnd(after: Self.errorSeconds)
+            return status.increment("rewrite.noModel")
+        }
+        let live = RangeEdit.Live(target: field.identity, value: field.value, selection: field.selection, secure: field.secure, composing: InputMethodState.shared.composes)
+        guard let writing = WritingOffer.rewrite(
+            span: span, rewrites: RewriteFilter.offered(rewrites, original: original), live: live, language: language ?? "en"
+        ) else {
+            overlay.showResult(WritingCopy.error(WritingCopy.noRewrite), at: placement, role: .error)
+            scheduleResultEnd(after: Self.errorSeconds)
+            return status.increment("rewrite.none")
+        }
+        let offer = Offer(
+            text: "", kind: .writing(writing), target: field.identity, fieldValue: field.value,
+            caretUTF16: field.selection.end, maxAgeSeconds: RangeEdit.defaultMaxAge
+        )
+        guard let id = arbiter.publish(offer) else {
+            overlay.hidePanel(exit: 0.08)
+            return status.increment("rewrite.refused")
+        }
+        shown = Shown(offerID: id, active: writing.active, value: field.value, selection: field.selection, placement: placement)
+        overlay.showOffer(writing, at: placement, entering: false)
+        startExpiry(id)
+        startGeometryWatch()
+        announce(writing.spokenLine)
+        status.increment("rewrite.offered")
+        publishStatus()
+    }
+
+    /// Under the span's text when the field gives its bounds on one line, else under the caret.
+    private func rewritePlacement(_ span: UTF16Span, element: AXUIElement) -> WritingOverlay.Placement? {
+        if let rect = textRect(span, element: element) { return WritingOverlay.Placement(under: rect, x: rect.minX - 34, anchoredBy: "bounds") }
+        return resultPlacement()
+    }
+
+    private func cancelRewrite() {
+        guard let task = rewriteTask else { return }
+        task.cancel()
+        rewriteTask = nil
+        if overlay.role == .working { overlay.hidePanel(exit: 0.08) }
+        status.increment("rewrite.cancelled")
+    }
+
     // MARK: - Results
 
     func insertionFinished(_ result: InsertionExecutor.Result) {
@@ -521,7 +661,7 @@ final class WritingCoordinator {
         resultTimer = nil
         if let id = toastGrantID { arbiter.dismissToast(grantID: id) }
         toastGrantID = nil
-        if overlay.role == .toast || overlay.role == .error { overlay.hidePanel(exit: exit) }
+        if overlay.role == .toast || overlay.role == .error || overlay.role == .working { overlay.hidePanel(exit: exit) }
         // The debug state said "toast" until the next event (V1b, check 6's native case).
         publishStatus()
     }

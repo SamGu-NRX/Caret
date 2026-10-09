@@ -9,7 +9,7 @@ import Foundation
 public enum FigureState: String, CaseIterable, Codable, Sendable {
     /// Enters, already looking at what it noticed.
     case noticed
-    /// Turns toward the offer and breathes.
+    /// Turns toward the offer and holds the look, blinking now and then.
     case offering
     /// Looks away, then leaves; the menu bar glyph tints Carrot.
     case working
@@ -26,13 +26,13 @@ public enum FigureState: String, CaseIterable, Codable, Sendable {
     case absent
 }
 
-/// The three characters. Pebble is the default; seed and wren are kept selectable until Sam picks
-/// (`OPEN-QUESTIONS.md` 1). Each one is a drawing plus a pose per state (CaretHost's
-/// `FigureCharacter.drawing`), so adding a fourth is one more case here and one more drawing.
+/// Caret's figure. Pebble, the blob with eyes, is the only one: Sam retired seed and wren on
+/// 2026-10-09, so onboarding, offers, slips and the menu bar glyph all draw it. The type stays
+/// because the surfaces take the figure as a parameter; its drawing and poses are CaretHost's
+/// `FigureCharacter.drawing`. Settings written with "seed" or "wren" read as pebble
+/// (`CaretSettings.init(from:)`).
 public enum FigureCharacter: String, CaseIterable, Sendable {
-    case pebble, seed, wren
-
-    public var displayName: String { rawValue.capitalized }
+    case pebble
 }
 
 /// A keycap and what it does: "Tab Add", "⌘Z Undo".

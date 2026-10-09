@@ -76,4 +76,24 @@ final class WriteFallbackTests: XCTestCase {
         XCTAssertEqual(WriteFallback.afterAX(classify("", same: false, elapsed: 0.6), refused: false), .failed("writeMismatch"))
         XCTAssertEqual(classify("", same: true, elapsed: 0.6), .unchanged, "the approved element unchanged is still an ignored write")
     }
+
+    func testAFieldThatSaysItCannotTakeSelectedTextPastesFirst() {
+        // Mac Catalyst: AXSelectedText not settable, and a write to it changes nothing.
+        XCTAssertTrue(WriteFallback.pastesFirst(learned: nil, selectedTextSettable: false, electron: false))
+    }
+
+    func testAnElectronAppPastesFirstWhateverItsFieldSays() {
+        XCTAssertTrue(WriteFallback.pastesFirst(learned: nil, selectedTextSettable: true, electron: true))
+        XCTAssertTrue(WriteFallback.pastesFirst(learned: nil, selectedTextSettable: nil, electron: true))
+    }
+
+    func testAnOrdinaryFieldTriesTheAXWriteFirst() {
+        XCTAssertFalse(WriteFallback.pastesFirst(learned: nil, selectedTextSettable: true, electron: false))
+        XCTAssertFalse(WriteFallback.pastesFirst(learned: nil, selectedTextSettable: nil, electron: false), "no answer is not a refusal")
+    }
+
+    func testWhatAWriteTaughtWins() {
+        XCTAssertTrue(WriteFallback.pastesFirst(learned: true, selectedTextSettable: true, electron: false))
+        XCTAssertFalse(WriteFallback.pastesFirst(learned: false, selectedTextSettable: false, electron: true), "an app set to the AX route stays on it")
+    }
 }

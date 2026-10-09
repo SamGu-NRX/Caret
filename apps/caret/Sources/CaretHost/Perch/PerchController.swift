@@ -94,7 +94,6 @@ final class PerchController {
     private var expiryTimer: Timer?
     private var trackTimer: Timer?
     private var locateTimer: Timer?
-    private var blinkTimer: Timer?
     private var fadeWork: DispatchWorkItem?
     /// The rim, perch and caption are on their way out.
     private var leaving = false
@@ -317,7 +316,7 @@ final class PerchController {
             startTimers()
         } else {
             leave(stopped: false)
-            // Nothing left to follow: the window-list and blink timers stop (review finding 8).
+            // Nothing left to follow: the window-list timers stop (review finding 8).
             stopTimers()
         }
         if listOpen { renderList() }
@@ -481,9 +480,10 @@ final class PerchController {
     }
 
     /// While there is a subject: the window list four times a second (the rim follows a dragged
-    /// window within a quarter second; one list read costs about a millisecond), Accessibility every
-    /// 2 s (a window that was replaced or a document that changed title), and a blink every 5 s.
-    /// Assumed intervals; nothing measured them against what a user notices.
+    /// window within a quarter second; one list read costs about a millisecond) and Accessibility
+    /// every 2 s (a window that was replaced or a document that changed title). Assumed intervals;
+    /// nothing measured them against what a user notices. The figure blinks on its own, at
+    /// irregular intervals (`FigureIdle`), so the perch keeps no blink timer.
     private func startTimers() {
         if trackTimer == nil {
             trackTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -495,14 +495,6 @@ final class PerchController {
                 MainActor.assumeIsolated { if self?.seen.isClear == false { self?.locate() } }
             }
         }
-        if blinkTimer == nil {
-            blinkTimer = Timer.scheduledTimer(withTimeInterval: Motion.Duration.blinkEvery, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, self.model.animated, self.model.presented, self.model.mood != .done, self.model.mood != .error else { return }
-                    self.model.blinkTick &+= 1
-                }
-            }
-        }
     }
 
     private func stopTimers() {
@@ -510,8 +502,6 @@ final class PerchController {
         trackTimer = nil
         locateTimer?.invalidate()
         locateTimer = nil
-        blinkTimer?.invalidate()
-        blinkTimer = nil
     }
 
     private func scheduleExpiry(now: Date) {
@@ -657,7 +647,7 @@ final class PerchController {
     }
 
     /// Any of the perch's timers is scheduled; for tests.
-    var timersPending: Bool { [expiryTimer, trackTimer, locateTimer, blinkTimer].contains { $0 != nil } }
+    var timersPending: Bool { [expiryTimer, trackTimer, locateTimer].contains { $0 != nil } }
 
     func shutdown() {
         stopped = true

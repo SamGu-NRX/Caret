@@ -22,6 +22,8 @@ final class MemoryController {
         @Published var calendar: CalendarChoiceRow?
         /// H14: the Files group.
         @Published var savedFiles = SavedFilesBook.State()
+        /// Brief items 4, 6 and 7: the Writing tab.
+        @Published var writing = WritingPage.State()
     }
 
     let book: MemoryBook
@@ -45,6 +47,12 @@ final class MemoryController {
     var sendSavedFiles: (SavedFilesRequest) -> Bool = { _ in false } {
         didSet { savedFiles.send = { [sendSavedFiles] in sendSavedFiles($0) } }
     }
+    /// Brief item 8: the Model group's button (`ModelKeeper.toggle`), set by the runtime.
+    var onModel: () -> Void = {}
+
+    /// The Model group as the runtime's `ModelKeeper` says it now is.
+    func showModel(_ panel: WritingPage.ModelPanel) { model.writing.model = panel }
+
     /// Finder and the user's editor, replaced in tests.
     var workspace: MemoryWorkspace = SystemWorkspace()
 
@@ -73,8 +81,10 @@ final class MemoryController {
         model.sites.pageInlineText = SettingsStore.shared.settings.pageInlineText
         model.sites.pageInlineContentEditable = SettingsStore.shared.settings.pageInlineContentEditable
         model.routing = SettingsStore.shared.settings.routing
+        syncWriting(SettingsStore.shared.settings, keepDrafts: false)
         SettingsStore.shared.observe { [weak self] settings in
             MainActor.assumeIsolated {
+                self?.syncWriting(settings, keepDrafts: true)
                 self?.model.sites.off = settings.sitesOff
                 self?.model.sites.pageInline = settings.pageInline
                 self?.model.sites.pageInlineText = settings.pageInlineText
@@ -93,6 +103,84 @@ final class MemoryController {
     /// Settings sends nothing).
     private func readCalendars() {
         model.calendar = CalendarChoiceRow.make(choice: SettingsStore.shared.settings.eventCalendar, directory: EventKitCalendars.shared)
+    }
+
+    // MARK: - Writing (brief items 4, 6 and 7)
+
+    /// The Writing tab from the settings. `keepDrafts`: a settings change made elsewhere (the menu) leaves what the
+    /// user is typing alone, unless it matched the saved text.
+    private func syncWriting(_ settings: CaretSettings, keepDrafts: Bool) {
+        var w = model.writing
+        let saved = settings.instructions.aboutMe
+        if !keepDrafts || !w.aboutChanged { w.aboutDraft = saved }
+        w.aboutSaved = saved
+        w.entries = WritingPage.entries(settings.instructions, name: Self.appName)
+        w.keys = settings.ghostKeys
+        w.appsOff = settings.appsOff.map { WritingPage.App(bundleID: $0, name: Self.appName($0)) }
+        model.writing = w
+    }
+
+    /// An app's name as Finder shows it, else its bundle identifier.
+    static func appName(_ bundleID: String) -> String {
+        if let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.localizedName { return running }
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+        }
+        return bundleID
+    }
+
+    private func performWriting(_ action: MemoryAction) {
+        switch action {
+        case .aboutText(let text):
+            model.writing.aboutDraft = text
+            model.writing.problem = nil
+        case .saveAbout:
+            let text = model.writing.aboutDraft
+            if let problem = WritingPage.saveProblem(text) {
+                model.writing.problem = problem
+                return
+            }
+            SettingsStore.shared.update(source: .menu) { $0.instructions.aboutMe = text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        case .editEntry(let id):
+            let entry = (model.writing.entries + model.writing.addable).first { $0.id == id }
+            model.writing.editing = entry.map { ($0.id, $0.text) }
+            model.writing.entryProblem = nil
+        case .entryText(let text):
+            if let id = model.writing.editing?.id { model.writing.editing = (id, text) }
+            model.writing.entryProblem = nil
+        case .saveEntry:
+            guard let editing = model.writing.editing,
+                  let entry = (model.writing.entries + model.writing.addable).first(where: { $0.id == editing.id }) else { return }
+            if let problem = WritingPage.saveProblem(editing.draft) {
+                model.writing.entryProblem = problem
+                return
+            }
+            let text = editing.draft
+            model.writing.editing = nil
+            model.writing.entryProblem = nil
+            SettingsStore.shared.update(source: .menu) { s in
+                switch entry.kind {
+                case .app: s.instructions.setApp(entry.key, text)
+                case .site: s.instructions.setSite(entry.key, text)
+                }
+            }
+        case .cancelEntry:
+            model.writing.editing = nil
+            model.writing.entryProblem = nil
+        case .removeEntry(let id):
+            guard let entry = model.writing.entries.first(where: { $0.id == id }) else { return }
+            if model.writing.editing?.id == id { model.writing.editing = nil }
+            SettingsStore.shared.update(source: .menu) { s in
+                switch entry.kind {
+                case .app: s.instructions.setApp(entry.key, "")
+                case .site: s.instructions.setSite(entry.key, "")
+                }
+            }
+        case .keys(let keys): SettingsStore.shared.update(source: .menu) { $0.ghostKeys = keys }
+        case .appOff(let id): SettingsStore.shared.update(source: .menu) { $0.setApp(id, off: true) }
+        case .appOn(let id): SettingsStore.shared.update(source: .menu) { $0.setApp(id, off: false) }
+        default: break
+        }
     }
 
     // MARK: - Not on this site
@@ -142,6 +230,11 @@ final class MemoryController {
     func open() {
         // Read while the browser is still the front app: the window coming forward ends that.
         model.sites.here = BrowserPage.frontOrigin()
+        model.writing.herePage = model.sites.here
+        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+           let id = front.bundleIdentifier {
+            model.writing.hereApp = WritingPage.App(bundleID: id, name: front.localizedName ?? Self.appName(id))
+        }
         readCalendars()
         book.requestList()
         files.requestList()
@@ -266,6 +359,9 @@ final class MemoryController {
         case .routing(let on): SettingsStore.shared.update(source: .menu) { $0.routing = on }
         case .calendar(let id): SettingsStore.shared.update(source: .menu) { $0.eventCalendar = id }
         case .pageInlineText, .pageInlineContentEditable: break
+        case .model: onModel()
+        case .aboutText, .saveAbout, .editEntry, .entryText, .saveEntry, .cancelEntry, .removeEntry, .keys, .appOff, .appOn:
+            performWriting(action)
         case .fileForget(let id):
             book.keep()
             savedFiles.askForget(id)
@@ -452,6 +548,6 @@ private struct MemoryRoot: View {
     var send: (MemoryAction) -> Void
 
     var body: some View {
-        MemoryView(state: model.state, files: model.files, savedFiles: model.savedFiles, tab: model.tab, character: figure.character, sites: model.sites, routing: model.routing, calendarRow: model.calendar, editorApp: editorApp(), send: send)
+        MemoryView(state: model.state, files: model.files, savedFiles: model.savedFiles, tab: model.tab, character: figure.character, sites: model.sites, routing: model.routing, calendarRow: model.calendar, writing: model.writing, editorApp: editorApp(), send: send)
     }
 }

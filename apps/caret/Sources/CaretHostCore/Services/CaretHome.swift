@@ -38,6 +38,18 @@ public struct CaretHome: Equatable, Sendable {
     /// The host's debug socket and settings move into an overridden home, so a test run reads and writes only its own.
     public var hostSocket: String { socketsDirectory + "/host.sock" }
     public var settingsFile: String { root + "/host-settings.json" }
+
+    /// Where the engine keeps its token profiles. The user's Caret keeps the folder it has always used, so no profile
+    /// is rebuilt; a run with its own home keeps its profiles there, and writes nothing into the user's Library.
+    /// Where a model download goes (`ModelKeeper`): the user's Caret's own models folder, or `<home>/Models` for a run
+    /// with its own home, so a test run never writes the 3.4 GB file into the user's Library (PR #16 review).
+    public func modelsDirectory(userHome: String) -> String {
+        isOverride ? root + "/Models" : Self.trimmed(userHome) + "/" + ModelFiles.caretFolder
+    }
+
+    public func profilesDirectory(userHome: String) -> String {
+        isOverride ? root + "/Profiles" : Self.trimmed(userHome) + "/Library/Application Support/Caret/v2-host/Profiles"
+    }
     /// The helper and reader this home's Caret started, so the next Caret can stop any a killed one left running.
     public var childrenFile: String { root + "/services-children.json" }
 

@@ -1,6 +1,7 @@
 import ApplicationServices
 import AutocompleteCore
 import CaretHostCore
+import Carbon
 import Foundation
 import MacContextCapture
 import QuartzCore
@@ -46,11 +47,19 @@ final class HostCoordinator {
     private var anchor: GhostSuggestion?
     private var lastContextKey: String?
     private var lastCaretRect: CGRect?
+    /// The last focus read, for an extension to draw at the caret's current place.
+    private var latest: (field: TargetIdentity, snapshot: FocusedFieldSnapshot)?
     private var generation: Task<Void, Never>?
     private var generationSerial: UInt64 = 0
     /// Every generation task that may still be inside the model, including cancelled ones:
     /// cancellation is a request, and shutdown must not free llama while one is running.
     private var inFlight: [UInt64: Task<Void, Never>] = [:]
+    /// The one extension of the shown suggestion (`GhostExtend`), cancelled with the generation.
+    private var extending: Task<Void, Never>?
+    /// Every extension request until it finishes, cancelled or not, so shutdown waits for each before the model
+    /// goes (PR #16 review: `drain` used to await only the current one, which `cancelGeneration` had just cleared).
+    private var extensionsInFlight: [UInt64: Task<Void, Never>] = [:]
+    private var extensionSerial: UInt64 = 0
     private var isShuttingDown = false
     /// The key-down whose paint was last measured, so one keystroke yields at most one sample.
     private var measuredKeySequence: UInt64 = 0
@@ -77,12 +86,15 @@ final class HostCoordinator {
     func handle(_ change: FocusObserver.Change) {
         guard let snapshot = change.snapshot, let element = change.element,
               let field = FieldReader.read(element) else {
+            // Which step failed, for the debug state: a field Caret cannot see shows only as no focus.
+            status.increment(change.element == nil ? "focus.read.noElement" : change.snapshot == nil ? "focus.read.noSnapshot" : "focus.read.unreadable")
             status.update { $0.focus = nil }
             onFocus?(nil)
             route?.observe(nil)
             return reset()
         }
         onFocus?(field.identity)
+        latest = (field.identity, snapshot)
         // Every read, a selection or an app Caret skips included: the router hears of each breakpoint.
         route?.observe(field)
         let context = snapshot.context
@@ -95,7 +107,9 @@ final class HostCoordinator {
         }
         guard engine.state == .ready, wordsAllowed(),
               policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
-              !field.secure, !context.traits.isSecureTextEntry, !context.traits.isPasswordField,
+              !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
+              !SecretField.holdsSecret(field, traits: context.traits),
+              ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()),
               field.selection.isEmpty
         else { return reset() }
         guard Self.fieldAgrees(field, with: context) else {
@@ -165,7 +179,7 @@ final class HostCoordinator {
             if let shown = overlay.shownText, shown != remainder, shown.hasSuffix(remainder) {
                 overlay.advance(typed: String(shown.dropLast(remainder.count)), remainder: remainder)
             }
-        case .dismissed, .expired, .closed:
+        case .dismissed, .expired, .closed, .realTab:
             guard current == nil else { return }
             cancelGeneration()
             overlay.hide()
@@ -228,6 +242,9 @@ final class HostCoordinator {
         cancelGeneration()
         reset()
         for task in Array(inFlight.values) {
+            await task.value
+        }
+        for task in Array(extensionsInFlight.values) {
             await task.value
         }
     }
@@ -297,6 +314,59 @@ final class HostCoordinator {
         anchor = held.suggestion
         guard present(held.suggestion.text, snapshot: held.snapshot, element: held.element, field: fresh, keyStamp: held.keyStamp) else { return }
         recordPaintLatency(held.keyStamp, finishedText: held.finishedText)
+        extend(held)
+    }
+
+    /// Brief item 1 (`GhostExtend`): the 4-token suggestion just drawn is extended once from its end, toward the
+    /// sentence end, and appended in place with no motion, only while the offer is untouched. Tab takes what is
+    /// drawn at the moment it is pressed: a claim removes the offer, and the extension then finds it gone.
+    private func extend(_ held: Held) {
+        guard !isShuttingDown, let offer = arbiter.snapshot().current, offer.source == .engine, case .ghost = offer.kind,
+              offer.text == held.suggestion.text,  // the words that fit a narrow field were all it had room for
+              GhostExtend.shouldExtend(offer.text, afterCursor: held.snapshot.context.afterCursor)
+        else { return }
+        let context = held.snapshot.context.replacingBeforeCursor(held.snapshot.context.beforeCursor + offer.text)
+        let engine = self.engine
+        extending?.cancel()
+        extensionSerial &+= 1
+        let serial = extensionSerial
+        extending = Task { [weak self] in
+            defer { self?.extensionsInFlight.removeValue(forKey: serial) }
+            let outcome = try? await engine.suggest(for: context, tokens: GhostExtend.tokens)
+            guard let self, !Task.isCancelled else { return }
+            guard case .suggestion(let more)? = outcome else { return self.status.increment("ghost.extend.none") }
+            let snap = self.arbiter.snapshot()
+            let fresh = FieldReader.readFocused()
+            let same = fresh.map { $0.identity == held.field.identity && $0.selection == held.field.selection } ?? false
+            if let why = GhostExtend.refusal(askedFor: offer.id, current: snap.current?.id, typedSinceOffer: snap.typedSinceOffer,
+                                             keyedSince: self.status.lastKeyDown().sequence != held.keyStamp.sequence,
+                                             sameField: same, more: more.text) {
+                return self.status.increment("ghost.extend.\(why)")
+            }
+            guard self.route?.gate().allows ?? true, let fresh else { return self.status.increment("ghost.extend.gated") }
+            let full = offer.text + more.text
+            // Publishing the longer offer displaces the shorter one (which takes its text down) and draws the whole
+            // in the same turn of the main thread, so the words already shown stay where they were.
+            let at = Self.drawSnapshot(held: held.snapshot, heldField: held.field.identity, latest: self.latest)
+            guard self.present(full, snapshot: at, element: held.element, field: fresh, keyStamp: held.keyStamp) else {
+                // Never leave an offer on the arbiter that is not drawn.
+                self.clearOffer()
+                return self.status.increment("ghost.extend.notDrawn")
+            }
+            self.anchor = GhostSuggestion(text: full, context: held.suggestion.context, generationMs: held.suggestion.generationMs)
+            self.status.increment("ghost.extended")
+        }
+        extensionsInFlight[serial] = extending
+    }
+
+    /// The snapshot an extension draws at: the latest read of the same field (same element and value), which has the
+    /// caret's current place, else the one the suggestion was made on. A scroll during the second request moves the
+    /// caret without changing the text, and drawing at the old place moved a correct ghost back (PR #16 review).
+    static func drawSnapshot(
+        held: FocusedFieldSnapshot, heldField: TargetIdentity, latest: (field: TargetIdentity, snapshot: FocusedFieldSnapshot)?
+    ) -> FocusedFieldSnapshot {
+        guard let latest, latest.field == heldField else { return held }
+        return latest.snapshot
     }
 
     /// Records which window held a ghost as covered, in the debug state, and logs it when the
@@ -331,6 +401,15 @@ final class HostCoordinator {
             overlay.hide()
             return false
         }
+        // Secure input may have come on while the engine worked: checked again just before drawing.
+        guard ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) else {
+            status.increment("held.ghost.secureInput")
+            overlay.hide()
+            return false
+        }
+        // A suggestion wider than a single-line field's room offers the words that fit; the rest stays in
+        // `anchor` and comes back as the user types or takes these (`SuggestionAnchor.remaining`).
+        let text = overlay.inlineText(text, at: snapshot, style: style)
         let offer = Offer(text: text, target: field.identity, fieldValue: field.value, caretUTF16: field.selection.start)
         guard let offerID = arbiter.publish(offer, shown: false) else {
             status.increment("offer.refused")
@@ -406,6 +485,8 @@ final class HostCoordinator {
 
     private func cancelGeneration() {
         held = nil
+        extending?.cancel()
+        extending = nil
         generation?.cancel()
         generation = nil
         generationSerial &+= 1

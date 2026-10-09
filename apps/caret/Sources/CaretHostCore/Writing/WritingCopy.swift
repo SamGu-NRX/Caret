@@ -8,6 +8,7 @@ public enum WritingCopy {
         case .spelling: return "Spelling"
         case .grammar: return "Grammar"
         case .punctuation: return "Spacing and punctuation"
+        case .rewrite: return "Wording"
         }
     }
 
@@ -45,6 +46,8 @@ public enum WritingCopy {
     /// The line's key hints: "Tab fix", "↓ more".
     public static let fixHint = "fix"
     public static let moreHint = "more"
+    /// Esc at the foot of the open list: it closes the list and changes nothing.
+    public static let closeHint = "close"
     /// The hint on a line whose two answers disagree: Tab fixes nothing until one is picked.
     public static let chooseHint = "choose"
 
@@ -61,8 +64,31 @@ public enum WritingCopy {
         case .fix: return "fix"
         case .original: return "keep original"
         case .fixAll: return "fix all"
+        case .rewrite: return "use this"
         }
     }
+
+    // MARK: Rewrites
+
+    /// The open list's first line, over the other ways to say it.
+    public static let rewriteReason = "Other ways to say it"
+    /// While the model writes them, at the text.
+    public static let rewriting = "Finding other ways to say it"
+    public static let noRewrite = "Caret found no other way to say this."
+    public static let rewriteNeedsModel = "Rewrites need the local model, and it isn't loaded."
+    public static let rewriteNothingHere = "Select some text, or put the caret in a sentence, to rewrite it."
+    public static let rewrittenLead = "Rewritten"
+
+    /// The toast's words after the lead: the new text's start, quoted, cut at a word within
+    /// `rewrittenPreview` characters. The whole of it is in the field already.
+    public static func rewrittenAs(_ text: String) -> String {
+        guard text.count > rewrittenPreview else { return "“\(text)”" }
+        var cut = String(text.prefix(rewrittenPreview))
+        if let space = cut.lastIndex(of: " ") { cut = String(cut[..<space]) }
+        return "“\(cut.trimmingCharacters(in: .punctuationCharacters))…”"
+    }
+    public static let rewrittenPreview = 32
+    public static let rewriteUndone = "Your wording is back"
 
     public static func fixCount(_ n: Int) -> String { n == 1 ? "1 fix" : "\(n) fixes" }
 
@@ -85,7 +111,9 @@ public enum WritingCopy {
     /// Why Tab changed nothing, by the executor's refusal code. Short enough for one line.
     public static func notFixed(_ code: String) -> String {
         switch code {
-        case "writeRefused", "writeIgnored": return "This app didn't take the fix, so nothing changed."
+        case "writeRefused", "writeIgnored", "selectionNotTaken": return "This app didn't take the fix, so nothing changed."
+        case "fixUndone": return "Caret couldn't fix that here."
+        case "fixNotRestored": return "Caret couldn't fix that here, and couldn't put your text back. Check it."
         case "composing": return "Caret doesn't fix text while an input method is on."
         case "revoked": return "Caret is paused, so nothing changed."
         default: return "The text changed, so nothing was fixed."
@@ -100,6 +128,7 @@ public enum WritingCopy {
         let text: String
         switch alternative.kind {
         case .fixAll: text = fixedAll(alternative.diff.count)
+        case .rewrite: text = rewriteUndone
         default:
             let change = alternative.diff.first
             text = "“\(visible(change?.original ?? ""))” is back"
@@ -114,6 +143,11 @@ public enum WritingCopy {
     // MARK: VoiceOver
 
     /// The line, spoken: what is wrong, the fix, and the keys.
+    /// What VoiceOver reads when the rewrites open.
+    public static func spokenRewrite(count: Int, first: String) -> String {
+        "\(rewriteReason), \(count == 1 ? "1 option" : "\(count) options"). \(spoken(first)). Down Arrow for the next, Tab uses it, Escape keeps yours."
+    }
+
     public static func spokenLine(reason: String, original: String, replacement: String) -> String {
         "\(reason). Replace \(spoken(original)) with \(spoken(replacement)). Tab fixes it, Down Arrow shows more."
     }

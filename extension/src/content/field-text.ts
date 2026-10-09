@@ -101,10 +101,40 @@ export function fieldText(el: Element): FieldText | null {
     const s = el.selectionStart;
     const e = el.selectionEnd;
     if (typeof s !== "number" || typeof e !== "number") return null;
-    return around(el.value, s, e);
+    return withQuiet(around(el.value, s, e));
   }
-  if (el instanceof HTMLElement && el.isContentEditable) return editorText(editingHost(el));
+  if (el instanceof HTMLElement && el.isContentEditable) return withQuiet(editorText(editingHost(el)));
   return null;
+}
+
+/** How long after a non-typing edit it is still reported: helper/src/protocol.ts QUIET_REPORT_MS. */
+const QUIET_REPORT_MS = 2000;
+let lastNonTypingEdit = Number.NEGATIVE_INFINITY;
+let trackingEdits = false;
+const HISTORY_OR_PASTE = new Set(["historyUndo", "historyRedo", "insertFromPaste", "insertFromPasteAsQuotation", "insertFromDrop", "deleteByDrag"]);
+
+/**
+ * v2/inline item 3: notes each paste, drop, undo and redo in this document, for `quietMs`. Rich editors (ProseMirror,
+ * Lexical) handle these themselves and cancel the browser's default, so no input event fires for them: the paste and
+ * drop events, ⌘Z and ⌘⇧Z (or Ctrl), and beforeinput are caught in the capture phase, before the editor sees them. Once
+ * per document; the content script calls it at start.
+ */
+export function trackEdits(): void {
+  if (trackingEdits) return;
+  trackingEdits = true;
+  const mark = (): void => void (lastNonTypingEdit = performance.now());
+  const opts = { capture: true, passive: true } as const;
+  addEventListener("paste", mark, opts);
+  addEventListener("drop", mark, opts);
+  addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "z" || e.key === "Z" || e.key === "y")) mark(); }, opts);
+  addEventListener("beforeinput", (e) => { if (HISTORY_OR_PASTE.has((e as InputEvent).inputType)) mark(); }, opts);
+  addEventListener("input", (e) => { if (HISTORY_OR_PASTE.has((e as InputEvent).inputType)) mark(); }, opts);
+}
+
+function withQuiet(t: FieldText | null): FieldText | null {
+  if (t === null) return null;
+  const quiet = Math.round(performance.now() - lastNonTypingEdit);
+  return quiet >= 0 && quiet < QUIET_REPORT_MS ? { ...t, quietMs: quiet } : t;
 }
 
 /**

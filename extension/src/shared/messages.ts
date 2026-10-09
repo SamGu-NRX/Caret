@@ -22,6 +22,11 @@ export interface PageControl {
   options?: { value: string; label: string; selected: boolean }[];
   form: string | null;
   rect: Rect;
+  /**
+   * v2/inline: where the control's label text is, in the same viewport pixels as `rect` (walker.ts labelRectOf): a Range
+   * over the label's text, not the label element's box, which often spans the row. Absent when no label is drawn.
+   */
+  labelRect?: Rect;
   required?: true;
   disabled?: true;
   invalid?: true;
@@ -146,7 +151,7 @@ export type ActVerb =
   | ({ kind: "pageSetChecked"; checked: boolean } & TargetFields)
   | ({ kind: "pageAttachFile"; file: { name: string; type: string; size: number; sha256: string; data: string } } & TargetFields)
   /** P4 item 8: `text` at the caret of the focused field, whose text before the caret must be `expect` (content/insert.ts). */
-  | ({ kind: "pageInsertText"; expect: string; text: string } & TargetFields);
+  | ({ kind: "pageInsertText"; expect: string; text: string; replace?: number } & TargetFields);
 
 export type PageVerb = { kind: "pageWalk"; tabId: number | null } | ActVerb;
 
@@ -223,6 +228,8 @@ export interface FieldText {
   before: string;
   after: string;
   selection: string;
+  /** Milliseconds since the last paste, drop, undo or redo in this document, when under 2 s (content/field-text.ts). */
+  quietMs?: number;
 }
 
 /**

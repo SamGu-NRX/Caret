@@ -69,12 +69,12 @@ const hostHello = (pid: number, capabilities: string[], host = true) => ({ type:
 /** A page link that records grants and inserts, and answers each insert with `outcome`. */
 function fakeLink(outcome: VerbResult["outcome"], extra: Partial<VerbResult> = {}) {
   const grants: (ActGrant | ActRevoke | CalendarGrant)[] = [];
-  const inserts: { windowId: string; key: string; expect: string; text: string; taskId: string }[] = [];
+  const inserts: { windowId: string; key: string; expect: string; text: string; taskId: string; replace?: number }[] = [];
   const link: ReaderLink = {
     run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }),
     grant: (m) => void grants.push(m),
-    insertText: async (windowId, key, expect, text, taskId) => {
-      inserts.push({ windowId, key, expect, text, taskId });
+    insertText: async (windowId, key, expect, text, taskId, _token, replace) => {
+      inserts.push({ windowId, key, expect, text, taskId, ...(replace === undefined ? {} : { replace }) });
       return { type: "verbResult", v: 1, id: "r", at: 0, outcome, detail: "'Cover letter' quoted here", ...extra };
     },
   };
@@ -196,6 +196,17 @@ describe("handlePageInsert (H13)", () => {
       h.shutdown();
       h.memory.close();
     }
+  });
+
+  it("carries the consumer's replacement count into the page link", async () => {
+    const fake = fakeLink("ok");
+    const h = make(fake);
+    try {
+      const message = ConsumerMessage.parse({ ...at(2), expect: "I like teh ", text: "the ", replace: 4 });
+      expect(message.type).toBe("pageInsert");
+      expect((await h.handlePageInsert(message as never)).outcome).toBe("inserted");
+      expect(fake.inserts).toMatchObject([{ expect: "I like teh ", text: "the ", replace: 4 }]);
+    } finally { h.shutdown(); h.memory.close(); }
   });
 
   it("inserts nothing while Caret is paused, or for a window that is not a page", async () => {

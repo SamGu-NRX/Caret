@@ -5,8 +5,9 @@
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
 import { assertNoExcludedValue, cut, flat, fold, OWNER_NOTE_CHARS, sectionTexts, SnippetLedger, spansOf, type Snippet, type ViewSpan } from "../privacy.ts";
+import { checkFirstLookOpen, checkFirstLookText, type Span } from "./first-look-allow-list.ts";
 import { breachWithNotes, measure, normalizedUnits, OperationLedger, splitNotes, viewInventory, type Breach, type Measurement, type OwnerNotes } from "./ledger/account.ts";
-import { nodePart, sourceLines, sourcePieces, splitLines, wholePart, type SourceAt } from "./ledger/source.ts";
+import { collapsedMap, lineEndAt, lineStartAt, nextLineStart, nodePart, partsOf, sourceLine, sourceLines, sourcePieces, splitLines, wholePart, type SourceAt } from "./ledger/source.ts";
 import { spanKey } from "./ledger/measure.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits, type DecodedUnit } from "./ledger/units.ts";
@@ -313,6 +314,18 @@ export class Disclosure extends SnippetLedger {
    * (ledger/measure.ts spanPositions).
    */
   private readonly spans = new Map<string, ViewSpan[]>();
+  /**
+   * First-look preview (v2/access): the user's own text (a saved value, an instruction) each minted text carries, through
+   * composition, so a template around it cannot send words the preview never showed. Read only by verify's first-look
+   * check; it charges nothing.
+   */
+  private readonly originsOf = new Map<string, Set<string>>();
+
+  private carryOrigins(text: string, parts: readonly string[]): void {
+    const origins = new Set(this.originsOf.get(text));
+    for (const part of parts) for (const origin of this.originsOf.get(part) ?? []) origins.add(origin);
+    if (origins.size > 0) this.originsOf.set(text, origins);
+  }
 
   /** Adds declared spans to a minted text. */
   private declareSpans(text: string, spans: Iterable<ViewSpan>): void {
@@ -326,13 +339,59 @@ export class Disclosure extends SnippetLedger {
 
   /** A composed text, recorded with its ways, carrying the declared spans of `parts`. */
   private composed(text: string, ways: readonly (readonly MintReason[])[], parts: readonly string[]): ModelText {
+    this.carryOrigins(text, parts);
     this.declareSpans(text, parts.flatMap((p) => this.spans.get(p) ?? []));
     return this.recordWays(text, ways);
   }
 
   /** Records `text` as minted under `reasons`, as one way of minting it, and brands it. */
   private record(text: string, reasons: Iterable<MintReason>): ModelText {
-    return this.recordWays(text, [[...reasons]]);
+    const way = [...reasons];
+    if (way.includes("memory") || way.includes("instruction")) this.originsOf.set(text, new Set([...(this.originsOf.get(text) ?? []), text]));
+    return this.recordWays(text, [way]);
+  }
+
+  /**
+   * First-look preview (v2/access): the stretches of whitespace-collapsed window lines a minted text reveals, as Spans,
+   * read from its declared spans. A range span gives the collapsed stretch of each line it covers; a text span every
+   * line of its view that holds it. Window text or a saved value with no declared span gets the lines of the measured
+   * windows that hold it, computed here and never declared, so nothing more is charged.
+   */
+  spansOfText(text: string): Span[] {
+    const out: Span[] = [];
+    const push = (s: Span): void => {
+      if (s.len > 0 && !out.some((x) => x.windowId === s.windowId && x.line === s.line && x.at === s.at && x.len === s.len)) out.push(s);
+    };
+    let declared: readonly ViewSpan[] = this.spans.get(text) ?? [];
+    // Window text minted with no declared span (a producer that charged it through the early check alone), and saved
+    // values: the lines of the measured windows that hold it, as the seal measures it.
+    const reasons = this.mints.get(text);
+    if (declared.length === 0 && ["candidate", "held", "plan", "drafted", "memory"].some((r) => reasons?.has(r as MintReason) === true)) declared = this.planSpans(text);
+    for (const sp of declared) {
+      const windowId = sp.view.window.windowId;
+      const parts = partsOf(sp.view);
+      if ("at" in sp) {
+        const raw = parts.find((p) => p.id === sp.at.part)?.raw;
+        if (raw === undefined) continue;
+        for (let ls = lineStartAt(raw, sp.at.start); ls >= 0; ) {
+          const le = lineEndAt(raw, ls);
+          const { text: line, from } = collapsedMap(raw.slice(ls, le));
+          const hit = from.flatMap((f, i) => (f + ls >= sp.at.start && f + ls < sp.at.end ? [i] : []));
+          if (hit.length > 0) push({ windowId, line, at: hit[0]!, len: hit[hit.length - 1]! - hit[0]! + 1 });
+          if (le >= sp.at.end) break;
+          ls = nextLineStart(raw, le);
+        }
+      } else {
+        for (const piece of splitLines(sp.text).map(sourceLine).filter((t) => t !== "")) {
+          for (const p of parts) for (const raw of splitLines(p.raw)) {
+            const line = sourceLine(raw);
+            const at = line.indexOf(piece);
+            if (at >= 0) push({ windowId, line, at, len: piece.length });
+          }
+        }
+      }
+    }
+    return out;
   }
 
   /** Records `text` as minted in each of `ways` (each a set of reasons) and brands it. */
@@ -687,6 +746,7 @@ export class Disclosure extends SnippetLedger {
     const spans: ViewSpan[] = bases.flatMap((b) => (b instanceof Basis ? b.spans : (this.spans.get(b) ?? [])));
     if (!this.admitTexts([text], { under: view === null ? null : view.window.windowId, kind: "candidate", spans })) return null;
     this.declareSpans(text, spans);
+    this.carryOrigins(text, minted);
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }
 
@@ -701,6 +761,7 @@ export class Disclosure extends SnippetLedger {
     const spans = [...this.planSpans(text), ...bases.flatMap((b) => this.spans.get(b) ?? [])];
     if (!this.admitTexts([text], { under: "plan", kind: "candidate", lines: true, spans })) return null;
     this.declareSpans(text, spans);
+    this.carryOrigins(text, bases);
     return this.recordWays(text, this.composedWays(bases, "derived", false).map((w) => [...w, "held" as const]));
   }
 
@@ -810,6 +871,8 @@ export class Disclosure extends SnippetLedger {
    * the body in paths: "" for a Jev wire body, "input" for a writer's input.
    */
   verify(purpose: string, body: unknown, root = ""): void {
+    // v2/access: during a first look the user previewed, a look that went stale or closed sends nothing.
+    checkFirstLookOpen();
     // The user switched an app or a site off since this request's text was read (PV2 re-review): none of it is sent,
     // whichever window it came from, since what was read before the switch is not rechecked text by text.
     if (switchedOffCount() !== this.policy) throw new UnmintedText(`${purpose}: an app or a site was switched off after this request was built; it was not sent`);
@@ -820,6 +883,8 @@ export class Disclosure extends SnippetLedger {
       // state that text writes, parsed from the text itself. Only there: anywhere else a JSON text is a text like any
       // other, held to its own slot's reasons and length (PV2 re-review).
       if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob, { count, scalar, key, container });
+      // v2/access: during a first look, only text the preview showed (and saved text it showed) is sent.
+      checkFirstLookText(this.spansOfText(v), this.reasonsOf(v), v, [...(this.originsOf.get(v) ?? [])]);
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
       if (v.length > slot.max) {
@@ -925,6 +990,7 @@ export class Disclosure extends SnippetLedger {
     };
     walk(written);
     this.asJson.add(text);
+    this.carryOrigins(text, parts);
     this.declareSpans(text, parts.flatMap((p) => this.spans.get(p) ?? []));
     return this.record(text, reasons);
   }

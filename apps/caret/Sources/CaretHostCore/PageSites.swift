@@ -67,8 +67,9 @@ public struct HostSettings: Encodable, Equatable, Sendable {
 ///
 /// The helper says `missing` for a Chromium browser that is in front, that the user typed in since it
 /// came to the front, and that has no Caret page engine connected; it says `connected` once one says
-/// hello. The line is for Chrome only, because its one next step is Add to Chrome (H4's installer),
-/// and it shows at most once per browser process per host session: it is information, not a nag. It
+/// hello. The line shows in every such browser (the helper sends `missing` only for Chromium ones);
+/// its Add to Chrome button only where the installer can add Caret for Chrome (`canAdd`: Chrome's
+/// channels and Helium). It shows at most once per browser process per host session: it is information, not a nag. It
 /// claims no key. It goes when an engine connects, when the browser leaves the front, when the user
 /// clicks Add to Chrome, after `lifetime`, or when Caret is paused or loses its helper.
 ///
@@ -77,6 +78,8 @@ public final class PageSight {
     public struct Line: Equatable, Sendable {
         public var browserPID: Int32
         public var browserName: String
+        /// The installer can add Caret for Chrome to this browser, so the line offers it.
+        public var canAdd = true
     }
 
     public static let text = "Caret can't see this page yet."
@@ -90,6 +93,15 @@ public final class PageSight {
         let id = bundleID.lowercased()
         return id == "com.google.chrome" || id.hasPrefix("com.google.chrome.")
     }
+
+    /// Browsers the installer can add Caret for Chrome to: Chrome's channels and Helium (H12).
+    public static func canAdd(bundleID: String) -> Bool {
+        isChrome(bundleID: bundleID) || bundleID.lowercased() == "net.imput.helium"
+    }
+
+    /// The line's second row where nothing can be added yet.
+    public static let notYet = "Caret reads pages in Chrome and Helium for now."
+
 
     public private(set) var shown: Line?
     /// Browser processes the line was shown for this session.
@@ -111,8 +123,7 @@ public final class PageSight {
             missing[pid] = nil
             if shown?.browserPID == pid { hide() }
         case .missing:
-            guard Self.isChrome(bundleID: m.browser.bundleId) else { return }
-            let line = Line(browserPID: pid, browserName: m.browser.name)
+            let line = Line(browserPID: pid, browserName: m.browser.name, canAdd: Self.canAdd(bundleID: m.browser.bundleId))
             missing[pid] = line
             show(line, frontmostPID: frontmostPID, paused: paused)
         }
@@ -130,6 +141,12 @@ public final class PageSight {
 
     /// Caret was paused: it says nothing.
     public func paused() { hide() }
+
+    /// Caret was turned off in the browser `pid` (`CaretSettings.appsOff`): its line goes now. The
+    /// caller passes `paused: true` for that browser from then on, so it does not come back.
+    public func turnedOff(_ pid: Int32) {
+        if shown?.browserPID == pid { hide() }
+    }
 
     /// The helper went away: what it said about browsers no longer holds.
     public func helperGone() {
@@ -203,9 +220,9 @@ public enum SitesPage {
         public var pageInline = PageInlineSettings()
         /// H14: the two switches for inline text in pages (`CaretSettings.pageInlineText`, `pageInlineContentEditable`).
         public var pageInlineText = true
-        public var pageInlineContentEditable = false
+        public var pageInlineContentEditable = true
         public init(off: [String] = [], here: String? = nil, draft: String = "", problem: String? = nil, pageInline: PageInlineSettings = PageInlineSettings(),
-                    pageInlineText: Bool = true, pageInlineContentEditable: Bool = false) {
+                    pageInlineText: Bool = true, pageInlineContentEditable: Bool = true) {
             self.pageInline = pageInline
             self.pageInlineText = pageInlineText
             self.pageInlineContentEditable = pageInlineContentEditable

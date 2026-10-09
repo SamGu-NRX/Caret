@@ -1,0 +1,8 @@
+Hi Maya, thanks for sending the draft over. I read through it this morning and I think the structure works well.
+Can we move our call to Thursday afternoon? Something came up on my end and I won't be able to make it at noon.
+The main reason the build is slow is that every test target links the full model runtime, even when it does not need it.
+I'm going to grab lunch now, but I should be back around two if you want to go over the slides together.
+Quick update on the launch: the landing page is done, the pricing copy still needs a pass, and the demo video is rendering.
+Let me know if you have any questions or if there is anything else I can help with before the deadline.
+We decided to keep the existing onboarding flow for now and revisit it after we have more data from the first cohort.
+Sorry for the late reply, I was traveling all week and only just got through my inbox.

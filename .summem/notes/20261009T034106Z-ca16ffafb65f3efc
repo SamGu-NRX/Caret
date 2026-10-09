@@ -1,0 +1,1 @@
+The h13 VM harness hardcodes caret-v2-host and requires the commit on v2/host; another branch needs its own harness copy. swift-typecheck refuses below about 7 GiB free disk.

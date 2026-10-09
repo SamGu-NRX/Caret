@@ -38,6 +38,23 @@ final class GhostTextEngine {
 
     static let maxCompletionTokens = 4
     static let maxDisplayWidth = 60
+    /// The caps this engine requests with. `Caret --probe-length` varies them to time longer
+    /// suggestions; a normal run keeps the defaults above.
+    var completionTokens = GhostTextEngine.maxCompletionTokens
+    /// Probe only (`Caret --probe-length`, mode `norm-4`): order the beam's candidates by mean log probability per
+    /// token instead of KeyType's cumulative score, which favors short candidates. A re-rank of what the beam returned,
+    /// not a different beam: KeyType's search and early stop (pinned upstream) still decide which candidates exist.
+    /// Not the default: it lengthened the first paint (mean 2.8 words against 2.4) at no extra model work, but on 60
+    /// positions where the two picked differently, a blind judge (pairs shuffled, labels hidden) preferred it 18 times,
+    /// the cumulative score 31 times, and tied 11: 48 % won or tied, under the 50 % bar set for adopting it
+    /// (~/.caret-run/evidence/host/inline/norm-judge, probe run length-norm-d9f6b6e1).
+    var normalizesLength = false
+    var displayWidth = GhostTextEngine.maxDisplayWidth
+    /// The user's personal instructions for a field (brief item 4, `PersonalInstructions.lines`). They replace KeyType's
+    /// `policy.customInstructions`, which nothing in Caret sets. The origin is the web page's, passed only by the page
+    /// path for its own field: a native field in the browser (its address bar) never gets a site's instructions
+    /// (PR #16 review).
+    var instructions: (TextFieldContext, _ origin: String?) -> [String] = { _, _ in [] }
     /// Candidates looked at, best first, when the better ones are refused at the seam or do not
     /// fit the text after the caret. KeyType's own filter still decides about the first.
     static let candidatesTried = 3
@@ -61,6 +78,8 @@ final class GhostTextEngine {
     private(set) var lastFitMs: Double?
     private var engine: ConstrainedGenerationEngine?
     private var scorer: SuffixScorer?
+    /// The runtime the engine decodes with, shared with `RewriteGenerator`.
+    private var runtime: LocalModelRuntime?
     /// `Caret --probe-replay`: every candidate is scored, refused or not, for calibration. The
     /// outcome is decided as in a normal run.
     var diagnostic = false
@@ -76,16 +95,17 @@ final class GhostTextEngine {
         self.filter = DefaultCandidateFilter(compatibilityStore: compatibilityStore, wordRecognizer: SystemWordRecognizer())
     }
 
-    func load(modelURL: URL, prependBOS: Bool? = nil) async {
+    func load(modelURL: URL, prependBOS: Bool? = nil, profileDirectory: URL = EngineLoader.profileDirectory) async {
         state = .loading
         let store = compatibilityStore
         let result = await Task.detached(priority: .userInitiated) {
-            Result { try EngineLoader.load(modelURL: modelURL, compatibilityStore: store, prependBOS: prependBOS) }
+            Result { try EngineLoader.load(modelURL: modelURL, compatibilityStore: store, prependBOS: prependBOS, profileDirectory: profileDirectory) }
         }.value
         switch result {
         case .success(let loaded):
             engine = loaded.engine
             scorer = SuffixScorer(runtime: loaded.runtime)
+            runtime = loaded.runtime
             state = .ready
             await warmUp(loaded.engine)
         case .failure(let error):
@@ -104,15 +124,26 @@ final class GhostTextEngine {
         state = .unavailable("disabled")
     }
 
+    /// Rewrites of `sentence` with the same model (`RewriteGenerator`); nil when it isn't loaded.
+    func rewrites(of sentence: String, mode: RewriteGenerator.Mode) async throws -> RewriteGenerator.Output? {
+        if let replay {
+            return replay.rewrites?[sentence].map { RewriteGenerator.Output(rewrites: $0, firstMs: 0, totalMs: 0, tokens: 0) }
+        }
+        guard let runtime else { return nil }
+        return try await RewriteGenerator(runtime: runtime).rewrites(of: sentence, mode: mode)
+    }
+
     func shutdown() async {
         let engine = self.engine
         self.engine = nil
+        runtime = nil
         state = .unavailable("shut down")
         await engine?.shutdown()
     }
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
-    func suggest(for context: TextFieldContext) async throws -> Outcome {
+    /// `tokens` overrides `completionTokens` for this one request (the extension after the first paint).
+    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil) async throws -> Outcome {
         if let replay {
             switch replay.outcome(before: context.beforeCursor, after: context.afterCursor) {
             case .text(let text)?: return .suggestion(GhostSuggestion(text: text, context: context, generationMs: 0))
@@ -134,9 +165,16 @@ final class GhostTextEngine {
             return .suppressed("numericMidWordStem")
         }
 
-        let request = makeRequest(for: context, policy: policy)
+        let request = makeRequest(for: context, policy: policy, tokens: tokens, origin: origin)
         let started = DispatchTime.now().uptimeNanoseconds
-        let candidates = try await engine.completions(for: request)
+        var candidates = try await engine.completions(for: request)
+        if normalizesLength {
+            candidates = candidates.enumerated().sorted { a, b in
+                let ma = a.element.logProbability / Double(max(1, a.element.tokenIDs.count))
+                let mb = b.element.logProbability / Double(max(1, b.element.tokenIDs.count))
+                return ma != mb ? ma > mb : a.offset < b.offset
+            }.map(\.element)
+        }
         try Task.checkCancellation()
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
         lastGenerationMs = elapsed
@@ -196,32 +234,34 @@ final class GhostTextEngine {
     }
 
     /// The request `suggest` sends for `context`, under the app's policy.
-    func request(for context: TextFieldContext) -> CompletionRequest {
-        makeRequest(for: context, policy: compatibilityStore.policy(for: context))
+    func request(for context: TextFieldContext, origin: String? = nil) -> CompletionRequest {
+        makeRequest(for: context, policy: compatibilityStore.policy(for: context), origin: origin)
     }
 
-    private func makeRequest(for context: TextFieldContext, policy: CompletionPolicy) -> CompletionRequest {
+    private func makeRequest(
+        for context: TextFieldContext, policy: CompletionPolicy, tokens override: Int? = nil, origin: String? = nil
+    ) -> CompletionRequest {
         // Token healing: prompt from the last clean token boundary and force the typed stem back
         // out, so the model can reach the whole-word token (ADR-019).
         let heal = MidWordHealing.plan(for: context)
         let promptContext = heal.map { context.replacingBeforeCursor($0.head) } ?? context
         let prompt = promptBuilder.buildPrompt(
             context: promptContext,
-            customInstructions: policy.customInstructions,
+            customInstructions: instructions(context, origin),
             includeEnvironmentContext: policy.includesEnvironmentContext
         ).prompt
         let healSlack = heal?.heal.count ?? 0
         let healTokens = healSlack > 0 ? 1 : 0
         let tokens = Self.shouldUseCapsule(for: context)
-            ? min(Self.maxCompletionTokens, 3) + healTokens
-            : Self.maxCompletionTokens + healTokens
+            ? min(override ?? completionTokens, 3) + healTokens
+            : (override ?? completionTokens) + healTokens
         return CompletionRequest(
             context: context,
             prompt: prompt,
             requiredPrefixBytes: heal.map { Array($0.heal.utf8) } ?? [],
             mode: policy.completionMode,
             maxCompletionTokens: tokens,
-            maxDisplayWidth: Self.maxDisplayWidth + healSlack
+            maxDisplayWidth: displayWidth + healSlack
         )
     }
 

@@ -21,6 +21,7 @@
 #   Contents/Helpers/node                      Node, pinned below (dev.caret.node, Bundle/node.entitlements)
 #   Contents/Helpers/caret-screen              the reader (dev.caret.screen, Bundle/caret-screen.entitlements)
 #   Contents/Helpers/caret-bridge              the Native Messaging host Chrome starts (dev.caret.bridge)
+#   Contents/Resources/AppIcon.icns            the app icon (Bundle/AppIcon.icns, from scripts/make-app-icon.sh)
 #   Contents/Resources/helper/                 the helper, bundled (scripts/helper-bundle.config.mjs)
 #   Contents/Resources/Caret for Chrome/       the unpacked extension, for Add to Chrome
 #   Contents/Library/LaunchAgents/dev.caret.host.plist   the agent SMAppService registers
@@ -109,6 +110,7 @@ rm -rf "$app" "$other"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Frameworks" "$contents/Helpers" "$contents/Resources" "$contents/Library/LaunchAgents"
 cp Bundle/Info.plist "$contents/Info.plist"
+cp Bundle/AppIcon.icns "$contents/Resources/AppIcon.icns"
 if [[ -n "${CARET_INTERNAL_BUILD:-}" ]]; then /usr/libexec/PlistBuddy -c "Add :CaretInternalBuild bool true" "$contents/Info.plist"; fi
 # CFBundleVersion, the build number: it only grows, so macOS and the user can tell two builds of one version apart. It
 # is CARET_BUILD_NUMBER when the caller sets it (a builder working from a git archive, which has no history), else the

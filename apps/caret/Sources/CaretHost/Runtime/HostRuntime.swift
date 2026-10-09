@@ -1,4 +1,5 @@
 import AppCompatibility
+import AutocompleteCore
 import AppKit
 import CaretHostCore
 import CaretScreenCore
@@ -13,6 +14,11 @@ public final class HostRuntime {
         public var socketPath: String
         public var helperSocketPath: String
         public var modelURL: URL
+        /// Where the engine keeps its token profiles (`CaretHome.profilesDirectory`): a run with its own `--home`
+        /// keeps them there, not in the user's Library.
+        public var profileDirectory: URL = EngineLoader.profileDirectory
+        /// Where a model download goes (`CaretHome.modelsDirectory`); nil is the user's Caret's models folder.
+        public var modelDownloadDirectory: URL?
         /// When set, offers are made only in these apps. For test runs on a shared Mac, so the host
         /// never draws over or takes Tab from windows it did not create. Nil means every app.
         public var allowedBundleIDs: Set<String>?
@@ -115,7 +121,7 @@ public final class HostRuntime {
     }
 
     private let configuration: Configuration
-    private let arbiter = OfferArbiter()
+    private let arbiter = OfferArbiter(aboveTabKeyCode: KeyboardLayout.aboveTabKeyCode())
     private let status = HostStatus()
     private let compatibilityStore = AppCompatibilityStore()
     private let engine: GhostTextEngine
@@ -141,6 +147,8 @@ public final class HostRuntime {
     private let socket: DebugStateSocket
     private let onboarding: OnboardingController
     private let memory: MemoryController
+    /// Brief item 8: the model file in use and Caret's own copy's download.
+    private let modelKeeper: ModelKeeper
     private let pageSight: PageSightCoordinator
     /// H6: the helper's router, as ghost text and the writing line follow it.
     private let routeLink: RouteLink
@@ -150,6 +158,7 @@ public final class HostRuntime {
     /// activity record arrives. Assumed: activity follows an accept within a second on this Mac.
     static let rehelloAcceptGrace: TimeInterval = 30
     private var engineTask: Task<Void, Never>?
+    private var trustPoll: Timer?
     private let servicesBox = ServicesBox()
     private var sessionLock: SessionLockWatch?
 
@@ -185,6 +194,10 @@ public final class HostRuntime {
         let pageInline = PageInlineCoordinator(arbiter: arbiter, status: status, engine: engine, policy: policy, drawsOnScreen: !configuration.surfacesHeadless)
         self.pageInline = pageInline
         pageInline.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
+        // Brief item 4: the user's personal instructions in every completion prompt; a page's site from the page path.
+        engine.instructions = { context, origin in
+            SettingsStore.shared.settings.instructions.lines(bundleID: context.target.bundleIdentifier, origin: origin)
+        }
         let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
         self.writing = writing
         let routeLink = RouteLink(status: status, enabled: SettingsStore.shared.settings.routing)
@@ -193,12 +206,18 @@ public final class HostRuntime {
         writing.route = routeLink
         routeLink.onChange = [{ coordinator.routeChanged() }, { writing.routeChanged() }]
         writing.allowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
+        // List mode: the blind judge preferred its rewrites 11 to 4 over sampled ones, which changed
+        // the meaning of 16 of 41 (rewrite probe 02f3cda9; judge verdicts in the PR).
+        let rewriteEngine = engine
+        writing.rewriter = { text in try? await rewriteEngine.rewrites(of: text, mode: .list)?.rewrites }
         // Every host write asks this right before it acts; pause, stop, take over and the helper's
         // connection closing end it (S1 audit #2).
         let authority = HostAuthority()
+        let keyHold = KeyHold()
         let executor = InsertionExecutor(
             arbiter: arbiter, status: status, compatibilityStore: compatibilityStore, policy: policy,
             authority: authority, advanceAfterFill: configuration.fillAdvances, pasteRestoreDelay: configuration.testHooks ? configuration.pasteRestoreDelay : 0,
+            keyHold: keyHold,
             onFinished: { result in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
@@ -239,11 +258,22 @@ public final class HostRuntime {
                 writing.displaced(offer)
             }
         }
-        let onboarding = OnboardingController(mode: OnboardingController.Mode(rawValue: configuration.onboarding ?? "off") ?? .off, testHooks: configuration.testHooks)
+        // Progress sits beside the settings file, so a test run with its own settings never touches the user's.
+        let progressPath = ((SettingsStore.path as NSString).deletingLastPathComponent as NSString).appendingPathComponent("onboarding-progress.json")
+        let onboarding = OnboardingController(mode: OnboardingController.Mode(rawValue: configuration.onboarding ?? "off") ?? .off,
+                                              testHooks: configuration.testHooks, progressPath: progressPath)
         self.onboarding = onboarding
         let activity = ActivityCenter()
         self.activity = activity
         let memory = MemoryController(testHooks: configuration.testHooks)
+        let modelKeeper = ModelKeeper(configured: configuration.modelURL, downloadFolder: configuration.modelDownloadDirectory)
+        self.modelKeeper = modelKeeper
+        let showModel: () -> Void = { [weak memory, unowned modelKeeper] in
+            memory?.showModel(WritingPage.ModelPanel(line: modelKeeper.line, action: modelKeeper.action(menu: false), status: modelKeeper.status))
+        }
+        modelKeeper.observe(showModel)
+        showModel()
+        memory.onModel = { [unowned modelKeeper] in modelKeeper.toggle() }
         self.memory = memory
         let perch = PerchController(center: activity, drawsOnScreen: configuration.perchDrawsOnScreen)
         self.perch = perch
@@ -251,6 +281,9 @@ public final class HostRuntime {
         let pageSight = PageSightCoordinator(draws: !configuration.surfacesHeadless)
         self.pageSight = pageSight
         pageSight.paused = { MainActor.assumeIsolated { SettingsStore.shared.settings.paused } }
+        pageSight.appOff = { pid in
+            NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map { AppSwitch.shared.isOff(bundleID: $0) } ?? false
+        }
         pageSight.sight.onChange = { [weak pageSight] line in
             pageSight?.redraw(line)
             status.update { $0.pageSight = pageSight?.sight.debugInfo }
@@ -269,8 +302,7 @@ public final class HostRuntime {
             }
             // Memory is the user's to see and change whatever the gate holds.
             if case .memoryReply(let reply) = message {
-                memory.receive(reply)
-                return onboarding.knowAvailableChanged(memory.book.state.acceptsAdd)
+                return memory.receive(reply)
             }
             if case .memoryDocumentReply(let reply) = message { return memory.receive(reply) }
             if case .savedFilesReply(let reply) = message { return memory.receive(reply) }
@@ -329,12 +361,14 @@ public final class HostRuntime {
             // An offer the memory row asked for ("Let it run on its own…") is shown there, not at the caret.
             case .skillOffer(let offer): if !memory.book.claim(offer) { surface.skillOffer(offer) }
             case .firstLookReply(let reply): onboarding.receive(reply)
+            case .firstLookPreview(let preview): onboarding.receive(preview)
             // Where the noticed facts behind an offer or a plan came from, for its "Not right".
             case .memoryProvenance(let provenance):
                 surface.provenance(provenance)
                 perch.ask.provenance(provenance)
             // W2: whether Caret can see the front browser's pages.
             case .pageEngine(let m):
+                if m.state == .connected { onboarding.browserConnected() }
                 pageSight.receive(m)
                 status.update { $0.pageSight = pageSight.sight.debugInfo }
             default: break
@@ -378,8 +412,30 @@ public final class HostRuntime {
             fill.toastChanged()
             writing.toastChanged()
         }
+        // The one-time coach slip under the first ghost text in another app, once onboarding is done.
+        let coach = CoachSlip()
+        coach.eligible = { [weak onboarding] in SettingsStore.shared.settings.onboarded && onboarding?.coachShown == false }
+        coach.onShown = { [weak onboarding] in onboarding?.markCoachShown() }
+        overlay.onShown = { caret in coach.ghostShown(caret: caret) }
+        overlay.onHidden = { coach.dismiss() }
         let firstLookClient = helper
+        let ghostEngine = engine
+        onboarding.complete = { text in
+            let context = TextFieldContext(beforeCursor: text, afterCursor: "", target: AppTarget(bundleIdentifier: "dev.caret.host", appName: "Caret"))
+            guard case .suggestion(let s)? = try? await ghostEngine.suggest(for: context) else { return nil }
+            return s.text
+        }
+        onboarding.modelReadiness = {
+            switch ghostEngine.state {
+            case .ready: return .ready
+            case .loading: return .loading(nil)
+            case .unavailable: return .unavailable
+            }
+        }
         onboarding.sendFirstLook = { firstLookClient.send($0) }
+        onboarding.sendPreview = { id, families, level in
+            firstLookClient.send(FirstLookPreviewRequest(requestId: id, at: Int64(Date().timeIntervalSince1970 * 1000), families: families, level: level))
+        }
         onboarding.sendAccept = { firstLookClient.send($0) }
         onboarding.sendStop = { firstLookClient.send($0) }
         onboarding.sendControl = { firstLookClient.send($0) }
@@ -394,9 +450,6 @@ public final class HostRuntime {
         surface.sendNotRight = { [weak memory] id, key, correction, answered in
             memory?.book.notRight(memoryId: id, offerKey: key, correction: correction, answered: answered) ?? false
         }
-        onboarding.onRemember = { [weak memory] in memory?.remember($0) }
-        onboarding.onForgetTyped = { [weak memory] in memory?.forgetTyped(labels: $0) }
-        onboarding.knowAvailable = { [weak memory] in memory?.book.state.acceptsAdd ?? false }
         perch.onOpenMemory = { [weak memory] in memory?.open() }
         perch.sendNotRight = { [weak memory] id, key, correction, answered in
             memory?.book.notRight(memoryId: id, offerKey: key, correction: correction, answered: answered) ?? false
@@ -440,10 +493,25 @@ public final class HostRuntime {
         // every change (B10). The client drops a change that leaves all three as they were.
         let gateClient = helper
         gateClient.update(HostSettings(SettingsStore.shared.settings, at: Self.nowMs()))
+        arbiter.setGhostKeys(SettingsStore.shared.settings.ghostKeys)
+        AppSwitch.shared.update(SettingsStore.shared.settings)
+        var appsOff = SettingsStore.shared.settings.appsOff
         // A setting that closes the gate takes down what it no longer allows at once, not only
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in
             gateClient.update(HostSettings(settings, at: Self.nowMs()))
+            arbiter.setGhostKeys(settings.ghostKeys)
+            AppSwitch.shared.update(settings)
+            // An app just turned off: what Caret shows there goes now, not at the next keystroke.
+            if settings.appsOff != appsOff {
+                appsOff = settings.appsOff
+                coordinator.gateClosed()
+                writing.gateClosed()
+                pageInline.gateClosed()
+                fill.gateClosed()
+                surface.gateClosed()
+                pageSight.appSwitchChanged()
+            }
             if !HostGate.allowsGhostText(settings) {
                 coordinator.gateClosed()
                 writing.gateClosed()
@@ -480,8 +548,12 @@ public final class HostRuntime {
             for control in InputPause.controls(for: taskIds) { pauseClient.send(control) }
             activity.notePause(taskIds, kind: kind)
         }
+        let focusObserver = focus
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
+                // Before the Tab returns: no key typed after it reaches the app while Caret writes there (a
+                // word selected for a fix, offsets approved for an insert). The executor ends the hold.
+                if claim.insertsText, !writesNothing { keyHold.begin(pid: claim.offer.target.pid) }
                 if claim.insertsText {
                     // A headless host writes nothing: the claim is decided and recorded, never applied.
                     if writesNothing { arbiter.abandon(claimID: claim.claimID, reason: "headless") } else { executor.submit(claim) }
@@ -525,6 +597,8 @@ public final class HostRuntime {
                         }
                     }
                 } else {
+                    // The same for Caret's own Undo: keys after the ⌘Z wait until its "" is written.
+                    if !writesNothing { keyHold.begin(pid: grant.target.pid) }
                     executor.submitUndo(grant)
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
@@ -540,6 +614,7 @@ public final class HostRuntime {
                     MainActor.assumeIsolated {
                         surface.navigated(offerID: offerID, ui: ui)
                         writing.navigated(offerID: offerID, ui: ui)
+                        pageInline.navigated(offerID: offerID, ui: ui)
                     }
                 }
             },
@@ -562,12 +637,22 @@ public final class HostRuntime {
                         pageInline.offerChanged(.closed)
                     }
                 }
-            }
-        ))
+            },
+            typed: { pid in
+                DispatchQueue.main.async { MainActor.assumeIsolated { focusObserver.keyTyped(pid: pid) } }
+            },
+            rewrite: { pid in
+                DispatchQueue.main.async { MainActor.assumeIsolated { writing.requestRewrite(pid: pid) } }
+            },
+            takesRewrite: { pid in AppSwitch.shared.takesRewriteKey(pid: pid) }
+        ), keyHold: keyHold)
+        let fixMethods = executor.writeMethods
+        writing.fixesStopped = { pid in fixMethods.fixesStopped(pid: pid) }
         let tap = self.tap
         // Accessibility granted in onboarding: a key tap the system refused at launch is made now.
         onboarding.onPermissionsChanged = { granted in
-            if granted.accessibility, !tap.restartIfRefused() { status.increment("tap.createFailed") }
+            // Never before the grant: an active tap asked for without it raises macOS's alert (startTapWhenTrusted).
+            if granted.accessibility, AXIsProcessTrusted(), !tap.restartIfRefused() { status.increment("tap.createFailed") }
         }
         let helper = self.helper
         let writeMethods = executor.writeMethods
@@ -733,8 +818,11 @@ public final class HostRuntime {
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
 
+    /// The menu's "Turn on Accessibility…": the switch step on its own, with the panel in System Settings.
+    public func openAccessSwitch() { onboarding.openAccess() }
+
     /// The menu's "Jev is off. Add a key…": the key step on its own.
-    public func openJevKeyStep() { onboarding.open(drawing: true, only: .jevKey) }
+    public func openJevKeyStep() { onboarding.openKey() }
 
     /// The key step's keychain, check and helper restart (H12), from the app shell's services. Set before `start`, which
     /// is when onboarding first opens.
@@ -758,25 +846,92 @@ public final class HostRuntime {
         )
     }
 
-    /// Onboarding's Add to your browser, which the app shell runs (`ChromeBridgeInstaller`).
+    /// Add to your browser, which the app shell runs (`ChromeBridgeInstaller`), from the page line ("Caret can't see
+    /// this page yet"). Onboarding no longer asks for it; it is offered at first need.
+    /// The login item waits for the end of onboarding (`CaretServices.registersAfterOnboarding`); `due` hands off.
+    public func deferLoginItem(_ later: @escaping () -> Bool, due: @escaping () -> Void) {
+        onboarding.registersLoginItemLater = later
+        onboarding.onLoginItemDue = due
+    }
+
     public var onAddToChrome: () -> Void {
-        get { onboarding.onAddToChrome }
+        get { pageSight.onAddToChrome }
         set {
-            onboarding.onAddToChrome = newValue
-            // "Caret can't see this page yet" names the same next step.
             pageSight.onAddToChrome = newValue
+            onboarding.onAddToBrowser = newValue
         }
     }
 
     /// The menu's What Caret Knows: the memory window.
     public func openMemory() { memory.open() }
 
+    /// Brief item 8, for the menu: the line naming the model file in use, the download's item (nil when there is
+    /// nothing to offer) and its status.
+    public var modelLine: String { modelKeeper.line }
+    public var modelAction: String? { modelKeeper.action(menu: true) }
+    public var modelStatus: String? { modelKeeper.status }
+    /// Starts Caret's model download, or stops the one running. Only ever from a user's choice.
+    public func toggleModelDownload() { modelKeeper.toggle() }
+
+    /// The key tap is made only once Caret has Accessibility. Asking macOS for an active keyboard tap without it raises
+    /// the "would like to control this computer" alert by itself, before onboarding has said a word (PX1's VM baseline,
+    /// ~/.caret-run/evidence/access/p1-run/out/shots/009-stuck-welcome.png).
+    ///
+    /// Trust is watched for the whole run, not only during onboarding: Sam's beta ran 3.5 hours untrusted with its tap
+    /// refused and said nothing. Every 2 s (and 250 ms after macOS announces an Accessibility change) the host reads
+    /// `AXIsProcessTrusted`. When it turns true, the tap is made again; while trusted but the tap is still missing or
+    /// disabled, it retries on each read. The menu shows both states (`accessibilityTrusted`, `keyTapHealthy`).
+    public private(set) var accessibilityTrusted = false
+    public private(set) var keyTapHealthy = true
+    /// Called on main when either of the two changes.
+    public var onTrustChanged: (() -> Void)?
+    private var axObserver: NSObjectProtocol?
+
+    private func startTapWhenTrusted() {
+        checkTrust()
+        trustPoll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkTrust() }
+        }
+        axObserver = DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { MainActor.assumeIsolated { self?.checkTrust() } }
+        }
+    }
+
+    private func checkTrust() {
+        let trusted = AXIsProcessTrusted()
+        let wasTrusted = accessibilityTrusted
+        accessibilityTrusted = trusted
+        var healthy = keyTapHealthy
+        if trusted {
+            if !wasTrusted {
+                // A grant given (or given back): a tap refused or disabled while untrusted is made afresh.
+                tap.stop()
+            }
+            if !tap.isEnabled {
+                if tap.restartIfRefused(), tap.isEnabled {
+                    healthy = true
+                } else {
+                    tap.stop()
+                    healthy = tap.start() && tap.isEnabled
+                    if !healthy { status.increment("tap.createFailed") }
+                }
+            } else {
+                healthy = true
+            }
+        }
+        if trusted != wasTrusted || healthy != keyTapHealthy {
+            keyTapHealthy = healthy
+            onTrustChanged?()
+        }
+    }
+
     public func start() throws {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
-        if !tap.start() { status.increment("tap.createFailed") }
+        startTapWhenTrusted()
         InputMethodState.shared.start()
         // The perch no longer follows focus: it sits on the task's window (v3 rim and perch).
+        focus.onNote = { [status] in status.increment($0) }
         focus.onChange = { [coordinator, writing] change in
             coordinator.handle(change)
             writing.handle(change)
@@ -806,9 +961,10 @@ public final class HostRuntime {
         }
         status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
         let modelURL = configuration.modelURL
+        let profileDirectory = configuration.profileDirectory
         engineTask = Task { [weak self] in
             guard let self else { return }
-            await self.engine.load(modelURL: modelURL)
+            await self.engine.load(modelURL: modelURL, profileDirectory: profileDirectory)
             self.publishEngineState()
             self.focus.requestRead()
         }
@@ -1070,10 +1226,11 @@ public final class HostRuntime {
             guard words.count == 3, let pid = Int32(words[2]), let key = TestKeys.key(words[1], pid: pid) else {
                 return Data("{\"error\":\"usage: key \(TestKeys.names) <pid>\"}\n".utf8)
             }
-            let consumed = tap.route(key, fromHook: true)
+            let disposition = tap.routeKey(key, fromHook: true)
             // The tap's callbacks post to main; wait for them, so the next read sees their effect.
             DispatchQueue.main.sync {}
-            return Data("{\"ok\":true,\"consumed\":\(consumed)}\n".utf8)
+            // plainTab: the tap would pass this key on as a plain Tab (Cotypist's ⌥Tab).
+            return Data("{\"ok\":true,\"consumed\":\(disposition == .consume),\"plainTab\":\(disposition == .passAsPlainTab)}\n".utf8)
         case "writemethod":
             // Test hook: `writemethod <pid> pastePid|axSelectedText` sets how that app takes writes,
             // so an acceptance run can drive the pasteboard route in an app that takes AX writes.
@@ -1230,13 +1387,16 @@ private final class ClientBox: @unchecked Sendable {
 
 /// Keys the debug socket's test hook can route.
 enum TestKeys {
-    static let names = "tab|shift-tab|opt-right|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:<c>"
+    static let names = "tab|shift-tab|opt-right|opt-tab|above-tab|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:<c>"
 
     static func key(_ name: String, pid: Int32) -> KeyStroke? {
         switch name {
         case "tab": return .tab(to: pid)
         case "shift-tab": return KeyStroke(keyCode: KeyStroke.tabKeyCode, shift: true, targetPID: pid)
         case "opt-right": return KeyStroke(keyCode: KeyStroke.rightKeyCode, option: true, targetPID: pid)
+        case "opt-tab": return KeyStroke(keyCode: KeyStroke.tabKeyCode, option: true, targetPID: pid)
+        // The ANSI key above Tab; the hook does not ask which keyboard this Mac has.
+        case "above-tab": return KeyStroke(keyCode: KeyStroke.graveKeyCode, text: "`", targetPID: pid)
         case "up": return KeyStroke(keyCode: KeyStroke.upKeyCode, targetPID: pid)
         case "down": return KeyStroke(keyCode: KeyStroke.downKeyCode, targetPID: pid)
         case "left": return KeyStroke(keyCode: KeyStroke.leftKeyCode, targetPID: pid)

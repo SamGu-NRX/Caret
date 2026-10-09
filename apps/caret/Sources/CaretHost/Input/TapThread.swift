@@ -34,6 +34,12 @@ public final class TapThread: @unchecked Sendable {
         /// Esc closed this offer, called before `offerChanged(.closed)`: a question Esc declined is
         /// answered by its id, even if main has since drawn something else. Tap thread; enqueue.
         public var closedOffer: @Sendable (UInt64) -> Void
+        /// A user key that types text (no ⌘ or ⌃), with the pid it goes to. Tap thread; enqueue.
+        public var typed: @Sendable (Int32) -> Void
+        /// The rewrite key (`KeyStroke.isRewriteRequest`), with the pid it went to. Tap thread; enqueue.
+        public var rewrite: @Sendable (Int32) -> Void
+        /// Whether the rewrite key is Caret's for that pid; when not, the app gets it. Tap thread; a lock and a lookup.
+        public var takesRewrite: @Sendable (Int32) -> Bool
 
         public init(
             claimed: @escaping @Sendable (Claim) -> Void,
@@ -44,9 +50,15 @@ public final class TapThread: @unchecked Sendable {
             stopWork: @escaping @Sendable (StatusLine) -> Void = { _ in },
             realKey: @escaping @Sendable (Int32) -> Void = { _ in },
             mouseDown: @escaping @Sendable (CGPoint) -> Void = { _ in },
-            closedOffer: @escaping @Sendable (UInt64) -> Void = { _ in }
+            closedOffer: @escaping @Sendable (UInt64) -> Void = { _ in },
+            typed: @escaping @Sendable (Int32) -> Void = { _ in },
+            rewrite: @escaping @Sendable (Int32) -> Void = { _ in },
+            takesRewrite: @escaping @Sendable (Int32) -> Bool = { _ in true }
         ) {
+            self.takesRewrite = takesRewrite
             self.closedOffer = closedOffer
+            self.typed = typed
+            self.rewrite = rewrite
             self.claimed = claimed
             self.offerChanged = offerChanged
             self.undo = undo
@@ -85,9 +97,13 @@ public final class TapThread: @unchecked Sendable {
     private var runLoop: CFRunLoop?
     private var thread: Thread?
 
-    public init(arbiter: OfferArbiter, callbacks: Callbacks) {
+    /// Keys typed into an app while Caret writes a fix there (`KeyHold`).
+    let keyHold: KeyHold
+
+    init(arbiter: OfferArbiter, callbacks: Callbacks, keyHold: KeyHold = KeyHold()) {
         self.arbiter = arbiter
         self.callbacks = callbacks
+        self.keyHold = keyHold
     }
 
     /// Creates the tap on a new thread and waits for it. False when the system refused the tap,
@@ -251,9 +267,27 @@ public final class TapThread: @unchecked Sendable {
         // time the key is delivered. Such a key takes nothing; the counter says how often it happens.
         let key = KeyStroke(event: event)
         stats.withLock { key.targetPID == nil ? ($0.targetMissing &+= 1) : ($0.targetFromEvent &+= 1) }
-        let consumed = route(key, stampedAt: started)
+        if keyHold.take(event, pid: key.targetPID) {
+            record(started: started)
+            return nil
+        }
+        let disposition = routeKey(key, stampedAt: started)
         record(started: started)
-        return consumed ? nil : Unmanaged.passUnretained(event)
+        switch disposition {
+        case .consume: return nil
+        case .pass: return Unmanaged.passUnretained(event)
+        case .passAsPlainTab:
+            // Cotypist's ⌥Tab: the app receives the Tab the user meant, without Option.
+            event.flags.remove(.maskAlternate)
+            return Unmanaged.passUnretained(event)
+        }
+    }
+
+    /// What the tap does with a key-down.
+    enum Disposition: Equatable {
+        case consume, pass
+        /// Pass it on with the Option flag cleared (`OfferArbiter.PassReason.realTab`).
+        case passAsPlainTab
     }
 
     /// Decides one key and hands the result on. True when the key is Caret's and must not reach
@@ -264,7 +298,12 @@ public final class TapThread: @unchecked Sendable {
     /// through the hook reads the same counters as one driven by real keys (A18, bug 18).
     @discardableResult
     public func route(_ key: KeyStroke, stampedAt uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds, fromHook: Bool = false) -> Bool {
-        let consumed = decide(key, stampedAt: uptimeNanos)
+        routeKey(key, stampedAt: uptimeNanos, fromHook: fromHook) == .consume
+    }
+
+    func routeKey(_ key: KeyStroke, stampedAt uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds, fromHook: Bool = false) -> Disposition {
+        let disposition = decide(key, stampedAt: uptimeNanos)
+        let consumed = disposition == .consume
         stats.withLock { s in
             s.keyDowns &+= 1
             if consumed { s.consumed &+= 1 }
@@ -274,40 +313,52 @@ public final class TapThread: @unchecked Sendable {
                 if !consumed { s.tabsPassed &+= 1 }
             }
         }
-        return consumed
+        return disposition
     }
 
-    private func decide(_ key: KeyStroke, stampedAt uptimeNanos: UInt64) -> Bool {
+    private func decide(_ key: KeyStroke, stampedAt uptimeNanos: UInt64) -> Disposition {
         callbacks.keyDown(uptimeNanos)
-        if let pid = key.targetPID { callbacks.realKey(pid) }
+        if let pid = key.targetPID {
+            callbacks.realKey(pid)
+            if key.text != nil, !key.command, !key.control { callbacks.typed(pid) }
+            // Caret's own key where writing help is on in that app: it never reaches the app, whatever is showing.
+            // Paused, or off in that app, the chord is the app's.
+            if key.isRewriteRequest, callbacks.takesRewrite(pid) {
+                callbacks.rewrite(pid)
+                return .consume
+            }
+        }
         switch arbiter.handleKeyDown(key) {
         case .consume(let claim):
             callbacks.claimed(claim)
-            return true
+            return .consume
         case .undo(let grant):
             callbacks.undo(grant)
-            return true
+            return .consume
         case .closeToast:
             callbacks.offerChanged(.toastDismissed, key)
-            return true
+            return .consume
         case .navigate(let offerID, let ui):
             callbacks.navigated(offerID, ui)
-            return true
+            return .consume
         case .closeOffer(let offerID):
             callbacks.closedOffer(offerID)
             callbacks.offerChanged(.closed, key)
-            return true
+            return .consume
         case .stopWork(let line):
             callbacks.stopWork(line)
-            return true
+            return .consume
         case .closeStatus:
             callbacks.offerChanged(.statusDismissed, key)
-            return true
+            return .consume
         case .pass(.noOffer), .pass(.otherApp), .pass(.modifierOnly):
-            return false
+            return .pass
+        case .pass(.realTab):
+            callbacks.offerChanged(.realTab, key)
+            return .passAsPlainTab
         case .pass(let reason):
             callbacks.offerChanged(reason, key)
-            return false
+            return .pass
         }
     }
 

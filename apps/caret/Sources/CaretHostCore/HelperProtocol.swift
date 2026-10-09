@@ -23,6 +23,8 @@ public enum HelperInbound: Equatable, Sendable {
     /// The answer to this host's `firstLook` (`FirstLook.swift`), the host's own contract until
     /// the helper's schema has it.
     case firstLookReply(FirstLookReply)
+    /// The answer to this host's `firstLookPreviewRequest` (`FirstLookPreview.swift`): what a first look may send.
+    case firstLookPreview(FirstLookPreview)
     /// The answer to this host's `memoryRequest` (`HelperMemory`), to this connection only.
     case memoryReply(HelperMemory.Reply)
     /// The answer to this host's `planRequest` (`AskCaret`), to this connection only.
@@ -83,6 +85,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .offerWithdrawn: return OfferWithdrawn.type
         case .taskProgress: return TaskProgress.type
         case .firstLookReply: return FirstLookReply.type
+        case .firstLookPreview: return FirstLookPreview.type
         case .memoryReply: return HelperMemory.Reply.type
         case .planProposal: return PlanProposal.type
         case .skillOffer: return SkillOffer.type
@@ -170,6 +173,8 @@ public enum HelperInbound: Equatable, Sendable {
             return .notForConsumer(type: envelope.type)
         case FirstLookReply.type:
             return .firstLookReply(try FirstLookReply.decode(line))
+        case FirstLookPreview.type:
+            return .firstLookPreview(try JSONDecoder().decode(FirstLookPreview.self, from: line))
         case HelperMemory.Reply.type:
             return .memoryReply(try HelperMemory.Reply.decode(line))
         case PlanProposal.type:

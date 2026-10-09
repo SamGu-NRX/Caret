@@ -381,6 +381,14 @@ export class HelperServer {
             else this.helper().handleSkillAnswer(m.data);
           }
           // The reply names windows and quotes values, so it goes to the asker only, as memory does.
+          else if (m.data.type === "firstLookPreviewRequest") {
+            try {
+              const preview = this.helper().handleFirstLookPreview(m.data);
+              if (!s.destroyed) s.write(JSON.stringify(preview) + "\n");
+            } catch {
+              this.reject(s, "first-look preview has invalid families");
+            }
+          }
           else if (m.data.type === "firstLook") {
             const requestId = m.data.requestId;
             void this.helper()

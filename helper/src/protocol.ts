@@ -979,8 +979,44 @@ export const FirstLook = z.object({
   families: z.array(z.string()),
   level: SettingsLevel,
   deadlineMs: z.number().int().positive(),
+  previewId: z.string().min(1).nullable().optional(),
 });
 export type FirstLook = z.infer<typeof FirstLook>;
+
+/** Local-only dry run. Families and level use the first-look gate. */
+export const FirstLookPreviewRequest = z.object({
+  type: z.literal("firstLookPreviewRequest"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1),
+  at: ms,
+  families: z.array(z.string()),
+  level: SettingsLevel,
+});
+export type FirstLookPreviewRequest = z.infer<typeof FirstLookPreviewRequest>;
+
+const FirstLookPreviewLine = z.object({ text: z.string(), sent: z.boolean() }).refine(
+  (l) => l.sent ? l.text.length > 0 : l.text === "",
+  { message: "placeholder lines carry no text; allowed lines are nonempty" },
+);
+const FirstLookPreviewWindow = z.object({
+  bundleId: z.string(), appName: z.string(), title: z.string(),
+  lines: z.array(FirstLookPreviewLine),
+  /** Upper bound on distinct allowed UTF-16 units, not predicted traffic. */
+  charsSent: z.number().int().positive(),
+}).refine((w) => w.charsSent === w.lines.reduce((n, l) => n + (l.sent ? l.text.length : 0), 0),
+  { message: "charsSent must count allowed characters" });
+export const FirstLookPreview = z.object({
+  type: z.literal("firstLookPreview"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1),
+  at: ms,
+  previewId: z.string().min(1),
+  windows: z.array(FirstLookPreviewWindow),
+  /** Upper bound summed across windows; repeat sends of the same text do not increase it. */
+  totalChars: z.number().int().nonnegative(),
+}).refine((p) => p.totalChars === p.windows.reduce((n, w) => n + w.charsSent, 0),
+  { message: "totalChars must sum the window upper bounds" });
+export type FirstLookPreview = z.infer<typeof FirstLookPreview>;
 
 /**
  * The window a host means in a planRequest (B21): the one the user was in when they opened Ask Caret, as the
@@ -1233,10 +1269,19 @@ export const FIELD_SELECTION_MAX = 2000;
  * card, one-time-code or hidden field, a self-identification question, or a frame on a site Caret is off for. Kept
  * only in the tab's latest snapshot in memory; never logged or stored.
  */
+/** How long after a non-typing edit the page still reports it (PageFocusText.quietMs). */
+export const QUIET_REPORT_MS = 2000;
+
 export const PageFocusText = z.object({
   before: z.string().max(FIELD_BEFORE_MAX),
   after: z.string().max(FIELD_AFTER_MAX),
   selection: z.string().max(FIELD_SELECTION_MAX),
+  /**
+   * v2/inline item 3: milliseconds since the last paste, drop, undo or redo in the field's document, when under
+   * QUIET_REPORT_MS; absent otherwise. A rich editor groups changes made close together into one undo step, so the host
+   * waits before offering there (CaretHostCore PageInlineMachine.editQuietMs).
+   */
+  quietMs: z.number().int().min(0).max(QUIET_REPORT_MS).optional(),
 });
 export type PageFocusText = z.infer<typeof PageFocusText>;
 
@@ -1291,10 +1336,12 @@ export const PageInsert = z.object({
   key: z.string().min(1),
   expect: z.string().max(FIELD_BEFORE_MAX),
   text: z.string().min(1).max(FIELD_BEFORE_MAX),
+  /** UTF-16 units immediately before the caret to replace. `expect` still includes the replaced text. Absent or zero inserts only. */
+  replace: z.number().int().min(0).max(FIELD_BEFORE_MAX).optional(),
   /** The element the offer was made for, as pageField.token named it; the page engine refuses any other (H13 review). */
   token: z.string().min(1).max(300),
   at: ms,
-});
+}).refine((m) => (m.replace ?? 0) <= m.expect.length, { message: "replace exceeds the text before the caret", path: ["replace"] });
 export type PageInsert = z.infer<typeof PageInsert>;
 /**
  * The hello capability for saved answers (S1). A consumer that lists it promises to show a saved answer's whole text
@@ -1394,7 +1441,7 @@ export const SavedFilesRequest = z
   .refine((m) => (m.op === "forget") === (m.id !== undefined), { message: "forget names the file's id; list names none", path: ["id"] });
 export type SavedFilesRequest = z.infer<typeof SavedFilesRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, FirstLookPreviewRequest, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -2354,6 +2401,10 @@ export type FieldLook = z.infer<typeof FieldLook>;
  * viewport is. The browser is `app`, the process the bridge was launched by, never one the page names. No value, no
  * label: `empty` says only whether the control holds any text.
  */
+/** PageField.nearby: how far above or below the field, in screen points, and at most how many frames. */
+export const NEARBY_RANGE = 160;
+export const NEARBY_MAX = 40;
+
 /** H13: the kinds of page field whose text a pageField carries (PageField.fieldKind). */
 export const PageFieldKind = z.enum(["input", "textarea", "contenteditable"]);
 export type PageFieldKind = z.infer<typeof PageFieldKind>;
@@ -2387,6 +2438,13 @@ export const PageField = z.object({
    * key is a label and an ordinal, which a replacement field of the same label keeps; an insert names this token.
    */
   token: z.string().min(1).max(300).optional(),
+  /**
+   * v2/inline: screen frames of what lies near the field in the page's top frame, other controls and every label's text
+   * (the field's own label included), within NEARBY_RANGE points above or below it. No text: the host keeps its slips off
+   * them, which hit-testing cannot do in a page Chrome shows Accessibility nothing of. Absent for a field in a child
+   * frame, which has no screen frame, and from a helper before it.
+   */
+  nearby: z.array(Frame).max(NEARBY_MAX).optional(),
   /**
    * H13 review: false when the field's document has lost focus (the user clicked the address bar): the host offers no
    * inline text there, since Tab would go to the browser. With `text`, to the same hosts only; absent before H13.
@@ -2690,7 +2748,7 @@ export const SavedFilesReply = z.object({
 export type SavedFilesReply = z.infer<typeof SavedFilesReply>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
-  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
+  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, FirstLookPreview, PlanProposal, SkillOffer,
   PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply, PageInsertReply, SavedFilesReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
@@ -2807,6 +2865,8 @@ export const PageControl = z.object({
   /** The form identity the strong key uses; null outside a form. */
   form: z.string().nullable(),
   rect: PageRect,
+  /** v2/inline: the label's text, in the same viewport pixels as `rect` (extension walker.ts labelRectOf); absent when none is drawn. */
+  labelRect: PageRect.optional(),
   required: z.literal(true).optional(),
   disabled: z.literal(true).optional(),
   invalid: z.literal(true).optional(),
@@ -3018,9 +3078,11 @@ export const PageVerb = z.discriminatedUnion("kind", [
   /**
    * P4 item 8: `text` at the caret of the focused field `id` names, by document.execCommand("insertText"), so the page's
    * own Undo takes it back. Only while that very element (no strong-key rebind) still has focus, holds no selection and
-   * reads exactly `expect` before its caret (PageFocusText.before); read back afterwards.
+   * reads exactly `expect` before its caret (PageFocusText.before); read back afterwards. `replace` names the UTF-16
+   * units immediately before the caret to replace; absent or zero inserts only. `expect` includes the replaced text.
    */
-  z.object({ kind: z.literal("pageInsertText"), ...PageTarget, expect: z.string().max(FIELD_BEFORE_MAX), text: z.string().min(1).max(FIELD_BEFORE_MAX) }),
+  z.object({ kind: z.literal("pageInsertText"), ...PageTarget, expect: z.string().max(FIELD_BEFORE_MAX), text: z.string().min(1).max(FIELD_BEFORE_MAX), replace: z.number().int().min(0).max(FIELD_BEFORE_MAX).optional() })
+    .refine((m) => (m.replace ?? 0) <= m.expect.length, { message: "replace exceeds the text before the caret", path: ["replace"] }),
   z.object({ kind: z.literal("pageWrite"), ...PageTarget, expect: z.string(), value: z.string() }),
   z.object({ kind: z.literal("pagePress"), ...PageTarget }),
   z.object({ kind: z.literal("pageSelect"), ...PageTarget, expect: z.string(), value: z.string() }),

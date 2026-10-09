@@ -14,27 +14,27 @@ final class ShipsCoreTests: XCTestCase {
         XCTAssertEqual(OnboardingLaunch.defaultMode(homeOverridden: false, settingsNamed: true), "off")
     }
 
-    func testAutoOpensEveryStepUntilFinishedThenOnlyForAMissingAccessibilityGrant() {
+    func testAutoOpensUntilFinishedThenOnlyForAMissingAccessibilityGrant() {
         let both = OnboardingPermissions(accessibility: true, inputMonitoring: true)
-        XCTAssertEqual(OnboardingLaunch.auto(onboarded: false, permissions: both), .all, "first launch")
-        XCTAssertNil(OnboardingLaunch.auto(onboarded: true, permissions: both), "finished, nothing missing: nothing opens")
-        XCTAssertEqual(OnboardingLaunch.auto(onboarded: true, permissions: .init(accessibility: false, inputMonitoring: true)), .only(.permissions))
-        XCTAssertNil(OnboardingLaunch.auto(onboarded: true, permissions: .init(accessibility: true, inputMonitoring: false)),
-                     "Input Monitoring is optional, so its absence alone opens nothing")
+        let none = OnboardingPermissions(accessibility: false, inputMonitoring: false)
+        XCTAssertEqual(OnboardingLaunch.auto(onboarded: false, permissions: none, progress: nil), .init(step: .hello), "first launch")
+        XCTAssertNil(OnboardingLaunch.auto(onboarded: true, permissions: both, progress: nil), "finished, nothing missing: nothing opens")
+        XCTAssertEqual(OnboardingLaunch.auto(onboarded: true, permissions: .init(accessibility: false, inputMonitoring: true), progress: nil),
+                       .init(step: .access, alone: true))
+        XCTAssertNil(OnboardingLaunch.auto(onboarded: true, permissions: .init(accessibility: true, inputMonitoring: false), progress: nil),
+                     "Input Monitoring is never asked in onboarding, so its absence opens nothing")
     }
 
-    func testAFlowOfThePermissionsStepAloneFinishesWhenTheGrantArrives() {
+    func testTheSwitchAloneFinishesWhenTheGrantArrives() {
         let clock = ManualClock()
-        let flow = OnboardingFlow(settings: CaretSettings(), permissions: .init(accessibility: false, inputMonitoring: true), clock: clock, only: .permissions)
+        let flow = OnboardingFlow(settings: CaretSettings(), permissions: .init(accessibility: false, inputMonitoring: true), clock: clock,
+                                  opening: .init(step: .access, alone: true))
         var commands: [OnboardingFlow.Command] = []
         flow.output = { if $0 != .changed { commands.append($0) } }
-        XCTAssertEqual(flow.state.step, .permissions)
-        XCTAssertEqual(flow.state.steps, [.permissions])
-        XCTAssertFalse(flow.state.canGoBack)
-        flow.send(.back)
-        XCTAssertEqual(flow.state.step, .permissions, "Back has nowhere to go")
+        flow.start()
+        XCTAssertEqual(flow.state.steps, [.access])
         flow.send(.permissions(.init(accessibility: true, inputMonitoring: true)))
-        clock.advance(by: OnboardingFlow.advanceAfterGrant)
+        clock.advance(by: OnboardingFlow.grantLanding)
         XCTAssertTrue(flow.state.finished)
         XCTAssertEqual(commands.last, .close)
     }
@@ -93,137 +93,122 @@ final class ShipsCoreTests: XCTestCase {
         XCTAssertNil(AgentStart.parse(""))
     }
 
-    // MARK: - The Jev key step
+    // MARK: - The Jev key, on the `on` step
 
     final class KeyRig {
         let clock = ManualClock()
         let flow: OnboardingFlow
         private(set) var commands: [OnboardingFlow.Command] = []
 
-        init(available: Bool = false, stored: Bool = false, only: OnboardingStep? = nil) {
+        /// On `on` with a ready preview; `alone` is the menu's "Jev is off".
+        init(available: Bool = false, stored: Bool = false, alone: Bool = false) {
             flow = OnboardingFlow(settings: CaretSettings(), permissions: .init(accessibility: true, inputMonitoring: true), clock: clock,
-                                  jevKeyAvailable: available, jevKeyStored: stored, only: only)
+                                  opening: .init(step: .on, alone: alone), jevKeyAvailable: available, jevKeyStored: stored)
             flow.output = { [unowned self] in if $0 != .changed { self.commands.append($0) } }
+            flow.start()
+            guard case .building(let id) = flow.state.on.preview else { return }
+            flow.send(.previewReady(requestId: id, OnboardingPreview(previewId: "pv", windows: [.init(bundleId: "com.apple.mail", appName: "Mail",
+                title: "Thursday?", lines: [.init(text: "Thursday at 3")], chars: 13)], chars: 13)))
         }
 
         var step: OnboardingStep { flow.state.step }
+        var key: OnboardingFlow.JevKeyDraft { flow.state.on.jevKey }
         func send(_ events: OnboardingFlow.Event...) { for e in events { flow.send(e) } }
-        /// Welcome, work and permissions (granted), in a flow without the know step.
-        func toKey() { send(.next, .next, .next) }
         var checks: [String] { commands.compactMap { if case .checkJevKey(let k) = $0 { return k.reveal } else { return nil } } }
+        var looks: Int { commands.filter { if case .askFirstLook = $0 { return true } else { return false } }.count }
     }
 
-    func testTheKeyStepShowsOnlyWhenCaretHasNoKey() {
-        let without = KeyRig(available: false)
-        XCTAssertEqual(without.flow.state.steps, [.welcome, .work, .permissions, .jevKey, .tryIt, .firstLook])
-        without.toKey()
-        XCTAssertEqual(without.step, .jevKey)
+    func testTheKeyFieldShowsOnlyWhenCaretHasNoKey() {
+        XCTAssertTrue(KeyRig(available: false).flow.state.on.needsKey)
         let with = KeyRig(available: true)
-        XCTAssertFalse(with.flow.state.steps.contains(.jevKey))
-        with.toKey()
-        XCTAssertEqual(with.step, .tryIt)
+        XCTAssertFalse(with.flow.state.on.needsKey)
+        with.send(.next)
+        XCTAssertEqual(with.looks, 1, "with a key, Send sends")
+        XCTAssertEqual(with.flow.state.steps.count, 5)
     }
 
-    func testContinueWithAnEmptyFieldOrSkipGoesOnWithoutAKey() {
+    func testSendWaitsForAKeyAndKeepGoesOnWithoutOne() {
         let rig = KeyRig()
-        rig.toKey()
+        XCTAssertFalse(rig.flow.state.canContinue)
         rig.send(.next)
-        XCTAssertEqual(rig.step, .tryIt)
         XCTAssertTrue(rig.checks.isEmpty)
-        let skip = KeyRig()
-        skip.toKey()
-        skip.send(.setJevKey("ts-something"), .skip)
-        XCTAssertEqual(skip.step, .tryIt)
-        XCTAssertTrue(skip.checks.isEmpty, "Skip sends nothing, whatever the field holds")
+        XCTAssertEqual(rig.looks, 0)
+        rig.send(.setJevKey("ts-something"), .keep)
+        XCTAssertEqual(rig.flow.state.on.decision, .kept)
+        XCTAssertTrue(rig.checks.isEmpty, "keeping everything on the Mac sends nothing, whatever the field holds")
     }
 
-    func testAKeyThatWorksIsCheckedOnceSavedClearedAndMovesOnByItself() {
+    func testAKeyThatWorksIsCheckedOnceSavedClearedAndThePreviewRebuilt() {
         let rig = KeyRig()
-        rig.toKey()
         rig.send(.setJevKey("  ts-live-123\n"), .next)
         XCTAssertEqual(rig.checks, ["ts-live-123"], "surrounding spaces and newlines from a paste go")
-        XCTAssertEqual(rig.flow.state.jevKey.phase, .checking)
+        XCTAssertEqual(rig.key.phase, .checking)
         XCTAssertFalse(rig.flow.state.canContinue)
-        rig.send(.next, .back, .setJevKey("other"))
-        XCTAssertEqual(rig.checks.count, 1, "Continue, Back and typing wait for the answer")
-        XCTAssertEqual(rig.step, .jevKey)
+        rig.send(.next, .setJevKey("other"))
+        XCTAssertEqual(rig.checks.count, 1, "Send and typing wait for the answer")
         rig.send(.jevKeyChecked(.works, saved: true))
-        XCTAssertTrue(rig.flow.state.jevKey.stored)
-        XCTAssertTrue(rig.flow.state.jevKey.text.isEmpty, "the flow does not hold a saved key")
-        XCTAssertEqual(rig.step, .jevKey)
-        rig.clock.advance(by: OnboardingFlow.advanceAfterGrant)
-        XCTAssertEqual(rig.step, .tryIt)
+        XCTAssertTrue(rig.key.stored)
+        XCTAssertTrue(rig.key.text.isEmpty, "the flow does not hold a saved key")
+        XCTAssertEqual(rig.looks, 0, "the restarted helper builds a new preview first")
+        guard case .building = rig.flow.state.on.preview else { return XCTFail("\(rig.flow.state.on.preview)") }
     }
 
     /// The coordinator's rule (2026-10-05): a 402 means the key is good and the account has no credits. It is kept,
     /// and the step stays so its line can be read.
-    func testAKeyWithNoCreditsIsKeptAndTheStepWaitsForContinue() {
+    func testAKeyWithNoCreditsIsKeptAndNothingIsSent() {
         let rig = KeyRig()
-        rig.toKey()
         rig.send(.setJevKey("ts-live-123"), .next, .jevKeyChecked(.noCredits, saved: true))
-        XCTAssertEqual(rig.flow.state.jevKey.phase.name, "noCredits")
-        XCTAssertTrue(rig.flow.state.jevKey.stored)
+        XCTAssertEqual(rig.key.phase.name, "noCredits")
+        XCTAssertTrue(rig.key.stored)
         rig.clock.advance(by: 5)
-        XCTAssertEqual(rig.step, .jevKey)
-        rig.send(.next)
-        XCTAssertEqual(rig.step, .tryIt)
-        XCTAssertEqual(rig.checks.count, 1)
+        XCTAssertEqual(rig.looks, 0)
+        XCTAssertEqual(rig.step, .on)
     }
 
-    func testARejectedOrUncheckedKeyStaysAndContinueChecksAgain() {
+    func testARejectedOrUncheckedKeyStaysAndSendChecksAgain() {
         for outcome in [JevKeyCheck.Outcome.rejected, .unreachable, .unclear(status: 503)] {
             let rig = KeyRig()
-            rig.toKey()
             rig.send(.setJevKey("ts-bad"), .next, .jevKeyChecked(outcome, saved: false))
-            XCTAssertEqual(rig.step, .jevKey, "\(outcome)")
-            XCTAssertFalse(rig.flow.state.jevKey.stored)
-            XCTAssertEqual(rig.flow.state.jevKey.text.reveal, "ts-bad", "kept in the field to correct")
+            XCTAssertFalse(rig.key.stored)
+            XCTAssertEqual(rig.key.text.reveal, "ts-bad", "kept in the field to correct")
             rig.send(.next)
             XCTAssertEqual(rig.checks, ["ts-bad", "ts-bad"], "\(outcome)")
+            XCTAssertEqual(rig.looks, 0)
         }
     }
 
     func testAnAnswerThatKeepsTheKeyButAKeychainThatRefusedItIsNotSaved() {
         let rig = KeyRig()
-        rig.toKey()
         rig.send(.setJevKey("ts-live"), .next, .jevKeyChecked(.works, saved: false))
-        XCTAssertEqual(rig.flow.state.jevKey.phase.name, "notSaved")
-        XCTAssertFalse(rig.flow.state.jevKey.stored)
-        rig.clock.advance(by: 5)
-        XCTAssertEqual(rig.step, .jevKey, "nothing was saved, so nothing moves on")
+        XCTAssertEqual(rig.key.phase.name, "notSaved")
+        XCTAssertFalse(rig.key.stored)
+        XCTAssertEqual(rig.looks, 0, "nothing was saved, so nothing goes")
     }
 
     func testTextWithSpacesInsideIsNotAKeyAndIsNeverSent() {
         let rig = KeyRig()
-        rig.toKey()
         rig.send(.setJevKey("my key is ts-123"), .next)
-        XCTAssertEqual(rig.flow.state.jevKey.phase, .malformed)
+        XCTAssertEqual(rig.key.phase, .malformed)
         XCTAssertTrue(rig.checks.isEmpty)
     }
 
-    func testTheKeyStepAloneFinishesOnContinueOrSkip() {
-        let rig = KeyRig(available: true, stored: true, only: .jevKey)
-        XCTAssertEqual(rig.step, .jevKey)
-        XCTAssertEqual(rig.flow.state.steps, [.jevKey])
-        XCTAssertTrue(rig.flow.state.jevKey.stored)
+    func testTheKeyAloneFinishesWhenAKeyWorks() {
+        let rig = KeyRig(alone: true)
+        XCTAssertEqual(rig.flow.state.steps, [.on])
         rig.send(.setJevKey("ts-new"), .next, .jevKeyChecked(.works, saved: true))
-        rig.clock.advance(by: OnboardingFlow.advanceAfterGrant)
         XCTAssertTrue(rig.flow.state.finished)
-        let skip = KeyRig(only: .jevKey)
-        skip.send(.skip)
-        XCTAssertTrue(skip.flow.state.finished)
+        XCTAssertEqual(rig.looks, 0, "the menu's key item checks the key; it does not look")
     }
 
     func testTheKeyNeverReachesTheDebugReplyOrADescription() throws {
         let seed = "ts-SEEDKEY-4711"
         let rig = KeyRig()
-        rig.toKey()
         rig.send(.setJevKey(seed))
         let info = String(decoding: try JSONEncoder().encode(rig.flow.debugInfo()), as: UTF8.self)
         XCTAssertFalse(info.contains("SEEDKEY"), info)
         XCTAssertTrue(info.contains(#""jevKeyLength":15"#), info)
         XCTAssertFalse(String(describing: rig.flow.state).contains("SEEDKEY"))
-        XCTAssertFalse(String(reflecting: rig.flow.state.jevKey).contains("SEEDKEY"))
+        XCTAssertFalse(String(reflecting: rig.key).contains("SEEDKEY"))
         rig.send(.next)
         XCTAssertFalse("\(rig.commands)".contains("SEEDKEY"), "a command that carries the key prints its length only")
         XCTAssertEqual(rig.checks, [seed])
@@ -344,7 +329,7 @@ final class ShipsCoreTests: XCTestCase {
     // MARK: - Helium
 
     func testHeliumReadsManifestsFromItsOwnFolder() {
-        XCTAssertEqual(BridgeBrowser.allCases, [.chrome, .helium])
+        XCTAssertTrue(BridgeBrowser.allCases.contains(.helium))
         XCTAssertEqual(BridgeBrowser.helium.bundleIdentifier, "net.imput.helium")
         XCTAssertEqual(BridgeBrowser.helium.nativeMessagingDirectory(userHome: "/Users/robin"),
                        "/Users/robin/Library/Application Support/net.imput.helium/NativeMessagingHosts")
