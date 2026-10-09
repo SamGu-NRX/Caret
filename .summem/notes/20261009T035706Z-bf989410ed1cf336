@@ -1,1 +1,0 @@
-PX1: an opened team-signed Caret.app hands off to its SMAppService agent, which drops launch arguments; in the VM pass CARET_TEST_HOOKS/CARET_GHOST_REPLAY to the agent with launchctl setenv before open.
