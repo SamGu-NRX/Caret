@@ -146,7 +146,7 @@ export type ActVerb =
   | ({ kind: "pageSetChecked"; checked: boolean } & TargetFields)
   | ({ kind: "pageAttachFile"; file: { name: string; type: string; size: number; sha256: string; data: string } } & TargetFields)
   /** P4 item 8: `text` at the caret of the focused field, whose text before the caret must be `expect` (content/insert.ts). */
-  | ({ kind: "pageInsertText"; expect: string; text: string } & TargetFields);
+  | ({ kind: "pageInsertText"; expect: string; text: string; replace?: number } & TargetFields);
 
 export type PageVerb = { kind: "pageWalk"; tabId: number | null } | ActVerb;
 

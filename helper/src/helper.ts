@@ -2414,7 +2414,7 @@ export class Helper {
     const pid = this.model.windows.get(m.windowId)?.app.pid ?? 0;
     link.grant?.({ type: "actGrant", v: PROTOCOL_VERSION, taskId, pid, windowId: m.windowId, at, expires: at + INLINE_GRANT_MS });
     try {
-      const r = await link.insertText(m.windowId, m.key, m.expect, m.text, taskId, m.token);
+      const r = await link.insertText(m.windowId, m.key, m.expect, m.text, taskId, m.token, m.replace);
       if (r.outcome === "ok") return reply("inserted", "inserted");
       // H13 review: the write was tried and the field reads as it did before it.
       if (r.insert === "unchanged") return reply("failed", "the page did not keep the insert; the field reads as before");

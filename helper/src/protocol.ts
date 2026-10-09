@@ -1291,10 +1291,12 @@ export const PageInsert = z.object({
   key: z.string().min(1),
   expect: z.string().max(FIELD_BEFORE_MAX),
   text: z.string().min(1).max(FIELD_BEFORE_MAX),
+  /** UTF-16 units immediately before the caret to replace. `expect` still includes the replaced text. Absent or zero inserts only. */
+  replace: z.number().int().min(0).max(FIELD_BEFORE_MAX).optional(),
   /** The element the offer was made for, as pageField.token named it; the page engine refuses any other (H13 review). */
   token: z.string().min(1).max(300),
   at: ms,
-});
+}).refine((m) => (m.replace ?? 0) <= m.expect.length, { message: "replace exceeds the text before the caret", path: ["replace"] });
 export type PageInsert = z.infer<typeof PageInsert>;
 /**
  * The hello capability for saved answers (S1). A consumer that lists it promises to show a saved answer's whole text
@@ -3018,9 +3020,11 @@ export const PageVerb = z.discriminatedUnion("kind", [
   /**
    * P4 item 8: `text` at the caret of the focused field `id` names, by document.execCommand("insertText"), so the page's
    * own Undo takes it back. Only while that very element (no strong-key rebind) still has focus, holds no selection and
-   * reads exactly `expect` before its caret (PageFocusText.before); read back afterwards.
+   * reads exactly `expect` before its caret (PageFocusText.before); read back afterwards. `replace` names the UTF-16
+   * units immediately before the caret to replace; absent or zero inserts only. `expect` includes the replaced text.
    */
-  z.object({ kind: z.literal("pageInsertText"), ...PageTarget, expect: z.string().max(FIELD_BEFORE_MAX), text: z.string().min(1).max(FIELD_BEFORE_MAX) }),
+  z.object({ kind: z.literal("pageInsertText"), ...PageTarget, expect: z.string().max(FIELD_BEFORE_MAX), text: z.string().min(1).max(FIELD_BEFORE_MAX), replace: z.number().int().min(0).max(FIELD_BEFORE_MAX).optional() })
+    .refine((m) => (m.replace ?? 0) <= m.expect.length, { message: "replace exceeds the text before the caret", path: ["replace"] }),
   z.object({ kind: z.literal("pageWrite"), ...PageTarget, expect: z.string(), value: z.string() }),
   z.object({ kind: z.literal("pagePress"), ...PageTarget }),
   z.object({ kind: z.literal("pageSelect"), ...PageTarget, expect: z.string(), value: z.string() }),

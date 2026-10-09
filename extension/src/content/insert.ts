@@ -3,7 +3,9 @@
 // It goes in through document.execCommand("insertText"), the way the browser puts in the user's own typing: the page
 // sees an ordinary insertText input event, and the field's own Undo takes the insert back in one step. Setting the value
 // (the form write's way, content/actions.ts) would clear the field's undo history and move the caret to the end. Just
-// before it, the caret is set where it already is, which ends the user's typing as an undo step (closeTyping).
+// before an insert, the caret is set where it already is, which ends the user's typing as an undo step (closeTyping).
+// With `replace`, the UTF-16 units immediately before the caret are selected instead; that also ends the typing step.
+// `expect` still names all the text before the caret, including the part to replace.
 //
 // It goes only into the field that had focus when the offer was made: the verb names the element the walk at that
 // moment kept, which must still be connected, still have focus, hold a single collapsed caret (an image selected in an
@@ -12,9 +14,10 @@
 // checked before and after the grant wait. Anything else is stale, and nothing is touched.
 //
 // Afterwards the whole field is read again, uncapped, against a snapshot taken just before the insert (H13 review): the
-// text before the caret must be the snapshot's plus the insert, the text after it unchanged, and the caret collapsed
-// right after the insert. The snapshot stays in this function: it is never sent or logged. A field that reads as the
-// snapshot did is `unchanged`; any other result is `unverified`, and is left as the page made it, never undone.
+// text before the caret must be the snapshot's minus the replaced text plus the insert, the text after it unchanged,
+// and the caret collapsed right after the insert. The snapshot stays in this function: it is never sent or logged.
+// A field that reads as the snapshot did is `unchanged`; any other result is `unverified`, and is left as the page made
+// it, never undone.
 import type { ActAnswer } from "../shared/messages.ts";
 import { BEFORE_MAX, fieldText, serialize } from "./field-text.ts";
 import { deepActiveElement } from "./walker.ts";
@@ -105,7 +108,8 @@ function shown(el: Element, text: string): string {
 }
 
 /** Why nothing may go in now, or null: a composition, focus, no single caret, or other text before the caret. */
-function refusal(el: Element, expect: string): ActAnswer | null {
+function refusal(el: Element, expect: string, replace: number): ActAnswer | null {
+  if (!Number.isInteger(replace) || replace < 0 || replace > BEFORE_MAX || replace > expect.length) return answer("stale", "replace exceeds the text before the caret or is not a bounded non-negative integer");
   if (composing) return answer("stale", "an input method is composing text in the field");
   if (!hasFocus(el)) return answer("stale", "the field no longer has focus");
   const c = caretState(el);
@@ -148,25 +152,54 @@ function editingHost(n: Node): HTMLElement | null {
   return host;
 }
 
+/** Selects exactly the text to replace, or restores the original caret when the editor cannot select it. */
+function selectReplacement(el: Element, before: string, replace: number): boolean {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const s = el.selectionStart;
+    if (s === null || s < replace) return false;
+    el.setSelectionRange(s - replace, s);
+    return true;
+  }
+  const sel = selectionOf(el);
+  const host = editingHost(el);
+  if (sel === null || sel.rangeCount !== 1 || host === null) return false;
+  const caret = sel.getRangeAt(0).cloneRange();
+  const wanted = shown(el, before.slice(before.length - replace));
+  // Chrome extends by characters, not UTF-16 units. Compare each range's serialized text rather than guessing offsets.
+  for (let step = 0; step < replace + 8; step++) {
+    sel.modify("extend", "backward", "character");
+    if (sel.rangeCount !== 1) break;
+    const r = sel.getRangeAt(0);
+    if (!host.contains(r.startContainer) || !host.contains(r.endContainer)) break;
+    if (shown(el, serialize(r)) === wanted) return true;
+  }
+  sel.setBaseAndExtent(caret.startContainer, caret.startOffset, caret.startContainer, caret.startOffset);
+  return false;
+}
+
 export async function insertAtCaret(
   el: Element,
-  verb: { expect: string; text: string },
+  verb: { expect: string; text: string; replace?: number },
   gate: (stage: string) => Promise<ActAnswer | null>,
 ): Promise<ActAnswer> {
-  const first = refusal(el, verb.expect);
+  const replace = verb.replace ?? 0;
+  const first = refusal(el, verb.expect, replace);
   if (first !== null) return first;
   const ready = await gate("before the text went in");
   if (ready !== null) return ready;
   // The gate awaited the worker; the user, the page or an input method may have typed, moved the caret, selected
   // something or started composing meanwhile, and execCommand would replace a selection (P4 review).
-  const again = refusal(el, verb.expect);
+  const again = refusal(el, verb.expect, replace);
   if (again !== null) return { ...again, detail: `${again.detail ?? again.outcome} (while Caret checked its grant)` };
   const was = caretState(el) as CaretState;
-  closeTyping(el);
+  if (replace > 0) {
+    if (!selectReplacement(el, was.before, replace)) return answer("stale", "the text to replace could not be selected");
+  } else closeTyping(el);
+  const expectedBefore = was.before.slice(0, was.before.length - replace) + verb.text;
   const went = document.execCommand("insertText", false, verb.text);
   await settle();
   const now = caretState(el);
-  if (now !== null && shown(el, now.before) === shown(el, `${was.before}${verb.text}`) && shown(el, now.after) === shown(el, was.after)) return answer("ok", null);
+  if (now !== null && shown(el, now.before) === shown(el, expectedBefore) && shown(el, now.after) === shown(el, was.after)) return answer("ok", null);
   if (wholeText(el) === `${was.before}${was.after}`) {
     return { outcome: "failed", detail: went ? "the field reads as it did before the insert" : "the page did not take the insert", insert: "unchanged" };
   }
