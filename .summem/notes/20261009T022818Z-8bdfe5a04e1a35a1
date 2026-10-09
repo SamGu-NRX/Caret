@@ -1,0 +1,1 @@
+Decisions evals keep a separate lifetime comparison ledger: calls without usable usage retain the full reservation, including timeouts and malformed replies; rerunning is not a free retry.
