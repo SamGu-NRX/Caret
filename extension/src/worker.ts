@@ -26,7 +26,7 @@ import { FrameDocs, NavGens, frameOrigin } from "./worker/frames.ts";
 import { composeFrames, isCaptchaUrl, type CaptchaFrame } from "./worker/compose.ts";
 import { judgePress, type FrameMarks } from "./worker/press-guard.ts";
 import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
-import { LEFT_TAB_MS, LeftTab, bareOrigin, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
+import { LEFT_TAB_MS, LeftTab, canonicalOrigin, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
 import { joinFrames } from "./shared/tab-text.ts";
 import { sectionTokens, type FrameSections } from "./worker/section-names.ts";
 
@@ -58,8 +58,41 @@ let retryMs = 2000;
 let chunks = new Chunks();
 /** "Not on this site": origins the helper says Caret is off for. Kept in this worker only; the helper resends it after every hello. */
 let sitesOff = new Set<string>();
-/** Whether Caret is off for `origin`, written with or without the trailing dot of a fully qualified host. */
-const offSite = (origin: string): boolean => sitesOff.has(origin) || sitesOff.has(bareOrigin(origin));
+/** Whether Caret is off for `origin`: both sides in canonicalOrigin's form, so a trailing dot matches either way. */
+const offSite = (origin: string): boolean => sitesOff.has(canonicalOrigin(origin));
+
+/** Whether a tab's top page is at a site Caret may act or read in: it has an http(s) origin, not off, not denied. */
+async function topAllowed(tabId: number): Promise<boolean> {
+  const top = frameOrigin((await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null)) ?? [], 0);
+  return top !== null && !offSite(top) && !deniedOrigin(top);
+}
+
+/**
+ * "Not on this site" changed: every grant for a frame at a site now off ends at once, and every grant in a tab whose top
+ * page is now off ends as soon as the tab's frames are read. grantAlive and act check the top page too, so a stage
+ * that runs before that read is refused all the same.
+ */
+async function dropOffGrants(): Promise<void> {
+  const held = grants.scopes();
+  for (const { taskId, scope } of held) if (offSite(scope.origin)) revokeTask(taskId);
+  for (const { taskId, scope } of held) if (!(await topAllowed(scope.tabId))) revokeTask(taskId);
+}
+
+/**
+ * An act's answer as the helper may have it: its readings and choice (the field's values, the page's error text, the
+ * options it showed) only while the frame's and the top page's sites are still allowed and the task's grant is live;
+ * a site switched off while the act ran gets the outcome alone.
+ */
+async function admitted(verb: ActVerb, a: ActAnswer): Promise<ActAnswer> {
+  if (a.readings === undefined && a.choice === undefined) return a;
+  const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId }).catch(() => null)) ?? [];
+  const here = frameOrigin(all, verb.frameId);
+  const top = frameOrigin(all, 0);
+  const ok = here !== null && top !== null && !offSite(here) && !offSite(top) && !deniedOrigin(here) && !deniedOrigin(top) && grants.check(verb.taskId, verb.tabId, verb.frameId).ok;
+  if (ok) return a;
+  const { readings: _readings, choice: _choice, ...rest } = a;
+  return rest;
+}
 /** Frames armed to report the user's input ("tabId:frameId"), and until when. */
 const armed = new Map<string, number>();
 /** Last focus report per tab, for the 150 ms limit. */
@@ -187,7 +220,8 @@ async function onHelper(raw: unknown): Promise<void> {
     case "pageChunk":
       return;
     case "pageSitesOff":
-      sitesOff = new Set(m.origins);
+      sitesOff = new Set(m.origins.map(canonicalOrigin));
+      await dropOffGrants();
       return;
     case "pageReadText": {
       if (engine === null) return;
@@ -202,7 +236,7 @@ async function onHelper(raw: unknown): Promise<void> {
       if (Date.now() >= m.expires) return result(m.id, { outcome: "error", detail: "the command expired before it arrived" });
       try {
         if (m.verb.kind === "pageWalk") await walk(m.id, m.verb.tabId);
-        else result(m.id, await act(m.verb, m.expires));
+        else result(m.id, await admitted(m.verb, await act(m.verb, m.expires)));
       } catch (e) {
         result(m.id, { outcome: "error", detail: e instanceof Error ? e.message : String(e) });
       }
@@ -294,6 +328,11 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   const topNow = frameOrigin(framesNow, 0);
   if (!unmoved(0) || topNow === null || offSite(topNow) || deniedOrigin(topNow)) return result(id, { outcome: "stale", detail: "the tab's page changed during the walk" });
   const rows = kept.map((k, i) => ({ ...k, named: named[i] })).filter((k) => {
+    // A frame whose site was switched off while the walk ran is dropped too: the policy is read again here.
+    if (offSite(k.origin) || deniedOrigin(k.origin)) {
+      missing.push({ frameId: k.f.frameId, reason: "Caret is off on this site" });
+      return false;
+    }
     if (unmoved(k.f.frameId)) return true;
     missing.push({ frameId: k.f.frameId, reason: "it navigated during the walk" });
     return false;
@@ -521,18 +560,25 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 /**
  * A content script mid-act asks whether its task's grant still covers its own frame: the grant is live, the frame's
- * navigation generation is the one the grant pinned, and its site is not off. Answered only for the asking frame.
+ * navigation generation is the one the grant pinned, its site is not off, and neither is its tab's top page. Answered
+ * only for the asking frame.
  */
 chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
   const x = m as { caret?: unknown; op?: unknown; taskId?: unknown } | null;
   if (x?.caret !== 1 || x.op !== "grantAlive" || typeof x.taskId !== "string") return false;
-  if (sender.id !== chrome.runtime.id || sender.tab?.id === undefined || sender.frameId === undefined) {
+  const tabId = sender.tab?.id;
+  const frameId = sender.frameId;
+  const taskId = x.taskId;
+  if (sender.id !== chrome.runtime.id || tabId === undefined || frameId === undefined) {
     reply(false);
     return false;
   }
-  const g = grants.check(x.taskId, sender.tab.id, sender.frameId);
-  reply(g.ok && navGens.get(sender.tab.id, sender.frameId) === g.scope.navGen && !offSite(g.scope.origin));
-  return false;
+  void topAllowed(tabId).then((topOk) => {
+    // The grant is read after the await: a revoke that landed meanwhile counts.
+    const g = grants.check(taskId, tabId, frameId);
+    reply(topOk && g.ok && navGens.get(tabId, frameId) === g.scope.navGen && !offSite(g.scope.origin));
+  });
+  return true;
 });
 
 /**

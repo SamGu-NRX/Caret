@@ -20,6 +20,22 @@ export const DENIED_HOSTS: readonly RegExp[] = [
   /^account\.apple\.com$/,
 ];
 
+/**
+ * The one form every "Not on this site" comparison uses, for the origins the user switched off and the ones a frame
+ * has: the URL parser's origin (lower case, default port dropped) without the host's trailing dot. The extension's
+ * worker uses the same function (extension/src/worker/left-tab.ts canonicalOrigin); test/denied-origins.test.ts checks
+ * the two agree.
+ */
+export function canonicalOrigin(origin: string): string {
+  let o: string;
+  try {
+    o = new URL(origin).origin;
+  } catch {
+    o = origin.trim().toLowerCase();
+  }
+  return o.replace(/\.(?=(:\d+)?$)/u, "");
+}
+
 /** Whether an origin is one Caret never reads. Anything that is not an http(s) origin is denied, as in the extension. */
 export function deniedOrigin(origin: string): boolean {
   let u: URL;

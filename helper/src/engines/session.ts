@@ -4,7 +4,7 @@
 // the engine refuses to act after the helper stopped waiting. Closing ends every pending command; the worker drops
 // every grant when its port closes, so a new session starts with none.
 import { randomUUID } from "node:crypto";
-import { deniedOrigin } from "../privacy/denied-origins.ts";
+import { canonicalOrigin, deniedOrigin } from "../privacy/denied-origins.ts";
 import { excludedValueUncached } from "../privacy/exclude.ts";
 import { secretTextUncached } from "../memory/sensitive.ts";
 import { PROTOCOL_VERSION, type AppRef, type EngineMessage, type HelperToEngine, type PageFocusMoved, type PageHello, type PageInput, type PagePong, type PageResult, type PageSnapshot, type PageVerb, type ScopedActGrant } from "../protocol.ts";
@@ -98,7 +98,7 @@ export class EngineSession {
 
   /** "Not on this site": the whole list of origins Caret is off for, replacing the worker's. */
   sitesOff(origins: readonly string[]): boolean {
-    this.offSites = new Set(origins);
+    this.offSites = new Set(origins.map(canonicalOrigin));
     return this.send({ type: "pageSitesOff", v: PROTOCOL_VERSION, origins: [...origins] });
   }
 

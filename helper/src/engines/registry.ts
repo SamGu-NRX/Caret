@@ -3,6 +3,7 @@
 // engineFor(windowId) through RoutedReaderLink (executor/means.ts) and otherwise does not change. When a session
 // ends (the worker restarted, the browser quit, the bridge died), its windows close in the screen model and its
 // window ids match nothing again, as the reader's do after readerRestarted(); the worker drops its grants itself.
+import { canonicalOrigin } from "../privacy/denied-origins.ts";
 import type { PageExclusion, Snapshot, WindowClosed } from "../protocol.ts";
 import { PROTOCOL_VERSION } from "../protocol.ts";
 import type { EngineDirectory, ReaderLink } from "../executor/means.ts";
@@ -80,13 +81,14 @@ export class EngineRegistry implements EngineDirectory {
    */
   setSitesOff(origins: readonly string[]): void {
     const before = new Set(this.offSites);
-    this.offSites = [...new Set(origins)].sort();
+    // One form for every comparison, here, in each session and in the extension (privacy/denied-origins.ts).
+    this.offSites = [...new Set(origins.map(canonicalOrigin))].sort();
     const now = this.offSites.filter((o) => !before.has(o));
     if (now.length > 0) noteSwitchedOff();
     for (const e of this.sessions.values()) {
       // The engine's session filters every later walk by the new list, so it takes it before the purge reads one again.
       e.session.offSites = new Set(this.offSites);
-      for (const tab of e.session.tabs.values()) if (tab.frames.some((f) => now.includes(f.origin))) this.hooks.purge(e.link.readAgain(tab));
+      for (const tab of e.session.tabs.values()) if (tab.frames.some((f) => now.includes(canonicalOrigin(f.origin)))) this.hooks.purge(e.link.readAgain(tab));
       if (e.session.hello !== null) e.session.sitesOff(this.offSites);
     }
   }

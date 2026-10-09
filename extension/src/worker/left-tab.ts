@@ -144,3 +144,16 @@ export function deniedOrigin(origin: string): boolean {
 export function bareOrigin(origin: string): string {
   return origin.replace(/\.(?=(:\d+)?$)/u, "");
 }
+
+/**
+ * The one form every site-policy comparison uses, for the origins the helper configures and the ones a frame has: the
+ * URL parser's origin (lower case, default port dropped), without the host's trailing dot. The helper applies the same
+ * function to its own sets (helper/src/privacy/denied-origins.ts canonicalOrigin).
+ */
+export function canonicalOrigin(origin: string): string {
+  try {
+    return bareOrigin(new URL(origin).origin);
+  } catch {
+    return bareOrigin(origin.trim().toLowerCase());
+  }
+}

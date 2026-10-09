@@ -296,3 +296,87 @@ describe("focus and typing reports to the helper (H13)", () => {
     expect(Object.keys(focusReports()[0] ?? {}).sort()).toEqual(["at", "frameId", "tabId", "type", "v"]);
   });
 });
+
+describe("a site switched off while work is in flight (review round 5)", () => {
+  const TOP = "https://shop.example.test";
+  const CHILD = "https://pay.example.test";
+  const FRAMES: Frame[] = [
+    { frameId: 0, parentFrameId: -1, documentId: "P0", url: `${TOP}/checkout` },
+    { frameId: 3, parentFrameId: 0, documentId: "P3", url: `${CHILD}/embed` },
+  ];
+  const helperSays = (m: Record<string, unknown>) => f.fire("port.message", { v: 1, ...m });
+  const resultOf = async (id: string): Promise<Record<string, unknown>> => {
+    for (let i = 0; i < 40; i++) {
+      const r = f.sentToHelper.find((m) => m.type === "pageResult" && m.id === id);
+      if (r !== undefined) return r;
+      await settle();
+    }
+    throw new Error(`no pageResult ${id}`);
+  };
+  const childReport = { ...report(CHILD, "/embed", "Pay"), headings: ["Card details"], iframes: [], viewport: [400, 300] };
+  const topReport = { ...report(TOP, "/checkout", "Checkout"), iframes: [{ src: `${CHILD}/embed`, rect: [0, 100, 400, 300], inner: [400, 300] }] };
+  const grant = (frameId: number, origin: string) => helperSays({ type: "scopedActGrant", taskId: "t1", at: Date.now(), expires: Date.now() + 5000, scope: { kind: "page", engine: "e1", tabId: 1, frameId, origin, navGen: 2 } });
+  const write = (id: string) => helperSays({ type: "pageCommand", id, expires: Date.now() + 5000, verb: { kind: "pageWrite", tabId: 1, frameId: 3, documentId: "P3", id: "e1", control: "text", name: "Name on card", taskId: "t1", expect: "", value: "Ines" } });
+
+  it("matches a site switched off with a trailing dot, both ways (#6)", async () => {
+    await start(FRAMES);
+    await helperSays({ type: "pageSitesOff", origins: [`${TOP}.`] });
+    expect((await walkTab("s1")).outcome).toBe("siteOff");
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "Q0", url: `${TOP}./checkout` }]);
+    await helperSays({ type: "pageSitesOff", origins: [TOP] });
+    expect((await walkTab("s2")).outcome).toBe("siteOff");
+    expect(f.asked).toEqual([]);
+  });
+
+  it("keeps the child frame when nothing is switched off (the control for the next case)", async () => {
+    await start(FRAMES);
+    f.answers.set("1:0:walk", topReport);
+    f.answers.set("1:3:walk", childReport);
+    await walkTab("s0");
+    const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { frames: { frameId: number }[] } | undefined;
+    expect(snap?.frames.map((x) => x.frameId)).toEqual([0, 3]);
+  });
+
+  it("leaves out a child frame whose site was switched off while the walk ran (#5)", async () => {
+    await start(FRAMES);
+    f.answers.set("1:0:walk", topReport);
+    f.answers.set("1:3:walk", childReport);
+    f.setDuring((op, frameId) => {
+      if (op === "walk" && frameId === 3) void helperSays({ type: "pageSitesOff", origins: [CHILD] });
+    });
+    await walkTab("s3");
+    const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { frames: { frameId: number }[] } | undefined;
+    expect(snap?.frames.map((x) => x.frameId)).toEqual([0]);
+    expect(JSON.stringify(f.sentToHelper)).not.toContain("Card details");
+  });
+
+  it("ends a child frame's grant when its top page's site is switched off, and grantAlive says no (#5)", async () => {
+    await start(FRAMES);
+    await grant(3, CHILD);
+    let alive: unknown = null;
+    await f.fire("runtime.message", { caret: 1, op: "grantAlive", taskId: "t1" }, { id: "x", tab: { id: 1 }, frameId: 3 }, (r: unknown) => void (alive = r));
+    for (let i = 0; i < 10; i++) await settle();
+    expect(alive).toBe(true);
+    await helperSays({ type: "pageSitesOff", origins: [TOP] });
+    for (let i = 0; i < 10; i++) await settle();
+    alive = null;
+    await f.fire("runtime.message", { caret: 1, op: "grantAlive", taskId: "t1" }, { id: "x", tab: { id: 1 }, frameId: 3 }, (r: unknown) => void (alive = r));
+    for (let i = 0; i < 10; i++) await settle();
+    expect(alive).toBe(false);
+    await write("w1");
+    expect((await resultOf("w1")).outcome).toBe("notAllowed");
+  });
+
+  it("forwards no readings from an act whose top page's site was switched off while it ran (#5)", async () => {
+    await start(FRAMES);
+    await grant(3, CHILD);
+    f.answers.set("1:3:act", { outcome: "failed", detail: "the page holds another value", readings: { before: "", afterInput: "Ines", afterBlur: "IN-4242", invalid: true, error: "Card ending 4242 declined" } });
+    f.setDuring((op) => {
+      if (op === "act") void helperSays({ type: "pageSitesOff", origins: [TOP] });
+    });
+    await write("w2");
+    const r = await resultOf("w2");
+    expect(r.readings).toBeUndefined();
+    expect(JSON.stringify(f.sentToHelper)).not.toMatch(/4242/u);
+  });
+});

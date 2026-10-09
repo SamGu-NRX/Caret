@@ -3,9 +3,9 @@
 // line, for an extension that walked one anyway. Every page, label and value is invented.
 import { describe, expect, it } from "vitest";
 import { DENIED_HOSTS as EXTENSION_HOSTS } from "../../extension/src/worker/left-tab.ts";
-import { DENIED_HOSTS, deniedOrigin } from "../src/privacy/denied-origins.ts";
+import { DENIED_HOSTS, canonicalOrigin, deniedOrigin } from "../src/privacy/denied-origins.ts";
 import { EngineSession, screenReadings } from "../src/engines/session.ts";
-import { toVerbOutcome } from "../src/engines/page-link.ts";
+import { toVerbOutcome, topFrameOn } from "../src/engines/page-link.ts";
 import { PROTOCOL_VERSION, type HelperToEngine, type PageFrame, type PageSnapshot } from "../src/protocol.ts";
 import { X, chrome } from "./fake-page.ts";
 
@@ -105,5 +105,24 @@ describe("an act's readings (review round 3)", () => {
   it("never keeps the page's error or description text, and keeps ordinary values for the write's check", () => {
     const r = screenReadings({ type: "pageResult", v: PROTOCOL_VERSION, id: "w", at: 0, outcome: "failed", detail: null, readings: { before: "", afterInput: "Ines", afterBlur: "", invalid: true, error: "Your recovery code swordfish expired" } });
     expect(r.readings).toEqual({ before: "", afterInput: "Ines", afterBlur: "", invalid: true, error: null });
+  });
+});
+
+describe("site-off origins, canonical both ways (review round 5, #6)", () => {
+  it("writes an origin the extension's way: lower case, no default port, no trailing dot", async () => {
+    const { canonicalOrigin: extension } = await import("../../extension/src/worker/left-tab.ts");
+    for (const o of ["https://Shop.Example.test.", "https://shop.example.test:443", "http://127.0.0.1:4310", "https://shop.example.test.:8443", "https://shop.example.test"]) {
+      expect(canonicalOrigin(o), o).toBe(extension(o));
+    }
+    expect(canonicalOrigin("https://shop.example.test.")).toBe("https://shop.example.test");
+  });
+
+  it("keeps a frame out of the model when its site was switched off with or without the trailing dot", () => {
+    const snap = (origin: string): PageSnapshot => ({ type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w", at: 0, tabId: 4, browserWindowId: 1, active: true, inFocusedWindow: true, title: "t", frames: [frame(0, origin)], missing: [], focused: null });
+    const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, () => true);
+    session.sitesOff(["https://shop.example.test."]);
+    expect(topFrameOn(snap("https://shop.example.test"), session.offSites)).toBe(false);
+    session.sitesOff(["https://shop.example.test"]);
+    expect(topFrameOn(snap("https://shop.example.test."), session.offSites)).toBe(false);
   });
 });

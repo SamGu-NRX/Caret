@@ -3,6 +3,7 @@
 // tab's snapshot to the screen model before answering, as the reader does, and maps the page outcome back onto
 // the reader's. Its grant() turns the executor's one-window ActGrant into one ScopedActGrant per frame of the tab
 // as last walked, each pinned to that frame's origin and navigation generation.
+import { canonicalOrigin } from "../privacy/denied-origins.ts";
 import { excludedSection } from "./page-exclusions.ts";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageFrame, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type VerbOutcome, type VerbResult } from "../protocol.ts";
 import type { ReaderLink } from "../executor/means.ts";
@@ -208,7 +209,7 @@ function frameSections(f: PageFrame): Pick<Node, "headings" | "outline" | "secti
  */
 export function topFrameOn(s: PageSnapshot, off: ReadonlySet<string>): boolean {
   const top = s.frames.find((f) => f.parentFrameId < 0);
-  return top !== undefined && !off.has(top.origin);
+  return top !== undefined && !off.has(canonicalOrigin(top.origin));
 }
 
 export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: number): Snapshot {
@@ -219,7 +220,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
   // top frame is at such a site is that site's page: none of its frames enters, nor its title (PV2 review). A walk with
   // no report from its top frame is of a site Caret cannot know, so it fails closed the same way (PV2 re-review).
   const tabOff = !topFrameOn(s, session.offSites);
-  const kept = new Set(tabOff ? [] : s.frames.filter((f) => !session.offSites.has(f.origin)).map((f) => f.frameId));
+  const kept = new Set(tabOff ? [] : s.frames.filter((f) => !session.offSites.has(canonicalOrigin(f.origin))).map((f) => f.frameId));
   for (const f of s.frames) {
     if (!kept.has(f.frameId)) continue;
     // H10: screen frames for the top frame's nodes only. A child frame's rects are in its own viewport, whose place in
