@@ -967,14 +967,7 @@ struct FirstPane: View {
     }
 
     private var trust: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(OnboardingCopy.First.trust)
-            Text(OnboardingCopy.First.soon)
-                .font(.system(size: 11))
-                .padding(.horizontal, 5)
-                .overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(Color(token: Tokens.rule), lineWidth: 1) }
-            Text(OnboardingCopy.First.undo)
-        }
+        Text(OnboardingCopy.First.trust)
         .font(.system(size: 13))
         .foregroundStyle(Color(token: Tokens.ink))
         .fixedSize(horizontal: false, vertical: true)

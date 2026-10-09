@@ -89,9 +89,9 @@ enum OnboardingCopy {
     enum First {
         static let title = "Caret found a next step."
         static func lead(app: String, title: String) -> String { "In \(app), \(title)." }
-        static let trust = "Before it acts inside another app, Caret asks. Say yes a few times and it stops asking for that app."
-        static let soon = "Soon"
-        static let undo = "⌘Z takes back anything it wrote."
+        /// Only what is built: asking before acting, and ⌘Z. Learning when to stop asking is EarnedTrust, a hook with no
+        /// behavior yet, so the line promises none (coordinator's copy, 2026-10-09).
+        static let trust = "Before it acts inside another app, Caret asks. ⌘Z takes back anything it wrote."
         static let asking = "macOS asks once for Calendar. Caret adds only the events you take."
         static let denied = "Calendar access is off, so Caret left it. Allow Caret under Privacy & Security, Calendars."
         static let doneHint = "That's the shape of it. Caret shows the step and where it came from, then writes it when you press Tab."
