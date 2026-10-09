@@ -1,1 +1,0 @@
-Helper: new script env names go in privacy-gate.ts processEnv()/HELPER_ONLY_ENV; await PageFocus.moved; diff guard-adversary vs base before loosening a guard; askValues needed in hello; MAX_WAYS 8, optionIs, visit-capped generation; close page sessions before shutdown.
