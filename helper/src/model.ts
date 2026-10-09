@@ -94,6 +94,9 @@ export class ScreenModel {
       return c === null ? [] : [c];
     }
     const prior = this.windows.get(id);
+    // A subtree walk of a window expire dropped would stand for the whole window. It stays out until a full walk, which the
+    // reader sends next: a subtree walk clears the window's content hash (AppWorker.swift walkSubtree).
+    if (prior === undefined && snap.root !== null && this.expired.has(id)) return [];
     const out: Change[] = [];
     let nodes: Map<string, Node>;
     let values: TypedValue[];

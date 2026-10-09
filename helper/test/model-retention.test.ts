@@ -125,6 +125,17 @@ describe("a window whose text is not read again", () => {
     expect(m.apply(snap([], { at: 14 * MIN, windowId: NOTE })).map((c) => c.kind)).toEqual(["windowOpened"]);
   });
 
+  it("stays out on a subtree walk, which would stand for the whole window, and comes back whole with the next full walk", () => {
+    const m = new ScreenModel();
+    m.apply(snap([text("n/title~0", "Order"), field("n/name~0", "Dana"), field("n/city~0", "Austin")], { at: 0, windowId: NOTE }));
+    m.expire(11 * MIN, null);
+    expect(m.apply(snap([field("n/city~0", "Austin, TX")], { at: 12 * MIN, windowId: NOTE, root: "n/city~0" }))).toEqual([]);
+    expect(m.windows.has(NOTE)).toBe(false);
+    const back = m.apply(snap([text("n/title~0", "Order"), field("n/name~0", "Dana"), field("n/city~0", "Austin, TX")], { at: 12 * MIN + 30_000, windowId: NOTE }));
+    expect(back.some((c) => c.kind === "windowOpened")).toBe(false);
+    expect([...(m.windows.get(NOTE)?.nodes.keys() ?? [])]).toEqual(["n/title~0", "n/name~0", "n/city~0"]);
+  });
+
   it("is not brought back by a purge", () => {
     const m = new ScreenModel();
     planted(m, 0);
