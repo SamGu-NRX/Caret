@@ -1717,6 +1717,11 @@ export class Executor {
       // A combobox shows the filter text Caret types before it presses the option, and a walk carries no sign of the
       // pick: only the content script's own answer does (content/combobox.ts), and that answer is what was lost.
       if (pageCombobox(field.role, e.windowId)) return { state: "unknown", detail: `Caret cannot tell whether the option was picked; ${fieldContents(e.before, held)}` };
+      // Known risk (PR #21 lead decision B): a user who types exactly this value after Stop, within the deadline and
+      // before this read, is counted as Caret's write, and a later Undo deletes the identical text. Reader input events
+      // name a window, not a field or key, and stop reaching a stopped task, so they cannot rule it out; the input
+      // watch can also arrive late (B29). The window is at most STOP_RECONCILE_MS, the text equals Caret's value, and
+      // Undo is the user's own request. Field-level input evidence would close it (issue #26).
       return { state: "landed", detail: null };
     }
     if (partialReplacement(e.before, e.after, held)) {
