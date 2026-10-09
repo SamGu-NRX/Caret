@@ -155,6 +155,69 @@ final class ServiceLauncherTests: XCTestCase {
         XCTAssertEqual(ServiceLauncher.stopStale(file: "\(dir)/missing.json", log: { _ in }), [])
     }
 
+    /// A child that ignores SIGTERM, and whose SIGKILL does not take (standing for one stuck on its way out, as the
+    /// reader was in beta.2's VM run): stop() still returns, within SIGTERM's grace plus the reap deadline, and says so.
+    func testStopReturnsWithinItsDeadlineWhenAChildIgnoresSIGTERMAndIsNotReaped() async throws {
+        let helper = try script("helper.sh", "cat > /dev/null\ntrap '' TERM\nexec sleep 60\n")
+        let reader = try script("reader.sh", "cat > /dev/null\nexec sleep 60\n")
+        let home = try CaretHome.resolve(override: "\(dir)/home", userHome: "/nonexistent")
+        var lines: [String] = []
+        var sent: [(pid_t, Int32)] = []
+        let launcher = try ServiceLauncher(
+            programs: .init(node: "/bin/sh", helperEntry: helper, reader: reader), home: home, log: { lines.append($0) },
+            sendSignal: { pid, sig in
+                sent.append((pid, sig))
+                if sig != SIGKILL { kill(pid, sig) }
+            }
+        )
+        launcher.start()
+        guard case .running(let pid) = launcher.helper.status else { return XCTFail("the helper did not start") }
+        defer { kill(pid, SIGKILL); _ = waitForExit(pid) }
+        try await Task.sleep(nanoseconds: 300_000_000)  // past `trap`, so SIGTERM is ignored
+        let started = Date()
+        await launcher.stop(grace: 0.4, reapDeadline: 0.4)
+        let took = Date().timeIntervalSince(started)
+        XCTAssertLessThan(took, 2, "stop() waited past its deadlines")
+        XCTAssertGreaterThanOrEqual(took, 0.8)
+        // The reader, when this machine lets it start, stops on its SIGTERM; the helper needs the SIGKILL.
+        XCTAssertEqual(sent.filter { $0.0 == pid }.map(\.1), [SIGTERM, SIGKILL])
+        XCTAssertEqual(launcher.helper.status, .stopped)
+        XCTAssertTrue(lines.contains("process \(pid) was killed but had not exited 0.4 s later; Caret stops waiting for it"), "\(lines)")
+        XCTAssertNotNil(ServiceLauncher.childRecord(pid), "the stand-in should still run until the test kills it")
+        let recorded = try JSONDecoder().decode([ServiceLauncher.ChildRecord].self, from: Data(contentsOf: URL(fileURLWithPath: home.childrenFile)))
+        XCTAssertEqual(recorded.map(\.pid), [pid], "a child left running must stay recorded for the next Caret to stop")
+    }
+
+    /// The hand-off to the login item waits on the same shutdown (`ShutdownOnce`): with a child that ignores SIGTERM and
+    /// is slow to go after SIGKILL, the wait finishes in time and the step after it runs. The reader slot needs the
+    /// Accessibility grant to start, so the slow child here is the helper; stop() treats both alike.
+    func testTheHandOffGoesOnWhenAChildIsSlowToStop() async throws {
+        let helper = try script("helper.sh", "cat > /dev/null\ntrap '' TERM\nexec sleep 60\n")
+        let reader = try script("reader.sh", "cat > /dev/null\nexec sleep 60\n")
+        let home = try CaretHome.resolve(override: "\(dir)/home", userHome: "/nonexistent")
+        let launcher = try ServiceLauncher(
+            programs: .init(node: "/bin/sh", helperEntry: helper, reader: reader), home: home, log: { _ in },
+            // SIGKILL lands only after 1.5 s, past the reap deadline below.
+            sendSignal: { pid, sig in
+                if sig == SIGKILL {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { kill(pid, SIGKILL) }
+                } else {
+                    kill(pid, sig)
+                }
+            }
+        )
+        launcher.start()
+        guard case .running(let pid) = launcher.helper.status else { return XCTFail("the helper did not start") }
+        defer { kill(pid, SIGKILL); _ = waitForExit(pid, seconds: 3) }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let shutdown = ShutdownOnce()
+        let started = Date()
+        XCTAssertTrue(shutdown.start { await launcher.stop(grace: 0.3, reapDeadline: 0.3) })
+        let finished = await shutdown.wait(deadline: 5)
+        XCTAssertTrue(finished, "the shutdown the hand-off waits on did not finish")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.4, "the hand-off waited for the slow child")
+    }
+
     func testRestartAfterAStopStartsAgainWithFreshBudgets() async throws {
         let helper = try script("helper.sh", "cat > /dev/null\nexit 1\n")
         let reader = try script("reader.sh", "cat > /dev/null\nexec sleep 60\n")

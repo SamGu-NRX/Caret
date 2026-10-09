@@ -35,9 +35,30 @@ public enum AccessibilityAccess {
 
     /// `tccutil`'s arguments to remove Caret's own Accessibility entry: never another app's.
     public static func resetArguments(bundleID: String?) throws -> [String] {
-        guard let bundleID, bundleID == "dev.caret.host" else { throw ResetRefused(bundleID: bundleID ?? "nil") }
-        return ["reset", "Accessibility", bundleID]
+        try resetArguments(service: "Accessibility", bundleID: bundleID)
     }
+
+    /// The TCC services Caret may reset for itself: the ones its own entries can be under.
+    public static let ownServices = ["Accessibility", "ListenEvent", "PostEvent"]
+
+    /// `tccutil reset SERVICE dev.caret.host`, for one of `ownServices` and Caret's own bundle id only.
+    public static func resetArguments(service: String, bundleID: String?) throws -> [String] {
+        guard let bundleID, bundleID == "dev.caret.host" else { throw ResetRefused(bundleID: bundleID ?? "nil") }
+        guard ownServices.contains(service) else { throw ResetRefused(bundleID: "\(bundleID) under \(service)") }
+        return ["reset", service, bundleID]
+    }
+
+    /// What to reset before the switch step opens System Settings: each of Caret's services this process is not trusted
+    /// for. An entry the running build is not trusted under can only be another build's (same bundle id, another
+    /// signature, which macOS shows as "Caret", switched on) or nothing, so resetting it loses nothing, and the drag then
+    /// adds an entry bound to this build. Loop does the same (research/R7, technique 6). Trusted: nothing.
+    public static func resetsBeforeAsking(accessibility: Bool, listenEvents: Bool, postEvents: Bool) -> [String] {
+        guard !accessibility else { return [] }
+        return ["Accessibility"] + (listenEvents ? [] : ["ListenEvent"]) + (postEvents ? [] : ["PostEvent"])
+    }
+
+    /// How long after macOS's change notice the entry counts as stale if this Caret is still untrusted.
+    public static let staleAfterNotice: TimeInterval = 2
 }
 
 /// When to read `AXIsProcessTrusted` after macOS says the list changed. `com.apple.accessibility.api` can arrive before

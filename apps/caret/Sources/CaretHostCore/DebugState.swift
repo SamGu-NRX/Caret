@@ -596,6 +596,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// Other copies of Caret found, by path, and whether the switch step says the wrong one was turned on.
         public var otherCarets: [String]?
         public var wrongCaret: Bool?
+        /// The entry macOS shows for Caret is on but not this build's; the step offers Reset.
+        public var staleEntry: Bool?
         /// `idle`, `asking`, `found`, `nothing` or `failed`.
         public var firstLook: String?
         public var firstLookRequest: String?

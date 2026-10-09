@@ -29,11 +29,11 @@ enum OnboardingCopy {
         static var reopened: String {
             "Caret opened again, and it isn't on yet. Open System Settings, then turn on Caret in the \(pane) list."
         }
-        static let staleTitle = "Caret was updated."
+        static let staleTitle = "The Caret in the list is an older copy. Reset it?"
         static var staleLine: String {
-            "macOS still shows Caret's switch, but it no longer applies to this version. Reset Caret's entry, then add Caret to the \(pane) list again."
+            "Its switch is on, but it belongs to another copy of Caret. Resetting removes only that entry; then turn on Caret again in the \(pane) list."
         }
-        static let reset = "Reset Caret's entry"
+        static let reset = "Reset"
         /// This running copy, as System Settings and Finder show it: "Caret.app in /Applications".
         static var thisCaret: String { OtherCaret(bundleID: "", path: Bundle.main.bundlePath).place }
         static func several(_ others: [OtherCaret]) -> String {

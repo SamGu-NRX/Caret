@@ -243,18 +243,34 @@ socket.onCommand = { cmd in
 socket.start()
 MainActor.assumeIsolated { reader.start() }
 
+// SIGTERM or SIGINT ends the reader within about a second. The handler runs on its own queue, so a busy main thread
+// cannot hold it; main gets one second to delete the calendars this reader made, then the process leaves with _exit.
+// Not exit: in beta.2's VM run (stale leg, host.log 2596-2601) a reader logged "stopping", deleted its calendars and
+// was still alive 3 s later, when Caret killed it. exit runs atexit handlers and library teardown, which can wait on
+// other threads; _exit does neither. Logs are unbuffered FileHandle writes and stdout is flushed first, so nothing is
+// lost. AX calls run on per-app worker threads with a 0.25 s timeout (AX.elementTimeout); one still in flight ends
+// with the process, and if anything outlasts this, Caret's SIGKILL 3 s after SIGTERM covers it.
+let stopQueue = DispatchQueue(label: "caret-screen.stop")
 for sig in [SIGINT, SIGTERM] {
     signal(sig, SIG_IGN)
-    let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    let src = DispatchSource.makeSignalSource(signal: sig, queue: stopQueue)
     src.setEventHandler {
         ctx.log("stopping; sent \(socket.sent) messages, dropped \(socket.dropped), e1 lines \(recorder?.count ?? 0)")
-        // The calendars it created go with it.
-        if let cal = calendarAdapter {
-            let left = cal.ownedCalendars
-            let errors = cal.disposeAll()
-            ctx.log("calendar: deleted \(left.count - errors.count) of \(left.count) calendars it created\(errors.isEmpty ? "" : "; \(errors.joined(separator: "; "))")")
+        let cleaned = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            // The calendars it created go with it.
+            if let cal = calendarAdapter {
+                let left = cal.ownedCalendars
+                let errors = cal.disposeAll()
+                ctx.log("calendar: deleted \(left.count - errors.count) of \(left.count) calendars it created\(errors.isEmpty ? "" : "; \(errors.joined(separator: "; "))")")
+            }
+            cleaned.signal()
         }
-        exit(0)
+        if cleaned.wait(timeout: .now() + 1) == .timedOut {
+            ctx.log("the main thread did not answer within 1 s; leaving without deleting calendars")
+        }
+        fflush(stdout)
+        _exit(0)
     }
     src.resume()
     _ = Unmanaged.passRetained(src)

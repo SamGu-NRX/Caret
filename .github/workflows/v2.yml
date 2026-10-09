@@ -1,13 +1,16 @@
 name: Caret v2
 
 on:
+  # A lane with a PR runs once, on the PR; the integration branches run on push. Push runs on every v2/* branch ran
+  # each lane twice (push and PR) and queued 16 runs on 5 macOS runners on 2026-10-09.
   push:
-    branches: [main, 'v2/**']
+    branches: [main, 'v2/dogfood', 'v2/next']
   pull_request:
     # Every PR into main or a v2 branch. Lane PRs target v2/dogfood and v2/next, and a fix/* head has no push run,
-    # so with only main and v2/next listed, PRs #15, #17, #18, #19 and #21 never ran these jobs. A v2/* head with a
-    # PR into a v2 branch runs twice (push and PR); that costs runner time, not correctness.
+    # so with only main and v2/next listed, PRs #15, #17, #18, #19 and #21 never ran these jobs.
     branches: [main, 'v2/**']
+  # A lane without a PR runs CI by hand (Actions > Caret v2 > Run workflow).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -145,8 +148,13 @@ jobs:
   host:
     name: host
     runs-on: macos-26
-    timeout-minutes: 30
+    # Swift tests took 10 to 13 minutes on 2026-10-09; the app bundle build below adds the reader, the bridge, the
+    # helper bundle and the extension.
+    timeout-minutes: 40
     env:
+      # The Xcode record-snapshots.yml records with, so a runner image's default Xcode can't change how the
+      # snapshots render between recording and checking (Greptile on #13).
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       CARET_RECORD_SNAPSHOTS: '0'
     steps:
       - name: Refuse credentials and external environment files
@@ -158,6 +166,7 @@ jobs:
               exit 1
             fi
           done
+          test -d "$DEVELOPER_DIR"
       - uses: actions/checkout@v4
       - name: Fetch pinned KeyType packages
         run: git submodule update --init --depth 1 packages/keytype
@@ -193,6 +202,46 @@ jobs:
           xcodebuild -version
           swift --version
       - run: swift test --package-path apps/caret
+      # The packaging path Caret.app ships through: the helper bundle with its worker and QuickJS wasm, the extension,
+      # the copied resources and the privacy gate's checks on the assembled bundle. Debug is ad hoc signed and needs no
+      # identity. build-app.sh installs dependencies only offline, so install them here first.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: |
+            helper/pnpm-lock.yaml
+            extension/pnpm-lock.yaml
+      - name: Install helper and extension dependencies
+        run: |
+          (cd helper && pnpm install --frozen-lockfile)
+          (cd extension && pnpm install --frozen-lockfile)
+      - name: Build Caret.app (debug)
+        run: apps/caret/scripts/build-app.sh debug
+      - name: Start the bundled helper on the bundled Node
+        shell: bash
+        run: |
+          contents=apps/caret/.build/Caret.app/Contents
+          # Under the temporary directory: the helper keeps its store only under local roots, which include tmpdir.
+          home=$(mktemp -d)
+          "$contents/Helpers/node" "$contents/Resources/helper/main.mjs" --no-jev --no-page \
+            --socket "$home/screen.sock" --data-dir "$home/data" --deny-list "$home/deny-apps.txt" > "$home/helper.log" 2>&1 &
+          pid=$!
+          for _ in $(seq 1 150); do
+            if [[ -S "$home/screen.sock" ]] || ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          started=0
+          [[ -S "$home/screen.sock" ]] && started=1
+          kill "$pid" 2>/dev/null || true
+          cat "$home/helper.log"
+          if [[ $started == 0 ]]; then
+            echo "::error::the bundled helper did not open its socket within 30 seconds"
+            exit 1
+          fi
 
   guards:
     name: guards
