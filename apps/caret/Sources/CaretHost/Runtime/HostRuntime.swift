@@ -759,6 +759,20 @@ public final class HostRuntime {
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
 
+    /// Whether work is running in this copy: an accepted offer the helper has not ended, or a surface's working line. The
+    /// hand-off to the login item stops the helper, so it waits while this is true.
+    public var isRunningWork: Bool { helper.hasRunningWork || surfaceWorking }
+
+    /// Stops taking offers (the key tap goes, and the trust watch that would make it again), so nothing new starts
+    /// between the hand-off's last check and its shutdown.
+    public func stopTakingOffers() {
+        trustPoll?.invalidate()
+        trustPoll = nil
+        if let axObserver { DistributedNotificationCenter.default().removeObserver(axObserver) }
+        axObserver = nil
+        tap.stop()
+    }
+
     /// The menu's "Turn on Accessibility…": the switch step on its own, with the panel in System Settings.
     public func openAccessSwitch() { onboarding.openAccess() }
 

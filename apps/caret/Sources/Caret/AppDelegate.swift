@@ -61,10 +61,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runtime.onTrustChanged = { [weak self] in self?.refreshTrust() }
         runtime.onWorkingChanged = { [weak self] working in
             self?.working = working
-            if !working, self?.handOffWhenIdle == true {
-                self?.handOffWhenIdle = false
-                self?.handOffToLoginItem()
-            }
             self?.refreshGlyph()
         }
         runtime.services = services
@@ -102,17 +98,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Onboarding is done (or the browser step needs the bridge): register the login item, which launchd starts, and
     /// stop this copy. Services stop first, so the agent's copy finds the sockets free. If the hand-off fails, a fresh
     /// copy opens and runs in-process as before.
-    /// The login item is due but work is running in this copy: hand off once it is done.
-    private var handOffWhenIdle = false
+    /// The login item is due but work is running in this copy: checked every second until it ends.
+    private var handOffWait: Timer?
 
     private func handOffToLoginItem() {
         guard !isTerminating else { return }
         // Accepted work (the first look's fill, say) runs in this copy's helper. Handing off stops the helper, and the
-        // next one restores the task as stopped, so a fill could end half done (Greptile on PR #17): wait for it.
-        if working {
-            handOffWhenIdle = true
+        // next one restores the task as stopped, so a fill could end half done (Codex and Greptile on PR #17). The
+        // runtime counts each accepted offer from its accept to the helper's end for it (RunningWork), so Done pressed
+        // right after Tab waits too. Work that never ends keeps this copy running; the next launch registers the agent.
+        if runtime.isRunningWork {
+            guard handOffWait == nil else { return }
+            handOffWait = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.runtime.isRunningWork else { return }
+                    self.handOffWait?.invalidate()
+                    self.handOffWait = nil
+                    self.handOffToLoginItem()
+                }
+            }
             return
         }
+        // Nothing new starts from here: the tap goes before the shutdown's await.
+        runtime.stopTakingOffers()
         isTerminating = true
         Task {
             await runtime.shutdown()

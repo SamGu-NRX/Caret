@@ -70,6 +70,11 @@ final class HelperClient: @unchecked Sendable {
     /// When this client last sent work the helper runs for this session (offerAccept, fillAll): until its
     /// activity record arrives, only this says the session owns a run that closing it would revoke.
     private let lastAccept = OSAllocatedUnfairLock<Date?>(initialState: nil)
+    /// The accepted offers the helper is running, from each accept written to the helper's end for it (`RunningWork`).
+    private let work = OSAllocatedUnfairLock(initialState: RunningWork())
+
+    /// Whether an offer this copy accepted is still running in the helper: the login-item hand-off waits for it.
+    var hasRunningWork: Bool { !work.withLock { $0.isEmpty } }
     var lastAcceptAt: Date? { lastAccept.withLock { $0 } }
 
     /// The connection is up and its hello named `routing`, so the helper sends it route decisions.
@@ -120,6 +125,7 @@ final class HelperClient: @unchecked Sendable {
     func send(_ accept: OfferAccept) -> Bool {
         let sent = sendLine(try? NDJSON.line(accept))
         if sent {
+            work.withLock { $0.accepted(accept.offerId) }
             stats.withLock { $0.accepts &+= 1 }
             lastAccept.withLock { $0 = Date() }
         }
@@ -333,6 +339,7 @@ final class HelperClient: @unchecked Sendable {
                 close(fd)
                 stats.withLock { $0.connected = false }
                 authority?.revokeAll("helperDisconnected")
+                work.withLock { $0.helperGone() }
                 onLink(false)
             }
             guard running.withLock({ $0 }) else { break }
@@ -449,6 +456,7 @@ final class HelperClient: @unchecked Sendable {
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
             }
         }
+        if case .taskProgress(let progress) = message { work.withLock { $0.progress(progress) } }
         onMessage(message)
     }
 
