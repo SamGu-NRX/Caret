@@ -285,7 +285,7 @@ final class OnboardingFlowTests: XCTestCase {
         kept.send(.keep)
         XCTAssertEqual(kept.state.on.decision, .kept)
         kept.send(.next)
-        XCTAssertEqual(kept.take(), [.keepOnMac, .finished, .close])
+        XCTAssertEqual(kept.take(), [.consent(sent: false), .finished, .close])
         XCTAssertNil(kept.lookAsk, "keeping sends no look")
     }
 
@@ -296,9 +296,9 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertTrue(rig.state.canContinue)
     }
 
-    func testAKeyIsCheckedThenTheLookGoesWithoutASecondPress() throws {
+    func testAKeyIsCheckedThenThePreviewIsBuiltAgainForTheNewHelper() throws {
         let rig = Rig.atOn(key: false)
-        rig.send(.previewReady(requestId: rig.previewAsk!, Rig.preview()))
+        rig.send(.previewReady(requestId: rig.previewAsk!, Rig.preview("pv-old")))
         XCTAssertTrue(rig.state.on.needsKey)
         XCTAssertFalse(rig.state.canContinue, "Send waits for a pasted key")
         rig.send(.setJevKey("not a key"), .next)
@@ -310,9 +310,40 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertFalse(rig.state.canContinue, "no second press while the check runs")
         rig.send(.jevKeyChecked(.works, saved: true))
         XCTAssertTrue(rig.state.on.jevKey.stored)
-        XCTAssertEqual(rig.state.on.decision, .sent)
-        XCTAssertNotNil(rig.lookAsk)
         XCTAssertTrue(rig.state.on.jevKey.text.isEmpty, "the key is not held once saved")
+        XCTAssertNil(rig.lookAsk, "saving the key restarts the helper, which forgot the old preview: nothing is sent on it")
+        let fresh = try XCTUnwrap(rig.previewAsk)
+        rig.send(.previewReady(requestId: fresh, Rig.preview("pv-new")), .next)
+        XCTAssertEqual(rig.lookAsk?.1, "pv-new", "the person sends what the new preview shows")
+    }
+
+    func testAPreviewAskedBeforeTheHelperConnectsIsAskedAgain() throws {
+        let rig = Rig.atOn()
+        let first = try XCTUnwrap(rig.previewAsk)
+        rig.send(.previewFailed(requestId: first, "helperNotConnected"))
+        XCTAssertEqual(rig.state.on.preview, .building(requestId: first), "still reading, not failed")
+        rig.take()
+        rig.clock.advance(by: 1)
+        let second = try XCTUnwrap(rig.previewAsk)
+        XCTAssertNotEqual(second, first)
+        for _ in 0..<OnboardingFlow.previewRetries {
+            guard case .building(let id) = rig.state.on.preview else { break }
+            rig.send(.previewFailed(requestId: id, "helperNotConnected"))
+            rig.clock.advance(by: 1)
+        }
+        XCTAssertEqual(rig.state.on.preview, .failed("helperNotConnected"), "it gives up after the retries")
+        XCTAssertTrue(rig.state.canContinue)
+    }
+
+    func testAGrantGivenBeforeTheGuideOpensLandsAtOnce() {
+        let rig = Rig()
+        rig.grant()
+        XCTAssertEqual(rig.step, .hello)
+        rig.send(.next)
+        XCTAssertEqual(rig.step, .access)
+        XCTAssertTrue(rig.state.access.granted)
+        rig.clock.advance(by: OnboardingFlow.grantLanding)
+        XCTAssertEqual(rig.step, .on, "no poll change is needed to move on")
     }
 
     // MARK: - First
@@ -328,6 +359,23 @@ final class OnboardingFlowTests: XCTestCase {
         guard case .accept(let accept)? = rig.take().first else { return XCTFail("Tab sends the accept") }
         XCTAssertEqual(accept.offerId, FirstLookReply.offerKey(requestId: request.requestId))
         XCTAssertTrue(rig.state.canContinue, "Done closes the window while the run goes on in the helper")
+    }
+
+    func testReturnTakesAFoundOfferAndADeclinedOneTakesNoKey() throws {
+        let rig = Rig.sent()
+        rig.send(.firstLookReply(try reply(rig.lookAsk!.0.requestId, .found, kind: .action, family: "event")))
+        rig.take()
+        rig.send(.key(.returnKey))
+        guard case .accept? = rig.take().first else { return XCTFail("Return is the primary: it takes the offer") }
+
+        let declined = Rig.sent()
+        declined.send(.firstLookReply(try reply(declined.lookAsk!.0.requestId, .found, kind: .action, family: "event")), .notNow)
+        declined.take()
+        XCTAssertEqual(declined.state.firstLookKeys, .none)
+        declined.send(.key(.tab), .accept)
+        XCTAssertTrue(declined.take().allSatisfy { if case .accept = $0 { return false } else { return true } }, "a declined offer cannot be taken")
+        declined.send(.next)
+        XCTAssertTrue(declined.state.finished, "Done closes")
     }
 
     func testNotNowLeavesAnEventAloneAndClosesAFill() throws {

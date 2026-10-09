@@ -125,7 +125,7 @@ extension OnboardingFlow.State {
     /// What the first look's keys do now: a found offer not yet taken takes Tab and its digits;
     /// a fill's done line takes ⌘Z; a run past three seconds takes Esc.
     public var firstLookKeys: FirstLookKeys {
-        guard step == .first, case .found(let found) = first.look, first.calendar == nil else { return .none }
+        guard step == .first, case .found(let found) = first.look, first.calendar == nil, !first.declined else { return .none }
         if let run = first.run { return FirstLookKeys(undo: run.undoable, stop: run.stoppable) }
         let takeable = found.takeable
         return FirstLookKeys(tab: takeable.contains { $0.key == .tab }, digits: Set(takeable.compactMap(\.key.digit)))
@@ -158,7 +158,7 @@ extension OnboardingFlow {
     }
 
     func take(_ action: PopupSpec.Action?) {
-        guard let action, case .found(let found) = state.first.look, state.first.run == nil else { return }
+        guard let action, case .found(let found) = state.first.look, state.first.run == nil, !state.first.declined else { return }
         let started = clock.now
         state.first.run = FirstLookRun(
             offerKey: found.offerKey, actionId: action.id, app: found.window.appName, fillRows: found.fillRows,

@@ -63,8 +63,6 @@ final class OnboardingController {
     var sendAccept: (OfferAccept) -> Bool = { _ in false }
     var sendStop: (OfferStop) -> Bool = { _ in false }
     var sendControl: (TaskControl) -> Bool = { _ in false }
-    /// The person kept everything on the Mac: the helper asks at first need before anything goes.
-    var onKeepOnMac: () -> Void = {}
     /// The local model's next words after `text`, or nil.
     var complete: (String) async -> String? = { _ in nil }
     var modelReadiness: () -> ModelReadiness = { .unavailable }
@@ -96,11 +94,40 @@ final class OnboardingController {
         return OnboardingProgress.decode(FileManager.default.contents(atPath: progressPath))
     }
 
-    private func saveProgress(_ step: OnboardingStep) {
+    /// Reads, changes and writes the progress file, making its folder (0700) when the settings folder does not exist
+    /// yet. A write that fails is logged: resuming then starts at the beginning, which is safe but worse.
+    private func updateProgress(_ change: (inout OnboardingProgress) -> Void) {
         guard let progressPath else { return }
-        let coach = progress?.coachShown ?? false
-        try? OnboardingProgress(step: step, at: Int64(Date().timeIntervalSince1970 * 1000), coachShown: coach).encoded()
-            .write(to: URL(fileURLWithPath: progressPath), options: .atomic)
+        var p = progress ?? OnboardingProgress(step: .hello, at: 0)
+        change(&p)
+        p.at = Int64(Date().timeIntervalSince1970 * 1000)
+        let url = URL(fileURLWithPath: progressPath)
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try p.encoded().write(to: url, options: .atomic)
+        } catch {
+            FileHandle.standardError.write(Data("caret: onboarding progress not saved: \(error.localizedDescription)\n".utf8))
+        }
+    }
+
+    private func saveProgress(_ step: OnboardingStep) { updateProgress { $0.step = step } }
+
+    /// Until the person sends the first look or keeps everything on the Mac, only the local next words run: the roles
+    /// that ask the cloud model are held (written down first, so a relaunch holds the same ones) and given back on
+    /// Send. Returns the roles the flow looks with.
+    private func holdCloudRoles() -> Set<CaretRole> {
+        if let held = progress?.heldRoles { return Set(held.compactMap(CaretRole.init(rawValue:))) }
+        let roles = store.settings.roles
+        updateProgress { $0.heldRoles = roles.map(\.rawValue).sorted() }
+        store.update(source: .onboarding) { $0.roles = $0.roles.intersection([.words]) }
+        return roles
+    }
+
+    private func decided(sent: Bool) {
+        guard let held = progress?.heldRoles else { return }
+        if sent { store.update(source: .onboarding) { $0.roles = Set(held.compactMap(CaretRole.init(rawValue:))) } }
+        updateProgress { $0.heldRoles = nil }
     }
 
     private var coachShownCache: Bool?
@@ -117,11 +144,7 @@ final class OnboardingController {
     /// The coach slip was shown: never again on this install.
     func markCoachShown() {
         coachShownCache = true
-        guard let progressPath else { return }
-        var p = progress ?? OnboardingProgress(step: .first, at: 0)
-        p.coachShown = true
-        p.at = Int64(Date().timeIntervalSince1970 * 1000)
-        try? p.encoded().write(to: URL(fileURLWithPath: progressPath), options: .atomic)
+        updateProgress { $0.coachShown = true }
     }
 
     // MARK: - Opening
@@ -152,8 +175,10 @@ final class OnboardingController {
         drawsWindow = drawing && mode != .hidden
         let permissions = readPermissions()
         let start = opening ?? OnboardingLaunch.Opening(step: permissions.accessibility ? .on : .hello)
+        var settings = store.settings
+        if !start.alone, !store.settings.onboarded { settings.roles = holdCloudRoles() }
         let flow = OnboardingFlow(
-            settings: store.settings, permissions: permissions, clock: RunLoopClock(),
+            settings: settings, permissions: permissions, clock: RunLoopClock(),
             token: String(UUID().uuidString.prefix(8)).lowercased(), opening: start,
             jevKeyAvailable: jevKey.available(), jevKeyStored: jevKey.stored()
         )
@@ -247,8 +272,8 @@ final class OnboardingController {
         case .askFirstLook(var request, let previewId):
             request.previewId = previewId
             if !sendFirstLook(request) { flow?.send(.firstLookUnsent) }
-        case .keepOnMac:
-            onKeepOnMac()
+        case .consent(let sent):
+            decided(sent: sent)
         case .accept(let accept):
             if foundFamily(accept.offerId) == "event", calendars.access == .notDetermined {
                 // H8: the first event accepted asks for Calendar access first.
@@ -394,7 +419,7 @@ final class OnboardingController {
         case .guide:
             window.level = .floating
             let size = OnboardingView.size(for: .guide)
-            let content = guide.placement(for: size, screen: window.screen ?? NSScreen.main)
+            let content = guide.placement(for: size, screen: nil)
             let target = window.frameRect(forContentRect: content)
             if shownFrame != .guide || target.origin.distance(to: window.frame.origin) > 1 {
                 window.setFrame(target, display: true, animate: animate && shownFrame != .guide)
@@ -579,11 +604,14 @@ final class GuidePlacement {
 
     /// The guide's content rect: 24 pt from System Settings, left of it when that fits on its screen, else right of
     /// it, else the screen's left edge; never off the visible frame.
+    /// `screen` nil: the display that holds System Settings' window, else the main one.
     func placement(for size: CGSize, screen: NSScreen?) -> NSRect {
-        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let settingsFrame = Self.settingsWindowFrame()
+        let holder = screen ?? settingsFrame.flatMap { f in NSScreen.screens.max { $0.frame.intersection(f).area < $1.frame.intersection(f).area } } ?? NSScreen.main
+        let visible = holder?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let gap: CGFloat = 24
         var origin: CGPoint
-        if let settings = Self.settingsWindowFrame() {
+        if let settings = settingsFrame {
             let top = settings.maxY - size.height
             if settings.minX - gap - size.width >= visible.minX {
                 origin = CGPoint(x: settings.minX - gap - size.width, y: top)
@@ -603,6 +631,10 @@ final class GuidePlacement {
 
 private extension CGPoint {
     func distance(to other: CGPoint) -> CGFloat { hypot(x - other.x, y - other.y) }
+}
+
+private extension CGRect {
+    var area: CGFloat { isNull ? 0 : width * height }
 }
 
 /// The apps the Hello line names, read before any permission (HANDOFF §2): LaunchServices and the running apps.

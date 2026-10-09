@@ -332,6 +332,12 @@ final class HostCoordinator {
             overlay.hide()
             return false
         }
+        // Secure input may have come on while the engine worked: checked again just before drawing.
+        guard ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) else {
+            status.increment("held.ghost.secureInput")
+            overlay.hide()
+            return false
+        }
         let offer = Offer(text: text, target: field.identity, fieldValue: field.value, caretUTF16: field.selection.start)
         guard let offerID = arbiter.publish(offer, shown: false) else {
             status.increment("offer.refused")

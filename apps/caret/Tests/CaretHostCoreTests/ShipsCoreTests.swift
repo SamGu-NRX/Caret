@@ -138,7 +138,7 @@ final class ShipsCoreTests: XCTestCase {
         XCTAssertTrue(rig.checks.isEmpty, "keeping everything on the Mac sends nothing, whatever the field holds")
     }
 
-    func testAKeyThatWorksIsCheckedOnceSavedClearedAndTheLookGoes() {
+    func testAKeyThatWorksIsCheckedOnceSavedClearedAndThePreviewRebuilt() {
         let rig = KeyRig()
         rig.send(.setJevKey("  ts-live-123\n"), .next)
         XCTAssertEqual(rig.checks, ["ts-live-123"], "surrounding spaces and newlines from a paste go")
@@ -149,7 +149,8 @@ final class ShipsCoreTests: XCTestCase {
         rig.send(.jevKeyChecked(.works, saved: true))
         XCTAssertTrue(rig.key.stored)
         XCTAssertTrue(rig.key.text.isEmpty, "the flow does not hold a saved key")
-        XCTAssertEqual(rig.looks, 1)
+        XCTAssertEqual(rig.looks, 0, "the restarted helper builds a new preview first")
+        guard case .building = rig.flow.state.on.preview else { return XCTFail("\(rig.flow.state.on.preview)") }
     }
 
     /// The coordinator's rule (2026-10-05): a 402 means the key is good and the account has no credits. It is kept,

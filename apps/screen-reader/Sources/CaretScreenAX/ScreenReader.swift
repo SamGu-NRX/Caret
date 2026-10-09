@@ -485,6 +485,9 @@ public struct DenyList: Sendable {
         "com.apple.keychainaccess", "com.apple.Passwords", "com.bitwarden.desktop", "com.1password", "com.agilebits",
         "com.lastpass", "com.dashlane", "com.callpod.keeper", "org.keepassxc", "me.proton.pass", "ch.protonmail.pass",
         "in.sinew.Enpass", "com.nordsec.nordpass", "com.apple.systempreferences.passwords",
+        // Terminals, System Settings and Caret itself (CaretHostCore ExcludedApps, with each one's reason).
+        "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "org.alacritty", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
+        "com.apple.systempreferences", "dev.caret.host", "dev.caret.screen", "dev.caret.node", "dev.caret.bridge",
     ]
 
     public init(prefixes: [String]) { self.prefixes = prefixes }

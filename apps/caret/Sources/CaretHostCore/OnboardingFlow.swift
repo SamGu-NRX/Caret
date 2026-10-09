@@ -71,11 +71,15 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
     public var at: Int64
     /// The one-time coach slip at the first ghost text in another app has been shown (HANDOFF §3, After).
     public var coachShown: Bool
+    /// The roles the person had before onboarding held the cloud ones (`CaretRole` raw values), until they send the
+    /// first look or keep everything on the Mac. Nil when nothing is held.
+    public var heldRoles: [String]?
 
-    public init(step: OnboardingStep, at: Int64, coachShown: Bool = false) {
+    public init(step: OnboardingStep, at: Int64, coachShown: Bool = false, heldRoles: [String]? = nil) {
         self.step = step
         self.at = at
         self.coachShown = coachShown
+        self.heldRoles = heldRoles
     }
 
     /// A file that is missing, unreadable or of another shape reads as no progress: onboarding starts at the
@@ -331,14 +335,17 @@ public final class OnboardingFlow {
             // The switch moves the flow by itself; the guide has no primary.
             case .access: return false
             case .on:
+                if on.jevKey.phase == .checking { return false }
+                // With a key needed, the primary checks a pasted key first; it waits for text.
+                let keyReady = !on.needsKey || on.jevKey.stored
+                if alone { return keyReady || !on.jevKey.text.isEmpty }
                 switch on.decision {
                 case .sent: return false
                 case .kept: return true
                 case .pending:
                     switch on.preview {
                     case .idle, .building: return false
-                    // With a key needed, the primary checks the pasted key and then sends; it waits for text.
-                    case .ready: return !on.needsKey || on.jevKey.stored || (!on.jevKey.text.isEmpty && on.jevKey.phase != .checking)
+                    case .ready: return keyReady || !on.jevKey.text.isEmpty
                     case .empty, .failed: return true
                     }
                 }
@@ -413,8 +420,8 @@ public final class OnboardingFlow {
         case checkJevKey(SecretText)
         /// The look itself, limited to the preview the person saw.
         case askFirstLook(FirstLookRequest, previewId: String?)
-        /// The person kept everything on the Mac: the helper asks at first need before anything goes.
-        case keepOnMac
+        /// The person decided about the cloud model: `sent` gives the held roles back, kept leaves them off.
+        case consent(sent: Bool)
         case accept(OfferAccept)
         case stop(OfferStop)
         case undo(TaskControl)
@@ -432,6 +439,9 @@ public final class OnboardingFlow {
     public static let firstLookGrace: TimeInterval = 1
     /// The preview is local work; past this the screen offers to go on without it. Assumed, not measured.
     public static let previewDeadline: TimeInterval = 10
+    /// The helper is not connected yet (Caret just started, or it restarted with a new key): ask again each second, this
+    /// many times, before saying the preview failed.
+    public static let previewRetries = 15
 
     let clock: SurfaceClock
     private(set) var base: CaretSettings
@@ -442,6 +452,8 @@ public final class OnboardingFlow {
     private var idleTimer: SurfaceTimer?
     private var landingTimer: SurfaceTimer?
     private var previewTimer: SurfaceTimer?
+    private var previewRetry: SurfaceTimer?
+    private var previewAttempts = 0
     private var firstLookTimer: SurfaceTimer?
     var runTimers: [SurfaceTimer] = []
     private var requests = 0
@@ -471,10 +483,11 @@ public final class OnboardingFlow {
 
     /// Cancels every timer. The window calls it when it drops an unfinished flow.
     public func cancelTimers() {
-        for t in [idleTimer, landingTimer, previewTimer, firstLookTimer] { t?.cancel() }
+        for t in [idleTimer, landingTimer, previewTimer, previewRetry, firstLookTimer] { t?.cancel() }
         idleTimer = nil
         landingTimer = nil
         previewTimer = nil
+        previewRetry = nil
         firstLookTimer = nil
         endRunTimers()
     }
@@ -517,11 +530,21 @@ public final class OnboardingFlow {
             guard case .building(let asking) = state.on.preview, asking == id else { return }
             previewTimer?.cancel()
             previewTimer = nil
+            if why == "helperNotConnected", previewAttempts < Self.previewRetries {
+                previewAttempts += 1
+                previewRetry = clock.schedule(after: 1, repeats: false) { [weak self] in
+                    guard let self, self.state.step == .on, case .building = self.state.on.preview else { return }
+                    self.previewRetry = nil
+                    self.askPreview()
+                    self.output(.changed)
+                }
+                return output(.changed)
+            }
             state.on.preview = .failed(why)
         case .keep:
             guard state.step == .on, state.on.decision == .pending else { return }
             state.on.decision = .kept
-            output(.keepOnMac)
+            output(.consent(sent: false))
         case .setJevKey(let text):
             guard state.step == .on, state.on.needsKey, state.on.jevKey.phase != .checking else { return }
             state.on.jevKey.text = SecretText(text)
@@ -566,12 +589,21 @@ public final class OnboardingFlow {
         case .access:
             break
         case .on:
+            if state.alone {
+                // The menu's key item: check a pasted key, or close once one is saved.
+                if state.on.needsKey, !state.on.jevKey.stored { return checkKey() }
+                return finish()
+            }
             switch (state.on.decision, state.on.preview) {
             case (.pending, .ready(let preview)): send(preview: preview)
             case (.pending, .building), (.pending, .idle), (.sent, _): break
             case (.pending, .empty), (.pending, .failed), (.kept, _): finish()
             }
         case .first:
+            // The primary is the offer's own button while it can be taken (Add to Calendar, Fill 4 fields).
+            if let found = state.firstLookFound, state.first.run == nil, !state.first.declined, state.first.calendar == nil {
+                return take(found.takeable.first { $0.key == .tab } ?? found.takeable.first)
+            }
             finish()
         }
     }
@@ -588,7 +620,10 @@ public final class OnboardingFlow {
         switch step {
         case .on:
             if case .idle = state.on.preview { askPreview() }
-        case .hello, .access, .first:
+        case .access:
+            // Granted before the guide opened (in System Settings, or by an earlier run): land it now.
+            if state.permissions.accessibility { land() }
+        case .hello, .first:
             break
         }
     }
@@ -684,7 +719,12 @@ public final class OnboardingFlow {
             state.access.granted = false
             return
         }
-        guard !before.accessibility || !state.access.granted, landingTimer == nil else { return }
+        guard !before.accessibility || !state.access.granted else { return }
+        land()
+    }
+
+    private func land() {
+        guard landingTimer == nil else { return }
         state.access.granted = true
         landingTimer = clock.schedule(after: Self.grantLanding, repeats: false) { [weak self] in
             guard let self else { return }
@@ -700,6 +740,8 @@ public final class OnboardingFlow {
     // MARK: - On
 
     func askPreview() {
+        previewTimer?.cancel()
+        previewTimer = nil
         requests += 1
         let id = "preview-\(token)-\(requests)"
         let families = FirstLookRequest.families(for: settingsForLook)
@@ -720,20 +762,21 @@ public final class OnboardingFlow {
 
     /// The person saw the preview and pressed Send: a key typed into the key field is checked first.
     func send(preview: OnboardingPreview) {
-        if state.on.needsKey, !state.on.jevKey.phase.saved, !state.on.jevKey.stored {
-            guard let key = JevKeyCheck.cleaned(state.on.jevKey.text.reveal) else {
-                state.on.jevKey.submits += 1
-                state.on.jevKey.phase = .malformed
-                return
-            }
-            state.on.jevKey.submits += 1
-            state.on.jevKey.phase = .checking
-            output(.checkJevKey(SecretText(key)))
-            return
-        }
+        if state.on.needsKey, !state.on.jevKey.stored { return checkKey() }
         state.on.decision = .sent
         state.on.sentPreviewId = preview.previewId
+        output(.consent(sent: true))
         askFirstLook(previewId: preview.previewId)
+    }
+
+    func checkKey() {
+        state.on.jevKey.submits += 1
+        guard let key = JevKeyCheck.cleaned(state.on.jevKey.text.reveal) else {
+            state.on.jevKey.phase = .malformed
+            return
+        }
+        state.on.jevKey.phase = .checking
+        output(.checkJevKey(SecretText(key)))
     }
 
     func jevKeyChecked(_ outcome: JevKeyCheck.Outcome, saved: Bool) {
@@ -747,7 +790,14 @@ public final class OnboardingFlow {
         // Send, so the look goes with no second press.
         guard outcome == .works else { return }
         if state.alone { return finish() }
-        if state.on.decision == .pending, case .ready(let preview) = state.on.preview { send(preview: preview) }
+        // Saving the key restarts the helper, which forgets every preview it minted: build it again, and the person
+        // sends what the new one shows.
+        if state.on.decision == .pending {
+            previewTimer?.cancel()
+            previewTimer = nil
+            previewAttempts = 0
+            askPreview()
+        }
     }
 
     var settingsForLook: CaretSettings {

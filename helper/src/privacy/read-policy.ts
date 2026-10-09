@@ -8,6 +8,9 @@ export const DEFAULT_APPS_OFF: readonly string[] = [
   "com.apple.keychainaccess", "com.apple.Passwords", "com.bitwarden.desktop", "com.1password", "com.agilebits",
   "com.lastpass", "com.dashlane", "com.callpod.keeper", "org.keepassxc", "me.proton.pass", "ch.protonmail.pass",
   "in.sinew.Enpass", "com.nordsec.nordpass", "com.apple.systempreferences.passwords",
+  // Terminals, System Settings and Caret itself (apps/caret CaretHostCore/Consent/ExcludedApps.swift).
+  "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "org.alacritty", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
+  "com.apple.systempreferences", "dev.caret.host", "dev.caret.screen", "dev.caret.node", "dev.caret.bridge",
 ];
 
 /** Whether a bundle identifier is on the list, as the reader decides it: the identifier itself or one under it. */

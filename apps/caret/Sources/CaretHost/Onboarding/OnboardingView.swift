@@ -73,7 +73,8 @@ struct OnboardingBar: View {
                 if let quiet { Button(quiet.title) { send(quiet.event) }.buttonStyle(QuietButtonStyle(size: 13)) }
                 Spacer()
                 if let primary {
-                    Button(primary) { send(primaryEvent) }
+                    // The flow decides what the primary does on each step (Return sends the same event).
+                    Button(primary) { send(.next) }
                         .buttonStyle(OnboardingButtonStyle(kind: .primary))
                         .disabled(!state.canContinue)
                         .keyboardShortcut(.defaultAction)
@@ -110,11 +111,6 @@ struct OnboardingBar: View {
             }
             return OnboardingCopy.First.done
         }
-    }
-
-    private var primaryEvent: OnboardingFlow.Event {
-        if state.step == .first, state.firstLookFound != nil, state.first.run == nil, !state.first.declined, state.first.calendar == nil { return .accept }
-        return .next
     }
 }
 
@@ -569,13 +565,20 @@ struct OnPane: View {
             case (.pending, .ready(let preview)):
                 GroupHead(text: OnboardingCopy.On.consentHead)
                 body(OnboardingCopy.On.consentLine(chars: preview.chars, windows: preview.windows.count))
-                HStack(alignment: .top, spacing: 12) {
-                    ForEach(Array(preview.windows.prefix(2).enumerated()), id: \.offset) { i, window in
-                        PreviewCrop(window: window, animated: animated, delay: Double(i) * 0.04)
+                // Every window and every line Send would approve, scrolling when there are more than fit.
+                ScrollingColumn(indicators: .visible) {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 12, alignment: .top), GridItem(.flexible(), spacing: 12, alignment: .top)],
+                              alignment: .leading, spacing: 12) {
+                        ForEach(Array(preview.windows.enumerated()), id: \.offset) { i, window in
+                            PreviewCrop(window: window, animated: animated, delay: Double(min(i, 4)) * 0.04)
+                        }
                     }
+                    .padding(.trailing, 10)
                 }
-                .padding(.top, 4)
-                if state.on.needsKey { KeyBlock(draft: state.on.jevKey, send: send).padding(.top, 4) }
+                .frame(maxHeight: 150)
+            }
+            if state.on.needsKey, state.on.decision == .pending || state.alone {
+                KeyBlock(draft: state.on.jevKey, send: send).padding(.top, 4)
             }
             PromiseBox(promise: promise).padding(.top, 8)
         }
@@ -628,12 +631,12 @@ struct PreviewCrop: View {
                 Text(window.title).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink2)).lineLimit(1)
             }
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(window.lines.prefix(4).enumerated()), id: \.offset) { _, line in
+                ForEach(Array(window.lines.enumerated()), id: \.offset) { _, line in
                     if let text = line.text {
                         Text(text).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink))
                             .padding(.horizontal, 3)
                             .background(Color(token: Tokens.carrotWash), in: RoundedRectangle(cornerRadius: 3))
-                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else {
                         Hatch().frame(height: 9).frame(maxWidth: 180)
                     }
