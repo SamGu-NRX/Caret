@@ -344,8 +344,12 @@ public final class OnboardingFlow {
         public var connected = false
         /// Why the last Add installed nothing (`browserAddFailed`); Add stays the primary so the person can retry.
         public var failure: String?
+        /// The browser Add actually opened, when it fell back from `target` (`browserOpened`).
+        public var openedIn: String?
 
         public var target: String? { trusted.first }
+        /// The browser whose extension the step waits for: the one Add opened, else the one it means to add.
+        public var waitingFor: String? { openedIn ?? target }
     }
 
     public struct State: Equatable, Sendable {
@@ -447,6 +451,8 @@ public final class OnboardingFlow {
         case browserConnected(String?)
         /// Add to <browser> installed nothing (the installer's message), so the step offers Add again.
         case browserAddFailed(String)
+        /// Add opened this browser's Extensions page (its display name), which may not be `target`.
+        case browserOpened(String)
         /// The host found Caret's grant stale (`AccessibilityAccess.isStale`), or no longer.
         case staleGrant(Bool)
         /// "Reset Caret's entry" on the switch step.
@@ -645,9 +651,13 @@ public final class OnboardingFlow {
             guard state.step == .browser, !state.browser.connected else { break }
             state.browser.opened = false
             state.browser.failure = why
+        case .browserOpened(let name):
+            guard state.step == .browser, !state.browser.connected else { break }
+            state.browser.openedIn = name
         case .browserConnected(let name):
-            // Only the browser the step adds Caret to: Helium connecting says nothing about Chrome's extension.
-            guard !state.browser.connected, name == nil || name == state.browser.target else { break }
+            // Only the browser the step waits for: Helium connecting says nothing about Chrome's extension, unless Add
+            // fell back to Helium (Greptile on PR #17).
+            guard !state.browser.connected, name == nil || name == state.browser.waitingFor else { break }
             state.browser.connected = true
             guard state.step == .browser, landingTimer == nil else { break }
             // As the switch lands: "Caret is in Chrome." for a moment, then on by itself.
@@ -904,12 +914,13 @@ public final class OnboardingFlow {
         state.on.jevKey.stored = true
         state.on.jevKey.text = SecretText("")
         // A key with no credits is kept, and the step stays so its line can be read (the coordinator's rule,
-        // 2026-10-05). A key that works: the key alone (the menu's "Jev is off") is done; otherwise the person pressed
-        // Send, so the look goes with no second press.
-        guard outcome == .works else { return }
-        if state.alone { return finish() }
-        // Saving the key restarts the helper, which forgets every preview it minted: build it again, and the person
-        // sends what the new one shows.
+        // 2026-10-05). The key alone (the menu's "Jev is off") is done once a key works.
+        if state.alone {
+            if outcome == .works { finish() }
+            return
+        }
+        // Saving any key restarts the helper, which forgets every preview it minted, a no-credits key's too: build it
+        // again, and the person sends what the new one shows (Codex on PR #17).
         if state.on.decision == .pending {
             previewTimer?.cancel()
             previewTimer = nil

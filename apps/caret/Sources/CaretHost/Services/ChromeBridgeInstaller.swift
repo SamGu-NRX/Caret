@@ -14,6 +14,9 @@ public enum ChromeBridgeInstaller {
         public let manualSteps: [String]
         /// False when nothing was installed: onboarding keeps its Add button so the person can try again.
         public var ok = true
+        /// The browser whose Extensions page was opened (its display name): with one browser's manifest refused, another
+        /// is opened instead, and onboarding waits for that one's extension.
+        public var opened: String? = nil
     }
 
     struct Bundled {
@@ -122,13 +125,15 @@ public enum ChromeBridgeInstaller {
             return Result(message: "Caret couldn't install its browser connection.",
                           detail: (refused + plan.notices).joined(separator: "\n"), manualSteps: steps, ok: false)
         }
+        var opened: String?
         if let page = pageBrowser(among: added, defaultBundleID: defaultBrowser),
            let app = workspace.urlForApplication(withBundleIdentifier: page.bundleIdentifier) {
+            opened = page.displayName
             // The store listing when there is one; until then the Extensions page and the folder to load unpacked.
             workspace.open([BrowserExtension.storeURL ?? page.extensionsPage], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
         }
         if BrowserExtension.storeURL == nil { workspace.activateFileViewerSelecting([bundled.extensionFolder]) }
         let message = added.isEmpty ? "Caret wrote this run's browser manifest." : "Caret's manifest is installed for \(names(added))."
-        return Result(message: message, detail: (refused + plan.notices).joined(separator: "\n"), manualSteps: steps)
+        return Result(message: message, detail: (refused + plan.notices).joined(separator: "\n"), manualSteps: steps, opened: opened)
     }
 }

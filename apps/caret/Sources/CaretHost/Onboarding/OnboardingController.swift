@@ -139,12 +139,15 @@ final class OnboardingController {
             updateProgress { $0.heldRoles = roles.map(\.rawValue).sorted() }
         }
         // Always, even when resuming from a saved snapshot: Caret may have stopped after saving progress but before
-        // saving settings, and the live roles must be words only until the person decides (Greptile on PR #17).
+        // saving settings, and the live roles must be words only until the person decides (Greptile on PR #17). The cap
+        // keeps them so while onboarding is open, whatever the menu turns on (Codex on PR #17).
+        store.rolesCap = [.words]
         store.update(source: .onboarding) { $0.roles = $0.roles.intersection([.words]) }
         return roles
     }
 
     private func decided(sent: Bool) {
+        store.rolesCap = nil
         // Keep means the cloud roles are off, with or without a held snapshot: an onboarded person reopening the pane
         // from the menu was never held, and Keep left their cloud roles on while the pane said off (Greptile on PR #17).
         if !sent { store.update(source: .onboarding) { $0.roles = $0.roles.intersection([.words]) } }
@@ -242,6 +245,8 @@ final class OnboardingController {
 
     /// Ends the window and polling. An unfinished flow is dropped; its progress file says where to resume.
     func close() {
+        // Closed undecided (Set up later): the roles stay words only, and the menu may change them from here.
+        store.rolesCap = nil
         stopPolling()
         stopGrantDetection()
         completion?.cancel()
@@ -270,8 +275,12 @@ final class OnboardingController {
     func browserConnected(_ name: String?) { flow?.send(.browserConnected(name)) }
 
     /// What Add to <browser> did: a failure goes back to the step, which says why and offers Add again.
-    func browserAddFinished(ok: Bool, message: String) {
-        if !ok { flow?.send(.browserAddFailed(message)) }
+    func browserAddFinished(ok: Bool, message: String, opened: String?) {
+        if !ok {
+            flow?.send(.browserAddFailed(message))
+        } else if let opened {
+            flow?.send(.browserOpened(opened))
+        }
     }
 
     /// Installed Chromium browsers, the default one first: those Caret's bridge trusts and those it does not yet.

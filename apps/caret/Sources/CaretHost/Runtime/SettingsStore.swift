@@ -25,6 +25,9 @@ public final class SettingsStore {
     public private(set) var loadError: String?
     /// The file existed and could not be decoded, and has not been kept aside yet.
     private var unreadable: Bool
+    /// While set, every change keeps the roles inside it: onboarding holds the cloud roles until the person sends the
+    /// first look or keeps everything on the Mac, and a role turned on from the menu meanwhile must not reach the helper.
+    public var rolesCap: Set<CaretRole>?
     /// The last write failed (a full disk, a folder that turned read-only): what is in memory is not on disk.
     public private(set) var lastWriteFailed = false
     private var observers: [UUID: (CaretSettings) -> Void] = [:]
@@ -54,6 +57,7 @@ public final class SettingsStore {
     public func update(source: MemoryEntry.Source, _ change: (inout CaretSettings) -> Void) {
         var next = settings
         change(&next)
+        if let rolesCap { next.roles.formIntersection(rolesCap) }
         next.recordPreferences(source: source, at: Int64((Date().timeIntervalSince1970 * 1000).rounded()))
         guard next != settings else { return }
         settings = next

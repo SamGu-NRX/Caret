@@ -576,7 +576,7 @@ struct BrowserPane: View {
         VStack(alignment: .leading, spacing: 0) {
             ScreenTitle(title: OnboardingCopy.Browser.title,
                         detail: b.target == nil ? OnboardingCopy.Browser.none : OnboardingCopy.Browser.line(HelloApps.list(b.trusted.map { HelloApp(bundleId: $0, name: $0) })))
-            if let target = b.target {
+            if let target = b.waitingFor {
                 HStack(spacing: 12) {
                     GrantMark(granted: b.connected, animated: animated)
                     SwappingLine(key: b.connected ? OnboardingCopy.Browser.connected(target) : (b.opened ? OnboardingCopy.Browser.waiting : target), animated: animated) {

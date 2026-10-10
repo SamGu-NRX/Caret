@@ -780,7 +780,9 @@ public final class HostRuntime {
     public func openAccessSwitch() { onboarding.openAccess() }
 
     /// Add to <browser>'s outcome, for onboarding's browser step (`ChromeBridgeInstaller.Result.ok`).
-    public func browserAddFinished(ok: Bool, message: String) { onboarding.browserAddFinished(ok: ok, message: message) }
+    public func browserAddFinished(ok: Bool, message: String, opened: String?) {
+        onboarding.browserAddFinished(ok: ok, message: message, opened: opened)
+    }
 
     /// The menu's "Jev is off. Add a key…": the key step on its own.
     public func openJevKeyStep() { onboarding.openKey() }

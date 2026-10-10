@@ -165,6 +165,20 @@ final class OnboardingHostTests: XCTestCase {
         XCTAssertEqual(next.store.settings.roles, [.words], "a resumed hold restricts the live roles again")
     }
 
+    func testTheMenuCannotTurnACloudRoleOnWhileOnboardingHoldsThem() throws {
+        let dir = temp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let c = controller(dir)
+        c.store.update(source: .menu) { $0.roles = [.words, .fill] }
+        c.permissionsOverride = .init(accessibility: false, inputMonitoring: false)
+        _ = try run(c, "onboarding open")
+        c.store.update(source: .menu) { $0.roles.insert(.calendar) }
+        XCTAssertEqual(c.store.settings.roles, [.words], "held until the person decides")
+        c.close()
+        c.store.update(source: .menu) { $0.roles.insert(.calendar) }
+        XCTAssertEqual(c.store.settings.roles, [.words, .calendar], "closed: the menu's choice stands")
+    }
+
     func testKeepTurnsTheCloudRolesOffForSomeoneAlreadyOnboarded() throws {
         let dir = temp()
         defer { try? FileManager.default.removeItem(at: dir) }

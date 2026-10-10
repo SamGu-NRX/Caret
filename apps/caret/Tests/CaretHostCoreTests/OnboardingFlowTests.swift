@@ -275,6 +275,17 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertTrue(rig.take().contains(.bringForward))
     }
 
+    func testAFallbackBrowserIsTheOneTheStepWaitsFor() {
+        let rig = atBrowser(["Google Chrome", "Helium"])
+        rig.send(.next)
+        rig.send(.browserOpened("Helium"))
+        XCTAssertEqual(rig.state.browser.waitingFor, "Helium", "Chrome's manifest was refused; Add opened Helium")
+        rig.send(.browserConnected("Google Chrome"))
+        XCTAssertFalse(rig.state.browser.connected)
+        rig.send(.browserConnected("Helium"))
+        XCTAssertTrue(rig.state.browser.connected, "Helium's extension moves the step on, with no Continue")
+    }
+
     func testAFailedAddSaysWhyAndCanBeTriedAgain() {
         let rig = atBrowser(["Google Chrome"])
         rig.send(.next)
@@ -393,6 +404,20 @@ final class OnboardingFlowTests: XCTestCase {
         let fresh = try XCTUnwrap(rig.previewAsk)
         rig.send(.previewReady(requestId: fresh, Rig.preview("pv-new")), .next)
         XCTAssertEqual(rig.lookAsk?.1, "pv-new", "the person sends what the new preview shows")
+    }
+
+    func testANoCreditsKeyIsKeptAndThePreviewIsBuiltAgain() throws {
+        let rig = Rig.atOn(key: false)
+        let old = try XCTUnwrap(rig.previewAsk)
+        rig.send(.previewReady(requestId: old, Rig.preview("pv-old")))
+        rig.send(.setJevKey("tsk_0123456789abcdef0123"), .next)
+        rig.take()
+        rig.send(.jevKeyChecked(.noCredits, saved: true))
+        XCTAssertTrue(rig.state.on.jevKey.stored)
+        XCTAssertEqual(rig.step, .on, "the step stays so the no-credits line can be read")
+        let fresh = try XCTUnwrap(rig.previewAsk)
+        XCTAssertNotEqual(fresh, old, "the restarted helper forgot pv-old: a new preview is asked for")
+        XCTAssertNil(rig.lookAsk)
     }
 
     func testAPreviewAskedBeforeTheHelperConnectsIsAskedAgain() throws {
