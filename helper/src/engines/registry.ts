@@ -67,6 +67,16 @@ export class EngineRegistry implements EngineDirectory {
     for (const tabId of e.session.tabs.keys()) this.hooks.apply({ type: "windowClosed", v: PROTOCOL_VERSION, at: Date.now(), windowId: pageWindowId(engine, tabId) });
   }
 
+  /**
+   * The screen model let go of a page window's text (ScreenModel.expire): its tab's last walk goes too, so the page
+   * engine keeps a tab's text no longer than the model does. The next walk of the tab (a focus there, an act) brings it back.
+   */
+  forgetWindow(windowId: string): void {
+    const page = parsePageWindow(windowId);
+    if (page === null) return;
+    this.sessions.get(page.engine)?.session.tabs.delete(page.tabId);
+  }
+
   listen(l: SessionListener): () => void {
     this.listeners.add(l);
     return () => this.listeners.delete(l);

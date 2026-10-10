@@ -409,10 +409,11 @@ export class Helper {
   /** Host-reported inserts, by window and field. */
   private readonly caretFills = new Map<string, CaretFill>();
   /**
-   * S1: values Caret's executor wrote into each field, by window and field, so capture never saves them as the user's
-   * words. A page write also shows as the field's entry "other"; this covers a write the content script did not see.
+   * S1: values Caret's executor wrote into each field, by window and field, with the task that wrote each, so capture never
+   * saves them as the user's words. A page write also shows as the field's entry "other"; this covers a write the content
+   * script did not see. A value goes when its task's record does (tick).
    */
-  private readonly caretWrites = new Map<string, string[]>();
+  private readonly caretWrites = new Map<string, { value: string; taskId: string }[]>();
   /** S1: host connections that declared SAVED_ANSWERS_CAPABILITY. With none, saved answers are neither matched nor offered. */
   private answerHosts = 0;
   /**
@@ -630,7 +631,7 @@ export class Helper {
         save: (r) => {
           // S1: every value the executor is about to write, on any run (an offer's, a goal's, a plan's), so capture
           // never saves Caret's words as the user's. The journal sees each write before the reader gets it.
-          if (r.pending?.kind === "write") this.noteWrite(r.pending.windowId, r.pending.key, r.pending.value);
+          if (r.pending?.kind === "write") this.noteWrite(r.pending.windowId, r.pending.key, r.pending.value, r.taskId);
           this.journal.save({ ...r, skillId: this.patterns.skills.skillOf(r.taskId) });
         },
         // A skill's run keeps its row until the skill has counted it (Skills.afterRun), which is after the run ends: a
@@ -889,6 +890,8 @@ export class Helper {
   private readonly readerListeners = new Set<(m: ReaderMessage) => void>();
   /** Who hears the host's "Not on this site" list (H5): the page engines' registry, once wirePageEngines joins it. */
   private readonly sitesOffListeners = new Set<(origins: readonly string[]) => void>();
+  /** Holders outside the helper told when the model expires a window (onWindowExpired): the page engines. */
+  private readonly expiryListeners = new Set<(windowId: string) => void>();
   /** The last list the host sent; null until a host sends one. */
   private sitesOffList: readonly string[] | null = null;
 
@@ -898,6 +901,12 @@ export class Helper {
     this.sitesOffListeners.add(l);
     if (this.sitesOffList !== null) l(this.sitesOffList);
     return () => this.sitesOffListeners.delete(l);
+  }
+
+  /** Tells `l` of every window the model expires (ScreenModel.expire), for a holder of its text outside the helper. */
+  onWindowExpired(l: (windowId: string) => void): () => void {
+    this.expiryListeners.add(l);
+    return () => this.expiryListeners.delete(l);
   }
 
   onReaderMessage(l: (m: ReaderMessage) => void): () => void {
@@ -2379,10 +2388,10 @@ export class Helper {
     this.publish({ type: "answerSaveOffer", v: PROTOCOL_VERSION, id, at: now, windowId, fieldKey: key, ...c.fields, replaces: was?.id ?? null, says: OFFER_SAYS });
   }
 
-  /** S1: records a value Caret's executor is about to write into a field (from the journal's pending write). */
-  private noteWrite(windowId: string, key: string, value: string): void {
+  /** S1: records a value Caret's executor is about to write into a field (from the journal's pending write), with its task. */
+  private noteWrite(windowId: string, key: string, value: string, taskId: string): void {
     const id = fieldId(windowId, key);
-    const list = [...(this.caretWrites.get(id) ?? []), value].slice(-MAX_WRITES_KEPT);
+    const list = [...(this.caretWrites.get(id) ?? []), { value, taskId }].slice(-MAX_WRITES_KEPT);
     // Moved to the end, so the oldest field is first when the map is trimmed.
     this.caretWrites.delete(id);
     this.caretWrites.set(id, list);
@@ -2392,7 +2401,7 @@ export class Helper {
   /** Every value Caret wrote into this field: its executor's writes and the host's inserts it was told of. */
   private caretWrote(windowId: string, key: string): string[] {
     const fill = this.caretFills.get(fieldId(windowId, key));
-    return [...(this.caretWrites.get(fieldId(windowId, key)) ?? []), ...(fill === undefined || fill.undoneAt !== null ? [] : [fill.value])];
+    return [...(this.caretWrites.get(fieldId(windowId, key)) ?? []).map((w) => w.value), ...(fill === undefined || fill.undoneAt !== null ? [] : [fill.value])];
   }
 
   /**
@@ -2700,6 +2709,13 @@ export class Helper {
       for (const [id, p] of this.proposals) if (now - p.at > PROPOSAL_KEEP_MS) this.proposals.delete(id);
       for (const [id, f] of this.caretFills) if (now - f.at > PROPOSAL_KEEP_MS) this.caretFills.delete(id);
       this.tasks.prune(now);
+      // A value Caret wrote is kept while its task's record is: while the run is under way or paused, and for a day after
+      // it ends, as long as Undo is offered for it (tasks/registry.ts KEEP_FINISHED_MS).
+      for (const [k, list] of [...this.caretWrites]) {
+        const live = list.filter((w) => this.tasks.get(w.taskId) !== undefined);
+        if (live.length === 0) this.caretWrites.delete(k);
+        else if (live.length !== list.length) this.caretWrites.set(k, live);
+      }
       this.opts.store.flush();
     }
   }
@@ -2746,6 +2762,9 @@ export class Helper {
       if (caret) fill.transfers.push(t);
     }
     if (ts.length > 0) this.patterns.onTransfers(ts);
+    // Judged: nothing reads the source's text again (the store keeps hashes, undo finds a transfer by identity), so it goes
+    // now. The entered value stays with the transfer, ten minutes after its edit (tick).
+    for (const t of ts) t.src = { ...t.src, text: "" };
   }
 
   /** `afterAdd`: asked because an About entry was just added (refillFocused), not because of a focus. */
@@ -3365,16 +3384,18 @@ export class Helper {
     // An edit still open there was typed over ten minutes ago, so transfers.tick has judged it; this lets go of its text.
     transfers: (id) => this.record(this.transfers.flush(id)),
     lineTable: forgetWindow,
+    // The page engine's last walk of the tab (engines/registry.ts forgetWindow, wired in engines/wire.ts).
+    pageWalks: (id) => {
+      for (const l of this.expiryListeners) l(id);
+    },
     ownerVerdicts: (id) => this.ownerVerdicts.forget(new Set([id])),
     preFocus: (id) => {
       if (this.preFocus?.windowId === id) this.preFocus = null;
     },
-    // Kept: a judged transfer names its source observation for attribution and undo, and goes ten minutes after its edit
-    // (Helper.tick). Listed under t1-retention (privacy-gate.ts).
+    // Nothing to drop: a judged transfer keeps no source text (record), and its entered value goes ten minutes after the edit.
     recentTransfers: null,
-    // Kept: answer capture reads it so a value Caret wrote is never saved as the user's own answer (S1), and dropping it
-    // would let one through once its window returned. It holds what Caret put in the field, at most MAX_WRITES_KEPT per
-    // field of MAX_FIELDS_WRITTEN. Listed under t1-retention (privacy-gate.ts).
+    // Kept while the task that wrote it is (tick): answer capture reads it so a value Caret wrote is never saved as the
+    // user's own answer (S1), and dropping it when a window expires would let one through once the window returned.
     caretWrites: null,
     answerOffers: (id) => {
       for (const [k, o] of this.answerOffers) if (o.windowId === id) this.answerOffers.delete(k);

@@ -370,10 +370,12 @@ export class Executor {
     for (const t of this.tasks.values()) {
       if (t.journaled && t.finished !== null && t.finished !== "paused" && t.readerId !== null && t.readerId !== this.readerId) this.journalDrop(t);
     }
-    // The reader dropped every grant with the old connection.
+    // The reader dropped every grant with the old connection. No task from before can take another step (checkSession),
+    // a paused one included, so none needs its source windows or guard any longer: they go now, not when it is stopped.
     for (const t of this.tasks.values()) {
       t.grant = null;
       t.calendarGranted = false;
+      releaseSources(t);
     }
   }
 

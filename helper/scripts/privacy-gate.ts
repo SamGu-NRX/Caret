@@ -15,9 +15,16 @@ if (owner !== null) reasons.push(owner);
 const required = [
   ["pv2-sites-send", "PV2's Sites and send-boundary fixes aren't accepted yet; the promise's switched-off sentence isn't backed", "It sends nothing from an app or website you've switched off."],
   ["ha2-copied-conversation", "HA2's copied-conversation fix isn't accepted yet", "No request takes more than half of any one conversation."],
-  // T1 (#32) bounds the screen model, its change log, the rolling text and every offer built on them (Helper.onExpiry).
-  // Pending watches, judged transfers' source observations, the values Caret wrote per field, paused runs' source views,
-  // routine values, finished task records and the page engine's last tab walks still keep pieces of screen text longer.
+  // T1 (#32) bounds the screen model, its change log, the rolling text and every offer built on them (Helper.onExpiry);
+  // T8 bounds the page engine's tab walks the same way and drops judged transfers' source text. What still keeps pieces
+  // of screen text past ten minutes:
+  // - a task while it runs or is paused: a pending watch's lines (tasks/pending.ts), a run's source views and guard
+  //   (executor/executor.ts releaseSources), and its journal row on disk, sealed (executor/journal.ts);
+  // - for a day after a task ends: its record, whose step sentences and details can quote values (tasks/registry.ts
+  //   KEEP_FINISHED_MS), and the values it wrote into each field (Helper.caretWrites);
+  // - the executor's undo ledger of a finished run, the values it wrote and replaced, for the helper's lifetime;
+  // - routine values, up to 64 per routine and 500 routines, for the helper's lifetime (patterns/routines.ts seenValues);
+  // - what the user saves in What Caret knows, until they remove it.
   ["t1-retention", "T1's retention fixes aren't accepted yet; the promise's ten-minute sentence isn't backed", "Caret keeps what it reads from your screen for ten minutes after it last reads it, then forgets it."],
 ] as const;
 // Internal VM and test builds use synthetic data and are never distributed, so the release acceptance records don't
