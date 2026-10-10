@@ -2,6 +2,7 @@ import AppCompatibility
 import AppKit
 import ApplicationServices
 import AutocompleteCore
+import Carbon
 import CaretHostCore
 import CaretScreenCore
 import CompletionUI
@@ -196,7 +197,11 @@ final class SurfaceCoordinator {
     // MARK: - Reading the system (the machine's `SurfaceWorld`)
 
     fileprivate func allows(pid: Int32) -> Bool {
-        headless ? policy.allows(pid: pid, bundleID: nil) : policy.allowsLive(pid: pid)
+        if headless { return policy.allows(pid: pid, bundleID: nil) }
+        // Secure Event Input silences every offer surface, as it does ghost text (ExcludedApps.allowsOffers): the event
+        // tap may not see Tab meanwhile, and the field behind may be a password field the app did not mark.
+        guard ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) else { return false }
+        return policy.allowsLive(pid: pid)
     }
 
     fileprivate func readField(pid: Int32) -> FocusedField? {

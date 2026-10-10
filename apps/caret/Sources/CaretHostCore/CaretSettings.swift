@@ -85,7 +85,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// brief; the data itself is not in this repository).
     public var roles: Set<CaretRole> = [.fill, .repeats, .watch, .calendar, .words]
     public var level: CaretLevel = .balanced
-    /// The pebble is the default (Sam, 2026-10-02); seed and wren stay as choices in settings.
+    /// Always pebble, the only figure (Sam, 2026-10-09). Still written, so older hosts read the file.
     public var character: FigureCharacter = .pebble
     /// Nothing is offered while paused, ghost text included.
     public var paused = false
@@ -144,7 +144,13 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         // Version 1 had no calendar role to turn off, so its absence there is not a choice.
         if written == 1 { roles.insert(.calendar) }
         level = try c.decode(CaretLevel.self, forKey: .level)
-        character = try c.decode(FigureCharacter.self, forKey: .character)
+        // Seed and wren were retired on 2026-10-09; a file that chose one still loads, as pebble.
+        // Any other unknown name is refused with the file, as an unknown role is.
+        let figure = try c.decode(String.self, forKey: .character)
+        guard let chosen = FigureCharacter(rawValue: figure) ?? (["seed", "wren"].contains(figure) ? .pebble : nil) else {
+            throw DecodingError.dataCorruptedError(forKey: .character, in: c, debugDescription: "unknown character \(figure)")
+        }
+        character = chosen
         paused = try c.decode(Bool.self, forKey: .paused)
         onboarded = try c.decode(Bool.self, forKey: .onboarded)
         memory = try c.decode([MemoryEntry].self, forKey: .memory)

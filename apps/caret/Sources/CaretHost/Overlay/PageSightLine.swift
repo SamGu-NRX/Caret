@@ -30,7 +30,7 @@ struct PageSightView: View {
                 Spacer(minLength: 0)
                 Button(PageSight.action, action: onAdd)
                     .buttonStyle(WindowButtonStyle(kind: .key, small: true))
-                    .accessibilityHint("Installs Caret for Chrome, after you confirm.")
+                    .accessibilityHint("Installs Caret's browser connection and opens the Extensions page.")
             }
             .padding(.leading, LineView.textIndent(compact: false))
             .padding(.trailing, Tokens.Shape.slipTrailing)

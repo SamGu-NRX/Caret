@@ -979,8 +979,44 @@ export const FirstLook = z.object({
   families: z.array(z.string()),
   level: SettingsLevel,
   deadlineMs: z.number().int().positive(),
+  previewId: z.string().min(1).nullable().optional(),
 });
 export type FirstLook = z.infer<typeof FirstLook>;
+
+/** Local-only dry run. Families and level use the first-look gate. */
+export const FirstLookPreviewRequest = z.object({
+  type: z.literal("firstLookPreviewRequest"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1),
+  at: ms,
+  families: z.array(z.string()),
+  level: SettingsLevel,
+});
+export type FirstLookPreviewRequest = z.infer<typeof FirstLookPreviewRequest>;
+
+const FirstLookPreviewLine = z.object({ text: z.string(), sent: z.boolean() }).refine(
+  (l) => l.sent ? l.text.length > 0 : l.text === "",
+  { message: "placeholder lines carry no text; allowed lines are nonempty" },
+);
+const FirstLookPreviewWindow = z.object({
+  bundleId: z.string(), appName: z.string(), title: z.string(),
+  lines: z.array(FirstLookPreviewLine),
+  /** Upper bound on distinct allowed UTF-16 units, not predicted traffic. */
+  charsSent: z.number().int().positive(),
+}).refine((w) => w.charsSent === w.lines.reduce((n, l) => n + (l.sent ? l.text.length : 0), 0),
+  { message: "charsSent must count allowed characters" });
+export const FirstLookPreview = z.object({
+  type: z.literal("firstLookPreview"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1),
+  at: ms,
+  previewId: z.string().min(1),
+  windows: z.array(FirstLookPreviewWindow),
+  /** Upper bound summed across windows; repeat sends of the same text do not increase it. */
+  totalChars: z.number().int().nonnegative(),
+}).refine((p) => p.totalChars === p.windows.reduce((n, w) => n + w.charsSent, 0),
+  { message: "totalChars must sum the window upper bounds" });
+export type FirstLookPreview = z.infer<typeof FirstLookPreview>;
 
 /**
  * The window a host means in a planRequest (B21): the one the user was in when they opened Ask Caret, as the
@@ -1394,7 +1430,7 @@ export const SavedFilesRequest = z
   .refine((m) => (m.op === "forget") === (m.id !== undefined), { message: "forget names the file's id; list names none", path: ["id"] });
 export type SavedFilesRequest = z.infer<typeof SavedFilesRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, FirstLookPreviewRequest, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -2690,7 +2726,7 @@ export const SavedFilesReply = z.object({
 export type SavedFilesReply = z.infer<typeof SavedFilesReply>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
-  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
+  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, FirstLookPreview, PlanProposal, SkillOffer,
   PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply, PageInsertReply, SavedFilesReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */

@@ -39,6 +39,8 @@ import {
   type FillRequest,
   type FirstLook,
   type FirstLookReply,
+  type FirstLookPreview,
+  type FirstLookPreviewRequest,
   type Focus,
   type MemoryDocument,
   type MemoryDocumentReply,
@@ -1273,6 +1275,10 @@ export class Helper {
   /** Binds an existing task to the session that resumes or undoes it, once the executor would accept the request. */
   private rebind(taskId: string, session: string | undefined, refusal: string | null): void {
     if (session !== undefined && refusal === null) this.taskHosts.set(taskId, new Set([session]));
+  }
+
+  handleFirstLookPreview(m: FirstLookPreviewRequest): FirstLookPreview {
+    return this.firstLookRunner.preview(m);
   }
 
   /** The host's first look: the best offer across the windows open now, answered to the asker only. */

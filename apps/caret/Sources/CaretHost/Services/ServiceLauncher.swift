@@ -209,7 +209,7 @@ final class ServiceLauncher {
     /// with `--no-jev` and the menu says Jev is off.
     static func helperLaunch(programs: CaretServices.Programs, home: CaretHome, hostEnvironment: [String: String],
                              storedKey: () -> String?) throws -> HelperLaunch {
-        var args = [programs.helperEntry, "--auth-fd", "0", "--socket", home.screenSocket, "--page-socket", home.pageSocket, "--data-dir", home.dataDirectory]
+        var args = [programs.helperEntry, "--auth-fd", "0", "--socket", home.screenSocket, "--page-socket", home.pageSocket, "--data-dir", home.dataDirectory, "--deny-list", home.denyList]
         var env = try childEnvironment(hostEnvironment, passesJevKey: true)
         if hasJevKey(env) {
             return HelperLaunch(args: args, env: env, jev: .environment, logLine: "the helper has Jev: its key comes from Caret's environment")

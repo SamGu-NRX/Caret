@@ -8,36 +8,23 @@ public enum FigureFacing: Sendable {
     case left, right
 }
 
-/// Each character's drawing. The enum itself is CaretHostCore's, so the surface decisions can
-/// name the character without SwiftUI.
+/// The figure's drawing. The enum itself is CaretHostCore's, so the surface decisions can name
+/// the figure without SwiftUI.
 extension FigureCharacter {
     var drawing: FigureDrawing {
         switch self {
         case .pebble: return Pebble()
-        case .seed: return Seed()
-        case .wren: return Wren()
         }
     }
 }
 
-/// The character in use: `CARET_FIGURE` when set (for screenshots, never saved), else the
-/// settings' choice (`SettingsStore`), pebble by default.
+/// The figure every surface draws. Pebble is the only one (Sam, 2026-10-09), so there is no
+/// choice to switch or save; the surfaces read it here so they keep one source.
 @MainActor
 public final class FigureSettings: ObservableObject {
     public static let shared = FigureSettings()
 
-    @Published public var character: FigureCharacter {
-        didSet {
-            guard character != oldValue else { return }
-            let chosen = character
-            SettingsStore.shared.update(source: .menu) { $0.character = chosen }
-        }
-    }
-
-    init() {
-        let env = ProcessInfo.processInfo.environment["CARET_FIGURE"].flatMap(FigureCharacter.init(rawValue:))
-        character = env ?? SettingsStore.shared.settings.character
-    }
+    public let character: FigureCharacter = .pebble
 }
 
 // MARK: - Pose
@@ -47,16 +34,12 @@ public final class FigureSettings: ObservableObject {
 struct FigurePose: Equatable {
     var bodyScale = CGSize(width: 1, height: 1)
     var bodyOffsetY: CGFloat = 0
-    var rotation: Double = 0
     var eyeOffset = CGSize.zero
     var eyeScale: CGFloat = 1
     var eyeSquash: CGFloat = 1
     var lids = false
-    var headRotation: Double = 0
     /// The light is out: the skin is Graphite and the glow is off.
     var graphite = false
-    /// The seed lies on its side.
-    var fallen = false
 }
 
 /// The figure is light, not paint (v3 DIRECTION.md section 4): a radial gradient from a warm core
@@ -205,156 +188,6 @@ struct Pebble: FigureDrawing {
     }
 }
 
-// MARK: - Seed
-
-/// The proofreader's mark with weight. Life is posture only. Kept as a choice in settings, lit
-/// like the pebble.
-struct Seed: FigureDrawing {
-    let viewBox = CGSize(width: 10, height: 12)
-
-    static func outline(_ p: inout Path) {
-        // M5 .5 C6.9 2.6 10 5.4 10 7.6 A5 4.4 0 0 1 0 7.6 C0 5.4 3.1 2.6 5 .5 Z; the arc as two
-        // quarter-ellipse curves.
-        let k: CGFloat = 0.5523
-        p.move(to: CGPoint(x: 5, y: 0.5))
-        p.addCurve(to: CGPoint(x: 10, y: 7.6), control1: CGPoint(x: 6.9, y: 2.6), control2: CGPoint(x: 10, y: 5.4))
-        p.addCurve(to: CGPoint(x: 5, y: 12), control1: CGPoint(x: 10, y: 7.6 + 4.4 * k), control2: CGPoint(x: 5 + 5 * k, y: 12))
-        p.addCurve(to: CGPoint(x: 0, y: 7.6), control1: CGPoint(x: 5 - 5 * k, y: 12), control2: CGPoint(x: 0, y: 7.6 + 4.4 * k))
-        p.addCurve(to: CGPoint(x: 5, y: 0.5), control1: CGPoint(x: 0, y: 5.4), control2: CGPoint(x: 3.1, y: 2.6))
-        p.closeSubpath()
-    }
-
-    func pose(for state: FigureState, facing: FigureFacing) -> FigurePose {
-        var pose = FigurePose()
-        let lean: Double = facing == .right ? 10 : -10
-        switch state {
-        case .noticed, .done, .still, .absent: break
-        case .offering: pose.rotation = lean
-        case .working, .needsYou: pose.bodyOffsetY = -2
-        case .error:
-            pose.graphite = true
-            pose.fallen = true
-        }
-        return pose
-    }
-
-    func pose(for state: FigureState, gaze: CGVector) -> FigurePose {
-        var pose = pose(for: state, facing: .right)
-        switch state {
-        case .noticed, .offering, .working, .needsYou, .still: pose.rotation = Double(gaze.dx) * 10
-        case .done, .error, .absent: break
-        }
-        return pose
-    }
-
-    func body(_ pose: FigurePose, skin: FigureSkin) -> AnyView {
-        let box = viewBox
-        return AnyView(GeometryReader { geo in
-            let k = geo.size.width / box.width
-            ViewBoxShape(viewBox: box, build: Self.outline).fill(skin.fill(in: geo.size))
-                .scaleEffect(x: pose.bodyScale.width, y: pose.bodyScale.height, anchor: .bottom)
-                .rotationEffect(.degrees(pose.fallen ? -90 : pose.rotation), anchor: .bottom)
-                .offset(y: (pose.fallen ? -5 : pose.bodyOffsetY) * k)
-        })
-    }
-
-    func glyph() -> Path {
-        var p = Path()
-        Self.outline(&p)
-        return p
-    }
-}
-
-// MARK: - Wren
-
-/// A small bird on your line. Life is gesture: head tilt, hop. Kept as a choice in settings, lit
-/// like the pebble.
-struct Wren: FigureDrawing {
-    let viewBox = CGSize(width: 14, height: 12)
-    /// The neck, 18% and 92% of the head group's box (head circle and beak).
-    static let neck = UnitPoint(x: (7 + 0.18 * 6.9) / 14, y: (1.8 + 0.92 * 5.2) / 12)
-
-    static func tail(_ p: inout Path) {
-        p.move(to: CGPoint(x: 3.6, y: 6.6))
-        p.addLine(to: CGPoint(x: 0.5, y: 4.5))
-        p.addLine(to: CGPoint(x: 1.5, y: 7.6))
-        p.addLine(to: CGPoint(x: 1, y: 9.6))
-        p.addLine(to: CGPoint(x: 3.8, y: 8.4))
-        p.closeSubpath()
-    }
-
-    static func body(_ p: inout Path) {
-        p.addEllipse(in: CGRect(x: 3, y: 3.3, width: 8, height: 8))
-    }
-
-    static func head(_ p: inout Path) {
-        p.addEllipse(in: CGRect(x: 7, y: 1.8, width: 5.2, height: 5.2))
-        p.move(to: CGPoint(x: 11.9, y: 3.8))
-        p.addLine(to: CGPoint(x: 13.9, y: 4.6))
-        p.addLine(to: CGPoint(x: 11.9, y: 5.4))
-        p.closeSubpath()
-    }
-
-    static func eye(_ p: inout Path) {
-        p.addEllipse(in: CGRect(x: 10.3 - 0.7, y: 3.9 - 0.7, width: 1.4, height: 1.4))
-    }
-
-    func pose(for state: FigureState, facing: FigureFacing) -> FigurePose {
-        var pose = FigurePose()
-        switch state {
-        case .noticed, .offering: pose.headRotation = -14
-        case .working: pose.headRotation = -34
-        case .done, .still, .absent: break
-        case .needsYou: pose.headRotation = -28
-        case .error:
-            pose.graphite = true
-            pose.headRotation = 24
-            pose.bodyScale = CGSize(width: 1.08, height: 0.9)
-        }
-        return pose
-    }
-
-    func pose(for state: FigureState, gaze: CGVector) -> FigurePose {
-        var pose = pose(for: state, facing: .right)
-        switch state {
-        case .noticed, .offering, .working, .needsYou, .still: pose.headRotation += Double(gaze.dy) * 20
-        case .done, .error, .absent: break
-        }
-        return pose
-    }
-
-    func body(_ pose: FigurePose, skin: FigureSkin) -> AnyView {
-        let box = viewBox
-        return AnyView(GeometryReader { geo in
-            let fill = skin.fill(in: geo.size)
-            ZStack {
-                // Separate shapes: in one path the tail and body wind opposite ways and the overlap
-                // fills as a hole.
-                ViewBoxShape(viewBox: box, build: Self.tail).fill(fill)
-                ViewBoxShape(viewBox: box, build: Self.body).fill(fill)
-                ZStack {
-                    ViewBoxShape(viewBox: box, build: Self.head).fill(fill)
-                    ViewBoxShape(viewBox: box, build: Self.eye).fill(Color(token: Tokens.eye))
-                }
-                .rotationEffect(.degrees(pose.headRotation), anchor: Self.neck)
-            }
-            .scaleEffect(x: pose.bodyScale.width, y: pose.bodyScale.height, anchor: .bottom)
-            .offset(y: pose.bodyOffsetY * geo.size.width / box.width)
-        })
-    }
-
-    func glyph() -> Path {
-        var tail = Path(), body = Path(), head = Path(), eye = Path()
-        Self.tail(&tail)
-        Self.body(&body)
-        Self.head(&head)
-        Self.eye(&eye)
-        var p = Path(tail.cgPath.union(body.cgPath).union(head.cgPath))
-        p.addPath(eye)
-        return p
-    }
-}
-
 // MARK: - Motion plan
 
 /// Which of the figure's motions run, decided apart from the drawing so a test can hold the
@@ -432,7 +265,6 @@ struct FigureView: View {
         let drawing = character.drawing
         let height = size * drawing.viewBox.height / drawing.viewBox.width
         let pose = gaze.map { drawing.pose(for: state, gaze: $0) } ?? drawing.pose(for: state, facing: facing)
-        let faces = gaze.map { $0.dx < 0 ? FigureFacing.left : .right } ?? facing
         let plan = FigureMotion.plan(state: state, animated: animated, reduce: reduceMotion || reducesMotion, perched: gaze != nil)
         let glow = pose.graphite ? 0 : max(2, size / 4.5)
         Group {
@@ -446,7 +278,6 @@ struct FigureView: View {
             }
         }
         .frame(width: size, height: height)
-        .scaleEffect(x: faces == .left && character == .wren ? -1 : 1, y: 1)
         .accessibilityHidden(true)
     }
 }

@@ -485,6 +485,9 @@ public struct DenyList: Sendable {
         "com.apple.keychainaccess", "com.apple.Passwords", "com.bitwarden.desktop", "com.1password", "com.agilebits",
         "com.lastpass", "com.dashlane", "com.callpod.keeper", "org.keepassxc", "me.proton.pass", "ch.protonmail.pass",
         "in.sinew.Enpass", "com.nordsec.nordpass", "com.apple.systempreferences.passwords",
+        // Terminals, System Settings and Caret itself (CaretHostCore ExcludedApps, with each one's reason).
+        "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "org.alacritty", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
+        "com.apple.systempreferences", "dev.caret.host", "dev.caret.screen", "dev.caret.node", "dev.caret.bridge",
     ]
 
     public init(prefixes: [String]) { self.prefixes = prefixes }
@@ -494,6 +497,8 @@ public struct DenyList: Sendable {
     }
 
     /// Reads the file, creating it with the defaults when it does not exist. An unreadable file is an error, not an empty list.
+    /// The defaults always apply on top of the file: they mirror CaretHostCore's ExcludedApps, which the host refuses
+    /// anyway, and a file written by an older Caret lacks the entries added since (terminals, System Settings, Caret).
     public static func load(path: String) throws -> DenyList {
         let fm = FileManager.default
         if !fm.fileExists(atPath: path) {
@@ -503,6 +508,7 @@ public struct DenyList: Sendable {
         }
         let text = try String(contentsOfFile: path, encoding: .utf8)
         let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-        return DenyList(prefixes: lines.filter { !$0.isEmpty && !$0.hasPrefix("#") })
+        let listed = lines.filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        return DenyList(prefixes: listed + defaults.filter { !listed.contains($0) })
     }
 }

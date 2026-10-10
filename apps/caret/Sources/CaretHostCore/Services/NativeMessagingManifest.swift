@@ -63,36 +63,123 @@ public struct NativeMessagingManifest: Codable, Equatable, Sendable {
     }
 }
 
-/// The browsers Caret can add itself to, and where each reads Native Messaging manifests for the user's own profile.
-/// Both run the same build of Caret for Chrome under the same extension id, so one manifest content serves both, and
-/// both are in `BridgeTrust.browserRequirements`, so the bridge accepts either as its parent.
+/// Known Chromium browsers. Installation does not imply that the bridge trusts a browser's signature.
 public enum BridgeBrowser: String, CaseIterable, Sendable {
-    case chrome
-    /// Helium (imput), a Chromium browser; it reads manifests from its own Application Support folder (H12).
-    case helium
+    case chrome, helium, brave, edge, vivaldi, chromium
 
     public var displayName: String {
         switch self {
         case .chrome: return "Google Chrome"
         case .helium: return "Helium"
+        case .brave: return "Brave"
+        case .edge: return "Microsoft Edge"
+        case .vivaldi: return "Vivaldi"
+        case .chromium: return "Chromium"
         }
     }
 
+    /// Sources for Chrome, Brave, Edge, Vivaldi and Chromium IDs:
+    /// bitwarden/clients fdc8b349e4b5e7e23cdc3296c37fdb55c240a1bb,
+    /// apps/desktop/desktop_native/chromium_importer/src/chromium/platform/macos.rs SUPPORTED_BROWSERS.
+    /// Helium's ID is the captured designated requirement in bridge/Sources/CaretBridgeXPC/Trust.swift.
     public var bundleIdentifier: String {
         switch self {
         case .chrome: return "com.google.Chrome"
         case .helium: return "net.imput.helium"
+        case .brave: return "com.brave.Browser"
+        case .edge: return "com.microsoft.edgemac"
+        case .vivaldi: return "com.vivaldi.Vivaldi"
+        case .chromium: return "org.chromium.Chromium"
         }
     }
 
-    /// The page Caret opens so the user can load the extension. Helium is Chromium and takes Chromium's address.
+    /// Only these browsers have captured requirements in BridgeTrust.browserRequirements.
+    /// Do not enable another browser without reading its requirement from a real signed app.
+    public var isTrustedByBridge: Bool {
+        self == .chrome || self == .helium
+    }
+
     public var extensionsPage: URL { URL(string: "chrome://extensions")! }
 
-    /// Where the browser reads Native Messaging manifests for the user `userHome`.
+    /// macOS folder sources for Chrome, Brave, Edge, Vivaldi and Chromium:
+    /// keepassxreboot/keepassxc 9e0f57a4a4c6c629fa6d0a593acb7d089b1d95cd,
+    /// src/browser/NativeMessageInstaller.cpp Q_OS_MACOS TARGET_DIR_* constants.
+    /// Helium: bitwarden/clients fdc8b349e4b5e7e23cdc3296c37fdb55c240a1bb,
+    /// apps/desktop/src/main/native-messaging.main.ts getMacNMHS, with NativeMessagingHosts appended by install.
     public func nativeMessagingDirectory(userHome: String) -> String {
         switch self {
         case .chrome: return userHome + "/Library/Application Support/Google/Chrome/NativeMessagingHosts"
         case .helium: return userHome + "/Library/Application Support/net.imput.helium/NativeMessagingHosts"
+        case .brave: return userHome + "/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+        case .edge: return userHome + "/Library/Application Support/Microsoft Edge/NativeMessagingHosts"
+        case .vivaldi: return userHome + "/Library/Application Support/Vivaldi/NativeMessagingHosts"
+        case .chromium: return userHome + "/Library/Application Support/Chromium/NativeMessagingHosts"
         }
+    }
+}
+
+/// A pure plan for the single-click install. The shell supplies LaunchServices' installed and default browsers.
+public struct BrowserInstallPlan: Equatable, Sendable {
+    public struct Target: Equatable, Sendable {
+        /// Nil for an explicit --nmh-dir, which is not a browser installation.
+        public let browser: BridgeBrowser?
+        public let directory: String
+
+        public init(browser: BridgeBrowser?, directory: String) {
+            self.browser = browser
+            self.directory = directory
+        }
+    }
+
+    public enum Destination: Equatable, Sendable {
+        case targets([Target])
+        case refused(String)
+    }
+
+    /// The UI can display these after the click; the installer does not ask for a second confirmation.
+    public static let manualSteps = [
+        "Turn on Developer mode, at the top right of the Extensions page.",
+        "Click Load unpacked.",
+        "Drag the \"Caret for Chrome\" folder from Finder into the window that opens, then click Select.",
+    ]
+
+    public let installedBrowsers: [BridgeBrowser]
+    public let untrustedBrowsers: [BridgeBrowser]
+    public let destination: Destination
+    public let pageBrowser: BridgeBrowser?
+
+    public var notices: [String] {
+        untrustedBrowsers.map { "Caret can't connect to \($0.displayName) yet" }
+    }
+
+    public init(homeIsOverride: Bool, manifestOverride: String?, userHome: String,
+                installed: [BridgeBrowser], defaultBundleID: String?) {
+        // Stable order and no duplicate writes, even if the caller supplies duplicates.
+        installedBrowsers = BridgeBrowser.allCases.filter { installed.contains($0) }
+        untrustedBrowsers = installedBrowsers.filter { !$0.isTrustedByBridge }
+        if let manifestOverride {
+            destination = manifestOverride.isEmpty
+                ? .refused("the manifest directory given is empty")
+                : .targets([Target(browser: nil, directory: manifestOverride)])
+            pageBrowser = nil
+        } else if homeIsOverride {
+            destination = .refused("this run has its own Caret home; give it --nmh-dir to say where the manifest goes")
+            pageBrowser = nil
+        } else {
+            let trusted = installedBrowsers.filter(\.isTrustedByBridge)
+            if installedBrowsers.isEmpty {
+                destination = .refused("Caret works with Google Chrome and Helium. Neither is installed on this Mac.")
+            } else if trusted.isEmpty {
+                destination = .refused("No installed browser is trusted by Caret's bridge. Install Google Chrome or Helium.")
+            } else {
+                destination = .targets(trusted.map { Target(browser: $0, directory: $0.nativeMessagingDirectory(userHome: userHome)) })
+            }
+            pageBrowser = Self.pageBrowser(among: trusted, defaultBundleID: defaultBundleID)
+        }
+    }
+
+    public static func pageBrowser(among browsers: [BridgeBrowser], defaultBundleID: String?) -> BridgeBrowser? {
+        let trusted = browsers.filter(\.isTrustedByBridge)
+        return trusted.first { $0.bundleIdentifier == defaultBundleID } ?? trusted.first
     }
 }

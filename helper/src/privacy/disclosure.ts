@@ -11,6 +11,7 @@ import { spanKey } from "./ledger/measure.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits, type DecodedUnit } from "./ledger/units.ts";
 import { LedgerEncodingError } from "./ledger/normalize.ts";
+import { checkFirstLookOpen, checkFirstLookText } from "./first-look-allow-list.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
@@ -324,15 +325,30 @@ export class Disclosure extends SnippetLedger {
     }
   }
 
-  /** A composed text, recorded with its ways, carrying the declared spans of `parts`. */
+  /**
+   * The saved values and user instructions each minted text carries, whole, through every composition. A first look's
+   * allow-list checks them line by line (first-look-allow-list.ts): a template cannot hide words the preview never showed.
+   */
+  private readonly origins = new Map<string, Set<string>>();
+
+  private carryOrigins(text: string, parts: readonly string[]): void {
+    const all = new Set(this.origins.get(text));
+    for (const p of parts) for (const o of this.origins.get(p) ?? []) all.add(o);
+    if (all.size > 0) this.origins.set(text, all);
+  }
+
+  /** A composed text, recorded with its ways, carrying the declared spans and origins of `parts`. */
   private composed(text: string, ways: readonly (readonly MintReason[])[], parts: readonly string[]): ModelText {
     this.declareSpans(text, parts.flatMap((p) => this.spans.get(p) ?? []));
+    this.carryOrigins(text, parts);
     return this.recordWays(text, ways);
   }
 
   /** Records `text` as minted under `reasons`, as one way of minting it, and brands it. */
   private record(text: string, reasons: Iterable<MintReason>): ModelText {
-    return this.recordWays(text, [[...reasons]]);
+    const way = [...reasons];
+    if (way.includes("memory") || way.includes("instruction")) this.origins.set(text, new Set([...(this.origins.get(text) ?? []), text]));
+    return this.recordWays(text, [way]);
   }
 
   /** Records `text` as minted in each of `ways` (each a set of reasons) and brands it. */
@@ -687,6 +703,7 @@ export class Disclosure extends SnippetLedger {
     const spans: ViewSpan[] = bases.flatMap((b) => (b instanceof Basis ? b.spans : (this.spans.get(b) ?? [])));
     if (!this.admitTexts([text], { under: view === null ? null : view.window.windowId, kind: "candidate", spans })) return null;
     this.declareSpans(text, spans);
+    this.carryOrigins(text, minted);
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }
 
@@ -701,6 +718,7 @@ export class Disclosure extends SnippetLedger {
     const spans = [...this.planSpans(text), ...bases.flatMap((b) => this.spans.get(b) ?? [])];
     if (!this.admitTexts([text], { under: "plan", kind: "candidate", lines: true, spans })) return null;
     this.declareSpans(text, spans);
+    this.carryOrigins(text, bases);
     return this.recordWays(text, this.composedWays(bases, "derived", false).map((w) => [...w, "held" as const]));
   }
 
@@ -810,6 +828,8 @@ export class Disclosure extends SnippetLedger {
    * the body in paths: "" for a Jev wire body, "input" for a writer's input.
    */
   verify(purpose: string, body: unknown, root = ""): void {
+    // A first look the person consented to from its preview stops at the first text outside that preview.
+    checkFirstLookOpen();
     // The user switched an app or a site off since this request's text was read (PV2 re-review): none of it is sent,
     // whichever window it came from, since what was read before the switch is not rechecked text by text.
     if (switchedOffCount() !== this.policy) throw new UnmintedText(`${purpose}: an app or a site was switched off after this request was built; it was not sent`);
@@ -820,6 +840,9 @@ export class Disclosure extends SnippetLedger {
       // state that text writes, parsed from the text itself. Only there: anywhere else a JSON text is a text like any
       // other, held to its own slot's reasons and length (PV2 re-review).
       if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob, { count, scalar, key, container });
+      // An owner note is declared by its view rather than by spans (ownerNote): the whole note is what it reveals.
+      const note = this.ownerNotes.get(v);
+      checkFirstLookText(this.spans.get(v) ?? (note === undefined ? [] : [{ view: note, text: v }]), this.reasonsOf(v), v, [...(this.origins.get(v) ?? [])]);
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
       if (v.length > slot.max) {

@@ -199,58 +199,79 @@ extension Gallery {
         Sample B2. A last paragraph closes the stand-in, as the promise closes with a short one about a second provider.
         """)
 
-    /// Every onboarding screen, and each state of the ones that change, reached by sending the
-    /// flow the events the window would.
+    /// Every onboarding pane and each state of the ones that change, reached by sending the flow the events the window
+    /// would (HANDOFF §3's list, as far as the host can draw it off screen).
     static func onboarding(_ character: FigureCharacter = .pebble) -> [Item] {
-        // Today's helper keeps no typed values, so the flow skips the know step and shows five
-        // dots; the know screens are drawn as a helper that keeps them would show them.
-        func flow(ax: Bool = true, input: Bool = true, know: Bool = false, _ events: [OnboardingFlow.Event]) -> OnboardingFlow.State {
-            let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: ax, inputMonitoring: input), clock: StillClock(), showsKnow: know)
-            for event in events { flow.send(event) }
+        let apps = [HelloApp(bundleId: "com.apple.mail", name: "Mail"), HelloApp(bundleId: "com.tinyspeck.slackmacgap", name: "Slack"),
+                    HelloApp(bundleId: "com.apple.Notes", name: "Notes"), HelloApp(bundleId: "com.google.Chrome", name: "Chrome")]
+        func flow(at opening: OnboardingLaunch.Opening = .init(step: .hello), ax: Bool = false, model: ModelReadiness = .ready, key: Bool = true,
+                  _ events: [OnboardingFlow.Event]) -> OnboardingFlow.State {
+            let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: ax, inputMonitoring: false),
+                                      clock: StillClock(), opening: opening, jevKeyAvailable: key)
+            flow.start()
+            for event in [.model(model), .apps(apps)] + events { flow.send(event) }
             return flow.state
         }
-        let toTryIt: [OnboardingFlow.Event] = [.next, .next, .next]
-        let toFirstLook = toTryIt + [.key(.tab), .next]
-        // The flow's first request, with its default token.
-        let found = FirstLookReply(requestId: "first-look-1-1", at: 0, outcome: .found, found: firstLookFound)
-        let nothing = FirstLookReply(requestId: "first-look-1-1", at: 0, outcome: .nothing)
+        // The ids the flow mints, with its default token: hello asks first, then the preview, then the look.
+        // The still clock never fires the idle wait, so the model's answer is set on the drawn state.
+        func withGhost(_ state: OnboardingFlow.State) -> OnboardingFlow.State {
+            var s = state
+            s.hello.ghost = " for getting back to me so quickly."
+            return s
+        }
+        let typed: [OnboardingFlow.Event] = [.typed("Hi Dana, thanks")]
+        let on = OnboardingLaunch.Opening(step: .on)
+        let preview = OnboardingPreview(previewId: "pv", windows: [
+            .init(bundleId: "com.apple.mail", appName: "Mail", title: "Thursday?", lines: [.init(text: "Dana Whitfield"), .init(text: "Thursday at 3 for coffee? Blue Bottle on 4th works for me."), .init(text: nil)], chars: 72),
+            .init(bundleId: "com.apple.Safari", appName: "Safari", title: "Apply · Northline", lines: [.init(text: "Apply · Northline"), .init(text: "Name · Email · Phone · School"), .init(text: nil)], chars: 46),
+        ], chars: 118)
+        let ready: [OnboardingFlow.Event] = [.previewReady(requestId: "preview-1-1", preview)]
+        let found = FirstLookReply(requestId: "first-look-1-2", at: 0, outcome: .found, found: firstLookFound)
+        let nothing = FirstLookReply(requestId: "first-look-1-2", at: 0, outcome: .nothing)
+        let toFirst = ready + [.next]
         let screens: [(String, OnboardingFlow.State)] = [
-            ("welcome", flow([])),
-            // The screen as it opens: every role on, watch included, and Balanced.
-            ("work", flow([.next])),
-            // What Caret knows so far: as it opens, typed in, and an email Continue would not keep.
-            ("know", flow(know: true, [.next, .next])),
-            ("know-typed", flow(know: true, [.next, .next, .setAbout(.name, "Dana Whitfield"), .setAbout(.email, "dana.whitfield@example.com")])),
-            ("know-problem", flow(know: true, [.next, .next, .setAbout(.name, "Dana Whitfield"), .setAbout(.email, "dana.whitfield@example"), .next])),
-            ("permissions-waiting", flow(ax: false, input: false, [.next, .next])),
-            ("permissions-on", flow(ax: false, input: false, [.next, .next, .permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true))])),
-            ("try-it", flow(toTryIt)),
-            ("try-it-declined", flow(toTryIt + [.key(.character("9"))])),
-            ("try-it-filled", flow(toTryIt + [.key(.tab)])),
-            // Another app that also takes Tab is running (Cotypist on Sam's Mac, Q1).
-            ("try-it-tab-owner", flow(toTryIt + [.otherTabOwners(["Cotypist"])])),
-            ("first-look-asking", flow(toFirstLook)),
-            ("first-look-found", flow(toFirstLook + [.firstLookReply(found)])),
-            // Tab taken: the line under the card at four seconds, the figure gone, Esc offered.
-            ("first-look-working", {
-                var state = flow(toFirstLook + [.firstLookReply(found), .key(.tab)])
-                state.firstLookRun?.seconds = 4
-                state.firstLookRun?.figureLeft = true
+            ("hello-idle", flow([])),
+            ("hello-typing", withGhost(flow(typed))),
+            ("hello-taken", {
+                var s = flow(typed)
+                s.hello.text += " for getting back to me so quickly."
+                s.hello.taken = true
+                return s
+            }()),
+            ("hello-loading", flow(model: .loading(nil), [])),
+            ("switch-off", flow(at: .init(step: .access), [])),
+            ("switch-help", flow(at: .init(step: .access), [.toggleHelp])),
+            ("switch-on", flow(at: .init(step: .access), [.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: false))])),
+            ("switch-relaunch-off", flow(at: .init(step: .access, reopened: true), [])),
+            ("browser", flow(at: .init(step: .browser), ax: true, [.browsers(trusted: ["Google Chrome", "Helium"], untrusted: ["Brave"])])),
+            ("browser-waiting", flow(at: .init(step: .browser), ax: true, [.browsers(trusted: ["Google Chrome"], untrusted: []), .next])),
+            ("browser-connected", flow(at: .init(step: .browser), ax: true, [.browsers(trusted: ["Google Chrome"], untrusted: []), .next, .browserConnected("Google Chrome")])),
+            ("browser-none", flow(at: .init(step: .browser), ax: true, [.browsers(trusted: [], untrusted: [])])),
+            ("can-building", flow(at: on, ax: true, [])),
+            ("can-preview", flow(at: on, ax: true, ready)),
+            ("can-key", flow(at: on, ax: true, key: false, ready)),
+            ("can-nothing-to-send", flow(at: on, ax: true, [.previewReady(requestId: "preview-1-1", OnboardingPreview(previewId: "pv", windows: [], chars: 0))])),
+            ("can-kept", flow(at: on, ax: true, ready + [.keep])),
+            ("can-looking", flow(at: on, ax: true, toFirst)),
+            ("found", flow(at: on, ax: true, toFirst + [.firstLookReply(found)])),
+            ("found-working", {
+                var state = flow(at: on, ax: true, toFirst + [.firstLookReply(found), .key(.tab)])
+                state.first.run?.seconds = 4
+                state.first.run?.figureLeft = true
                 return state
             }()),
-            ("first-look-done", flow(toFirstLook + [.firstLookReply(found), .key(.tab), .taskProgress(firstLookProgress(.done, written: 4))])),
-            ("first-look-nothing", flow(toFirstLook + [.firstLookReply(nothing)])),
-            ("first-look-error", flow(toFirstLook + [.firstLookUnsent])),
+            ("found-done", flow(at: on, ax: true, toFirst + [.firstLookReply(found), .key(.tab), .taskProgress(firstLookProgress(.done, written: 4))])),
+            ("nothing", flow(at: on, ax: true, toFirst + [.firstLookReply(nothing)])),
         ]
         let items = screens.map { name, state in
             Item(name: "onboarding-\(name)", view: AnyView(OnboardingView(state: state, character: character, animated: false, promise: samplePrivacyPromise)))
         }
         // As under `swift run`; an app build cannot reach it.
-        let missing = Item(name: "onboarding-permissions-no-promise", view: AnyView(OnboardingView(
-            state: flow(ax: false, input: false, [.next, .next]), character: character, animated: false, promise: nil)))
+        let missing = Item(name: "onboarding-can-no-promise", view: AnyView(OnboardingView(
+            state: flow(at: on, ax: true, ready), character: character, animated: false, promise: nil)))
         // Scrolled to the end, so the last blocks are in the pixels too.
-        let end = Item(name: "onboarding-permissions-promise-end", view: AnyView(OnboardingView(
-            state: flow(ax: false, input: false, [.next, .next]), character: character, animated: false, promise: samplePrivacyPromise)
+        let end = Item(name: "onboarding-can-promise-end", view: AnyView(OnboardingView(
+            state: flow(at: on, ax: true, ready), character: character, animated: false, promise: samplePrivacyPromise)
             .environment(\.offscreenScrolledToEnd, true)))
         return items + [missing, end]
     }
@@ -322,8 +343,7 @@ struct AlternativesScene: View {
 }
 
 /// Every state of the figure at its four sizes (14 in a slip, 16 in a pop-up, 22 perched, 64
-/// once in onboarding), and the other two characters at slip size. The grid sizes its window to
-/// its rows: the prototype's window was shorter than its content (LEAD-REVIEW defect 1).
+/// once in onboarding). The grid sizes its window to its rows: the prototype's window was shorter than its content (LEAD-REVIEW defect 1).
 struct FigureGalleryView: View {
     static let sizes: [CGFloat] = [Tokens.FigureSize.line, Tokens.FigureSize.popup, Tokens.FigureSize.perch, Tokens.FigureSize.onboarding]
 
@@ -332,7 +352,6 @@ struct FigureGalleryView: View {
             GridRow {
                 Text("")
                 ForEach(Self.sizes, id: \.self) { Text("\(Int($0)) pt").font(Tokens.Font.chromeSmall).foregroundStyle(Color(token: Tokens.ink2)) }
-                Text("Seed, wren").font(Tokens.Font.chromeSmall).foregroundStyle(Color(token: Tokens.ink2))
             }
             ForEach(FigureState.allCases, id: \.self) { state in
                 GridRow {
@@ -341,11 +360,6 @@ struct FigureGalleryView: View {
                         FigureView(character: .pebble, state: state, facing: .right, size: size, animated: false)
                             .frame(width: 72, height: 64)
                     }
-                    HStack(spacing: 10) {
-                        FigureView(character: .seed, state: state, size: 14, animated: false)
-                        FigureView(character: .wren, state: state, size: 14, animated: false)
-                    }
-                    .frame(height: 64)
                 }
             }
         }

@@ -125,8 +125,8 @@ extension OnboardingFlow.State {
     /// What the first look's keys do now: a found offer not yet taken takes Tab and its digits;
     /// a fill's done line takes ⌘Z; a run past three seconds takes Esc.
     public var firstLookKeys: FirstLookKeys {
-        guard step == .firstLook, case .found(let found) = firstLook else { return .none }
-        if let run = firstLookRun { return FirstLookKeys(undo: run.undoable, stop: run.stoppable) }
+        guard step == .first, case .found(let found) = first.look, first.calendar == nil, !first.declined else { return .none }
+        if let run = first.run { return FirstLookKeys(undo: run.undoable, stop: run.stoppable) }
         let takeable = found.takeable
         return FirstLookKeys(tab: takeable.contains { $0.key == .tab }, digits: Set(takeable.compactMap(\.key.digit)))
     }
@@ -142,13 +142,13 @@ extension OnboardingFlow {
         case .commandDigit(let n) where keys.digits.contains(n):
             take(state.firstLookFound?.takeable.first { $0.key.digit == n })
         case .undo where keys.undo:
-            guard let run = state.firstLookRun else { return }
-            state.firstLookRun?.phase = .undoing
+            guard let run = state.first.run else { return }
+            state.first.run?.phase = .undoing
             output(.undo(TaskControl(taskId: run.offerKey, action: .undo)))
         case .escape:
-            guard keys.stop, let run = state.firstLookRun else { return back() }
+            guard keys.stop, let run = state.first.run else { return notNow() }
             endRunTimers()
-            state.firstLookRun?.phase = .stoppedByYou
+            state.first.run?.phase = .stoppedByYou
             output(.stop(OfferStop(offerId: run.offerKey, at: nowMs)))
         case .returnKey:
             next()
@@ -158,22 +158,22 @@ extension OnboardingFlow {
     }
 
     func take(_ action: PopupSpec.Action?) {
-        guard let action, case .found(let found) = state.firstLook, state.firstLookRun == nil else { return }
+        guard let action, case .found(let found) = state.first.look, state.first.run == nil, !state.first.declined else { return }
         let started = clock.now
-        state.firstLookRun = FirstLookRun(
+        state.first.run = FirstLookRun(
             offerKey: found.offerKey, actionId: action.id, app: found.window.appName, fillRows: found.fillRows,
             source: OfferLifecycle.sourcePhrase(found.sourceApps), startedAt: started
         )
         // The figure looks away (200 ms), then leaves; the seconds count once a second.
         runTimers = [
             clock.schedule(after: 0.2, repeats: false) { [weak self] in
-                guard let self, self.state.firstLookRun?.working == true else { return }
-                self.state.firstLookRun?.figureLeft = true
+                guard let self, self.state.first.run?.working == true else { return }
+                self.state.first.run?.figureLeft = true
                 self.output(.changed)
             },
             clock.schedule(after: 1, repeats: true) { [weak self] in
-                guard let self, let run = self.state.firstLookRun, run.working else { return }
-                self.state.firstLookRun?.seconds = Int(self.clock.now.timeIntervalSince(run.startedAt))
+                guard let self, let run = self.state.first.run, run.working else { return }
+                self.state.first.run?.seconds = Int(self.clock.now.timeIntervalSince(run.startedAt))
                 self.output(.changed)
             },
         ]
@@ -182,41 +182,41 @@ extension OnboardingFlow {
 
     /// The run's progress, by its task id (the offer's key). A later phase replaces an earlier one.
     func firstLookProgress(_ progress: TaskProgress) {
-        guard let run = state.firstLookRun, progress.taskId == run.offerKey else { return }
+        guard let run = state.first.run, progress.taskId == run.offerKey else { return }
         if run.working {
-            if progress.steps > 0 { state.firstLookRun?.steps = progress.steps }
+            if progress.steps > 0 { state.first.run?.steps = progress.steps }
             switch progress.phase {
-            case .verified, .skipped: if let step = progress.step { state.firstLookRun?.nextStep = step + 1 }
-            case .acting, .stopped: if let step = progress.step { state.firstLookRun?.nextStep = step }
+            case .verified, .skipped: if let step = progress.step { state.first.run?.nextStep = step + 1 }
+            case .acting, .stopped: if let step = progress.step { state.first.run?.nextStep = step }
             default: break
             }
         }
         switch progress.phase {
         case .verified where run.working:
-            state.firstLookRun?.verified += 1
+            state.first.run?.verified += 1
         case .done where run.working:
             endRunTimers()
-            state.firstLookRun?.phase = .done(written: progress.written)
+            state.first.run?.phase = .done(written: progress.written)
         case .stopped where run.working:
             endRunTimers()
-            state.firstLookRun?.phase = .stopped(progress.stopReason ?? .error)
+            state.first.run?.phase = .stopped(progress.stopReason ?? .error)
         case .handoff where run.working:
             endRunTimers()
-            state.firstLookRun?.phase = .handoff
+            state.first.run?.phase = .handoff
         case .paused where run.working:
             endRunTimers()
-            state.firstLookRun?.phase = .paused
+            state.first.run?.phase = .paused
         // Esc showed where the run stopped from the progress seen so far; the helper's own ending
         // corrects it: the step it stopped before, or Done when the run finished first.
         case .stopped where run.phase == .stoppedByYou:
-            if progress.steps > 0 { state.firstLookRun?.steps = progress.steps }
-            if let step = progress.step { state.firstLookRun?.nextStep = step }
+            if progress.steps > 0 { state.first.run?.steps = progress.steps }
+            if let step = progress.step { state.first.run?.nextStep = step }
             // A failure that ended the run before the stop reached it is the line's true reason.
-            if let reason = progress.stopReason, reason != .you { state.firstLookRun?.phase = .stopped(reason) }
+            if let reason = progress.stopReason, reason != .you { state.first.run?.phase = .stopped(reason) }
         case .done where run.phase == .stoppedByYou:
-            state.firstLookRun?.phase = .done(written: progress.written)
+            state.first.run?.phase = .done(written: progress.written)
         case .undone where run.phase == .undoing:
-            state.firstLookRun?.phase = .undone(OfferLifecycle.undoCount(progress))
+            state.first.run?.phase = .undone(OfferLifecycle.undoCount(progress))
         default:
             break
         }
@@ -232,27 +232,27 @@ extension OnboardingFlow {
     /// withdrawal means they were changed elsewhere since: the flow takes the saved ones, or the
     /// new look would ask again for the family just turned off (A10 review).
     func firstLookWithdrawn(_ withdrawn: OfferWithdrawn) {
-        guard state.step == .firstLook, state.firstLookRun == nil,
-              case .found(let found) = state.firstLook, found.offerKey == withdrawn.id else { return }
+        guard state.step == .first, state.first.run == nil,
+              case .found(let found) = state.first.look, found.offerKey == withdrawn.id else { return }
         switch withdrawn.reason {
         case .settings:
             state.roles = base.roles
             state.level = base.level
-            askFirstLook()
-        case .reoffered: askFirstLook()
-        case .taken, .dismissed, .diverged, .idle, .stale, .expired: state.firstLook = .nothing
+            askFirstLook(previewId: state.on.sentPreviewId)
+        case .reoffered: askFirstLook(previewId: state.on.sentPreviewId)
+        case .taken, .dismissed, .diverged, .idle, .stale, .expired: state.first.look = .nothing
         }
     }
 
     /// The accept or the undo could not be written: the helper is not connected.
     func firstLookUnsent(_ what: SendFailure) {
-        guard let run = state.firstLookRun else { return }
+        guard let run = state.first.run else { return }
         switch what {
         case .accept where run.working:
             endRunTimers()
-            state.firstLookRun?.phase = .unsent
+            state.first.run?.phase = .unsent
         case .undo where run.phase == .undoing:
-            state.firstLookRun?.phase = .undoUnsent
+            state.first.run?.phase = .undoUnsent
         default:
             break
         }
@@ -267,7 +267,7 @@ extension OnboardingFlow {
 extension OnboardingFlow.State {
     /// The found offer, while the first look shows one.
     public var firstLookFound: FirstLookReply.Found? {
-        if case .found(let found) = firstLook { return found }
+        if case .found(let found) = first.look { return found }
         return nil
     }
 }

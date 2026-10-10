@@ -26,13 +26,16 @@ public struct FirstLookRequest: Codable, Equatable, Sendable {
     public var level: CaretLevel
     /// Answer within this many milliseconds; anything later is ignored.
     public var deadlineMs: Int
+    /// The local allow-list the person approved. Nil preserves an unpreviewed first look.
+    public var previewId: String?
 
-    public init(requestId: String, at: Int64, families: [String], level: CaretLevel, deadlineMs: Int = FirstLookRequest.defaultDeadlineMs) {
+    public init(requestId: String, at: Int64, families: [String], level: CaretLevel, deadlineMs: Int = FirstLookRequest.defaultDeadlineMs, previewId: String? = nil) {
         self.requestId = requestId
         self.at = at
         self.families = families
         self.level = level
         self.deadlineMs = deadlineMs
+        self.previewId = previewId
     }
 
     /// The families the settings enable, in the helper's order.
@@ -40,7 +43,7 @@ public struct FirstLookRequest: Codable, Equatable, Sendable {
         ["fill", "pending", "loop", "routine", "event"].filter { settings.gate.allows(family: $0) }
     }
 
-    enum CodingKeys: String, CodingKey { case type, v, requestId, at, families, level, deadlineMs }
+    enum CodingKeys: String, CodingKey { case type, v, requestId, at, families, level, deadlineMs, previewId }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -50,6 +53,8 @@ public struct FirstLookRequest: Codable, Equatable, Sendable {
         families = try c.decode([String].self, forKey: .families)
         level = try c.decode(CaretLevel.self, forKey: .level)
         deadlineMs = try c.decode(Int.self, forKey: .deadlineMs)
+        // Accept older hosts' requests without this key, but always write it, including null.
+        previewId = try c.decodeIfPresent(String.self, forKey: .previewId)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -61,6 +66,7 @@ public struct FirstLookRequest: Codable, Equatable, Sendable {
         try c.encode(families, forKey: .families)
         try c.encode(level, forKey: .level)
         try c.encode(deadlineMs, forKey: .deadlineMs)
+        try c.encode(previewId, forKey: .previewId)
     }
 
     /// One NDJSON line.

@@ -1,0 +1,1 @@
+PX1: CaretHostCore imports only CaretScreenCore, so swiftc -emit-module of CaretScreenCore plus swiftc -typecheck of CaretHostCore checks it in ~10 s with ~2 MB disk when heavy builds are disk-blocked.

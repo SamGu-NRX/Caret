@@ -9,6 +9,9 @@ export const DEFAULT_APPS_OFF: readonly string[] = [
   "com.apple.keychainaccess", "com.apple.Passwords", "com.bitwarden.desktop", "com.1password", "com.agilebits",
   "com.lastpass", "com.dashlane", "com.callpod.keeper", "org.keepassxc", "me.proton.pass", "ch.protonmail.pass",
   "in.sinew.Enpass", "com.nordsec.nordpass", "com.apple.systempreferences.passwords",
+  // Terminals, System Settings and Caret itself (apps/caret CaretHostCore/Consent/ExcludedApps.swift).
+  "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "org.alacritty", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
+  "com.apple.systempreferences", "dev.caret.host", "dev.caret.screen", "dev.caret.node", "dev.caret.bridge",
 ];
 
 /** Whether a bundle identifier is on the list, as the reader decides it: the identifier itself or one under it. */
@@ -17,8 +20,10 @@ export function appOff(bundleId: string, prefixes: readonly string[]): boolean {
 }
 
 /**
- * The deny list file the reader reads (one bundle identifier prefix per line, "#" starts a comment), or null when there
- * is none: the reader creates it with the defaults on its first start, and the helper never writes it.
+ * The deny list file the reader reads (one bundle identifier prefix per line, "#" starts a comment), with the defaults
+ * added, or null when there is none: the reader creates it with the defaults on its first start, and the helper never
+ * writes it. The defaults always apply, as the reader applies them (DenyList.load): a file an older Caret wrote lacks
+ * the entries added since.
  */
 export function readAppsOff(path: string): string[] | null {
   let text: string;
@@ -28,7 +33,8 @@ export function readAppsOff(path: string): string[] | null {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw e;
   }
-  return splitLines(text).map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#"));
+  const listed = splitLines(text).map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#"));
+  return [...listed, ...DEFAULT_APPS_OFF.filter((d) => !listed.includes(d))];
 }
 
 /**
