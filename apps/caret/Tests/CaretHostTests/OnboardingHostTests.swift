@@ -175,8 +175,20 @@ final class OnboardingHostTests: XCTestCase {
         c.store.update(source: .menu) { $0.roles.insert(.calendar) }
         XCTAssertEqual(c.store.settings.roles, [.words], "held until the person decides")
         c.close()
+        XCTAssertTrue(c.holdsCloudRoles, "Set up later keeps the hold until Send or Keep")
         c.store.update(source: .menu) { $0.roles.insert(.calendar) }
-        XCTAssertEqual(c.store.settings.roles, [.words, .calendar], "closed: the menu's choice stands")
+        XCTAssertEqual(c.store.settings.roles, [.words], "closed undecided: still held")
+        // The next launch keeps the hold from the progress file.
+        let next = controller(dir)
+        XCTAssertTrue(next.holdsCloudRoles)
+        // The menu's held role opens setup at the step that decides it.
+        next.permissionsOverride = .init(accessibility: true, inputMonitoring: false)
+        next.openToFinishSetup()
+        XCTAssertEqual(next.debugInfo()?.step, "on")
+        _ = try run(next, "onboarding keep")
+        XCTAssertFalse(next.holdsCloudRoles, "Keep decides: the menu is free again")
+        next.store.update(source: .menu) { $0.roles.insert(.calendar) }
+        XCTAssertEqual(next.store.settings.roles, [.words, .calendar])
     }
 
     func testKeepTurnsTheCloudRolesOffForSomeoneAlreadyOnboarded() throws {

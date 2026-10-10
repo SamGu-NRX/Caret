@@ -366,6 +366,7 @@ public final class HostRuntime {
                     memory.linkChanged(up)
                     perch.ask.linkChanged(up)
                     pageTask.machine.linkChanged(up: up)
+                    onboarding.helperLinkChanged(up)
                     if !up {
                         surface.helperGone()
                         pageSight.sight.helperGone()
@@ -775,6 +776,12 @@ public final class HostRuntime {
         axObserver = nil
         tap.stop()
     }
+
+    /// Onboarding holds the cloud roles until the person sends or keeps (`RoleMenu`).
+    public var rolesCap: Set<CaretRole>? { SettingsStore.shared.rolesCap }
+
+    /// The menu's held role: setup opens where the hold is decided.
+    public func openSetupToFinish() { onboarding.openToFinishSetup() }
 
     /// The menu's "Turn on Accessibility…": the switch step on its own, with the panel in System Settings.
     public func openAccessSwitch() { onboarding.openAccess() }

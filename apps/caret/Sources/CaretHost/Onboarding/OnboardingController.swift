@@ -95,6 +95,35 @@ final class OnboardingController {
         self.store = store
         self.progressPath = progressPath
         store.observe { [weak self] settings in self?.flow?.send(.settingsChanged(settings)) }
+        // A hold left by an undecided onboarding (Set up later, a quit) lasts across launches until Send or Keep: the
+        // consent pane promised nothing leaves before then (Codex on PR #17).
+        if progress?.heldRoles != nil { store.rolesCap = [.words] }
+    }
+
+    /// A preview request held while the helper restarts, and what decides when it goes.
+    private var restartGate = HelperRestartGate()
+    private var heldPreview: (id: String, families: [String], level: CaretLevel)?
+
+    /// The helper connection went down or came up (HostRuntime's link). A held preview goes once the new helper is up.
+    func helperLinkChanged(_ up: Bool) {
+        restartGate.link(up: up)
+        if up { sendHeldPreview() }
+    }
+
+    private func sendHeldPreview() {
+        guard let held = heldPreview, !restartGate.holds(at: ProcessInfo.processInfo.systemUptime) else { return }
+        heldPreview = nil
+        if !sendPreview(held.id, held.families, held.level) { flow?.send(.previewFailed(requestId: held.id, "helperNotConnected")) }
+    }
+
+    /// The cloud roles are held: the menu shows them as unavailable (`RoleMenu`).
+    var holdsCloudRoles: Bool { store.rolesCap != nil }
+
+    /// The menu's held role: setup opens where the hold is decided, the "Caret is on" step, or the switch first when
+    /// Caret can't see apps yet.
+    func openToFinishSetup() {
+        let trusted = readPermissions().accessibility
+        open(drawing: true, opening: OnboardingLaunch.Opening(step: trusted ? .on : .access, reopened: true))
     }
 
     private var drawsWindow = false
@@ -245,8 +274,7 @@ final class OnboardingController {
 
     /// Ends the window and polling. An unfinished flow is dropped; its progress file says where to resume.
     func close() {
-        // Closed undecided (Set up later): the roles stay words only, and the menu may change them from here.
-        store.rolesCap = nil
+        // Closed undecided (Set up later) keeps the cap: the menu offers to finish setup instead.
         stopPolling()
         stopGrantDetection()
         completion?.cancel()
@@ -380,6 +408,14 @@ final class OnboardingController {
                 self?.flow?.send(.ghost(requestId: id, text: ghost))
             }
         case .askPreview(let id, let families, let level):
+            // Saving a key restarts the helper: the preview waits for the new one (HelperRestartGate).
+            if restartGate.holds(at: ProcessInfo.processInfo.systemUptime) {
+                heldPreview = (id, families, level)
+                DispatchQueue.main.asyncAfter(deadline: .now() + HelperRestartGate.waitLimit) { [weak self] in
+                    MainActor.assumeIsolated { self?.sendHeldPreview() }
+                }
+                return
+            }
             if !sendPreview(id, families, level) { flow?.send(.previewFailed(requestId: id, "helperNotConnected")) }
         case .checkJevKey(let key):
             checkJevKey(key)
@@ -417,7 +453,10 @@ final class OnboardingController {
             var saved = false
             if outcome.keepsKey, self?.jevKeyGeneration == generation {
                 saved = hooks.save(key.reveal)
-                if saved { hooks.saved() }
+                if saved {
+                    self?.restartGate.restartRequested(at: ProcessInfo.processInfo.systemUptime)
+                    hooks.saved()
+                }
             }
             guard let self, let flow = self.flow, flow === asking else { return }
             flow.send(.jevKeyChecked(outcome, saved: saved))

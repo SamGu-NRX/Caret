@@ -163,9 +163,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         perchItem.state = runtime.perchHidden ? .off : .on
         let settings = SettingsStore.shared.settings
         pauseItem.title = settings.paused ? "Resume Caret" : "Pause Caret"
+        let cap = runtime.rolesCap
         for item in roleItems {
             let role = (item.representedObject as? String).flatMap(CaretRole.init(rawValue:))
             item.state = role.map(settings.roles.contains) == true ? .on : .off
+            // Held by an undecided onboarding: shown as unavailable, and choosing it opens setup.
+            let note = role.flatMap { RoleMenu.note($0, cap: cap) }
+            if #available(macOS 14.4, *) { item.subtitle = note }
+            item.toolTip = note
         }
         for item in levelItems {
             item.state = item.representedObject as? String == settings.level.rawValue ? .on : .off
@@ -246,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleRole(_ sender: NSMenuItem) {
         guard let role = (sender.representedObject as? String).flatMap(CaretRole.init(rawValue:)) else { return }
+        if RoleMenu.choice(role, cap: runtime.rolesCap) == .finishSetup { return runtime.openSetupToFinish() }
         SettingsStore.shared.update(source: .menu) { s in
             if s.roles.contains(role) { s.roles.remove(role) } else { s.roles.insert(role) }
         }

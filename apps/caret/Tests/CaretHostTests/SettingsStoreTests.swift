@@ -55,6 +55,24 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNotNil(store.debugInfo().error)
     }
 
+    func testAnUnreadableFileThatCannotBeMovedYetIsNeverOverwritten() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(#"{"version":9}"#.utf8).write(to: URL(fileURLWithPath: path))
+        let store = SettingsStore(path: path)
+        // The folder turns read-only: the move aside fails, and the change must not be written over the file.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: dir.path)
+        store.update(source: .onboarding) { $0.roles = [.words] }
+        XCTAssertTrue(store.lastWriteFailed)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), #"{"version":9}"#, "still the unreadable file")
+        // Writable again: the next change keeps it aside first, then writes.
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        store.update(source: .onboarding) { $0.roles = [.words, .fill] }
+        XCTAssertFalse(store.lastWriteFailed)
+        let kept = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("settings.json.unreadable-") }
+        XCTAssertEqual(kept.count, 1)
+        XCTAssertEqual(try String(contentsOfFile: dir.appendingPathComponent(kept[0]).path, encoding: .utf8), #"{"version":9}"#)
+    }
+
     func testAFailedWriteIsReportedUntilAWriteSucceeds() throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // The settings path's folder is a file: nothing can be written under it.

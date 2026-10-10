@@ -207,7 +207,7 @@ describe("preview and approval over the socket", () => {
     helper = new Helper({ store, askJev: (req) => { calls++; return fake(req); }, shadow: false, allowBackgroundFocus: false, now: () => now, publish: (m) => server.publish(m), sendToReader: (cmd) => server.sendToReader(cmd) });
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "preview-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "preview-test", host: true });
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     await until(() => helper.hasReader);
   });
@@ -236,6 +236,20 @@ describe("preview and approval over the socket", () => {
     expect(p.totalChars).toBeGreaterThan(0);
     expect(calls).toBe(before);
     expect(reader.verbs).toHaveLength(walks);
+  });
+
+  it("refuses a preview to a consumer that is not the host, with a named error and no screen text", async () => {
+    await reader.replay(loadRecording("offers-fill.ndjson").filter((m) => m.type === "snapshot"), { applied: (id, at) => helper.model.windows.get(id)?.updatedAt === at, tick: () => {} });
+    const other = await LineClient.connect(join(dir, "screen.sock"));
+    try {
+      other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "not-the-host" });
+      other.send(request);
+      expect(await other.waitFor((m) => m.type === "error")).toMatchObject({ message: "firstLookPreviewRequest needs a host hello (host: true): only the host shows the preview as consent" });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(other.received.some((m) => (m as { type?: string }).type === "firstLookPreview")).toBe(false);
+    } finally {
+      other.close();
+    }
   });
 
   it("returns firstLookReply errors for unknown and expired ids without sending", async () => {

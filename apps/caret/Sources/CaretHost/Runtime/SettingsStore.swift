@@ -62,8 +62,14 @@ public final class SettingsStore {
         guard next != settings else { return }
         settings = next
         loadError = nil
-        if unreadable { keepUnreadable() }
-        save()
+        // The unreadable file is never overwritten: until it is kept aside, the change stays in memory only, and the
+        // next change tries the move again (Codex on PR #17).
+        if unreadable, !keepUnreadable() {
+            lastWriteFailed = true
+            loadError = "\(path): unreadable, and it could not be kept aside yet; this change is not saved"
+        } else {
+            save()
+        }
         for observer in observers.values { observer(next) }
     }
 
@@ -76,14 +82,17 @@ public final class SettingsStore {
 
     /// Moves the file this host could not read to `<path>.unreadable-<ms>` before the first write replaces it: a newer
     /// Caret's settings, say, after a downgrade. Nothing is deleted; the move failing only logs, and the write goes on.
-    private func keepUnreadable() {
-        unreadable = false
+    /// True once the file is kept aside (or is gone): only then may `save` write over its path.
+    private func keepUnreadable() -> Bool {
         let kept = path + ".unreadable-\(Int64((Date().timeIntervalSince1970 * 1000).rounded()))"
         do {
-            try FileManager.default.moveItem(atPath: path, toPath: kept)
+            if FileManager.default.fileExists(atPath: path) { try FileManager.default.moveItem(atPath: path, toPath: kept) }
+            unreadable = false
             FileHandle.standardError.write(Data("caret: kept the unreadable settings file at \(kept)\n".utf8))
+            return true
         } catch {
             FileHandle.standardError.write(Data("caret: could not keep the unreadable settings file: \(error.localizedDescription)\n".utf8))
+            return false
         }
     }
 
