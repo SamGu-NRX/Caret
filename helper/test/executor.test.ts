@@ -15,6 +15,7 @@ import type { AskJev } from "../src/fill/jev.ts";
 import { quotedPart } from "../src/executor/target.ts";
 import { field, FIXTURE_APP, MAIL_APP, snap } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
+import { released } from "./released.ts";
 
 const W = { titleStartsWith: TITLE };
 const write = (key: string, value: string, says = `${key} holds ${value}`): Step => ({ says, end: { kind: "valueEquals", window: W, target: { key, describe: says }, value } });
@@ -434,6 +435,40 @@ describe("executor", () => {
     expect(progress("t1").at(-1)).toMatchObject({ phase: "stopped", step: 1 });
     expect(progress("t1").at(-1)?.detail).toMatch(/no longer reads the window it acts in/);
     expect(acts().filter((v) => v.kind === "write" && v.key === K("textfield:email~0"))).toEqual([]);
+  });
+
+  it("lets go of a paused run's guard, and what it holds, once a reader restart means the run can take no more steps (T8)", async () => {
+    app.afterVerb = (_, v) => {
+      if (v.kind === "write" && v.key === K("textfield:name~0")) {
+        void helper.handleReader({ type: "userInput", v: PROTOCOL_VERSION, at: 5, pid: FIXTURE_APP.pid, kind: "mouse", point: [50, 50] });
+      }
+    };
+    // What a guard keeps: the checked values and the source views they were read from. A stand-in object here.
+    let checked: { source: string } | null = { source: "Dana Whitfield, 4471 Larkspur Lane" };
+    const ref = new WeakRef(checked);
+    const guardOver = (held: { source: string }) => (): string | null => (held.source === "" ? "gone" : null);
+    const run = helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {}, undefined, { guard: guardOver(checked) });
+    checked = null;
+    const r = await run;
+    expect(r).toMatchObject({ outcome: "paused", step: 1 });
+    app.afterVerb = null;
+    expect(await released(ref)).toBe(false);
+    helper.executor.readerRestarted("another-reader");
+    expect(await released(ref)).toBe(true);
+  });
+
+  it("keeps the values a run wrote while its task record lasts, and drops them when the record goes a day after the run (T8)", async () => {
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana Whitfield")]), {});
+    expect(r).toMatchObject({ outcome: "done" });
+    const wrote = () => (helper as unknown as { caretWrote(w: string, k: string): string[] }).caretWrote(WIN, K("textfield:name~0"));
+    expect(wrote()).toEqual(["Dana Whitfield"]);
+    const day = 24 * 60 * 60 * 1000;
+    helper.tick(Date.now() + day - 60_000);
+    expect(helper.tasks.get("t1")).toBeDefined();
+    expect(wrote()).toEqual(["Dana Whitfield"]);
+    helper.tick(Date.now() + day + 60_000);
+    expect(helper.tasks.get("t1")).toBeUndefined();
+    expect(wrote()).toEqual([]);
   });
 
   it("ignores input in other processes and clicks outside the window", async () => {

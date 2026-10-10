@@ -6,7 +6,7 @@ import { provenanceWindows, type Provenance } from "./fill/contract.ts";
 import type { OfferProducer } from "./offers/lifetimes.ts";
 
 /** Holders of state read from a window that are not offer families. */
-export const WINDOW_STATE_HOLDERS = ["transfers", "lineTable", "ownerVerdicts", "preFocus", "recentTransfers", "caretWrites", "answerOffers", "askQuestions", "pendingWatches", "goalSegments", "runs", "router"] as const;
+export const WINDOW_STATE_HOLDERS = ["transfers", "lineTable", "pageWalks", "ownerVerdicts", "preFocus", "recentTransfers", "caretWrites", "answerOffers", "askQuestions", "pendingWatches", "goalSegments", "runs", "router"] as const;
 
 export type WindowStateHolder = OfferProducer | (typeof WINDOW_STATE_HOLDERS)[number];
 
