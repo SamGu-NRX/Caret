@@ -7,11 +7,12 @@ import type { Origin, ScopeSet } from "../fill/ask-scope.ts";
 import { createHash } from "node:crypto";
 import type * as z from "zod";
 import type { ValueOriginSchema } from "../codemode/types.ts";
-import type { Plan } from "../executor/schema.ts";
+import type { Identity, Plan } from "../executor/schema.ts";
 import type { FillScope } from "../fill/fill.ts";
 import type { CheckedValue, FieldContract, Provenance } from "../fill/contract.ts";
 import type { HandoffWhy } from "./capabilities.ts";
 import type { OwedField } from "./left.ts";
+import type { ReplayState } from "./replay.ts";
 import type { ReadableField, SavedValue } from "../fill/alternate.ts";
 import type { SourceNote } from "../planner/codeplan.ts";
 
@@ -23,7 +24,23 @@ export type GoalDomain =
   | { kind: "calendar"; calendar: string };
 
 /** What a target looked like as a control: how a fill of it is lowered. */
-export type GoalControl = "text" | "select" | "combobox" | "radio" | "date" | "time" | "checkbox" | "button" | "calendar" | "file";
+export type GoalControl = "text" | "select" | "combobox" | "radio" | "date" | "time" | "checkbox" | "button" | "calendar" | "file" | "row";
+
+/**
+ * Slice 2: what a list row was when frozen. `cells` as the reader showed them; `container` the table, outline or list it
+ * belongs to; `selectable` and the page fields are what goals/capabilities.ts navVerdict reads to pick the actor.
+ */
+export interface RowBinding {
+  cells: string[];
+  /** The anchor cells of every other row of the same list, read from the window whether or not it was listed (Identity.others). */
+  others: string[][];
+  container: { key: string; role: string } | null;
+  selectable: boolean;
+  inForm: boolean | null;
+  href: "none" | "hash" | "other" | null;
+  /** The target's kind as navVerdict reads it: the AX role natively, the ARIA role on a page. */
+  kind: string;
+}
 
 /** What a target ref stood for when its snapshot was frozen. Code issued it; a program only names it. */
 export interface TargetBinding {
@@ -49,6 +66,8 @@ export interface TargetBinding {
    * meets before it is written. Absent for a button, a file control, the calendar, and a field Caret never types.
    */
   field?: FieldContract;
+  /** Slice 2: on a list row only. */
+  row?: RowBinding;
 }
 
 /** What a value ref stood for: its exact text and where it came from. */
@@ -134,7 +153,15 @@ export interface GoalInventory {
 }
 
 /** `attach` (P2 adds the kind; P3 lowers it): a file the user confirmed in the preview, put in a page's file control. */
-export type GoalStepKind = "write" | "calendar" | "press" | "handoff" | "attach";
+export type GoalStepKind = "write" | "calendar" | "press" | "handoff" | "attach" | "navigate";
+
+/** Slice 2: a navigate step's capability, who makes the transition, the row's identity and its container. */
+export interface GoalNav {
+  capability: "selectRow" | "openItem";
+  actor: "caret" | "you";
+  identity: Identity;
+  container: { key: string; role: string } | null;
+}
 
 /**
  * P3: the file an attach step's row offers (protocol GoalStepView.file). `choose`: none; the user picks one in the
@@ -181,6 +208,8 @@ export interface GoalStep {
   checked?: CheckedValue;
   /** P3: on an attach step only, the file its row offers. */
   file?: AttachOffer;
+  /** Slice 2: on a navigate step only. */
+  nav?: GoalNav;
   /**
    * I6: on a page plan's hand-off row only (page-planner.ts handoffRow): the step the user reads last, "You press Next"
    * or "The rest is yours". It is a row, never an action: lowering gives it no executor step, a run never reaches it,
@@ -273,6 +302,11 @@ export interface GoalPlan {
   origin: Origin;
   /** HA2: what the value gate's requests to Jev cost while lowering (gates.ts jevGate); absent when it asked none. */
   jev?: { calls: number; costUsd: number; latencyMs: number };
+  /**
+   * Slice 2: a plan whose program stopped at an observe ends with that navigation, and keeps what the replay needs
+   * (goals/replay.ts). Held by reference, never cloned or journaled: GoalRuns.propose takes it before it copies the plan.
+   */
+  replay?: ReplayState;
 }
 
 /** JSON with object keys sorted, so equal content always hashes equal. */
@@ -316,6 +350,8 @@ export function segmentDigest(programHash: string, s: Omit<GoalSegment, "digest"
         file: x.file,
         // I6: a hand-off row (never run), absent on every other step.
         row: x.row,
+        // Slice 2: a navigate step's capability, actor, identity and container, absent on every other step.
+        nav: x.nav,
       })),
       warnings,
     }),

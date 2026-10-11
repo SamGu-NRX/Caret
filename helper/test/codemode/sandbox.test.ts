@@ -42,7 +42,7 @@ describe("a valid program", () => {
       { ref: "step:4", kind: "press", target: "t:next", effect: "e:next-page" },
       { ref: "step:5", kind: "waitFor", effect: "e:next-page", timeoutMs: 2000 },
     ]);
-    expect(o.plan.choices).toEqual([{ question: "q:session", offered: ["o:tue", "o:wed"], chosen: "o:wed" }]);
+    expect(o.plan.choices).toEqual([{ question: "q:session", offered: ["o:tue", "o:wed"], chosen: "o:wed", requestDigest: expect.stringMatching(/^[0-9a-f]{64}$/) }]);
     expect(o.plan.programDigest).toMatch(/^[0-9a-f]{64}$/);
     // Jev got the host's question text and labels, not anything the program wrote.
     expect(seen).toEqual([FORM.questions[0]!.text, "Tue Oct 20, 3:00 PM", "Wed Oct 21, 10:00 AM"]);

@@ -27,7 +27,19 @@ export const GOAL_API = PLAN_API.replace(
    * Example: const mail = await caret.readWindow("w2" as WindowRef); const d = caret.draft("Thanks, I'm in.", [mail.window]);
    * At most 2. */
   draft(text: string, from: readonly (WindowRef | ValueRef)[]): ValueRef;
+  /** Step: open or select a list row, a target of kind "row" whose allowedNavigateEffects is not empty. "e:open" shows the
+   * item the row names, "e:select" selects the row, "e:yours" asks the user to open it. Caret decides who makes it.
+   * Call observe() with this step right after it; nothing else may come between. */
+  navigate(target: TargetRef, effect: EffectRef): StepRef;
+  /** The window again once the navigate step \`after\` is done, with new refs: the item's values, its fields and its
+   * rows. Await it right after that navigate, and use only its refs for what the item shows. At most 3 per goal. Once a
+   * plan observes, its steps run in the order you create them. A list's question offers its rows, labelled as their
+   * targets are: after choose(), navigate the row target whose label is the chosen option's label. */
+  observe(after: StepRef): Promise<ReadWindow>;
   /** Orders every step you created into the plan.`,
+).replace(
+  "    options: readonly OptionRef[]; allowedPressEffects: readonly EffectRef[] }[];",
+  "    options: readonly OptionRef[]; allowedPressEffects: readonly EffectRef[]; allowedNavigateEffects?: readonly EffectRef[] }[];",
 );
 
 export const GOAL_SYSTEM = `You write one short TypeScript function that builds a plan for Caret, a Mac assistant. The function only

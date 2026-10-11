@@ -90,7 +90,9 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "state.task": { reasons: ["ownWording"], max: 800 }, // seen 381
   },
   "codemode.choice": {
-    "questions.*.criteria.*": { reasons: ["ownWording"], max: 100 }, // seen 47
+    // Slice 2: a list's choice group offers its rows by their labels (goals/inventory.ts), screen text minted as
+    // descriptors and cut to a target label's 200 characters; every other choice offers Caret's own wording.
+    "questions.*.criteria.*": { reasons: ["descriptor", "ownWording"], max: 200 }, // seen 47
     "questions.*.instructions": { reasons: ["ownWording"], max: 100 }, // seen 42
     "state.goal": { reasons: ["instruction"], max: 600 }, // seen 10
   },
@@ -157,6 +159,12 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "input.snapshots[*].revision": { reasons: ["ownWording"], max: 100 }, // seen 16
     "input.snapshots[*].snapshot": { reasons: ["ownWording"], max: 100 }, // seen 2
     "input.snapshots[*].targets[*].allowedPressEffects[*]": { reasons: ["ownWording"], max: 100 }, // seen 8
+    // Slice 2: a list row's navigate effects (goals/capabilities.ts), and its list's choice group (goals/inventory.ts).
+    "input.snapshots[*].targets[*].allowedNavigateEffects[*]": { reasons: ["ownWording"], max: 100 },
+    "input.snapshots[*].questions[*].ref": { reasons: ["ownWording"], max: 100 },
+    "input.snapshots[*].questions[*].text": { reasons: ["ownWording"], max: 400 },
+    "input.snapshots[*].questions[*].options[*].ref": { reasons: ["ownWording"], max: 100 },
+    "input.snapshots[*].questions[*].options[*].label": { reasons: ["descriptor", "ownWording"], max: 1200 },
     "input.snapshots[*].targets[*].kind": { reasons: ["ownWording"], max: 100 }, // seen 8
     "input.snapshots[*].targets[*].label": { reasons: ["candidate", "descriptor", "instruction", "memory", "ownWording"], max: 1200 }, // seen 32
     "input.snapshots[*].targets[*].ref": { reasons: ["ownWording"], max: 100 }, // seen 2
@@ -341,7 +349,7 @@ export const ITEMS: { readonly [K in ShapeKey]: Readonly<Record<string, number>>
     "state.form.sections[*]": 44,
     "state.form.sections[*].fields[*]": 44,
   },
-  "codemode.choice": { "questions.*": 2, "questions.*.criteria.*": 8 }, // seen 1, 3
+  "codemode.choice": { "questions.*": 2, "questions.*.criteria.*": 9 }, // seen 1, 3; a list's MAX_ROWS (8) and none
   "codeplan.asksAbout": { "questions.*": 2, "questions.*.criteria.*": 4 }, // seen 1, 2
   "draft.check": { "questions.*": 4 }, // seen 2
   "event.card": { "questions.*": 2, "questions.*.criteria.*": 4 }, // seen 1, 2
@@ -355,10 +363,11 @@ export const ITEMS: { readonly [K in ShapeKey]: Readonly<Record<string, number>>
     "input.snapshots[*]": 4, // goals/inventory.ts MAX_GOAL_WINDOWS and the calendar
     "input.snapshots[*].targets[*]": 40, // planner.ts MAX_PLAN_FIELDS and MAX_PLAN_BUTTONS (seen 5)
     "input.snapshots[*].targets[*].allowedPressEffects[*]": 4, // seen 2
+    "input.snapshots[*].targets[*].allowedNavigateEffects[*]": 3, // capabilities.ts: e:select, e:open, e:yours
     "input.snapshots[*].targets[*].options[*]": 300, // a select's options
     "input.snapshots[*].values[*]": 40, // planner/codeplan.ts MAX_VALUES
     "input.snapshots[*].values[*].origin.inputs[*]": 4, // seen 0
-    "input.snapshots[*].questions[*]": 8, // seen 0
+    "input.snapshots[*].questions[*]": 8, // goals/inventory.ts: one per list
     "input.snapshots[*].questions[*].options[*]": 300, // a select's options
   },
   "intent.fields": { "questions.*": 40 }, // MAX_INTENT_FIELDS (seen 8)
