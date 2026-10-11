@@ -1,0 +1,1 @@
+DF1 debug socket needs --test-hooks or CARET_DEBUG_SOCKET=full; uninstall leaves dev.caret.host Metal cache. Store build ID differs (key stripped). CI off v2/access needs a v2.yml carrier commit. Gemma needs rig memory >4 GiB. macOS 26 guest AX focus falls back to frontmost app.

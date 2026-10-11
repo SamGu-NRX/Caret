@@ -143,13 +143,34 @@ describe("every other act re-walks the tab as before", () => {
   it.each([
     ["failed", { outcome: "failed", detail: "the page kept the old value", readings: readings("", "") }],
     ["stale", { outcome: "stale", detail: "the field changed since the walk" }],
-    ["error", { outcome: "error", detail: "no answer" }],
   ])("a text write answered %s", async (_, answer) => {
     const r = rig(() => answer);
     const n = await walked(r);
     await r.write(KEY.name, "AXTextField", "", "Robin Example");
     expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite", "pageWalk"]);
     expect(r.timings[0]?.rewalk).not.toBeNull();
+  });
+
+  it("a text write with no answer returns axError so the executor can read once for reconciliation", async () => {
+    const r = rig(() => ({ outcome: "error", detail: "no answer" }));
+    const n = await walked(r);
+    expect((await r.write(KEY.name, "AXTextField", "", "Robin Example")).outcome).toBe("axError");
+    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite"]);
+    expect(r.timings[0]?.rewalk).toBeNull();
+  });
+
+  it("an undo restore with no answer re-walks the tab, since undo runs no recovery read of its own", async () => {
+    const r = rig((v) => (v.kind === "pageWrite" && v.sameAs !== undefined ? { outcome: "error", detail: "no answer" } : { outcome: "ok", detail: null, readings: readings("", v.kind === "pageWrite" ? v.value : "") }));
+    await walked(r);
+    expect((await r.link.run({ kind: "write", pid: browser.pid, windowId: WIN, key: KEY.name, role: "AXTextField", attribute: "value", expect: "", value: "Robin Example", taskId: "t1", mark: "m1" })).outcome).toBe("ok");
+    const n = r.verbs().length;
+    r.timings.length = 0;
+    expect((await r.link.run({ kind: "write", pid: browser.pid, windowId: WIN, key: KEY.name, role: "AXTextField", attribute: "value", expect: "Robin Example", value: "", taskId: "t1", sameAs: "m1" })).outcome).toBe("axError");
+    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite", "pageWalk"]);
+    expect(r.timings[0]?.rewalk).not.toBeNull();
+    // The walk shows what the page holds now (the rig's page never took either write).
+    expect(r.node(KEY.name)?.value ?? "").toBe("");
+    r.link.cancelTrailingWalks();
   });
 
   it("a combobox pick answered ok", async () => {

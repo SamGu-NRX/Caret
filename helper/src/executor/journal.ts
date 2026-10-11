@@ -25,10 +25,10 @@ const step = z.number().int().nonnegative();
  * One undo ledger entry. A write records the value it replaced and the mark under which the reader keeps the
  * element it wrote (null when none was recorded: such a write is never restored). `after` is always the value Caret
  * meant to write, never a later read (B29). `unconfirmed`: a fault, missing read-back or partial result left the
- * write unverified. `partialWrite`: a read found a proper prefix of the intended whole-field replacement;
- * guarded undo may restore it under S1's rule. `mayIncludeInput`: an unrecognized read-back may hold the user's
- * typing, and undo refuses it. A calendar entry's `eventId` is null for an add whose answer the crash lost; undo then
- * looks the event up by its slot.
+ * write unverified. `partialWrite`: the proper prefix of the intended whole-field replacement a read found before any
+ * pause or stop; guarded undo restores it under S1's rule only while the field holds exactly that prefix.
+ * `mayIncludeInput`: an unrecognized read-back may hold the user's typing, and undo refuses it. A calendar entry's
+ * `eventId` is null for an add whose answer the crash lost; undo then looks the event up by its slot.
  */
 export const LedgerEntrySchema = z.discriminatedUnion("kind", [
   z.object({
@@ -42,8 +42,11 @@ export const LedgerEntrySchema = z.discriminatedUnion("kind", [
     after: z.string(),
     mark: z.string().min(1).nullable(),
     unconfirmed: z.literal(true).optional(),
-    /** A read found a non-empty proper prefix of the intended whole-field replacement (S1). */
-    partialWrite: z.literal(true).optional(),
+    /**
+     * The non-empty proper prefix of the intended whole-field replacement a read found while Caret held the window (S1).
+     * `true` is a row saved before PR #21, which recorded no prefix; its undo restores no prefix.
+     */
+    partialWrite: z.union([z.literal(true), z.string().min(1)]).optional(),
     mayIncludeInput: z.literal(true).optional(),
   }),
   z.object({ kind: z.literal("calendar"), step, eventId: z.string().min(1).nullable(), calendar: z.string(), title: z.string(), start: z.string(), end: z.string() }),
