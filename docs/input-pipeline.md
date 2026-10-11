@@ -64,6 +64,8 @@ The context frame includes the current application/window, focused text and sele
 | Inline text preview | Commit the displayed completion or correction | No action cards, so pass through |
 | Action hoverable | Pass through unless a primary action explicitly displays a Tab hint | Choose the corresponding visible action |
 | Workflow preview | Only activate the exact visible primary effect when that preview owns Tab | Choose visible alternatives if provided |
+| Page task panel (H11) | Accept the newest previewed segment once, under its digest; while it shows, no other offer in that browser takes Tab | Pass through |
+| Offer to save an answer (H11) | Pass through: people move between fields with Tab, and Tab must never save their words | Command–1 saves |
 
 Only one Caret view owns Tab at a time. Showing action cards dismisses an inline offer. Shortcut interception must be scoped to a visible, current offer and must consume the event exactly once. A global observer alone cannot implement key suppression.
 
@@ -170,3 +172,58 @@ their reason, so the judge is never offered them.
 First prove the loop in one supported text app: correct offer, Tab inserts once, undo works, and a focus switch makes an old response unusable. Then connect one real workflow to Teddy's cards. Exercise continuous typing, IME input, secure fields, permission denial/revocation, duplicate keypresses and user interruption. Measure offer acceptance, unwanted interruptions, latency and calls per active minute before tuning the interval or confidence rules.
 
 The reviewed app commit `827a387` has a cursor-adjacent trigger, a pinned action strip, a scrollable menu, install packaging and Accessibility reconnection. Its current pinned shortcuts use Command–Option–1/2/3; the product keyboard contract above remains the integration target. Action selection logs and closes the panel; it does not execute the Python planner. The local CLI still supports sample preview/hold/confirm. The two routers now exist behind `python3 -m caret.bridge`, but no Swift code calls it yet. Inline insertion, live workflows, Screenpipe retrieval and both execution adapters remain integration work.
+
+## Onboarding privacy promise: done in the Caret lane
+
+Sam assigned this to the Caret lane on 2026-10-08, so Teddy does not need to. The permissions step (`PermissionsScreen` in `apps/caret/Sources/CaretHost/Onboarding/OnboardingView.swift`) now reads the bundled `PrivacyPromise.txt` and shows all of it, word for word, under the permission card. The text scrolls in the space the card leaves, with its two headings set as group heads. The view has no promise text of its own and no fallback. A run without an app bundle, such as `swift run`, shows a developer-only line that names the missing file.
+
+An app build cannot get that far without the file. `scripts/privacy_gate.sh` refuses to finish `build-app.sh`, the Xcode target and `package_mac.py` when the assembled app's `PrivacyPromise.txt` is missing, empty, a link or outside the app, or different from `PRIVACY_PROMISE`. Those verification runs never write the file. `build-app.sh debug` and `acceptance`, and `make app` (an Xcode Debug build), are internal builds: they skip only the two release acceptance records, stamp the bundle `CaretInternalBuild`, and release and packaging refuse a stamped bundle. It also refuses a copy of any promise sentence in Swift or fallback text in the view (`scripts/check_onboarding_privacy.py`); the onboarding snapshot tests check what the step draws. The apps/mac permission panel still has no cloud-data promise; if it gains one, it should read the same resource.
+
+## Host change, done by the Caret lane: let the fields question fill only what Caret already settled
+
+This was a request to Teddy. Sam decided that the Caret lane fixes a Teddy-owned surface when it blocks Caret, so the host-integration lane (v2/hostint2) builds it after this branch merges into v2/int1. Teddy, nothing is needed from you.
+
+An Ask now asks which fields far more often. Jev's two scope answers rarely say "unclear" (0 of 300 field pairs in B31's live run). They more often disagree, or both vote "asks" just under the cutoff. The helper now offers those fields by their exact labels whenever eight or fewer remain, beside the fields Jev settled. The question text names the settled ones: "Caret will fill Name. Which of these should it fill too?"
+
+Today the card has no way to say "just those". Tab with nothing selected picks the highlighted row, and Esc fills nothing, the settled fields included. The helper side is done (`helper/src/protocol.ts`, `helper/src/helper.ts` `handleAskAnswer`, tests in `helper/test/g35-clarify-wire.test.ts`):
+
+- `askQuestion.filling` (optional, fields questions only) lists the labels Caret fills whatever is picked.
+- An `askAnswer` with `picks: []` answers such a question: Caret fills only the `filling` fields. Any other empty answer is refused with `schema`.
+
+The host change:
+
+1. `CaretHostCore/AskChoices.swift`: decode `filling` on `AskQuestion` (absent, or one or more labels, fields questions only), and let `AskAnswer` carry zero picks.
+2. `CaretHostCore/AskCaret.swift`: on a question with `filling`, Tab with no row selected sends `picks: []`. Space still selects rows, and Tab with rows selected sends them. Leave every other question's Tab as it is.
+3. `AskCopy.answerLabel`: on such a question, say what Tab fills, counting the settled fields: "Fill 1" with nothing selected, "Fill 3" with two rows selected. Keep "Choose" for questions without `filling`.
+4. `AskCopy.questionHint`: for such a question, "Up and Down move between the fields. Space selects or clears one. Tab fills the selected fields and the ones Caret named. Escape fills nothing."
+5. No motion. The card redraws on each key at once, as it does now: the user is watching the key they pressed.
+6. VoiceOver (found in review, and true of every fields question today): a row has a label and a value but no action, so a VoiceOver user can't pick an arbitrary field. Give each row a Select/Clear action bound to its option id, and take `.isSelected` from the checkbox, not from the highlight, on a many-pick question.
+7. Tests: add golden lines for a question with `filling` and an answer with no picks to both copies of `ask-choices.ndjson`, and change `AskChoicesTests` where it expects an empty answer to fail to decode.
+
+The keyboard contract does not change: the card owns Tab, Space, the arrows and Esc only while it shows. Rows are unchanged, and a row's detail now names the field's section when no group does: two "City" rows under Delivery > Address and Billing > Address read "Delivery" and "Billing".
+
+Until this ships, a user who wants none of the offered fields has to dismiss the question, and the settled fields go unfilled too.
+
+## Host change, done by the Caret lane: value questions in the Ask panel
+
+The host-integration lane (v2/hostint2) builds this after the value settlement branch (v2/vs1) merges. Teddy, nothing is needed from you.
+
+When an Ask settles which fields to fill but Jev's two value questions don't agree on a field's value, the helper can now ask the user which value goes in. Without a host that draws it, those fields stay blank, as before. The helper side is done (`helper/src/protocol.ts`, `helper/src/planner/choices.ts` `valueChoices`, `helper/src/planner/ask.ts`, tests in `helper/test/vs1-value-clarify.test.ts`, golden lines in `helper/fixtures/golden/ask-values.ndjson`):
+
+- A new hello capability, `askValues`, beside `askChoices`. Only a consumer that declares both gets a value question.
+- `askQuestion.part` may be `value`, with `pick: "one"`. Its options are one or more `{ "kind": "value", "id", "value", "source" }` rows and then exactly one `{ "kind": "blank", "id" }`, at most eight in all. `value` is the exact text Caret would put in the field. `source` says where Caret read it, in the user's words: "Your saved Email", or a window's title and the line ("Order 48213: Email: dana.ortiz@example.com").
+- On a value question, `filling` lists the values already checked, each as "Label: value". The answer leaves those as they are.
+- The answer is one pick. A value pick prepares the next preview, and Caret checks it again before offering it, so it may still come back blank. The blank pick asks nothing more. The reply is the next value question (one field at a time, in form order, at most eight) or the proposal. A pick that names a source or field that changed since gets the `unknownWindow` refusal.
+
+The host change:
+
+1. `CaretHostCore/AskChoices.swift`: decode `part: value`, the `value` and `blank` options, and `filling` on value questions. Copy `fixtures/golden/ask-values.ndjson` into `Tests/CaretHostCoreTests/Fixtures/` and decode it byte for byte in `AskChoicesTests`.
+2. `AskCopy.option`: a value row's title is `value` and its detail is `source`. The blank row's title is "Leave blank", with no detail. Both wrap to as many lines as they need. Two addresses can differ only in their last characters, so a value is never truncated. The row in `Perch/AskView.swift` is a fixed 26 points today; a value row takes its text's height instead.
+3. Nothing is preselected. `AskCaret.Question.highlight` becomes optional, and a value question opens with no row highlighted. Down moves to the first row and Up to the last, then they move as now. Tab answers with the highlighted row. Tab with no row highlighted is consumed and does nothing. Esc dismisses and writes nothing, as on every question. Return stays swallowed while a question shows (`Perch/PerchController.swift`), as now. The fields question's empty answer (the section above) stays a fields question's only: a value question always answers with one pick.
+4. `AskCopy.answerLabel` says "Choose". `AskCopy.questionHint` takes the question, not only its pick mode, and for a value question says: "Up and Down move between the values. Tab chooses one. Escape writes nothing."
+5. Above the rows, when `filling` is present, one quiet line that wraps: "Caret will fill" and the entries, joined with commas. The question text is the helper's ("Which email should go in Work email?"). When the rows outgrow the panel, the list scrolls within it and keeps the highlighted row in view, with no animation.
+6. No motion. The card redraws at once on each key, as now. There is no confidence badge and no timed auto-accept, so reduced motion has nothing to change.
+7. VoiceOver: the card reads the question, then the "Caret will fill" line, then the rows, then the actions. Each row is one element whose label reads the value, then "from" and the source ("grace.oduya@example.com, from Your saved Email"), with a Choose action bound to its option id. The blank row reads "Leave blank". Each Up or Down announces the highlighted row's label. Opening the question announces the question and the number of values, and highlights nothing.
+8. Declare `askValues` in the host's hello, beside `askChoices`, only once 1 to 7 ship and a keyboard-only and a VoiceOver pass through a value question both work.
+
+The keyboard contract does not change: the card owns Tab, the arrows and Esc only while it shows.

@@ -1,4 +1,4 @@
-"""Chat completions via Vercel AI Gateway (Gemini 2.5 Flash default)."""
+"""Development-only chat completions via Vercel AI Gateway."""
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 CHAT_COMPLETIONS_PATH = "/chat/completions"
 DEFAULT_MODEL = "google/gemini-2.5-flash"
 DEFAULT_TIMEOUT_SECONDS = 120.0
+# This route cannot ship: Caret cannot disclose what happens to data sent through it.
+VERCEL_GEMINI_ENABLED = False
+VERCEL_GEMINI_DEV_ENV = "CARET_DEV_VERCEL_GEMINI"
 
 VERCEL_API_GATEWAY_KEY_ENV = "VERCEL_API_GATEWAY_KEY"
 AI_GATEWAY_API_KEY_ENV = "AI_GATEWAY_API_KEY"
@@ -27,12 +30,25 @@ class CompletionError(RuntimeError):
     """Raised when configuration, transport, or response parsing fails."""
 
 
+class CompletionDisabled(CompletionError):
+    """The dev-only route is off; no credentials were loaded and nothing was sent."""
+
+
 @dataclass(frozen=True)
 class CompletionResult:
     text: str
     model: str
     raw: dict[str, Any]
     usage: dict[str, Any]
+
+
+def vercel_disabled_reason() -> str | None:
+    """Release hosts cannot opt in to any Vercel route, regardless of model."""
+    if os.environ.get("CARET_RELEASE_HOST") == "1":
+        return "Vercel AI Gateway is disabled under a release host."
+    if os.environ.get(VERCEL_GEMINI_DEV_ENV) != "1":
+        return "Vercel AI Gateway is disabled; development only: set CARET_DEV_VERCEL_GEMINI=1 to enable it."
+    return None
 
 
 def gateway_api_key() -> str:
@@ -78,6 +94,8 @@ def complete(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> CompletionResult:
     """Create a non-streaming chat completion through Vercel AI Gateway."""
+    if reason := vercel_disabled_reason():
+        raise CompletionDisabled(reason)
     key = api_key.strip() if api_key else gateway_api_key()
     url = base_url.rstrip("/") + CHAT_COMPLETIONS_PATH
     body: dict[str, Any] = {

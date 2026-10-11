@@ -1,0 +1,683 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "31d8f976-4d78-4bbe-8dff-9233f7e384cc",
+ "at": 1791185557789,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Checkout - Fernway Goods",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "58785BCB90676459B78FB7CF3296DC75",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/checkout-shipping.html",
+   "navGen": 10,
+   "title": "Checkout - Fernway Goods",
+   "headings": [
+    "Contact",
+    "Delivery"
+   ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Contact",
+     "name": "eba7404650e6f1d2e052e0b6fc05d0cb6bbb15f65f5f6f4884492cd9e76a390b"
+    },
+    {
+     "id": "o2",
+     "heading": true,
+     "text": "Delivery",
+     "name": "4624b7769aaa1cc1e188eba5607bed7249c5470410a48772de74412729ca368e"
+    },
+    {
+     "id": "o3",
+     "heading": false,
+     "text": "Shipping method",
+     "name": "daaffb443c181e53310f5c277b8e3cc23cb1375430ac7d85ca6a72da4b9d9739"
+    }
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:email~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=email\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      340,
+      146,
+      600,
+      42
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/checkbox:email me with news and offers~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=offers\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Email me with news and offers",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      344,
+      201,
+      13,
+      13
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/combobox:country/region~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=country\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Country/Region",
+     "value": "United States",
+     "options": [
+      {
+       "value": "United States",
+       "label": "United States",
+       "selected": true
+      },
+      {
+       "value": "Canada",
+       "label": "Canada",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      340,
+      292,
+      600,
+      44
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/textbox:first name (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=first\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "First name (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      340,
+      374,
+      294,
+      42
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/textbox:last name~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=last\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Last name",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      646,
+      374,
+      294,
+      42
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/textbox:company (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=company\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Company (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      340,
+      454,
+      600,
+      42
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/textbox:address~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=address\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Address",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      340,
+      524,
+      600,
+      42
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/textbox:apartment, suite, etc. (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=address2\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Apartment, suite, etc. (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      340,
+      594,
+      600,
+      42
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/textbox:city~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=city\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "City",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      340,
+      674,
+      192,
+      42
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/combobox:state~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=state\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "State",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "State",
+       "selected": true
+      },
+      {
+       "value": "Alabama",
+       "label": "Alabama",
+       "selected": false
+      },
+      {
+       "value": "Alaska",
+       "label": "Alaska",
+       "selected": false
+      },
+      {
+       "value": "Arizona",
+       "label": "Arizona",
+       "selected": false
+      },
+      {
+       "value": "Arkansas",
+       "label": "Arkansas",
+       "selected": false
+      },
+      {
+       "value": "California",
+       "label": "California",
+       "selected": false
+      },
+      {
+       "value": "Colorado",
+       "label": "Colorado",
+       "selected": false
+      },
+      {
+       "value": "Connecticut",
+       "label": "Connecticut",
+       "selected": false
+      },
+      {
+       "value": "Delaware",
+       "label": "Delaware",
+       "selected": false
+      },
+      {
+       "value": "District of Columbia",
+       "label": "District of Columbia",
+       "selected": false
+      },
+      {
+       "value": "Florida",
+       "label": "Florida",
+       "selected": false
+      },
+      {
+       "value": "Georgia",
+       "label": "Georgia",
+       "selected": false
+      },
+      {
+       "value": "Hawaii",
+       "label": "Hawaii",
+       "selected": false
+      },
+      {
+       "value": "Idaho",
+       "label": "Idaho",
+       "selected": false
+      },
+      {
+       "value": "Illinois",
+       "label": "Illinois",
+       "selected": false
+      },
+      {
+       "value": "Indiana",
+       "label": "Indiana",
+       "selected": false
+      },
+      {
+       "value": "Iowa",
+       "label": "Iowa",
+       "selected": false
+      },
+      {
+       "value": "Kansas",
+       "label": "Kansas",
+       "selected": false
+      },
+      {
+       "value": "Kentucky",
+       "label": "Kentucky",
+       "selected": false
+      },
+      {
+       "value": "Louisiana",
+       "label": "Louisiana",
+       "selected": false
+      },
+      {
+       "value": "Maine",
+       "label": "Maine",
+       "selected": false
+      },
+      {
+       "value": "Maryland",
+       "label": "Maryland",
+       "selected": false
+      },
+      {
+       "value": "Massachusetts",
+       "label": "Massachusetts",
+       "selected": false
+      },
+      {
+       "value": "Michigan",
+       "label": "Michigan",
+       "selected": false
+      },
+      {
+       "value": "Minnesota",
+       "label": "Minnesota",
+       "selected": false
+      },
+      {
+       "value": "Mississippi",
+       "label": "Mississippi",
+       "selected": false
+      },
+      {
+       "value": "Missouri",
+       "label": "Missouri",
+       "selected": false
+      },
+      {
+       "value": "Montana",
+       "label": "Montana",
+       "selected": false
+      },
+      {
+       "value": "Nebraska",
+       "label": "Nebraska",
+       "selected": false
+      },
+      {
+       "value": "Nevada",
+       "label": "Nevada",
+       "selected": false
+      },
+      {
+       "value": "New Hampshire",
+       "label": "New Hampshire",
+       "selected": false
+      },
+      {
+       "value": "New Jersey",
+       "label": "New Jersey",
+       "selected": false
+      },
+      {
+       "value": "New Mexico",
+       "label": "New Mexico",
+       "selected": false
+      },
+      {
+       "value": "New York",
+       "label": "New York",
+       "selected": false
+      },
+      {
+       "value": "North Carolina",
+       "label": "North Carolina",
+       "selected": false
+      },
+      {
+       "value": "North Dakota",
+       "label": "North Dakota",
+       "selected": false
+      },
+      {
+       "value": "Ohio",
+       "label": "Ohio",
+       "selected": false
+      },
+      {
+       "value": "Oklahoma",
+       "label": "Oklahoma",
+       "selected": false
+      },
+      {
+       "value": "Oregon",
+       "label": "Oregon",
+       "selected": false
+      },
+      {
+       "value": "Pennsylvania",
+       "label": "Pennsylvania",
+       "selected": false
+      },
+      {
+       "value": "Rhode Island",
+       "label": "Rhode Island",
+       "selected": false
+      },
+      {
+       "value": "South Carolina",
+       "label": "South Carolina",
+       "selected": false
+      },
+      {
+       "value": "South Dakota",
+       "label": "South Dakota",
+       "selected": false
+      },
+      {
+       "value": "Tennessee",
+       "label": "Tennessee",
+       "selected": false
+      },
+      {
+       "value": "Texas",
+       "label": "Texas",
+       "selected": false
+      },
+      {
+       "value": "Utah",
+       "label": "Utah",
+       "selected": false
+      },
+      {
+       "value": "Vermont",
+       "label": "Vermont",
+       "selected": false
+      },
+      {
+       "value": "Virginia",
+       "label": "Virginia",
+       "selected": false
+      },
+      {
+       "value": "Washington",
+       "label": "Washington",
+       "selected": false
+      },
+      {
+       "value": "West Virginia",
+       "label": "West Virginia",
+       "selected": false
+      },
+      {
+       "value": "Wisconsin",
+       "label": "Wisconsin",
+       "selected": false
+      },
+      {
+       "value": "Wyoming",
+       "label": "Wyoming",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      544,
+      674,
+      192,
+      44
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/textbox:zip code~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=zip\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "ZIP code",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      748,
+      674,
+      192,
+      42
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/textbox:phone (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=phone\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Phone (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      340,
+      756,
+      600,
+      42
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e13",
+     "key": "form@0/checkbox:save this information for next time~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=save\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Save this information for next time",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      344,
+      811,
+      13,
+      13
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e14",
+     "key": "form@0/radio:standard (5-7 business days)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=ship\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Standard (5-7 business days)",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      360,
+      885,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e14",
+      "name": "Shipping method"
+     },
+     "sections": [
+      "o2",
+      "o3"
+     ]
+    },
+    {
+     "id": "e15",
+     "key": "form@0/radio:express (2-3 business days)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=ship\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Express (2-3 business days)",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      360,
+      933,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e14",
+      "name": "Shipping method"
+     },
+     "sections": [
+      "o2",
+      "o3"
+     ]
+    },
+    {
+     "id": "e16",
+     "key": "form@0/radio:overnight~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=ship\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Overnight",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      360,
+      981,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e14",
+      "name": "Shipping method"
+     },
+     "sections": [
+      "o2",
+      "o3"
+     ]
+    },
+    {
+     "id": "e17",
+     "key": "form@0/textbox:add a gift note (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=gift\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "Add a gift note (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      340,
+      1040,
+      600,
+      58
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e18",
+     "key": "form@0/button:continue to payment~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Continue to payment",
+     "form": "form@0",
+     "rect": [
+      340,
+      1133,
+      600,
+      49
+     ],
+     "sections": [
+      "o2"
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

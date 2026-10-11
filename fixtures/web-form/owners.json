@@ -1,0 +1,110 @@
+{
+  "about": "G2: whose each value is, for page-loop-eval.ts's canned engine, which answers fill's ownership questions from it. Per page: `user` lists the values that are the page's own person's (the user filling in the form), `other` the values of anyone else the sources name, and `otherFields` the fields (a task page's data-oracle names; a corpus or W4 form's labels) that ask for someone else's details. Each page's memory entries are the user's too. A value that holds values of only one side is that side's; one that holds both, or neither, is unclear, which is what the canned engine answers wherever this file says nothing. Written by hand from the page's own sources (fixtures/web-form/tasks/expect, fixtures/realfill/sources), never from what fill offers. The corpus's two decoy windows sit beside every corpus form: Dana Whitfield and Priya are listed as someone else's on each, and the decoy mail's recipient Jordan Reyes only on the two forms that are his. W4's saved pages take theirs from W4's replay folder (--w4-owners). All values are synthetic.",
+  "pages": {
+    "wizard-1": {
+      "user": ["Ines Vandermeer", "Nessa", "555-0147", "ines.vandermeer@example.org", "Denver, Colorado", "Tallgrass Mechatronics", "Copperline Fabrication", "Northfield State University"],
+      "other": ["555-0112", "Mom and Dad", "Hanna", "Northfield College", "Gareth Lowe", "gareth.lowe@example.net", "555-0183", "Orbitline Field Systems"],
+      "otherFields": []
+    },
+    "wizard-2": {
+      "user": ["Ines Vandermeer", "Nessa", "555-0147", "ines.vandermeer@example.org", "Denver, Colorado", "Tallgrass Mechatronics", "Copperline Fabrication", "Northfield State University"],
+      "other": ["555-0112", "Mom and Dad", "Hanna", "Northfield College", "Gareth Lowe", "gareth.lowe@example.net", "555-0183", "Orbitline Field Systems"],
+      "otherFields": []
+    },
+    "wizard-3": {
+      "user": ["Ines Vandermeer", "Nessa", "555-0147", "ines.vandermeer@example.org", "Denver, Colorado", "Tallgrass Mechatronics", "Copperline Fabrication", "Northfield State University"],
+      "other": ["555-0112", "Mom and Dad", "Hanna", "Northfield College", "Gareth Lowe", "gareth.lowe@example.net", "555-0183", "Orbitline Field Systems"],
+      "otherFields": []
+    },
+    "reveal": {
+      "user": ["Priya Castellanos", "priya.castellanos@example.com", "48 Larchmere Avenue, Toronto, Ontario", "112 Birchmount Road, Hamilton, L8P 2K4", "Bluefin Staffing Partners", "Lakeshore Polytechnic Institute"],
+      "other": ["Dan Mbeki", "Daniel Mbeki", "Dan", "dan.mbeki.home@example.org", "daniel.mbeki@example.net", "555-0131"],
+      "otherFields": ["referrer_name", "referrer_email"]
+    },
+    "forty": {
+      "user": ["Josephine Abernathy-Cole", "Jo Abernathy-Cole", "Jo", "555-0164", "jabernathy.cole@example.org", "jo.abernathycole@example.com", "2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214"],
+      "other": ["Marcus Cole", "555-0171", "marcus.cole@example.net", "Elena Varga", "Elena", "555-0139", "elena.varga@example.org", "Tamsin", "Hollis Street Community Garden"],
+      "otherFields": ["em_name", "em_relation", "em_phone", "em_email", "ref1_name", "ref1_phone", "ref1_email", "ref2_name", "ref2_phone", "ref2_email"]
+    },
+    "greenhouse": {
+      "user": ["Dmitri Halvorsen", "Dima", "555-0126", "dmitri.halvorsen@example.org", "Portland, Maine", "Lakeshore Polytechnic Institute"],
+      "other": ["Ayesha Mendel", "ayesha.mendel@example.net", "555-0108", "Boston, Massachusetts"],
+      "otherFields": []
+    },
+    "ashby": {
+      "user": ["Lia Nakamura", "Lia", "Aurelia Josephine Nakamura", "aurelia.nakamura@example.net", "555-0152", "San Diego, California", "San Jose"],
+      "other": ["Owen Achterberg", "Owen", "owen.achterberg@example.com", "555-0195"],
+      "otherFields": []
+    },
+    "httpbin-pizza": {
+      "user": ["Jordan Reyes", "jordan.reyes@example.org", "(512) 555-0147"],
+      "other": ["Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    },
+    "greenhouse-apply": {
+      "user": ["Jordan Reyes", "jordan.reyes@example.org", "(512) 555-0147", "The University of Texas at Austin"],
+      "other": ["Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    },
+    "airline-passenger": {
+      "user": ["Riley Okafor", "Riley Ade Okafor", "riley.okafor@example.net", "(206) 555-0134", "98103"],
+      "other": ["Morgan Ellis", "morgan.ellis@northwind-travel.example.com", "(206) 555-0188", "Northwind Travel", "Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    },
+    "hubspot-contact": {
+      "user": [],
+      "other": ["Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    },
+    "rental-application": {
+      "user": ["Elena Marisol Vance", "elena.vance@example.com", "(737) 555-0112", "4410 Speedway Apt 2, Austin, Texas 78751", "Brightline Dental Labs"],
+      "other": ["Gary Pruitt", "(512) 555-0193", "gpruitt@example.net", "Tomas Reed", "(737) 555-0179", "Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": ["Landlord or property manager name", "Landlord phone"]
+    },
+    "clinic-intake": {
+      "user": ["Theo Lindqvist", "theo.lindqvist@example.org", "(617) 555-0141", "(617) 555-0175", "27 Linden Terrace, Unit 3, Somerville, Massachusetts 02143"],
+      "other": ["Ines Lindqvist", "Ines", "ines.lindqvist@example.org", "(617) 555-0129", "(617) 555-0166", "ines.lindqvist@fairmount.example.com", "Fairmount Design Group", "Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": ["Emergency contact name", "Relationship to patient", "Emergency contact phone"]
+    },
+    "conference-registration": {
+      "user": [],
+      "other": ["Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    },
+    "event-rsvp": {
+      "user": ["Avery Kim", "Avery", "avery.kim@example.com"],
+      "other": ["Beatrice Sutherland", "Bea", "bea.sutherland@example.com", "(503) 555-0157", "bea@marigold-bakery.example.com", "Marigold Bakery", "Priscilla", "Jun", "Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": ["Guest's full name", "Guest's meal choice"]
+    },
+    "checkout-shipping": {
+      "user": ["Marcus Bell", "marcus.bell@example.com", "650-555-0118", "1907 Alameda de las Pulgas, apt 12", "Redwood City CA 94061"],
+      "other": ["Lena", "Lena Marsh", "88 Birch Hollow Rd, Asheville, NC 28801", "828-555-0104", "Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    },
+    "support-ticket": {
+      "user": [],
+      "other": ["Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    },
+    "course-enrollment": {
+      "user": ["Daniel James Okonkwo-Reyes", "DJ", "daniel.or@example.net", "414-555-0137"],
+      "other": ["Ms. Alvarez", "Alvarez", "r.alvarez@lakeside.example.org", "414-555-0190", "Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    },
+    "job-application": {
+      "user": ["Harper Quinlan", "harper.quinlan@example.com", "(303) 555-0121", "https://harperq.example.com", "github.com/harperq-data", "Ridgeline Outdoor Co"],
+      "other": ["Kai Lindgren", "Dr. Simone Achebe", "Simone Achebe", "simone.achebe@ridgeline.example.com", "(303) 555-0183", "Wren Ng", "wren.ng@northgate.example.com", "(720) 555-0108", "Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": ["Referrer's name (if referred)", "Reference name", "Reference relationship", "Reference email", "Reference phone"]
+    },
+    "car-service-booking": {
+      "user": ["Jamie Torres", "jamie.torres@example.net", "(720) 555-0146"],
+      "other": ["Chris Delgado", "cdelgado@summit-subaru.example.com", "(720) 555-0170", "1450 Foothills Pkwy, Golden, CO 80401", "Summit Subaru", "Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    },
+    "b2b-demo-request": {
+      "user": [],
+      "other": ["Dana Whitfield", "Dana", "dana.whitfield@lumenlabs.example.com", "(415) 555-0162", "2201 Mission St, San Francisco, CA 94110", "Lumen Labs", "Priya"],
+      "otherFields": []
+    }
+  }
+}

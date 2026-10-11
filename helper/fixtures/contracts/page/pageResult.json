@@ -1,0 +1,50 @@
+{
+  "type": "pageResult",
+  "v": 1,
+  "id": "fixture-command",
+  "at": 20,
+  "outcome": "ok",
+  "detail": "fixture detail",
+  "readings": {
+    "before": "",
+    "afterInput": "Ada",
+    "afterBlur": "Ada",
+    "invalid": false,
+    "error": "fixture error"
+  },
+  "choice": {
+    "flavor": "aria",
+    "matches": [
+      "Ada"
+    ],
+    "expanded": false,
+    "hiddenInput": "set"
+  },
+  "attached": {
+    "via": "input",
+    "file": {
+      "name": "fixture.txt",
+      "size": 1
+    },
+    "shown": true
+  },
+  "text": {
+    "tabId": 3,
+    "leftAt": 10,
+    "title": "Fixture",
+    "frames": [
+      {
+        "frameId": 0,
+        "origin": "https://fixture.invalid"
+      }
+    ],
+    "selection": [
+      "Synthetic"
+    ],
+    "blocks": [
+      "Fixture text"
+    ],
+    "cut": false,
+    "docsText": "on"
+  }
+}

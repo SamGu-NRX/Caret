@@ -1,0 +1,51 @@
+{
+  "effort": "base",
+  "autoReview": ["open"],
+  "strictness": 2,
+  "commentTypes": ["logic", "syntax"],
+  "ignorePatterns": "packages/**\n.summem/**\nmemory-bank/archive/**\n**/*.png\n**/*.jpg\n**/*.mp4\n**/pnpm-lock.yaml\n**/package-lock.json\n**/Package.resolved",
+  "summarySection": { "included": true, "collapsible": true, "defaultOpen": false },
+  "instructions": "Caret v2 is a Mac assistant at the text caret: a Swift host app (apps/caret), a Swift screen reader that acts through Accessibility (apps/screen-reader), a TypeScript helper that plans fills and goals (helper), and a Chrome extension (extension). packages/ is pinned upstream code and is skipped. Judge changes against the rules below first; a way to break one outranks any style point. Test data is synthetic by design.",
+  "rules": [
+    {
+      "id": "never-wrong-value",
+      "rule": "Caret never writes a value it has not verified. Every field write goes through the fill write contract (checkValues, or a named mintExempt rule) and is read back. Flag any path that writes without that check, guesses a value, or can write a value that belongs to another person.",
+      "scope": ["helper/**", "apps/**", "extension/**"],
+      "severity": "high"
+    },
+    {
+      "id": "privacy",
+      "rule": "Screen or page text leaves the Mac only through the helper's privacy ledger and its measured limits. Secret fields (passwords, one-time codes, card data) and deny-listed account or password-manager origins are never read, kept or sent. Flag any new read, retention or send path that skips the exclusions or the ledger.",
+      "scope": ["helper/**", "apps/**", "extension/**"],
+      "severity": "high"
+    },
+    {
+      "id": "consequential-actions",
+      "rule": "Caret never presses send, submit, delete, pay or share itself, never approves OS security or privacy prompts, and never automates terminals or Caret itself; those steps are handed to the user. Flag any dispatch path that can perform one without the user's own press, or any press that bypasses the goal capability table.",
+      "scope": ["helper/**", "apps/**", "extension/**"],
+      "severity": "high"
+    },
+    {
+      "id": "stop-and-undo",
+      "rule": "Stop blocks every new dispatch. Undo restores a field only while it still holds exactly what Caret wrote, so user text is never overwritten. Flag code that can dispatch after Stop or restore over text Caret did not write.",
+      "scope": ["helper/**", "apps/**", "extension/**"],
+      "severity": "high"
+    },
+    {
+      "id": "grants",
+      "rule": "Every reader or extension action needs a live grant bound to the accepted task, process or tab, window or frame, and expiry, checked right before the mutation.",
+      "scope": ["apps/screen-reader/**", "helper/src/executor/**", "helper/src/goals/**", "extension/src/**"],
+      "severity": "high"
+    },
+    {
+      "id": "no-secrets-in-git",
+      "rule": "No credentials, API keys or personal data are committed; fixtures and test data are synthetic.",
+      "severity": "high"
+    },
+    {
+      "id": "loud-errors",
+      "rule": "Prefer explicit interfaces with specific, loud errors over guessing from structure. A changed default or constant states its reason and evidence at the change site.",
+      "severity": "medium"
+    }
+  ]
+}

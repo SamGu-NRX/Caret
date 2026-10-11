@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Register | DevHarbor Summit 2026</title>
+<style>
+body{font-family:Inter,-apple-system,Helvetica,Arial,sans-serif;max-width:680px;margin:0 auto;padding:24px;color:#e8e9f0;background:#14152b}
+h1{font-size:28px;margin:0} .dates{color:#9ea3ff;margin:4px 0 22px}
+h2{font-size:15px;color:#9ea3ff;margin-top:30px}
+label,legend{display:block;font-size:13px;margin:12px 0 5px;color:#c9cbe0}
+.row{display:flex;gap:14px} .row>div{flex:1}
+input[type=text],input[type=email],select{width:100%;padding:10px;font-size:15px;box-sizing:border-box;border:1px solid #3a3c66;border-radius:8px;background:#1e2040;color:#fff}
+fieldset{border:1px solid #3a3c66;border-radius:8px;padding:10px 14px;margin:14px 0} fieldset label{display:block;margin:8px 0;color:#e8e9f0;font-size:14px}
+.star{color:#ff8fa3} .check{margin:10px 0;font-size:14px} .check label{display:inline;color:#e8e9f0;font-size:14px}
+button{margin-top:22px;padding:13px 28px;font-size:16px;background:#6f72ff;color:#fff;border:0;border-radius:8px}
+</style></head><body>
+<!-- Invented developer-conference registration (B24 corpus). Submit is inert. -->
+<h1>DevHarbor Summit 2026</h1>
+<p class="dates">November 18&ndash;19 &middot; Pier 27, San Francisco &middot; and online</p>
+<form onsubmit="event.preventDefault()">
+<h2>About you</h2>
+<div class="row">
+ <div><label for="fn">First name<span class="star">*</span></label><input type="text" id="fn" autocomplete="off"></div>
+ <div><label for="ln">Last name<span class="star">*</span></label><input type="text" id="ln" autocomplete="off"></div>
+</div>
+<label for="em">Email address<span class="star">*</span></label><input type="email" id="em" autocomplete="off">
+<div class="row">
+ <div><label for="jt">Job title<span class="star">*</span></label><input type="text" id="jt" autocomplete="off"></div>
+ <div><label for="co">Company or organization<span class="star">*</span></label><input type="text" id="co" autocomplete="off"></div>
+</div>
+<label for="country">Country<span class="star">*</span></label>
+<select id="country"><option value="">Select country</option><option>United States</option><option>Canada</option><option>Mexico</option><option>United Kingdom</option><option>Germany</option><option>Japan</option><option>India</option><option>Brazil</option><option>Australia</option><option>Other</option></select>
+
+<h2>Your ticket</h2>
+<fieldset><legend>Ticket type<span class="star">*</span></legend>
+<label><input type="radio" name="ticket" value="full"> In-person: Full conference</label>
+<label><input type="radio" name="ticket" value="workshop"> In-person: Workshop day only</label>
+<label><input type="radio" name="ticket" value="virtual"> Virtual pass</label>
+</fieldset>
+<fieldset><legend>Workshops (choose any)</legend>
+<label><input type="checkbox" name="ws" value="rust"> Intro to Rust</label>
+<label><input type="checkbox" name="ws" value="otel"> Observability with OpenTelemetry</label>
+<label><input type="checkbox" name="ws" value="a11y"> Accessible front-end patterns</label>
+</fieldset>
+
+<h2>On-site details</h2>
+<div class="row">
+ <div><label for="diet">Dietary requirements</label>
+  <select id="diet"><option value="">Select...</option><option>No dietary requirements</option><option>Vegetarian</option><option>Vegan</option><option>Gluten-free</option><option>Halal</option><option>Kosher</option><option>Other</option></select></div>
+ <div><label for="shirt">T-shirt size</label>
+  <select id="shirt"><option value="">Select size</option><option>XS</option><option>S</option><option>M</option><option>L</option><option>XL</option><option>XXL</option></select></div>
+</div>
+<label for="heard">How did you hear about us?</label>
+<select id="heard"><option value="">Select...</option><option>Colleague or friend</option><option>Social media</option><option>Newsletter</option><option>Meetup or user group</option><option>Search engine</option><option>Other</option></select>
+
+<div class="check"><input type="checkbox" id="coc"> <label for="coc">I agree to the DevHarbor Code of Conduct.<span class="star">*</span></label></div>
+<div class="check"><input type="checkbox" id="news"> <label for="news">Send me news about future DevHarbor events.</label></div>
+<button type="submit">Continue to review</button>
+</form>
+</body></html>

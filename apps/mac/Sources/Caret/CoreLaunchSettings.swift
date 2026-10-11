@@ -14,6 +14,8 @@ import os
 enum CoreLaunchSettings {
     private static let log = Logger(subsystem: "com.caret.app", category: "core-launch")
 
+    static let providerEnvironmentKeys = ["GROQ_API_KEY", "AI_GATEWAY_API_KEY", "TYPESAFE_API_KEY"]
+
     /// `~/.config/caret/dev.json`, or `CARET_DEV_CONFIG`. Git-ignored by
     /// living outside the repository.
     struct DeveloperConfig: Decodable {
@@ -200,7 +202,7 @@ enum CoreLaunchSettings {
 
         let envFile = env["CARET_ENV_FILE"] ?? config.envFile
         var overrides = environment(fromEnvFileAt: envFile)
-        for key in ["GROQ_API_KEY", "AI_GATEWAY_API_KEY", "TYPESAFE_API_KEY"] {
+        for key in Self.providerEnvironmentKeys {
             if let value = env[key] { overrides[key] = value }
         }
 

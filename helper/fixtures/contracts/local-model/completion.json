@@ -1,0 +1,22 @@
+{
+  "id": "r1",
+  "ok": true,
+  "text": "fixture",
+  "stop": "eog",
+  "prefixTokens": 1,
+  "prefixCached": false,
+  "promptTokens": 2,
+  "outputTokens": 3,
+  "ms": {
+    "prefix": 1,
+    "prompt": 2,
+    "decode": 3,
+    "total": 6
+  },
+  "memory": {
+    "residentMB": 1,
+    "footprintMB": 2,
+    "peakFootprintMB": 3,
+    "peakResidentMB": 4
+  }
+}

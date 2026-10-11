@@ -1,0 +1,86 @@
+{
+  "id": "claim-follow-up",
+  "title": "Fill the claim form, archive the order, and add the follow-up",
+  "slots": {
+    "name": "the claimant's full name",
+    "city": "the shipping city"
+  },
+  "steps": [
+    {
+      "says": "The claim form's name field holds {{name}}",
+      "end": {
+        "kind": "valueEquals",
+        "window": { "bundleId": "dev.caret.fixture", "titleStartsWith": "Caret Fixture — Executor" },
+        "target": { "key": "dev.caret.fixture/standard/textfield:name~0", "describe": "the Name field" },
+        "value": "{{name}}"
+      }
+    },
+    {
+      "says": "The shipping city is {{city}}",
+      "end": {
+        "kind": "valueEquals",
+        "window": { "titleStartsWith": "Caret Fixture — Executor" },
+        "target": { "role": "AXTextField", "label": "City", "describe": "the city field of the shipping address" },
+        "value": "{{city}}"
+      }
+    },
+    {
+      "says": "The Email field has focus",
+      "end": {
+        "kind": "focused",
+        "window": { "titleStartsWith": "Caret Fixture — Executor" },
+        "target": { "label": "Email", "role": "AXTextField", "describe": "the Email field" }
+      }
+    },
+    {
+      "says": "The order shows as archived",
+      "end": {
+        "kind": "exists",
+        "window": { "titleStartsWith": "Caret Fixture — Executor" },
+        "target": { "role": "AXStaticText", "label": "Status: Archived", "describe": "the archived status line" }
+      },
+      "via": { "kind": "press", "target": { "role": "AXButton", "label": "Archive", "describe": "the Archive button" } }
+    },
+    {
+      "says": "The active status line is gone",
+      "end": {
+        "kind": "absent",
+        "window": { "titleStartsWith": "Caret Fixture — Executor" },
+        "target": { "role": "AXStaticText", "label": "Status: Active", "describe": "the active status line" }
+      }
+    },
+    {
+      "says": "Page 2 is showing",
+      "end": { "kind": "windowTitle", "window": { "titleStartsWith": "Caret Fixture — Executor" }, "title": "Caret Fixture — Executor (page 2)" },
+      "via": { "kind": "press", "target": { "role": "AXButton", "label": "Next page", "describe": "the Next page button" } }
+    },
+    {
+      "says": "The follow-up with {{name}} is on the Caret Test calendar",
+      "end": {
+        "kind": "calendarEvent",
+        "calendar": "Caret Test",
+        "title": "Follow-up with {{name}}",
+        "start": "2026-10-08T15:00:00-05:00",
+        "end": "2026-10-08T15:30:00-05:00"
+      }
+    },
+    {
+      "says": "The executor window is in front",
+      "end": { "kind": "windowFocused", "window": { "bundleId": "dev.caret.fixture", "titleStartsWith": "Caret Fixture — Executor" } }
+    },
+    {
+      "says": "You send the follow-up yourself",
+      "end": {
+        "kind": "handoff",
+        "window": { "titleStartsWith": "Caret Fixture — Executor" },
+        "target": { "role": "AXButton", "label": "Send", "describe": "the Send button" },
+        "why": "outbound"
+      }
+    },
+    {
+      "says": "The help page is open",
+      "end": { "kind": "windowTitle", "window": { "titleStartsWith": "Caret Fixture — Help" }, "title": "Caret Fixture — Help" },
+      "via": { "kind": "openUrl", "url": "https://example.com/help" }
+    }
+  ]
+}

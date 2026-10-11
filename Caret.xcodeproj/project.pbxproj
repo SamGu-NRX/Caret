@@ -295,9 +295,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = B10000000000000000000007 /* Build configuration list for PBXNativeTarget "Caret" */;
 			buildPhases = (
+				E90000000000000000000F01 /* Privacy gate */,
 				B10000000000000000000003 /* Sources */,
 				B10000000000000000000005 /* Frameworks */,
 				B10000000000000000000004 /* Resources */,
+				E90000000000000000000F02 /* Processed privacy gate */,
 			);
 			buildRules = (
 			);
@@ -391,6 +393,41 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		E90000000000000000000F01 /* Privacy gate */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Privacy gate";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "unset CARET_BUILD_PLIST CARET_REQUIRE_PROCESSED_PLIST\n[ \"$CONFIGURATION\" = Debug ] || unset CARET_INTERNAL_BUILD\nexport CARET_PRIVACY_RESOURCE=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyPromise.txt\"\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
+		};
+		E90000000000000000000F02 /* Processed privacy gate */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			/* This input orders the final check after ProcessInfoPlistFile; signing waits for target phases. */
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Processed privacy gate";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "unset CARET_PRIVACY_RESOURCE\n[ \"$CONFIGURATION\" = Debug ] || unset CARET_INTERNAL_BUILD\nplist=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\n/usr/libexec/PlistBuddy -c \"Delete :CaretInternalBuild\" \"$plist\" 2>/dev/null\n[ \"$CARET_INTERNAL_BUILD\" != 1 ] || /usr/libexec/PlistBuddy -c \"Add :CaretInternalBuild bool true\" \"$plist\"\nexport CARET_BUILD_PLIST=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nexport CARET_REQUIRE_PROCESSED_PLIST=1\nexport CARET_VERIFY_PRIVACY_RESOURCE=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyPromise.txt\"\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		B10000000000000000000003 /* Sources */ = {

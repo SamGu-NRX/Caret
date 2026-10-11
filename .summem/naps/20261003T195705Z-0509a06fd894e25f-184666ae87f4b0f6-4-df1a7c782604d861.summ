@@ -1,0 +1,1 @@
+A13: ask field sits in the keyable non-activating activity panel (sendEvent takes Return/Tab/Esc/Cmd-Z); drive it with scripts/pid-keys.swift, not cua-driver. Golden line 32 now has calendar. --calendar-test without Calendar access hands off blocked tcc, no grant.

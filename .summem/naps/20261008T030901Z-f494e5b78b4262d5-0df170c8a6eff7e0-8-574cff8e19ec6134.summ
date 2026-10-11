@@ -1,0 +1,1 @@
+OWNER_NOTE_CHARS is 0 behind TODO(INT1); privacy copy is bundled PrivacyPromise.txt (verify gate). Scope stand-ins use builders.scopeLabel. Script env names via processEnv/HELPER_ONLY_ENV. Diff adversary accept runs vs base before loosening a guard.

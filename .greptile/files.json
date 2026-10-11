@@ -1,0 +1,8 @@
+{
+  "files": [
+    { "path": "AGENTS.md", "description": "Contributor contract: the selected upstreams, ownership and keyboard rules" },
+    { "path": "docs/input-pipeline.md", "description": "How input, routing and acceptance work, and who owns each part" },
+    { "path": "docs/native-computer-use.md", "description": "How native actions are planned, granted and verified" },
+    { "path": "helper/src/privacy.ts", "description": "The privacy promise shown to users and the snippet limits behind it", "scope": ["helper/**", "extension/**"] }
+  ]
+}

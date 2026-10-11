@@ -1,0 +1,279 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "332ff29c-0fd4-45c5-9e44-92eb086597a5",
+ "at": 1791185481991,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Apply: Software Engineer Intern (Q1 local test)",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "AE18F6A3D05940B10559C4A791B9D1D8",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/greenhouse-apply.html",
+   "navGen": 3,
+   "title": "Apply: Software Engineer Intern (Q1 local test)",
+   "headings": [
+    "Software Engineer Intern"
+   ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Software Engineer Intern",
+     "name": "eab7ccb4de1cd2926d2e2fd811f3caa952d435d451cb58c709a62fee8e6c9ff6"
+    }
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form[f]/textbox:first name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"name=first_name\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "First Name *",
+     "value": "",
+     "form": "form#f",
+     "rect": [
+      280,
+      139,
+      720,
+      34
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form[f]/textbox:last name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"name=last_name\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Last Name *",
+     "value": "",
+     "form": "form#f",
+     "rect": [
+      280,
+      209,
+      720,
+      34
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form[f]/textbox:email *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"name=email\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email *",
+     "value": "",
+     "form": "form#f",
+     "rect": [
+      280,
+      279,
+      720,
+      34
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form[f]/textbox:phone~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"name=phone\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Phone",
+     "value": "",
+     "form": "form#f",
+     "rect": [
+      280,
+      349,
+      720,
+      34
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form[f]/button:resume/cv *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"name=resume\",\"file\"]",
+     "kind": "file",
+     "role": "button",
+     "name": "Resume/CV *",
+     "form": "form#f",
+     "rect": [
+      280,
+      419,
+      253,
+      21
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form[f]/combobox:school *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"id=school-input\",\"combobox\"]",
+     "kind": "combobox",
+     "role": "combobox",
+     "name": "School *",
+     "value": "",
+     "form": "form#f",
+     "rect": [
+      289,
+      503,
+      16,
+      32
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form[f]/combobox:degree *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"name=degree\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Degree *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select...",
+       "selected": true
+      },
+      {
+       "value": "Associate's Degree",
+       "label": "Associate's Degree",
+       "selected": false
+      },
+      {
+       "value": "Bachelor's Degree",
+       "label": "Bachelor's Degree",
+       "selected": false
+      },
+      {
+       "value": "Master's Degree",
+       "label": "Master's Degree",
+       "selected": false
+      },
+      {
+       "value": "Doctorate",
+       "label": "Doctorate",
+       "selected": false
+      },
+      {
+       "value": "Other",
+       "label": "Other",
+       "selected": false
+      }
+     ],
+     "form": "form#f",
+     "rect": [
+      280,
+      580,
+      720,
+      36
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form[f]/textbox:graduation date (mm/yyyy)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"name=grad\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Graduation Date (MM/YYYY)",
+     "value": "",
+     "form": "form#f",
+     "rect": [
+      280,
+      652,
+      720,
+      34
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form[f]/combobox:are you legally authorized to work in the united states? *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"id=auth-input\",\"combobox\"]",
+     "kind": "combobox",
+     "role": "combobox",
+     "name": "Are you legally authorized to work in the United States? *",
+     "value": "",
+     "form": "form#f",
+     "rect": [
+      289,
+      749,
+      16,
+      32
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form[f]/textbox:linkedin profile~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"name=linkedin\",\"url\"]",
+     "kind": "url",
+     "role": "textbox",
+     "name": "LinkedIn Profile",
+     "value": "",
+     "form": "form#f",
+     "rect": [
+      280,
+      826,
+      720,
+      34
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form[f]/button:submit application~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form#f\",\"id=submit\",\"button\"]",
+     "kind": "button",
+     "role": "button",
+     "name": "Submit application",
+     "form": "form#f",
+     "rect": [
+      280,
+      880,
+      158.6,
+      37
+     ],
+     "sections": [
+      "o1"
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

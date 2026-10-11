@@ -1,0 +1,101 @@
+name: Record host snapshots
+
+on:
+  workflow_dispatch:
+  # A single temporary branch can bootstrap recording before this workflow lands on main.
+  push:
+    branches: [snapshots/record]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: record-host-snapshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  record-snapshots:
+    name: record-snapshots
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      # Snapshot review uses the CI renderer, not the local Xcode 27 renderer.
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      CARET_RECORD_SNAPSHOTS: '1'
+    steps:
+      - name: Refuse credentials and external environment files
+        shell: bash
+        run: |
+          for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY CARET_ENV_FILE; do
+            if printenv "$name" > /dev/null; then
+              echo "::error::$name must not be set in fixture-only CI"
+              exit 1
+            fi
+          done
+          test -d "$DEVELOPER_DIR"
+      - uses: actions/checkout@v4
+      - name: Fetch pinned KeyType packages
+        run: git submodule update --init --depth 1 packages/keytype
+      - name: Install pinned llama.cpp macOS framework
+        shell: bash
+        run: |
+          download=$(mktemp -d "$RUNNER_TEMP/llama-download.XXXXXX")
+          extracted=$(mktemp -d "$RUNNER_TEMP/llama-extracted.XXXXXX")
+          curl --fail --location --retry 3 \
+            https://github.com/ggml-org/llama.cpp/releases/download/b9402/llama-b9402-xcframework.zip \
+            --output "$download/llama.zip"
+          unzip -q "$download/llama.zip" -d "$extracted" \
+            'build-apple/llama.xcframework/Info.plist' \
+            'build-apple/llama.xcframework/macos-arm64_x86_64/*'
+          python3 -I - "$extracted/build-apple/llama.xcframework/Info.plist" <<'PY'
+          import plistlib
+          import sys
+          path = sys.argv[1]
+          with open(path, 'rb') as f:
+              manifest = plistlib.load(f)
+          manifest['AvailableLibraries'] = [
+              lib for lib in manifest['AvailableLibraries'] if lib['SupportedPlatform'] == 'macos'
+          ]
+          if len(manifest['AvailableLibraries']) != 1:
+              raise SystemExit('Expected exactly one macOS llama.cpp library')
+          with open(path, 'wb') as f:
+              plistlib.dump(manifest, f)
+          PY
+          mkdir -p packages/keytype/Packages/ModelRuntime/Vendor
+          mv "$extracted/build-apple/llama.xcframework" packages/keytype/Packages/ModelRuntime/Vendor/
+      - name: Report canonical renderer
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: Record host snapshots from fixture data
+        shell: bash
+        run: |
+          touch "$RUNNER_TEMP/snapshot-recording-start"
+          # Every SnapshotTests.check caller belongs to one of these test class families.
+          swift test --package-path apps/caret \
+            --filter 'CaretHostTests\..*(SnapshotTests|RenderTests|MemoryHostTests|OnboardingHostTests)'
+      - name: Stage recorded images with repository paths
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          test -f "$RUNNER_TEMP/snapshot-recording-start"
+          stage="$RUNNER_TEMP/snapshot-artifact"
+          mkdir -p "$stage"
+          # Include every rewritten reference, even byte-identical ones, but not untouched old images.
+          while IFS= read -r -d '' path; do
+            mkdir -p "$stage/$(dirname "$path")"
+            cp "$path" "$stage/$path"
+          done < <(find apps/caret/Tests/CaretHostTests/References -type f -name '*.png' \
+            -newer "$RUNNER_TEMP/snapshot-recording-start" -print0)
+          count=$(find "$stage" -type f -name '*.png' | wc -l | tr -d ' ')
+          echo "Recorded $count images"
+          test "$count" -gt 0
+      - name: Upload recorded images for visual review
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-snapshots-${{ github.run_id }}
+          # Upload the staging root, so apps/caret/.../References remains inside the artifact.
+          path: ${{ runner.temp }}/snapshot-artifact/
+          if-no-files-found: error

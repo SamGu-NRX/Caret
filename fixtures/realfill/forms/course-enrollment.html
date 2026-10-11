@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Continuing Education Enrollment | Lakeside Community College</title>
+<style>
+body{font-family:Verdana,Geneva,sans-serif;max-width:740px;margin:20px auto;color:#222;font-size:14px}
+.banner{background:#003b5c;color:#fff;padding:12px 16px} .banner b{font-size:18px}
+h1{font-size:20px;color:#003b5c;margin-top:20px} h2{font-size:15px;background:#e9eff3;padding:6px 8px;margin-top:24px}
+table{width:100%;border-collapse:collapse} td{padding:6px 4px;vertical-align:top} td.l{width:38%;text-align:right;padding-right:12px}
+label,legend{font-weight:bold}
+input[type=text],input[type=email],input[type=tel],input[type=date],select{width:95%;padding:5px;font-size:14px;border:1px solid #8a9ba8}
+fieldset{border:0;padding:0;margin:0} fieldset label{display:block;font-weight:normal;margin:4px 0}
+.r{color:#b00} .small{font-size:12px;color:#555} .check{margin:8px 0} .check label{font-weight:normal}
+button{margin:20px 0 0 38%;padding:8px 18px;font-size:14px}
+</style></head><body>
+<!-- Invented community-college enrollment form (B24 corpus). Submit is inert. -->
+<div class="banner"><b>Lakeside Community College</b> &nbsp; Continuing Education</div>
+<h1>Course Enrollment Form</h1>
+<p class="small">Fields marked with <span class="r">*</span> are required. Returning students: enter your Student ID so we can match your records.</p>
+<form onsubmit="event.preventDefault()">
+<h2>Student information</h2>
+<table>
+<tr><td class="l"><label for="fn">First name <span class="r">*</span></label></td><td><input type="text" id="fn" autocomplete="off"></td></tr>
+<tr><td class="l"><label for="mn">Middle name</label></td><td><input type="text" id="mn" autocomplete="off"></td></tr>
+<tr><td class="l"><label for="ln">Last name <span class="r">*</span></label></td><td><input type="text" id="ln" autocomplete="off"></td></tr>
+<tr><td class="l"><label for="pn">Preferred name (optional)</label></td><td><input type="text" id="pn" autocomplete="off"></td></tr>
+<tr><td class="l"><label for="dob">Date of birth <span class="r">*</span></label></td><td><input type="date" id="dob"></td></tr>
+<tr><td class="l"><label for="em">Email <span class="r">*</span></label></td><td><input type="email" id="em" autocomplete="off"></td></tr>
+<tr><td class="l"><label for="ph">Phone <span class="r">*</span></label></td><td><input type="tel" id="ph" autocomplete="off"></td></tr>
+<tr><td class="l"><label for="sid">Student ID (returning students)</label></td><td><input type="text" id="sid" autocomplete="off"></td></tr>
+</table>
+<h2>Course selection</h2>
+<table>
+<tr><td class="l"><label for="course">Course <span class="r">*</span></label></td><td>
+<select id="course"><option value="">Select a course</option><option>CIS 120 - Computer Literacy</option><option>CIS 140 - Intro to Web Development</option><option>CIS 155 - Python Programming I</option><option>ACC 101 - Bookkeeping Basics</option></select></td></tr>
+<tr><td class="l"><label for="term">Term <span class="r">*</span></label></td><td>
+<select id="term"><option value="">Select term</option><option>Winter 2027</option><option>Spring 2027</option><option>Summer 2027</option></select></td></tr>
+<tr><td class="l"></td><td><fieldset><legend>Section <span class="r">*</span></legend>
+<label><input type="radio" name="sec" value="mw"> Mon/Wed 6:00-8:30 PM</label>
+<label><input type="radio" name="sec" value="tt"> Tue/Thu 9:00-11:30 AM</label>
+<label><input type="radio" name="sec" value="sat"> Sat 9:00 AM-12:30 PM</label>
+</fieldset></td></tr>
+</table>
+<h2>Background</h2>
+<table>
+<tr><td class="l"><label for="edu">Highest level of education completed <span class="r">*</span></label></td><td>
+<select id="edu"><option value="">Select...</option><option>Less than high school</option><option>High school diploma or GED</option><option>Some college, no degree</option><option>Associate degree</option><option>Bachelor's degree</option><option>Graduate degree</option></select></td></tr>
+</table>
+<div class="check"><input type="checkbox" id="first"> <label for="first">This is my first class at Lakeside</label></div>
+<div class="check"><input type="checkbox" id="news"> <label for="news">Email me the Lakeside Continuing Ed newsletter</label></div>
+<button type="submit">Submit enrollment</button>
+</form>
+</body></html>

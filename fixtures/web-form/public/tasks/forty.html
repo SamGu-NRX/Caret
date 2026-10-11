@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en" data-oracle-page="forty">
+<head>
+<meta charset="utf-8">
+<title>Volunteer onboarding: Riverside Food Bank</title>
+<link rel="stylesheet" href="/tasks/tasks.css">
+</head>
+<body>
+<!-- F1 size-limit page: exactly 40 fields on one page (text, email, tel, url, number, date, selects, textareas,
+     checkboxes, one radio group), for the fill's hand-off by size. Every name and value is invented. -->
+<h1>Volunteer onboarding</h1>
+<p class="step">Riverside Food Bank</p>
+<form id="onboard" action="/tasks/submit?page=forty&amp;via=native" method="post" data-task-submit>
+<fieldset><legend>Personal details</legend>
+  <div class="row"><label for="first_name">First name</label><input id="first_name" name="first_name" autocomplete="given-name" data-oracle="first_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="middle_name">Middle name</label><input id="middle_name" name="middle_name" autocomplete="additional-name" data-oracle="middle_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="last_name">Last name</label><input id="last_name" name="last_name" autocomplete="family-name" data-oracle="last_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="preferred_name">Preferred name</label><input id="preferred_name" name="preferred_name" data-oracle="preferred_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="pronouns">Pronouns</label><select id="pronouns" name="pronouns" data-oracle="pronouns" data-oracle-kind="select"><option value="">Select...</option><option>She/her</option><option>He/him</option><option>They/them</option><option>Prefer not to say</option></select></div>
+  <div class="row"><label for="birth_date">Date of birth</label><input id="birth_date" name="birth_date" type="date" autocomplete="bday" data-oracle="birth_date" data-oracle-kind="text"></div>
+  <div class="row"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="email" data-oracle="email" data-oracle-kind="text"></div>
+  <div class="row"><label for="alt_email">Alternate email</label><input id="alt_email" name="alt_email" type="email" data-oracle="alt_email" data-oracle-kind="text"></div>
+  <div class="row"><label for="phone">Mobile phone</label><input id="phone" name="phone" type="tel" autocomplete="tel" data-oracle="phone" data-oracle-kind="text"></div>
+  <div class="row"><label for="alt_phone">Other phone</label><input id="alt_phone" name="alt_phone" type="tel" data-oracle="alt_phone" data-oracle-kind="text"></div>
+</fieldset>
+<fieldset><legend>Home address</legend>
+  <div class="row"><label for="street1">Street address</label><input id="street1" name="street1" autocomplete="address-line1" data-oracle="street1" data-oracle-kind="text"></div>
+  <div class="row"><label for="street2">Apartment, suite, etc.</label><input id="street2" name="street2" autocomplete="address-line2" data-oracle="street2" data-oracle-kind="text"></div>
+  <div class="row"><label for="city">City</label><input id="city" name="city" autocomplete="address-level2" data-oracle="city" data-oracle-kind="text"></div>
+  <div class="row"><label for="state">State</label><select id="state" name="state" autocomplete="address-level1" data-options="regions.United States" data-oracle="state" data-oracle-kind="select"><option value="">Select...</option></select></div>
+  <div class="row"><label for="postal">ZIP code</label><input id="postal" name="postal" autocomplete="postal-code" data-oracle="postal" data-oracle-kind="text"></div>
+  <div class="row"><label for="country">Country</label><select id="country" name="country" autocomplete="country-name" data-options="countries" data-oracle="country" data-oracle-kind="select"><option value="">Select...</option></select></div>
+</fieldset>
+<fieldset><legend>Emergency contact</legend>
+  <div class="row"><label for="em_name">Emergency contact name</label><input id="em_name" name="em_name" data-oracle="em_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="em_relation">Relationship</label><select id="em_relation" name="em_relation" data-oracle="em_relation" data-oracle-kind="select"><option value="">Select...</option><option>Spouse or partner</option><option>Parent</option><option>Sibling</option><option>Friend</option><option>Other</option></select></div>
+  <div class="row"><label for="em_phone">Emergency contact phone</label><input id="em_phone" name="em_phone" type="tel" data-oracle="em_phone" data-oracle-kind="text"></div>
+  <div class="row"><label for="em_email">Emergency contact email</label><input id="em_email" name="em_email" type="email" data-oracle="em_email" data-oracle-kind="text"></div>
+</fieldset>
+<fieldset><legend>References</legend>
+  <div class="row"><label for="ref1_name">Reference 1 name</label><input id="ref1_name" name="ref1_name" data-oracle="ref1_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="ref1_phone">Reference 1 phone</label><input id="ref1_phone" name="ref1_phone" type="tel" data-oracle="ref1_phone" data-oracle-kind="text"></div>
+  <div class="row"><label for="ref1_email">Reference 1 email</label><input id="ref1_email" name="ref1_email" type="email" data-oracle="ref1_email" data-oracle-kind="text"></div>
+  <div class="row"><label for="ref2_name">Reference 2 name</label><input id="ref2_name" name="ref2_name" data-oracle="ref2_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="ref2_phone">Reference 2 phone</label><input id="ref2_phone" name="ref2_phone" type="tel" data-oracle="ref2_phone" data-oracle-kind="text"></div>
+  <div class="row"><label for="ref2_email">Reference 2 email</label><input id="ref2_email" name="ref2_email" type="email" data-oracle="ref2_email" data-oracle-kind="text"></div>
+</fieldset>
+<fieldset><legend>Preferences</legend>
+  <div class="row"><label for="tshirt">T-shirt size</label><select id="tshirt" name="tshirt" data-oracle="tshirt" data-oracle-kind="select"><option value="">Select...</option><option>XS</option><option>S</option><option>M</option><option>L</option><option>XL</option><option>XXL</option></select></div>
+  <div class="row"><label for="dietary">Dietary needs</label><select id="dietary" name="dietary" data-oracle="dietary" data-oracle-kind="select"><option value="">Select...</option><option>None</option><option>Vegetarian</option><option>Vegan</option><option>Halal</option><option>Kosher</option><option>Gluten-free</option><option>Other</option></select></div>
+  <div class="row"><label for="allergies">Allergies</label><textarea id="allergies" name="allergies" data-oracle="allergies" data-oracle-kind="text"></textarea></div>
+  <div class="row"><label><input type="checkbox" id="weekdays" name="weekdays" data-oracle="weekdays" data-oracle-kind="checkbox"> Available on weekdays</label></div>
+  <div class="row"><label><input type="checkbox" id="weekends" name="weekends" data-oracle="weekends" data-oracle-kind="checkbox"> Available on weekends</label></div>
+  <fieldset data-oracle="shift" data-oracle-kind="radios"><legend>Preferred shift</legend><div class="inline"><label><input type="radio" name="shift" value="morning"> Morning</label><label><input type="radio" name="shift" value="afternoon"> Afternoon</label><label><input type="radio" name="shift" value="evening"> Evening</label></div></fieldset>
+  <div class="row"><label for="start_date">Earliest start date</label><input id="start_date" name="start_date" type="date" data-oracle="start_date" data-oracle-kind="text"></div>
+  <div class="row"><label for="hours">Hours per week</label><input id="hours" name="hours" type="number" data-oracle="hours" data-oracle-kind="text"></div>
+</fieldset>
+<fieldset><legend>About you</legend>
+  <div class="row"><label for="languages">Languages spoken</label><input id="languages" name="languages" data-oracle="languages" data-oracle-kind="text"></div>
+  <div class="row"><label for="skills">Relevant skills</label><textarea id="skills" name="skills" data-oracle="skills" data-oracle-kind="text"></textarea></div>
+  <div class="row"><label for="linkedin">LinkedIn profile</label><input id="linkedin" name="linkedin" type="url" data-oracle="linkedin" data-oracle-kind="text"></div>
+  <div class="row"><label for="website">Personal website</label><input id="website" name="website" type="url" data-oracle="website" data-oracle-kind="text"></div>
+  <div class="row"><label for="heard">How did you hear about us?</label><select id="heard" name="heard" data-oracle="heard" data-oracle-kind="select"><option value="">Select...</option><option>Friend</option><option>Social media</option><option>Search engine</option><option>Event</option><option>Other</option></select></div>
+  <div class="row"><label><input type="checkbox" id="photo_consent" name="photo_consent" data-oracle="photo_consent" data-oracle-kind="checkbox"> I agree to be photographed at events</label></div>
+</fieldset>
+<div class="actions"><button type="submit" data-oracle-press="submit">Submit</button></div>
+</form>
+<script src="/tasks/options.js"></script>
+<script src="/tasks/pages.js"></script>
+<script src="/tasks/probe.js"></script>
+</body>
+</html>

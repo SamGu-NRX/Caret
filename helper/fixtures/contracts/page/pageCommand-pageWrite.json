@@ -1,0 +1,18 @@
+{
+  "type": "pageCommand",
+  "v": 1,
+  "id": "fixture-pageWrite",
+  "expires": 1000,
+  "verb": {
+    "kind": "pageWrite",
+    "tabId": 3,
+    "frameId": 0,
+    "documentId": "fixture-document",
+    "id": "field-1",
+    "control": "text",
+    "name": "First name",
+    "taskId": "fixture-task",
+    "expect": "",
+    "value": "Ada"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "type": "pageCommand",
+  "v": 1,
+  "id": "fixture-pageChooseOption",
+  "expires": 1000,
+  "verb": {
+    "kind": "pageChooseOption",
+    "tabId": 3,
+    "frameId": 0,
+    "documentId": "fixture-document",
+    "id": "field-1",
+    "control": "text",
+    "name": "First name",
+    "taskId": "fixture-task",
+    "expect": "",
+    "value": "A",
+    "question": "Choose a letter"
+  }
+}

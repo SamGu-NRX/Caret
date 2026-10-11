@@ -1,0 +1,560 @@
+{
+ "source": "live B31 at v2/g35 c213ae2c (~/.caret-run/evidence/screen/g35/live-b31 requests.ndjson and jev.ndjson): each field's two value answers (wording A then B) as the chosen candidate's text, and the five verifier pairs. Fields by corpus label; kinds from g35/PARTIALS-ROOT-CAUSE.md.",
+ "values": [
+  {
+   "ask": "b31-01",
+   "field": "Work email",
+   "kind": "disagree",
+   "requests": [
+    6,
+    7
+   ],
+   "a": {
+    "text": "dana.whitfield@lumenlabs.example.com",
+    "confidence": 0.48
+   },
+   "b": {
+    "text": "grace.oduya@example.com",
+    "confidence": 0.47
+   },
+   "key": "grace.oduya@example.com"
+  },
+  {
+   "ask": "b31-05",
+   "field": "Earliest start date",
+   "kind": "disagree",
+   "requests": [
+    34,
+    35
+   ],
+   "a": {
+    "text": "Can start Jan 4, 2027 (two weeks notice + the holidays)",
+    "confidence": 0.49
+   },
+   "b": {
+    "text": "start Jan 4, 2027",
+    "confidence": 0.54
+   },
+   "key": "2027-01-04"
+  },
+  {
+   "ask": "b31-06",
+   "field": "Email address",
+   "kind": "disagree",
+   "requests": [
+    41,
+    42
+   ],
+   "a": {
+    "text": "dana.whitfield@lumenlabs.example.com",
+    "confidence": 0.46
+   },
+   "b": {
+    "text": "noor.haddad@example.org",
+    "confidence": 0.48
+   },
+   "key": "noor.haddad@example.org"
+  },
+  {
+   "ask": "b31-11",
+   "field": "ZIP code",
+   "kind": "disagree",
+   "requests": [
+    84,
+    85
+   ],
+   "a": {
+    "text": "Redwood City CA 94061",
+    "confidence": 0.46
+   },
+   "b": {
+    "text": null,
+    "confidence": 0.51
+   },
+   "key": "94061"
+  },
+  {
+   "ask": "b31-11",
+   "field": "Phone",
+   "kind": "disagree",
+   "requests": [
+    84,
+    85
+   ],
+   "a": {
+    "text": null,
+    "confidence": 0.49
+   },
+   "b": {
+    "text": "650-555-0118",
+    "confidence": 0.51
+   },
+   "key": "650-555-0118"
+  },
+  {
+   "ask": "b31-12",
+   "field": "Your full name",
+   "kind": "disagree",
+   "requests": [
+    91,
+    92
+   ],
+   "a": {
+    "text": null,
+    "confidence": 0.44
+   },
+   "b": {
+    "text": "Avery Kim",
+    "confidence": 0.48
+   },
+   "key": "Avery Kim"
+  },
+  {
+   "ask": "b31-13",
+   "field": "Current mileage",
+   "kind": "disagree",
+   "requests": [
+    98,
+    99
+   ],
+   "a": {
+    "text": "(720) 555-0146",
+    "confidence": 0.49
+   },
+   "b": {
+    "text": null,
+    "confidence": 0.53
+   },
+   "key": "59,870"
+  },
+  {
+   "ask": "b31-13",
+   "field": "Preferred date",
+   "kind": "disagree",
+   "requests": [
+    98,
+    99
+   ],
+   "a": {
+    "text": "Saturday, October 17 at 8:45am",
+    "confidence": 0.6
+   },
+   "b": {
+    "text": "2026-10-17",
+    "confidence": 0.61
+   },
+   "key": "2026-10-17"
+  },
+  {
+   "ask": "b31-02",
+   "field": "Month",
+   "kind": "low",
+   "requests": [
+    13,
+    14
+   ],
+   "a": {
+    "text": "04/12/1990",
+    "confidence": 0.84
+   },
+   "b": {
+    "text": "04/12/1990",
+    "confidence": 0.63
+   },
+   "key": "April"
+  },
+  {
+   "ask": "b31-02",
+   "field": "Day",
+   "kind": "low",
+   "requests": [
+    13,
+    14
+   ],
+   "a": {
+    "text": "04/12/1990",
+    "confidence": 0.75
+   },
+   "b": {
+    "text": "04/12/1990",
+    "confidence": 0.69
+   },
+   "key": "12"
+  },
+  {
+   "ask": "b31-02",
+   "field": "Mileage Plan number (optional)",
+   "kind": "low",
+   "requests": [
+    13,
+    14
+   ],
+   "a": {
+    "text": "123456789",
+    "confidence": 0.67
+   },
+   "b": {
+    "text": "123456789",
+    "confidence": 0.76
+   },
+   "key": "123456789"
+  },
+  {
+   "ask": "b31-05",
+   "field": "Will you now or in the future require visa sponsorship to work in the US?",
+   "kind": "low",
+   "requests": [
+    34,
+    35
+   ],
+   "a": {
+    "text": "No sponsorship needed - US citizen",
+    "confidence": 0.97
+   },
+   "b": {
+    "text": "No sponsorship needed - US citizen",
+    "confidence": 0.57
+   },
+   "key": "No"
+  },
+  {
+   "ask": "b31-07",
+   "field": "Monthly rent ($)",
+   "kind": "low",
+   "requests": [
+    50,
+    51
+   ],
+   "a": {
+    "text": "$1,450",
+    "confidence": 0.72
+   },
+   "b": {
+    "text": "$1,450",
+    "confidence": 0.42
+   },
+   "key": "1,450"
+  },
+  {
+   "ask": "b31-08",
+   "field": "Mobile phone",
+   "kind": "wrong",
+   "requests": [
+    59,
+    60
+   ],
+   "a": {
+    "text": "(617) 555-0129",
+    "confidence": 0.44
+   },
+   "b": {
+    "text": "(617) 555-0129",
+    "confidence": 0.84
+   },
+   "key": "(617) 555-0141"
+  },
+  {
+   "ask": "b31-08",
+   "field": "Home phone",
+   "kind": "wrong",
+   "requests": [
+    59,
+    60
+   ],
+   "a": {
+    "text": "(617) 555-0166",
+    "confidence": 0.49
+   },
+   "b": {
+    "text": "(617) 555-0166",
+    "confidence": 0.6
+   },
+   "key": "(617) 555-0175"
+  },
+  {
+   "ask": "b31-09",
+   "field": "Reference email",
+   "kind": "low",
+   "requests": [
+    68,
+    69
+   ],
+   "a": {
+    "text": "simone.achebe@ridgeline.example.com",
+    "confidence": 0.61
+   },
+   "b": {
+    "text": "simone.achebe@ridgeline.example.com",
+    "confidence": 0.48
+   },
+   "key": "simone.achebe@ridgeline.example.com"
+  },
+  {
+   "ask": "b31-09",
+   "field": "Reference phone",
+   "kind": "wrong",
+   "requests": [
+    68,
+    69
+   ],
+   "a": {
+    "text": "(720) 555-0108",
+    "confidence": 0.66
+   },
+   "b": {
+    "text": "(720) 555-0108",
+    "confidence": 0.78
+   },
+   "key": "(303) 555-0183"
+  },
+  {
+   "ask": "b31-12",
+   "field": "Email",
+   "kind": "low",
+   "requests": [
+    91,
+    92
+   ],
+   "a": {
+    "text": "avery.kim@example.com",
+    "confidence": 0.63
+   },
+   "b": {
+    "text": "avery.kim@example.com",
+    "confidence": 0.82
+   },
+   "key": "avery.kim@example.com"
+  },
+  {
+   "ask": "b31-12",
+   "field": "Approximate arrival time",
+   "kind": "low",
+   "requests": [
+    91,
+    92
+   ],
+   "a": {
+    "text": "7:45 pm.",
+    "confidence": 0.49
+   },
+   "b": {
+    "text": "7:45 pm.",
+    "confidence": 0.66
+   },
+   "key": "19:45"
+  },
+  {
+   "ask": "b31-13",
+   "field": "Model",
+   "kind": "low",
+   "requests": [
+    98,
+    99
+   ],
+   "a": {
+    "text": "60k service for your Outback",
+    "confidence": 0.86
+   },
+   "b": {
+    "text": "60k service for your Outback",
+    "confidence": 0.69
+   },
+   "key": "Outback"
+  },
+  {
+   "ask": "b31-13",
+   "field": "Full name",
+   "kind": "low",
+   "requests": [
+    98,
+    99
+   ],
+   "a": {
+    "text": "Jamie Torres",
+    "confidence": 0.64
+   },
+   "b": {
+    "text": "Jamie Torres",
+    "confidence": 0.74
+   },
+   "key": "Jamie Torres"
+  },
+  {
+   "ask": "b31-13",
+   "field": "Email",
+   "kind": "low",
+   "requests": [
+    98,
+    99
+   ],
+   "a": {
+    "text": "jamie.torres@example.net",
+    "confidence": 0.64
+   },
+   "b": {
+    "text": "jamie.torres@example.net",
+    "confidence": 0.62
+   },
+   "key": "jamie.torres@example.net"
+  },
+  {
+   "ask": "b31-14",
+   "field": "Email address",
+   "kind": "wrong",
+   "requests": [
+    107,
+    108
+   ],
+   "a": {
+    "text": "dana.whitfield@lumenlabs.example.com",
+    "confidence": 0.86
+   },
+   "b": {
+    "text": "dana.whitfield@lumenlabs.example.com",
+    "confidence": 0.66
+   },
+   "key": "kenji.watanabe@example.net"
+  },
+  {
+   "ask": "b31-15",
+   "field": "Pizza Size",
+   "kind": "low",
+   "requests": [
+    116,
+    117
+   ],
+   "a": {
+    "text": "Large, mushroom and onion",
+    "confidence": 0.83
+   },
+   "b": {
+    "text": "Large, mushroom and onion",
+    "confidence": 0.73
+   },
+   "key": "Large"
+  },
+  {
+   "ask": "b31-15",
+   "field": "Preferred delivery time",
+   "kind": "low",
+   "requests": [
+    116,
+    117
+   ],
+   "a": {
+    "text": "7:30 pm",
+    "confidence": 0.93
+   },
+   "b": {
+    "text": "7:30 pm",
+    "confidence": 0.73
+   },
+   "key": "19:30"
+  },
+  {
+   "ask": "b31-20",
+   "field": "Preferred date",
+   "kind": "low",
+   "requests": [
+    149,
+    150
+   ],
+   "a": {
+    "text": "2026-10-17",
+    "confidence": 0.53
+   },
+   "b": {
+    "text": "2026-10-17",
+    "confidence": 0.62
+   },
+   "key": "2026-10-17"
+  }
+ ],
+ "verifier": [
+  {
+   "ask": "b31-01",
+   "field": "First name",
+   "requests": [
+    8,
+    9
+   ],
+   "a": {
+    "choice": "exact",
+    "confidence": 0.89
+   },
+   "b": {
+    "choice": "exact",
+    "confidence": 0.57
+   },
+   "key": "Grace"
+  },
+  {
+   "ask": "b31-01",
+   "field": "Last name",
+   "requests": [
+    8,
+    9
+   ],
+   "a": {
+    "choice": "exact",
+    "confidence": 0.82
+   },
+   "b": {
+    "choice": "exact",
+    "confidence": 0.5
+   },
+   "key": "Oduya"
+  },
+  {
+   "ask": "b31-04",
+   "field": "School",
+   "requests": [
+    29,
+    30
+   ],
+   "a": {
+    "choice": "exact",
+    "confidence": 1
+   },
+   "b": {
+    "choice": "exact",
+    "confidence": 0.65
+   },
+   "key": "The University of Texas at Austin"
+  },
+  {
+   "ask": "b31-07",
+   "field": "Street address",
+   "requests": [
+    52,
+    53
+   ],
+   "a": {
+    "choice": "exact",
+    "confidence": 0.95
+   },
+   "b": {
+    "choice": "exact",
+    "confidence": 0.74
+   },
+   "key": "4410 Speedway"
+  },
+  {
+   "ask": "b31-09",
+   "field": "Reference relationship",
+   "requests": [
+    70,
+    71
+   ],
+   "a": {
+    "choice": "exact",
+    "confidence": 0.89
+   },
+   "b": {
+    "choice": "exact",
+    "confidence": 0.46
+   },
+   "key": "Manager"
+  }
+ ]
+}

@@ -1,0 +1,15 @@
+{
+  "type": "scopedActGrant",
+  "v": 1,
+  "taskId": "fixture-task",
+  "at": 10,
+  "expires": 1000,
+  "scope": {
+    "kind": "page",
+    "engine": "fixture-engine",
+    "tabId": 3,
+    "frameId": 0,
+    "origin": "https://fixture.invalid",
+    "navGen": 1
+  }
+}

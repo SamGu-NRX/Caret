@@ -69,6 +69,22 @@ public final class CoreProcessTransport: CoreTransport {
         self.configuration = configuration
     }
 
+    /// Apply after merging the parent and developer env file; release builds never forward Vercel opt-ins.
+    public static func childEnvironment(_ input: [String: String]) -> [String: String] {
+        #if DEBUG
+        let release = input["CARET_RELEASE_HOST"] == "1"
+        #else
+        let release = true
+        #endif
+        guard release else { return input }
+        var result = input.filter { key, _ in
+            !key.hasPrefix("CARET_DEV_") && !key.hasPrefix("AI_GATEWAY_") && !key.hasPrefix("VERCEL_")
+                && key != "CARET_ENV_FILE" && key != "CARET_JEV_GATEWAY_KEY"
+        }
+        result["CARET_RELEASE_HOST"] = "1"
+        return result
+    }
+
     public func start(
         onLine: @escaping (String) -> Void,
         onTermination: @escaping (CoreTerminationReason) -> Void
@@ -87,7 +103,7 @@ public final class CoreProcessTransport: CoreTransport {
         process.arguments = ["-u", "-m", configuration.moduleName] + configuration.arguments
         var environment = ProcessInfo.processInfo.environment
         for (key, value) in configuration.environmentOverrides { environment[key] = value }
-        process.environment = environment
+        process.environment = Self.childEnvironment(environment)
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = stderr

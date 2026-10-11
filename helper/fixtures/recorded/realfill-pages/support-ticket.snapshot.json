@@ -1,0 +1,319 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "3b65c376-db93-4296-8a4f-6c247e425162",
+ "at": 1791185568824,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Submit a request - Tallyhook Help Center",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "CD6A7BA83E1F69B7FA30DDEA5F31AA7F",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/support-ticket.html",
+   "navGen": 11,
+   "title": "Submit a request - Tallyhook Help Center",
+   "headings": [
+    "Submit a request"
+   ],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": true,
+     "text": "Submit a request",
+     "name": "4ee018da18fb62037aadeadc0fa407eda8df53ce95fe11b6b8abfd35daccef49"
+    },
+    {
+     "id": "o2",
+     "heading": false,
+     "text": "Priority *",
+     "name": "9ece27153f56a719eeb0ac637995dffbc9f351e69b53eb900bb4bf20f2126e76"
+    }
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:your name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=name\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Your name *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      166.2,
+      640,
+      36
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:email address *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=email\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email address *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      239.2,
+      640,
+      36
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:workspace url~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ws\",\"url\"]",
+     "kind": "url",
+     "role": "textbox",
+     "name": "Workspace URL",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      331.2,
+      640,
+      36
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/combobox:product area *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=area\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Product area *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "-- Choose one --",
+       "selected": true
+      },
+      {
+       "value": "Billing",
+       "label": "Billing",
+       "selected": false
+      },
+      {
+       "value": "Integrations",
+       "label": "Integrations",
+       "selected": false
+      },
+      {
+       "value": "Mobile app",
+       "label": "Mobile app",
+       "selected": false
+      },
+      {
+       "value": "Reports",
+       "label": "Reports",
+       "selected": false
+      },
+      {
+       "value": "Account and login",
+       "label": "Account and login",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      320,
+      404.2,
+      640,
+      38
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/radio:low: general question~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=prio\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Low: general question",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      325,
+      472.2,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e5",
+      "name": "Priority *"
+     },
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/radio:normal: something isn't working~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=prio\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Normal: something isn't working",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      325,
+      497.2,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e5",
+      "name": "Priority *"
+     },
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/radio:urgent: my team can't work~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=prio\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Urgent: my team can't work",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      325,
+      522.2,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e5",
+      "name": "Priority *"
+     },
+     "sections": [
+      "o1",
+      "o2"
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/textbox:subject *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=subject\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Subject *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      581.2,
+      640,
+      36
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/textbox:description *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=body\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "Description *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      673.2,
+      640,
+      116
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/button:attachments (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=files\",\"file\"]",
+     "kind": "file",
+     "role": "button",
+     "name": "Attachments (optional)",
+     "form": "form@0",
+     "rect": [
+      320,
+      830.2,
+      253,
+      21
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/checkbox:allow a support agent to access my workspace while this req…~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=access\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Allow a support agent to access my workspace while this request is open",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      324,
+      866.2,
+      13,
+      13
+     ],
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/button:submit~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Submit",
+     "form": "form@0",
+     "rect": [
+      320,
+      914.2,
+      83.6,
+      36
+     ],
+     "sections": [
+      "o1"
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

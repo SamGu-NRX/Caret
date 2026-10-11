@@ -1,9 +1,9 @@
 name: Release Caret.dmg
 
+# This packages the v1 app (Caret.xcodeproj builds apps/mac), so it runs only by hand. A v2 tag used to start it:
+# the v2.0.0-beta.1 push did (run 37886284083) and stopped only because the privacy gate refused, which would have
+# published the v1 app as a v2 release. v2 builds come from apps/caret/scripts/build-app.sh, signed on a Mac.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:

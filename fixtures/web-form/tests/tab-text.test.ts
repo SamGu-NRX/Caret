@@ -1,0 +1,525 @@
+// P4's content-side halves in a real browser (headless Chrome for Testing, temporary profile, no extension): what a
+// text read of the tab the user just left takes from a page and what it never takes, the 16 KB cap, the selection
+// first, Google Docs' and Sheets' text for assistive technology (on replica pages), the text around the caret of the
+// field being typed in, and the insert at the caret with the page's own Undo. The modules are the extension's own
+// (extension/src/content/text.ts, field-text.ts, insert.ts), bundled and run in each page's main world. The worker's
+// halves (which tab, which frames) are tested in extension/test/tab-text.test.ts and in the journey
+// (tab-source-journey.ts). Every name and value is invented.
+import assert from "node:assert/strict";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { fileURLToPath } from "node:url";
+import { after, before, describe, test } from "node:test";
+import { build } from "esbuild";
+import { launchHeadless, type Headless, type Tab } from "../tasks/chrome.ts";
+
+const EXT = fileURLToPath(new URL("../../../extension/src/content/", import.meta.url));
+
+/** Pages by path; each is served as it is. */
+const PAGES: Record<string, string> = {
+  "/mail": `<!doctype html><title>Inbox</title>
+<nav>Inbox (3) Sent Drafts NAV-ONLY</nav>
+<main>
+<h1>Your trip details</h1>
+<p>Hi Ines,</p>
+<p>Traveler: Ines Vandermeer<br>Email: <a href="mailto:ines.vandermeer@example.org">ines.vandermeer@example.org</a><br>Cell: 555-0147</p>
+<table><tr><td>Flight</td><td>OL 482</td></tr><tr><td>Seat</td><td>14C</td></tr></table>
+<form><input type="password" value="PW-hunter2"><input type="hidden" value="HIDDEN-token"><input type="text" value="INPUT-text">
+<textarea>TEXTAREA-draft</textarea><select><option>OPTION-one</option></select><button type="button">BUTTON-send</button></form>
+<div role="button">ROLEBUTTON-archive</div>
+<div contenteditable="true">EDITABLE-reply</div>
+<span style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">SRONLY-hint</span>
+<div style="position:absolute;width:1px;height:1px;overflow:hidden;white-space:nowrap">TINYBOX-hint</div>
+<div style="display:none">DISPLAYNONE-ssn</div>
+<div aria-hidden="true">ARIAHIDDEN-x</div>
+<div style="opacity:0">OPACITY-x</div>
+<div style="position:absolute;left:-10000px;top:0;width:200px">OFFSCREEN-x</div>
+<div style="visibility:hidden">VISHIDDEN-x <span style="visibility:visible">VISIBLE-child</span></div>
+<script>/*SCRIPT-x*/</script><style>.x{}/*STYLE-x*/</style>
+<iframe srcdoc="<p>IFRAME-text</p>"></iframe>
+</main>
+<footer>FOOTER-only</footer>`,
+  "/hidden-main": `<!doctype html><title>Hidden main</title><div aria-hidden="true"><main><p>PRIVATE-main</p></main></div><p>Body text</p>`,
+  "/tiny-main": `<!doctype html><title>Tiny</title><div style="width:1px;height:1px;overflow:hidden"><main style="width:600px"><p>TINY-main</p></main></div><p>Outside</p>`,
+  "/offscreen-scroller": `<!doctype html><title>Off</title><div style="position:absolute;left:-10000px;top:0;width:300px;height:200px;overflow:auto"><main><p>OFF-main</p></main></div><p>Outside</p>`,
+  "/clip": `<!doctype html><title>Clip</title><main>
+<div style="width:200px;height:40px;overflow:hidden;position:relative"><p style="margin:0">Visible line</p><p style="position:absolute;left:300px;top:0;margin:0">CLIPPED-out</p></div>
+<div style="height:60px;overflow:auto"><p style="margin-top:300px">SCROLL-reachable</p></div></main>`,
+  "/scroller": `<!doctype html><title>Scroller</title><body style="margin:0;overflow:hidden;height:300px"><main style="height:300px;overflow:auto"><p style="margin-top:2000px">BELOW-fold</p></main></body>`,
+  "/role-main": `<!doctype html><title>App</title><div id="nav">SIDEBAR-x</div><div role="main"><p>Order ORD-48213 ships Friday.</p></div><main hidden><p>HIDDEN-MAIN</p></main>`,
+  "/no-main": `<!doctype html><title>Note</title><p>Phone: 555-0147</p><div style="display:none">GONE</div>`,
+  "/sel": `<!doctype html><title>Sel</title><aside id="side"><p id="aside">Cell: 555-0147</p></aside>
+<main><p id="a">Hi Ines,</p><p id="b">Start <span style="display:none">HIDDEN-IN-SELECTION</span>date: October 20, 2026</p><p>Thanks!</p></main>`,
+  "/big": `<!doctype html><title>Big</title><main>${Array.from({ length: 400 }, (_, i) => `<p>Paragraph ${String(i).padStart(3, "0")} ${"x".repeat(80)}</p>`).join("")}</main>`,
+  "/docs": `<!doctype html><title>Doc</title><body><div class="kix-appview-editor"><canvas width="10" height="10"></canvas></div>
+<iframe class="docs-texteventtarget-iframe" style="position:absolute;top:-10000px;left:0;width:625px;height:1px;border:0"></iframe></body>`,
+  "/sheets": `<!doctype html><title>Sheet</title><body><div role="textbox" contenteditable="false" style="position:absolute;top:100px">A1 formula bar</div>
+<div id="at" role="textbox" contenteditable="true" style="position:absolute;top:-9998px;left:4px;width:600px;white-space:pre"></div></body>`,
+  "/fields": `<!doctype html><title>Fields</title><main>
+<input id="t" type="text" value="Hello world"><input id="e" type="email" value="ines@example.org">
+<textarea id="ta"></textarea>
+<div id="ce" contenteditable="true"><div>Line one</div><div>Line two<br>and more</div></div>
+</main>`,
+};
+
+let server: Server;
+let origin: string;
+let browser: Headless;
+let bundle: string;
+
+before(async () => {
+  const out = await build({
+    stdin: {
+      contents: `import * as t from "./text.ts"; import * as f from "./field-text.ts"; import * as i from "./insert.ts"; import * as c from "./caret-rect.ts"; globalThis.__p4 = { ...t, ...f, ...i, ...c };`,
+      resolveDir: EXT,
+      loader: "ts",
+    },
+    bundle: true,
+    write: false,
+    format: "iife",
+    target: "chrome116",
+    logLevel: "warning",
+  });
+  bundle = out.outputFiles[0]?.text ?? "";
+  server = createServer((req, res) => {
+    const page = PAGES[new URL(req.url ?? "/", "http://x").pathname];
+    if (page === undefined) return void res.writeHead(404).end();
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  browser = await launchHeadless();
+});
+
+after(async () => {
+  await browser?.stop();
+  await new Promise((r) => server?.close(r));
+});
+
+/** Opens `path` with the extension's modules loaded as `__p4` in the page. */
+async function open(path: string): Promise<Tab> {
+  const tab = await browser.open(`${origin}${path}`);
+  await tab.evaluate(`${bundle};true`);
+  return tab;
+}
+
+interface Read {
+  selection: string[];
+  blocks: string[];
+  cut: boolean;
+}
+
+const MUST_NOT = ["NAV-ONLY", "PW-hunter2", "HIDDEN-token", "INPUT-text", "TEXTAREA-draft", "OPTION-one", "BUTTON-send", "ROLEBUTTON-archive", "EDITABLE-reply", "SRONLY-hint", "TINYBOX-hint", "DISPLAYNONE-ssn", "ARIAHIDDEN-x", "OPACITY-x", "OFFSCREEN-x", "VISHIDDEN-x", "SCRIPT-x", "STYLE-x", "IFRAME-text", "FOOTER-only"];
+
+describe("what a read takes from the page (rule 4)", () => {
+  test("only the main region's visible text, never a control, a hidden or off-screen element, a script or a frame", async () => {
+    const tab = await open("/mail");
+    const r = await tab.evaluate<Read>("__p4.readMainText()");
+    const all = [...r.selection, ...r.blocks].join("\n\n");
+    for (const s of MUST_NOT) assert.ok(!all.includes(s), `${s} was read`);
+    assert.deepEqual(r.blocks.slice(0, 4), ["Your trip details", "Hi Ines,", "Traveler: Ines Vandermeer\nEmail: ines.vandermeer@example.org\nCell: 555-0147", "Flight\tOL 482\nSeat\t14C"]);
+    assert.ok(all.includes("VISIBLE-child"), "a visible child of a hidden parent is text a person sees");
+    assert.equal(r.cut, false);
+    await tab.close();
+  });
+
+  test("the first rendered [role=main], else body; a hidden main is not the region", async () => {
+    const a = await open("/role-main");
+    assert.deepEqual((await a.evaluate<Read>("__p4.readMainText()")).blocks, ["Order ORD-48213 ships Friday."]);
+    await a.close();
+    const b = await open("/no-main");
+    assert.deepEqual((await b.evaluate<Read>("__p4.readMainText()")).blocks, ["Phone: 555-0147"]);
+    await b.close();
+  });
+
+  test("never a main region something above hides, nor text an ancestor clips away; a scroller's text is reachable (P4 review)", async () => {
+    const a = await open("/hidden-main");
+    assert.deepEqual((await a.evaluate<Read>("__p4.readMainText()")).blocks, ["Body text"]);
+    await a.close();
+    // Second review: a main inside a 1 px overflow wrapper, or inside a scroller placed off screen.
+    for (const path of ["/tiny-main", "/offscreen-scroller"]) {
+      const t = await open(path);
+      assert.deepEqual((await t.evaluate<Read>("__p4.readMainText()")).blocks, ["Outside"], path);
+      await t.close();
+    }
+    const b = await open("/clip");
+    const clip = (await b.evaluate<Read>("__p4.readMainText()")).blocks.join("\n");
+    assert.ok(clip.includes("Visible line") && clip.includes("SCROLL-reachable"), clip);
+    assert.ok(!clip.includes("CLIPPED-out"), clip);
+    await b.close();
+    const c = await open("/scroller");
+    assert.deepEqual((await c.evaluate<Read>("__p4.readMainText()")).blocks, ["BELOW-fold"]);
+    await c.close();
+  });
+
+  test("is capped at 16 KB, cut between paragraphs", async () => {
+    const tab = await open("/big");
+    const r = await tab.evaluate<Read>("__p4.readMainText()");
+    const bytes = r.blocks.reduce((n, p) => n + Buffer.byteLength(p) + 1, 0);
+    assert.ok(bytes <= 16 * 1024 + 1, `${bytes} bytes`);
+    assert.equal(r.cut, true);
+    assert.ok(r.blocks.length > 100 && r.blocks.length < 400);
+    r.blocks.forEach((p, i) => assert.equal(p, `Paragraph ${String(i).padStart(3, "0")} ${"x".repeat(80)}`));
+    await tab.close();
+  });
+});
+
+describe("a selection is read first (rule 4)", () => {
+  test("the text the user selected comes before the main region's, even outside it, and still without hidden text", async () => {
+    const tab = await open("/sel");
+    await tab.evaluate(`(() => {
+      const s = getSelection(); s.removeAllRanges();
+      const r = document.createRange(); r.selectNodeContents(document.getElementById("aside")); s.addRange(r);
+    })()`);
+    const r = await tab.evaluate<Read>("__p4.readMainText()");
+    assert.deepEqual(r.selection, ["Cell: 555-0147"]);
+    assert.deepEqual(r.blocks, ["Hi Ines,", "Start date: October 20, 2026", "Thanks!"]);
+    await tab.evaluate(`(() => {
+      const s = getSelection(); s.removeAllRanges();
+      const r = document.createRange(); r.setStart(document.getElementById("b").firstChild, 0); r.setEnd(document.getElementById("b").lastChild, 5); s.addRange(r);
+    })()`);
+    const r2 = await tab.evaluate<Read>("__p4.readMainText()");
+    assert.deepEqual(r2.selection, ["Start date:"]);
+    assert.ok(!r2.selection.join("").includes("HIDDEN-IN-SELECTION"));
+    // The cap counts the selection first: a selection always survives a long page.
+    const capped = await tab.evaluate<Read>("__p4.readMainText(document, 40)");
+    assert.deepEqual(capped.selection, ["Start date:"]);
+    await tab.close();
+  });
+});
+
+describe("Google Docs and Sheets: their own text for assistive technology (item 6)", () => {
+  test("names the editors by origin and path only", async () => {
+    const tab = await open("/no-main");
+    const kinds = await tab.evaluate<(string | null)[]>(`[
+      __p4.docsKind("https://docs.google.com", "/document/d/abc/edit"),
+      __p4.docsKind("https://docs.google.com", "/document/u/0/d/abc/edit"),
+      __p4.docsKind("https://docs.google.com", "/spreadsheets/d/abc/edit"),
+      __p4.docsKind("https://docs.google.com", "/spreadsheets/d/abc/htmlview"),
+      __p4.docsKind("https://docs.google.com.evil.test", "/document/d/abc/edit"),
+      __p4.docsKind("https://mail.google.com", "/mail/u/0/"),
+    ]`);
+    assert.deepEqual(kinds, ["document", "document", "spreadsheet", null, null, null]);
+    await tab.close();
+  });
+
+  test("reads Docs' text-event target when screen reader and braille support put the document there, and says off when not", async () => {
+    const tab = await open("/docs");
+    await tab.evaluate(`(() => {
+      const d = document.querySelector("iframe").contentDocument;
+      d.body.innerHTML = '<div role="textbox" contenteditable="true" aria-label="Document content">\\u200b\\u200b</div>';
+    })()`);
+    assert.deepEqual(await tab.evaluate("__p4.readFrameText('https://docs.google.com', '/document/d/abc/edit', true)"), { selection: [], blocks: [], cut: false, docsText: "off" });
+    // The main region of a Docs page holds no document text: it is drawn on the canvas.
+    assert.deepEqual((await tab.evaluate<Read>("__p4.readMainText()")).blocks, []);
+    await tab.evaluate(`(() => {
+      const box = document.querySelector("iframe").contentDocument.querySelector("[role=textbox]");
+      box.innerHTML = "<p>Quarterly plan</p><p>Owner: Ines Vandermeer</p><p>Email: ines.vandermeer@example.org</p>";
+    })()`);
+    const on = await tab.evaluate<Read & { docsText: string }>("__p4.readFrameText('https://docs.google.com', '/document/d/abc/edit', true)");
+    assert.equal(on.docsText, "on");
+    assert.deepEqual(on.blocks, ["Quarterly plan", "Owner: Ines Vandermeer", "Email: ines.vandermeer@example.org"]);
+    // A child frame of a Docs page, or a page elsewhere, never takes this path.
+    assert.equal((await tab.evaluate<{ docsText: string | null }>("__p4.readFrameText('https://docs.google.com', '/document/d/abc/edit', false)")).docsText, null);
+    // The caret in the text-event target: the sentence being typed (not checked in a real editable Doc: brief addendum).
+    await tab.evaluate(`(() => {
+      const d = document.querySelector("iframe").contentDocument;
+      const box = d.querySelector("[role=textbox]"); box.focus();
+      const p = box.querySelectorAll("p")[1].firstChild; const r = d.createRange(); r.setStart(p, 7); r.collapse(true);
+      const s = d.getSelection(); s.removeAllRanges(); s.addRange(r);
+    })()`);
+    const focus = await tab.evaluate<{ text: string; field: { before: string; after: string } | null }>("__p4.docsFocus(document, 'document')");
+    assert.equal(focus.text, "on");
+    assert.equal(focus.field?.before, "Quarterly plan\nOwner: ");
+    assert.ok(focus.field?.after.startsWith("Ines Vandermeer"));
+    await tab.close();
+  });
+
+  test("reads Sheets' off-screen textbox row by row, and never the visible formula bar", async () => {
+    const tab = await open("/sheets");
+    assert.equal((await tab.evaluate<{ docsText: string }>("__p4.readFrameText('https://docs.google.com', '/spreadsheets/d/abc/edit', true)")).docsText, "off");
+    await tab.evaluate(`document.getElementById("at").textContent = "\\n\\nName\\tEmail\\t\\t\\nInes Vandermeer\\tines.vandermeer@example.org\\t\\n"`);
+    const r = await tab.evaluate<Read & { docsText: string }>("__p4.readFrameText('https://docs.google.com', '/spreadsheets/d/abc/edit', true)");
+    assert.equal(r.docsText, "on");
+    assert.deepEqual(r.blocks, ["Name\tEmail", "Ines Vandermeer\tines.vandermeer@example.org"]);
+    await tab.close();
+  });
+});
+
+describe("the text around the caret of the field being typed in (item 7)", () => {
+  test("an input and a textarea: before the caret up to 2000, after up to 500, and the selection", async () => {
+    const tab = await open("/fields");
+    assert.deepEqual(await tab.evaluate(`(() => { const t = document.getElementById("t"); t.focus(); t.setSelectionRange(5, 5); return __p4.fieldText(t); })()`), { before: "Hello", after: " world", selection: "" });
+    assert.deepEqual(await tab.evaluate(`(() => { const t = document.getElementById("t"); t.setSelectionRange(0, 5); return __p4.fieldText(t); })()`), { before: "", after: " world", selection: "Hello" });
+    const long = await tab.evaluate<{ before: string; after: string }>(`(() => {
+      const ta = document.getElementById("ta"); ta.value = "a".repeat(2500) + "b".repeat(1000); ta.focus(); ta.setSelectionRange(2500, 2500); return __p4.fieldText(ta);
+    })()`);
+    assert.equal(long.before, "a".repeat(2000));
+    assert.equal(long.after, "b".repeat(500));
+    // Chrome gives no caret in an email input: nothing is guessed.
+    assert.equal(await tab.evaluate(`__p4.fieldText(document.getElementById("e"))`), null);
+    await tab.close();
+  });
+
+  test("a contenteditable, through the DOM selection, with its lines as a person sees them", async () => {
+    const tab = await open("/fields");
+    const r = await tab.evaluate(`(() => {
+      const ce = document.getElementById("ce"); ce.focus();
+      const t = ce.querySelectorAll("div")[1].lastChild; const r = document.createRange(); r.setStart(t, 3); r.collapse(true);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      return __p4.fieldText(ce);
+    })()`);
+    assert.deepEqual(r, { before: "Line one\nLine two\nand", after: " more", selection: "" });
+    await tab.close();
+  });
+});
+
+describe("the insert at the caret (item 8)", () => {
+  const insert = (sel: string, expect: string, text: string): string =>
+    `__p4.insertAtCaret(document.querySelector(${JSON.stringify(sel)}), { expect: ${JSON.stringify(expect)}, text: ${JSON.stringify(text)} }, async () => null)`;
+
+  test("goes in at the caret of the focused textarea, is read back, and the page's own Undo takes it out", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.value = "I am writing to apply for the  position."; ta.focus(); ta.setSelectionRange(30, 30); })()`);
+    const a = await tab.evaluate<{ outcome: string }>(insert("#ta", "I am writing to apply for the ", "Field Robotics Technician"));
+    assert.equal(a.outcome, "ok");
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "I am writing to apply for the Field Robotics Technician position.");
+    await tab.evaluate(`document.execCommand("undo")`);
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "I am writing to apply for the  position.");
+    await tab.close();
+  });
+
+  test("goes in at the caret of a contenteditable editor, and Undo takes it out", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => {
+      const ce = document.getElementById("ce"); ce.focus();
+      const t = ce.querySelectorAll("div")[1].lastChild; const r = document.createRange(); r.setStart(t, 3); r.collapse(true);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    })()`);
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ce", "Line one\nLine two\nand", " a little"))).outcome, "ok");
+    assert.equal(await tab.evaluate(`document.getElementById("ce").innerText`), "Line one\nLine two\nand a little more");
+    await tab.evaluate(`document.execCommand("undo")`);
+    assert.equal(await tab.evaluate(`document.getElementById("ce").innerText`), "Line one\nLine two\nand more");
+    await tab.close();
+  });
+
+  // The test Mac (runs/20261006T151009Z-37788): after real typing in a contenteditable, one ⌘Z took the insert and the
+  // typed sentence with it. Chrome adds an insertText to the typing's still-open undo step. Here the keys are CDP key
+  // events, under which an input and a textarea join the same way.
+  test("after typing by keys, the page's Undo takes back the insert alone: an input, a textarea, a contenteditable", async () => {
+    const typed = "The garden club meets on the first";
+    for (const id of ["t", "ta", "ce"]) {
+      const tab = await open("/fields");
+      const read = `(() => { const e = document.getElementById("${id}"); return (e.isContentEditable ? e.innerText : e.value).replace(/\\u00a0/g, " "); })()`;
+      await tab.evaluate(`(() => { const e = document.getElementById("${id}"); if (e.isContentEditable) e.textContent = ""; else e.value = ""; e.focus(); })()`);
+      for (const ch of typed) {
+        await tab.send("Input.dispatchKeyEvent", { type: "keyDown", key: ch, text: ch });
+        await tab.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch });
+      }
+      assert.equal(await tab.evaluate(read), typed, id);
+      assert.equal((await tab.evaluate<{ outcome: string }>(insert(`#${id}`, typed, " Saturday of May."))).outcome, "ok", id);
+      assert.equal(await tab.evaluate(read), `${typed} Saturday of May.`, id);
+      await tab.evaluate(`document.execCommand("undo")`);
+      assert.equal(await tab.evaluate(read), typed, `${id}: one Undo leaves what was typed`);
+      await tab.close();
+    }
+  });
+
+  // H13 review (P1): an input method's composition (Pinyin) is the IME's. Nothing goes in while one is under way in the
+  // document, whether it started before Tab or while Caret asked the worker about its grant.
+  test("touches nothing while an input method composes, before or during the grant wait", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { __p4.trackComposition(); const ta = document.getElementById("ta"); ta.value = "Ni hao "; ta.focus(); ta.setSelectionRange(7, 7); })()`);
+    const start = `document.getElementById("ta").dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, composed: true }))`;
+    const end = `document.getElementById("ta").dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, composed: true }))`;
+    await tab.evaluate(start);
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ta", "Ni hao ", "friend"))).outcome, "stale");
+    await tab.evaluate(end);
+    const during = `__p4.insertAtCaret(document.getElementById("ta"), { expect: "Ni hao ", text: "friend" }, async () => { ${start}; return null; })`;
+    assert.equal((await tab.evaluate<{ outcome: string }>(during)).outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Ni hao ");
+    await tab.evaluate(end);
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ta", "Ni hao ", "friend"))).outcome, "ok");
+    await tab.close();
+  });
+
+  // H13 review (P2): an image selected in an editor serializes to "", but it is a selection, not a caret, and an insert
+  // would replace it or land beside it. Refused at Tab and while the worker answers about the grant.
+  test("an image selected in an editor is not a caret, before or during the grant wait", async () => {
+    const tab = await open("/fields");
+    const selectImage = `(() => { const ce = document.getElementById("ce"); const r = document.createRange(); r.setStart(ce, 1); r.setEnd(ce, 2); const s = getSelection(); s.removeAllRanges(); s.addRange(r); })()`;
+    await tab.evaluate(`(() => {
+      const ce = document.getElementById("ce"); ce.innerHTML = 'Hello <img alt="" width="8" height="8">'; ce.focus();
+    })()`);
+    await tab.evaluate(selectImage);
+    assert.equal((await tab.evaluate<{ selection: string }>(`__p4.fieldText(document.getElementById("ce"))`)).selection, "", "the image reads as no text");
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ce", "Hello ", "there"))).outcome, "stale");
+    await tab.evaluate(`(() => { const ce = document.getElementById("ce"); const r = document.createRange(); r.setStart(ce.firstChild, 6); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); })()`);
+    const during = `__p4.insertAtCaret(document.getElementById("ce"), { expect: "Hello ", text: "there" }, async () => { ${selectImage}; return null; })`;
+    assert.equal((await tab.evaluate<{ outcome: string }>(during)).outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("ce").innerHTML`), 'Hello <img alt="" width="8" height="8">');
+    await tab.close();
+  });
+
+  // H13 review (P1): the read-back is of the whole field, not the 2,000 code units before the caret: the text after the
+  // caret must be as it was and the caret right after the insert. A change other than the insert is unverified and
+  // left as it is (never undone blindly); a field that reads as before is unchanged.
+  test("validates the whole field after the insert: unverified when the page changed more, unchanged when it took nothing", async () => {
+    const tab = await open("/fields");
+    // A page handler that drops the text after the caret when a multi-character insert comes in.
+    await tab.evaluate(`(() => {
+      const ta = document.getElementById("ta"); ta.value = "Dear team,\\nThe second line stays."; ta.focus(); ta.setSelectionRange(10, 10);
+      ta.addEventListener("input", (e) => { if (e.inputType === "insertText" && (e.data ?? "").length > 1) ta.value = ta.value.slice(0, ta.selectionStart); });
+    })()`);
+    const dropped = await tab.evaluate<{ outcome: string; insert?: string }>(insert("#ta", "Dear team,", " thanks"));
+    assert.deepEqual([dropped.outcome, dropped.insert], ["failed", "unverified"]);
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, thanks", "left as the page made it");
+    // A change beyond the 2,000 code units before the caret is still seen.
+    await tab.evaluate(`(() => {
+      const t = document.getElementById("t"); t.value = "a".repeat(3000); t.focus(); t.setSelectionRange(3000, 3000);
+      t.addEventListener("input", (e) => { if (e.inputType === "insertText" && (e.data ?? "").length > 1) { const at = t.selectionStart; t.value = "b" + t.value.slice(1); t.setSelectionRange(at, at); } });
+    })()`);
+    const far = await tab.evaluate<{ outcome: string; insert?: string }>(insert("#t", "a".repeat(2000), "!!"));
+    assert.deepEqual([far.outcome, far.insert], ["failed", "unverified"]);
+    // The caret must sit right after the insert.
+    await tab.evaluate(`(() => {
+      const ce = document.getElementById("ce"); ce.textContent = "Hi"; ce.focus();
+      const r = document.createRange(); r.setStart(ce.firstChild, 2); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      ce.addEventListener("input", () => { const r2 = document.createRange(); r2.setStart(ce.firstChild, 0); r2.collapse(true); const s2 = getSelection(); s2.removeAllRanges(); s2.addRange(r2); });
+    })()`);
+    const moved = await tab.evaluate<{ outcome: string; insert?: string }>(insert("#ce", "Hi", " there"));
+    assert.deepEqual([moved.outcome, moved.insert], ["failed", "unverified"]);
+    await tab.close();
+    // A page that puts its value back (a controlled field that rejects the change): nothing changed. (A beforeinput
+    // handler cannot cancel execCommand's insert in Chrome.)
+    const tab2 = await open("/fields");
+    await tab2.evaluate(`(() => {
+      const ta = document.getElementById("ta"); ta.value = "Dear team,"; ta.focus(); ta.setSelectionRange(10, 10);
+      ta.addEventListener("input", () => { ta.value = "Dear team,"; ta.setSelectionRange(10, 10); });
+    })()`);
+    const cancelled = await tab2.evaluate<{ outcome: string; insert?: string }>(insert("#ta", "Dear team,", " thanks"));
+    assert.deepEqual([cancelled.outcome, cancelled.insert], ["failed", "unchanged"]);
+    assert.equal(await tab2.evaluate(`document.getElementById("ta").value`), "Dear team,");
+    await tab2.close();
+  });
+
+  test("touches nothing when the text before the caret changed, text is selected, or the field lost focus", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.value = "Dear team, "; ta.focus(); ta.setSelectionRange(11, 11); })()`);
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ta", "Dear all, ", "thanks"))).outcome, "stale");
+    await tab.evaluate(`document.getElementById("ta").setSelectionRange(0, 4)`);
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ta", "", "thanks"))).outcome, "stale");
+    await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.setSelectionRange(11, 11); document.getElementById("t").focus(); })()`);
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ta", "Dear team, ", "thanks"))).outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, ");
+    await tab.close();
+  });
+
+  test("touches nothing when text is selected in the field while Caret asks the worker whether its grant holds (P4 review)", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const t = document.getElementById("t"); t.focus(); t.setSelectionRange(5, 5); })()`);
+    const selectedMeanwhile = `__p4.insertAtCaret(document.getElementById("t"), { expect: "Hello", text: "!" }, async () => { document.getElementById("t").setSelectionRange(5, 11); return null; })`;
+    assert.equal((await tab.evaluate<{ outcome: string }>(selectedMeanwhile)).outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("t").value`), "Hello world");
+    await tab.close();
+  });
+
+  test("touches nothing when the user types while Caret asks the worker whether its grant holds", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.value = "Dear team, "; ta.focus(); ta.setSelectionRange(11, 11); })()`);
+    const typedMeanwhile = `__p4.insertAtCaret(document.getElementById("ta"), { expect: "Dear team, ", text: "thanks" }, async () => { const ta = document.getElementById("ta"); ta.setRangeText("I ", 11, 11, "end"); return null; })`;
+    assert.equal((await tab.evaluate<{ outcome: string }>(typedMeanwhile)).outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, I ");
+    await tab.close();
+  });
+});
+
+// H13: where the caret is, for the host's inline text (extension/src/content/caret-rect.ts), and the insert only into a
+// document the user is looking at.
+describe("the caret of the focused field (H13)", () => {
+  type R = [number, number, number, number];
+
+  test("an input's caret follows its text, from the text's start", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const t = document.getElementById("t"); t.focus(); t.setSelectionRange(0, 0); })()`);
+    const start = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("t"))`);
+    const box = await tab.evaluate<{ left: number; top: number; bottom: number }>(`(() => { const b = document.getElementById("t").getBoundingClientRect(); return { left: b.left, top: b.top, bottom: b.bottom }; })()`);
+    assert.ok(start[0] >= box.left && start[0] <= box.left + 8, `caret at ${start[0]}, field from ${box.left}`);
+    assert.ok(start[1] >= box.top - 1 && start[1] + start[3] <= box.bottom + 1);
+    await tab.evaluate(`document.getElementById("t").setSelectionRange(11, 11)`);
+    const end = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("t"))`);
+    assert.ok(end[0] > start[0] + 40, `"Hello world" moved the caret from ${start[0]} to ${end[0]}`);
+    // A selection is not a caret.
+    await tab.evaluate(`document.getElementById("t").setSelectionRange(0, 5)`);
+    assert.equal(await tab.evaluate(`__p4.caretRect(document.getElementById("t"))`), null);
+    await tab.close();
+  });
+
+  test("a textarea's caret on its second line sits a line lower, at that line's text", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.style.width = "300px"; ta.value = "Dear team,\\nThanks"; ta.focus(); ta.setSelectionRange(10, 10); })()`);
+    const first = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("ta"))`);
+    await tab.evaluate(`document.getElementById("ta").setSelectionRange(17, 17)`);
+    const second = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("ta"))`);
+    assert.ok(second[1] > first[1] + first[3] * 0.5, `second line at ${second[1]}, first at ${first[1]}`);
+    assert.ok(second[0] < first[0], "'Thanks' is shorter than 'Dear team,'");
+    // The measuring copy is gone.
+    assert.equal(await tab.evaluate(`document.documentElement.lastElementChild.tagName`), "BODY");
+    await tab.close();
+  });
+
+  test("a contenteditable's caret is its selection's, also on an empty line", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => {
+      const ce = document.getElementById("ce"); ce.focus();
+      const t = ce.querySelectorAll("div")[1].firstChild; const r = document.createRange(); r.setStart(t, 4); r.collapse(true);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    })()`);
+    const r = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("ce"))`);
+    const line = await tab.evaluate<{ left: number; top: number }>(`(() => { const b = document.getElementById("ce").querySelectorAll("div")[1].getBoundingClientRect(); return { left: b.left, top: b.top }; })()`);
+    assert.ok(r[0] > line.left + 10 && Math.abs(r[1] - line.top) < 4, JSON.stringify({ r, line }));
+    await tab.evaluate(`(() => { const ce = document.getElementById("ce"); ce.innerHTML = "<div><br></div>"; const r = document.createRange(); r.setStart(ce.firstChild, 0); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); })()`);
+    const empty = await tab.evaluate<R | null>(`__p4.caretRect(document.getElementById("ce"))`);
+    assert.ok(empty !== null && empty[3] > 0, "an empty line still has a caret");
+    await tab.close();
+  });
+
+  test("an insert goes only into the editor the walk kept, never an editor nested in it (H13 review)", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => {
+      const outer = document.getElementById("ce");
+      outer.innerHTML = 'Dear Alice, <span contenteditable="false"><span id="inner" contenteditable="true"></span></span>';
+      const inner = document.getElementById("inner"); inner.focus();
+      const r = document.createRange(); r.setStart(inner, 0); r.collapse(true);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    })()`);
+    const r = await tab.evaluate<{ outcome: string }>(`__p4.insertAtCaret(document.getElementById("ce"), { expect: "Dear Alice, ", text: "thanks" }, async () => null)`);
+    assert.equal(r.outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("inner").textContent`), "");
+    await tab.close();
+  });
+
+  test("an insert into an editor goes nowhere while a form control inside it has focus (H13 review)", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => {
+      const outer = document.getElementById("ce");
+      outer.innerHTML = 'Dear Alice, <input id="embedded" value="">';
+      const r = document.createRange(); r.setStart(outer.firstChild, 12); r.collapse(true);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      document.getElementById("embedded").focus();
+    })()`);
+    const r = await tab.evaluate<{ outcome: string }>(`__p4.insertAtCaret(document.getElementById("ce"), { expect: "Dear Alice, ", text: "thanks" }, async () => null)`);
+    assert.equal(r.outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("embedded").value`), "");
+    await tab.close();
+  });
+
+  test("an insert touches nothing in a document that does not have focus (a tab the user just left)", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.value = "Dear team, "; ta.focus(); ta.setSelectionRange(11, 11); document.hasFocus = () => false; })()`);
+    const r = await tab.evaluate<{ outcome: string }>(`__p4.insertAtCaret(document.getElementById("ta"), { expect: "Dear team, ", text: "thanks" }, async () => null)`);
+    assert.equal(r.outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, ");
+    await tab.close();
+  });
+});

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Replica: Ashby application</title>
+<!-- W4: the structure of Ashby's application form (saved read-only on 2026-10-04): no <form> element, questions in
+     <label>s whose `for` names no control, a location combobox named only by its placeholder, a resume dropzone over a
+     clipped file input its visible label names, and Yes/No questions built from aria-pressed buttons with no type
+     attribute. Every name and value here is invented; the page's script is the fixture's own (replica.js). -->
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+  .entry { margin: 14px 0; }
+  .entry > label { display: block; font-weight: 600; }
+  .clipped { border: 0; clip: rect(0px, 0px, 0px, 0px); clip-path: inset(50%); height: 1px; margin: 0 -1px -1px 0; overflow: hidden; padding: 0; position: absolute; width: 1px; white-space: nowrap; }
+  .dropzone { border: 2px dashed #888; padding: 12px; display: flex; gap: 12px; align-items: center; }
+  .yesno { display: inline-flex; }
+  .yesno button { width: 80px; height: 40px; }
+  .yesno button[aria-pressed="true"] { background: #222; color: #fff; }
+</style>
+</head>
+<body>
+<h1>Replica: Ashby application</h1>
+<div class="entry"><label for="_systemfield_name">Legal Name</label><input placeholder="Type here..." name="_systemfield_name" id="_systemfield_name" type="text"></div>
+<div class="entry"><label for="_systemfield_location">Where do you plan on working from?</label>
+  <div class="input-container"><input placeholder="Start typing..." aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" role="combobox" value=""><button class="toggle" aria-label="Toggle"></button></div></div>
+<div class="entry"><label for="_systemfield_resume">Resume</label>
+  <div role="presentation" class="input-file" id="resume-box"><input type="file" tabindex="-1" id="_systemfield_resume" class="clipped">
+    <div class="dropzone"><button class="upload"><span><span>Upload File</span></span></button><p>or drag and drop here</p></div></div></div>
+<div class="entry"><label for="q-years">Do you have a minimum of 7 years of experience building software?</label>
+  <div class="yesno" id="q-years"><button aria-pressed="false" data-option="yes">Yes</button><button aria-pressed="false" data-option="no">No</button><input type="checkbox" tabindex="-1" name="q-years" style="display:none"></div></div>
+<!-- A toggle whose page never marks the press: the answer cannot be verified. -->
+<div class="entry"><label for="q-clearance">Do you hold a current security clearance?</label>
+  <div class="yesno" id="q-clearance" data-broken="true"><button aria-pressed="false" data-option="yes">Yes</button><button aria-pressed="false" data-option="no">No</button></div></div>
+<!-- Unreadable text inside the group must not stand in for the question a person reads (W4 review #3). -->
+<div class="entry"><label for="q-veteran">Are you a protected veteran?</label>
+  <div class="yesno" id="q-veteran"><span style="font-size:0;display:inline-block;width:40px;height:12px">Do you like pizza?</span><button aria-pressed="false" data-option="yes">Yes</button><button aria-pressed="false" data-option="no">No</button></div></div>
+<!-- Buttons in a disabled fieldset are disabled though their own `disabled` is false (W4 review #4). -->
+<fieldset disabled style="border:0;padding:0;margin:0"><div class="entry"><label for="q-shift">Can you work night shifts?</label>
+  <div class="yesno" id="q-shift"><button type="button" aria-pressed="false" data-option="yes">Yes</button><button type="button" aria-pressed="false" data-option="no">No</button></div></div></fieldset>
+<!-- A toggle whose mousedown moves its button into a form: Caret must not click it (W4 review #1). -->
+<div class="entry"><label for="q-visa">Will you need a visa?</label>
+  <div class="yesno" id="q-visa" data-trap="true"><button aria-pressed="false" data-option="yes">Yes</button><button aria-pressed="false" data-option="no">No</button></div></div>
+<!-- Typeless buttons inside a form submit it: not a press group. -->
+<form id="relocate-form"><div class="entry"><label for="q-relocate">Are you willing to relocate?</label>
+  <div class="yesno" id="q-relocate"><button aria-pressed="false" data-option="yes">Yes</button><button aria-pressed="false" data-option="no">No</button></div></div></form>
+<div class="entry"><button class="submit" id="submit-application">Submit Application</button></div>
+<script src="/fixture.js"></script>
+<script src="/replica/replica.js"></script>
+</body>
+</html>
