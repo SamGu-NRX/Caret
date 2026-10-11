@@ -1,0 +1,293 @@
+// Swift mirror of the offer messages in helper/src/protocol.ts: the helper sends alternatives, action
+// lines and pop-ups to the host and withdraws them; the host answers with offerAccept and offerStop.
+// Every value, action bar and spec inside them goes through PopupSpec's parsers, so a message the
+// helper's zod schema would refuse for a missing ref or a bar without Tab is refused here with the
+// same PopupSpecError, not a generic decoding error.
+import Foundation
+
+/// The field an offer belongs to. The host matches it by frame, since it cannot recompute the
+/// reader's element keys.
+public struct OfferField: Codable, Equatable, Sendable {
+    public var pid: Int
+    public var windowId: String
+    /// The reader's element key.
+    public var key: String
+    public var frame: Frame?
+    /// The field's window as the host can check it: two identical windows differ in their number.
+    public var window: OfferWindow
+    public init(pid: Int, windowId: String, key: String, frame: Frame?, window: OfferWindow) {
+        self.pid = pid; self.windowId = windowId; self.key = key; self.frame = frame; self.window = window
+    }
+    enum CodingKeys: String, CodingKey { case pid, windowId, key, frame, window }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pid = try c.decode(Int.self, forKey: .pid); windowId = try c.decode(String.self, forKey: .windowId)
+        key = try c.decode(String.self, forKey: .key); frame = try c.decodeNullable(Frame.self, forKey: .frame)
+        window = try c.decode(OfferWindow.self, forKey: .window)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
+        try c.encode(key, forKey: .key); try c.encode(frame, forKey: .frame); try c.encode(window, forKey: .window)
+    }
+}
+
+/// A window's number from the window server (CGWindowID; nil when the reader could not read one) and its title.
+public struct OfferWindow: Codable, Equatable, Sendable {
+    public var number: Int?
+    public var title: String
+    public init(number: Int?, title: String) { self.number = number; self.title = title }
+    enum CodingKeys: String, CodingKey { case number, title }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        number = try c.decodeNullable(Int.self, forKey: .number); title = try c.decode(String.self, forKey: .title)
+        if let n = number, n <= 0 { throw ProtocolError("window number must be positive") }
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(number, forKey: .number); try c.encode(title, forKey: .title)
+    }
+}
+
+/// Values for the focused field, best first. The host inserts the one shown itself, so there is no
+/// offerAccept for alternatives. `quoted`: the top value is quoted from a source on screen.
+public struct OfferAlternatives: Codable, Equatable, Sendable {
+    public static let type = "alternatives"
+    public static let maxCandidates = 3
+    public var offerKey: String
+    public var at: Int64
+    public var field: OfferField
+    public var candidates: [PopupSpec.Value]
+    public var quoted: Bool
+    public init(offerKey: String, at: Int64, field: OfferField, candidates: [PopupSpec.Value], quoted: Bool) {
+        self.offerKey = offerKey; self.at = at; self.field = field; self.candidates = candidates; self.quoted = quoted
+    }
+    enum CodingKeys: String, CodingKey { case offerKey, at, field, candidates, quoted }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        offerKey = try c.decode(String.self, forKey: .offerKey); at = try c.decode(Int64.self, forKey: .at)
+        field = try c.decode(OfferField.self, forKey: .field)
+        let raw = try c.decode([JSON].self, forKey: .candidates)
+        guard (1...Self.maxCandidates).contains(raw.count) else {
+            throw ProtocolError("candidates must hold 1 to \(Self.maxCandidates) values, got \(raw.count)")
+        }
+        candidates = try raw.enumerated().map { try PopupSpec.parseValue($1, path: "candidates[\($0)]") }
+        quoted = try c.decode(Bool.self, forKey: .quoted)
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(offerKey, forKey: .offerKey); try c.encode(at, forKey: .at); try c.encode(field, forKey: .field)
+        try c.encode(candidates.map(\.json), forKey: .candidates); try c.encode(quoted, forKey: .quoted)
+    }
+}
+
+/// One action in another app, as a line. `endState` is the work's result in one sentence; `actions`
+/// follow the rules of a pop-up's actions block; `variants` is what the down arrow opens.
+public struct OfferAction: Codable, Equatable, Sendable {
+    public static let type = "action"
+    public var offerKey: String
+    public var at: Int64
+    public var field: OfferField
+    /// The app the action happens in, as the line names it.
+    public var app: String
+    public var endState: PopupSpec.Value
+    public var actions: [PopupSpec.Action]
+    public var variants: PopupSpec?
+    public init(offerKey: String, at: Int64, field: OfferField, app: String, endState: PopupSpec.Value,
+                actions: [PopupSpec.Action], variants: PopupSpec? = nil) {
+        self.offerKey = offerKey; self.at = at; self.field = field; self.app = app
+        self.endState = endState; self.actions = actions; self.variants = variants
+    }
+    enum CodingKeys: String, CodingKey { case offerKey, at, field, app, endState, actions, variants }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        offerKey = try c.decode(String.self, forKey: .offerKey); at = try c.decode(Int64.self, forKey: .at)
+        field = try c.decode(OfferField.self, forKey: .field)
+        app = try c.decode(String.self, forKey: .app)
+        if app.isEmpty { throw ProtocolError("app is empty") }
+        endState = try PopupSpec.parseValue(try c.decode(JSON.self, forKey: .endState), path: "endState")
+        actions = try PopupSpec.parseActionBar(try c.decode(JSON.self, forKey: .actions), path: "actions")
+        variants = try c.decodeOptional(PopupSpec.self, forKey: .variants)
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(offerKey, forKey: .offerKey); try c.encode(at, forKey: .at); try c.encode(field, forKey: .field)
+        try c.encode(app, forKey: .app); try c.encode(endState.json, forKey: .endState)
+        try c.encode(actions.map(\.json), forKey: .actions); try c.encodeIfPresent(variants, forKey: .variants)
+    }
+}
+
+/// Help bigger than a sentence: a validated PopupSpec.
+public struct OfferPopup: Codable, Equatable, Sendable {
+    public static let type = "popup"
+    public var offerKey: String
+    public var at: Int64
+    public var field: OfferField
+    public var spec: PopupSpec
+    /// A grounded fill's source apps, each once, in field order; absent for other pop-ups.
+    public var sourceApps: [String]?
+    public init(offerKey: String, at: Int64, field: OfferField, spec: PopupSpec, sourceApps: [String]? = nil) {
+        self.offerKey = offerKey; self.at = at; self.field = field; self.spec = spec; self.sourceApps = sourceApps
+    }
+    enum CodingKeys: String, CodingKey { case offerKey, at, field, spec, sourceApps }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        offerKey = try c.decode(String.self, forKey: .offerKey); at = try c.decode(Int64.self, forKey: .at)
+        field = try c.decode(OfferField.self, forKey: .field); spec = try c.decode(PopupSpec.self, forKey: .spec)
+        sourceApps = try c.decodeOptional([String].self, forKey: .sourceApps)
+        if let apps = sourceApps, apps.isEmpty || apps.contains(where: \.isEmpty) || Set(apps).count != apps.count {
+            throw ProtocolError("sourceApps holds one or more distinct, non-empty app names")
+        }
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(offerKey, forKey: .offerKey); try c.encode(at, forKey: .at)
+        try c.encode(field, forKey: .field); try c.encode(spec, forKey: .spec); try c.encodeIfPresent(sourceApps, forKey: .sourceApps)
+    }
+}
+
+/// What the user accepted from an action line or pop-up (Fable plan, section 2, "Hand-off to the
+/// executor"). The work runs as a task whose id is `offerId`. Same shape as the host's own type.
+public struct OfferAccept: Codable, Equatable, Sendable {
+    public static let type = "offerAccept"
+
+    public var offerId: String
+    public var actionId: String
+    /// Choices the user made before accepting: the highlighted row of a choices block (by block
+    /// id, `choices` when it has none, or `variants` for an action line's picker), zero-based.
+    public var overrides: [String: Int]
+    public var at: Int64
+
+    public init(offerId: String, actionId: String, overrides: [String: Int], at: Int64) {
+        self.offerId = offerId
+        self.actionId = actionId
+        self.overrides = overrides
+        self.at = at
+    }
+
+    enum CodingKeys: String, CodingKey { case offerId, actionId, overrides, at }
+
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        offerId = try c.decode(String.self, forKey: .offerId)
+        actionId = try c.decode(String.self, forKey: .actionId)
+        overrides = try c.decode([String: Int].self, forKey: .overrides)
+        if let (k, row) = overrides.first(where: { $0.value < 0 }) { throw ProtocolError("overrides[\(k)] is negative (\(row))") }
+        at = try c.decode(Int64.self, forKey: .at)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(offerId, forKey: .offerId)
+        try c.encode(actionId, forKey: .actionId)
+        try c.encode(overrides, forKey: .overrides)
+        try c.encode(at, forKey: .at)
+    }
+}
+
+/// Esc on running work: the same as taskControl stop for the task the offer started.
+public struct OfferStop: Codable, Equatable, Sendable {
+    public static let type = "offerStop"
+    public var offerId: String
+    public var at: Int64
+    public init(offerId: String, at: Int64) { self.offerId = offerId; self.at = at }
+    enum CodingKeys: String, CodingKey { case offerId, at }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        offerId = try c.decode(String.self, forKey: .offerId); at = try c.decode(Int64.self, forKey: .at)
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(offerId, forKey: .offerId); try c.encode(at, forKey: .at)
+    }
+}
+
+/// The offer is no longer valid and a consumer removes it. `id` is a patternOffer's id, or the
+/// offerKey of an alternatives, action or popup message.
+public struct OfferWithdrawn: Codable, Equatable, Sendable {
+    public static let type = "offerWithdrawn"
+    /// `taken`: its values were entered, by Caret or by the user, or the user went to the window it
+    /// offered to open. `diverged`: the user entered something else. `idle`: no longer sent. `stale`: a
+    /// window it reads or writes closed or changed, the reader restarted, or its memory entry was paused
+    /// or forgotten. `expired`: its lifetime ended (helper/src/offers/lifetimes.ts). `reoffered`: the
+    /// user entered some of a loopFinish's or routine's values by hand, and the rest are offered again
+    /// under `replacedBy`. `settings`: the user paused Caret, or turned off the role or level that
+    /// allows this kind of offer.
+    public enum Reason: String, Codable, Sendable { case taken, dismissed, diverged, idle, stale, expired, reoffered, settings }
+    public var at: Int64
+    public var id: String
+    public var reason: Reason
+    /// The new offer's key; present with `reoffered` and with no other reason.
+    public var replacedBy: String?
+    public init(at: Int64, id: String, reason: Reason, replacedBy: String? = nil) {
+        self.at = at; self.id = id; self.reason = reason; self.replacedBy = replacedBy
+    }
+    enum CodingKeys: String, CodingKey { case at, id, reason, replacedBy }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Int64.self, forKey: .at); id = try c.decode(String.self, forKey: .id)
+        reason = try c.decode(Reason.self, forKey: .reason)
+        replacedBy = try c.decodeOptional(String.self, forKey: .replacedBy)
+        if replacedBy?.isEmpty == true { throw ProtocolError("replacedBy is empty") }
+        if (reason == .reoffered) != (replacedBy != nil) { throw ProtocolError("replacedBy comes with reason reoffered, and reoffered needs it") }
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(at, forKey: .at); try c.encode(id, forKey: .id); try c.encode(reason, forKey: .reason)
+        try c.encodeIfPresent(replacedBy, forKey: .replacedBy)
+    }
+}
+
+/// Host to helper: the user's settings, sent on connect and on every change (helper/src/protocol.ts
+/// `Settings`). The helper's gate applies them to its next decision: paused holds every offer and
+/// withdraws those shown, a role left out disables its producers, and the level sets the hourly budget
+/// (helper/src/offers/settings.ts LEVELS). Named apart from the host's own `CaretSettings`, which holds
+/// more than the helper needs.
+public struct GateSettings: Codable, Equatable, Sendable {
+    public static let type = "settings"
+    /// The host's roles by their raw values. `words` is the host's ghost text; the helper ignores it.
+    /// `calendar` switches the event card (B16).
+    public enum Role: String, Codable, CaseIterable, Sendable { case fill, `repeat` = "repeat", watch, calendar, words }
+    public enum Level: String, Codable, CaseIterable, Sendable { case quiet, balanced, eager }
+
+    public var at: Int64
+    /// Each role at most once.
+    public var roles: [Role]
+    public var level: Level
+    public var paused: Bool
+
+    public init(at: Int64, roles: [Role], level: Level, paused: Bool) {
+        self.at = at; self.roles = roles; self.level = level; self.paused = paused
+    }
+
+    enum CodingKeys: String, CodingKey { case at, roles, level, paused }
+
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Int64.self, forKey: .at)
+        roles = try c.decode([Role].self, forKey: .roles)
+        if Set(roles).count != roles.count { throw ProtocolError("roles lists a role twice") }
+        level = try c.decode(Level.self, forKey: .level)
+        paused = try c.decode(Bool.self, forKey: .paused)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(at, forKey: .at); try c.encode(roles, forKey: .roles)
+        try c.encode(level, forKey: .level); try c.encode(paused, forKey: .paused)
+    }
+}
