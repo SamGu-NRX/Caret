@@ -295,10 +295,15 @@ describe("T-E5: apps and sites switched off", () => {
     try {
       const path = join(dir, "deny-apps.txt");
       writeFileSync(path, "# old\ncom.apple.keychainaccess\ncom.example.private\n");
+      // readAppsOff returns the user's lines; the model adds every required entry on top (#37, required-apps.test.ts).
       const got = readAppsOff(path)!;
       expect(got).toContain("com.example.private");
-      for (const d of DEFAULT_APPS_OFF) expect(got).toContain(d);
-      expect(new Set(got).size).toBe(got.length);
+      for (const d of DEFAULT_APPS_OFF) {
+        const m = new ScreenModel();
+        m.setAppsOff(got);
+        m.apply(snap([text("t", line)], { at: 1000, windowId: "old-file", app: { pid: 9000, bundleId: d, name: d } }));
+        expect(m.windows.has("old-file"), d).toBe(false);
+      }
       expect(readAppsOff(join(dir, "absent.txt"))).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
