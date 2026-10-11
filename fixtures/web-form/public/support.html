@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Support request</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+  label { display: inline-block; min-width: 180px; vertical-align: top; }
+  p { margin: 8px 0; }
+  textarea { width: 420px; height: 80px; }
+</style>
+</head>
+<body>
+<h1>Support request</h1>
+<!-- D2-06: a support form a goal plan fills from an email. Continue shows one more field with the page's own script,
+     so only the user presses it; Submit posts to /submit, which counts. Every name and value is invented. -->
+<form id="support" action="/submit" method="post">
+  <p><label for="s_order">Order number</label><input id="s_order" name="order"></p>
+  <p><label for="s_desc">Description</label><textarea id="s_desc" name="description"></textarea></p>
+  <p id="more" hidden><label for="s_email">Contact email</label><input id="s_email" name="email" type="email"></p>
+  <p><button type="button" id="s_continue">Continue</button> <button type="submit" id="s_submit">Submit</button></p>
+</form>
+<script>
+  document.getElementById("s_continue").addEventListener("click", () => {
+    document.getElementById("more").hidden = false;
+  });
+</script>
+<script src="/fixture.js"></script>
+</body>
+</html>

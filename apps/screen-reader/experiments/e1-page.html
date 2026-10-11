@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- E1 web fixture. Runs its own scripted changes; every change carries a marker
+     "T<epoch ms><action><cycle>" so the reader's notification log can be joined to it.
+     Query: ?cycles=N&period=MS. Actions: v programmatic value, k inserted text (like typing),
+     f focus, s text node change, a node added, r node removed, t document title. -->
+<meta charset="utf-8">
+<title>Caret E1 page</title>
+<style>body{font:14px -apple-system,sans-serif;margin:16px} input{width:420px;margin:4px 0}</style>
+<h1>Caret E1 page</h1>
+<label>Programmatic <input id="v" aria-label="Programmatic"></label><br>
+<label>Typed <input id="k" aria-label="Typed"></label><br>
+<label>Focus A <input id="fa" aria-label="Focus A"></label>
+<label>Focus B <input id="fb" aria-label="Focus B"></label>
+<p id="s" aria-live="off">idle</p>
+<ul id="list"></ul>
+<script>
+const q = new URLSearchParams(location.search);
+const cycles = Number(q.get("cycles") || 40), period = Number(q.get("period") || 1200);
+const actions = ["v", "k", "f", "s", "a", "r", "t"];
+let step = 0;
+const mark = (a, n) => `T${Date.now()}${a}${n}`;
+const timer = setInterval(() => {
+  if (step >= cycles * actions.length) { clearInterval(timer); document.title = "Caret E1 page done"; return; }
+  const n = Math.floor(step / actions.length), a = actions[step % actions.length];
+  step++;
+  const m = mark(a, n);
+  switch (a) {
+    case "v": document.getElementById("v").value = m; break;
+    case "k": { const el = document.getElementById("k"); el.focus(); el.select(); document.execCommand("insertText", false, m); break; }
+    case "f": { const el = document.getElementById(n % 2 ? "fb" : "fa"); el.value = m; el.focus(); break; }
+    case "s": document.getElementById("s").textContent = m; break;
+    case "a": { const li = document.createElement("li"); li.textContent = m; document.getElementById("list").appendChild(li); break; }
+    case "r": { const l = document.getElementById("list"); if (l.firstChild) { l.firstChild.textContent = m; l.removeChild(l.firstChild); } break; }
+    case "t": document.title = `Caret E1 page ${m}`; break;
+  }
+}, period);
+</script>

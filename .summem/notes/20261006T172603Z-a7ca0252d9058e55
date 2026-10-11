@@ -1,0 +1,1 @@
+Once an assistive app turns on Chrome's web accessibility, native ghost text sees page fields, but Chrome ignores its AX writes (writeIgnored): Tab is eaten. HostCoordinator yields to page inline text via PageInline.nativeYields.

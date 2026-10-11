@@ -1,0 +1,38 @@
+// The writers the helper starts with (L1). By default there is no program writer and Ask's intents come from Jev, so
+// no default path calls Groq or any other chat provider. A developer may name one route with --dev-writer; the helper
+// then says so on start, and a missing key stops the start rather than leaving that writer off or picking another.
+import { ASK_MAKER, INTENT_ROUTE, WRITER_ROUTE } from "./config.ts";
+import { devWriterRoute } from "./routes.ts";
+import { readKey } from "./env.ts";
+import { makeWriterPort, type WriterPort } from "./port.ts";
+
+export interface StartWriters {
+  /** Code-mode plans and goal programs; null when no developer named a route. */
+  plan: WriterPort | null;
+  /** How Ask makes its intent (helper.ts HelperOptions.ask). */
+  ask: { maker: "jev" | "heads" } | { maker: "writer"; writer: WriterPort };
+}
+
+/**
+ * `devWriter` is main.ts's --dev-writer ("groq:<model>" or "gateway:<model>"), undefined without it. `say` writes one
+ * line to the helper's log.
+ */
+export function writersOnStart(devWriter: string | undefined, say: (line: string) => void, env: NodeJS.ProcessEnv = process.env): StartWriters {
+  if (devWriter === undefined) {
+    // Configured routes are null since L1; a non-null one is explicit configuration, used as written.
+    if (ASK_MAKER === "writer" && INTENT_ROUTE === null) throw new Error("writer/config.ts ASK_MAKER is \"writer\" and INTENT_ROUTE is null: start with --dev-writer provider:model");
+    const plan = WRITER_ROUTE === null ? null : makeWriterPort(WRITER_ROUTE);
+    const ask: StartWriters["ask"] = ASK_MAKER === "writer" && INTENT_ROUTE !== null ? { maker: "writer", writer: makeWriterPort(INTENT_ROUTE) } : { maker: ASK_MAKER === "heads" ? "heads" : "jev" };
+    say(`writers: ${plan === null ? "no program writer, so goals say they are not available" : `program writer ${WRITER_ROUTE?.provider} ${WRITER_ROUTE?.model}`}; Ask's intents from ${ask.maker === "writer" ? `${INTENT_ROUTE?.provider} ${INTENT_ROUTE?.model}` : ask.maker === "heads" ? "Jev in one request" : "Jev"} (writer/config.ts)`);
+    return { plan, ask };
+  }
+  const route = devWriterRoute(devWriter);
+  try {
+    readKey(route.keyName, env);
+  } catch (e) {
+    throw new Error(`--dev-writer ${devWriter} cannot start: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const plan = makeWriterPort(route);
+  say(`DEVELOPER FLAG --dev-writer: plan and goal programs go to ${route.provider} ${route.model}${ASK_MAKER === "writer" ? ", and Ask's intents too" : ""}. This is not a default path.`);
+  return { plan, ask: ASK_MAKER === "writer" ? { maker: "writer", writer: plan } : { maker: ASK_MAKER } };
+}

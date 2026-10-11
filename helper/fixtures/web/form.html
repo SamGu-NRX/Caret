@@ -1,0 +1,74 @@
+<!doctype html>
+<!-- The executor's web target for WebKit (caret-fixture --webkit) and Chromium (a temporary profile).
+     Every value here is invented. caretState, caretReset and caretSeed let the evaluation read and set
+     the page's true state through JavaScript, without trusting the executor's own Accessibility reads. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Caret Form — Web</title>
+<style>
+  body { font: 14px -apple-system, sans-serif; margin: 16px; }
+  label { display: inline-block; width: 90px; }
+  input, textarea { width: 260px; }
+  fieldset { display: inline-block; vertical-align: top; width: 300px; }
+  p { margin: 6px 0; }
+</style>
+</head>
+<body>
+<form onsubmit="return false">
+  <p><label for="name">Name</label><input id="name" type="text"></p>
+  <p><label for="email">Email</label><input id="email" type="text"></p>
+  <p><label for="reference">Reference</label><input id="reference" type="text"></p>
+  <p><label for="notes">Notes</label><textarea id="notes" rows="3"></textarea></p>
+  <fieldset><legend>Billing</legend>
+    <p><label for="billingCity">City</label><input id="billingCity" type="text"></p>
+    <p><label for="billingStreet">Street</label><input id="billingStreet" type="text"></p>
+  </fieldset>
+  <fieldset><legend>Shipping</legend>
+    <p><label for="shippingCity">City</label><input id="shippingCity" type="text"></p>
+    <p><label for="shippingStreet">Street</label><input id="shippingStreet" type="text"></p>
+  </fieldset>
+  <p id="status">Status: Active</p>
+  <p id="page">Page 1 of 2</p>
+  <p id="note" hidden>Note added</p>
+  <p>
+    <button type="button" id="archive">Archive</button>
+    <button type="button" id="addNote">Add note</button>
+    <button type="button" id="nextPage">Next page</button>
+    <button type="button" id="send">Send</button>
+  </p>
+</form>
+<script>
+  const TITLE = "Caret Form — Web";
+  const FIELDS = ["name", "email", "reference", "notes", "billingCity", "billingStreet", "shippingCity", "shippingStreet"];
+  let sent = false;
+  document.getElementById("archive").onclick = () => { document.getElementById("status").textContent = "Status: Archived"; };
+  document.getElementById("addNote").onclick = () => { document.getElementById("note").hidden = false; };
+  document.getElementById("nextPage").onclick = () => {
+    document.title = TITLE + " (page 2)";
+    document.getElementById("page").textContent = "Page 2 of 2";
+  };
+  document.getElementById("send").onclick = () => { sent = true; };
+  window.caretState = () => ({
+    title: document.title,
+    fields: Object.fromEntries(FIELDS.map((f) => [f, document.getElementById(f).value])),
+    status: document.getElementById("status").textContent,
+    page: document.getElementById("page").textContent,
+    note: !document.getElementById("note").hidden,
+    sent,
+    focused: document.activeElement && document.activeElement.id ? document.activeElement.id : null,
+  });
+  window.caretReset = () => {
+    for (const f of FIELDS) document.getElementById(f).value = "";
+    document.getElementById("status").textContent = "Status: Active";
+    document.getElementById("note").hidden = true;
+    document.getElementById("page").textContent = "Page 1 of 2";
+    document.title = TITLE;
+    sent = false;
+    if (document.activeElement) document.activeElement.blur();
+    return true;
+  };
+  window.caretSeed = (id, value) => { document.getElementById(id).value = value; return true; };
+</script>
+</body>
+</html>

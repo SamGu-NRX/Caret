@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Northgate Analytics - Data Analyst</title>
+<style>
+body{font-family:-apple-system,Helvetica,Arial,sans-serif;max-width:720px;margin:30px auto;color:#515357}
+h1{font-size:30px;color:#000;margin:0} .meta{color:#808080;font-size:13px;letter-spacing:.06em;text-transform:uppercase;margin:6px 0 30px}
+h2{font-size:14px;letter-spacing:.08em;text-transform:uppercase;color:#000;margin:34px 0 8px}
+.q{display:flex;align-items:center;gap:16px;margin:10px 0} .q>label{flex:0 0 220px;font-size:15px;color:#000}
+.q>input,.q>select,.q>textarea{flex:1;padding:6px 8px;font-size:15px;border:1px solid #e2e2e2;border-radius:3px}
+.req{color:#e95f50}
+fieldset{border:0;padding:0;margin:14px 0} legend{font-size:15px;color:#000;margin-bottom:6px} fieldset label{margin-right:24px}
+.check{margin:14px 0;font-size:14px}
+button{margin-top:26px;padding:12px 30px;font-size:14px;letter-spacing:.08em;text-transform:uppercase;background:#579eee;color:#fff;border:0;border-radius:3px}
+</style></head><body>
+<!-- Invented job application in a Lever-like layout (B24 corpus). Submit is inert. -->
+<h1>Data Analyst</h1>
+<div class="meta">Denver, CO &middot; Analytics &middot; Full-time</div>
+<form onsubmit="event.preventDefault()">
+<h2>Submit your application</h2>
+<div class="q"><label for="resume">Resume/CV <span class="req">&#10033;</span></label><input type="file" id="resume" accept=".pdf,.doc,.docx"></div>
+<div class="q"><label for="name">Full name <span class="req">&#10033;</span></label><input type="text" id="name" autocomplete="off"></div>
+<div class="q"><label for="email">Email <span class="req">&#10033;</span></label><input type="email" id="email" autocomplete="off"></div>
+<div class="q"><label for="phone">Phone <span class="req">&#10033;</span></label><input type="tel" id="phone" autocomplete="off"></div>
+<div class="q"><label for="org">Current company</label><input type="text" id="org" autocomplete="off"></div>
+
+<h2>Links</h2>
+<div class="q"><label for="li">LinkedIn URL</label><input type="url" id="li" autocomplete="off"></div>
+<div class="q"><label for="gh">GitHub URL</label><input type="url" id="gh" autocomplete="off"></div>
+<div class="q"><label for="pf">Portfolio or website</label><input type="url" id="pf" autocomplete="off"></div>
+
+<h2>A few questions</h2>
+<div class="q"><label for="start">Earliest start date</label><input type="date" id="start"></div>
+<fieldset><legend>Will you now or in the future require visa sponsorship to work in the US? <span class="req">&#10033;</span></legend>
+<label><input type="radio" name="spons" value="yes"> Yes</label>
+<label><input type="radio" name="spons" value="no"> No</label>
+</fieldset>
+<div class="q"><label for="heard">How did you hear about this role?</label>
+<select id="heard"><option value="">Select...</option><option>LinkedIn</option><option>Company website</option><option>Employee referral</option><option>Job board</option><option>University career center</option><option>Other</option></select></div>
+<div class="q"><label for="ref">Referrer's name (if referred)</label><input type="text" id="ref" autocomplete="off"></div>
+<div class="q"><label for="sal">Desired salary (optional)</label><input type="text" id="sal" autocomplete="off"></div>
+
+<h2>Professional reference</h2>
+<div class="q"><label for="rname">Reference name</label><input type="text" id="rname" autocomplete="off"></div>
+<div class="q"><label for="rrel">Reference relationship</label>
+<select id="rrel"><option value="">Select...</option><option>Manager</option><option>Colleague</option><option>Direct report</option><option>Professor</option><option>Other</option></select></div>
+<div class="q"><label for="remail">Reference email</label><input type="email" id="remail" autocomplete="off"></div>
+<div class="q"><label for="rphone">Reference phone</label><input type="tel" id="rphone" autocomplete="off"></div>
+
+<h2>Additional information</h2>
+<div class="q"><label for="add">Cover letter or anything else you'd like us to know</label><textarea id="add" rows="5"></textarea></div>
+<div class="check"><input type="checkbox" id="future"> <label for="future">Keep me in mind for future openings at Northgate</label></div>
+<button type="submit">Submit application</button>
+</form>
+</body></html>

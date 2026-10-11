@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Checkout - Fernway Goods</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;max-width:600px;margin:24px auto;color:#202223}
+.brand{font-size:22px;font-weight:600;letter-spacing:.02em} .crumbs{font-size:12px;color:#6d7175;margin:6px 0 20px}
+h2{font-size:18px;margin:26px 0 10px;font-weight:600}
+.f{margin:10px 0} label{display:block;font-size:12px;color:#6d7175;margin-bottom:3px}
+.row{display:flex;gap:12px} .row>div{flex:1}
+input[type=text],input[type=email],input[type=tel],select,textarea{width:100%;padding:12px;font-size:14px;box-sizing:border-box;border:1px solid #d9d9d9;border-radius:5px}
+.check{margin:10px 0;font-size:14px} .check label{display:inline;font-size:14px;color:#202223}
+fieldset{border:1px solid #d9d9d9;border-radius:5px;padding:0;margin:10px 0} legend{font-size:18px;font-weight:600;padding:0;margin-bottom:10px}
+fieldset label{display:block;padding:14px;border-top:1px solid #e3e3e3;font-size:14px;color:#202223;margin:0} fieldset label:first-of-type{border-top:0}
+button{margin-top:22px;width:100%;padding:16px;font-size:15px;background:#1f5f54;color:#fff;border:0;border-radius:5px}
+</style></head><body>
+<!-- Invented storefront checkout, contact and delivery steps only (B24 corpus). Stops before payment: there are no card fields. -->
+<div class="brand">FERNWAY GOODS</div>
+<div class="crumbs">Cart &rsaquo; <b>Information</b> &rsaquo; Shipping &rsaquo; Payment</div>
+<form onsubmit="event.preventDefault()">
+<h2>Contact</h2>
+<div class="f"><label for="email">Email</label><input type="email" id="email" autocomplete="off"></div>
+<div class="check"><input type="checkbox" id="offers"> <label for="offers">Email me with news and offers</label></div>
+
+<h2>Delivery</h2>
+<div class="f"><label for="country">Country/Region</label>
+<select id="country"><option selected>United States</option><option>Canada</option></select></div>
+<div class="row">
+ <div class="f"><label for="first">First name (optional)</label><input type="text" id="first" autocomplete="off"></div>
+ <div class="f"><label for="last">Last name</label><input type="text" id="last" autocomplete="off"></div>
+</div>
+<div class="f"><label for="company">Company (optional)</label><input type="text" id="company" autocomplete="off"></div>
+<div class="f"><label for="address">Address</label><input type="text" id="address" autocomplete="off"></div>
+<div class="f"><label for="address2">Apartment, suite, etc. (optional)</label><input type="text" id="address2" autocomplete="off"></div>
+<div class="row">
+ <div class="f"><label for="city">City</label><input type="text" id="city" autocomplete="off"></div>
+ <div class="f"><label for="state">State</label><select id="state"><option value="">State</option><option>Alabama</option><option>Alaska</option><option>Arizona</option><option>Arkansas</option><option>California</option><option>Colorado</option><option>Connecticut</option><option>Delaware</option><option>District of Columbia</option><option>Florida</option><option>Georgia</option><option>Hawaii</option><option>Idaho</option><option>Illinois</option><option>Indiana</option><option>Iowa</option><option>Kansas</option><option>Kentucky</option><option>Louisiana</option><option>Maine</option><option>Maryland</option><option>Massachusetts</option><option>Michigan</option><option>Minnesota</option><option>Mississippi</option><option>Missouri</option><option>Montana</option><option>Nebraska</option><option>Nevada</option><option>New Hampshire</option><option>New Jersey</option><option>New Mexico</option><option>New York</option><option>North Carolina</option><option>North Dakota</option><option>Ohio</option><option>Oklahoma</option><option>Oregon</option><option>Pennsylvania</option><option>Rhode Island</option><option>South Carolina</option><option>South Dakota</option><option>Tennessee</option><option>Texas</option><option>Utah</option><option>Vermont</option><option>Virginia</option><option>Washington</option><option>West Virginia</option><option>Wisconsin</option><option>Wyoming</option></select></div>
+ <div class="f"><label for="zip">ZIP code</label><input type="text" id="zip" inputmode="numeric" autocomplete="off"></div>
+</div>
+<div class="f"><label for="phone">Phone (optional)</label><input type="tel" id="phone" autocomplete="off"></div>
+<div class="check"><input type="checkbox" id="save"> <label for="save">Save this information for next time</label></div>
+
+<fieldset><legend>Shipping method</legend>
+<label><input type="radio" name="ship" value="std"> Standard (5-7 business days)</label>
+<label><input type="radio" name="ship" value="exp"> Express (2-3 business days)</label>
+<label><input type="radio" name="ship" value="ovn"> Overnight</label>
+</fieldset>
+<div class="f"><label for="gift">Add a gift note (optional)</label><textarea id="gift" rows="2"></textarea></div>
+<button type="submit">Continue to payment</button>
+</form>
+</body></html>

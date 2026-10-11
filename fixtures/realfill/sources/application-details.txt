@@ -1,0 +1,9 @@
+Application details
+Name: Jordan Reyes
+Email: jordan.reyes@example.org
+Phone: (512) 555-0147
+School: The University of Texas at Austin
+Degree: Bachelor's Degree
+Graduation: 05/2027
+LinkedIn: https://www.linkedin.com/in/jordan-reyes-dev
+Work authorization: yes, US citizen

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Schedule Service | Summit Subaru</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0 auto;color:#1c1c1c}
+.hdr{background:#0b2d71;color:#fff;padding:16px 20px} .hdr h1{margin:0;font-size:22px} .hdr p{margin:4px 0 0;font-size:13px;opacity:.85}
+form{padding:0 20px 30px} .step{font-size:12px;font-weight:bold;color:#0b2d71;text-transform:uppercase;letter-spacing:.06em;margin-top:28px}
+h2{font-size:18px;margin:4px 0 10px}
+label,legend{display:block;font-size:13px;font-weight:bold;margin:12px 0 4px}
+.row{display:flex;gap:14px} .row>div{flex:1}
+input[type=text],input[type=email],input[type=tel],input[type=date],input[type=time],select,textarea{width:100%;padding:9px;font-size:15px;box-sizing:border-box;border:1px solid #a6a6a6}
+fieldset{border:1px solid #d0d0d0;padding:8px 14px;margin:12px 0} fieldset label{font-weight:normal;margin:7px 0}
+.req{color:#c8102e} .check{margin:10px 0;font-size:14px} .check label{display:inline;font-weight:normal}
+button{margin-top:22px;padding:13px 30px;font-size:15px;background:#c8102e;color:#fff;border:0;font-weight:bold}
+</style></head><body>
+<!-- Invented dealership service-booking form (B24 corpus). Submit is inert. -->
+<div class="hdr"><h1>Summit Subaru Service</h1><p>1450 Foothills Pkwy, Golden, CO &middot; Online appointment request</p></div>
+<form onsubmit="event.preventDefault()">
+<div class="step">Step 1 of 3</div><h2>Your vehicle</h2>
+<div class="row">
+ <div><label for="year">Year <span class="req">*</span></label>
+  <select id="year"><option value="">Select year</option><option>2026</option><option>2025</option><option>2024</option><option>2023</option><option>2022</option><option>2021</option><option>2020</option><option>2019</option><option>2018</option><option>2017</option><option>2016</option><option>2015</option></select></div>
+ <div><label for="model">Model <span class="req">*</span></label>
+  <select id="model"><option value="">Select model</option><option>Ascent</option><option>Crosstrek</option><option>Forester</option><option>Impreza</option><option>Legacy</option><option>Outback</option><option>WRX</option></select></div>
+</div>
+<div class="row">
+ <div><label for="miles">Current mileage <span class="req">*</span></label><input type="text" id="miles" inputmode="numeric" autocomplete="off"></div>
+ <div><label for="vin">VIN (optional)</label><input type="text" id="vin" autocomplete="off"></div>
+</div>
+
+<div class="step">Step 2 of 3</div><h2>Services and time</h2>
+<fieldset><legend>Services requested <span class="req">*</span></legend>
+<label><input type="checkbox" name="svc" value="oil"> Oil and filter change</label>
+<label><input type="checkbox" name="svc" value="rot"> Tire rotation</label>
+<label><input type="checkbox" name="svc" value="brk"> Brake inspection</label>
+<label><input type="checkbox" name="svc" value="cab"> Cabin air filter replacement</label>
+<label><input type="checkbox" name="svc" value="aln"> Wheel alignment</label>
+</fieldset>
+<div class="row">
+ <div><label for="date">Preferred date <span class="req">*</span></label><input type="date" id="date"></div>
+ <div><label for="time">Preferred time <span class="req">*</span></label><input type="time" id="time" min="07:00" max="17:00" step="900"></div>
+</div>
+<fieldset><legend>While we service your vehicle</legend>
+<label><input type="radio" name="trans" value="wait"> I'll wait at the dealership</label>
+<label><input type="radio" name="trans" value="shuttle"> Shuttle ride</label>
+<label><input type="radio" name="trans" value="drop"> Drop off and pick up later</label>
+</fieldset>
+
+<div class="step">Step 3 of 3</div><h2>Contact information</h2>
+<label for="name">Full name <span class="req">*</span></label><input type="text" id="name" autocomplete="off">
+<div class="row">
+ <div><label for="email">Email <span class="req">*</span></label><input type="email" id="email" autocomplete="off"></div>
+ <div><label for="mobile">Mobile phone <span class="req">*</span></label><input type="tel" id="mobile" autocomplete="off"></div>
+</div>
+<label for="comments">Comments for your service advisor</label><textarea id="comments" rows="3"></textarea>
+<div class="check"><input type="checkbox" id="ready"> <label for="ready">Text me when my vehicle is ready</label></div>
+<div class="check"><input type="checkbox" id="specials"> <label for="specials">Send me service specials and coupons</label></div>
+<button type="submit">Request appointment</button>
+</form>
+</body></html>
