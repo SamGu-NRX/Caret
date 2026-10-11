@@ -18,7 +18,7 @@ import type { WriterRequest } from "../src/writer/port.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { MAIL_APP, optionIs, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, wireButtons } from "./fake-app.ts";
-import { LineClient } from "./socket-reader.ts";
+import { authenticateHost, LineClient, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const lines = readFileSync(new URL("../fixtures/golden/ask-choices.ndjson", import.meta.url), "utf8").trim().split("\n");
 const CONSUMER = new Set(["hello", "planRequest", "askAnswer"]);
@@ -186,12 +186,13 @@ describe("askAnswer on the socket", () => {
   it("is refused by name from a consumer that did not declare the capability", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caret-ask-sock-"));
     const store = new Store(join(dir, "data"));
-    const server: HelperServer = new HelperServer(join(dir, "screen.sock"), () => helper, () => {});
+    const server: HelperServer = new HelperServer(join(dir, "screen.sock"), () => helper, () => {}, TEST_LAUNCH_SECRET);
     const helper: Helper = new Helper({ store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: false, publish: (m) => server.publish(m) });
     await server.listen();
     try {
       const c = await LineClient.connect(join(dir, "screen.sock"));
       c.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "old-host", host: true });
+      await authenticateHost(c);
       c.send(at(3));
       const e = await c.waitFor((m) => m.type === "error" && String(m.message).includes("askAnswer"));
       expect(e.message).toBe(`askAnswer needs "${ASK_CHOICES_CAPABILITY}" in the consumer's hello capabilities`);
@@ -199,6 +200,7 @@ describe("askAnswer on the socket", () => {
       // One that declared it reaches the helper: an unknown question is gone.
       const d = await LineClient.connect(join(dir, "screen.sock"));
       d.send(at(0));
+      await authenticateHost(d);
       d.send(at(3));
       const r = await d.waitFor((m) => m.type === "planProposal");
       expect(r).toMatchObject({ requestId: "ask-8", outcome: "error", error: { code: "questionGone" } });

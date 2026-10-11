@@ -10,7 +10,7 @@ import { AnyMessage, ConsumerMessage, FILL_ALL_CAPABILITY, FillProposal, HelperM
 import { HelperServer } from "../src/server.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { LineClient } from "./socket-reader.ts";
+import { authenticateHost, LineClient, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const lines = readFileSync(new URL("../fixtures/golden/fill-all.ndjson", import.meta.url), "utf8").trim().split("\n");
 const CONSUMER = new Set(["hello", "fillAll", "taskControl"]);
@@ -59,7 +59,7 @@ describe("fillAll on the socket", () => {
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "caret-fill-all-"));
     store = new Store(join(dir, "data"));
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({ store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: false, publish: (m) => own.publish(m) });
     helper = mine;
     server = own;
@@ -82,6 +82,7 @@ describe("fillAll on the socket", () => {
     ]) {
       const c = await LineClient.connect(join(dir, "screen.sock"));
       c.send(hello);
+      if (hello.host === true) await authenticateHost(c);
       c.send(ask);
       const e = await c.waitFor((m) => m.type === "error" && String(m.message).includes("fillAll"));
       expect(e.message).toBe(`fillAll needs a host hello with "${FILL_ALL_CAPABILITY}" in its capabilities`);
@@ -92,6 +93,7 @@ describe("fillAll on the socket", () => {
   it("reaches the helper from a host that declared it: an unknown proposal is refused there, as an offerAccept's is", async () => {
     const c = await LineClient.connect(join(dir, "screen.sock"));
     c.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host", host: true, capabilities: [FILL_ALL_CAPABILITY] });
+    await authenticateHost(c);
     c.send(ask);
     const stopped = await c.waitFor((m) => m.type === "taskProgress" && m.taskId === "fill-404");
     expect(stopped).toMatchObject({ phase: "stopped", stopReason: "refused", detail: "no such fill proposal, or it expired" });

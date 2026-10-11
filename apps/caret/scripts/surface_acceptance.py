@@ -47,6 +47,7 @@ import sys
 import time
 
 import fixture_app
+import launch_secret
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -139,9 +140,22 @@ def check(name, ok, **detail):
     return ok
 
 
-def start(name, args, out_dir, env=None, stdin=None):
+def start_with_secret(name, args, out_dir, env=None):
+    """The helper or caret-screen, with this run's launch secret on standard input (--auth-fd 0, launch_secret.py)."""
+    return start(name, args, out_dir, env=env, popen=launch_secret.popen_with_secret)
+
+
+def start_caret(name, args, out_dir, env=None):
+    """Caret attached to this run's helper, with the host key on an inherited pipe, so the helper admits it as the host."""
+    return start(name, args, out_dir, env=env, popen=launch_secret.popen_caret)
+
+
+def start(name, args, out_dir, env=None, stdin=None, popen=subprocess.Popen):
     out = open(os.path.join(out_dir, f"{name}.log"), "w")
-    proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, stdin=stdin)
+    kwargs = {"stdout": out, "stderr": subprocess.STDOUT, "env": env}
+    if stdin is not None:
+        kwargs["stdin"] = stdin
+    proc = popen(args, **kwargs)
     STARTED.append((name, proc))
     NAMES[proc.pid] = name
     log("started", name, proc.pid)

@@ -134,7 +134,8 @@ export const Hello = z
     version: z.string(),
     /**
      * A consumer that is the host app: only its session counts as "host connected", and only it keeps a run
-     * with no Tab alive (B23). Other consumers (evaluation scripts, the page engine) leave it out.
+     * with no Tab alive (B23). Other consumers (evaluation scripts, the page engine) leave it out. The helper answers
+     * it with hostChallenge and treats the connection as the host only after a valid hostProof (src/host-auth.ts).
      */
     host: z.literal(true).optional(),
     /**
@@ -396,6 +397,37 @@ export const HelperAuth = z.object({
   pid: z.number().int().positive(),
 });
 export type HelperAuth = z.infer<typeof HelperAuth>;
+
+/**
+ * The helper's answer to a consumer hello with `host: true`, sent before anything else on that connection: base64 of
+ * 32 random bytes, fresh per connection and good for one proof. Until the host answers it with hostProof the helper
+ * grants the connection nothing and sends it nothing else (src/host-auth.ts).
+ */
+export const HostChallenge = z.object({
+  type: z.literal("hostChallenge"),
+  v: z.literal(PROTOCOL_VERSION),
+  nonce: z.string().min(16),
+});
+export type HostChallenge = z.infer<typeof HostChallenge>;
+
+/**
+ * The host's answer to hostChallenge, its next line after hello: base64 of HMAC-SHA256(hostKey, "caret-host-proof\n" +
+ * nonce), where hostKey is HMAC-SHA256(launch secret, "caret-host-key"). A wrong proof, any other line first, or none
+ * within 5 s closes the connection.
+ */
+export const HostProof = z.object({
+  type: z.literal("hostProof"),
+  v: z.literal(PROTOCOL_VERSION),
+  proof: z.string().min(1),
+});
+export type HostProof = z.infer<typeof HostProof>;
+
+/** The proof checked out: from here on the connection is the host, with the capabilities its hello listed. */
+export const HostAuthenticated = z.object({
+  type: z.literal("hostAuthenticated"),
+  v: z.literal(PROTOCOL_VERSION),
+});
+export type HostAuthenticated = z.infer<typeof HostAuthenticated>;
 
 export const VerbOutcome = z.enum([
   "ok",
@@ -1441,7 +1473,7 @@ export const SavedFilesRequest = z
   .refine((m) => (m.op === "forget") === (m.id !== undefined), { message: "forget names the file's id; list names none", path: ["id"] });
 export type SavedFilesRequest = z.infer<typeof SavedFilesRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, FirstLookPreviewRequest, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, FirstLookPreviewRequest, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked, HostProof]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -2750,6 +2782,7 @@ export type SavedFilesReply = z.infer<typeof SavedFilesReply>;
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, FirstLookPreview, PlanProposal, SkillOffer,
   PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply, PageInsertReply, SavedFilesReply,
+  HostChallenge, HostAuthenticated,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);

@@ -114,27 +114,22 @@ def rig(out_dir, mode):
         raise SystemExit(why)
     sa.RUN_START = time.time()
     before = sa.front_pid()
-    secret = os.urandom(32)
-    helper = sa.start("helper", ["node", os.path.join(HERE, "acceptance_helper.ts"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--state", STATE,
-                                 "--routing", "live" if mode == "on" else "off"], out_dir, stdin=subprocess.PIPE)
-    helper.stdin.write(secret)
-    helper.stdin.close()
+    sa.start_with_secret("helper", ["node", os.path.join(HERE, "acceptance_helper.ts"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--state", STATE,
+                                    "--routing", "live" if mode == "on" else "off"], out_dir)
     if not sa.wait_for(lambda: os.path.exists(HELPER_SOCK), 20, 0.1):
         raise SystemExit("helper did not open its socket")
     pid, _ = open_textedit(out_dir)
     # Quit only the instance this run launched, then give the front back to the app that had it.
     sa.BEFORE_STOP.append(lambda: (subprocess.run(["kill", str(pid)]), sa.ax(before.get("pid") or 1, "hand-back", before.get("pid") or 1) if before.get("pid") else None))
     sa.check("this run's TextEdit is frontmost (NSWorkspace and lsappinfo)", True, before=before, after=sa.front_pid(), pid=pid)
-    reader = sa.start("reader", [os.path.join(SCREEN_BIN, "caret-screen"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", str(pid)],
-                      out_dir, stdin=subprocess.PIPE)
-    reader.stdin.write(secret)
-    reader.stdin.close()
+    sa.start_with_secret("reader", [os.path.join(SCREEN_BIN, "caret-screen"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", str(pid)],
+                         out_dir)
     # Ghost text alone: every other role off, so no other offer takes the arbiter's slot.
     settings = os.path.join(out_dir, "settings.json")
     with open(settings, "w") as f:
         json.dump({"version": 2, "roles": ["words"], "level": "balanced", "character": "pebble", "paused": False, "onboarded": True,
                    "memory": [], "routing": mode == "on"}, f)
-    h = sa.start("host", [sa.CARET, "--socket", sa.HOST_SOCK, "--helper-socket", HELPER_SOCK, "--allow-pids", str(pid), "--test-hooks",
+    h = sa.start_caret("host", [sa.CARET, "--socket", sa.HOST_SOCK, "--helper-socket", HELPER_SOCK, "--allow-pids", str(pid), "--test-hooks",
                           "--settings", settings, "--status-item", "off", "--perch", "hidden"], out_dir)
     if not sa.wait_for(lambda: os.path.exists(sa.HOST_SOCK), 15, 0.1):
         raise SystemExit("host did not open its socket")

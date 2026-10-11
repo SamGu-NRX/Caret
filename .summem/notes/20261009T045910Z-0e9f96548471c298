@@ -1,1 +1,0 @@
-Acceptance builds (build-app.sh acceptance) answer every debug-socket command only with --test-hooks or CARET_DEBUG_SOCKET=full since e0d39205; otherwise state and spend only, as a release build (DF1).

@@ -22,7 +22,7 @@
 //   node apps/caret/scripts/offers_socket_acceptance.ts --out DIR [--runs 3] [--routing off|live] [--host-routing on|off]
 //
 // --routing and --host-routing (H6) are routing_option.ts's.
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -31,12 +31,18 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
+import { newLaunchSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
 import { Store } from "../../../helper/src/store.ts";
 import type { AskJev } from "../../../helper/src/fill/jev.ts";
 import type { HelperMessage, OfferAccept, OfferStop, TaskControl } from "../../../helper/src/protocol.ts";
 import { jevPickingText } from "../../../helper/test/builders.ts";
 import { SocketReader, loadRecording, until as untilTrue } from "../../../helper/test/socket-reader.ts";
 import { routedJev, routingHarness, routingOptions, type RoutingHarness } from "./routing_option.ts";
+
+// The in-process server's launch secret. Caret gets the host key derived from it (spawnCaret), so the server admits it
+// as the host (helper/src/host-auth.ts).
+const launchSecret = newLaunchSecret();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -139,7 +145,7 @@ async function openSession(): Promise<Session> {
   };
   const task = helper.handleTask.bind(helper);
   helper.handleTask = (m) => (m.type === "taskControl" && !inStop && fromHost.push({ at: Date.now(), m }), task(m));
-  server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`));
+  server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`), launchSecret);
   await server.listen();
   const reader = await SocketReader.connect(HELPER_SOCK);
   const hooks = {
@@ -163,13 +169,13 @@ async function closeSession(s: Session): Promise<void> {
 
 // MARK: - the host, headless
 
-const host: ChildProcess = spawn(CARET, [
+const host: ChildProcess = spawnCaret(CARET, [
   // --test-hooks: the debug socket's `key` drives the tap's routing, and needs it (CodeRabbit on PR #9).
   "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden", "--surfaces", "headless", "--test-hooks",
   "--allow-pids", PIDS.join(","),
   // Nothing on screen, not even the menu bar item, and a settings file of the run's own.
   "--status-item", "off", "--settings", join(SOCKETS, "a5-offers-settings.json"),
-]);
+], launchSecret);
 host.stderr?.setEncoding("utf8");
 host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));
 process.on("exit", () => host.kill("SIGTERM"));

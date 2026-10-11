@@ -1,0 +1,1 @@
+Rig: v2/access CI needs a carrier commit with v2.yml from sam/v2/ci; rig-run memory 4-12 GiB (Gemma needs >4); macOS 26 guest AX focus falls back to the frontmost app (-25204); copy runs out before caret-heavy prune.

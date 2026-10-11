@@ -206,6 +206,13 @@ public struct DebugState: Codable, Equatable, Sendable {
     /// The consumer connection to the helper's socket.
     public struct HelperLink: Codable, Equatable, Sendable {
         public var connected = false
+        /// Whether the helper accepted this Caret's host proof on the current connection (`HostAuth`); nil for a Caret
+        /// with no host key, which the helper serves as any other consumer.
+        public var hostAuthenticated: Bool?
+        /// The menu's status line while the helper refuses this Caret as its host (`HostRetry.statusLine`), and the wait
+        /// before the next attempt in seconds. Both nil once the helper accepts it.
+        public var hostRefused: String?
+        public var hostRetrySeconds: Double?
         public var connects: UInt64 = 0
         public var proposals: UInt64 = 0
         /// `activity` and `activityReply` messages received.

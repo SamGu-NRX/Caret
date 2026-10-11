@@ -1,1 +1,0 @@
-caret-heavy prune deletes inputs/vm-job/runs (the whole guest evidence); copy the run directory out before pruning an r2-vm job.

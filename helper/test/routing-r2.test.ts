@@ -15,7 +15,7 @@ import { ConsentLedger } from "../src/routing/consent.ts";
 import { PROTOCOL_VERSION, ROUTING_CAPABILITY, type TaskRecord } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { jevPickingText } from "./builders.ts";
-import { LineClient, SocketReader, loadRecording } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, TEST_LAUNCH_SECRET, loadRecording } from "./socket-reader.ts";
 
 describe("the consent ledger reads only the helper's own records", () => {
   let dir: string;
@@ -118,6 +118,7 @@ describe("A5's recordings with routing on, over the socket", () => {
     const c = await LineClient.connect(join(dir, "screen.sock"));
     clients.push(c);
     c.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", ...hello });
+    if (hello.host === true) await authenticateHost(c);
     return c;
   };
   const settings = { type: "settings", v: PROTOCOL_VERSION, at: 1, roles: [...DEFAULT_SETTINGS.roles], level: DEFAULT_SETTINGS.level, paused: false };
@@ -133,7 +134,7 @@ describe("A5's recordings with routing on, over the socket", () => {
     store = new Store(join(dir, "data"));
     routerAsked.length = 0;
     let n = 0;
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       askJev,

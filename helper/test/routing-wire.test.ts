@@ -12,7 +12,7 @@ import { MemoryStore } from "../src/patterns/memory.ts";
 import { AnyMessage, ConsumerMessage, HelperMessage, PROTOCOL_VERSION, ROUTING_CAPABILITY, type AppRef, type HelperMessage as HM, type Node, type RouteDecision } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { snap } from "./builders.ts";
-import { LineClient } from "./socket-reader.ts";
+import { authenticateHost, LineClient, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const lines = readFileSync(new URL("../fixtures/golden/routing.ndjson", import.meta.url), "utf8").trim().split("\n");
 
@@ -95,7 +95,7 @@ describe("route decisions through the helper and the server", () => {
     memory = new MemoryStore(join(dir, "data"));
     clock = Date.parse("2026-10-05T10:00:00-05:00");
     due.length = 0;
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       memory,
@@ -121,6 +121,7 @@ describe("route decisions through the helper and the server", () => {
     const decisions = (c: LineClient): RouteDecision[] => c.received.filter((m): m is RouteDecision => (m as HM).type === "routeDecision");
     const oldHost = await LineClient.connect(join(dir, "screen.sock"));
     oldHost.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "host-before-routing", host: true });
+    await authenticateHost(oldHost);
     await oldHost.waitFor((m) => m.type === "pageEngineState", 300).catch(() => undefined);
     void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: clock, from: null, to: NOTES });
     doc("Plans for the week");
@@ -130,6 +131,7 @@ describe("route decisions through the helper and the server", () => {
 
     const host = await LineClient.connect(join(dir, "screen.sock"));
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true, capabilities: [ROUTING_CAPABILITY] });
+    await authenticateHost(host);
     const write = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.outcome === "write");
     expect(write).toMatchObject({ windowId: DOC, key: BODY, route: null });
     expect(write.expires).toBeGreaterThan(write.at);

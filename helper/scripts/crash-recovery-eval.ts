@@ -6,7 +6,7 @@
 // own, on a temporary data directory (the same scene as test/skills.test.ts).
 // Phase 2, across processes: the real helper (src/main.ts) runs as a child on that data directory. This script plays
 // the reader over the socket (it checks the helper's proof, answers its commands as caret-screen would, and keeps the
-// elements its writes recorded) and the host (hello with host: true). The calendar window shows, a compose window
+// elements its writes recorded) and the host (hello with host: true, then its proof). The calendar window shows, a compose window
 // opens, and the skill runs with no Tab. When the command for its second write arrives, the child is killed with
 // SIGKILL and the write is never applied. The child is started again with the same secret, as src/launch.ts does;
 // the reader reconnects under the same launch id and sends the screen again. Then:
@@ -31,7 +31,7 @@ import { newLaunchSecret, sendSecret } from "../src/launch.ts";
 import { HelperToReader, PROTOCOL_VERSION, type ActivityReply, type HelperMessage, type MemoryReply, type ReaderMessage, type TaskProgress } from "../src/protocol.ts";
 import { Desk, cellKey, type DeskSink, type GridWindow, type ListWindow } from "../test/scene.ts";
 import { FIXTURE_APP, MAIL_APP } from "../test/builders.ts";
-import { LineClient, until } from "../test/socket-reader.ts";
+import { authenticateHost, LineClient, until } from "../test/socket-reader.ts";
 
 const { values: a } = parseArgs({ options: { out: { type: "string" } } });
 if (a.out === undefined) throw new Error("usage: node scripts/crash-recovery-eval.ts --out DIR");
@@ -193,6 +193,8 @@ const connectReader = async (): Promise<LineClient> => {
 const connectHost = async (): Promise<LineClient> => {
   const h = await LineClient.connect(SOCK);
   h.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: process.pid, version: "crash-eval-host", host: true });
+  // The proof goes right after hello, under the key the launch secret gives (src/host-auth.ts).
+  await authenticateHost(h, secret);
   h.send({ type: "settings", v: PROTOCOL_VERSION, at: Date.now(), ...SETTINGS });
   return h;
 };
