@@ -18,7 +18,7 @@ import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { field, jevPickingText, snap, text } from "./builders.ts";
-import { LineClient, SocketReader, loadRecording, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, TEST_LAUNCH_SECRET, loadRecording, until } from "./socket-reader.ts";
 
 const request: FirstLookPreviewRequest = { type: "firstLookPreviewRequest", v: PROTOCOL_VERSION, requestId: "preview-1", at: 1000, families: ["fill", "pending", "event"], level: "balanced" };
 const fixture = fileURLToPath(new URL("../../apps/caret/Tests/CaretHostCoreTests/Fixtures/first-look-preview.ndjson", import.meta.url));
@@ -205,11 +205,12 @@ describe("preview and approval over the socket", () => {
     lookNumber = 0;
     const values: Record<string, string> = { Name: "Dana Whitfield", Email: "dana.whitfield@example.com", Phone: "+1 (512) 555-0142" };
     const fake = jevPickingText((_, instructions) => values[/Label: '([^']+)'/.exec(instructions)?.[1] ?? ""] ?? null);
-    server = new HelperServer(join(dir, "screen.sock"), () => helper, () => {});
+    server = new HelperServer(join(dir, "screen.sock"), () => helper, () => {}, TEST_LAUNCH_SECRET);
     helper = new Helper({ store, askJev: (req) => { calls++; return fake(req); }, shadow: false, allowBackgroundFocus: false, now: () => now, publish: (m) => server.publish(m), sendToReader: (cmd) => server.sendToReader(cmd) });
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "preview-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     await until(() => helper.hasReader);
   });
