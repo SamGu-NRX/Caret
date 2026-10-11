@@ -123,7 +123,7 @@ final class HostAuthTests: XCTestCase {
         let plain = try object(NDJSON.line(HostHello.make(pid: 1, routing: true, goalFiles: true, host: false)))
         let caps = try XCTUnwrap(plain["capabilities"] as? [String])
         XCTAssertEqual(Set(caps).intersection(HostHello.hostOnlyCapabilities), [], "none of what only the host is granted")
-        XCTAssertEqual(Set(caps), [MemoryDocs.capability, HostHello.askChoicesCapability, HelperSpend.capability, HostHello.valueChecksCapability, HostHello.askScopeCapability],
+        XCTAssertEqual(Set(caps), [MemoryDocs.capability, HostHello.askChoicesCapability, AskQuestion.taskCapability, HelperSpend.capability, HostHello.valueChecksCapability, HostHello.askScopeCapability],
                        "what any consumer may have stays")
         let host = try XCTUnwrap(try object(NDJSON.line(HostHello.make(pid: 1, routing: true, goalFiles: true, host: true)))["capabilities"] as? [String])
         XCTAssertEqual(Set(host).intersection(HostHello.hostOnlyCapabilities), HostHello.hostOnlyCapabilities.subtracting([LocalText.capability]),

@@ -43,7 +43,8 @@ describe("writer eval's fixture-only OpenAI routes", () => {
     expect(report.rows.map((row) => [row.model, row.n])).toEqual([["gpt-6-luna@low", 10], ["gpt-6-luna@none", 10]]);
     expect(table).toContain("valid | correct | p50 ms | p95 ms | mean in tok | mean out tok (reasoning) | mean $/plan");
     expect(report.spent).toBeCloseTo(0.012, 12);
-  });
+    // The run is a child process allowed 30 s (run's spawnSync); 1.7 s here, 5.4 s on a loaded CI runner (alpha run 38167435419).
+  }, 30_000);
 
   it("stops before sending when the request estimate exceeds the shared run budget", () => {
     const { fetched, report } = run("openai:gpt-6-luna,openai:gpt-6-luna@none", "0.0001");
