@@ -1,0 +1,1 @@
+Helper: script env names go in privacy-gate.ts; diff guard-adversary vs base before loosening a guard; MAX_WAYS 8; MAX_GENERATOR_VISITS. Oracle rules off FillTrace.owns; choices need whole units. VM harness pins caret-v2-host; swift-typecheck needs ~7 GiB.

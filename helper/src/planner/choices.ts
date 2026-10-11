@@ -18,7 +18,7 @@
 // fit lists its first candidates.
 import { pointsAtOther } from "./people.ts";
 import type { ScreenModel } from "../model.ts";
-import { MAX_ASK_OPTIONS, type AskOption } from "../protocol.ts";
+import { MAX_ASK_OPTIONS, MAX_TASK_LABEL, type AskOption } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { collectCandidates } from "../fill/candidates.ts";
 import { fieldKinds, fieldTerms, NAME_TERM, overlap, words } from "../fill/kinds.ts";
@@ -26,7 +26,7 @@ import { mentionedKind } from "../memory/sensitive.ts";
 import { namesShortLabel } from "./planner.ts";
 import { normalizeInstruction, SECTION_WORDS } from "./scope-words.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
-import { ASKS, asksPress, asksValue, type AskPart, type QuestionPart } from "./says.ts";
+import { ASKS, asksPress, asksValue, TASK_ASK, TASK_FILL_SAYS, TASK_FILL_SOME_SAYS, TASK_PLAN_LABEL, TASK_PLAN_SAYS, taskFillLabel, type AskPart, type QuestionPart } from "./says.ts";
 import type { UnresolvedValue } from "../fill/fill.ts";
 import type { AskFixed, IntentField, IntentSnapshot } from "./intent.ts";
 
@@ -225,6 +225,18 @@ function personChoices(snap: IntentSnapshot): ChoicesResult {
 export function valueQueue(unresolved: readonly UnresolvedValue[]): UnresolvedValue[] {
   if (unresolved.length > MAX_ASK_OPTIONS) return [];
   return unresolved.filter((u) => u.options.length < MAX_ASK_OPTIONS);
+}
+
+/**
+ * The task question: the fill reading first (the fields Jev chose, by name, or "some fields" when it chose none and asks
+ * which next), then the whole task. One is picked.
+ */
+export function taskChoices(chosen: readonly string[]): Choices {
+  const options: Choice[] = [
+    { option: { kind: "task", id: "o1", label: taskFillLabel(chosen, MAX_TASK_LABEL), says: chosen.length === 0 ? TASK_FILL_SOME_SAYS : TASK_FILL_SAYS }, fixes: { task: "fill" } },
+    { option: { kind: "task", id: "o2", label: TASK_PLAN_LABEL, says: TASK_PLAN_SAYS }, fixes: { task: "plan" } },
+  ];
+  return { part: "task", text: TASK_ASK, pick: "one", options };
 }
 
 /** One field's value question: each eligible value as Caret would put it in, where it was read, then Leave blank. */

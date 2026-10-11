@@ -14,7 +14,7 @@ import { SELF_IDENTIFICATION } from "../src/engines/page-exclusions.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
 import { headsIntentMaker, headsRequest, readHeads, scopeId, scopeRequest, SECTION_QUESTION, sectionVerdict, settleFields } from "../src/planner/intent-heads.ts";
-import type { IntentMaker } from "../src/planner/intent-makers.ts";
+import type { IntentMaker } from "../src/planner/intent.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskGoal } from "../src/planner/ask.ts";
 import { askScope, scopeSet, sectionMembership, sectionPlacement, sectionRefusal, windowOutline, withScope } from "../src/fill/ask-scope.ts";
 import { sectionName } from "../src/engines/page-exclusions.ts";
@@ -400,8 +400,8 @@ describe("sections are occurrences (review of fc233af and 3e8a129)", () => {
     const d = desk({ reader: nodes });
     const s = snapFor(d);
     const listed: IntentMaker = {
-      name: "writer",
-      make: async (x) => ({ intent: { route: "fill", why: "none", scope: "list", section: "none", fields: x.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "writer", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }),
+      name: "heads",
+      make: async (x) => ({ intent: { route: "fill", why: "none", scope: "list", section: "none", fields: x.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "heads", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }),
     };
     const j = jev({ asks: ["Reference number", "Serial number"], unclear: ["Model"], section: "Equipment details" });
     const asked = await plan(d, j, INSTRUCTION, false, listed).catch((e: unknown) => e);
@@ -593,7 +593,7 @@ function tokens(): ((text: string) => string) & { salt: string } {
     expect(e.message).toBe(SAYS.sectionNotFound);
     expect(e.intent).toMatchObject({ route: "refuse", why: "sectionNotFound" });
     // The writer's path, which settles the fields itself.
-    const listed: IntentMaker = { name: "writer", make: async (x) => ({ intent: { route: "fill", why: "none", scope: "list", section: "none", fields: x.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "writer", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }) };
+    const listed: IntentMaker = { name: "heads", make: async (x) => ({ intent: { route: "fill", why: "none", scope: "list", section: "none", fields: x.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "heads", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }) };
     const w = await refusal(plan(d, jev({ section: "unlisted" }), INSTRUCTION, false, listed));
     expect(w.message).toBe(SAYS.sectionNotFound);
     // One wording only, or below the cutoff: nothing is taken out.

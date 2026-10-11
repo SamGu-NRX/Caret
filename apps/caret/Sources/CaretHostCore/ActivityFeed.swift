@@ -176,6 +176,13 @@ public extension AskCaret.Phase {
         // A question waits on the user as a plan does.
         case .proposed, .question: return .waiting
         case .running(let card): return .running(listed: listed(card.offerKey))
+        // A goal card waits on the user until Tab, then runs as its segment's task.
+        case .goal(let card):
+            switch card.stage {
+            case .preview, .editing, .editSent: return .waiting
+            case .running, .stopping: return .running(listed: card.taskId.map(listed) ?? false)
+            case .ended: return .none
+            }
         }
     }
 }

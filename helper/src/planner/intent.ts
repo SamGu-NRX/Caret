@@ -8,11 +8,12 @@ import { instructionForModel, instructionView, redactWindow } from "../fill/reda
 //   - whose details: the user's (each field says whose it wants, as fill decides today), or a person the
 //     instruction names;
 //   - literal values: exact substrings of the instruction, each tied to a field in scope.
-// An intent maker (the writer's strict JSON, or Jev's staged Choice and Noul) fills in the parts; checkIntent
+// The heads maker asks Jev for the parts; checkIntent
 // checks each against the snapshot and the instruction, and turns the intent into the fill engine's scope
 // (fill.ts FillScope). Jev stays the chooser of values: the intent only narrows what fill asks about.
 import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
+import type { Settled } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
@@ -27,6 +28,27 @@ import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames,
 import { PlannerError } from "./validate.ts";
 import { peopleOnScreen, PRONOUN_DETAILS, type PersonCandidate } from "./people.ts";
 import { SAYS, SaidError, Unclear, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSectionUnknown, saysSsn, type AskPart } from "./says.ts";
+
+/** What making one intent cost, for the proposal's log and the scoreboard. */
+export interface MakerUse {
+  maker: "heads";
+  model: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  latencyMs: number;
+}
+
+export interface IntentMaker {
+  /** "heads" is the one-request Jev maker (intent-heads.ts). */
+  readonly name: string;
+  /**
+   * `settled`: what the request's scope question already settled (fill/ask-scope.ts Settled), which the heads maker uses
+   * instead of asking it again (I2 ruling: one request, one settlement).
+   */
+  make(snap: IntentSnapshot, signal?: AbortSignal, settled?: Pick<Settled, "asks" | "unresolved" | "sectionless" | "section" | "notFound">): Promise<{ intent: AskIntent; use: MakerUse }>;
+}
 
 export const ROUTES = ["fill", "plan", "ask", "refuse"] as const;
 export type AskRoute = (typeof ROUTES)[number];
@@ -107,7 +129,25 @@ export interface AskIntent {
    * heading text); absent when it named none. Held by the Ask's scope (ask-scope.ts AskScope.section).
    */
   namedSection?: string;
+  /**
+   * How the heads request's route question came out (intent-heads.ts readHead): settled, between two routes, or unsure.
+   * Only the heads maker sets it; planAsk reads it to ask which task the user means instead of refusing.
+   */
+  routeHead?: RouteHead;
 }
+
+/** The heads request's route options (intent-heads.ts ROUTE). */
+export type RouteChoice = "all" | "some" | "plan" | "refuse";
+/**
+ * A Choice head's outcome (intent-heads.ts readHead): `settled` when its answer clears the floor alone; `between` when
+ * neither of the top two does but the two together do (`mass` is their merged confidence); `unsure` otherwise, with the
+ * top answer and its confidence kept for the scoreboard.
+ */
+export type HeadOutcome<T extends string> =
+  | { kind: "settled"; choice: T; confidence: number }
+  | { kind: "between"; a: T; b: T; mass: number }
+  | { kind: "unsure"; top: T | null; confidence: number };
+export type RouteHead = HeadOutcome<RouteChoice>;
 
 /**
  * What the user picked in answer to an Ask's questions (B29), by what code resolved each pick to: the fields' node
@@ -120,6 +160,8 @@ export interface AskFixed {
   person?: { kind: "user" } | { kind: "person"; name: string };
   /** Value clarification: the user's pick for a field by its key, an option of its value question, or null to leave it blank. */
   values?: readonly { key: string; option: string | null }[];
+  /** The task question's pick: fill the form, or plan the whole task (ask.ts taskQuestion). */
+  task?: "fill" | "plan";
 }
 
 export interface IntentField {

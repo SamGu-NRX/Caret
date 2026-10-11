@@ -18,7 +18,7 @@ import { Store } from "../src/store.ts";
 import { LEFT_TAB_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type GoalProgress, type HelperMessage, type HelperToEngine, type PageControl, type PageResult, type PageSnapshot, type PageTabText, type PageVerb, type PlanProposal } from "../src/protocol.ts";
 import { jevPickingText } from "./builders.ts";
 import { X, chrome, hello, okReader } from "./fake-page.ts";
-import { intentWriter } from "./page-rig.ts";
+import { headsJev } from "./heads-jev.ts";
 
 const MAIL = "page:eng1:3";
 const FORM = "page:eng1:7";
@@ -128,9 +128,9 @@ describe("an Ask reads the tab the user just left (I6)", () => {
     let mine: Helper | null = null;
     host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void mine?.handleReader(m), purge: (s) => mine?.purgeWindow(s), warn: (l) => void warnings.push(l) });
     mine = helper = new Helper({
-      store, askJev: jev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, now: () => Date.now() + ahead,
+      store, askJev: headsJev(jev, "all"), shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, now: () => Date.now() + ahead,
       tabReader: pageTabReader(host.registry), publish: (m) => void published.push(m), warn: (l) => void warnings.push(l),
-      ask: { maker: "writer", writer: intentWriter({ scope: "all" }) },
+      ask: { maker: "heads" },
       pageDocument: (id) => host.registry.documentOf(id),
       pageContext: (id) => host.registry.contextOf(id),
     });

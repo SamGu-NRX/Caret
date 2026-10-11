@@ -92,7 +92,7 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
         return s.events(matching: s.predicateForEvents(withStart: from, end: to, calendars: [c])).compactMap(Self.backendEvent)
     }
 
-    public func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> String {
+    public func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> BackendEvent {
         let s = try store()
         guard let c = s.calendar(withIdentifier: calendarID) else { throw EventKitError("no calendar \(calendarID)") }
         if userCalendars {
@@ -107,7 +107,11 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
         e.endDate = end
         try s.save(e, span: .thisEvent, commit: true)
         guard let id = e.eventIdentifier else { throw EventKitError("the saved event has no identifier") }
-        return id
+        // The state undo compares against is the store's own read of the saved event, so what the store adds on save (a
+        // calendar's default alarm, a modification date) is not taken for the user's edit. A read that fails here falls
+        // back to the saved object: the id is never lost to it.
+        let stored = (s.event(withIdentifier: id)).flatMap(Self.backendEvent)
+        return stored ?? Self.backendEvent(e) ?? BackendEvent(id: id, calendarID: calendarID, title: title, start: start, end: end)
     }
 
     /// Throws when access is gone (S1 audit #16: before B23 this answered "no such event", which undo took as removed).
@@ -126,15 +130,22 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
         (try? store())?.calendar(withIdentifier: calendarID)?.allowsContentModifications == true
     }
 
-    public func removeEvent(id: String) throws {
+    /// The fresh read and the removal happen here, together, so an edit the user makes after the adapter's checks still
+    /// stops it: an event that is no longer as Caret saved it is left (CalendarEventChanged).
+    public func removeEvent(id: String, ifStill saved: BackendEvent) throws {
         let s = try store()
         guard let e = s.event(withIdentifier: id) else { return }
+        _ = e.refresh()
+        guard let now = Self.backendEvent(e), saved.unchanged(in: now) else { throw CalendarEventChanged() }
         try s.remove(e, span: .thisEvent, commit: true)
     }
 
     private static func backendEvent(_ e: EKEvent) -> BackendEvent? {
         guard let id = e.eventIdentifier, let c = e.calendar, let start = e.startDate, let end = e.endDate else { return nil }
-        return BackendEvent(id: id, calendarID: c.calendarIdentifier, title: e.title ?? "", start: start, end: end)
+        let alarms = (e.alarms ?? []).map { a in a.absoluteDate.map { "at \($0.timeIntervalSince1970)" } ?? "offset \(a.relativeOffset)" }
+        let attendees = (e.attendees ?? []).map { $0.url.absoluteString }.sorted()
+        let state = EventState(notes: e.notes ?? "", location: e.location ?? "", url: e.url?.absoluteString ?? "", alarms: alarms.sorted(), attendees: attendees, allDay: e.isAllDay, lastModified: e.lastModifiedDate)
+        return BackendEvent(id: id, calendarID: c.calendarIdentifier, title: e.title ?? "", start: start, end: end, state: state)
     }
 
     /// A read-only look, through a store of its own, at every event calendar with this title: its source

@@ -69,7 +69,7 @@ describe("SpendLedger", () => {
     expect(writer.route).toBe(WRITER_ROUTE);
     const signal = new AbortController().signal;
     await writer.write(minted({ kind: "plan", disclosureId: "d", input: {}, maxOutputTokens: 10, signal }));
-    await writer.write(minted({ kind: "intent", disclosureId: "d", input: {}, maxOutputTokens: 10, signal }));
+    await writer.write(minted({ kind: "plan", disclosureId: "d", input: {}, maxOutputTokens: 10, signal }));
     await expect(writer.write(minted({ kind: "goal", disclosureId: "d", input: {}, maxOutputTokens: 10, signal }))).rejects.toThrow("429");
     expect(ledger.message().writer).toMatchObject({ calls: 2, failed: 1, inputTokens: 1800, outputTokens: 420 });
     expect(ledger.message().writer.costUsd).toBeCloseTo(0.0012, 12);

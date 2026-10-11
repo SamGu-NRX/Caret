@@ -22,6 +22,12 @@ final class AskModel: ObservableObject {
     var select: (String) -> Void = { _ in }
     /// VoiceOver's Choose on one row of a value question, by option id.
     var choose: (String) -> Void = { _ in }
+    /// The goal card's edit field changed.
+    var goalDraft: (String) -> Void = { _ in }
+    /// ⌘E, or VoiceOver's Edit, on a goal card.
+    var editGoal: () -> Void = {}
+    /// Return, or VoiceOver's Keep, in the goal card's edit field.
+    var keepGoalEdit: () -> Void = {}
 }
 
 /// What the desk's "Not right" row asks for.
@@ -54,6 +60,9 @@ struct AskSection: View {
     var onNotRight: (DeskNotRight) -> Void = { _ in }
     var onSelect: (String) -> Void = { _ in }
     var onChoose: (String) -> Void = { _ in }
+    var onGoalDraft: (String) -> Void = { _ in }
+    var onEditGoal: () -> Void = {}
+    var onKeepGoalEdit: () -> Void = {}
 
     static let fieldTitle = "Ask Caret"
     static let emptyLine = "Nothing running. Caret shows up where you type when it has something."
@@ -71,6 +80,14 @@ struct AskSection: View {
         case .running: return "A plan is running. Escape stops it."
         case .asking: return "Caret is planning what you asked."
         case .atForm: return "The preview is at the form. Tab there fills it."
+        case .goal(let card):
+            switch card.stage {
+            case .preview: return card.editable == nil ? "Tab runs the plan below. Escape puts it away." : "Tab runs the plan below. Command E edits Caret's draft. Escape puts it away."
+            case .editing: return "Return keeps your words. Escape keeps Caret's draft."
+            case .running: return "A plan is running. Escape stops it."
+            case .editSent, .stopping: return "Caret is updating the plan."
+            case .ended: return card.undoable ? "Command Z puts it back. Escape closes it." : "Escape closes it."
+            }
         case .idle, .failed, .ended: return "Return plans it. Nothing runs until you press Tab."
         }
     }
@@ -102,6 +119,8 @@ struct AskSection: View {
                     onRun: onRun, onEscape: onEscape, onNotRight: onNotRight).padding(.top, 8)
         case .question(let q):
             AskQuestionCard(question: q, onAnswer: onRun, onEscape: onEscape, onSelect: onSelect, onChoose: onChoose).padding(.top, 8)
+        case .goal(let card):
+            GoalCardView(card: card, animated: animated, onRun: onRun, onEscape: onEscape, onUndo: onUndo, onEdit: onEditGoal, onDraft: onGoalDraft, onKeep: onKeepGoalEdit).padding(.top, 8)
         case .running(let card):
             AskCard(card: card, ending: nil, running: true, character: character, animated: animated, onRun: onRun, onEscape: onEscape).padding(.top, 8)
         case .ended(let card, let line):
@@ -372,6 +391,8 @@ struct AskQuestionCard: View {
     var onChoose: (String) -> Void = { _ in }
 
     private var isValue: Bool { question.ask.part == .value }
+    /// A value or task question lists each choice over its quieter words, wrapped whole.
+    private var stacked: Bool { question.ask.part == .value || question.ask.part == .task }
 
     var body: some View {
         Block {
@@ -388,7 +409,7 @@ struct AskQuestionCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 4)
                 }
-                if isValue {
+                if stacked {
                     AskValueRows(question: question, onChoose: onChoose).padding(.top, 8)
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
@@ -405,7 +426,7 @@ struct AskQuestionCard: View {
                 Hairline().padding(.vertical, 9)
                 HStack(spacing: 12) {
                     // Nothing is highlighted as a value question opens, and Tab waits for an arrow: the arrows lead.
-                    if isValue { HintView(hint: Hint(key: "\u{2191}\u{2193}", label: "Move")) }
+                    if stacked { HintView(hint: Hint(key: "\u{2191}\u{2193}", label: "Move")) }
                     HintView(hint: Hint(key: "Tab", label: AskCopy.answerLabel(question)))
                     if question.ask.pick == .many { HintView(hint: Hint(key: "Space", label: "Select")) }
                     HintView(hint: Hint(key: "Esc", label: "Dismiss"))
@@ -583,7 +604,7 @@ private struct AskValueRow: View {
 /// content and scrolls long content. With one child, that child is both, drawn from the top (clip it to cut it at
 /// `max`). One layout pass with no measured state, so a fresh hosting view's fitting size (`HostedPanel.measure`) is
 /// already right.
-private struct CappedHeight: Layout {
+struct CappedHeight: Layout {
     var max: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -707,7 +728,8 @@ struct AskLiveSection: View {
         AskSection(
             text: model.text, phase: model.phase, character: character, focusToken: model.focusToken, animated: animated, notRight: model.notRight,
             onEdit: { model.edit($0) }, onSubmit: { model.submit() }, onRun: { model.run() }, onEscape: { model.escape() }, onUndo: { model.undo() },
-            onNotRight: { model.notRightAction($0) }, onSelect: { model.select($0) }, onChoose: { model.choose($0) }
+            onNotRight: { model.notRightAction($0) }, onSelect: { model.select($0) }, onChoose: { model.choose($0) },
+            onGoalDraft: { model.goalDraft($0) }, onEditGoal: { model.editGoal() }, onKeepGoalEdit: { model.keepGoalEdit() }
         )
         .onChange(of: announcement) { _, words in
             if let words { AccessibilityNotification.Announcement(words).post() }
@@ -744,6 +766,19 @@ struct AskLiveSection: View {
         // other questions it is the rows' own selected state.
         case .question(let q): return AskCopy.questionAnnouncement(q.ask)
         case .ended(_, let line): return line.text
+        case .goal(let card):
+            switch card.stage {
+            case .preview where card.note != nil:
+                return card.note
+            case .preview:
+                let handOff = GoalCopy.handOff(card).map { " \(GoalCopy.spokenHandOff($0))" } ?? ""
+                return "\(GoalCopy.title(card)), \(GoalCopy.eyebrow(card)). Tab to \(GoalCopy.action(card).lowercased()), Escape to dismiss.\(handOff)"
+            case .editing: return card.note ?? "Editing Caret's draft. Return keeps your words."
+            case .editSent: return "Checking your words."
+            case .stopping: return Captions.stopping
+            case .running: return GoalCopy.working(card.place)
+            case .ended(let e): return e.line
+            }
         }
     }
 }

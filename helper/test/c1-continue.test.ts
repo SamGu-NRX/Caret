@@ -3,6 +3,7 @@
 // do not depend on it go on in the same task, under the same undo. A restore that cannot be verified stops the run as
 // before. Driven through the Helper, the goal runs and the page engine of fill-transaction.test.ts. Every name and value
 // is invented.
+import { headsJev } from "./heads-jev.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,17 +40,6 @@ const putBack = (extra: Partial<PageResult> = {}): object => ({
   ...extra,
 });
 
-function intentWriter(): WriterPort {
-  return {
-    route: FAKE_WRITER_ROUTE,
-    async write(req) {
-      const base = { model: "canned", provider: "canned", inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
-      if (req.kind !== "intent") throw new Error(`asked to write a ${req.kind}`);
-      const json = { route: "fill", why: "none", scope: "all", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
-      return { ...base, output: { program: null, reply: JSON.stringify(json), json } };
-    },
-  };
-}
 
 interface Rig {
   page: FakePage;
@@ -83,7 +73,7 @@ async function rig(onChoose: (v: Extract<PageVerb, { kind: "pageChooseOption" }>
   };
   let helper: Helper;
   const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
-  helper = new Helper({ store, askJev: jev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => void published.push(m), warn: () => {}, ask: { maker: "writer", writer: intentWriter() }, pageDocument: (id) => host.registry.documentOf(id) });
+  helper = new Helper({ store, askJev: headsJev(jev, "all"), shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => void published.push(m), warn: () => {}, ask: { maker: "heads" }, pageDocument: (id) => host.registry.documentOf(id) });
   wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
   host.registry.add(page.session);
   page.session.receive(hello);

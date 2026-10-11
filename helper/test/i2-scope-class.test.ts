@@ -8,7 +8,7 @@ import { ScreenModel } from "../src/model.ts";
 import { FILE_INPUT_SUBROLE } from "../src/engines/page-link.ts";
 import { AskRefused, planAsk, type AskGoal } from "../src/planner/ask.ts";
 import { headsIntentMaker, scopeRequest } from "../src/planner/intent-heads.ts";
-import type { IntentMaker } from "../src/planner/intent-makers.ts";
+import type { IntentMaker } from "../src/planner/intent.ts";
 import { intentSnapshot, type AskIntent } from "../src/planner/intent.ts";
 import { buildInventory } from "../src/goals/inventory.ts";
 import { lowerGoal } from "../src/goals/lower.ts";
@@ -78,9 +78,9 @@ const jev = (asks: readonly string[], seen: JevRequest[] = []): AskJev => async 
 
 /** A maker that reads the instruction as `intent`, as the writer does: no per-field scope of its own. */
 const writerLike = (intent: Partial<AskIntent>): IntentMaker => ({
-  name: "writer",
+  name: "heads",
   async make() {
-    return { intent: { route: "fill", why: "none", scope: "all", section: "none", fields: [], sources: ["any"], whose: "user", literals: [], ...intent }, use: { maker: "writer", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } };
+    return { intent: { route: "fill", why: "none", scope: "all", section: "none", fields: [], sources: ["any"], whose: "user", literals: [], ...intent }, use: { maker: "heads", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } };
   },
 });
 

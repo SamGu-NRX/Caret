@@ -47,7 +47,7 @@ describe("goalEdit", () => {
     expect(again).toMatchObject({ event: "segment", goalId: first.goalId, segment: 0, reason: "start", requestId: first.requestId });
     const shown = again as Segment;
     expect(shown.digest).not.toBe(first.digest);
-    expect(shown.steps[1]).toEqual({ index: 1, kind: "write", says: `Message: ${MINE}` });
+    expect(shown.steps[1]).toEqual({ index: 1, kind: "write", says: `Message: ${MINE}`, tier: "write" });
     expect(shown.steps[0]).toEqual(first.steps[0]);
     expect(shown.steps[2]).toEqual(first.steps[2]);
     // Published to goal hosts, as every later preview is.

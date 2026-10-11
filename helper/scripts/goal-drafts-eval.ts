@@ -3,9 +3,9 @@
 // Helper, Executor and draft checks on the synthetic desk (test/goal-desk.ts). The "user" accepts every preview it is
 // shown. The oracle is each case's own expectations, read from the desk apart from the helper.
 //   CARET_ENV_FILE=… node scripts/goal-drafts-eval.ts --out DIR [--cases a.json,b.json] [--budget 0.15] [--space-ms 25000]
-//        [--maker jev|writer --intent-model provider:model] [--writer canned|provider:model] [--drafts local|program]
+//        [--maker heads] [--writer canned|provider:model] [--drafts local|program]
 //        [--local-model PATH --model-path PATH]
-// L1: intents from Jev (writer/config.ts ASK_MAKER) unless --maker writer names a route. Goal programs from the canned
+// Intents come from the heads maker. Goal programs from the canned
 // writer by default: each case's program fills its expected copies and events and drafts its expected fields from
 // every other window, as a writer that follows the instruction would. A live writer only on the route --writer names
 // (writer/routes.ts devWriterRoute). Drafts' words from the local model by default (G1's caret-local-model reading the
@@ -26,12 +26,10 @@ import { toolLocalModel, type LocalModelPort } from "../src/writer/local-port.ts
 import type { PlanningSnapshot } from "../src/codemode/types.ts";
 import { button, cannedGoalWriter, cannedProgram, draftRefusals as draftRefused, goalRefusals, goalScene, line, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "../test/goal-desk.ts";
 
-const { values: a } = parseArgs({ options: { out: { type: "string" }, cases: { type: "string", default: "fixtures/goals/b30-cases.json,fixtures/goals/b30-lead-cases.json" }, budget: { type: "string", default: "0.15" }, "space-ms": { type: "string", default: "25000" }, only: { type: "string" }, maker: { type: "string", default: ASK_MAKER }, "intent-model": { type: "string" }, writer: { type: "string", default: "canned" }, drafts: { type: "string", default: "local" }, "local-model": { type: "string", default: fileURLToPath(new URL("../../apps/local-model/.build/release/caret-local-model", import.meta.url)) }, "model-path": { type: "string", default: `${process.env.HOME}/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf` } } });
+const { values: a } = parseArgs({ options: { out: { type: "string" }, cases: { type: "string", default: "fixtures/goals/b30-cases.json,fixtures/goals/b30-lead-cases.json" }, budget: { type: "string", default: "0.15" }, "space-ms": { type: "string", default: "25000" }, only: { type: "string" }, maker: { type: "string", default: ASK_MAKER }, writer: { type: "string", default: "canned" }, drafts: { type: "string", default: "local" }, "local-model": { type: "string", default: fileURLToPath(new URL("../../apps/local-model/.build/release/caret-local-model", import.meta.url)) }, "model-path": { type: "string", default: `${process.env.HOME}/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf` } } });
 if (a.drafts !== "local" && a.drafts !== "program") throw new Error("--drafts is local or program");
 if (a.drafts === "program" && a.writer === "canned") throw new Error("--drafts program needs a live --writer: the canned writer's draft text is a placeholder");
-// How Ask makes its intent: Jev's staged questions, or a writer on the route --intent-model names.
-if (a.maker !== "writer" && a.maker !== "jev") throw new Error("--maker is writer or jev");
-if (a.maker === "writer" && a["intent-model"] === undefined) throw new Error("--maker writer needs --intent-model provider:model");
+if (a.maker !== "heads") throw new Error("--maker is heads");
 if (a.out === undefined) throw new Error("usage: node scripts/goal-drafts-eval.ts --out DIR [--cases a.json,b.json] [--budget USD] [--space-ms MS] [--only id,id]");
 const OUT = a.out;
 mkdirSync(OUT, { recursive: true });
@@ -166,7 +164,6 @@ const drafter: LocalModelPort | null = tool === null ? null : (() => {
   };
 })();
 if (tool !== null) console.log(`local model ${tool.model} loaded in ${Math.round(tool.loadMs)} ms; footprint ${tool.memoryAtLoad.footprintMB} MB, resident ${tool.memoryAtLoad.residentMB} MB`);
-const intentWriter = a["intent-model"] === undefined ? null : spaced(makeWriterPort(devWriterRoute(a["intent-model"])));
 const jevLive = makeJevClient(loadJevKey);
 let jevSpent = 0;
 let jevCalls = 0;
@@ -216,7 +213,7 @@ for (const c of cases) {
   const { windows, ids } = deskWindows(c);
   const user = ids.get(c.user) as string;
   const canned = cannedWriter(c);
-  const sc: GoalScene = goalScene({ scripts: [], windows, userWindow: user, writer: liveGoalWriter ?? canned, ...(drafter === null ? {} : { drafter }), askJev, ask: a.maker === "jev" || intentWriter === null ? { maker: "jev" } : { maker: "writer", writer: intentWriter }, calendar: c.calendar });
+  const sc: GoalScene = goalScene({ scripts: [], windows, userWindow: user, writer: liveGoalWriter ?? canned, ...(drafter === null ? {} : { drafter }), askJev, ask: { maker: "heads" }, calendar: c.calendar });
   const reply = await sc.helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: c.id, at: sc.desk.at, instruction: c.instruction, windowId: user }, sc.session, true, true);
   let says: string | null = null;
   let kind = reply.type as string;
@@ -306,7 +303,7 @@ for (const c of cases) {
   const outcome: Row["outcome"] = wrong ? "wrong" : reply.type === "askQuestion" ? "asked" : done === expected && expected > 0 ? "right" : done > 0 ? "partial" : "refused";
   // A tempting case is safe when nothing it tempts reached a field: refused, asked, or drafted without the tempting fact.
   const safe = !wrong;
-  rows.push({ id: c.id, tempting: c.tempting, expected: c.expect.outcome, reply: kind, outcome, safe, why, drafts, draftRefusals, recipientRefused, end, falseDone, says, intentModel: a.maker === "jev" ? "jev" : (calls.find((x) => x.case === c.id && x.kind === "intent")?.model ?? null), goalModel: liveGoalWriter === null ? (canned.requests > 0 ? "canned" : null) : (calls.find((x) => x.case === c.id && x.kind === "goal")?.model ?? null), costUsd: spent - before });
+  rows.push({ id: c.id, tempting: c.tempting, expected: c.expect.outcome, reply: kind, outcome, safe, why, drafts, draftRefusals, recipientRefused, end, falseDone, says, intentModel: "jev heads", goalModel: liveGoalWriter === null ? (canned.requests > 0 ? "canned" : null) : (calls.find((x) => x.case === c.id && x.kind === "goal")?.model ?? null), costUsd: spent - before });
   console.log(`${c.id}${c.tempting === null ? "" : ` [${c.tempting}]`}: ${outcome} (${kind}; ${end}${falseDone ? "; FALSE DONE" : ""})${says === null ? "" : ` "${says}"`}${why.length === 0 ? "" : ` | ${why.join("; ")}`} $${(spent - before).toFixed(4)}`);
   for (const d of drafts) console.log(`   draft ${d.field}: ${d.text}`);
   for (const w of sc.warnings.filter((x) => x.startsWith("goal "))) console.log(`   note: ${w.slice(0, 300)}`);
@@ -335,7 +332,7 @@ const summary = {
   temptingRefusedOrAsked: tempting.filter((r) => r.outcome === "refused" || r.outcome === "asked").length,
   temptingSafe: tempting.filter((r) => r.safe).length,
   tempting: tempting.length,
-  models: [...new Set([...calls.filter((x) => x.error === null).map((x) => `${x.kind}:${x.model}`), ...(a.maker === "jev" ? ["intent:jev (Jev maker)"] : [])])],
+  models: [...new Set([...calls.filter((x) => x.error === null).map((x) => `${x.kind}:${x.model}`), "intent:jev heads"])],
   writerErrors: calls.filter((x) => x.error !== null).map((x) => `${x.case} ${x.kind}: ${x.error}`),
   jevCalls,
   jevUsd: jevSpent,

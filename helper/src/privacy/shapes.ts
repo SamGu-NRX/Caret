@@ -172,27 +172,6 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "input.snapshots[*].values[*].ref": { reasons: ["ownWording"], max: 100 }, // seen 3
     "input.snapshots[*].window": { reasons: ["ownWording"], max: 100 }, // seen 2
   },
-  "intent": {
-    "input.fields[*].control": { reasons: ["ownWording"], max: 100 }, // seen 20
-    "input.fields[*].name": { reasons: ["descriptor", "instruction", "memory", "ownWording"], max: 1200 }, // seen 56
-    "input.fields[*].ref": { reasons: ["ownWording"], max: 100 }, // seen 3
-    "input.fields[*].section": { reasons: ["descriptor"], max: 1200 }, // seen 8
-    "input.form": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 67
-    "input.instruction": { reasons: ["instruction"], max: 800 }, // seen 104
-    "input.memory[*]": { reasons: ["descriptor", "memory"], max: 1200 }, // seen 18
-    "input.persons[*].ref": { reasons: ["ownWording"], max: 100 }, // seen 2
-    "input.persons[*].span": { reasons: ["descriptor", "instruction"], max: 1200 }, // seen 7
-    "input.sections[*].name": { reasons: ["descriptor"], max: 1200 }, // seen 8
-    "input.sections[*].ref": { reasons: ["ownWording"], max: 100 }, // seen 2
-    "input.windows[*].app": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 25
-    // The one value from a source window the intent writer gets, by the lead's ruling (PV2, 7 Oct): a window's sender as
-    // its redacted view shows it (planner/intent.ts snapMint source), so an Ask like "fill from Priya's mail" can name
-    // the window. SC1 2c gives the intent writer descriptors and the instruction only; this row is the exception,
-    // tested in test/sc1-shapes.test.ts. G3's sender-versus-subject redesign will revisit it.
-    "input.windows[*].from": { reasons: ["candidate"], max: 1200 }, // seen 11
-    "input.windows[*].ref": { reasons: ["ownWording"], max: 100 }, // seen 2
-    "input.windows[*].title": { reasons: ["descriptor"], max: 1200 }, // seen 40
-  },
   "intent.fields": {
     "questions.*.instructions": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 97
     "state.form": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 28
@@ -382,13 +361,6 @@ export const ITEMS: { readonly [K in ShapeKey]: Readonly<Record<string, number>>
     "input.snapshots[*].questions[*]": 8, // seen 0
     "input.snapshots[*].questions[*].options[*]": 300, // a select's options
   },
-  "intent": {
-    "input.fields[*]": 40, // MAX_INTENT_FIELDS
-    "input.memory[*]": 40, // planner.ts MAX_PLAN_VALUES (seen 3)
-    "input.persons[*]": 8, // seen 1
-    "input.sections[*]": 40, // MAX_INTENT_HEADINGS
-    "input.windows[*]": 8, // MAX_INTENT_WINDOWS
-  },
   "intent.fields": { "questions.*": 40 }, // MAX_INTENT_FIELDS (seen 8)
   "intent.route": { "questions.*": 12, "questions.*.criteria.*": 12 }, // seen 6, 6
   "pattern.naming": { "questions.*": 2, "questions.*.criteria.*": 7, "state.fromSections[*]": 8, "state.from[*]": 8, "state.intoFields[*]": 8 }, // patterns/naming.ts MAX_NAME_CANDIDATES and none; seen 1, 1, 3
@@ -428,7 +400,6 @@ export const SCALARS: { readonly [K in ShapeKey]?: Readonly<Record<string, reado
   [UNNAMED]: { [ANY_PATH]: ["number", "boolean", "null"] },
   "ask.heads": { "state.form.fields[*].filled": ["boolean"], "state.form.fields[*].section": ["null"] },
   goal: { "input.snapshots[*].targets[*].canFill": ["boolean"], "input.snapshots[*].values[*].origin.startUTF16": ["number"], "input.snapshots[*].values[*].origin.endUTF16": ["number"] },
-  intent: { "input.fields[*].filled": ["boolean"], "input.fields[*].section": ["null"], "input.windows[*].from": ["null"] },
   "pattern.naming": { "state.timesSeen": ["number"] },
   plan: { "input.snapshots[*].targets[*].canFill": ["boolean"], "input.snapshots[*].values[*].origin.startUTF16": ["number"], "input.snapshots[*].values[*].origin.endUTF16": ["number"] },
   "route.judge": { "state.conversation": ["boolean"], "state.field.empty": ["boolean"], "state.field.finishedSentences": ["number"], "state.form.emptyFields": ["number"] },

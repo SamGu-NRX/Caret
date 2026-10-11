@@ -10,7 +10,8 @@ import type { EventClock } from "../offers/event-time.ts";
 import { disclosureFor } from "../planner/codeplan.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { WRITER_MAX_OUTPUT_TOKENS } from "../writer/config.ts";
-import type { WriterPort } from "../writer/port.ts";
+import { WriterUnavailable, type WriterPort } from "../writer/port.ts";
+import { SaidError, SAYS } from "../planner/says.ts";
 import { draftAsk } from "../writer/local-draft.ts";
 import { LocalModelUnavailable, type LocalModelPort } from "../writer/local-port.ts";
 import type { DraftPlan } from "../codemode/types.ts";
@@ -74,6 +75,10 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
   try {
     written = await o.writer.write(inv.ledger.seal({ kind: "goal", disclosureId: o.goalId, disclosed, input: { goal: inv.ledger.slice(inv.ledger.instruction(o.instruction), 500), snapshots: inv.snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) }));
   } catch (e) {
+    if (e instanceof WriterUnavailable) {
+      const said = new SaidError("unavailable", SAYS.writerBudget, e.message);
+      throw new GoalError("nothingToDo", said.message, said.detail);
+    }
     throw new GoalError("nothingToDo", "the plan writer is not available now", e instanceof Error ? e.message.slice(0, 200) : String(e));
   }
   use.value = { model: written.model, latencyMs: written.latencyMs, costUsd: written.costUsd, inputTokens: written.inputTokens, outputTokens: written.outputTokens, program: written.output.program };

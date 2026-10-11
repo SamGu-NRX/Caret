@@ -23,7 +23,7 @@ import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
 import type { Change, ScreenModel } from "../model.ts";
 import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
 import { nodeText } from "../model.ts";
-import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
+import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, type GoalStepView, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { isDerived } from "./gates.ts";
@@ -939,8 +939,9 @@ export class GoalRuns {
   private async segmentStopped(run: Run, seg: GoalSegment, m: Pick<Extract<TaskProgress, { phase: "stopped" }>, "step" | "stopReason" | "detail">): Promise<void> {
     const why = run.cause ?? this.classify(run, seg, m.stopReason, m.detail ?? "");
     const at = m.step === null ? null : (stepOf(run, seg, m.step)?.index ?? null);
+    const ran = run.task?.id ?? null;
     this.endTask(run);
-    await this.stopAndReplan(run, why.reason, at, why.says);
+    await this.stopAndReplan(run, why.reason, at, why.says, "freshPlan", ran);
   }
 
   /** The executor's stop, in the goal's words. A page whose document changed reloaded, whatever the executor saw first. */
@@ -968,7 +969,7 @@ export class GoalRuns {
     }
   }
 
-  private async stopAndReplan(run: Run, reason: GoalStopReason, step: number | null, says: string, fresh: "afterReveal" | "freshPlan" = "freshPlan"): Promise<void> {
+  private async stopAndReplan(run: Run, reason: GoalStopReason, step: number | null, says: string, fresh: "afterReveal" | "freshPlan" = "freshPlan", taskId: string | null = null): Promise<void> {
     if (run.state === "stopped") return;
     run.state = "stopped";
     this.deps.ended?.(run.plan.goalId);
@@ -976,7 +977,7 @@ export class GoalRuns {
     const total = run.plan.segments.reduce((n, x) => n + x.steps.filter((y) => y.row !== true).length, 0);
     const sentence = `${says.charAt(0).toUpperCase()}${says.slice(1)}, so Caret stopped after ${done} of ${total} steps.`;
     const next = REPLANNABLE.has(reason) ? await this.fresh(run, reason, fresh) : null;
-    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: run.cursor.segment, step, reason, says: next === null ? sentence : `${sentence} A fresh plan from the screen as it is now is ready for you to check.`, freshPlan: next?.event === "segment" ? next.goalId : null });
+    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: run.cursor.segment, step, reason, says: next === null ? sentence : `${sentence} A fresh plan from the screen as it is now is ready for you to check.`, freshPlan: next?.event === "segment" ? next.goalId : null, ...(taskId === null ? {} : { taskId }) });
     if (next !== null) this.deps.publish(next);
   }
 
@@ -1042,7 +1043,7 @@ export class GoalRuns {
       digest: seg.digest,
       expires: run.expires,
       where: d.kind === "window" ? { kind: "window", app: d.appName, title: d.title } : { kind: "calendar", calendar: d.calendar },
-      steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }), ...(s.kind === "attach" && s.file !== undefined ? { file: s.file } : {}) })),
+      steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }), tier: tierOf(s), ...(s.kind === "attach" && s.file !== undefined ? { file: s.file } : {}) })),
       warnings: run.cursor.segment === 0 ? run.plan.warnings : [],
       ...pageOf(this.deps.model, run.plan, seg),
     };
@@ -1295,4 +1296,22 @@ function deepFreeze<T>(v: T): T {
     for (const x of Object.values(v)) deepFreeze(x);
   }
   return v;
+}
+
+/**
+ * A step's trust tier as the preview shows it (protocol GoalStepView.tier): a press handed to the user is `yours`; a
+ * field handed to the user to set stays in the write tier, since what it risks is a value, not an effect.
+ */
+export function tierOf(s: Pick<GoalStep, "kind" | "target">): NonNullable<GoalStepView["tier"]> {
+  switch (s.kind) {
+    case "write":
+    case "calendar":
+      return "write";
+    case "attach":
+      return "attach";
+    case "press":
+      return "navigate";
+    case "handoff":
+      return s.target.control === "button" ? "yours" : "write";
+  }
 }

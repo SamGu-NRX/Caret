@@ -39,10 +39,10 @@ private final class FakeBackend: CalendarBackend, @unchecked Sendable {
         if readFails { throw ReadError() }
         return events.values.filter { $0.calendarID == calendarID && $0.start < to && $0.end > from }
     }
-    func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> String {
+    func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> BackendEvent {
         calls.append("save \(calendarID)"); n += 1
         events["ev-\(n)"] = BackendEvent(id: "ev-\(n)", calendarID: calendarID, title: title, start: start, end: end)
-        return "ev-\(n)"
+        return events["ev-\(n)"]!
     }
     func event(id: String) throws -> BackendEvent? {
         calls.append("event \(id)")
@@ -50,7 +50,15 @@ private final class FakeBackend: CalendarBackend, @unchecked Sendable {
         if readFails { throw ReadError() }
         return events[id]
     }
-    func removeEvent(id: String) throws { calls.append("remove \(id)"); events.removeValue(forKey: id) }
+    func removeEvent(id: String, ifStill saved: BackendEvent) throws {
+        calls.append("remove \(id)")
+        // As EventKitBackend: the fresh read and the removal together, so an edit made after the adapter's checks stops it.
+        duringRemove?()
+        if let now = events[id], !saved.unchanged(in: now) { throw CalendarEventChanged() }
+        events.removeValue(forKey: id)
+    }
+    /// Called inside a removal before its fresh read, as the user's edit landing during an undo.
+    var duringRemove: (() -> Void)?
     func defaultCalendarID() -> String? { calls.append("default"); return nil }
     func isWritable(calendarID: String) -> Bool { calls.append("writable \(calendarID)"); return calendars[calendarID] != nil }
 }
@@ -60,6 +68,49 @@ private let chicago = TimeZone(identifier: "America/Chicago")!
 private let start = "2026-10-08T15:00:00-05:00", end = "2026-10-08T15:30:00-05:00"
 
 @Suite struct CalendarAdapterTests {
+    /// Greptile review on #13: undo never deletes an event the user changed after Caret added it, whatever they changed,
+    /// and the check is the backend's fresh read inside the removal, so an edit during the undo counts too.
+    @Test func undoLeavesAnEventTheUserChanged() throws {
+        let edits: [(String, (inout EventState) -> Void)] = [
+            ("notes", { $0.notes = "Bring the deposit" }),
+            ("location", { $0.location = "Cafe Lumen" }),
+            ("url", { $0.url = "https://meet.example.com/abc" }),
+            ("alarms", { $0.alarms = ["offset -900.0"] }),
+            ("attendees", { $0.attendees = ["mailto:dana@example.com"] }),
+            ("all day", { $0.allDay = true }),
+        ]
+        for (what, edit) in edits {
+            for during in [false, true] {
+                let b = FakeBackend()
+                let a = CalendarAdapter(backend: b, zone: chicago)
+                guard case let .ok(added?) = a.perform(.calendarAdd(calendar: "Caret Test", title: "Coffee with Dana", start: start, end: end, taskId: "t1")) else { Issue.record("add failed"); return }
+                let change = { var e = b.events[added.id]!; edit(&e.state); b.events[added.id] = e }
+                if during { b.duringRemove = change } else { change() }
+                #expect(a.perform(.calendarRemove(id: added.id, taskId: "t1")) == .refused(.changed, CalendarAdapter.changedByYou), "\(what), during: \(during)")
+                #expect(b.events[added.id] != nil, "\(what) is left")
+            }
+        }
+    }
+
+    @Test func undoStillRemovesAnEventOnlyTheStoreTouched() {
+        // A modification date the saved copy did not have is the store's, not the user's edit.
+        let b = FakeBackend()
+        let a = CalendarAdapter(backend: b, zone: chicago)
+        guard case let .ok(added?) = a.perform(.calendarAdd(calendar: "Caret Test", title: "Coffee with Dana", start: start, end: end, taskId: "t1")) else { Issue.record("add failed"); return }
+        b.events[added.id]!.state.lastModified = Date(timeIntervalSince1970: 1_791_000_000)
+        #expect(a.perform(.calendarRemove(id: added.id, taskId: "t1")) == .ok(nil))
+        #expect(b.events[added.id] == nil)
+    }
+
+    @Test func aChangedModificationDateLeavesTheEvent() {
+        var saved = BackendEvent(id: "e", calendarID: "c", title: "T", start: t(start), end: t(end), state: EventState(lastModified: Date(timeIntervalSince1970: 1)))
+        var now = saved
+        now.state.lastModified = Date(timeIntervalSince1970: 2)
+        #expect(!saved.unchanged(in: now))
+        saved.state.lastModified = nil
+        #expect(saved.unchanged(in: now))
+    }
+
     @Test func addsToACalendarItCreatesOnTheLocalSourceFindsItAndUndoesIt() {
         let b = FakeBackend()
         let a = CalendarAdapter(backend: b, zone: chicago)

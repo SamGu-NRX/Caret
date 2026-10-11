@@ -123,6 +123,8 @@ describe("equal values skip", () => {
     expect(await sc.accept(first.goalId)).toBeNull();
     const stop = last(sc, "stopped");
     expect(stop && [stop.reason, stop.freshPlan !== null]).toEqual(["targetChanged", true]);
+    // A stop at acceptance's precheck, before any task ran, names no task to undo (Codex review on #22).
+    expect(stop && "taskId" in stop).toBe(false);
     expect(stop?.says).toMatch(/^'Order number' changed since Caret planned this, so Caret stopped after 0 of 2 steps\. A fresh plan/);
     expect(acts(sc)).toEqual([]);
     const fresh = segmentsOf(sc, stop?.freshPlan ?? "")[0];
@@ -152,6 +154,8 @@ describe("stop and re-preview", () => {
     const stop = last(sc, "stopped");
     // Stopped before step 2 (index 1), with step 1 verified.
     expect(stop && [stop.reason, stop.step, stop.says.startsWith("A new window 'Spelling and Grammar' opened in Mail Fixture, so Caret stopped after 1 of 2 steps.")]).toEqual(["dialog", 1, true]);
+    // The executor's stop names the task that ran, whose undo ledger holds what it wrote (Codex review on #22).
+    expect(stop?.taskId).toMatch(/:s0$/u);
     const fresh = segmentsOf(sc, stop?.freshPlan ?? "")[0];
     expect(fresh?.reason).toBe("freshPlan");
     // The stopped goal's segment cannot be accepted again; the fresh one runs once accepted, writing only what remains.
