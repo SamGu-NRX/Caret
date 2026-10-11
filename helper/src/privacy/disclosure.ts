@@ -347,10 +347,6 @@ export class Disclosure extends SnippetLedger {
   // on the immutable view and text. Keep it for this Disclosure, not admission decisions or mutable ledger charges.
   private readonly sourceSpans = new WeakMap<WindowState, Map<string, ViewSpan[]>>();
 
-  // Whole-note fallback lookup took 31% of sampled product CPU in the 100-field preview. Its result depends only
-  // on the immutable view and text. Keep it for this Disclosure, not admission decisions or mutable ledger charges.
-  private readonly sourceSpans = new WeakMap<WindowState, Map<string, ViewSpan[]>>();
-
   /** Adds declared spans to a minted text. */
   private declareSpans(text: string, spans: Iterable<ViewSpan>): void {
     let l = this.spans.get(text);
