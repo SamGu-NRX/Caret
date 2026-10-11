@@ -140,6 +140,7 @@ import type { Snapshot, ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
+import { clearTextMemos, expireTextMemos } from "./privacy/text-memo.ts";
 import { TabSource, TabTextExpired, type DocsApp, type TabReader } from "./engines/tab-source.ts";
 
 /** The origin of a page address ("https://host:port"), or null when there is none or it does not parse. */
@@ -2690,6 +2691,7 @@ export class Helper {
       // otherwise a window left untouched for ten minutes would drop out of the text window.
       for (const w of this.model.windows.values()) this.text.observe(w, now);
       this.text.prune(now);
+      expireTextMemos(now);
       const cutoff = now - 10 * 60 * 1000;
       while ((this.recentTransfers[0]?.at ?? now) < cutoff) this.recentTransfers.shift();
       for (const [id, p] of this.proposals) if (now - p.at > PROPOSAL_KEEP_MS) this.proposals.delete(id);
@@ -3331,6 +3333,8 @@ export class Helper {
   purgeWindow(s: Snapshot): void {
     this.model.apply(s);
     this.checkFills(s.window.windowId);
+    // Answers cached about the purged text go too (privacy/text-memo.ts): they are keyed hashes, but none outlives it.
+    clearTextMemos();
   }
 
   private checkFills(windowId: string): void {
