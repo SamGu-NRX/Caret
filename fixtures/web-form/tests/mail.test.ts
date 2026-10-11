@@ -13,7 +13,11 @@ test("the inbox serves its page and messages, with a new code per start, and its
     const page = await (await fetch(`${site.mainOrigin}/mail/`)).text();
     assert.match(page, /<script src="\/mail\/mail.js"><\/script>/);
     const messages = (await (await fetch(`${site.mainOrigin}/mail/messages.json`)).json()) as { id: string; body: string[] }[];
-    assert.deepEqual(messages.map((m) => m.id), ["kayak", "dana", "dana-old", "priya", "support", "lena"]);
+    assert.deepEqual(messages.map((m) => m.id), ["kayak", "dana", "dana-old", "priya", "support", "lena", "maya", "jonah", "orbitline"]);
+    // The journey's events (journey.ts row 1) are stated whole in their messages, and still ahead.
+    const { coffee, lunch } = site.mail.events;
+    assert.ok(messages[6]?.body.includes(coffee.sentence) && messages[7]?.body.includes(lunch.sentence));
+    assert.ok(Date.parse(`${coffee.date}T00:00:00Z`) > Date.now());
     assert.ok(messages[0]?.body.includes(`Confirmation number: ${site.mail.code}`));
     assert.ok(messages[2]?.body.includes(`Confirmation number: ${site.mail.decoy}`));
     assert.notEqual(site.mail.code, site.mail.decoy);
