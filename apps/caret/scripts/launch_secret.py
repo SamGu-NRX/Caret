@@ -29,6 +29,8 @@ def popen_with_secret(args, secret=SECRET, **popen_kwargs):
     proc = subprocess.Popen(args, stdin=subprocess.PIPE, **popen_kwargs)
     proc.stdin.write(secret)
     proc.stdin.close()
+    # Popen treats a set stdin as its own to flush and close; on Python 3.11 communicate() then flushes the closed file.
+    proc.stdin = None
     return proc
 
 
