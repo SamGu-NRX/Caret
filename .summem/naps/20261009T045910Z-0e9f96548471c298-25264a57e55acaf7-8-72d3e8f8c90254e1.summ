@@ -1,0 +1,1 @@
+Acceptance debug needs test-hooks/full; otherwise state/spend. Chrome store strips key/changing ID; HTTP(S) grants replace tabs. v2/access lacks CI; v2/ci carries it. Rig Gemma needs >4 GiB; system AX -25204 uses app fallback. Prune deletes vm-job/runs: copy evidence first.

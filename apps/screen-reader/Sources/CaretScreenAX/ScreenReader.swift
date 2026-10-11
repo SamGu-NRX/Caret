@@ -481,22 +481,20 @@ public struct DenyList: Sendable {
     public let prefixes: [String]
     public var count: Int { prefixes.count }
 
-    public static let defaults = [
-        "com.apple.keychainaccess", "com.apple.Passwords", "com.bitwarden.desktop", "com.1password", "com.agilebits",
-        "com.lastpass", "com.dashlane", "com.callpod.keeper", "org.keepassxc", "me.proton.pass", "ch.protonmail.pass",
-        "in.sinew.Enpass", "com.nordsec.nordpass", "com.apple.systempreferences.passwords",
-        // Terminals, System Settings and Caret itself (CaretHostCore ExcludedApps, with each one's reason).
-        "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "org.alacritty", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
-        "com.apple.systempreferences", "dev.caret.host", "dev.caret.screen", "dev.caret.node", "dev.caret.bridge",
-    ]
+    public static let defaults = ExcludedApps.entries.map(\.bundleIdentifier)
 
-    public init(prefixes: [String]) { self.prefixes = prefixes }
+    public init(prefixes: [String]) {
+        // beta.1 files contain only password managers. File entries may add exclusions, never remove required ones.
+        var seen = Set<String>()
+        self.prefixes = (Self.defaults + prefixes).filter { seen.insert($0).inserted }
+    }
 
     public func denies(_ bundleId: String) -> Bool {
         prefixes.contains { bundleId == $0 || bundleId.hasPrefix($0 + ".") }
     }
 
-    /// Reads the file, creating it with the defaults when it does not exist. An unreadable file is an error, not an empty list.
+    /// Adds file entries to the required set without rewriting existing files. Creates a missing file with defaults.
+    /// An unreadable file is an error, not an empty list.
     public static func load(path: String) throws -> DenyList {
         let fm = FileManager.default
         if !fm.fileExists(atPath: path) {

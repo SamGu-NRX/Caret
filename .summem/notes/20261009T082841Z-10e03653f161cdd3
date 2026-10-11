@@ -1,1 +1,0 @@
-FigureView freezes itself when rendersOffscreen is set (Gallery.png), so references never catch a rest blink; rest beats (FigureIdle) take randomness from the figureLife environment (.seeded/.frozen) and the slip's glance direction from figureTyping, set in SurfaceCoordinator.

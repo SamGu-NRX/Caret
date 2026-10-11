@@ -66,10 +66,11 @@ export class ScreenModel {
   /** Bundle identifier prefixes of apps the user switched off (privacy/read-policy.ts): their windows never enter the model. */
   private appsOff: readonly string[] = DEFAULT_APPS_OFF;
 
-  /** Sets the apps whose windows never enter the model, and closes any of their windows it holds. */
+  /** Adds user exclusions to the required set, and closes any excluded windows it holds. */
   setAppsOff(prefixes: readonly string[], at = Date.now()): void {
     if (prefixes.some((p) => !this.appsOff.includes(p))) noteSwitchedOff();
-    this.appsOff = [...prefixes];
+    // beta.1 deny-list files lack terminals, settings and Caret. No file or caller may remove required exclusions.
+    this.appsOff = [...new Set([...DEFAULT_APPS_OFF, ...prefixes])];
     for (const [id, w] of [...this.windows]) if (appOff(w.app.bundleId, this.appsOff)) this.close(id, at);
   }
 

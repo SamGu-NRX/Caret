@@ -1,1 +1,0 @@
-Info.plist '--' comment refuses builds; h1x build.sh hardcodes its worktree; cp -cR breaks symlinked node_modules. Disclosure caps at 8 ways; value options state exact outputs. Helper tests stop at MAX_GENERATOR_VISITS; close page sessions before shutdown.

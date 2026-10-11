@@ -281,10 +281,12 @@ describe("T-E4: a control labelled with a sensitive kind", () => {
 });
 
 describe("T-E5: apps and sites switched off", () => {
-  it("the helper's default deny list is the reader's, word for word", () => {
-    const swift = readFileSync(join(here, "../../apps/screen-reader/Sources/CaretScreenAX/ScreenReader.swift"), "utf8");
-    const block = /static let defaults = \[([\s\S]*?)\]/u.exec(swift)?.[1] ?? "";
-    expect([...block.matchAll(/"([^"]+)"/gu)].map((x) => x[1])).toEqual([...DEFAULT_APPS_OFF]);
+  it("the helper's required deny list matches the shared Swift exclusions", () => {
+    const swift = readFileSync(join(here, "../../apps/screen-reader/Sources/CaretScreenCore/ExcludedApps.swift"), "utf8");
+    const ids = [...swift.matchAll(/Entry\(bundleIdentifier: "([^"]+)"/gu)].map((x) => x[1]);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toEqual([...DEFAULT_APPS_OFF]);
   });
 
   const line = "Vault item: Lumen staging, user dana";
