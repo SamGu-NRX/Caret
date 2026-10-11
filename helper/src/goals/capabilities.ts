@@ -1,8 +1,9 @@
-// Which presses an accepted goal plan may make itself (D2-06, plan section 5: "Predictable safe presses need a
-// registered capability describing both effect and verifier; 'the model said Save is safe' is not one").
+// Which presses Caret may make itself (D2-06, plan section 5: "Predictable safe presses need a registered capability
+// describing both effect and verifier; 'the model said Save is safe' is not one"). A goal plan's press is lowered by
+// pressVerdict, and since G1 (CU-COUNSEL-R2 Q3) the executor asks it again before any plan's press (executor.ts
+// pressStep), so this table is the one authority for Caret's presses.
 //
-// The registry is code, frozen, and deliberately small: one capability. A press a goal plan names is lowered by
-// pressVerdict, in this order:
+// The registry is code, frozen, and deliberately small: one capability. pressVerdict decides, in this order:
 //   1. A control whose label reads as outbound, destructive, money or system (risk.ts: Send, Submit, Pay, Delete,
 //      Allow and their kin), or any control in a system prompt, is the user's to press. No capability is consulted.
 //   2. A page control is the user's to press: the page engine never runs a page's own script (extension
