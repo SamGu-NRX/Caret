@@ -1,0 +1,1 @@
+Stop reconciliation (PR #21, #33): a prefix read after an interrupt is never Caret's; input evidence on the target since send (reader fieldInput, page inputAt) makes the read unknown and sets mayIncludeInput, so Undo refuses.

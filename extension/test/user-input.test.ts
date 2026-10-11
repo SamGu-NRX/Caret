@@ -1,0 +1,145 @@
+// Issue #26: which page events count as the user's own input on a field, and the time the walk reports for a control.
+// One right answer per case, so each is pinned here on its own.
+import { describe, expect, it } from "vitest";
+import { USER_INPUT_RECENT_MS, UserInputs, inOwnList, isUserInput, type ListElement } from "../src/content/user-input.ts";
+
+/** A stand-in element: its role, id, attributes and parent. */
+interface Fake extends ListElement<Fake> {
+  role: string | null;
+}
+function el(role: string | null, id = "", attrs: Record<string, string> = {}, parent: Fake | null = null): Fake {
+  const self: Fake = {
+    role,
+    id,
+    parentElement: parent,
+    closest(selector: string) {
+      const want = /role="(\w+)"/u.exec(selector)?.[1];
+      for (let n: Fake | null = self; n !== null; n = n.parentElement) if (n.role === want) return n;
+      return null;
+    },
+    contains(other: Fake) {
+      for (let n: Fake | null = other; n !== null; n = n.parentElement) if (n === self) return true;
+      return false;
+    },
+    getAttribute: (name: string) => attrs[name] ?? null,
+  };
+  return self;
+}
+
+describe("isUserInput", () => {
+  it("counts trusted typing, pasting and keys, and never Esc, which stops Caret", () => {
+    expect(isUserInput({ isTrusted: true, type: "keydown", key: "D" })).toBe(true);
+    expect(isUserInput({ isTrusted: true, type: "keydown", key: "Tab" })).toBe(true);
+    expect(isUserInput({ isTrusted: true, type: "beforeinput" })).toBe(true);
+    expect(isUserInput({ isTrusted: true, type: "input" })).toBe(true);
+    expect(isUserInput({ isTrusted: true, type: "keydown", key: "Escape" })).toBe(false);
+  });
+
+  it("never counts an untrusted event, as Caret's own writes and a page's scripts make", () => {
+    for (const type of ["keydown", "beforeinput", "input"]) expect(isUserInput({ isTrusted: false, type, key: "D" })).toBe(false);
+  });
+
+  it("counts a trusted pointer going down, which can set a custom control with no input event (PR #33 review)", () => {
+    expect(isUserInput({ isTrusted: true, type: "pointerdown" })).toBe(true);
+    expect(isUserInput({ isTrusted: false, type: "pointerdown" })).toBe(false);
+  });
+
+  it("does not count the events that follow a press or a focus change, which the press already counted", () => {
+    for (const type of ["click", "focusin", "change"]) expect(isUserInput({ isTrusted: true, type })).toBe(false);
+  });
+});
+
+describe("UserInputs", () => {
+  // A tree of plain objects stands in for elements: `parent` links each to the one it sits in.
+  const parent = new Map<object, object>();
+  const within = (inner: object, outer: object): boolean => {
+    for (let n: object | undefined = inner; n !== undefined; n = parent.get(n)) if (n === outer) return true;
+    return false;
+  };
+  const form = {}, field = {}, inner = {}, other = {};
+  parent.set(field, form).set(inner, field).set(other, form);
+  const armedInputs = (): UserInputs<object> => {
+    const t = new UserInputs<object>(within);
+    t.armed(100_000, 0);
+    return t;
+  };
+
+  it("keeps nothing in a frame no grant has covered", () => {
+    const t = new UserInputs<object>(within);
+    t.noted(field, 1000);
+    expect(t.at(field, 1000)).toBeUndefined();
+  });
+
+  it("keeps input for USER_INPUT_RECENT_MS after the grants end, as Stop ends them, and none after that", () => {
+    const t = new UserInputs<object>(within);
+    t.armed(60_000, 1000);
+    t.armed(0, 5000);
+    t.noted(field, 5000 + USER_INPUT_RECENT_MS - 1);
+    expect(t.at(field, 5000 + USER_INPUT_RECENT_MS)).toBe(5000 + USER_INPUT_RECENT_MS - 1);
+    t.noted(other, 5000 + USER_INPUT_RECENT_MS);
+    expect(t.at(other, 5000 + USER_INPUT_RECENT_MS)).toBeUndefined();
+  });
+
+  it("reports the latest input on the control or inside it, and none on a sibling or the form around it", () => {
+    const t = armedInputs();
+    t.noted(field, 1000);
+    t.noted(inner, 1500);
+    expect(t.at(field, 2000)).toBe(1500);
+    expect(t.at(inner, 2000)).toBe(1500);
+    expect(t.at(other, 2000)).toBeUndefined();
+    // The form holds the field, so a walk of a control that is the whole form would see it; the field never sees the form's.
+    t.noted(form, 1800);
+    expect(t.at(field, 2000)).toBe(1500);
+  });
+
+  it("forgets input older than USER_INPUT_RECENT_MS", () => {
+    const t = armedInputs();
+    t.noted(field, 1000);
+    expect(t.at(field, 1000 + USER_INPUT_RECENT_MS - 1)).toBe(1000);
+    expect(t.at(field, 1000 + USER_INPUT_RECENT_MS)).toBeUndefined();
+  });
+
+  it("keeps the newest time when the same element is noted again", () => {
+    const t = armedInputs();
+    t.noted(field, 1000);
+    t.noted(other, 1100);
+    t.noted(field, 1200);
+    expect(t.at(field, 1300)).toBe(1200);
+    expect(t.at(other, 1300)).toBe(1100);
+  });
+
+  it("keeps at most 64 elements, dropping the oldest", () => {
+    const t = armedInputs();
+    const many = Array.from({ length: 70 }, () => ({}));
+    many.forEach((el, i) => t.noted(el, 1000 + i));
+    expect(t.at(many[0] as object, 2000)).toBeUndefined();
+    expect(t.at(many[69] as object, 2000)).toBe(1069);
+    expect(t.at(many[6] as object, 2000)).toBe(1006);
+  });
+});
+
+describe("inOwnList", () => {
+  it("counts a pick in the list the focused combobox names, even rendered elsewhere in the page", () => {
+    const combo = el("combobox", "c1", { "aria-controls": "list-1" });
+    const list = el("listbox", "list-1");
+    expect(inOwnList(combo, el("option", "", {}, list))).toBe(true);
+    expect(inOwnList(el("combobox", "c2", { "aria-owns": "list-1" }), list)).toBe(true);
+  });
+
+  it("counts a list labelled by the control, and the option the control names as active", () => {
+    expect(inOwnList(el("combobox", "c1"), el("option", "", {}, el("listbox", "", { "aria-labelledby": "c1" })))).toBe(true);
+    expect(inOwnList(el("combobox", "c1", { "aria-activedescendant": "opt-3" }), el("option", "opt-3", {}, el("listbox")))).toBe(true);
+    expect(inOwnList(el("combobox", "c1", { "aria-activedescendant": "opt-3" }), el("option", "opt-4", {}, el("listbox")))).toBe(false);
+  });
+
+  it("counts a list inside the control", () => {
+    const combo = el("combobox", "c1");
+    expect(inOwnList(combo, el("option", "", {}, el("listbox", "", {}, combo)))).toBe(true);
+  });
+
+  it("does not count another control's list, or a click outside any list", () => {
+    const field = el("textbox", "f1");
+    expect(inOwnList(field, el("option", "", {}, el("listbox", "list-2")))).toBe(false);
+    expect(inOwnList(field, el(null))).toBe(false);
+  });
+});

@@ -316,7 +316,7 @@ export interface WalkOutput {
  * Walks the document. `idOf` gives each kept element its registry id (the same element keeps its id across walks);
  * `onKept` sees each kept element with the control it became.
  */
-export function walkControls(idOf: (el: Element) => string, onKept: (el: Element, c: PageControl) => void, entryOf: (el: Element, value: string) => PageControl["entry"] = () => undefined): WalkOutput {
+export function walkControls(idOf: (el: Element) => string, onKept: (el: Element, c: PageControl) => void, entryOf: (el: Element, value: string) => PageControl["entry"] = () => undefined, inputAtOf: (el: Element) => number | undefined = () => undefined): WalkOutput {
   const origin = location.origin;
   const forms = [...document.forms];
   const controls: PageControl[] = [];
@@ -405,6 +405,9 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       if (token !== undefined) c.autocomplete = token;
     }
     if (f.shadow !== undefined) c.shadow = f.shadow;
+    // Issue #26: when the user's own input last reached it, which the helper's read after Stop checks.
+    const inputAt = inputAtOf(f.el);
+    if (inputAt !== undefined) c.inputAt = inputAt;
     const inside = outline.chains.get(f.el) ?? [];
     if (inside.length > 0) c.sections = inside;
     controls.push(c);

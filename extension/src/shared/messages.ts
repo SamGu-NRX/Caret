@@ -44,6 +44,11 @@ export interface PageControl {
   maxLength?: number;
   /** S1: how a text input's or textarea's text was entered since it was last empty (content/entry.ts); absent when no edit was seen. */
   entry?: "typed" | "pasted" | "other";
+  /**
+   * Issue #26: when the user's own input last reached the control (content/user-input.ts), on this frame's wall clock;
+   * absent when none did in the last USER_INPUT_RECENT_MS. Never on an excluded control.
+   */
+  inputAt?: number;
   /** H14, file inputs only: the accept attribute's extensions and MIME types, lowercased (walker.ts acceptOf). */
   accept?: string[];
   /** W2: the autocomplete attribute's field name, when it is one Caret reads (walker.ts autocompleteOf). */

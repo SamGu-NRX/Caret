@@ -48,6 +48,12 @@ export const LedgerEntrySchema = z.discriminatedUnion("kind", [
      */
     partialWrite: z.union([z.literal(true), z.string().min(1)]).optional(),
     mayIncludeInput: z.literal(true).optional(),
+    /**
+     * When Caret sent the write, for a write a lost answer or an interrupt left: a page field whose walk shows the
+     * user's input from then on (PageControl.inputAt) is not restored. Kept across a restart, since the page's record
+     * outlives the helper (PR #33 review).
+     */
+    sentAt: z.number().int().nonnegative().optional(),
   }),
   z.object({ kind: z.literal("calendar"), step, eventId: z.string().min(1).nullable(), calendar: z.string(), title: z.string(), start: z.string(), end: z.string() }),
   z.object({ kind: z.literal("press"), step, label: z.string(), windowId: z.string() }),
@@ -56,7 +62,7 @@ export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
 
 /** What the executor is about to dispatch: saved before the reader gets it, so a crash during it is known. */
 export const PendingAct = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("write"), step, pid: z.number().int(), windowId: z.string(), key: z.string(), role: z.string(), before: z.string(), value: z.string(), mark: z.string().min(1) }),
+  z.object({ kind: z.literal("write"), step, pid: z.number().int(), windowId: z.string(), key: z.string(), role: z.string(), before: z.string(), value: z.string(), mark: z.string().min(1), sentAt: z.number().int().nonnegative().optional() }),
   z.object({ kind: z.literal("press"), step, label: z.string(), windowId: z.string() }),
   z.object({ kind: z.literal("calendar"), step, calendar: z.string(), title: z.string(), start: z.string(), end: z.string() }),
 ]);

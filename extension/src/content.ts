@@ -22,10 +22,11 @@
 import type { FieldLook, FocusMoved, FrameReport, FrameSelfAnswer, FrameTextAnswer, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
-import { clean } from "./content/names.ts";
+import { clean, composedParent } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
 import { EntryTracker } from "./content/entry.ts";
+import { UserInputs, inOwnList, isUserInput } from "./content/user-input.ts";
 import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 import { docsKind, readFrameText } from "./content/text.ts";
 import { docsFocus, fieldText, trackEdits } from "./content/field-text.ts";
@@ -98,14 +99,16 @@ function textOf(until: number): FrameTextAnswer {
   return { selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText };
 }
 
-function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): FrameReport {
+function walk(reg: Registry, entries: EntryTracker | null, inputs: UserInputs<Element>, caretText: boolean): FrameReport {
   const t0 = performance.now();
   const href = location.href;
   const nav = navigationEntry();
+  const now = Date.now();
   const out = walkControls(
     (el) => reg.idOf(el),
     (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form }),
     (el, value) => entries?.entryOf(el, value),
+    (el) => inputs.at(el, now),
   );
   const active = deepActiveElement();
   let focused: FrameReport["focused"] = null;
@@ -195,6 +198,27 @@ if (globalThis.__caretContent === undefined) {
     );
   }
 
+  // Issue #26: when the user's own input last reached each control, which the walk reports (content/user-input.ts).
+  // Capture on the window from document_start, so the page's listeners cannot hide it; passive, so it never delays it.
+  const inputs = new UserInputs<Element>((inner, outer) => {
+    let n: Element | null = inner;
+    for (let i = 0; n !== null && i < 256; i++, n = composedParent(n)) if (n === outer) return true;
+    return false;
+  });
+  const noteInput = (e: Event): void => {
+    if (!isUserInput(e)) return;
+    const at = Date.now();
+    const target = e.composedPath()[0];
+    if (target instanceof Element) inputs.noted(target, at);
+    const active = deepActiveElement();
+    // A pointer is noted at the focused control too only in that control's own list of options, which a combobox may
+    // render elsewhere in the page (content/combobox.ts): picking there sets the control with no input event. A list
+    // that belongs to another control is not this one's (PR #33 review).
+    if (e.type === "pointerdown" && !(active !== null && target instanceof Element && inOwnList(active, target))) return;
+    if (active !== null && active !== target) inputs.noted(active, at);
+  };
+  for (const type of ["keydown", "beforeinput", "input", "pointerdown"]) addEventListener(type, noteInput, { capture: true, passive: true });
+
   // H13 review: an inline insert never lands inside an input method's composition (content/insert.ts).
   trackComposition();
   trackEdits();
@@ -238,7 +262,7 @@ if (globalThis.__caretContent === undefined) {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
-      reply(walk(reg, entries, m.caretText !== false));
+      reply(walk(reg, entries, inputs, m.caretText !== false));
       return false;
     }
     if (m.op === "frame") {
@@ -255,6 +279,7 @@ if (globalThis.__caretContent === undefined) {
     }
     if (m.op === "guard") {
       guardUntil = m.until;
+      inputs.armed(m.until, Date.now());
       reply(true);
       return false;
     }
@@ -264,6 +289,7 @@ if (globalThis.__caretContent === undefined) {
     }
     // The act arms this document itself for as long as its grant runs, whatever became of the worker's guard message.
     guardUntil = Math.max(guardUntil, m.guardUntil);
+    inputs.armed(m.guardUntil, Date.now());
     const taskId = m.verb.taskId;
     const start = takeovers;
     const alive = async (): Promise<boolean> => {

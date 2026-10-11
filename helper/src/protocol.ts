@@ -77,6 +77,8 @@ export const Node = z.object({
   maxLength: z.number().int().nonnegative().optional(),
   /** S1, page text fields only: how the field's text was entered (PageEntry). */
   entry: PageEntry.optional(),
+  /** Issue #26, page controls only: when the user's own input last reached the control (PageControl.inputAt). */
+  inputAt: ms.optional(),
   /** H14, page file controls only: the accept attribute's tokens, lowercased. */
   accept: z.array(z.string().min(1).max(100)).max(20).optional(),
   /**
@@ -476,6 +478,25 @@ export const UserInput = z.object({
 export type UserInput = z.infer<typeof UserInput>;
 
 /**
+ * A key the user pressed in a watched process that may have changed text (issue #26): sent with the window-level
+ * userInput for every key except Esc, which types nothing and is Caret's Stop key. It names the element the key went
+ * to, never the key: the element with keyboard focus as the reader last read it. `windowId` is null when the reader
+ * does not know which of the process's windows had focus; `key` is null when it does not know the element. Both
+ * are null from a Tab, or from Caret focusing a field for a write, until the reader reads where focus went. The executor counts it against a write whose
+ * answer was lost (executor.ts readUnconfirmed): typing in that field after the write was sent makes Caret's own value
+ * indistinguishable from the user's.
+ */
+export const FieldInput = z.object({
+  type: z.literal("fieldInput"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  pid: z.number().int(),
+  windowId: z.string().nullable(),
+  key: z.string().nullable(),
+});
+export type FieldInput = z.infer<typeof FieldInput>;
+
+/**
  * The user pressed something in a window under a press watch (B20): the pressable element under their
  * click, or the button a key pressed (B21), its role and its label as the reader last read it, and when the
  * button or key went down. `key` is the element's key in the window's latest walk, null when that walk did
@@ -500,7 +521,7 @@ export const UserPress = z.object({
 });
 export type UserPress = z.infer<typeof UserPress>;
 
-export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard, VerbResult, UserInput, UserPress]);
+export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard, VerbResult, UserInput, FieldInput, UserPress]);
 export type ReaderMessage = z.infer<typeof ReaderMessage>;
 
 /** Consumer asks for a fill proposal for the form around one field, without waiting for a focus event. */
@@ -2885,6 +2906,13 @@ export const PageControl = z.object({
   maxLength: z.number().int().nonnegative().optional(),
   /** S1: how a text input's or textarea's text was entered since it was last empty (PageEntry); absent when no edit was seen. */
   entry: PageEntry.optional(),
+  /**
+   * Issue #26: when the user's own input last reached the control, on the frame's wall clock: a trusted beforeinput or
+   * input event on it or inside it, or a trusted key going down while it or an element inside it had focus, other than
+   * Esc (extension content/user-input.ts). Noted only while a grant covers the frame and for 30 s after it ends; absent
+   * when there was none in the last 30 s. Nothing about the input travels. The executor counts it against a write whose answer was lost (executor.ts readUnconfirmed).
+   */
+  inputAt: ms.optional(),
   /** H14, page file controls only: the accept attribute's tokens, lowercased. */
   accept: z.array(z.string().min(1).max(100)).max(20).optional(),
   /** W2: the autocomplete attribute's field name (extension walker.ts autocompleteOf), which the write contract reads. */

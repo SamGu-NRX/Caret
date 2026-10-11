@@ -71,7 +71,7 @@ Data the extension handles (tick these):
 - Personal communications. The text around the cursor of the field you are typing in, which can be an email you are writing.
 - Website content. Field labels, page headings, and the visible text of the tab you just left when a fill needs it as a source.
 - Web history. The title and address of the page whose form is being filled, and of the tab you just left.
-- User activity. That focus moved into a field, and that you clicked or pressed a key while Caret was filling the page. Which key, and what was clicked, are not recorded.
+- User activity. That focus moved into a field, and that you clicked or pressed a key while Caret was filling the page. While Caret fills a page and for 30 seconds after, also when you last typed, pasted, clicked or pressed a key in each field. Which key, what you typed and what was clicked are not recorded.
 
 Leave unticked: health information, financial and payment information (card fields are never read), authentication information (password and one-time-code fields are never read), location.
 

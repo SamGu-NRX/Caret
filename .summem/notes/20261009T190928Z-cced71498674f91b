@@ -1,0 +1,1 @@
+Issue #26: reader fieldInput (keys but Esc, element from cached focus, none after Tab) and page PageControl.inputAt feed executor InputWatch from send time; input on the target makes the recovery read unknown and sets mayIncludeInput so Undo refuses.
