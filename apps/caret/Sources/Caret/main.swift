@@ -64,6 +64,20 @@ if CommandLine.arguments.dropFirst().first == "--probe-length", CommandLine.argu
     RunLoop.main.run()
 }
 
+// Dev mode: `Caret --probe-rewrite <sentences.txt> <out.ndjson>` times the rewrite generator's modes.
+if CommandLine.arguments.dropFirst().first == "--probe-rewrite", CommandLine.arguments.count >= 4 {
+    let sentences = URL(fileURLWithPath: CommandLine.arguments[2])
+    let out = URL(fileURLWithPath: CommandLine.arguments[3])
+    let modelURL = configuration.modelURL
+    MainActor.assumeIsolated {
+        Task {
+            print(await DevProbe.rewrite(modelURL: modelURL, sentences: sentences, out: out), terminator: "")
+            exit(0)
+        }
+    }
+    RunLoop.main.run()
+}
+
 // Dev mode: `Caret --probe-replay <cases.json> <out.json>` records the engine's outcome for each
 // case as a `--ghost-replay` file, and prints every candidate's refusal and fit scores.
 if CommandLine.arguments.dropFirst().first == "--probe-replay", CommandLine.arguments.count >= 4 {
@@ -294,6 +308,9 @@ case .run(let mode):
 }
 configuration.helperSocketPath = MainActor.assumeIsolated { services.helperSocket }
 
+// The engine's token profiles follow the home: a test run's --home keeps them out of the user's Library.
+configuration.profileDirectory = URL(fileURLWithPath: home.profilesDirectory(userHome: NSHomeDirectory()), isDirectory: true)
+configuration.modelDownloadDirectory = URL(fileURLWithPath: home.modelsDirectory(userHome: NSHomeDirectory()), isDirectory: true)
 let launchConfiguration = configuration
 let launchStatusItem = showsStatusItem
 let launchManifestDirectory = manifestDirectory

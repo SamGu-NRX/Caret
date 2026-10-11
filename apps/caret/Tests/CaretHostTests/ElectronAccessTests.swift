@@ -37,6 +37,26 @@ final class ElectronAccessTests: XCTestCase {
         XCTAssertEqual(asked, [])
     }
 
+    /// PR #16 review: a busy app (`cannotComplete`, as the 250 ms messaging timeout gives) is asked
+    /// again on its next activation, up to `maxAttempts`, and not after it says yes.
+    func testABusyAppIsAskedAgainOnALaterActivation() {
+        var results: [AXError] = [.cannotComplete, .success]
+        var calls = 0
+        let a = ElectronAccess(family: { _ in .electron }, set: { _ in calls += 1; return results.removeFirst() })
+        let url = URL(fileURLWithPath: "/Applications/Slack.app")
+        XCTAssertFalse(a.ask(pid: 5, bundleURL: url))
+        XCTAssertTrue(a.ask(pid: 5, bundleURL: url), "asked again, and this time it took")
+        XCTAssertFalse(a.ask(pid: 5, bundleURL: url))
+        XCTAssertEqual(calls, 2)
+    }
+
+    func testABusyAppIsAskedAtMostMaxAttemptsTimes() {
+        var calls = 0
+        let a = ElectronAccess(family: { _ in .electron }, set: { _ in calls += 1; return .cannotComplete })
+        for _ in 0..<6 { _ = a.ask(pid: 5, bundleURL: URL(fileURLWithPath: "/Applications/Slack.app")) }
+        XCTAssertEqual(calls, ElectronAccess.maxAttempts)
+    }
+
     func testAFailedAskIsNotRetriedForThatProcess() {
         var calls = 0
         let a = ElectronAccess(family: { _ in .electron }, set: { _ in calls += 1; return .attributeUnsupported })

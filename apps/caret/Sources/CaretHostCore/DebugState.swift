@@ -139,6 +139,7 @@ public struct DebugState: Codable, Equatable, Sendable {
                 case .fix: return "fix"
                 case .original: return "original"
                 case .fixAll: return "fixAll"
+                case .rewrite: return "rewrite"
                 }
             }
             current = offer.current

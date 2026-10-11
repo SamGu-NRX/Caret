@@ -39,11 +39,6 @@ final class PageInlineCoordinator {
     private var origin: String?
     private var originFocus: String?
 
-    /// The site's origin for a field in the browser `bundleID`: only when the page field the helper last reported is
-    /// in that browser.
-    func origin(forBundleID bundleID: String) -> String? {
-        lastField?.app.bundleId == bundleID ? origin : nil
-    }
     private var tabOwner: String?
     private var activation: NSObjectProtocol?
     private var inputMethod: NSObjectProtocol?
@@ -261,13 +256,14 @@ final class PageInlineCoordinator {
         requestedAt = [r.id: stamp]
         let context = TextFieldContext(beforeCursor: r.before, afterCursor: r.after, target: AppTarget(bundleIdentifier: r.bundleID, appName: r.appName))
         let engine = self.engine
+        let origin = self.origin
         let gateNanos = HostCoordinator.presentationGateNanos(lastGenerationMs: engine.lastGenerationMs)
         generation = Task { [weak self] in
             // As native ghost text: generation starts at once; the adaptive gate only delays the drawing (ADR-080).
             let gate = Task { try? await Task.sleep(nanoseconds: gateNanos) }
             let outcome: GhostTextEngine.Outcome
             do {
-                outcome = try await engine.suggest(for: context)
+                outcome = try await engine.suggest(for: context, origin: origin)
             } catch {
                 gate.cancel()
                 // H13 review: a failed generation ends its request, so the next report of the same text asks again.

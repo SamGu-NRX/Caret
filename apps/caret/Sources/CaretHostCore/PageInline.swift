@@ -229,10 +229,10 @@ public enum PageInlineCopy {
     public static let switchesHead = "Suggestions as you type"
     public static let webPages = "Suggestions in web pages"
     public static let webPagesDetail = "Caret's next words in text boxes on web pages. Tab takes them; ⌘Z takes them back."
-    public static let richEditors = "Suggestions in rich editors (Notion, Gmail, Docs)"
-    /// The undo caveat in one line (H13: Chrome joins inserted text to the editor's open typing step, and some rich
-    /// editors keep their own undo, so one ⌘Z there could take back typing as well).
-    public static let richEditorsDetail = "Off at first: some of these editors keep their own undo, where one ⌘Z can also take back what you typed."
+    public static let richEditors = "Suggestions in rich editors"
+    /// What the switch covers. Gmail and Google Docs suggest text themselves and keep their own rule, so they are not
+    /// named here; the group below covers them.
+    public static let richEditorsDetail = "Editors inside web pages, such as Notion. Tab takes Caret's words; ⌘Z takes them back."
     public static let richEditorsNeedsWeb = "Needs suggestions in web pages on."
 
     public static let sitesHead = "Pages with their own suggestions"

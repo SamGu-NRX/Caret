@@ -101,6 +101,12 @@ struct WritingTabView: View {
                 InstructionEditor(label: "Instructions for \(entry.name)", text: editing.draft, placeholder: "", height: 84, autofocus: true,
                                   onChange: { send(.entryText($0)) })
                 HStack(spacing: 8) {
+                    if let problem = state.entryProblem {
+                        Text(problem)
+                            .font(Tokens.Font.chromeSmall)
+                            .foregroundStyle(Color(token: Tokens.ink))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Spacer(minLength: 0)
                     Button(WritingPageCopy.cancel) { send(.cancelEntry) }
                         .buttonStyle(WindowButtonStyle(kind: .key, small: true))

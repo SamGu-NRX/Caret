@@ -19,6 +19,9 @@ final class FocusObserver {
     }
 
     var onChange: ((Change) -> Void)?
+    /// A counter name for the debug state (`HostStatus.increment`) each time a subscription is
+    /// refused or retried.
+    var onNote: ((String) -> Void)?
 
     private let reader = FocusedFieldReader()
     private let electron = ElectronAccess()
@@ -30,6 +33,7 @@ final class FocusObserver {
     private var pendingSince: UInt64?
     private var running = false
     private(set) var notificationCount: UInt64 = 0
+    private var lastNotifiedAt: UInt64 = 0
 
     init(coalesceInterval: TimeInterval = 0.008) {
         self.coalesceInterval = coalesceInterval
@@ -55,6 +59,28 @@ final class FocusObserver {
         tearDown()
     }
 
+    /// A key that types text went to `pid`. If the app is the one observed and nothing was heard
+    /// from it within `silenceAfterKey`, the subscriptions are on an element that no longer reports:
+    /// a Mac Catalyst text view that had focus while its app launched posted nothing to Caret while
+    /// it took a typed sentence, though a fresh subscription to it hears every key (VM run
+    /// 20261009T111919Z-40847). So they move to the focused element again, and it is read.
+    func keyTyped(pid: pid_t) {
+        guard running, pid == observedPID else { return }
+        let typedAt = DispatchTime.now().uptimeNanoseconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.silenceAfterKey) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.running, self.observedPID == pid, self.lastNotifiedAt < typedAt else { return }
+                self.onNote?("focus.observe.silentKey")
+                self.observeFocusedElement()
+                self.scheduleRead()
+            }
+        }
+    }
+
+    /// Assumed, not measured: long enough for a value notification to follow a key in the apps
+    /// sampled, short enough that the first ghost is not much later than it would have been.
+    static let silenceAfterKey: TimeInterval = 0.2
+
     /// Re-read now, for example after the host inserted text.
     func requestRead() { scheduleRead() }
 
@@ -65,7 +91,7 @@ final class FocusObserver {
 
     // MARK: - Observer
 
-    private func retarget() {
+    private func retarget(attempt: Int = 0) {
         guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != ownPID else {
             // Our own menu or a vanished app: keep watching the previous target.
             return
@@ -80,22 +106,44 @@ final class FocusObserver {
         var created: AXObserver?
         guard AXObserverCreate(pid, Self.callback, &created) == .success, let created else { return }
         let appElement = AXUIElementCreateApplication(pid)
-        var registered = add(kAXFocusedUIElementChangedNotification, on: appElement, observer: created)
-        registered = add(kAXFocusedWindowChangedNotification, on: appElement, observer: created) && registered
-        // A moved or resized window moves the caret on screen without changing the text; the
-        // coordinator re-pins visible ghost text on the resulting read.
-        add(kAXWindowMovedNotification, on: appElement, observer: created)
-        add(kAXWindowResizedNotification, on: appElement, observer: created)
+        var refused = [
+            add(kAXFocusedUIElementChangedNotification, on: appElement, observer: created),
+            add(kAXFocusedWindowChangedNotification, on: appElement, observer: created),
+            // A moved or resized window moves the caret on screen without changing the text; the
+            // coordinator re-pins visible ghost text on the resulting read.
+            add(kAXWindowMovedNotification, on: appElement, observer: created),
+            add(kAXWindowResizedNotification, on: appElement, observer: created),
+        ].filter { $0 != .success }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
         observer = created
         observedPID = pid
-        observeFocusedElement()
+        refused += observeFocusedElement()
+        for code in refused { onNote?("focus.observe.refused.\(code.rawValue)") }
+        if observedElement == nil { onNote?("focus.observe.noElement") }
+        if (!refused.isEmpty || observedElement == nil), attempt < Self.retryDelays.count {
+            retry(pid, attempt: attempt)
+        }
         if electron.ask(pid: pid, bundleURL: app.bundleURL) { settle(pid) }
-        // An app still launching (or busy) can refuse the subscription or have no focused element yet. Without a retry
-        // its focus and typing posted nothing to Caret for as long as it stayed frontmost: in the rig VM, a TextEdit
-        // just opened gave no element and no notification while 45 keys were typed into it (DF1 run
-        // 20261009T110741Z-22973, host.log "focus read"). Subscribe again, and look again, a few times.
-        if !registered || observedElement == nil { resubscribe(pid, attempt: 0) }
+    }
+
+    /// An app that has only just launched can refuse the subscriptions, or have no focused element
+    /// yet, when it activates; with nothing subscribed Caret would not hear its typing until the
+    /// user left the app and came back. So the subscriptions are made again while it stays in front.
+    /// The delays are assumed, not measured: the VM's Mac Catalyst fixture (run
+    /// 20261009T104144Z-36771) got no focus read at all after `open`, and this is the first try at it.
+    static let retryDelays: [TimeInterval] = [0.3, 1.0, 2.5]
+
+    private func retry(_ pid: pid_t, attempt: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryDelays[attempt]) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.running, self.observedPID == pid,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+                self.onNote?("focus.observe.retry")
+                self.tearDown()
+                self.retarget(attempt: attempt + 1)
+                self.scheduleRead()
+            }
+        }
     }
 
     /// An Electron app just asked for its tree builds it after this read. A field that already had
@@ -115,54 +163,19 @@ final class FocusObserver {
         }
     }
 
-    /// Delays before subscribing to an app again after its subscription or its focused element failed; assumed, not
-    /// measured (an app's launch in the VM took about a second).
-    static let resubscribeDelays: [TimeInterval] = [0.3, 1, 3, 8]
-
-    private func resubscribe(_ pid: pid_t, attempt: Int) {
-        guard attempt < Self.resubscribeDelays.count else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.resubscribeDelays[attempt]) { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, self.running, self.observedPID == pid,
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
-                if self.observedElement != nil { self.scheduleRead(); return }
-                self.tearDown()
-                self.retargetOnce(pid: pid, attempt: attempt + 1)
-            }
-        }
-    }
-
-    /// `retarget` for one retry: subscribes again and, if that still fails, schedules the next retry.
-    private func retargetOnce(pid: pid_t, attempt: Int) {
-        var created: AXObserver?
-        guard AXObserverCreate(pid, Self.callback, &created) == .success, let created else { return resubscribe(pid, attempt: attempt) }
-        let appElement = AXUIElementCreateApplication(pid)
-        var registered = add(kAXFocusedUIElementChangedNotification, on: appElement, observer: created)
-        registered = add(kAXFocusedWindowChangedNotification, on: appElement, observer: created) && registered
-        add(kAXWindowMovedNotification, on: appElement, observer: created)
-        add(kAXWindowResizedNotification, on: appElement, observer: created)
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
-        observer = created
-        observedPID = pid
-        observeFocusedElement()
-        scheduleRead()
-        if !registered || observedElement == nil { resubscribe(pid, attempt: attempt) }
-    }
-
     /// Moves the per-element value and selection subscriptions to the currently focused element.
-    private func observeFocusedElement() {
-        guard let observer else { return }
+    /// Returns the errors of the subscriptions the element refused.
+    @discardableResult
+    private func observeFocusedElement() -> [AXError] {
+        guard let observer else { return [] }
         if let previous = observedElement {
             for name in Self.elementNotifications {
                 AXObserverRemoveNotification(observer, previous, name as CFString)
             }
         }
         observedElement = AXRead.focusedElement()
-        if let element = observedElement {
-            for name in Self.elementNotifications {
-                add(name, on: element, observer: observer)
-            }
-        }
+        guard let element = observedElement else { return [] }
+        return Self.elementNotifications.map { add($0, on: element, observer: observer) }.filter { $0 != .success }
     }
 
     private func tearDown() {
@@ -174,11 +187,10 @@ final class FocusObserver {
         observedElement = nil
     }
 
-    /// True when the subscription took, or was already there.
-    @discardableResult
-    private func add(_ name: String, on element: AXUIElement, observer: AXObserver) -> Bool {
-        let rc = AXObserverAddNotification(observer, element, name as CFString, Unmanaged.passUnretained(self).toOpaque())
-        return rc == .success || rc == .notificationAlreadyRegistered
+    /// `.notificationAlreadyRegistered` counts as subscribed.
+    private func add(_ name: String, on element: AXUIElement, observer: AXObserver) -> AXError {
+        let result = AXObserverAddNotification(observer, element, name as CFString, Unmanaged.passUnretained(self).toOpaque())
+        return result == .notificationAlreadyRegistered ? .success : result
     }
 
     private static let elementNotifications = [
@@ -197,6 +209,7 @@ final class FocusObserver {
 
     private func handle(_ notification: String) {
         notificationCount &+= 1
+        lastNotifiedAt = DispatchTime.now().uptimeNanoseconds
         if notification == kAXFocusedUIElementChangedNotification
             || notification == kAXFocusedWindowChangedNotification
             || notification == kAXUIElementDestroyedNotification {

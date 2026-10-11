@@ -24,6 +24,13 @@ final class WritingPageTests: XCTestCase {
         XCTAssertEqual(s.addable.map(\.name), ["mail.google.com"])
     }
 
+    /// PR #16 review: an over-long app or site entry used to be cut to the limit unseen on Save.
+    func testSaveRefusesTextOverTheLimitAndSaysWhy() {
+        let limit = PersonalInstructions.maxCharacters
+        XCTAssertNil(WritingPage.saveProblem(String(repeating: "a", count: limit)))
+        XCTAssertEqual(WritingPage.saveProblem(String(repeating: "a", count: limit + 1)), "Keep it under \(limit) characters.")
+    }
+
     func testTheCountSaysHowMuchReachesTheModel() {
         XCTAssertEqual(WritingPage.count("  I write plainly. "), "16 of 1,536 characters")
         XCTAssertEqual(WritingPage.count(String(repeating: "a", count: 2000)), "The model reads the first 1,536 characters; the rest is kept here.")

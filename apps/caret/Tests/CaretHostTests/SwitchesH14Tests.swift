@@ -18,10 +18,10 @@ final class SwitchesH14Tests: XCTestCase {
 
     private var path: String { dir.appendingPathComponent("settings.json").path }
 
-    func testTheDefaultsAreWebPagesOnAndRichEditorsOff() {
+    func testTheDefaultsAreWebPagesAndRichEditorsOn() {
         let s = SettingsStore(path: path).settings
         XCTAssertTrue(s.pageInlineText)
-        XCTAssertFalse(s.pageInlineContentEditable)
+        XCTAssertTrue(s.pageInlineContentEditable)
     }
 
     func testEachSwitchIsWrittenAndReadBackByTheNextLaunch() throws {

@@ -110,6 +110,19 @@ enum AXRead {
         return nil
     }
 
+    static func int(_ attribute: String, on element: AXUIElement) -> Int? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+        return (value as? NSNumber)?.intValue
+    }
+
+    /// The element's own answer to whether `attribute` can be set; nil when it does not answer.
+    static func isSettable(_ attribute: String, on element: AXUIElement) -> Bool? {
+        var settable: DarwinBoolean = false
+        guard AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success else { return nil }
+        return settable.boolValue
+    }
+
     static func range(_ attribute: String, on element: AXUIElement) -> CFRange? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,

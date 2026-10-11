@@ -28,8 +28,14 @@ public struct GhostReplay: Codable, Equatable, Sendable {
     }
 
     public var entries: [Entry]
+    /// Rewrites recorded for a sentence, by the sentence (`RewriteGenerator`), for the rewrite
+    /// key's VM rows. Optional in the file.
+    public var rewrites: [String: [String]]?
 
-    public init(entries: [Entry]) { self.entries = entries }
+    public init(entries: [Entry], rewrites: [String: [String]]? = nil) {
+        self.entries = entries
+        self.rewrites = rewrites
+    }
 
     /// The recorded outcome for a context: the text before the caret ends with the entry's, and
     /// the text after it, ignoring trailing whitespace, is the entry's. A field holds more text

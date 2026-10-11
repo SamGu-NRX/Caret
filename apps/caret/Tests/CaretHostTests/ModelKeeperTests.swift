@@ -26,6 +26,18 @@ final class ModelKeeperTests: XCTestCase {
         XCTAssertNotNil(k.action(menu: false))
     }
 
+    /// PR #16 review: a run with its own home downloaded into the user's Library. No byte is fetched here: the
+    /// download is refused for disk space before any request.
+    func testADownloadGoesToTheFolderItWasGiven() throws {
+        var folders: [URL] = []
+        let inside = FileManager.default.temporaryDirectory.appendingPathComponent("keeper-\(UUID().uuidString)/Models")
+        defer { try? FileManager.default.removeItem(at: inside.deletingLastPathComponent()) }
+        let k = ModelKeeper(configured: ModelFiles.caretFile(home: home), home: home, downloadFolder: inside, exists: { _ in false },
+                            makeDownload: { folders.append($0); return ModelDownload(folder: $0, freeBytes: { _ in 0 }) })
+        k.toggle()
+        XCTAssertEqual(folders, [inside])
+    }
+
     func testANamedFileIsNamedAndOffersNothing() {
         let k = ModelKeeper(configured: URL(fileURLWithPath: "/tmp/other.gguf"), home: home, exists: { _ in true })
         XCTAssertEqual(k.line, "Using other.gguf, named at launch.")

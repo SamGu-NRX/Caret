@@ -14,6 +14,11 @@ public final class HostRuntime {
         public var socketPath: String
         public var helperSocketPath: String
         public var modelURL: URL
+        /// Where the engine keeps its token profiles (`CaretHome.profilesDirectory`): a run with its own `--home`
+        /// keeps them there, not in the user's Library.
+        public var profileDirectory: URL = EngineLoader.profileDirectory
+        /// Where a model download goes (`CaretHome.modelsDirectory`); nil is the user's Caret's models folder.
+        public var modelDownloadDirectory: URL?
         /// When set, offers are made only in these apps. For test runs on a shared Mac, so the host
         /// never draws over or takes Tab from windows it did not create. Nil means every app.
         public var allowedBundleIDs: Set<String>?
@@ -190,9 +195,8 @@ public final class HostRuntime {
         self.pageInline = pageInline
         pageInline.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
         // Brief item 4: the user's personal instructions in every completion prompt; a page's site from the page path.
-        engine.instructions = { [weak pageInline] context in
-            let id = context.target.bundleIdentifier
-            return SettingsStore.shared.settings.instructions.lines(bundleID: id, origin: pageInline?.origin(forBundleID: id))
+        engine.instructions = { context, origin in
+            SettingsStore.shared.settings.instructions.lines(bundleID: context.target.bundleIdentifier, origin: origin)
         }
         let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
         self.writing = writing
@@ -202,12 +206,18 @@ public final class HostRuntime {
         writing.route = routeLink
         routeLink.onChange = [{ coordinator.routeChanged() }, { writing.routeChanged() }]
         writing.allowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
+        // List mode: the blind judge preferred its rewrites 11 to 4 over sampled ones, which changed
+        // the meaning of 16 of 41 (rewrite probe 02f3cda9; judge verdicts in the PR).
+        let rewriteEngine = engine
+        writing.rewriter = { text in try? await rewriteEngine.rewrites(of: text, mode: .list)?.rewrites }
         // Every host write asks this right before it acts; pause, stop, take over and the helper's
         // connection closing end it (S1 audit #2).
         let authority = HostAuthority()
+        let keyHold = KeyHold()
         let executor = InsertionExecutor(
             arbiter: arbiter, status: status, compatibilityStore: compatibilityStore, policy: policy,
             authority: authority, advanceAfterFill: configuration.fillAdvances, pasteRestoreDelay: configuration.testHooks ? configuration.pasteRestoreDelay : 0,
+            keyHold: keyHold,
             onFinished: { result in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
@@ -256,7 +266,7 @@ public final class HostRuntime {
         let activity = ActivityCenter()
         self.activity = activity
         let memory = MemoryController(testHooks: configuration.testHooks)
-        let modelKeeper = ModelKeeper(configured: configuration.modelURL)
+        let modelKeeper = ModelKeeper(configured: configuration.modelURL, downloadFolder: configuration.modelDownloadDirectory)
         self.modelKeeper = modelKeeper
         let showModel: () -> Void = { [weak memory, unowned modelKeeper] in
             memory?.showModel(WritingPage.ModelPanel(line: modelKeeper.line, action: modelKeeper.action(menu: false), status: modelKeeper.status))
@@ -271,6 +281,9 @@ public final class HostRuntime {
         let pageSight = PageSightCoordinator(draws: !configuration.surfacesHeadless)
         self.pageSight = pageSight
         pageSight.paused = { MainActor.assumeIsolated { SettingsStore.shared.settings.paused } }
+        pageSight.appOff = { pid in
+            NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map { AppSwitch.shared.isOff(bundleID: $0) } ?? false
+        }
         pageSight.sight.onChange = { [weak pageSight] line in
             pageSight?.redraw(line)
             status.update { $0.pageSight = pageSight?.sight.debugInfo }
@@ -497,6 +510,7 @@ public final class HostRuntime {
                 pageInline.gateClosed()
                 fill.gateClosed()
                 surface.gateClosed()
+                pageSight.appSwitchChanged()
             }
             if !HostGate.allowsGhostText(settings) {
                 coordinator.gateClosed()
@@ -534,8 +548,12 @@ public final class HostRuntime {
             for control in InputPause.controls(for: taskIds) { pauseClient.send(control) }
             activity.notePause(taskIds, kind: kind)
         }
+        let focusObserver = focus
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
+                // Before the Tab returns: no key typed after it reaches the app while Caret writes there (a
+                // word selected for a fix, offsets approved for an insert). The executor ends the hold.
+                if claim.insertsText, !writesNothing { keyHold.begin(pid: claim.offer.target.pid) }
                 if claim.insertsText {
                     // A headless host writes nothing: the claim is decided and recorded, never applied.
                     if writesNothing { arbiter.abandon(claimID: claim.claimID, reason: "headless") } else { executor.submit(claim) }
@@ -579,6 +597,8 @@ public final class HostRuntime {
                         }
                     }
                 } else {
+                    // The same for Caret's own Undo: keys after the ⌘Z wait until its "" is written.
+                    if !writesNothing { keyHold.begin(pid: grant.target.pid) }
                     executor.submitUndo(grant)
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
@@ -617,8 +637,17 @@ public final class HostRuntime {
                         pageInline.offerChanged(.closed)
                     }
                 }
-            }
-        ))
+            },
+            typed: { pid in
+                DispatchQueue.main.async { MainActor.assumeIsolated { focusObserver.keyTyped(pid: pid) } }
+            },
+            rewrite: { pid in
+                DispatchQueue.main.async { MainActor.assumeIsolated { writing.requestRewrite(pid: pid) } }
+            },
+            takesRewrite: { pid in AppSwitch.shared.takesRewriteKey(pid: pid) }
+        ), keyHold: keyHold)
+        let fixMethods = executor.writeMethods
+        writing.fixesStopped = { pid in fixMethods.fixesStopped(pid: pid) }
         let tap = self.tap
         // Accessibility granted in onboarding: a key tap the system refused at launch is made now.
         onboarding.onPermissionsChanged = { granted in
@@ -902,6 +931,7 @@ public final class HostRuntime {
         startTapWhenTrusted()
         InputMethodState.shared.start()
         // The perch no longer follows focus: it sits on the task's window (v3 rim and perch).
+        focus.onNote = { [status] in status.increment($0) }
         focus.onChange = { [coordinator, writing] change in
             coordinator.handle(change)
             writing.handle(change)
@@ -931,9 +961,10 @@ public final class HostRuntime {
         }
         status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
         let modelURL = configuration.modelURL
+        let profileDirectory = configuration.profileDirectory
         engineTask = Task { [weak self] in
             guard let self else { return }
-            await self.engine.load(modelURL: modelURL)
+            await self.engine.load(modelURL: modelURL, profileDirectory: profileDirectory)
             self.publishEngineState()
             self.focus.requestRead()
         }

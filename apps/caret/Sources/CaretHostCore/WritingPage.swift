@@ -47,13 +47,15 @@ public enum WritingPage {
         public var appsOff: [App] = []
         /// A line under the How you write editor: why Save refused the text.
         public var problem: String?
+        /// The same for the app or site entry being edited.
+        public var entryProblem: String?
 
         public init() {}
 
         public static func == (a: State, b: State) -> Bool {
             a.keys == b.keys && a.aboutDraft == b.aboutDraft && a.aboutSaved == b.aboutSaved && a.entries == b.entries
                 && a.editing?.id == b.editing?.id && a.editing?.draft == b.editing?.draft && a.hereApp == b.hereApp
-                && a.herePage == b.herePage && a.appsOff == b.appsOff && a.problem == b.problem && a.model == b.model
+                && a.herePage == b.herePage && a.appsOff == b.appsOff && a.problem == b.problem && a.entryProblem == b.entryProblem && a.model == b.model
         }
 
         public var aboutChanged: Bool { aboutDraft != aboutSaved }
@@ -79,6 +81,12 @@ public enum WritingPage {
     }
 
     /// The count under How you write: how much of it reaches the model with nothing else beside it.
+    /// Why Save refuses `text`, or nil: longer than `PersonalInstructions.maxCharacters`. The draft
+    /// stays as typed; nothing is cut unseen (PR #16 review).
+    public static func saveProblem(_ text: String) -> String? {
+        text.count > PersonalInstructions.maxCharacters ? "Keep it under \(PersonalInstructions.maxCharacters) characters." : nil
+    }
+
     public static func count(_ text: String) -> String {
         let n = PersonalInstructions.kept(text)?.count ?? 0
         let limit = PersonalInstructions.promptCharacters

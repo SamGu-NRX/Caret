@@ -65,6 +65,14 @@ public enum InsertionGuard {
         public var replaceEnd: Int
         public var replacement: String
         public var resultingValue: String
+
+        public init(target: TargetIdentity, replaceStart: Int, replaceEnd: Int, replacement: String, resultingValue: String) {
+            self.target = target
+            self.replaceStart = replaceStart
+            self.replaceEnd = replaceEnd
+            self.replacement = replacement
+            self.resultingValue = resultingValue
+        }
     }
 
     public static func approve(
