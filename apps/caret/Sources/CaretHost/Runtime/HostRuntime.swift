@@ -157,7 +157,8 @@ public final class HostRuntime {
     /// How long after this host sent an accept the session counts as owning a run, before the run's
     /// activity record arrives. Assumed: activity follows an accept within a second on this Mac.
     static let rehelloAcceptGrace: TimeInterval = 30
-    private var engineTask: Task<Void, Never>?
+    /// Loads and releases the model as the settings need it (`ModelNeed`). Nil with `--no-ghost` or a replay.
+    private var residency: ModelResidency?
     private var trustPoll: Timer?
     private let servicesBox = ServicesBox()
     private var sessionLock: SessionLockWatch?
@@ -425,13 +426,7 @@ public final class HostRuntime {
             guard case .suggestion(let s)? = try? await ghostEngine.suggest(for: context) else { return nil }
             return s.text
         }
-        onboarding.modelReadiness = {
-            switch ghostEngine.state {
-            case .ready: return .ready
-            case .loading: return .loading(nil)
-            case .unavailable: return .unavailable
-            }
-        }
+        onboarding.modelReadiness = { Self.onboardingReadiness(ghostEngine.state, SettingsStore.shared.settings) }
         onboarding.sendFirstLook = { firstLookClient.send($0) }
         onboarding.sendPreview = { id, families, level in
             firstLookClient.send(FirstLookPreviewRequest(requestId: id, at: Int64(Date().timeIntervalSince1970 * 1000), families: families, level: level))
@@ -959,20 +954,39 @@ public final class HostRuntime {
             }
             return
         }
-        status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
         let modelURL = configuration.modelURL
         let profileDirectory = configuration.profileDirectory
-        engineTask = Task { [weak self] in
-            guard let self else { return }
-            await self.engine.load(modelURL: modelURL, profileDirectory: profileDirectory)
-            self.publishEngineState()
-            self.focus.requestRead()
+        let residency = ModelResidency(
+            load: { [weak self] in
+                guard let self else { return }
+                self.status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
+                await self.engine.load(modelURL: modelURL, profileDirectory: profileDirectory)
+            },
+            loaded: { [weak self] in
+                guard let self else { return }
+                self.publishEngineState()
+                self.focus.requestRead()
+                self.pageInline.modelLoaded()
+            },
+            release: { [weak self] in
+                guard let self else { return }
+                await self.engine.release()
+                self.publishEngineState()
+            }
+        )
+        self.residency = residency
+        if !ModelNeed.wanted(SettingsStore.shared.settings) {
+            engine.stayOff()
+            publishEngineState()
         }
+        residency.follow(SettingsStore.shared)
     }
 
     /// Stops input first, then joins model work and frees llama/Metal resources. Must finish
     /// before the process exits (ggml-metal aborts otherwise; KeyType ADR-021/132).
     public func shutdown() async {
+        // Before the fields are torn down: a load that ends during quit must not wake them.
+        residency?.close()
         tap.stop()
         focus.stop()
         helper.stop()
@@ -991,8 +1005,10 @@ public final class HostRuntime {
         arbiter.invalidate()
         // A paste in progress must finish and put the user's clipboard back before exit.
         await executor.waitUntilIdle()
-        await engineTask?.value
-        // No generation may still be inside llama when its resources are freed.
+        // A load or release in progress finishes; none starts after it (`close` above).
+        await residency?.settled()
+        // No generation may still be inside llama when its resources are freed. The engine also waits for page inline
+        // text's and rewrites' calls (`GhostTextEngine.release`).
         await coordinator.drain()
         await engine.shutdown()
         socket.stop()
@@ -1003,6 +1019,19 @@ public final class HostRuntime {
         case .loading: return "Loading model"
         case .ready: return "Ready"
         case .unavailable(let reason): return "Unavailable: \(reason)"
+        case .off: return "\(CaretRole.words.title) is off"
+        }
+    }
+
+    /// The hello field's readiness. The words role decides first: switching it off reads `.off` at once, while the
+    /// release that follows still has calls to drain and the engine may read `.ready` (Codex on #30).
+    static func onboardingReadiness(_ state: GhostTextEngine.State, _ settings: CaretSettings) -> ModelReadiness {
+        guard ModelNeed.wanted(settings) else { return .off }
+        switch state {
+        case .ready: return .ready
+        case .loading: return .loading(nil)
+        case .unavailable: return .unavailable
+        case .off: return .off
         }
     }
 
@@ -1012,6 +1041,7 @@ public final class HostRuntime {
         case .loading: state = .init(state: "loading", modelFile: configuration.modelURL.lastPathComponent)
         case .ready: state = .init(state: "ready", modelFile: configuration.modelURL.lastPathComponent)
         case .unavailable(let reason): state = .init(state: "unavailable", detail: reason, modelFile: configuration.modelURL.lastPathComponent)
+        case .off: state = .init(state: "off", modelFile: configuration.modelURL.lastPathComponent)
         }
         status.update { $0.engine = state }
     }

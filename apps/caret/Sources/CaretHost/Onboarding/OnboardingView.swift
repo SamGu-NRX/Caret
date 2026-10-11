@@ -315,6 +315,7 @@ struct HelloPane: View {
     private var coachKey: String {
         let h = state.hello
         if h.model == .unavailable { return OnboardingCopy.Hello.unavailable }
+        if h.model == .off { return OnboardingCopy.Hello.wordsOff }
         if case .loading = h.model { return OnboardingCopy.Hello.loading }
         if h.ghost != nil { return OnboardingCopy.Hello.coachShown }
         return h.taken ? OnboardingCopy.Hello.coachTaken : ""

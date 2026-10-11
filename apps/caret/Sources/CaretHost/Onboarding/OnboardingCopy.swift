@@ -13,6 +13,8 @@ enum OnboardingCopy {
         static let coachTaken = "That's it. That's most of Caret."
         static let loading = "Getting the writing model ready. The field wakes up when it's done."
         static let unavailable = "The writing model isn't on this Mac yet. Caret still turns on, and the next words start once it is."
+        /// The model is released while the words role is off (`ModelNeed`), so "isn't on this Mac" would be untrue.
+        static let wordsOff = "Complete words is off, so this field stays quiet. Turn it on under Help With in Caret's menu to try it."
         static func apps(_ list: String) -> String { "It'll be there in \(list)." }
         static let primary = "Turn on Caret"
         static let caption = "One switch in System Settings. Caret moves on by itself."

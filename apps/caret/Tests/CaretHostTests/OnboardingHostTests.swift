@@ -147,6 +147,32 @@ final class OnboardingHostTests: XCTestCase {
         XCTAssertTrue(c.debugInfo()?.finished == true)
     }
 
+    /// Codex on #30: Complete words switched off while the hello field's completion is inside the model. The answer
+    /// arrives before the 0.5 s readiness poll, and is dropped rather than shown for Tab to take.
+    func testACompletionThatOutlivesTheModelIsNotShown() throws {
+        let dir = temp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let c = controller(dir)
+        var readiness = ModelReadiness.ready
+        var answered = false
+        c.modelReadiness = { readiness }
+        c.complete = { _ in
+            readiness = .off
+            answered = true
+            return " for that."
+        }
+        c.permissionsOverride = .init(accessibility: false, inputMonitoring: false)
+        XCTAssertEqual(try run(c, "onboarding open").step, "hello")
+        _ = try run(c, "onboarding type Hi Dana, thanks")
+        let deadline = Date().addingTimeInterval(3)
+        while !answered, Date() < deadline { wait(0.01) }
+        XCTAssertTrue(answered, "the field asked the model")
+        wait(0.05)
+        let hello = try XCTUnwrap(try run(c, "onboarding").hello)
+        XCTAssertNil(hello.ghostLength)
+        XCTAssertEqual(hello.model, "off")
+    }
+
     func testARelaunchResumesAtTheSwitchOrPastIt() throws {
         let dir = temp()
         defer { try? FileManager.default.removeItem(at: dir) }

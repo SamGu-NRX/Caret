@@ -404,6 +404,21 @@ public enum HostGate {
     }
 }
 
+/// Whether the host keeps its local model loaded (Codex on #13: it loaded at launch with Complete words off). The
+/// model's users and the switches they follow:
+/// - ghost text in native fields: the words role (`HostGate.allowsGhostText`);
+/// - inline text in web page fields: the words role, then `pageInlineText`;
+/// - ⌃⌥R rewrites: the words role (`WritingCoordinator.allowed`; rewrites "come with the words role", `GatePolicy`).
+/// Writing fixes need no model: the static rules and the system's checker find them.
+///
+/// So the words role alone decides. Pause does not release the model: it is a break, not a choice of features, and
+/// the next words should come at once when it ends rather than after a reload.
+public enum ModelNeed {
+    public static func wanted(_ settings: CaretSettings) -> Bool {
+        settings.roles.contains(.words)
+    }
+}
+
 extension GateSettings {
     /// What the helper's gate reads from the user's settings (B10's `settings` message): the roles,
     /// in `CaretRole` order, the level and the pause. The character, onboarding and memory stay on
