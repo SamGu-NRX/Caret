@@ -1,5 +1,6 @@
 """Build and open the same Caret.app Xcode produces, so Accessibility stays one entry."""
 
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -8,6 +9,17 @@ import sys
 root = Path(__file__).resolve().parent.parent
 if sys.version_info < (3, 11):
     raise SystemExit("Caret requires Python 3.11 or newer. Run this script with a supported interpreter.")
+
+# A developer Debug build, never distributed: internal VM and test builds use synthetic data, so the release
+# acceptance records don't apply. Every other gate check does, the Xcode phases honor the flag in Debug only and
+# stamp the bundle CaretInternalBuild, and packaging refuses a stamped bundle.
+internal = {**os.environ, "CARET_INTERNAL_BUILD": "1"}
+# Fail early, before build/install/key-sync effects; the Xcode phase enforces the same check.
+gate = subprocess.run(
+    ["/bin/sh", str(root / "scripts" / "privacy_gate.sh")], capture_output=True, text=True, env=internal,
+)
+if gate.returncode != 0:
+    raise SystemExit((gate.stderr or gate.stdout or "privacy gate: refusing to package").strip())
 
 derived_data = root / ".local" / "DerivedData"
 subprocess.run(
@@ -27,6 +39,7 @@ subprocess.run(
         "build",
     ],
     check=True,
+    env=internal,
 )
 bundle = derived_data / "Build" / "Products" / "Debug" / "Caret.app"
 plist = bundle / "Contents" / "Info.plist"

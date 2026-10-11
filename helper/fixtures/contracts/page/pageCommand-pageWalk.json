@@ -1,0 +1,10 @@
+{
+  "type": "pageCommand",
+  "v": 1,
+  "id": "fixture-command",
+  "expires": 1000,
+  "verb": {
+    "kind": "pageWalk",
+    "tabId": 3
+  }
+}

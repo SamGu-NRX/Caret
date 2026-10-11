@@ -1,4 +1,5 @@
 import Foundation
+import CaretCore
 
 enum HistoryDebug {
     static let missingRootMessage = "Caret has no project root, so last-N history is unavailable."
@@ -51,7 +52,7 @@ enum HistoryDebug {
         process.currentDirectoryURL = projectRoot
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (environment["PATH"] ?? "")
-        process.environment = environment
+        process.environment = CoreProcessTransport.childEnvironment(environment)
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout

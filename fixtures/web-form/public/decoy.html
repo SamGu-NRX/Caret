@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Decoy frames</title></head>
+<body style="font: 14px system-ui; margin: 16px">
+<h1>Decoy frames</h1>
+<!-- A visible frame, and a full-size frame placed off screen: the walk cannot tell which document is seen, so it keeps neither. -->
+<iframe title="Visible" src="/frame/same" style="width:300px; height:150px; border:0"></iframe>
+<iframe title="Off screen" src="/frame/offscreen" style="position:absolute; left:-9999px; width:300px; height:150px; border:0"></iframe>
+<script>fetch("/hello", { method: "POST", body: JSON.stringify({ loadId: "decoy", href: location.href }) });</script>
+</body></html>

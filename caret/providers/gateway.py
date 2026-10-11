@@ -61,6 +61,7 @@ from __future__ import annotations
 import json
 import os
 
+from ..completions import vercel_disabled_reason
 from ..context import ContextFrame
 from ..engine import ProviderFailure
 from ..judge import JudgeError, Question, Verdict, describe_frame, validate_choice
@@ -178,6 +179,8 @@ class GatewayWriter:
         )
 
     def complete(self, frame: ContextFrame, instruction: str) -> str:
+        if reason := vercel_disabled_reason():
+            raise ProviderFailure(reason)
         try:
             reply = inline_completion(self.client, frame, instruction, post_json)
         except ChatError as error:
@@ -238,6 +241,8 @@ class GatewayJudge:
         )
 
     def choose(self, question: Question, frame: ContextFrame) -> Verdict:
+        if reason := vercel_disabled_reason():
+            raise JudgeError(reason)
         options = "\n".join(
             f"- {choice.id}: {choice.detail or choice.label}" for choice in question.choices
         )

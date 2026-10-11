@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en" data-oracle-page="ashby">
+<head>
+<meta charset="utf-8">
+<title>Platform Security Engineer @ Juniper Freight</title>
+<!-- F1 Ashby look-alike. Structure from W4's saved Ashby page (2026-10-04): a single-page app that renders its form
+     after load (here 400 ms after DOMContentLoaded), no <form> element, field rows (data-field-path) whose labels'
+     `for` sometimes names no control, a location combobox named only by its placeholder ("Start typing...") that
+     queries as you type, SMS consent radios whose labels hold the answer in <strong>, resume and cover-letter dropzones
+     over clipped file inputs, Yes/No questions built from aria-pressed buttons with no type attribute, and a Submit
+     Application button outside any form. Every name and value is invented. -->
+<link rel="stylesheet" href="/tasks/tasks.css">
+<style>
+  [data-field-path] { margin: 16px 0; }
+  [data-field-path] > label { display: block; font-weight: 600; margin-bottom: 4px; }
+  .clipped { border: 0; clip: rect(0px, 0px, 0px, 0px); clip-path: inset(50%); height: 1px; margin: 0 -1px -1px 0; overflow: hidden; padding: 0; position: absolute; width: 1px; white-space: nowrap; }
+  .consent label { display: block; font-weight: normal; }
+  .consent p { display: inline; margin: 0; }
+  .submit { width: 100%; height: 44px; background: #1d1d1f; color: #fff; border: 0; border-radius: 22px; font: inherit; }
+</style>
+</head>
+<body>
+<h1>Platform Security Engineer</h1>
+<div id="app"><p id="loading">Loading application…</p></div>
+<template id="form-template">
+  <div data-field-path="_systemfield_name"><label for="_systemfield_name">Legal Name</label><div><input placeholder="Type here..." name="_systemfield_name" id="_systemfield_name" type="text" data-oracle="legal_name" data-oracle-kind="text"></div></div>
+  <div data-field-path="_systemfield_email"><label for="_systemfield_email">Email</label><div><input placeholder="hello@example.com..." name="_systemfield_email" id="_systemfield_email" type="email" data-oracle="email" data-oracle-kind="text"></div></div>
+  <div data-field-path="5e0c1a2b-phone"><label for="5e0c1a2b-phone">Phone</label><div><input placeholder="1-415-555-1234..." name="5e0c1a2b-phone" id="5e0c1a2b-phone" type="tel" data-oracle="phone" data-oracle-kind="text"></div>
+    <div class="consent" data-oracle="sms_consent" data-oracle-kind="radios">
+      <p>Check <strong>Yes</strong> or <strong>No</strong> to indicate your agreement to receive text message updates from Juniper Freight regarding your job application.</p>
+      <label><input type="radio" name="communicationConsent" value="given"> <p><strong>Yes</strong> - I consent to receiving text messages</p></label>
+      <label><input type="radio" name="communicationConsent" value="notGiven"> <p><strong>No</strong> - I do not consent to receiving text messages</p></label>
+    </div></div>
+  <div data-field-path="_systemfield_location"><label for="_systemfield_location">Where do you plan on working from (for payroll tax purposes)?</label>
+    <div class="picker" data-source="/tasks/api/places" data-oracle="location" data-oracle-kind="picker"><input placeholder="Start typing..." aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" role="combobox" autocomplete="off"></div></div>
+  <div data-field-path="_systemfield_resume"><label for="_systemfield_resume">Resume</label>
+    <div role="presentation" class="dropzone" data-oracle="resume" data-oracle-kind="file"><input type="file" tabindex="-1" id="_systemfield_resume" class="clipped" accept=".pdf,.doc,.docx">
+      <button data-oracle-press="upload-resume"><span>Upload File</span></button><p>or drag and drop here</p> <span class="filename"></span></div></div>
+  <div data-field-path="a91f-linkedin"><label for="a91f-linkedin">LinkedIn Profile</label><div><input placeholder="Type here..." name="a91f-linkedin" id="a91f-linkedin" type="text" data-oracle="linkedin" data-oracle-kind="text"></div></div>
+  <div data-field-path="b72e-cover"><label for="b72e-cover">Cover Letter</label>
+    <div role="presentation" class="dropzone" data-oracle="cover_letter" data-oracle-kind="file"><input type="file" tabindex="-1" id="b72e-cover" class="clipped" accept=".pdf,.doc,.docx,.txt">
+      <button data-oracle-press="upload-cover"><span>Upload File</span></button><p>or drag and drop here</p> <span class="filename"></span></div></div>
+  <div data-field-path="c3d4-years"><label for="c3d4-years">Do you have a minimum of 5 years of experience in application or cloud security?</label>
+    <div class="yesno" id="c3d4-years" data-oracle="years_security" data-oracle-kind="pressgroup"><button aria-pressed="false">Yes</button><button aria-pressed="false">No</button></div></div>
+  <div data-field-path="d5e6-oncall"><label for="d5e6-oncall">Are you comfortable joining an on-call rotation one week in six?</label>
+    <div class="yesno" id="d5e6-oncall" data-oracle="on_call" data-oracle-kind="pressgroup"><button aria-pressed="false">Yes</button><button aria-pressed="false">No</button></div></div>
+  <div data-field-path="e7f8-incident"><label for="e7f8-incident">Describe a security incident you helped resolve and what you changed afterwards.</label><textarea placeholder="Type here..." name="e7f8-incident" id="e7f8-incident" rows="4" data-oracle="incident" data-oracle-kind="text"></textarea></div>
+  <div data-field-path="f9a0-salary"><label for="f9a0-salary">What are your salary expectations?</label><div><input placeholder="Type here..." name="f9a0-salary" id="f9a0-salary" type="text" data-oracle="salary" data-oracle-kind="text"></div></div>
+  <div><button class="submit" data-task-submit data-oracle-press="submit">Submit Application</button></div>
+</template>
+<script src="/tasks/options.js"></script>
+<script src="/tasks/pages.js"></script>
+<script>
+  // The app renders its form after load, as Ashby's does.
+  document.addEventListener("DOMContentLoaded", () => setTimeout(() => {
+    const app = document.getElementById("app");
+    app.replaceChildren(document.getElementById("form-template").content.cloneNode(true));
+    TaskPage.wire(app);
+  }, 400));
+</script>
+<script src="/tasks/probe.js"></script>
+</body>
+</html>

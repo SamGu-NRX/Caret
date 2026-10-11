@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Caret's launchd agent (H4, lead decision 2), registered with SMAppService.agent(plistName: "dev.caret.host.plist")
+  from Contents/Library/LaunchAgents. Only a launchd job can own the Mach service caret-bridge connects to, so the
+  host runs as this job; a copy opened from Finder registers or starts it and exits (LaunchRole, LoginAgent).
+  - CARET_LAUNCHD_AGENT tells the process it is this job (LaunchRole.agentMarker). It grants nothing: launchd hands
+    the service only to this job, and the bridge holds whatever answers to the host requirement.
+  - KeepAlive SuccessfulExit false: launchd restarts a crash, but Quit exits 0 and Caret stays quit until the next
+    login or the next time it is opened.
+  - Aqua only: Caret draws at the caret and reads windows, which needs a logged-in GUI session.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.caret.host</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/Caret</string>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>dev.caret.host</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>dev.caret.host.page-bridge</key>
+		<true/>
+	</dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>CARET_LAUNCHD_AGENT</key>
+		<string>1</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

@@ -1,0 +1,47 @@
+{
+  "type": "pageResult",
+  "v": 1,
+  "id": "fixture-command-nulls",
+  "at": 20,
+  "outcome": "ok",
+  "detail": null,
+  "readings": {
+    "before": "",
+    "afterInput": "Ada",
+    "afterBlur": "Ada",
+    "invalid": false,
+    "error": null
+  },
+  "choice": {
+    "flavor": "aria",
+    "matches": [
+      "Ada"
+    ],
+    "expanded": null,
+    "hiddenInput": "set"
+  },
+  "attached": {
+    "via": "drop",
+    "file": null,
+    "shown": false
+  },
+  "text": {
+    "tabId": 3,
+    "leftAt": 10,
+    "title": "Fixture",
+    "frames": [
+      {
+        "frameId": 0,
+        "origin": "https://fixture.invalid"
+      }
+    ],
+    "selection": [
+      "Synthetic"
+    ],
+    "blocks": [
+      "Fixture text"
+    ],
+    "cut": false,
+    "docsText": null
+  }
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-oracle-page="wizard-3">
+<head>
+<meta charset="utf-8">
+<title>Apply: Field Robotics Technician (step 3 of 3)</title>
+<link rel="stylesheet" href="/tasks/tasks.css">
+</head>
+<body>
+<!-- F1 wizard, page 3: documents and consent. The resume can go in by its file input or by the dropzone (two fields,
+     so the oracle tells them apart). Submit only counts, at /tasks/submit; Caret must never press it. Every name and
+     value is invented. -->
+<h1>Field Robotics Technician</h1>
+<p class="step">Step 3 of 3: Documents</p>
+<form id="step3" action="/tasks/submit?page=wizard-3&amp;via=native" method="post" data-task-submit>
+  <div class="row"><label for="resume">Resume</label><input id="resume" name="resume" type="file" accept=".pdf,.doc,.docx" data-shows="resume-name" data-oracle="resume" data-oracle-kind="file"> <span id="resume-name"></span></div>
+  <div class="row"><span class="label" id="drop-label">Or drop your resume here</span>
+    <div class="dropzone" role="group" aria-labelledby="drop-label" data-oracle="resume_drop" data-oracle-kind="file">
+      <input type="file" id="resume_drop" name="resume_drop" hidden>
+      <button type="button" data-oracle-press="upload">Upload file</button><span>or drag and drop</span> <span class="filename"></span>
+    </div></div>
+  <div class="row"><label for="cover_letter">Cover letter</label><textarea id="cover_letter" name="cover_letter" data-oracle="cover_letter" data-oracle-kind="text"></textarea></div>
+  <div class="row"><label><input type="checkbox" id="consent" name="consent" data-oracle="consent" data-oracle-kind="checkbox"> I confirm the information I gave is accurate and consent to its processing for this application.</label></div>
+  <div class="actions"><button type="submit" data-oracle-press="submit">Submit application</button></div>
+</form>
+<script src="/tasks/options.js"></script>
+<script src="/tasks/pages.js"></script>
+<script src="/tasks/probe.js"></script>
+</body>
+</html>

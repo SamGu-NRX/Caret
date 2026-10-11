@@ -1,0 +1,114 @@
+// Generates src/privacy/ledger/unicode16.ts, the pinned table behind ledgerNormalizeV1 (OUTPUT-LEDGER-SPEC section 2).
+// The runtime's own Unicode (Node's ICU, 17.0 on the development Mac in October 2026) must not decide what the ledger
+// matches, so the per-scalar mapping is computed here from the Unicode 16.0.0 data files and written as a table.
+//
+// Usage: node scripts/gen-ledger-unicode.ts <dir holding UnicodeData.txt, CaseFolding.txt and PropList.txt of 16.0.0>
+// The files come from https://www.unicode.org/Public/16.0.0/ucd/. Their SHA-256 must equal SOURCES below, or nothing
+// is written.
+//
+// Each scalar maps, on its own, to: NFKD (full compatibility decomposition, canonically ordered), then full default
+// case folding (CaseFolding.txt statuses C and F, not T or S), then NFKD of that result, then every White_Space scalar
+// to U+0020. Hangul syllables decompose algorithmically in the normalizer itself (their jamo neither fold nor
+// decompose further), so they are left out of the table.
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const SOURCES: Readonly<Record<string, string>> = {
+  "UnicodeData.txt": "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f",
+  "CaseFolding.txt": "6f1f9c588eb4a5c718d9e8f93b782685e5c7fec872cf05e8e6878053599e09bb",
+  "PropList.txt": "53d614508e2a0b2305a8aa21cd60d993de9326cdf65993660dfcce4503548583",
+};
+
+const dir = process.argv[2];
+if (dir === undefined) throw new Error("usage: node scripts/gen-ledger-unicode.ts <unicode 16.0.0 ucd dir>");
+const text: Record<string, string> = {};
+for (const [name, sha] of Object.entries(SOURCES)) {
+  const bytes = readFileSync(join(dir, name));
+  const got = createHash("sha256").update(bytes).digest("hex");
+  if (got !== sha) throw new Error(`${name}: SHA-256 ${got}, expected ${sha} (Unicode 16.0.0)`);
+  text[name] = bytes.toString("utf8");
+}
+if (!text["CaseFolding.txt"]!.startsWith("# CaseFolding-16.0.0.txt")) throw new Error("CaseFolding.txt is not 16.0.0");
+
+const hex = (s: string): number => Number.parseInt(s, 16);
+const decomp = new Map<number, number[]>();
+const ccc = new Map<number, number>();
+for (const line of text["UnicodeData.txt"]!.split("\n")) {
+  if (line === "") continue;
+  const f = line.split(";");
+  const cp = hex(f[0]!);
+  const c = Number(f[3]);
+  if (c !== 0) ccc.set(cp, c);
+  const d = f[5]!.replace(/^<[^>]+>\s*/u, "").trim();
+  if (d !== "") decomp.set(cp, d.split(" ").map(hex));
+}
+const fold = new Map<number, number[]>();
+for (const line of text["CaseFolding.txt"]!.split("\n")) {
+  const m = /^([0-9A-F]+); ([CFST]); ([0-9A-F ]+);/u.exec(line);
+  if (m === null || (m[2] !== "C" && m[2] !== "F")) continue;
+  fold.set(hex(m[1]!), m[3]!.trim().split(" ").map(hex));
+}
+const space = new Set<number>();
+for (const line of text["PropList.txt"]!.split("\n")) {
+  const m = /^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*; White_Space\b/u.exec(line);
+  if (m === null) continue;
+  for (let cp = hex(m[1]!); cp <= hex(m[2] ?? m[1]!); cp++) space.add(cp);
+}
+
+const HANGUL_FIRST = 0xac00;
+const HANGUL_LAST = 0xd7a3;
+const hangul = (cp: number): boolean => cp >= HANGUL_FIRST && cp <= HANGUL_LAST;
+
+function decompose(cp: number, out: number[]): void {
+  if (hangul(cp)) throw new Error("Hangul syllables are decomposed by the normalizer, not the table");
+  const d = decomp.get(cp);
+  if (d === undefined) out.push(cp);
+  else for (const x of d) decompose(x, out);
+}
+
+/** Canonical ordering: a stable sort of each run of non-starters by combining class. */
+function ordered(cps: number[]): number[] {
+  const out = [...cps];
+  for (let i = 0; i < out.length; i++) {
+    if ((ccc.get(out[i]!) ?? 0) === 0) continue;
+    let j = i;
+    while (j < out.length && (ccc.get(out[j]!) ?? 0) !== 0) j++;
+    const run = out.slice(i, j).map((cp, k) => ({ cp, k })).sort((a, b) => (ccc.get(a.cp)! - ccc.get(b.cp)!) || a.k - b.k);
+    for (let k = i; k < j; k++) out[k] = run[k - i]!.cp;
+    i = j - 1;
+  }
+  return out;
+}
+
+const nfkd = (cps: readonly number[]): number[] => {
+  const out: number[] = [];
+  for (const cp of cps) decompose(cp, out);
+  return ordered(out);
+};
+
+const map = new Map<number, number[]>();
+const touched = new Set<number>([...decomp.keys(), ...fold.keys(), ...space]);
+for (const cp of [...touched].sort((a, b) => a - b)) {
+  if (hangul(cp)) continue;
+  const first = nfkd([cp]);
+  const folded = first.flatMap((x) => fold.get(x) ?? [x]);
+  const result = nfkd(folded).map((x) => (space.has(x) ? 0x20 : x));
+  if (result.length !== 1 || result[0] !== cp) map.set(cp, result);
+}
+
+const h = (n: number): string => n.toString(16).toUpperCase();
+const entries = [...map].map(([cp, r]) => `${h(cp)}:${r.map(h).join(" ")}`);
+const lines: string[] = [];
+for (let i = 0; i < entries.length; i += 12) lines.push(`  "${entries.slice(i, i + 12).join(";")};"`);
+const header = `// GENERATED by scripts/gen-ledger-unicode.ts from Unicode 16.0.0. Do not edit; regenerate.
+// SHA-256 of the source files:
+${Object.entries(SOURCES).map(([n, s]) => `//   ${n} ${s}`).join("\n")}
+// Each entry is "scalar:result" in hex: what ledgerNormalizeV1 (normalize.ts) maps that scalar to, on its own (NFKD,
+// full case folding C+F, NFKD, White_Space to U+0020). A scalar not listed maps to itself; Hangul syllables are
+// decomposed by the normalizer. ${map.size} entries.
+export const UNICODE_VERSION = "16.0.0";
+export const SCALAR_MAP =
+`;
+writeFileSync(new URL("../src/privacy/ledger/unicode16.ts", import.meta.url), `${header}${lines.join(" +\n")};\n`);
+console.log(`${map.size} entries`);

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from .auto_expand import complete_auto_expand
-from .completions import DEFAULT_MODEL, CompletionError, complete_text
+from .completions import DEFAULT_MODEL, CompletionDisabled, CompletionError, complete_text
 from .skill_action import GATEWAY_SKILL_ACTION_IDS, complete_skill_action
 from .planner import plan
 from .screenpipe import debug_preview, last_n_clipboard, last_n_minutes, last_n_windows
@@ -46,7 +46,7 @@ def main() -> int:
     clipboard.add_argument("--lease", type=Path, default=None)
     debug_cmd = commands.add_parser("history-debug")
     debug_cmd.add_argument("--lease", type=Path, default=None)
-    complete_cmd = commands.add_parser("complete", help="Gemini 2.5 Flash via Vercel AI Gateway")
+    complete_cmd = commands.add_parser("complete", help="Development-only Gemini via Vercel AI Gateway, disabled by default")
     complete_cmd.add_argument("--prompt", required=True)
     complete_cmd.add_argument("--system", default="")
     complete_cmd.add_argument("--model", default=DEFAULT_MODEL)
@@ -104,6 +104,9 @@ def main() -> int:
                 instructions=args.instructions,
                 model=args.model,
             )
+        except CompletionDisabled as error:
+            print(json.dumps({"status": "disabled", "error": str(error)}), file=sys.stderr)
+            return 1
         except CompletionError as error:
             print(json.dumps({"error": str(error)}), file=sys.stderr)
             return 1
@@ -117,6 +120,9 @@ def main() -> int:
                 instructions_override=args.instructions,
                 model=args.model,
             )
+        except CompletionDisabled as error:
+            print(json.dumps({"status": "disabled", "error": str(error)}), file=sys.stderr)
+            return 1
         except (CompletionError, ValueError) as error:
             print(json.dumps({"error": str(error)}), file=sys.stderr)
             return 1
@@ -129,6 +135,9 @@ def main() -> int:
                 system=args.system or None,
                 model=args.model,
             )
+        except CompletionDisabled as error:
+            print(json.dumps({"status": "disabled", "error": str(error)}), file=sys.stderr)
+            return 1
         except CompletionError as error:
             print(json.dumps({"error": str(error)}), file=sys.stderr)
             return 1

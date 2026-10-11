@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" data-oracle-page="wizard-2">
+<head>
+<meta charset="utf-8">
+<title>Apply: Field Robotics Technician (step 2 of 3)</title>
+<link rel="stylesheet" href="/tasks/tasks.css">
+</head>
+<body>
+<!-- F1 wizard, page 2: work history and education. School is a picker that queries /tasks/api/schools as you type and
+     lists matches in a listbox at the end of <body>; only a pick counts, typed text alone does not. "Authorized to
+     work?" is a Yes/No button group; Yes shows the Sponsorship radios. Every name and value is invented. -->
+<h1>Field Robotics Technician</h1>
+<p class="step">Step 2 of 3: Experience and education</p>
+<form id="step2" onsubmit="return false">
+  <fieldset><legend>Most recent position</legend>
+    <div class="row"><label for="employer">Employer</label><input id="employer" name="employer" autocomplete="organization" data-oracle="employer" data-oracle-kind="text"></div>
+    <div class="row"><label for="job_title">Job title</label><input id="job_title" name="job_title" autocomplete="organization-title" data-oracle="job_title" data-oracle-kind="text"></div>
+    <div class="row"><label for="job_start">Start date</label><input id="job_start" name="job_start" type="month" data-oracle="job_start" data-oracle-kind="text"></div>
+    <div class="row"><label for="job_duties">Main duties</label><textarea id="job_duties" name="job_duties" data-oracle="job_duties" data-oracle-kind="text"></textarea></div>
+  </fieldset>
+  <fieldset><legend>Education</legend>
+    <div class="row"><label for="school">School</label>
+      <div class="picker" data-source="/tasks/api/schools" data-oracle="school" data-oracle-kind="picker"><input id="school" name="school" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="Start typing your school"></div></div>
+    <div class="row"><label for="degree">Degree</label><select id="degree" name="degree" data-options="degrees" data-oracle="degree" data-oracle-kind="select"><option value="">Select...</option></select></div>
+    <div class="row"><span class="label" id="grad-label">Graduation date</span>
+      <select id="grad_month" name="grad_month" aria-labelledby="grad-label grad_month_hint" data-options="months" data-oracle="grad_month" data-oracle-kind="select"><option value="">Month</option></select>
+      <span id="grad_month_hint" hidden>month</span>
+      <select id="grad_year" name="grad_year" aria-labelledby="grad-label grad_year_hint" data-options="years" data-oracle="grad_year" data-oracle-kind="select"><option value="">Year</option></select>
+      <span id="grad_year_hint" hidden>year</span></div>
+  </fieldset>
+  <div class="row"><span class="label" id="authorized-label">Are you legally authorized to work in the country where this job is located?</span>
+    <div class="yesno" role="group" aria-labelledby="authorized-label" data-oracle="authorized" data-oracle-kind="pressgroup"><button type="button" aria-pressed="false">Yes</button><button type="button" aria-pressed="false">No</button></div></div>
+  <fieldset id="sponsorship-row" hidden data-oracle="sponsorship" data-oracle-kind="radios"><legend>Will you now or in the future require visa sponsorship?</legend>
+    <div class="inline"><label><input type="radio" name="sponsorship" value="yes"> Yes</label><label><input type="radio" name="sponsorship" value="no"> No</label></div>
+  </fieldset>
+  <div class="actions"><button type="button" data-next-href="/tasks/wizard/3" data-oracle-press="next">Next</button></div>
+</form>
+<script src="/tasks/options.js"></script>
+<script src="/tasks/pages.js"></script>
+<script>
+  const authorized = document.querySelector('[data-oracle="authorized"]');
+  authorized.addEventListener("change", () => TaskPage.reveal("sponsorship-row", TaskPage.pressed(authorized) === "Yes"));
+  TaskPage.reveal("sponsorship-row", false);
+</script>
+<script src="/tasks/probe.js"></script>
+</body>
+</html>

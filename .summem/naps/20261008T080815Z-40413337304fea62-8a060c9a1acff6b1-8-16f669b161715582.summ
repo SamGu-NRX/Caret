@@ -1,0 +1,1 @@
+HI2-VS1: Info.plist '--' comment breaks builds; h1x build.sh hardcodes its worktree; cp -cR breaks symlinked node_modules; Disclosure max 8 ways; optionIs states outputs; helper gen stops at MAX_GENERATOR_VISITS; close page sessions before shutdown; no oracle rules on FillTrace.

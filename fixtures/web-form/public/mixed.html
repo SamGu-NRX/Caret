@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply: Mixed controls</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+  label { display: inline-block; min-width: 180px; }
+  p { margin: 6px 0; }
+</style>
+</head>
+<body>
+<h1 id="m_title">Apply: Mixed controls</h1>
+<!-- D2-04: one of each control a Fill all writes (text, select, radio, checkbox, date, time, date and time, and the React
+     app's react-select below), beside what it must leave alone: a box the source does not answer, a sign-up box, a terms
+     box the page engine never reads, a file input, and two buttons. Every name and value is invented. -->
+<form id="apply" action="/submit" method="post">
+  <p><label for="m_name">Full name</label><input id="m_name" name="full_name"></p>
+  <p><label for="m_email">Email</label><input id="m_email" name="email" type="email"></p>
+  <p><label for="m_country">Country</label>
+    <select id="m_country" name="country">
+      <option value="">Choose a country</option>
+      <option value="ca">Canada</option>
+      <option value="mx">Mexico</option>
+      <option value="us">United States</option>
+    </select></p>
+  <p><label><input type="checkbox" id="m_license" name="license"> Do you have a valid driving license?</label></p>
+  <p><label><input type="checkbox" id="m_over18" name="over18"> Are you over 18?</label></p>
+  <p><label><input type="checkbox" id="m_news" name="news"> Send me news and offers</label></p>
+  <p><label><input type="checkbox" id="m_terms" name="terms"> I agree to the terms of service</label></p>
+  <p><label for="m_start">Start date</label><input id="m_start" name="start_date" type="date"></p>
+  <p><label for="m_time">Interview time</label><input id="m_time" name="interview_time" type="time"></p>
+  <p><label for="m_from">Available from</label><input id="m_from" name="available_from" type="datetime-local"></p>
+  <p><label for="m_resume">Resume</label><input id="m_resume" name="resume" type="file"></p>
+  <p><button type="button" id="m_next">Next</button> <button type="submit">Submit</button></p>
+</form>
+<!-- Outside the form element, owned by it through the form attribute: a radio's choice is all its same-named buttons of
+     one form owner, wherever they sit (D2-04 second review). -->
+<fieldset><legend>Shift</legend>
+  <label><input type="radio" name="shift" value="day" form="apply"> Day</label>
+  <label><input type="radio" name="shift" value="night" form="apply"> Night</label>
+</fieldset>
+<section><div id="react-root"></div></section>
+<script src="/fixture.js"></script>
+<script src="/app.bundle.js"></script>
+</body>
+</html>

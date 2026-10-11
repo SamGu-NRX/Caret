@@ -1,0 +1,24 @@
+root ::= "route: " ( "fill\n" fill | "plan\nend\n" | "refuse\nwhy: " refusal "\nend\n" | "ask\nwhy: " question "\nend\n" )
+refusal ::= "neverTyped" | "noSuchField" | "notOnScreen" | "pressOrSend" | "payment" | "otherPersonUnnamed" | "nothingToFill"
+question ::= "whichFields" | "whichSource" | "whichPerson"
+fill ::= "scope: " scope "\nsources: " sources "\nwhose: " whose "\n" lits "end\n"
+scope ::= "all" | "list\nfield: " ( fn0 fa0 | fn1 fa1 | fn2 fa2 | fn3 fa3 | fn4 fa4 | fn5 fa5 | fn6 )
+fn0 ::= "Full name"
+fa0 ::= ( "\nfield: " ( fn1 fa1 | fn2 fa2 | fn3 fa3 | fn4 fa4 | fn5 fa5 | fn6 ) )?
+fn1 ::= "Email"
+fa1 ::= ( "\nfield: " ( fn2 fa2 | fn3 fa3 | fn4 fa4 | fn5 fa5 | fn6 ) )?
+fn2 ::= "Phone"
+fa2 ::= ( "\nfield: " ( fn3 fa3 | fn4 fa4 | fn5 fa5 | fn6 ) )?
+fn3 ::= "Phone (2)"
+fa3 ::= ( "\nfield: " ( fn4 fa4 | fn5 fa5 | fn6 ) )?
+fn4 ::= "Social Security number"
+fa4 ::= ( "\nfield: " ( fn5 fa5 | fn6 ) )?
+fn5 ::= "Delivery time"
+fa5 ::= ( "\nfield: " ( fn6 ) )?
+fn6 ::= "Tell us \"anything\" else \\ about your order, the gate code, …"
+sources ::= "any" | "instruction" | si0
+si0 ::= "memory"
+whose ::= "user" | "unnamed" | "Gary"
+lits ::= ( lit ( lit ( lit lit? )? )? )?
+lit ::= "literal: " ( fn0 | fn1 | fn2 | fn3 | fn4 | fn5 | fn6 ) " = " value "\n"
+value ::= "7:30 pm" | "7:30 pm and use Gary's phone"

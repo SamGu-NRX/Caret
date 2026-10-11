@@ -1,0 +1,1525 @@
+{
+ "about": "The long-conversation dev set's desks with no bystanders (scripts/longchat-fixtures.ts). Synthetic only.",
+ "decoys": [],
+ "forms": [
+  {
+   "id": "httpbin-pizza",
+   "file": "../realfill/forms/httpbin-pizza.html",
+   "origin": "the B24 dev corpus's httpbin-pizza, with lc-01's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-01.window.json"
+   },
+   "fields": [
+    {
+     "label": "Customer name",
+     "control": "text",
+     "expected": "Jordan Reyes"
+    },
+    {
+     "label": "Telephone",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "E-mail address",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Pizza Size",
+     "control": "radio",
+     "options": [
+      "Small",
+      "Medium",
+      "Large"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Bacon",
+     "group": "Pizza Toppings",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Extra Cheese",
+     "group": "Pizza Toppings",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Onion",
+     "group": "Pizza Toppings",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Mushroom",
+     "group": "Pizza Toppings",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Preferred delivery time",
+     "control": "time",
+     "expected": "19:30"
+    },
+    {
+     "label": "Delivery instructions",
+     "control": "textarea",
+     "expected": "side door, ring twice"
+    }
+   ]
+  },
+  {
+   "id": "greenhouse-apply",
+   "file": "../realfill/forms/greenhouse-apply.html",
+   "origin": "the B24 dev corpus's greenhouse-apply, with lc-02's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-02.window.json"
+   },
+   "fields": [
+    {
+     "label": "First Name",
+     "control": "text",
+     "expected": "Jordan"
+    },
+    {
+     "label": "Last Name",
+     "control": "text",
+     "expected": "Reyes"
+    },
+    {
+     "label": "Email",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Phone",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Resume/CV",
+     "control": "file",
+     "expected": "none"
+    },
+    {
+     "label": "School",
+     "control": "combobox",
+     "expected": "none"
+    },
+    {
+     "label": "Degree",
+     "control": "select",
+     "options": [
+      "Select...",
+      "Associate's Degree",
+      "Bachelor's Degree",
+      "Master's Degree",
+      "Doctorate",
+      "Other"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Graduation Date (MM/YYYY)",
+     "control": "text",
+     "expected": "05/2027"
+    },
+    {
+     "label": "Are you legally authorized to work in the United States?",
+     "control": "combobox",
+     "expected": "none"
+    },
+    {
+     "label": "LinkedIn Profile",
+     "control": "url",
+     "expected": "https://www.linkedin.com/in/jordan-reyes-dev"
+    }
+   ]
+  },
+  {
+   "id": "event-rsvp",
+   "file": "../realfill/forms/event-rsvp.html",
+   "origin": "the B24 dev corpus's event-rsvp, with lc-03's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-03.window.json"
+   },
+   "fields": [
+    {
+     "label": "Your full name",
+     "control": "text",
+     "expected": "Jordan Reyes"
+    },
+    {
+     "label": "Email",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Phone",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Will you be joining us?",
+     "control": "radio",
+     "options": [
+      "Joyfully accepts",
+      "Regretfully declines"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "How many in your party?",
+     "control": "select",
+     "options": [
+      "Select",
+      "1",
+      "2"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Your meal choice",
+     "control": "select",
+     "options": [
+      "Select a meal",
+      "Braised short rib",
+      "Herb-roasted salmon",
+      "Wild mushroom risotto (vegetarian)"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Guest's full name",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Guest's meal choice",
+     "control": "select",
+     "options": [
+      "Select a meal",
+      "Braised short rib",
+      "Herb-roasted salmon",
+      "Wild mushroom risotto (vegetarian)"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Dietary restrictions or allergies",
+     "control": "textarea",
+     "expected": "no shellfish"
+    },
+    {
+     "label": "Approximate arrival time",
+     "control": "time",
+     "expected": "19:45"
+    },
+    {
+     "label": "A note for the couple",
+     "control": "textarea",
+     "expected": "none"
+    },
+    {
+     "label": "Text me updates about the day",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "checkout-shipping",
+   "file": "../realfill/forms/checkout-shipping.html",
+   "origin": "the B24 dev corpus's checkout-shipping, with lc-04's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-04.window.json"
+   },
+   "fields": [
+    {
+     "label": "Email",
+     "control": "email",
+     "expected": "none"
+    },
+    {
+     "label": "Email me with news and offers",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Country/Region",
+     "control": "select",
+     "options": [
+      "United States",
+      "Canada"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "First name",
+     "control": "text",
+     "expected": "Jordan"
+    },
+    {
+     "label": "Last name",
+     "control": "text",
+     "expected": "Reyes"
+    },
+    {
+     "label": "Company",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Address",
+     "control": "text",
+     "expected": "4410 Speedway"
+    },
+    {
+     "label": "Apartment, suite, etc.",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "City",
+     "control": "text",
+     "expected": "Austin"
+    },
+    {
+     "label": "State",
+     "control": "select",
+     "options": [
+      "State",
+      "Alabama",
+      "Alaska",
+      "Arizona",
+      "Arkansas",
+      "California",
+      "Colorado",
+      "Connecticut",
+      "Delaware",
+      "District of Columbia",
+      "Florida",
+      "Georgia",
+      "Hawaii",
+      "Idaho",
+      "Illinois",
+      "Indiana",
+      "Iowa",
+      "Kansas",
+      "Kentucky",
+      "Louisiana",
+      "Maine",
+      "Maryland",
+      "Massachusetts",
+      "Michigan",
+      "Minnesota",
+      "Mississippi",
+      "Missouri",
+      "Montana",
+      "Nebraska",
+      "Nevada",
+      "New Hampshire",
+      "New Jersey",
+      "New Mexico",
+      "New York",
+      "North Carolina",
+      "North Dakota",
+      "Ohio",
+      "Oklahoma",
+      "Oregon",
+      "Pennsylvania",
+      "Rhode Island",
+      "South Carolina",
+      "South Dakota",
+      "Tennessee",
+      "Texas",
+      "Utah",
+      "Vermont",
+      "Virginia",
+      "Washington",
+      "West Virginia",
+      "Wisconsin",
+      "Wyoming"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "ZIP code",
+     "control": "text",
+     "expected": "78751"
+    },
+    {
+     "label": "Phone",
+     "control": "tel",
+     "expected": "none"
+    },
+    {
+     "label": "Save this information for next time",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Shipping method",
+     "control": "radio",
+     "options": [
+      "Standard (5-7 business days)",
+      "Express (2-3 business days)",
+      "Overnight"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Add a gift note",
+     "control": "textarea",
+     "expected": "Happy housewarming, Sam!"
+    }
+   ]
+  },
+  {
+   "id": "job-application",
+   "file": "../realfill/forms/job-application.html",
+   "origin": "the B24 dev corpus's job-application, with lc-05's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-05.window.json"
+   },
+   "fields": [
+    {
+     "label": "Resume/CV",
+     "control": "file",
+     "expected": "none"
+    },
+    {
+     "label": "Full name",
+     "control": "text",
+     "expected": "Jordan Reyes"
+    },
+    {
+     "label": "Email",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Phone",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Current company",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "LinkedIn URL",
+     "control": "url",
+     "expected": "none"
+    },
+    {
+     "label": "GitHub URL",
+     "control": "url",
+     "expected": "https://github.com/jordan-reyes-dev",
+     "accept": [
+      "github.com/jordan-reyes-dev"
+     ]
+    },
+    {
+     "label": "Portfolio or website",
+     "control": "url",
+     "expected": "none"
+    },
+    {
+     "label": "Earliest start date",
+     "control": "date",
+     "expected": "2027-01-04"
+    },
+    {
+     "label": "Will you now or in the future require visa sponsorship to work in the US?",
+     "control": "radio",
+     "options": [
+      "Yes",
+      "No"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "How did you hear about this role?",
+     "control": "select",
+     "options": [
+      "Select...",
+      "LinkedIn",
+      "Company website",
+      "Employee referral",
+      "Job board",
+      "University career center",
+      "Other"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Referrer's name (if referred)",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Desired salary",
+     "control": "text",
+     "expected": "$145,000"
+    },
+    {
+     "label": "Reference name",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Reference relationship",
+     "control": "select",
+     "options": [
+      "Select...",
+      "Manager",
+      "Colleague",
+      "Direct report",
+      "Professor",
+      "Other"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Reference email",
+     "control": "email",
+     "expected": "none"
+    },
+    {
+     "label": "Reference phone",
+     "control": "tel",
+     "expected": "none"
+    },
+    {
+     "label": "Cover letter or anything else you'd like us to know",
+     "control": "textarea",
+     "expected": "none"
+    },
+    {
+     "label": "Keep me in mind for future openings at Northgate",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "car-service-booking",
+   "file": "../realfill/forms/car-service-booking.html",
+   "origin": "the B24 dev corpus's car-service-booking, with lc-06's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-06.window.json"
+   },
+   "fields": [
+    {
+     "label": "Year",
+     "control": "select",
+     "options": [
+      "Select year",
+      "2026",
+      "2025",
+      "2024",
+      "2023",
+      "2022",
+      "2021",
+      "2020",
+      "2019",
+      "2018",
+      "2017",
+      "2016",
+      "2015"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Model",
+     "control": "select",
+     "options": [
+      "Select model",
+      "Ascent",
+      "Crosstrek",
+      "Forester",
+      "Impreza",
+      "Legacy",
+      "Outback",
+      "WRX"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Current mileage",
+     "control": "text",
+     "expected": "59,870",
+     "accept": [
+      "59870"
+     ]
+    },
+    {
+     "label": "VIN",
+     "control": "text",
+     "expected": "1HGCM82633A004352"
+    },
+    {
+     "label": "Oil and filter change",
+     "group": "Services requested",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Tire rotation",
+     "group": "Services requested",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Brake inspection",
+     "group": "Services requested",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Cabin air filter replacement",
+     "group": "Services requested",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Wheel alignment",
+     "group": "Services requested",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Preferred date",
+     "control": "date",
+     "expected": "none"
+    },
+    {
+     "label": "Preferred time",
+     "control": "time",
+     "expected": "none"
+    },
+    {
+     "label": "While we service your vehicle",
+     "control": "radio",
+     "options": [
+      "I'll wait at the dealership",
+      "Shuttle ride",
+      "Drop off and pick up later"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Full name",
+     "control": "text",
+     "expected": "Jordan Reyes"
+    },
+    {
+     "label": "Email",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Mobile phone",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Comments for your service advisor",
+     "control": "textarea",
+     "expected": "the brakes squeal when cold"
+    },
+    {
+     "label": "Text me when my vehicle is ready",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Send me service specials and coupons",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "rental-application",
+   "file": "../realfill/forms/rental-application.html",
+   "origin": "the B24 dev corpus's rental-application, with lc-07's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-07.window.json"
+   },
+   "fields": [
+    {
+     "label": "First name",
+     "control": "text",
+     "expected": "Jordan"
+    },
+    {
+     "label": "Middle name",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Last name",
+     "control": "text",
+     "expected": "Reyes"
+    },
+    {
+     "label": "Date of birth",
+     "control": "date",
+     "expected": "none"
+    },
+    {
+     "label": "Social Security number",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Email address",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Mobile phone",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Street address",
+     "control": "text",
+     "expected": "4410 Speedway"
+    },
+    {
+     "label": "Apt / Unit",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "City",
+     "control": "text",
+     "expected": "Austin"
+    },
+    {
+     "label": "State",
+     "control": "select",
+     "options": [
+      "Select",
+      "AL",
+      "AK",
+      "AZ",
+      "AR",
+      "CA",
+      "CO",
+      "CT",
+      "DE",
+      "DC",
+      "FL",
+      "GA",
+      "HI",
+      "ID",
+      "IL",
+      "IN",
+      "IA",
+      "KS",
+      "KY",
+      "LA",
+      "ME",
+      "MD",
+      "MA",
+      "MI",
+      "MN",
+      "MS",
+      "MO",
+      "MT",
+      "NE",
+      "NV",
+      "NH",
+      "NJ",
+      "NM",
+      "NY",
+      "NC",
+      "ND",
+      "OH",
+      "OK",
+      "OR",
+      "PA",
+      "RI",
+      "SC",
+      "SD",
+      "TN",
+      "TX",
+      "UT",
+      "VT",
+      "VA",
+      "WA",
+      "WV",
+      "WI",
+      "WY"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "ZIP code",
+     "control": "text",
+     "expected": "78751"
+    },
+    {
+     "label": "Moved in (MM/YYYY)",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Monthly rent ($)",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Reason for moving",
+     "control": "textarea",
+     "expected": "none"
+    },
+    {
+     "label": "Landlord or property manager name",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Landlord phone",
+     "control": "tel",
+     "expected": "none"
+    },
+    {
+     "label": "Desired move-in date",
+     "control": "date",
+     "expected": "none"
+    },
+    {
+     "label": "Number of occupants (including you)",
+     "control": "select",
+     "options": [
+      "Select",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5 or more"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Do you have pets?",
+     "control": "radio",
+     "options": [
+      "Yes",
+      "No"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Current employer",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Job title",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Gross monthly income ($)",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Vehicle make and model",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "I certify that the information in this application is true and complete.",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Email me about available units and resident events.",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "clinic-intake",
+   "file": "../realfill/forms/clinic-intake.html",
+   "origin": "the B24 dev corpus's clinic-intake, with lc-08's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-08.window.json"
+   },
+   "fields": [
+    {
+     "label": "Patient full name (legal)",
+     "control": "text",
+     "expected": "Jordan Reyes"
+    },
+    {
+     "label": "Preferred name",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Date of birth",
+     "control": "date",
+     "expected": "none"
+    },
+    {
+     "label": "Preferred language",
+     "control": "select",
+     "options": [
+      "Select...",
+      "English",
+      "Spanish",
+      "Portuguese",
+      "Haitian Creole",
+      "Chinese (Mandarin)",
+      "Vietnamese",
+      "Other"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Email",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Mobile phone",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Home phone",
+     "control": "tel",
+     "expected": "none"
+    },
+    {
+     "label": "Street address",
+     "control": "text",
+     "expected": "4410 Speedway"
+    },
+    {
+     "label": "Apartment or unit",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "City",
+     "control": "text",
+     "expected": "Austin"
+    },
+    {
+     "label": "State",
+     "control": "select",
+     "options": [
+      "Select...",
+      "AL",
+      "AK",
+      "AZ",
+      "AR",
+      "CA",
+      "CO",
+      "CT",
+      "DE",
+      "DC",
+      "FL",
+      "GA",
+      "HI",
+      "ID",
+      "IL",
+      "IN",
+      "IA",
+      "KS",
+      "KY",
+      "LA",
+      "ME",
+      "MD",
+      "MA",
+      "MI",
+      "MN",
+      "MS",
+      "MO",
+      "MT",
+      "NE",
+      "NV",
+      "NH",
+      "NJ",
+      "NM",
+      "NY",
+      "NC",
+      "ND",
+      "OH",
+      "OK",
+      "OR",
+      "PA",
+      "RI",
+      "SC",
+      "SD",
+      "TN",
+      "TX",
+      "UT",
+      "VT",
+      "VA",
+      "WA",
+      "WV",
+      "WI",
+      "WY"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "ZIP code",
+     "control": "text",
+     "expected": "78751"
+    },
+    {
+     "label": "How should we contact you?",
+     "control": "radio",
+     "options": [
+      "Phone call",
+      "Text message",
+      "Email"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Emergency contact name",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Relationship to patient",
+     "control": "select",
+     "options": [
+      "Select...",
+      "Spouse or partner",
+      "Parent",
+      "Child",
+      "Sibling",
+      "Friend",
+      "Other"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Emergency contact phone",
+     "control": "tel",
+     "expected": "none"
+    },
+    {
+     "label": "I have read the Notice of Privacy Practices.",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Sign me up for the Harbor Health newsletter.",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "course-enrollment",
+   "file": "../realfill/forms/course-enrollment.html",
+   "origin": "the B24 dev corpus's course-enrollment, with lc-09's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-09.window.json"
+   },
+   "fields": [
+    {
+     "label": "First name",
+     "control": "text",
+     "expected": "Jordan"
+    },
+    {
+     "label": "Middle name",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Last name",
+     "control": "text",
+     "expected": "Reyes"
+    },
+    {
+     "label": "Preferred name",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Date of birth",
+     "control": "date",
+     "expected": "none"
+    },
+    {
+     "label": "Email",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Phone",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Student ID (returning students)",
+     "control": "text",
+     "expected": "LC-204417"
+    },
+    {
+     "label": "Course",
+     "control": "select",
+     "options": [
+      "Select a course",
+      "CIS 120 - Computer Literacy",
+      "CIS 140 - Intro to Web Development",
+      "CIS 155 - Python Programming I",
+      "ACC 101 - Bookkeeping Basics"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Term",
+     "control": "select",
+     "options": [
+      "Select term",
+      "Winter 2027",
+      "Spring 2027",
+      "Summer 2027"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Section",
+     "control": "radio",
+     "options": [
+      "Mon/Wed 6:00-8:30 PM",
+      "Tue/Thu 9:00-11:30 AM",
+      "Sat 9:00 AM-12:30 PM"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Highest level of education completed",
+     "control": "select",
+     "options": [
+      "Select...",
+      "Less than high school",
+      "High school diploma or GED",
+      "Some college, no degree",
+      "Associate degree",
+      "Bachelor's degree",
+      "Graduate degree"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "This is my first class at Lakeside",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Email me the Lakeside Continuing Ed newsletter",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "b2b-demo-request",
+   "file": "../realfill/forms/b2b-demo-request.html",
+   "origin": "the B24 dev corpus's b2b-demo-request, with lc-10's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-10.window.json"
+   },
+   "fields": [
+    {
+     "label": "First name",
+     "control": "text",
+     "expected": "Jordan"
+    },
+    {
+     "label": "Last name",
+     "control": "text",
+     "expected": "Reyes"
+    },
+    {
+     "label": "Work email",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Phone number",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Company name",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Job title",
+     "control": "text",
+     "expected": "none"
+    },
+    {
+     "label": "Company website",
+     "control": "url",
+     "expected": "https://lumenlabs.example.com"
+    },
+    {
+     "label": "Number of employees",
+     "control": "select",
+     "options": [
+      "Select one",
+      "1-10",
+      "11-50",
+      "51-200",
+      "201-1,000",
+      "1,001+"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Country",
+     "control": "select",
+     "options": [
+      "Select one",
+      "United States",
+      "Canada",
+      "United Kingdom",
+      "Ireland",
+      "Australia",
+      "Other"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Accounts payable automation",
+     "group": "What are you interested in?",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Expense management",
+     "group": "What are you interested in?",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Procurement",
+     "group": "What are you interested in?",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Preferred demo date",
+     "control": "date",
+     "expected": "none"
+    },
+    {
+     "label": "Anything else we should know?",
+     "control": "textarea",
+     "expected": "we run 40 entities across 3 currencies"
+    },
+    {
+     "label": "I'd like to receive product news and marketing emails from Ledgerline. You can unsubscribe at any time.",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "support-ticket",
+   "file": "../realfill/forms/support-ticket.html",
+   "origin": "the B24 dev corpus's support-ticket, with lc-11's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-11.window.json"
+   },
+   "fields": [
+    {
+     "label": "Your name",
+     "control": "text",
+     "expected": "Jordan Reyes"
+    },
+    {
+     "label": "Email address",
+     "control": "email",
+     "expected": "jordan.reyes@example.net"
+    },
+    {
+     "label": "Workspace URL",
+     "control": "url",
+     "expected": "https://lumen.example.com"
+    },
+    {
+     "label": "Product area",
+     "control": "select",
+     "options": [
+      "-- Choose one --",
+      "Billing",
+      "Integrations",
+      "Mobile app",
+      "Reports",
+      "Account and login"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Priority",
+     "control": "radio",
+     "options": [
+      "Low: general question",
+      "Normal: something isn't working",
+      "Urgent: my team can't work"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Subject",
+     "control": "text",
+     "expected": "CSV export fails over 10k rows"
+    },
+    {
+     "label": "Description",
+     "control": "textarea",
+     "expected": "none"
+    },
+    {
+     "label": "Attachments",
+     "control": "file",
+     "expected": "none"
+    },
+    {
+     "label": "Allow a support agent to access my workspace while this request is open",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "conference-registration",
+   "file": "../realfill/forms/conference-registration.html",
+   "origin": "the B24 dev corpus's conference-registration, with lc-12's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-12.window.json"
+   },
+   "fields": [
+    {
+     "label": "First name",
+     "control": "text",
+     "expected": "Jordan"
+    },
+    {
+     "label": "Last name",
+     "control": "text",
+     "expected": "Reyes"
+    },
+    {
+     "label": "Email address",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Job title",
+     "control": "text",
+     "expected": "Senior Product Designer"
+    },
+    {
+     "label": "Company or organization",
+     "control": "text",
+     "expected": "Lumen Labs"
+    },
+    {
+     "label": "Country",
+     "control": "select",
+     "options": [
+      "Select country",
+      "United States",
+      "Canada",
+      "Mexico",
+      "United Kingdom",
+      "Germany",
+      "Japan",
+      "India",
+      "Brazil",
+      "Australia",
+      "Other"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Ticket type",
+     "control": "radio",
+     "options": [
+      "In-person: Full conference",
+      "In-person: Workshop day only",
+      "Virtual pass"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "Intro to Rust",
+     "group": "Workshops (choose any)",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Observability with OpenTelemetry",
+     "group": "Workshops (choose any)",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Accessible front-end patterns",
+     "group": "Workshops (choose any)",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Dietary requirements",
+     "control": "select",
+     "options": [
+      "Select...",
+      "No dietary requirements",
+      "Vegetarian",
+      "Vegan",
+      "Gluten-free",
+      "Halal",
+      "Kosher",
+      "Other"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "T-shirt size",
+     "control": "select",
+     "options": [
+      "Select size",
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "XXL"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "How did you hear about us?",
+     "control": "select",
+     "options": [
+      "Select...",
+      "Colleague or friend",
+      "Social media",
+      "Newsletter",
+      "Meetup or user group",
+      "Search engine",
+      "Other"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "I agree to the DevHarbor Code of Conduct.",
+     "control": "checkbox",
+     "expected": "none"
+    },
+    {
+     "label": "Send me news about future DevHarbor events.",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "hubspot-contact",
+   "file": "../realfill/forms/hubspot-contact.html",
+   "origin": "the B24 dev corpus's hubspot-contact, with lc-13's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "../longchat/sources/lc-13.window.json"
+   },
+   "fields": [
+    {
+     "label": "First Name",
+     "control": "text",
+     "expected": "Jordan"
+    },
+    {
+     "label": "Last Name",
+     "control": "text",
+     "expected": "Reyes"
+    },
+    {
+     "label": "Email",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Phone number",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Company name",
+     "control": "text",
+     "expected": "Lumen Labs"
+    },
+    {
+     "label": "Website URL",
+     "control": "text",
+     "expected": "https://lumenlabs.example.com"
+    },
+    {
+     "label": "Company size",
+     "control": "select",
+     "options": [
+      "Please Select",
+      "1 employee",
+      "2 to 9 employees",
+      "10 to 24 employees",
+      "25 to 49 employees",
+      "50 to 99 employees",
+      "100 to 199 employees",
+      "200 or more employees"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "How can we help?",
+     "control": "textarea",
+     "expected": "we need SSO for 300 seats by March"
+    },
+    {
+     "label": "I agree to receive other communications from HubSpot.",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- The skill flow's web destination (B20, scripts/skills-real-eval.ts): three fields and no buttons, like B19's
+     intake form on caret-fixture, so no press that reads as outbound, destructive or money is learned as the
+     routine's finish and the skill may earn running on its own. Every value here is invented. caretState,
+     caretReset and caretSeed let the evaluation read and set the page's true state through JavaScript. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Caret Intake — Web</title>
+<style>
+  body { font: 14px -apple-system, sans-serif; margin: 16px; }
+  label { display: inline-block; width: 90px; }
+  input { width: 260px; }
+  p { margin: 6px 0; }
+</style>
+</head>
+<body>
+<form onsubmit="return false">
+  <p><label for="name">Name</label><input id="name" type="text"></p>
+  <p><label for="email">Email</label><input id="email" type="text"></p>
+  <p><label for="reference">Reference</label><input id="reference" type="text"></p>
+</form>
+<script>
+  const FIELDS = ["name", "email", "reference"];
+  window.caretState = () => ({
+    title: document.title,
+    fields: Object.fromEntries(FIELDS.map((f) => [f, document.getElementById(f).value])),
+    focused: document.activeElement && document.activeElement.id ? document.activeElement.id : null,
+  });
+  window.caretReset = () => {
+    for (const f of FIELDS) document.getElementById(f).value = "";
+    if (document.activeElement) document.activeElement.blur();
+    return true;
+  };
+  window.caretSeed = (id, value) => { document.getElementById(id).value = value; return true; };
+</script>
+</body>
+</html>

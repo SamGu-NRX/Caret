@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The pinned Node runtime in Contents/Helpers/node, which runs the helper under the hardened runtime (build-app.sh).
+
+  Granted:
+  - com.apple.security.cs.allow-jit: V8 compiles JavaScript, and the WebAssembly of the QuickJS sandbox, into MAP_JIT
+    memory, which the hardened runtime refuses without this.
+
+  Not granted, though Node's own build has them (codesign -d entitlements of node v26.5.0):
+  - allow-unsigned-executable-memory, disable-executable-page-protection: expected unneeded on Apple silicon, where V8
+    uses MAP_JIT.
+  - disable-library-validation: no native addon ships; QuickJS is WebAssembly.
+  - allow-dyld-environment-variables: Caret builds the helper's environment itself and passes no DYLD_ variable.
+  - get-task-allow: lets other processes attach a debugger.
+
+  Evidence: none yet that allow-jit is needed, or enough. SIP is disabled on the Mac this was set up on
+  (csrutil status, 2026-10-04), so the hardened runtime was not enforced, and the H4 probe saw every set pass,
+  including no entitlements at all. Check on a Mac with SIP on before shipping: the helper must start and
+  helper/test/codemode must pass with exactly this set.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>

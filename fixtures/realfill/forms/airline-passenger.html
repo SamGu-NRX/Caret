@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Guest information | Alaska Airlines (local replica)</title>
+<style>
+body{font-family:-apple-system,Helvetica,Arial,sans-serif;max-width:760px;margin:24px auto;color:#1a1a1a}
+h1{font-size:24px} h2{font-size:18px;margin-top:28px} .row{display:flex;gap:16px} .row>div{flex:1}
+label{display:block;font-size:13px;margin:12px 0 4px} input[type=text],input[type=email],input[type=tel],select{width:100%;padding:8px;font-size:15px;box-sizing:border-box}
+fieldset{border:0;padding:0;margin:12px 0} legend{font-size:13px}
+button{margin-top:24px;padding:12px 22px;font-size:16px;background:#01426a;color:#fff;border:0;border-radius:4px}
+</style></head><body>
+<!-- Replica of the Alaska Airlines guest passenger form the Q1 dogfood reached (AUS to SEA, one adult), with
+     the same field labels. Continue is inert. -->
+<h1>Who's flying?</h1>
+<p>Enter names exactly as they appear on the government-issued ID you'll travel with.</p>
+<form onsubmit="event.preventDefault()">
+<h2>Passenger 1 (Adult)</h2>
+<div class="row">
+ <div><label for="fn">First name / Given name</label><input type="text" id="fn" autocomplete="off"></div>
+ <div><label for="mn">Middle name (optional)</label><input type="text" id="mn" autocomplete="off"></div>
+ <div><label for="ln">Last name / Surname</label><input type="text" id="ln" autocomplete="off"></div>
+</div>
+<label for="sfx">Suffix (optional)</label>
+<select id="sfx"><option value="">None</option><option>Jr.</option><option>Sr.</option><option>II</option><option>III</option><option>IV</option></select>
+<fieldset><legend>Date of birth</legend>
+<div class="row">
+ <div><label for="dobm">Month</label><select id="dobm"><option value="">Month</option><option>January</option><option>February</option><option>March</option><option>April</option><option>May</option><option>June</option><option>July</option><option>August</option><option>September</option><option>October</option><option>November</option><option>December</option></select></div>
+ <div><label for="dobd">Day</label><input type="text" id="dobd" inputmode="numeric" autocomplete="off"></div>
+ <div><label for="doby">Year</label><input type="text" id="doby" inputmode="numeric" autocomplete="off"></div>
+</div></fieldset>
+<fieldset><legend>Gender (as shown on your ID)</legend>
+<label><input type="radio" name="g" value="m"> Male</label>
+<label><input type="radio" name="g" value="f"> Female</label>
+<label><input type="radio" name="g" value="x"> Unspecified (X)</label>
+<label><input type="radio" name="g" value="u"> Undisclosed (U)</label>
+</fieldset>
+<label for="mp">Mileage Plan number (optional)</label><input type="text" id="mp" autocomplete="off">
+<label for="ktn">Known Traveler Number (optional)</label><input type="text" id="ktn" autocomplete="off">
+<h2>Contact information</h2>
+<div class="row">
+ <div><label for="em">Email address</label><input type="email" id="em" autocomplete="off"></div>
+ <div><label for="ph">Phone number</label><input type="tel" id="ph" autocomplete="off"></div>
+</div>
+<label for="zip">Zip code</label><input type="text" id="zip" autocomplete="off">
+<label><input type="checkbox" id="txt"> Send me flight status updates by text</label>
+<button type="submit">Continue</button>
+</form>
+</body></html>

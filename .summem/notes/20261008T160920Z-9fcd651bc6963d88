@@ -1,0 +1,1 @@
+Owner notes (note-unit.ts unitText) omit an editable field's label, so an owner judgement never sees 'Do not use' over a value; choices use windowUnit (title plus every shown text of the page) instead. Sealed source_notes cap each note at 1200 chars and throw OutOfShape above it.

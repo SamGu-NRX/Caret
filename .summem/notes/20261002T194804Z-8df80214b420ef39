@@ -1,0 +1,1 @@
+Empty AppKit text fields report no caret bounds, so KeyType's ghost renderer finds no placement; SurfaceCoordinator draws its own ghost at a derived caret.

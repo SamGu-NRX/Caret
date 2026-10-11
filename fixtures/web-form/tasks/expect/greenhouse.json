@@ -1,0 +1,79 @@
+{
+  "page": "greenhouse",
+  "sources": {
+    "note": "Kestrel Robotics: Embedded Firmware Engineer\nPreferred first name: Dima (legal name Dmitri Halvorsen).\nPhone: 555-0126\nI live in Portland, Maine, not Oregon. Recruiters keep mixing that up.\nSchool: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020.\nTwo resumes on the laptop: dmitri-halvorsen-general.pdf and dmitri-halvorsen-firmware.pdf.\nSkip the voluntary demographic questions.",
+    "email": {
+      "from": "Ayesha Mendel <ayesha.mendel@example.net>",
+      "to": "Dmitri Halvorsen <dmitri.halvorsen@example.org>",
+      "subject": "Kestrel Robotics: Embedded Firmware Engineer application",
+      "body": "Hi Dmitri,\n\nGreat speaking with you. As promised, here's the link to apply for the Embedded Firmware Engineer role. The role is fully remote within the United States.\n\nPlease attach the firmware-focused resume, dmitri-halvorsen-firmware.pdf, rather than the general one.\n\nIf you have questions, I'm at 555-0108.\n\nAyesha Mendel\nTalent Partner, Kestrel Robotics\nBoston, Massachusetts"
+    },
+    "memory": [
+      {
+        "key": "email",
+        "value": "dmitri.halvorsen@example.org"
+      },
+      {
+        "key": "LinkedIn",
+        "value": "https://www.linkedin.com/in/example-dmitri-halvorsen"
+      },
+      {
+        "key": "work authorization",
+        "value": "US citizen; authorized to work in the United States; will not need visa sponsorship"
+      },
+      {
+        "key": "how I heard about Kestrel Robotics",
+        "value": "Recruiter outreach"
+      }
+    ]
+  },
+  "expected": {
+    "first_name": "Dmitri",
+    "last_name": "Halvorsen",
+    "preferred_name": "Dima",
+    "email": "dmitri.halvorsen@example.org",
+    "country": "United States",
+    "phone": "555-0126",
+    "location": "Portland, Maine, United States",
+    "resume": "dmitri-halvorsen-firmware.pdf",
+    "linkedin": "https://www.linkedin.com/in/example-dmitri-halvorsen",
+    "website": "none",
+    "school": "Lakeshore Polytechnic Institute",
+    "degree": "Bachelor's degree",
+    "discipline": "Electrical Engineering",
+    "edu_start_month": "September",
+    "edu_start_year": "2016",
+    "edu_end_month": "May",
+    "edu_end_year": "2020",
+    "authorized": "Yes",
+    "sponsorship": "No",
+    "why_us": "none",
+    "heard": "Recruiter outreach",
+    "eeo_gender": "none",
+    "eeo_hispanic": "none",
+    "eeo_race": "none",
+    "eeo_veteran": "none",
+    "eeo_disability": "none"
+  },
+  "basis": {
+    "first_name": "note: 'legal name Dmitri Halvorsen'",
+    "last_name": "note: 'legal name Dmitri Halvorsen'",
+    "preferred_name": "note: 'Preferred first name: Dima'",
+    "email": "memory 'email': 'dmitri.halvorsen@example.org' (not ayesha.mendel@example.net)",
+    "country": "note: 'I live in Portland, Maine'",
+    "phone": "note: 'Phone: 555-0126' (not the recruiter's 555-0108)",
+    "location": "note: 'I live in Portland, Maine, not Oregon' (not the recruiter's Boston)",
+    "resume": "email: 'Please attach the firmware-focused resume, dmitri-halvorsen-firmware.pdf'",
+    "linkedin": "memory 'LinkedIn'",
+    "school": "note: 'School: Lakeshore Polytechnic Institute' (not Lakeshore University)",
+    "degree": "note: 'B.S. Electrical Engineering'",
+    "discipline": "note: 'B.S. Electrical Engineering'",
+    "edu_start_month": "note: 'September 2016 to May 2020'",
+    "edu_start_year": "note: 'September 2016 to May 2020'",
+    "edu_end_month": "note: 'September 2016 to May 2020'",
+    "edu_end_year": "note: 'September 2016 to May 2020'",
+    "authorized": "memory 'work authorization': 'authorized to work in the United States'",
+    "sponsorship": "memory 'work authorization': 'will not need visa sponsorship'",
+    "heard": "memory 'how I heard about Kestrel Robotics': 'Recruiter outreach'"
+  }
+}

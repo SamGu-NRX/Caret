@@ -1,0 +1,284 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "b41e78ce-edc9-41d1-9dd3-a97f70ef1f23",
+ "at": 1791185471269,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "httpbin.org/forms/post",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "8BC4422703428CF9ECA2162CEE5F26B1",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/httpbin-pizza.html",
+   "navGen": 2,
+   "title": "httpbin.org/forms/post",
+   "headings": [],
+   "sections": [
+    {
+     "id": "o1",
+     "heading": false,
+     "text": "Pizza Size",
+     "name": "54d9adf427ae3589d21ebbd97ffbe2180a5a1a3853873caacb4c0b4465f1aafd"
+    },
+    {
+     "id": "o2",
+     "heading": false,
+     "text": "Pizza Toppings",
+     "name": "df9619ffddfe40c7a697ac7a60f1b9887ed2455464ed7d17fa238359bd12fff1"
+    }
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:customer name:~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=custname\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Customer name:",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      117.3,
+      16,
+      153,
+      21
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:telephone:~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=custtel\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Telephone:",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      82.9,
+      53,
+      153,
+      21
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:e-mail address:~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=custemail\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "E-mail address:",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      112,
+      90,
+      153,
+      21
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/radio:small~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=size\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Small",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      29,
+      169.6,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e4",
+      "name": "Pizza Size"
+     },
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/radio:medium~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=size\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Medium",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      29,
+      205.6,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e4",
+      "name": "Pizza Size"
+     },
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/radio:large~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=size\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Large",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      29,
+      241.6,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e4",
+      "name": "Pizza Size"
+     },
+     "sections": [
+      "o1"
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/checkbox:bacon~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=topping\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Bacon",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      28,
+      329.2,
+      13,
+      13
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/checkbox:extra cheese~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=topping\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Extra Cheese",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      28,
+      365.2,
+      13,
+      13
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/checkbox:onion~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=topping\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Onion",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      28,
+      401.2,
+      13,
+      13
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/checkbox:mushroom~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=topping\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Mushroom",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      28,
+      437.2,
+      13,
+      13
+     ],
+     "sections": [
+      "o2"
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/textbox:preferred delivery time:~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=delivery\",\"time\"]",
+     "kind": "time",
+     "role": "textbox",
+     "name": "Preferred delivery time:",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      164.8,
+      498.2,
+      104,
+      24
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/textbox:delivery instructions:~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=comments\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "Delivery instructions:",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      151.1,
+      538.2,
+      182,
+      36
+     ]
+    },
+    {
+     "id": "e13",
+     "key": "form@0/button:submit order~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Submit order",
+     "form": "form@0",
+     "rect": [
+      8,
+      594.2,
+      92.3,
+      21
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

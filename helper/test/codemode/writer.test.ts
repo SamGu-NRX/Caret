@@ -1,0 +1,132 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
+// WriterPort, prompt and transport, with a fake fetch. The live measurement is scripts/writer-eval.ts.
+import { minted } from "../minted.ts";
+import { readFileSync } from "node:fs";
+import { describe, expect, test } from "vitest";
+import { runCodePlan } from "../../src/codemode/sandbox.ts";
+import { PlanningSnapshotSchema } from "../../src/codemode/types.ts";
+import { listModels } from "../../src/writer/chat.ts";
+import { GATEWAY_GPT_OSS_120B, GROQ_GPT_OSS_120B, GROQ_QWEN_3_8_27B } from "../../src/writer/config.ts";
+import { extractProgram, PLAN_API, planUserMessage } from "../../src/writer/plan-prompt.ts";
+import { GOAL_API, GOAL_SYSTEM } from "../../src/writer/goal-prompt.ts";
+import { makeWriterPort, type WriterRequest } from "../../src/writer/port.ts";
+import { CANNED_PROGRAM, FORM, MAIL } from "./fixtures.ts";
+import { WRITER_CORPUS } from "./writer-corpus.ts";
+
+const KEY = "sk-test-not-a-real-key";
+
+function fakeFetch(status: number, body: unknown, seen: { url: string; init: RequestInit }[] = []): typeof fetch {
+  return (async (url: string | URL | Request, init?: RequestInit) => {
+    seen.push({ url: String(url), init: init ?? {} });
+    return new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  }) as typeof fetch;
+}
+
+const completion = (content: string, model = "openai/gpt-oss-120b") => ({
+  model,
+  choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }],
+  usage: { prompt_tokens: 2000, completion_tokens: 500, completion_tokens_details: { reasoning_tokens: 120 } },
+});
+
+// The input is fixture wording, minted with the request; its type is the port's, which takes minted values only.
+const request = (input: unknown = { goal: "Sign me up", snapshots: [FORM, MAIL] }): WriterRequest => minted({ kind: "plan", disclosureId: "disc-1", input: input as Record<string, unknown>, maxOutputTokens: 1500, signal: new AbortController().signal }) as unknown as WriterRequest;
+
+describe("plan prompt", () => {
+  test("the API the writer reads names exactly the functions the sandbox exposes", () => {
+    const worker = readFileSync(new URL("../../src/codemode/worker.ts", import.meta.url), "utf8");
+    const exposed = [...worker.matchAll(/api\("(\w+)"/g)].map((m) => m[1]).sort();
+    const documented = [...GOAL_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort();
+    expect(documented).toEqual(exposed);
+    // A single-window plan's writer never reads draft(), which the worker refuses outside a goal (B30).
+    expect([...PLAN_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort()).toEqual(exposed.filter((x) => x !== "draft"));
+  });
+
+  test("the goal API says which targets fill takes and which press takes (G2)", () => {
+    // Each line replaced in PLAN_API is gone from GOAL_API, so a reworded PLAN_API cannot silently keep the old text.
+    expect(GOAL_API).not.toContain("put a value into a fillable target");
+    expect(GOAL_API).not.toContain("press a target, expecting one of its allowedPressEffects");
+    expect(GOAL_API).toContain("A target whose canFill is\n   * false is a button: press() it, never fill() it.");
+    // G2 live (gpt-oss-20b, c103deb): one program passed a value object, another a value ref of a window it never read.
+    expect(GOAL_API).toContain("if (order) caret.fill(field.ref, order.ref);");
+    expect(GOAL_API).toContain("A field\n   * has none and is never pressed.");
+    expect(GOAL_SYSTEM).toContain("fill() takes only fields; press() takes only buttons.");
+    expect(GOAL_SYSTEM).toContain("Never put a value into another target because the right one is missing.");
+    // G2 live (qwen3.8, 69df243): a program picked the sender's email for Order number by a substring of its display,
+    // which names the mail's title; another drafted text into the calendar.
+    expect(GOAL_SYSTEM).toContain("Choose a value by its quoted part only.");
+    expect(GOAL_SYSTEM).toContain('takes only a listed event value (its display starts "the event"), never a draft.');
+  });
+
+  test("the inventory carries labels and refs, not value origins", () => {
+    const msg = planUserMessage({ goal: "Sign me up", snapshots: [FORM, MAIL] });
+    expect(msg).toContain('"ref": "t:name"');
+    expect(msg).toContain("Alex Rivera");
+    expect(msg).not.toContain("startUTF16");
+    expect(msg).not.toContain("digest");
+  });
+
+  test("extractProgram takes the fenced function and refuses anything else", () => {
+    expect(extractProgram("Here:\n```ts\nasync function main(caret) { return 1; }\n```\nDone")).toBe("async function main(caret) { return 1; }");
+    expect(extractProgram("async function main(caret) {}")).toBe("async function main(caret) {}");
+    expect(extractProgram("```ts\nconst x = 1;\n```")).toBeNull();
+    expect(extractProgram("I can't help with that.")).toBeNull();
+  });
+
+  test("every corpus case has valid snapshots within the writer budget", () => {
+    expect(WRITER_CORPUS).toHaveLength(10);
+    for (const c of WRITER_CORPUS) {
+      for (const s of c.snapshots) PlanningSnapshotSchema.parse(s);
+      expect(() => planUserMessage({ goal: c.goal, snapshots: c.snapshots })).not.toThrow();
+    }
+  });
+});
+
+describe("WriterPort", () => {
+  test("a canned writer reply becomes a valid plan through the sandbox", async () => {
+    const port = makeWriterPort(GROQ_GPT_OSS_120B, { key: () => KEY, fetchFn: fakeFetch(200, completion("```ts\n" + CANNED_PROGRAM + "```")) });
+    const w = await port.write(request());
+    expect(w.output.program).not.toBeNull();
+    const o = await runCodePlan(w.output.program!, [FORM, MAIL], async () => "o:tue");
+    if (!o.ok) throw new Error(`${o.kind}: ${o.detail}`);
+    expect(o.plan.steps.map((s) => s.kind)).toEqual(["fill", "fill", "fill", "press", "waitFor"]);
+  });
+
+  test("sends the route's model, output cap and reasoning fields, and prices the reply", async () => {
+    const seen: { url: string; init: RequestInit }[] = [];
+    const port = makeWriterPort(GROQ_GPT_OSS_120B, { key: () => KEY, fetchFn: fakeFetch(200, completion("```ts\nasync function main(caret) {}\n```"), seen) });
+    const w = await port.write(request());
+    expect(seen[0]!.url).toBe("https://api.groq.com/openai/v1/chat/completions");
+    const body = JSON.parse(String(seen[0]!.init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ model: "openai/gpt-oss-120b", max_completion_tokens: 1500, reasoning_effort: "low", include_reasoning: false, temperature: 0 });
+    expect((seen[0]!.init.headers as Record<string, string>).Authorization).toBe(`Bearer ${KEY}`);
+    expect(w).toMatchObject({ model: "openai/gpt-oss-120b", provider: "groq", inputTokens: 2000, outputTokens: 500, reasoningTokens: 120 });
+    expect(w.costUsd).toBeCloseTo((2000 * 0.15 + 500 * 0.6) / 1e6, 12);
+  });
+
+  test("a provider error names its status and type and never echoes the key", async () => {
+    const body = { error: { message: `AI Gateway requires a valid credit card on file. key=${KEY}`, type: "customer_verification_required" } };
+    const port = makeWriterPort(GATEWAY_GPT_OSS_120B, { key: () => KEY, fetchFn: fakeFetch(403, body) });
+    const err = await port.write(request()).catch((e: Error) => e);
+    // L1: this refusal has its own error (chat.ts GatewayNeedsCard; test/models-l1.test.ts).
+    expect(String(err)).toContain("Vercel AI Gateway needs a card on file, even for free models");
+    expect(String(err)).not.toContain(KEY);
+  });
+
+  test("other kinds, a missing disclosure and malformed input are refused before any request", async () => {
+    const seen: { url: string; init: RequestInit }[] = [];
+    const port = makeWriterPort(GROQ_GPT_OSS_120B, { key: () => KEY, fetchFn: fakeFetch(200, completion(""), seen) });
+    await expect(port.write({ ...request(), kind: "polish" })).rejects.toThrow("not implemented");
+    await expect(port.write({ ...request(), disclosureId: "" })).rejects.toThrow("disclosureId");
+    await expect(port.write(request({ goal: "x", snapshots: [] }))).rejects.toThrow();
+    expect(seen).toHaveLength(0);
+  });
+
+  test("listModels reads the provider's model ids", async () => {
+    const ids = await listModels(GROQ_QWEN_3_8_27B, KEY, fakeFetch(200, { data: [{ id: "openai/gpt-oss-120b" }, { id: "qwen/qwen3.8-27b" }] }));
+    expect(ids).toEqual(["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]);
+  });
+});
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

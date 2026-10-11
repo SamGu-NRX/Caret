@@ -1,0 +1,1 @@
+Desk scripts that read offers(...).at(-1) across sittings must move the desk a day and require a new offer: two walked-past offers in one app a day are held (gate.ts IGNORED_LIMIT 2), so .at(-1) silently reads the previous offer (A11).

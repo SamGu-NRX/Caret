@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-oracle-page="greenhouse">
+<head>
+<meta charset="utf-8">
+<title>Careers: Embedded Firmware Engineer at Kestrel Robotics</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; color: #222; }
+  header { background: #12324a; color: #fff; padding: 18px 32px; font-weight: 700; }
+  main { max-width: 860px; margin: 24px auto; padding: 0 16px; }
+  #grnhse_app iframe { width: 100%; height: 3000px; border: 0; }
+</style>
+</head>
+<body>
+<!-- F1 Greenhouse look-alike, outer page: a company's careers page that embeds the job board's application form in an
+     iframe, as Greenhouse's embed code does (div#grnhse_app, iframe#grnhse_iframe). The form is /tasks/greenhouse/form.
+     Every name and value is invented. -->
+<header>Kestrel Robotics</header>
+<main>
+  <h1>Embedded Firmware Engineer</h1>
+  <p>Remote (United States)</p>
+  <p>We build small autonomous inspection robots for water utilities. You will write and test the firmware that keeps
+     them moving, sensing and reporting.</p>
+  <div id="grnhse_app"><iframe id="grnhse_iframe" title="Greenhouse Job Board" src="/tasks/greenhouse/form" scrolling="no"></iframe></div>
+</main>
+<script>
+  // ?show=all reaches the form, which hides its own dependent fields.
+  if (location.search !== "") document.getElementById("grnhse_iframe").src = `/tasks/greenhouse/form${location.search}`;
+</script>
+<script src="/tasks/probe.js"></script>
+</body>
+</html>

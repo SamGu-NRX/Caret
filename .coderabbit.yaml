@@ -1,0 +1,8 @@
+# Review non-default v2 and fix bases; keep other settings at their defaults.
+# https://docs.coderabbit.ai/reference/configuration
+reviews:
+  auto_review:
+    enabled: true
+    base_branches:
+      - "^v2/.*$"
+      - "^fix/.*$"

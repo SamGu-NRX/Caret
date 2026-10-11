@@ -1,0 +1,1 @@
+apps/caret: SurfaceMachine/FillMachine decide, coordinators read and draw; test via SurfaceRig/FillRig + ManualClock. Off-screen renders: SwiftUI-drawn controls only; no repeating KeyframeAnimator (CPU). Debug JSON omits nil. Host tests: own --settings, --status-item off.

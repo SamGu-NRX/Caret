@@ -1,0 +1,39 @@
+{
+  "page": "wizard-3",
+  "sources": {
+    "note": "Job search, robotics tech roles (fall 2026)\n- Apply under my legal name, Ines Vandermeer. Nessa is only what friends call me.\n- Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline.\n- Moved to Denver, Colorado in March. Lease runs through next year.\n- Started at Tallgrass Mechatronics in August 2022. Before that: Copperline Fabrication, assembly tech, 2021-2022.\n- B.S. in Mechanical Engineering, Northfield State University, graduated May 2021. (Not Northfield College, that was Hanna's school.)\n- Old resume ines-resume-2024.pdf is out of date, don't send it.",
+    "email": {
+      "from": "Gareth Lowe <gareth.lowe@example.net>",
+      "to": "Ines Vandermeer <ines.vandermeer@example.org>",
+      "subject": "Field Robotics Technician: next steps",
+      "body": "Hi Ines,\n\nThanks for the call on Tuesday. The Field Robotics Technician role sits with our Denver, Colorado crew, so you'd stay local.\n\nWhen you apply through the portal, please attach the resume you sent me last week, ines-vandermeer-resume-2026.pdf, so the hiring manager sees the same version I did.\n\nIf the form gives you any trouble, call or text me at 555-0183, or reply here.\n\nBest,\nGareth Lowe\nTechnical Recruiter, Orbitline Field Systems"
+    },
+    "memory": [
+      {
+        "key": "email for job applications",
+        "value": "ines.vandermeer@example.org"
+      },
+      {
+        "key": "current job title",
+        "value": "Field Service Technician"
+      },
+      {
+        "key": "work authorization",
+        "value": "US citizen; authorized to work in the United States; never needs visa sponsorship"
+      },
+      {
+        "key": "t-shirt size",
+        "value": "S"
+      }
+    ]
+  },
+  "expected": {
+    "resume": "ines-vandermeer-resume-2026.pdf",
+    "resume_drop": "none",
+    "cover_letter": "none",
+    "consent": "none"
+  },
+  "basis": {
+    "resume": "email: 'please attach the resume you sent me last week, ines-vandermeer-resume-2026.pdf' (note rules out ines-resume-2024.pdf)"
+  }
+}

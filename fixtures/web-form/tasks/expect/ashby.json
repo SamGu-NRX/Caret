@@ -1,0 +1,54 @@
+{
+  "page": "ashby",
+  "sources": {
+    "note": "Juniper Freight: Platform Security Engineer\nPhone: 555-0152\nSix years in application and cloud security now (since 2020).\nMoving to San Diego, California in November and will work from there. San Jose is only until the move.\nHaven't written a cover letter for Juniper and not sending one.\nIncident question: use the token-leak story, write it fresh.",
+    "email": {
+      "from": "Owen Achterberg <owen.achterberg@example.com>",
+      "to": "Lia Nakamura <aurelia.nakamura@example.net>",
+      "subject": "Juniper Freight security role",
+      "body": "Lia,\n\nThe platform security posting is up. Apply through the careers page and upload aurelia-nakamura-security-2026.pdf, the one you showed me, not the older generalist resume.\n\nText me at 555-0195 once it's in and I'll ping the hiring manager.\n\nOwen"
+    },
+    "memory": [
+      {
+        "key": "legal name",
+        "value": "Aurelia Josephine Nakamura"
+      },
+      {
+        "key": "email",
+        "value": "aurelia.nakamura@example.net"
+      },
+      {
+        "key": "salary expectation",
+        "value": "$185,000"
+      },
+      {
+        "key": "on-call",
+        "value": "fine with a one-week-in-six on-call rotation"
+      }
+    ]
+  },
+  "expected": {
+    "legal_name": "Aurelia Josephine Nakamura",
+    "email": "aurelia.nakamura@example.net",
+    "phone": "555-0152",
+    "sms_consent": "none",
+    "location": "San Diego, California, United States",
+    "resume": "aurelia-nakamura-security-2026.pdf",
+    "linkedin": "none",
+    "cover_letter": "none",
+    "years_security": "Yes",
+    "on_call": "Yes",
+    "incident": "none",
+    "salary": "$185,000"
+  },
+  "basis": {
+    "legal_name": "memory 'legal name': 'Aurelia Josephine Nakamura' (the email calls her Lia)",
+    "email": "memory 'email': 'aurelia.nakamura@example.net' (not owen.achterberg@example.com)",
+    "phone": "note: 'Phone: 555-0152' (not Owen's 555-0195)",
+    "location": "note: 'Moving to San Diego, California in November and will work from there. San Jose is only until the move.'",
+    "resume": "email: 'upload aurelia-nakamura-security-2026.pdf'",
+    "years_security": "note: 'Six years in application and cloud security'",
+    "on_call": "memory 'on-call': 'fine with a one-week-in-six on-call rotation'",
+    "salary": "memory 'salary expectation': '$185,000'"
+  }
+}

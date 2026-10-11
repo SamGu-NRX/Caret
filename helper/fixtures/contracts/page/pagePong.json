@@ -1,0 +1,8 @@
+{
+  "type": "pagePong",
+  "v": 1,
+  "id": "fixture-ping",
+  "at": 20,
+  "instance": "fixture-instance",
+  "startedAt": 10
+}
