@@ -49,3 +49,15 @@ When the task needs project, architecture, or stack context, read the relevant p
 - Treat packages/ as pinned upstream code. Preserve authorship and licenses; do not bulk rename upstream files.
 - Run make check on Mac, or make test plus python3 scripts/check_sources.py for core-only Linux work.
 - Preserve other contributors' changes. Use branches and PRs after the initial repository setup.
+
+<!-- agent-skills:start -->
+## Agent skills
+
+Before starting work, read the skills below that apply to the task; each SKILL.md says when to use it. They are Sam's working playbooks and Lauren Tan's pstack (`pstack-*`), chosen for this repo. Obvious Autobuild loads them from `.obvious/skills/` on the default branch.
+
+PR titles and bodies follow `.obvious/skills/pr-writing` and `.github/pull_request_template.md`, with before/after screenshots, a recording for motion or interaction, and a simple diagram where they help.
+
+- [`pr-writing`](.obvious/skills/pr-writing/SKILL.md): Writes or revises pull request titles, descriptions and visual evidence
+- [`pstack-principle-prove-it-works`](.obvious/skills/pstack-principle-prove-it-works/SKILL.md): Apply after completing a task, before declaring done
+- [`pstack-principle-test-behavior-not-implementation`](.obvious/skills/pstack-principle-test-behavior-not-implementation/SKILL.md): Apply when you write, change, or keep a test
+<!-- agent-skills:end -->
