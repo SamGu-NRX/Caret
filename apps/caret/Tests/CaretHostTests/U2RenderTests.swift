@@ -108,8 +108,8 @@ final class U2RenderTests: XCTestCase {
                                                                    P(name: "Carrot, the problem's edge", token: Tokens.carrot, minimum: mark)]),
             ("Knows, permissions", memory["memory-permissions"]!, [P(name: "Ink, rule names, pop-up values", token: Tokens.ink, minimum: text),
                                                                    P(name: "Ink 2, what each rule means, the ceiling", token: Tokens.ink2, minimum: text)]),
-            // v2/access replaced the welcome and work screens these rows measured (merge into v2/next). The new panes need
-            // their own probes from the screens' owner; guessed ones measured the Hello headline at 2.88 (CI run 37906771739).
+            // v2/access replaced the welcome and work screens these rows measured. The new panes need their own probes from
+            // the screens' owner; guessed ones measured the Hello headline at 2.88 (v2/next, CI run 37906771739).
         ]
     }
 

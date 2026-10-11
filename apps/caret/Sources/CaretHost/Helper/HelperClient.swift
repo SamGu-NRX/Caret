@@ -70,6 +70,14 @@ final class HelperClient: @unchecked Sendable {
     /// When this client last sent work the helper runs for this session (offerAccept, fillAll): until its
     /// activity record arrives, only this says the session owns a run that closing it would revoke.
     private let lastAccept = OSAllocatedUnfairLock<Date?>(initialState: nil)
+    /// The accepted offers the helper is running, from each accept written to the helper's end for it (`RunningWork`).
+    private let work = OSAllocatedUnfairLock(initialState: RunningWork())
+
+    /// Whether an offer this copy accepted is still running in the helper: the login-item hand-off waits for it.
+    var hasRunningWork: Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        return !work.withLock { $0.isEmpty(at: now) }
+    }
     var lastAcceptAt: Date? { lastAccept.withLock { $0 } }
 
     /// The connection is up and its hello named `routing`, so the helper sends it route decisions.
@@ -118,7 +126,10 @@ final class HelperClient: @unchecked Sendable {
     /// True when written.
     @discardableResult
     func send(_ accept: OfferAccept) -> Bool {
+        // Recorded before the write: the reader thread can apply the helper's answer before sendLine returns.
+        work.withLock { $0.accepted(accept.offerId, at: ProcessInfo.processInfo.systemUptime) }
         let sent = sendLine(try? NDJSON.line(accept))
+        if !sent { work.withLock { $0.unsent(accept.offerId) } }
         if sent {
             stats.withLock { $0.accepts &+= 1 }
             lastAccept.withLock { $0 = Date() }
@@ -203,7 +214,10 @@ final class HelperClient: @unchecked Sendable {
     /// D2-04: ⌘1 on a field's fill, for the whole form. True when written.
     @discardableResult
     func send(_ fillAll: FillAllRequest) -> Bool {
+        // A fill-all runs as a task the helper reports by `taskID`, so the hand-off waits for it as for an accept.
+        work.withLock { $0.accepted(fillAll.taskID, at: ProcessInfo.processInfo.systemUptime) }
         let sent = sendLine(try? NDJSON.line(fillAll))
+        if !sent { work.withLock { $0.unsent(fillAll.taskID) } }
         if sent {
             stats.withLock { $0.accepts &+= 1 }
             lastAccept.withLock { $0 = Date() }
@@ -220,7 +234,10 @@ final class HelperClient: @unchecked Sendable {
     /// H11: Tab on the page task panel: the segment it previewed, under that preview's digest. True when written.
     @discardableResult
     func send(_ accept: GoalAccept) -> Bool {
+        // A page task's segment runs as a task the helper reports by `taskID`: the hand-off waits for it too.
+        work.withLock { $0.accepted(accept.taskID, at: ProcessInfo.processInfo.systemUptime) }
         let sent = sendLine(try? NDJSON.line(accept))
+        if !sent { work.withLock { $0.unsent(accept.taskID) } }
         if sent {
             stats.withLock { $0.accepts &+= 1 }
             lastAccept.withLock { $0 = Date() }
@@ -333,6 +350,7 @@ final class HelperClient: @unchecked Sendable {
                 close(fd)
                 stats.withLock { $0.connected = false }
                 authority?.revokeAll("helperDisconnected")
+                work.withLock { $0.helperGone() }
                 onLink(false)
             }
             guard running.withLock({ $0 }) else { break }
@@ -449,6 +467,7 @@ final class HelperClient: @unchecked Sendable {
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
             }
         }
+        if case .taskProgress(let progress) = message { work.withLock { $0.progress(progress) } }
         onMessage(message)
     }
 

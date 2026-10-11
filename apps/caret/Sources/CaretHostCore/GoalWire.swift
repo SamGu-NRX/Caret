@@ -92,6 +92,10 @@ public struct GoalAccept: Codable, Equatable, Sendable {
     public var at: Int64
     public var confirmedFile: ConfirmedFile?
 
+    /// The task the helper runs this segment as and reports its progress under: helper/src/goals/runs.ts
+    /// `segmentTaskId`, the goal's id, ":s", the segment.
+    public var taskID: String { "\(goalId):s\(segment)" }
+
     public init(goalId: String, segment: Int, digest: String, at: Int64, confirmedFile: ConfirmedFile? = nil) {
         self.goalId = goalId
         self.segment = segment

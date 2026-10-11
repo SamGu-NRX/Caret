@@ -369,7 +369,10 @@ public final class HostRuntime {
                 perch.ask.provenance(provenance)
             // W2: whether Caret can see the front browser's pages.
             case .pageEngine(let m):
-                if m.state == .connected { onboarding.browserConnected() }
+                if m.state == .connected {
+                    let known = BridgeBrowser.allCases.first { $0.bundleIdentifier == m.browser.bundleId }
+                    onboarding.browserConnected(known?.displayName ?? m.browser.name)
+                }
                 pageSight.receive(m)
                 status.update { $0.pageSight = pageSight.sight.debugInfo }
             default: break
@@ -392,6 +395,7 @@ public final class HostRuntime {
                     memory.linkChanged(up)
                     perch.ask.linkChanged(up)
                     pageTask.machine.linkChanged(up: up)
+                    onboarding.helperLinkChanged(up)
                     if !up {
                         surface.helperGone()
                         pageSight.sight.helperGone()
@@ -813,8 +817,33 @@ public final class HostRuntime {
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
 
+    /// Whether work is running in this copy: an accepted offer the helper has not ended, or a surface's working line. The
+    /// hand-off to the login item stops the helper, so it waits while this is true.
+    public var isRunningWork: Bool { helper.hasRunningWork || surfaceWorking }
+
+    /// Stops taking offers (the key tap goes, and the trust watch that would make it again), so nothing new starts
+    /// between the hand-off's last check and its shutdown.
+    public func stopTakingOffers() {
+        trustPoll?.invalidate()
+        trustPoll = nil
+        if let axObserver { DistributedNotificationCenter.default().removeObserver(axObserver) }
+        axObserver = nil
+        tap.stop()
+    }
+
+    /// Onboarding holds the cloud roles until the person sends or keeps (`RoleMenu`).
+    public var rolesCap: Set<CaretRole>? { SettingsStore.shared.rolesCap }
+
+    /// The menu's held role: setup opens where the hold is decided.
+    public func openSetupToFinish() { onboarding.openToFinishSetup() }
+
     /// The menu's "Turn on Accessibility…": the switch step on its own, with the panel in System Settings.
     public func openAccessSwitch() { onboarding.openAccess() }
+
+    /// Add to <browser>'s outcome, for onboarding's browser step (`ChromeBridgeInstaller.Result.ok`).
+    public func browserAddFinished(ok: Bool, message: String, opened: String?) {
+        onboarding.browserAddFinished(ok: ok, message: message, opened: opened)
+    }
 
     /// The menu's "Jev is off. Add a key…": the key step on its own.
     public func openJevKeyStep() { onboarding.openKey() }

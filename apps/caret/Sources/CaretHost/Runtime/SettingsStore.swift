@@ -20,9 +20,16 @@ public final class SettingsStore {
     public let path: String
     public private(set) var settings: CaretSettings
     /// Why the file could not be read, when it exists but is not settings this host understands.
-    /// The defaults are used meanwhile, and the file is not overwritten until the user changes a
-    /// setting.
+    /// The defaults are used meanwhile. The first write afterwards keeps the unreadable file beside it
+    /// (`keepUnreadable`), since onboarding writes without the user changing a setting.
     public private(set) var loadError: String?
+    /// The file existed and could not be decoded, and has not been kept aside yet.
+    private var unreadable: Bool
+    /// While set, every change keeps the roles inside it: onboarding holds the cloud roles until the person sends the
+    /// first look or keeps everything on the Mac, and a role turned on from the menu meanwhile must not reach the helper.
+    public var rolesCap: Set<CaretRole>?
+    /// The last write failed (a full disk, a folder that turned read-only): what is in memory is not on disk.
+    public private(set) var lastWriteFailed = false
     private var observers: [UUID: (CaretSettings) -> Void] = [:]
 
     init(path: String = SettingsStore.path) {
@@ -30,6 +37,7 @@ public final class SettingsStore {
         let loaded = Self.load(path)
         settings = loaded.settings
         loadError = loaded.error
+        unreadable = loaded.error != nil
     }
 
     static func load(_ path: String) -> (settings: CaretSettings, error: String?) {
@@ -49,11 +57,19 @@ public final class SettingsStore {
     public func update(source: MemoryEntry.Source, _ change: (inout CaretSettings) -> Void) {
         var next = settings
         change(&next)
+        if let rolesCap { next.roles.formIntersection(rolesCap) }
         next.recordPreferences(source: source, at: Int64((Date().timeIntervalSince1970 * 1000).rounded()))
         guard next != settings else { return }
         settings = next
         loadError = nil
-        save()
+        // The unreadable file is never overwritten: until it is kept aside, the change stays in memory only, and the
+        // next change tries the move again (Codex on PR #17).
+        if unreadable, !keepUnreadable() {
+            lastWriteFailed = true
+            loadError = "\(path): unreadable, and it could not be kept aside yet; this change is not saved"
+        } else {
+            save()
+        }
         for observer in observers.values { observer(next) }
     }
 
@@ -64,6 +80,22 @@ public final class SettingsStore {
         return id
     }
 
+    /// Moves the file this host could not read to `<path>.unreadable-<ms>` before the first write replaces it: a newer
+    /// Caret's settings, say, after a downgrade. Nothing is deleted; the move failing only logs, and the write goes on.
+    /// True once the file is kept aside (or is gone): only then may `save` write over its path.
+    private func keepUnreadable() -> Bool {
+        let kept = path + ".unreadable-\(Int64((Date().timeIntervalSince1970 * 1000).rounded()))"
+        do {
+            if FileManager.default.fileExists(atPath: path) { try FileManager.default.moveItem(atPath: path, toPath: kept) }
+            unreadable = false
+            FileHandle.standardError.write(Data("caret: kept the unreadable settings file at \(kept)\n".utf8))
+            return true
+        } catch {
+            FileHandle.standardError.write(Data("caret: could not keep the unreadable settings file: \(error.localizedDescription)\n".utf8))
+            return false
+        }
+    }
+
     private func save() {
         let url = URL(fileURLWithPath: path)
         do {
@@ -71,7 +103,9 @@ public final class SettingsStore {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(settings).write(to: url, options: .atomic)
+            lastWriteFailed = false
         } catch {
+            lastWriteFailed = true
             loadError = "\(path): could not write: \(error)"
             FileHandle.standardError.write(Data("caret: \(loadError!)\n".utf8))
         }

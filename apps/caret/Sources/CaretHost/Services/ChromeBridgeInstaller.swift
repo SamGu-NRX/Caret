@@ -12,6 +12,11 @@ public enum ChromeBridgeInstaller {
         public let message: String
         public let detail: String
         public let manualSteps: [String]
+        /// False when nothing was installed: onboarding keeps its Add button so the person can try again.
+        public var ok = true
+        /// The browser whose Extensions page was opened (its display name): with one browser's manifest refused, another
+        /// is opened instead, and onboarding waits for that one's extension.
+        public var opened: String? = nil
     }
 
     struct Bundled {
@@ -89,7 +94,7 @@ public enum ChromeBridgeInstaller {
     public static func run(home: CaretHome, manifestOverride: String?) -> Result {
         guard let bundled = Bundled.inMainBundle() else {
             return Result(message: "Caret for Chrome isn't in this build of Caret.",
-                          detail: "Build Caret.app with scripts/build-app.sh to include it.", manualSteps: steps)
+                          detail: "Build Caret.app with scripts/build-app.sh to include it.", manualSteps: steps, ok: false)
         }
         let workspace = NSWorkspace.shared
         let defaultBrowser = workspace.urlForApplication(toOpen: URL(string: "https://example.com")!).flatMap { Bundle(url: $0)?.bundleIdentifier }
@@ -101,7 +106,7 @@ public enum ChromeBridgeInstaller {
         switch plan.destination {
         case .refused(let why):
             return Result(message: "Caret can't add itself to a browser in this run.",
-                          detail: ([why] + plan.notices).joined(separator: "\n"), manualSteps: steps)
+                          detail: ([why] + plan.notices).joined(separator: "\n"), manualSteps: steps, ok: false)
         case .targets(let t): targets = t
         }
         let results = install(bridgePath: bundled.bridge.path, targets: targets)
@@ -118,15 +123,17 @@ public enum ChromeBridgeInstaller {
         let refused = results.compactMap { r -> String? in if case .refused(let why) = r.1 { return why } else { return nil } }
         guard !successful.isEmpty else {
             return Result(message: "Caret couldn't install its browser connection.",
-                          detail: (refused + plan.notices).joined(separator: "\n"), manualSteps: steps)
+                          detail: (refused + plan.notices).joined(separator: "\n"), manualSteps: steps, ok: false)
         }
+        var opened: String?
         if let page = pageBrowser(among: added, defaultBundleID: defaultBrowser),
            let app = workspace.urlForApplication(withBundleIdentifier: page.bundleIdentifier) {
+            opened = page.displayName
             // The store listing when there is one; until then the Extensions page and the folder to load unpacked.
             workspace.open([BrowserExtension.storeURL ?? page.extensionsPage], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
         }
         if BrowserExtension.storeURL == nil { workspace.activateFileViewerSelecting([bundled.extensionFolder]) }
         let message = added.isEmpty ? "Caret wrote this run's browser manifest." : "Caret's manifest is installed for \(names(added))."
-        return Result(message: message, detail: (refused + plan.notices).joined(separator: "\n"), manualSteps: steps)
+        return Result(message: message, detail: (refused + plan.notices).joined(separator: "\n"), manualSteps: steps, opened: opened)
     }
 }

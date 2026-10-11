@@ -303,11 +303,42 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(rig.take(), [.addToBrowser], "the native host is written and the extension's page opened")
         XCTAssertTrue(rig.state.browser.opened)
         XCTAssertEqual(rig.step, .browser, "it waits for the extension")
-        rig.send(.browserConnected)
+        rig.send(.browserConnected("Helium"))
+        XCTAssertFalse(rig.state.browser.connected, "another browser's extension says nothing about Chrome's")
+        rig.send(.browserConnected("Google Chrome"))
         XCTAssertTrue(rig.state.browser.connected)
         rig.clock.advance(by: OnboardingFlow.grantLanding)
         XCTAssertEqual(rig.step, .on, "the first connection moves on by itself")
         XCTAssertTrue(rig.take().contains(.bringForward))
+    }
+
+    func testAFallbackBrowserIsTheOneTheStepWaitsFor() {
+        let rig = atBrowser(["Google Chrome", "Helium"])
+        rig.send(.next)
+        rig.send(.browserOpened("Helium"))
+        XCTAssertEqual(rig.state.browser.waitingFor, "Helium", "Chrome's manifest was refused; Add opened Helium")
+        rig.send(.browserConnected("Google Chrome"))
+        XCTAssertFalse(rig.state.browser.connected)
+        rig.send(.browserConnected("Helium"))
+        XCTAssertTrue(rig.state.browser.connected, "Helium's extension moves the step on, with no Continue")
+    }
+
+    func testAFailedAddSaysWhyAndCanBeTriedAgain() {
+        let rig = atBrowser(["Google Chrome"])
+        rig.send(.next)
+        XCTAssertEqual(rig.take(), [.addToBrowser])
+        rig.send(.browserAddFailed("Caret couldn't install its browser connection."))
+        XCTAssertFalse(rig.state.browser.opened, "back to Add, not waiting for an extension that can't connect")
+        XCTAssertEqual(rig.state.browser.failure, "Caret couldn't install its browser connection.")
+        rig.take()
+        rig.send(.next)
+        XCTAssertEqual(rig.take(), [.addToBrowser], "Add runs again")
+        XCTAssertNil(rig.state.browser.failure)
+        XCTAssertEqual(rig.step, .browser)
+
+        let elsewhere = Rig(opening: .init(step: .on), ax: true)
+        elsewhere.send(.browserAddFailed("x"))
+        XCTAssertNil(elsewhere.state.browser.failure, "only the browser step takes it")
     }
 
     func testTheBrowserStepIsSkippableAndContinuesWithoutWaiting() {
@@ -329,7 +360,7 @@ final class OnboardingFlowTests: XCTestCase {
 
     func testAnExtensionConnectedEarlierNeedsNoClick() {
         let rig = Rig(opening: .init(step: .access), ax: false)
-        rig.send(.browsers(trusted: ["Google Chrome"], untrusted: []), .browserConnected)
+        rig.send(.browsers(trusted: ["Google Chrome"], untrusted: []), .browserConnected("Google Chrome"))
         rig.grant()
         rig.clock.advance(by: OnboardingFlow.grantLanding)
         XCTAssertEqual(rig.step, .browser)
@@ -371,7 +402,8 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(empty.state.on.preview, .empty)
         empty.take()
         empty.send(.next)
-        XCTAssertEqual(empty.take(), [.finished, .close])
+        XCTAssertEqual(empty.take(), [.consent(sent: false), .finished, .close], "nothing shown, nothing agreed: Done keeps, so the held roles are dropped")
+        XCTAssertEqual(empty.state.on.decision, .kept)
 
         let kept = Rig.atOn()
         kept.send(.previewReady(requestId: kept.previewAsk!, Rig.preview()))
@@ -409,6 +441,20 @@ final class OnboardingFlowTests: XCTestCase {
         let fresh = try XCTUnwrap(rig.previewAsk)
         rig.send(.previewReady(requestId: fresh, Rig.preview("pv-new")), .next)
         XCTAssertEqual(rig.lookAsk?.1, "pv-new", "the person sends what the new preview shows")
+    }
+
+    func testANoCreditsKeyIsKeptAndThePreviewIsBuiltAgain() throws {
+        let rig = Rig.atOn(key: false)
+        let old = try XCTUnwrap(rig.previewAsk)
+        rig.send(.previewReady(requestId: old, Rig.preview("pv-old")))
+        rig.send(.setJevKey("tsk_0123456789abcdef0123"), .next)
+        rig.take()
+        rig.send(.jevKeyChecked(.noCredits, saved: true))
+        XCTAssertTrue(rig.state.on.jevKey.stored)
+        XCTAssertEqual(rig.step, .on, "the step stays so the no-credits line can be read")
+        let fresh = try XCTUnwrap(rig.previewAsk)
+        XCTAssertNotEqual(fresh, old, "the restarted helper forgot pv-old: a new preview is asked for")
+        XCTAssertNil(rig.lookAsk)
     }
 
     func testAPreviewAskedBeforeTheHelperConnectsIsAskedAgain() throws {
@@ -541,5 +587,15 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(HelloApps.list(picked), "Mail, Chrome, Slack and Notes")
         let bare = HelloApps.pick(defaultMail: nil, defaultBrowser: nil, running: [], installed: [], excluded: { _ in false })
         XCTAssertEqual(bare.map(\.name), ["Notes", "Mail", "Safari"], "never fewer than three names")
+    }
+
+    func testHelloNamesOnlyAppsAPersonTypesIn() {
+        XCTAssertTrue(HelloApps.isPersonApp(path: "/Applications/Slack.app", home: "/Users/a"))
+        XCTAssertTrue(HelloApps.isPersonApp(path: "/System/Applications/Notes.app", home: "/Users/a"))
+        XCTAssertTrue(HelloApps.isPersonApp(path: "/Users/a/Applications/Arc.app", home: "/Users/a"))
+        XCTAssertFalse(HelloApps.isPersonApp(path: "/System/Library/CoreServices/Setup Assistant.app", home: "/Users/a"), "the VM's Hello named it")
+        XCTAssertFalse(HelloApps.isPersonApp(path: "/System/Library/CoreServices/Finder.app", home: "/Users/a"))
+        XCTAssertFalse(HelloApps.isPersonApp(path: "/Users/a/Downloads/Tool.app", home: "/Users/a"))
+        XCTAssertFalse(HelloApps.isPersonApp(path: nil, home: "/Users/a"))
     }
 }

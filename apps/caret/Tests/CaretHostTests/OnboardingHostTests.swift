@@ -173,6 +173,62 @@ final class OnboardingHostTests: XCTestCase {
         XCTAssertEqual(hello.model, "off")
     }
 
+    func testAResumedHoldStillLeavesOnlyNextWordsOn() throws {
+        let dir = temp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let settings = dir.appendingPathComponent("settings.json").path
+        let first = controller(dir)
+        first.store.update(source: .menu) { $0.roles = [.words, .fill] }
+        first.permissionsOverride = .init(accessibility: false, inputMonitoring: false)
+        _ = try run(first, "onboarding open")
+        XCTAssertEqual(first.store.settings.roles, [.words], "held until the person decides")
+        first.close()
+        // Caret stopped after writing the held roles to its progress but before writing settings.
+        SettingsStore(path: settings).update(source: .menu) { $0.roles = [.words, .fill] }
+        let next = controller(dir)
+        next.permissionsOverride = .init(accessibility: false, inputMonitoring: false)
+        _ = try run(next, "onboarding open")
+        XCTAssertEqual(next.store.settings.roles, [.words], "a resumed hold restricts the live roles again")
+    }
+
+    func testTheMenuCannotTurnACloudRoleOnWhileOnboardingHoldsThem() throws {
+        let dir = temp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let c = controller(dir)
+        c.store.update(source: .menu) { $0.roles = [.words, .fill] }
+        c.permissionsOverride = .init(accessibility: false, inputMonitoring: false)
+        _ = try run(c, "onboarding open")
+        c.store.update(source: .menu) { $0.roles.insert(.calendar) }
+        XCTAssertEqual(c.store.settings.roles, [.words], "held until the person decides")
+        c.close()
+        XCTAssertTrue(c.holdsCloudRoles, "Set up later keeps the hold until Send or Keep")
+        c.store.update(source: .menu) { $0.roles.insert(.calendar) }
+        XCTAssertEqual(c.store.settings.roles, [.words], "closed undecided: still held")
+        // The next launch keeps the hold from the progress file.
+        let next = controller(dir)
+        XCTAssertTrue(next.holdsCloudRoles)
+        // The menu's held role opens setup at the step that decides it.
+        next.permissionsOverride = .init(accessibility: true, inputMonitoring: false)
+        next.openToFinishSetup()
+        XCTAssertEqual(next.debugInfo()?.step, "on")
+        _ = try run(next, "onboarding keep")
+        XCTAssertFalse(next.holdsCloudRoles, "Keep decides: the menu is free again")
+        next.store.update(source: .menu) { $0.roles.insert(.calendar) }
+        XCTAssertEqual(next.store.settings.roles, [.words, .calendar])
+    }
+
+    func testKeepTurnsTheCloudRolesOffForSomeoneAlreadyOnboarded() throws {
+        let dir = temp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let c = controller(dir)
+        c.store.update(source: .menu) { $0.roles = [.words, .fill]; $0.onboarded = true }
+        c.permissionsOverride = .init(accessibility: true, inputMonitoring: false)
+        _ = try run(c, "onboarding open on")
+        XCTAssertEqual(c.store.settings.roles, [.words, .fill], "reopened from the menu: nothing held")
+        _ = try run(c, "onboarding keep")
+        XCTAssertEqual(c.store.settings.roles, [.words], "Keep turns the next step off, as the pane says")
+    }
+
     func testARelaunchResumesAtTheSwitchOrPastIt() throws {
         let dir = temp()
         defer { try? FileManager.default.removeItem(at: dir) }

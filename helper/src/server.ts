@@ -380,13 +380,18 @@ export class HelperServer {
             if (!this.hosts.has(s)) this.reject(s, "skillAnswer needs a host hello (host: true): only the host shows keep and promote questions");
             else this.helper().handleSkillAnswer(m.data);
           }
-          // The reply names windows and quotes values, so it goes to the asker only, as memory does.
+          // The reply names windows and quotes values, so it goes to the asker only, as memory does, and only to the host,
+          // which shows it as consent: any other same-user consumer would get screen text it never asked the person for.
+          // "Host" is claimed in the hello today; fix/host-auth (#36) makes it proven.
           else if (m.data.type === "firstLookPreviewRequest") {
-            try {
-              const preview = this.helper().handleFirstLookPreview(m.data);
-              if (!s.destroyed) s.write(JSON.stringify(preview) + "\n");
-            } catch {
-              this.reject(s, "first-look preview has invalid families");
+            if (!this.hosts.has(s)) this.reject(s, "firstLookPreviewRequest needs a host hello (host: true): only the host shows the preview as consent");
+            else {
+              try {
+                const preview = this.helper().handleFirstLookPreview(m.data);
+                if (!s.destroyed) s.write(JSON.stringify(preview) + "\n");
+              } catch {
+                this.reject(s, "first-look preview has invalid families");
+              }
             }
           }
           else if (m.data.type === "firstLook") {

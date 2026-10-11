@@ -29,6 +29,14 @@ if CommandLine.arguments.dropFirst().first == "--unregister" {
     exit(result.ok ? 0 : 1)
 }
 
+// `Caret --trust-probe` prints whether a fresh process of this app has Accessibility (`AXIsProcessTrusted`) and exits.
+// The onboarding debug hook `trust-probe` runs it beside the host's own answer: the VM after-runs saw a running host
+// stay untrusted after the grant until it was relaunched, and this tells a stale answer from a missing grant.
+if CommandLine.arguments.dropFirst().first == "--trust-probe" {
+    print(AXIsProcessTrusted())
+    exit(0)
+}
+
 var configuration = HostRuntime.Configuration()
 
 // Dev mode: `Caret --probe-typing <text>` times one generation per typed prefix.
