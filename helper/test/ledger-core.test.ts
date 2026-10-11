@@ -328,30 +328,29 @@ describe("production equals the brute-force reference (section 9)", () => {
     expect(partial).toBeGreaterThan(1000);
   });
 
-  it("superstring monotonicity: prefix + O + suffix, concatenations, repetition and added units never charge less", () => {
-    for (let seed = 1; seed <= 2_000; seed++) {
-      const { units, lines, spans } = caseOf(seed);
-      if (lines.length === 0 || units.length === 0) continue;
-      const r = rng(seed + 99_999);
-      const base = refReveal(units, lines, spans);
-      const k = Math.floor(r() * units.length);
-      const o = units[k]!;
-      const grown: string[][] = [
-        units.map((u, i) => (i === k ? `${gen(r, 3)}${o}${gen(r, 3)}` : u)),
-        units.map((u, i) => (i === k ? `${o}${units[(k + 1) % units.length]!}` : u)),
-        units.map((u, i) => (i === k ? `${o}${o}` : u)),
-        [...units, gen(r, 24)],
-      ];
-      for (const g of grown) {
-        const ref = refReveal(g, lines, spans);
-        for (const p of base.positions) expect(ref.positions).toContain(p);
-        expect(production(g, lines, spans)).toEqual(ref);
-      }
-      // A unit added with its declared span never charges less either.
-      const more = refReveal([...units, gen(r, 6)], lines, [...spans, gen(r, 4)]);
-      expect(production([...units, gen(rng(seed), 6)], lines, spans).charged).toBeGreaterThanOrEqual(production(units, lines, spans).charged);
-      for (const p of base.positions) expect(more.positions).toContain(p);
+  // The 2,000 independent seeds took 5.820 s in one 5 s test under full-suite CPU stress.
+  it.each(Array.from({ length: 2_000 }, (_, i) => i + 1))("superstring monotonicity seed %i: prefix, concatenation, repetition and added units never charge less", (seed) => {
+    const { units, lines, spans } = caseOf(seed);
+    if (lines.length === 0 || units.length === 0) return;
+    const r = rng(seed + 99_999);
+    const base = refReveal(units, lines, spans);
+    const k = Math.floor(r() * units.length);
+    const o = units[k]!;
+    const grown: string[][] = [
+      units.map((u, i) => (i === k ? `${gen(r, 3)}${o}${gen(r, 3)}` : u)),
+      units.map((u, i) => (i === k ? `${o}${units[(k + 1) % units.length]!}` : u)),
+      units.map((u, i) => (i === k ? `${o}${o}` : u)),
+      [...units, gen(r, 24)],
+    ];
+    for (const g of grown) {
+      const ref = refReveal(g, lines, spans);
+      for (const p of base.positions) expect(ref.positions).toContain(p);
+      expect(production(g, lines, spans)).toEqual(ref);
     }
+    // A unit added with its declared span never charges less either.
+    const more = refReveal([...units, gen(r, 6)], lines, [...spans, gen(r, 4)]);
+    expect(production([...units, gen(rng(seed), 6)], lines, spans).charged).toBeGreaterThanOrEqual(production(units, lines, spans).charged);
+    for (const p of base.positions) expect(more.positions).toContain(p);
   });
 
   it("unit order and line order change nothing", () => {

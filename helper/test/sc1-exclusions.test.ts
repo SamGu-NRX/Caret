@@ -235,15 +235,14 @@ describe("T-E3: values in a secret format, generated", () => {
     for (const p of pieces(x)) expect(JSON.stringify([...m.windows.values()].map((v) => [v.window.title, [...v.nodes.values()], v.values]))).not.toContain(p);
   }
 
+  // The eight independent API-key instances took 5.813 s in one 5 s test under full-suite CPU stress.
   for (const [family, xs] of Object.entries(FAMILIES)) {
-    it(`${family}: no wire string of any builder holds an instance in any position`, async () => {
-      for (const x of xs) {
-        const before = fetched.length;
-        await flows(x);
-        const bodies = fetched.slice(before);
-        expect(bodies.length, family).toBeGreaterThan(0);
-        for (const b of bodies) for (const p of pieces(x)) expect(b.includes(p), `${family}: ${p}`).toBe(false);
-      }
+    it.each(xs.map((x, index) => ({ x, index })))(`${family} instance $index: no wire string of any builder holds it in any position`, async ({ x }) => {
+      const before = fetched.length;
+      await flows(x);
+      const bodies = fetched.slice(before);
+      expect(bodies.length, family).toBeGreaterThan(0);
+      for (const b of bodies) for (const p of pieces(x)) expect(b.includes(p), `${family}: ${p}`).toBe(false);
     });
   }
 });

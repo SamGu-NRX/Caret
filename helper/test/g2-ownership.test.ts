@@ -617,10 +617,11 @@ describe("G2 round 4: the redacted view, generated", () => {
   const SEPS = [": ", " is ", " = ", " ", ":", " - ", " -> ", "\t", "\n"];
   const QUOTES = [["", ""], ['"', '"'], ["'", "'"], ["(", ")"], ["[", "]"], ["<", ">"], ["`", "`"]];
 
-  it("no request carries a value planted beside a marker word, whatever the separator, quoting or role", async () => {
+  // Precompute in the original RNG order so shuffling preserves all 240 generated scenes.
+  const generated = (() => {
     const r = rng(7);
     const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)] as T;
-    for (let i = 0; i < 240; i++) {
+    return Array.from({ length: 240 }, (_, i) => {
       const planted = `Qv${i}x${Math.floor(r() * 9000 + 1000)}`;
       const m = pick(MARKERS);
       const [o, c] = pick(QUOTES) as [string, string];
@@ -643,37 +644,42 @@ describe("G2 round 4: the redacted view, generated", () => {
               : role === "blankOpener" ? [{ key: "o/t", parent: null, role: "AXTextArea", editable: true as const, value: `Notes${pick(["\n", "\r\n"])}${m}:${pick(["\n\n", "\r\n\r\n", "\n \n"])}${o}${planted}${c}\nCity: Austin`, frame: at }]
               : [{ key: "o/c", parent: null, role: "AXCell", value: line, frame: at }],
           } as Snapshot);
-      const name = control("e1", "Full name");
-      const others = role === "note" ? [source] : [source, noteWindow("Name: Kenji Watanabe")];
-      const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
-      const model = desk([name, control("e2", "Notes", "textarea")], others);
-      await proposeFill(model, ask, WIN, keyOf(name), 2000);
-      const snap = intentSnapshot("Fill all fields", model, model.windows.get(WIN)!, []);
-      requests.push(headsRequest(snap), scopeRequest(snap, 0), scopeRequest(snap, 1));
-      await jevIntentMaker(ask).make(snap);
-      const writes: WriterRequest[] = [];
-      const writer: WriterPort = {
-        route: gatewayRoute("openai/gpt-oss-120b"),
-        async write(req) {
-          writes.push(req);
-          return { model: "fixture", provider: "fixture", output: { program: null, reply: "", json: { route: "refuse", why: "nothingToFill", scope: "none", section: "none", fields: [], sources: [], whose: "user", literals: [] } }, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
-        },
-      };
-      await writerIntentMaker(writer, () => "fixture").make(snap);
-      // These writers stop after their request, before any program runs. A secret guard failure must not be hidden
-      // as an expected planner failure: all three requests must reach the stand-in.
-      await expect(planWithCode("Fill all fields", model, { values: () => [] }, { writer, askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 })).rejects.toBeInstanceOf(PlannerError);
-      await expect(planGoal(model, { goalId: "fixture", instruction: "Fill all fields", writer, askJev: ask, windows: [WIN], memory: [], calendar: null, clock: macClock(new Date(2000)), now: 2000, readerSession: 0 })).rejects.toBeInstanceOf(GoalError);
-      expect(writes, `case ${i}: all writer builders reached`).toHaveLength(3);
-      try {
-        await planTask("Fill all fields", model, { values: () => [] }, { askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 });
-      } catch (e) {
-        expect(e).toBeInstanceOf(PlannerError);
-      }
-      expect(requests.some((r) => r.purpose === "planner.fields"), `case ${i}: planner built a request`).toBe(true);
-      const sent = JSON.stringify([requests.map((x) => [x.state, x.questions, x.nouls ?? {}, x.snippets]), writes.map((w) => [w.input, w.disclosed])]);
-      expect(sent.includes(planted), `case ${i} (${role}): ${JSON.stringify(line)}`).toBe(false);
+      return { i, planted, line, role, source };
+    });
+  })();
+
+  // The batch took 8.468 s in one 5 s test under full-suite CPU stress; each scene gets its own test.
+  it.each(generated)("case $i ($role): no request carries the planted value", async ({ i, planted, line, role, source }) => {
+    const name = control("e1", "Full name");
+    const others = role === "note" ? [source] : [source, noteWindow("Name: Kenji Watanabe")];
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    const model = desk([name, control("e2", "Notes", "textarea")], others);
+    await proposeFill(model, ask, WIN, keyOf(name), 2000);
+    const snap = intentSnapshot("Fill all fields", model, model.windows.get(WIN)!, []);
+    requests.push(headsRequest(snap), scopeRequest(snap, 0), scopeRequest(snap, 1));
+    await jevIntentMaker(ask).make(snap);
+    const writes: WriterRequest[] = [];
+    const writer: WriterPort = {
+      route: gatewayRoute("openai/gpt-oss-120b"),
+      async write(req) {
+        writes.push(req);
+        return { model: "fixture", provider: "fixture", output: { program: null, reply: "", json: { route: "refuse", why: "nothingToFill", scope: "none", section: "none", fields: [], sources: [], whose: "user", literals: [] } }, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
+      },
+    };
+    await writerIntentMaker(writer, () => "fixture").make(snap);
+    // These writers stop after their request, before any program runs. A secret guard failure must not be hidden
+    // as an expected planner failure: all three requests must reach the stand-in.
+    await expect(planWithCode("Fill all fields", model, { values: () => [] }, { writer, askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 })).rejects.toBeInstanceOf(PlannerError);
+    await expect(planGoal(model, { goalId: "fixture", instruction: "Fill all fields", writer, askJev: ask, windows: [WIN], memory: [], calendar: null, clock: macClock(new Date(2000)), now: 2000, readerSession: 0 })).rejects.toBeInstanceOf(GoalError);
+    expect(writes, `case ${i}: all writer builders reached`).toHaveLength(3);
+    try {
+      await planTask("Fill all fields", model, { values: () => [] }, { askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 });
+    } catch (e) {
+      expect(e).toBeInstanceOf(PlannerError);
     }
+    expect(requests.some((r) => r.purpose === "planner.fields"), `case ${i}: planner built a request`).toBe(true);
+    const sent = JSON.stringify([requests.map((x) => [x.state, x.questions, x.nouls ?? {}, x.snippets]), writes.map((w) => [w.input, w.disclosed])]);
+    expect(sent.includes(planted), `case ${i} (${role}): ${JSON.stringify(line)}`).toBe(false);
   });
 
   it("the redacted view's cost on the corpora: the lines it drops, and the right values they held", () => {
