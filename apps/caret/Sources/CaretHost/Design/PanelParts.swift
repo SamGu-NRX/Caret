@@ -238,6 +238,24 @@ struct AppGlyph: View {
 
 // MARK: - The slip
 
+/// How a slip's changes animate, as `LineView` decided it: they move, or under Reduce Motion they
+/// fade at 0.12 s, or with `animated` off they switch at once.
+struct SlipMotion: Equatable {
+    var moves: Bool
+    var fades: Bool
+}
+
+/// The `SlipMotion` each slip in a view chose, in layout order. Nothing in the app reads it. A test
+/// hosts a live slip and reads it to see what Reduce Motion did; an off-screen render draws one
+/// still frame whatever the slip decided (Greptile on #19).
+struct SlipMotionKey: PreferenceKey {
+    static var defaultValue: [SlipMotion] { [] }
+
+    static func reduce(value: inout [SlipMotion], nextValue: () -> [SlipMotion]) {
+        value += nextValue()
+    }
+}
+
 /// The slip (DIRECTION.md section 5.3): the offer line, the working line with its step bar, the
 /// result, the error, and the question that grows it from 30 to 74. It changes in place; every
 /// state is this one view with different content, so the panel never re-enters between them.
@@ -318,6 +336,7 @@ struct LineView: View {
         .accessibilityValue(SlipSpeech.value(content) ?? "")
         .accessibilityAddTraits(.updatesFrequently)
         .modifier(OptionalAction(name: "Not right", action: onNotRight))
+        .preference(key: SlipMotionKey.self, value: [SlipMotion(moves: moves, fades: fades)])
     }
 
     /// Where the words start: the row under the line aligns to it.
