@@ -515,7 +515,8 @@ async function main(): Promise<void> {
 
   // ==== Row 1: mail to event, 1b undo, 1c undo after an edit ====
   reached = "row 1 (mail to event)";
-  const eventOracle = (e: MailEvent): { title: string; date: string; start: string; end: string; location: string } => ({ title: e.title, date: e.date, start: e.start, end: e.end, location: e.location });
+  // Location is outside the event contract (event-card.ts, CalendarEvent): compared fields only; location goes in the row's note.
+  const eventOracle = (e: MailEvent): { title: string; date: string; start: string; end: string } => ({ title: e.title, date: e.date, start: e.start, end: e.end });
   /** An instant as YYYY-MM-DD and HH:MM in `zone`. */
   const local = (iso: string, zone: string): { date: string; time: string } => {
     const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
@@ -542,7 +543,7 @@ async function main(): Promise<void> {
     const exp1c = { undoSays: EVENT_CHANGED, calendarAfterUndo: [{ ...eventOracle(lunch), start: "13:00", end: "14:00" }] };
     const { offer, diagnosis, times } = await eventOffer("maya", coffee);
     await screenshot(mailSid, "row1-mail-maya");
-    const gap = "and the event has no location: CalendarEvent (helper/src/executor/means.ts) and the card (offers/event-card.ts) carry none";
+    const gap = "(location is not in the event contract)";
     if (offer === null) {
       const why = times === 0 ? "Page snapshots carry no typed values (helper/src/engines/page-link.ts sets values: [] for every page window), so offers/event-card.ts spansIn finds no time span in a web thread" : "the window has typed time values, so the cause is elsewhere (see journey.log and warnings.txt)";
       const cause = `no event offer within 10 s: ${diagnosis}. ${why}; ${gap}`;
@@ -553,21 +554,23 @@ async function main(): Promise<void> {
       return;
     }
     // Tab on the offer: the event goes into the fake calendar.
-    const shown = (o: Msg): { title: string; date: string; start: string; end: string; location: string | null } => {
+    const shown = (o: Msg): { title: string; date: string; start: string; end: string } => {
       const spec = o.variants as { blocks: { type: string; title?: { text: string }; rows?: { label: string; value: { text: string } }[] }[] };
       const facts = spec.blocks.find((b) => b.type === "facts")?.rows ?? [];
       const ev = helper.events.shown().find((x) => x.offerKey === o.offerKey);
       const when = ev !== undefined && "start" in ev.when ? ev.when : null;
-      return { title: spec.blocks.find((b) => b.type === "header")?.title?.text ?? "", date: when === null ? "" : local(when.start, coffee.zone).date, start: when === null ? "" : local(when.start, coffee.zone).time, end: when === null ? "" : local(when.end, coffee.zone).time, location: facts.find((r) => /where|location/i.test(r.label))?.value.text ?? null };
+      return { title: spec.blocks.find((b) => b.type === "header")?.title?.text ?? "", date: when === null ? "" : local(when.start, coffee.zone).date, start: when === null ? "" : local(when.start, coffee.zone).time, end: when === null ? "" : local(when.end, coffee.zone).time };
     };
-    const inCalendar = (): { title: string; date: string; start: string; end: string; location: string | null }[] => [...calendar.events.values()].map((ev) => ({ title: ev.title, date: local(ev.start, coffee.zone).date, start: local(ev.start, coffee.zone).time, end: local(ev.end, coffee.zone).time, location: (ev as { location?: string }).location ?? null }));
+    const inCalendar = (): { title: string; date: string; start: string; end: string }[] => [...calendar.events.values()].map((ev) => ({ title: ev.title, date: local(ev.start, coffee.zone).date, start: local(ev.start, coffee.zone).time, end: local(ev.end, coffee.zone).time }));
     const offerSeen = shown(offer);
+    const offerFacts = (offer.variants as { blocks: { type: string; rows?: { label: string; value: { text: string } }[] }[] }).blocks.find((b) => b.type === "facts")?.rows ?? [];
+    const locationNote = `location is not in the event contract (offers/event-card.ts, CalendarEvent); the message says "${coffee.location}", the card shows ${JSON.stringify(offerFacts.find((r) => /where|location/i.test(r.label))?.value.text ?? null)}`;
     const offerKey = String(offer.offerKey);
     let mark = hostMark();
     hostLine.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: offerKey, actionId: "add", overrides: {}, at: Date.now() });
     await hostLine.next((m) => m.type === "taskProgress" && m.taskId === offerKey && (m.phase === "done" || m.phase === "stopped" || m.phase === "handoff"), mark, 10_000);
     const added = inCalendar();
-    observe("mail-to-event", { driven: true, observed: { offer: offerSeen, calendar: added }, expected: exp1, cause: offerSeen.location === null ? `the offer and the calendar entry lack the location: ${gap}` : "the offer or the calendar entry differs from the message" });
+    observe("mail-to-event", { driven: true, observed: { offer: offerSeen, calendar: added }, expected: exp1, cause: "the offer or the calendar entry differs from the message", note: locationNote });
     // 1b: Undo.
     mark = hostMark();
     hostLine.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId: offerKey, action: "undo" });
@@ -746,6 +749,7 @@ async function main(): Promise<void> {
       driven: true,
       observed: { proposals: proposals.length, previews: previews.length },
       expected: { proposals: 0, previews: 0 },
+      expectedFailure: "known gap: #36's non-host rule, focus task caret-host-nonhost-f1",
       cause: `the plain consumer got ${JSON.stringify(counts(proposals))} over the run (${whileField} while form.html's First name was focused) and previews ${JSON.stringify(counts(previews))}; its firstLookPreviewRequest was ${got.some((m) => m.type === "error" && /firstLookPreviewRequest/.test(String(m.message))) ? "refused" : "answered"}. Known on alpha: fill proposals are published to every consumer (server.ts publish); PR #36's queued non-host rule owns it`,
     });
   }

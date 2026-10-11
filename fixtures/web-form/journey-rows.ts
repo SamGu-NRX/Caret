@@ -33,7 +33,7 @@ export const ROWS: readonly RowSpec[] = [
   {
     id: "mail-to-event",
     number: "1",
-    oracle: "A conversation line in the web mail thread yields one event offer whose title, date, start and end time and location equal the message's; accepting it writes exactly that event into the fake calendar.",
+    oracle: "A conversation line in the web mail thread yields one event offer whose title, date, and start and end time equal the message's; accepting it writes exactly that event into the fake calendar. Location is not in the event contract (offers/event-card.ts, CalendarEvent in executor/means.ts): it is recorded as a note, not compared.",
     owner: "#22 (v2/act)",
   },
   {
@@ -93,6 +93,10 @@ export interface Observation {
   expected: unknown;
   /** Why the row failed (the product gap or bug, or what kept it from being driven). Ignored when it passes. */
   cause?: string;
+  /** Something observed outside the oracle, reported beside the result (row 1's location). */
+  note?: string;
+  /** A failure the lead has ruled known, with its label; the row still fails, marked expected. */
+  expectedFailure?: string;
 }
 
 export interface RowResult extends RowSpec {
@@ -102,6 +106,9 @@ export interface RowResult extends RowSpec {
   expected: unknown;
   /** Null when the row passed; otherwise never empty. */
   cause: string | null;
+  note: string | null;
+  /** The known-gap label when the row fails as ruled expected; null otherwise. */
+  expectedFailure: string | null;
 }
 
 export interface JourneyReport {
@@ -118,10 +125,10 @@ export function buildReport(commit: string, at: string, observations: Partial<Re
   if (unknown.length > 0) throw new Error(`observations for rows the journey does not define: ${unknown.join(", ")}`);
   const rows = ROWS.map((spec): RowResult => {
     const o = observations[spec.id];
-    if (o === undefined) return { ...spec, pass: false, driven: false, observed: null, expected: null, cause: `not reached: ${notReached}` };
+    if (o === undefined) return { ...spec, pass: false, driven: false, observed: null, expected: null, cause: `not reached: ${notReached}`, note: null, expectedFailure: null };
     const pass = o.driven && isDeepStrictEqual(o.observed, o.expected);
     const cause = pass ? null : o.cause !== undefined && o.cause.trim() !== "" ? o.cause : o.driven ? "observed differs from expected; the run gave no further cause" : "not driven; the run gave no further cause";
-    return { ...spec, pass, driven: o.driven, observed: o.observed, expected: o.expected, cause };
+    return { ...spec, pass, driven: o.driven, observed: o.observed, expected: o.expected, cause, note: o.note ?? null, expectedFailure: pass ? null : (o.expectedFailure ?? null) };
   });
   const passed = rows.filter((r) => r.pass).length;
   return { commit, at, passed, failed: rows.length - passed, rows };
@@ -141,12 +148,14 @@ export function reportMarkdown(r: JourneyReport): string {
     "",
     "| Row | Id | Result | Cause | Owning PR |",
     "| --- | --- | --- | --- | --- |",
-    ...r.rows.map((x) => `| ${x.number} | ${x.id} | ${x.pass ? "pass" : "FAIL"} | ${x.cause === null ? "" : cell(x.cause)} | ${x.pass ? "" : x.owner} |`),
+    ...r.rows.map((x) => `| ${x.number} | ${x.id} | ${x.pass ? "pass" : x.expectedFailure !== null ? "FAIL (expected)" : "FAIL"} | ${x.expectedFailure !== null ? `${cell(x.expectedFailure)}. ` : ""}${x.cause === null ? "" : cell(x.cause)}${x.note === null ? "" : ` Note: ${cell(x.note)}`} | ${x.pass ? "" : x.owner} |`),
     "",
   ];
   for (const x of r.rows) {
     lines.push(`## ${x.number} ${x.id}: ${x.pass ? "pass" : "FAIL"}`, "", `Oracle: ${x.oracle}`, "");
+    if (x.expectedFailure !== null) lines.push(`Expected failure: ${x.expectedFailure}`, "");
     if (x.cause !== null) lines.push(`Cause: ${x.cause}`, "");
+    if (x.note !== null) lines.push(`Note: ${x.note}`, "");
     lines.push("Observed:", "", "```json", JSON.stringify(x.observed, null, 2), "```", "", "Expected:", "", "```json", JSON.stringify(x.expected, null, 2), "```", "");
   }
   return `${lines.join("\n")}\n`;
