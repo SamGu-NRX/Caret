@@ -385,11 +385,12 @@ async function main(): Promise<void> {
     engineSeen.push({ at: Date.now(), type: x.type, tabId: x.tabId ?? null, origins, fieldText: (x.focused?.text !== undefined && x.focused.text !== null) || (x.docs?.field !== undefined && x.docs.field !== null) || (x.type === "pageFocus" && "text" in x && (x as { text?: unknown }).text !== undefined), tabText: x.text !== undefined, json: JSON.stringify(m) });
     return receive(m);
   };
-  const commands: { at: number; kind: string; tabId: number | null; key: string | null }[] = [];
+  // Page verbs name their control by `name` (its accessible name, protocol.ts PageTarget) and `id`; they carry no node key.
+  const commands: { at: number; kind: string; tabId: number | null; name: string | null }[] = [];
   const command = session.command.bind(session);
   session.command = (verb: PageVerb, timeoutMs?: number) => {
-    const v = verb as { kind: string; tabId?: number | null; key?: string };
-    commands.push({ at: Date.now(), kind: v.kind, tabId: v.tabId ?? null, key: v.key ?? null });
+    const v = verb as { kind: string; tabId?: number | null; name?: string };
+    commands.push({ at: Date.now(), kind: v.kind, tabId: v.tabId ?? null, name: v.name ?? null });
     return command(verb, timeoutMs);
   };
   const ACTS = new Set(["pageWrite", "pagePress", "pageSelect", "pageChooseOption", "pageSetChecked", "pageInsertText", "pageAttachFile"]);
@@ -708,9 +709,7 @@ async function main(): Promise<void> {
     const formTab = form.tabId;
     const acts = commands.slice(cmd0).filter((c) => ACTS.has(c.kind) && c.tabId === formTab);
     const stopped = stopAt ?? Number.POSITIVE_INFINITY;
-    const w = helper.model.windows.get(form.windowId);
-    const labelOfKey = (key: string | null): string => (key === null ? "?" : (w?.nodes.get(key)?.label ?? key));
-    const dispatched = [...new Set(acts.filter((c) => c.at <= stopped).map((c) => fieldOf(labelOfKey(c.key))))];
+    const dispatched = [...new Set(acts.filter((c) => c.at <= stopped).map((c) => fieldOf(c.name ?? "?")))];
     const verified = new Set(progressOf(acceptMark, seg.goalId).filter((m) => m.event === "step" && m.phase === "verified").map((m) => fieldOf(String(m.says).split(":")[0] ?? "")));
     const texts = [...progressOf(acceptMark, seg.goalId).map((m) => String(m.says ?? "")), ...textsFor(acceptMark, new Set([seg.goalId]))];
     const claimed = [...new Set(Object.keys(LABEL_FIELD).filter((l) => texts.some((t) => /may have been written/i.test(t) && t.includes(l))).map(fieldOf))].sort();
@@ -778,13 +777,19 @@ async function main(): Promise<void> {
     const direct = await session.readText(offTab, 3000);
     await sleep(300);
     const fromOff = engineSeen.slice(seen0).filter((x) => x.tabId === offTab || x.origins.includes(offOrigin) || x.json.includes(OFF_MARKER) || x.json.includes(offOrigin));
+    // A focus move on an off site is reported with ids only (PageFocusMoved: type, v, at, tabId, frameId; #14 64dc3571
+    // "Focus reports from those pages carry only the tab and frame ids"). Those carry nothing of the page and are
+    // reported as a note; a focus report carrying any other key counts.
+    const ID_ONLY = new Set(["type", "v", "at", "tabId", "frameId"]);
+    const focus = fromOff.filter((x) => x.type === "pageFocus");
+    const focusWithContent = focus.filter((x) => Object.keys(JSON.parse(x.json) as object).some((k) => !ID_ONLY.has(k)));
     const observed = {
       snapshots: fromOff.filter((x) => x.type === "pageSnapshot").length,
-      focusReports: fromOff.filter((x) => x.type === "pageFocus").length,
+      focusReports: focusWithContent.length,
       fieldText: fromOff.filter((x) => x.fieldText || x.json.includes(OFF_MARKER)).length,
       tabText: fromOff.filter((x) => x.tabText).length,
     };
-    observe("deny-site-off", { driven: true, observed, expected: { snapshots: 0, focusReports: 0, fieldText: 0, tabText: 0 }, cause: `${fromOff.length} engine message(s) about the switched-off tab or origin: ${[...new Set(fromOff.map((x) => x.type))].join(", ") || "none"}; the helper's direct read of the tab answered ${direct.outcome}` });
+    observe("deny-site-off", { driven: true, observed, expected: { snapshots: 0, focusReports: 0, fieldText: 0, tabText: 0 }, cause: `${fromOff.length} engine message(s) about the switched-off tab or origin: ${[...new Set(fromOff.map((x) => x.type))].join(", ") || "none"}; the helper's direct read of the tab answered ${direct.outcome}`, note: `${focus.length - focusWithContent.length} id-only focus report(s) from the off tab (tab and frame ids, no page content), as #14's contract sends` });
     hostLine.send({ type: "settings", v: PROTOCOL_VERSION, at: Date.now(), roles: [...DEFAULT_SETTINGS.roles], level: DEFAULT_SETTINGS.level, paused: false, sitesOff: [] });
   })();
 
