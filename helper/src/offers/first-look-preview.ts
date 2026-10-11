@@ -92,6 +92,11 @@ export class FirstLookPreviews {
     return { type: "firstLookPreview", v: PROTOCOL_VERSION, requestId: req.requestId, at, previewId, windows: shown, totalChars: shown.reduce((n, w) => n + w.charsSent, 0) };
   }
 
+  /** The screen model let go of a window's text (ScreenModel.expire): no saved preview keeps a line read from it. */
+  windowExpired(windowId: string): void {
+    for (const [id, saved] of this.saved) if (saved.spans.some((s) => s.windowId === windowId)) this.saved.set(id, { at: saved.at, spans: saved.spans.filter((s) => s.windowId !== windowId) });
+  }
+
   lookup(id: string, at: number): PreviewLookup {
     const preview = this.saved.get(id);
     if (preview === undefined) return { error: "previewUnknown" };

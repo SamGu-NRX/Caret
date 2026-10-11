@@ -71,7 +71,7 @@ export interface FirstLookDeps {
    * Records the found offer so an offerAccept with its key reaches `accept`. `underlying` is the id of the
    * engine's offer it reports, so that offer's withdrawal ends the first look's key too.
    */
-  record: (msg: OfferPopup, family: Family, accept: AcceptHandler, underlying: string | null) => void;
+  record: (msg: OfferPopup, family: Family, accept: AcceptHandler, underlying: string | null, windows: readonly string[]) => void;
   /** Ends the found offer: publishes offerWithdrawn for its key. */
   withdraw: (offerKey: string, reason: "taken" | "stale") => void;
   /** Values the user told Caret that a form's fields may take (fill/about.ts). */
@@ -96,6 +96,8 @@ interface Candidate {
   spec: (offerKey: string) => PopupSpecT;
   /** A fill's source apps, each once, in field order. */
   sourceApps?: string[];
+  /** The other windows the offer's values were read from (a fill's sources), so the offer ends when one expires. */
+  sources?: string[];
   accept: (offerKey: string) => AcceptHandler;
   /** The engine offer a loop or routine candidate reports, and what to do once it is chosen. */
   underlying?: string;
@@ -110,6 +112,11 @@ type Settled = { family: Family; ok: true; found: Candidate[] } | { family: Fami
 export class FirstLookRunner {
   private readonly deps: FirstLookDeps;
   private readonly previews = new FirstLookPreviews();
+
+  /** A window's text expired: the saved previews let go of the lines they read from it (FirstLookPreviews.windowExpired). */
+  windowExpired(windowId: string): void {
+    this.previews.windowExpired(windowId);
+  }
 
   constructor(deps: FirstLookDeps) {
     this.deps = deps;
@@ -187,7 +194,10 @@ export class FirstLookRunner {
     if (late()) return reply("error", null, "the look did not finish before the deadline");
     if (!this.deps.live()) return reply("error", null, "the helper is in shadow mode");
     if (this.deps.paused()) return reply("error", null, "Caret is paused");
-    const all = settled.flatMap((s) => (s.ok ? s.found : []));
+    // A candidate whose window, or a window its values came from, expired while the look ran is no offer: taking it would
+    // find nothing to check (ScreenModel.expire).
+    const held = (c: Candidate): boolean => [c.window.window.windowId, ...(c.sources ?? [])].every((id) => this.deps.model.windows.has(id));
+    const all = settled.flatMap((s) => (s.ok ? s.found : [])).filter(held);
     const best = all.sort((a, b) => a.rank - b.rank || b.weight - a.weight)[0];
     if (best === undefined) {
       const problems = settled.flatMap((s) => (s.ok ? [] : [`${s.family}: ${s.reason}`]));
@@ -212,7 +222,7 @@ export class FirstLookRunner {
     if (late()) return reply("error", null, "the look did not finish before the deadline");
     best.chosen?.();
     const msg: OfferPopup = { type: "popup", v: PROTOCOL_VERSION, offerKey, at: out.at, field: offerField(best.window, best.key), spec };
-    this.deps.record(msg, best.family, best.accept(offerKey), best.underlying ?? null);
+    this.deps.record(msg, best.family, best.accept(offerKey), best.underlying ?? null, [best.window.window.windowId, ...(best.sources ?? [])]);
     return out;
   }
 
@@ -316,6 +326,7 @@ export class FirstLookRunner {
       const popup = buildFillPopup(model, p);
       out.push({
         ...(popup.sourceApps === undefined ? {} : { sourceApps: popup.sourceApps }),
+        sources: p.fields.flatMap((f) => (f.source === null ? [] : [f.source.windowId])),
         family: "fill",
         kind: "fill",
         rank: RANK.fill,
