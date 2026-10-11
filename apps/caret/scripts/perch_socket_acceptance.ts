@@ -24,7 +24,7 @@
 //      Rim.seen cases and the rim-* renders cover it.
 //
 //   node apps/caret/scripts/perch_socket_acceptance.ts --out DIR [--runs 5]
-import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -33,11 +33,17 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
+import { newLaunchSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
 import { Store } from "../../../helper/src/store.ts";
 import { PROTOCOL_VERSION, type Activity, type HelperMessage, type Node, type TaskProgress, type TaskRecord } from "../../../helper/src/protocol.ts";
 import type { Plan, Step } from "../../../helper/src/executor/schema.ts";
 import { FakeApp, K, TITLE } from "../../../helper/test/fake-app.ts";
 import { FIXTURE_APP } from "../../../helper/test/builders.ts";
+
+// The in-process server's launch secret. Caret gets the host key derived from it (spawnCaret), so the server admits it
+// as the host (helper/src/host-auth.ts).
+const launchSecret = newLaunchSecret();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -87,7 +93,7 @@ const helper = new Helper({
 });
 app.helper = helper;
 app.show();
-server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`));
+server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 const progress = (id: string): TaskProgress[] => sent.flatMap((x) => (x.m.type === "taskProgress" && x.m.taskId === id ? [x.m] : []));
@@ -105,10 +111,10 @@ const PLAN: Plan = { id: "six-fields", title: "Fill the six fields", slots: {}, 
 
 // --test-hooks: `key`, `control` and `click` on the debug socket need it (CodeRabbit on PR #9).
 const hostHome = mkdtempSync(join(tmpdir(), "caret-a4-home-"));
-const host: ChildProcess = spawn(CARET, [
+const host: ChildProcess = spawnCaret(CARET, [
   "--home", hostHome, "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--test-hooks", "--no-ghost",
   "--allow-pids", String(FIXTURE_APP.pid), "--perch", "hidden", "--status-item", "off",
-]);
+], launchSecret);
 host.stderr?.setEncoding("utf8");
 host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));
 process.on("exit", () => host.kill("SIGTERM"));

@@ -29,6 +29,7 @@ import { parseArgs, promisify } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
 import { newLaunchSecret, sendSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
 // B23: caret-screen accepts only a helper that proves it holds this launch's secret, which both get
 // here: the reader on its standard input (--auth-fd 0), the in-process server as an argument.
 const launchSecret = newLaunchSecret();
@@ -333,7 +334,7 @@ try {
   reader.stderr?.setEncoding("utf8");
   reader.stderr?.on("data", (d: string) => log.push(`reader: ${d.trim().slice(0, 300)}`));
   // --test-hooks: `key` and `control` on the debug socket need it (CodeRabbit on PR #9).
-  host = spawn(CARET, ["--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--test-hooks", "--no-ghost", "--allow-pids", String(fixturePid), "--perch", a.perch === "shown" ? "shown" : "hidden"]);
+  host = spawnCaret(CARET, ["--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--test-hooks", "--no-ghost", "--allow-pids", String(fixturePid), "--perch", a.perch === "shown" ? "shown" : "hidden"], launchSecret);
   started.push(host);
   host.stderr?.setEncoding("utf8");
   host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));

@@ -2424,6 +2424,29 @@
             "why"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hostProof"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "proof": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "proof"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -10514,6 +10537,47 @@
             "requestId",
             "error",
             "files"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hostChallenge"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "nonce": {
+              "type": "string",
+              "minLength": 16
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "nonce"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hostAuthenticated"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            }
+          },
+          "required": [
+            "type",
+            "v"
           ],
           "additionalProperties": false
         }

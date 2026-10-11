@@ -19,6 +19,7 @@ import { pageHost } from "../src/engines/host.ts";
 import { PageEngineLink } from "../src/engines/page-link.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
 import { X, chrome, hello as pageHello } from "./fake-page.ts";
+import { authenticateRawHost, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const golden = readFileSync(new URL("../fixtures/golden/page-inline.ndjson", import.meta.url), "utf8").trim().split("\n");
 const at = (i: number): Record<string, unknown> => JSON.parse(golden[i] as string) as Record<string, unknown>;
@@ -97,7 +98,7 @@ describe("page text on the socket (H13)", () => {
     fake = fakeLink("ok");
     let s: HelperServer | null = null;
     helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, readerLink: fake.link, publish: (m) => s?.publish(m), warn: (l) => void warnings.push(l) });
-    server = new HelperServer(path, () => helper, (l) => void warnings.push(l));
+    server = new HelperServer(path, () => helper, (l) => void warnings.push(l), TEST_LAUNCH_SECRET);
     s = server;
     await server.listen();
   });
@@ -118,6 +119,8 @@ describe("page text on the socket (H13)", () => {
     send(plain.s, hostHello(2, []));
     // A consumer that is not the host cannot get the text by naming the capability.
     send(tool.s, hostHello(3, ["pageText"], false));
+    await authenticateRawHost(texted.s, texted.lines);
+    await authenticateRawHost(plain.s, plain.lines);
     await tick();
     server.publish(HelperMessage.parse(at(1)));
     await tick();
@@ -134,6 +137,7 @@ describe("page text on the socket (H13)", () => {
   it("takes pageInsert only from a host that declared pageText", async () => {
     const plain = await connect(path);
     send(plain.s, hostHello(2, []));
+    await authenticateRawHost(plain.s, plain.lines);
     await tick();
     send(plain.s, at(2));
     await tick();
@@ -145,6 +149,7 @@ describe("page text on the socket (H13)", () => {
   it("inserts under a grant for that insert alone, revokes it, and answers the asker", async () => {
     const texted = await connect(path);
     send(texted.s, hostHello(1, ["pageText"]));
+    await authenticateRawHost(texted.s, texted.lines);
     await tick();
     send(texted.s, at(2));
     await tick();

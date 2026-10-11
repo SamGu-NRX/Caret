@@ -315,6 +315,8 @@ case .run(let mode):
     }
 }
 configuration.helperSocketPath = MainActor.assumeIsolated { services.helperSocket }
+// In memory only: the runtime's helper client proves with it that this Caret is the host (HostAuth).
+configuration.hostKey = MainActor.assumeIsolated { services.hostKey }
 
 // The engine's token profiles follow the home: a test run's --home keeps them out of the user's Library.
 configuration.profileDirectory = URL(fileURLWithPath: home.profilesDirectory(userHome: NSHomeDirectory()), isDirectory: true)

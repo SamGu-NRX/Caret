@@ -1,0 +1,1 @@
+Helper: script env names in privacy-gate.ts/HELPER_ONLY_ENV; diff guard-adversary vs base before loosening a guard; askValues in hello; MAX_WAYS 8; close page sessions before shutdown; oracle rules off FillTrace; h13 harness needs v2/host; swift-typecheck ~7 GiB.

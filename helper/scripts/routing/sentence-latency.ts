@@ -29,7 +29,8 @@ import { FakeCalendar } from "../../src/executor/means.ts";
 import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev, type JevRequest } from "../../src/fill/jev.ts";
 import { PROTOCOL_VERSION, ROUTING_CAPABILITY, type AppRef, type Node, type Snapshot, type TypedValue } from "../../src/protocol.ts";
 import { DEFAULT_SETTINGS } from "../../src/offers/settings.ts";
-import { LineClient } from "../../test/socket-reader.ts";
+import { authenticateHost, LineClient } from "../../test/socket-reader.ts";
+import { newLaunchSecret } from "../../src/launch.ts";
 
 const { values: a } = parseArgs({
   options: {
@@ -112,10 +113,13 @@ const helper = new Helper({
   publish: (m) => server?.publish(m),
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
 });
-server = new HelperServer(sock, () => helper, () => undefined);
+// The host below says host: true, which a helper accepts only with a proof under its launch secret (src/host-auth.ts).
+const launchSecret = newLaunchSecret();
+server = new HelperServer(sock, () => helper, () => undefined, launchSecret);
 await server.listen();
 const host = await LineClient.connect(sock);
 host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "r2-latency-host", host: true, capabilities: [ROUTING_CAPABILITY] });
+await authenticateHost(host, launchSecret);
 host.send({ type: "settings", v: PROTOCOL_VERSION, at: Date.now(), roles: [...DEFAULT_SETTINGS.roles], level: DEFAULT_SETTINGS.level, paused: false });
 const reader = await LineClient.connect(sock);
 reader.send({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "r2-latency-reader" });

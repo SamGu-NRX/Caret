@@ -44,6 +44,7 @@ import threading
 import time
 
 import fixture_app
+import launch_secret
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -76,21 +77,22 @@ def log(*parts):
     print(time.strftime("%H:%M:%S"), *parts, flush=True)
 
 
-# B23: caret-screen accepts only a helper that proves it holds this run's launch secret; both get it
-# on their standard input (--auth-fd 0), never on a command line.
-LAUNCH_SECRET = os.urandom(32)
-
-
 def start_with_secret(name, args, out_dir, env=None, cwd=None):
-    proc = start(name, args, out_dir, env=env, cwd=cwd, stdin=subprocess.PIPE)
-    proc.stdin.write(LAUNCH_SECRET)
-    proc.stdin.close()
-    return proc
+    """The helper or caret-screen, with this run's launch secret on standard input (--auth-fd 0, launch_secret.py)."""
+    return start(name, args, out_dir, env=env, cwd=cwd, popen=launch_secret.popen_with_secret)
 
 
-def start(name, args, out_dir, env=None, cwd=None, stdin=None):
+def start_caret(name, args, out_dir, env=None):
+    """Caret attached to this run's helper, with the host key on an inherited pipe, so the helper admits it as the host."""
+    return start(name, args, out_dir, env=env, popen=launch_secret.popen_caret)
+
+
+def start(name, args, out_dir, env=None, cwd=None, stdin=None, popen=subprocess.Popen):
     out = open(os.path.join(out_dir, f"{name}.log"), "w")
-    proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, cwd=cwd, stdin=stdin)
+    kwargs = {"stdout": out, "stderr": subprocess.STDOUT, "env": env, "cwd": cwd}
+    if stdin is not None:
+        kwargs["stdin"] = stdin
+    proc = popen(args, **kwargs)
     STARTED.append((name, proc))
     NAMES[proc.pid] = name
     log("started", name, proc.pid)
@@ -304,7 +306,7 @@ def rig(out_dir, ghost=False, act=False):
     host_args = [CARET, "--socket", HOST_SOCK, "--helper-socket", HELPER_SOCK, "--test-hooks", "--allow-pids", pid_list]
     if not ghost:
         host_args.append("--no-ghost")
-    start("host", host_args, out_dir, env=dict(os.environ, CARET_FILL_ADVANCE=os.environ.get("CARET_FILL_ADVANCE", "off")))
+    start_caret("host", host_args, out_dir, env=dict(os.environ, CARET_FILL_ADVANCE=os.environ.get("CARET_FILL_ADVANCE", "off")))
     if not wait_for(lambda: os.path.exists(HOST_SOCK), 15, 0.1):
         raise SystemExit("host did not open its socket")
     state = wait_for(lambda: (lambda s: s if s.get("helper", {}).get("connected") else None)(host()), 15, 0.2)
