@@ -135,6 +135,10 @@ describe("question memory in the helper", () => {
     expect(AskQuestion.parse(await helper.handlePlanRequest(request(2), "s1", true))).toMatchObject({ part: "fields" });
     // The second lapses unanswered.
     clock += 11 * 60 * 1000;
+    // Both windows are still on screen: the reader sends them again (#32 expires a window ten minutes after its last
+    // snapshot). Only the questions lapse.
+    app.show(clock);
+    void helper.handleReader({ ...mailWindow(), at: clock });
     helper.tick(clock);
     const r = PlanProposal.parse(await helper.handlePlanRequest(request(3), "s1", true));
     expect(r).toMatchObject({ outcome: "proposed" });
@@ -156,6 +160,10 @@ describe("question memory in the helper", () => {
     expect(AskQuestion.parse(await helper.handlePlanRequest(request(1), "s1", true))).toMatchObject({ part: "fields" });
     expect(AskQuestion.parse(await helper.handlePlanRequest(request(2), "s1", true))).toMatchObject({ part: "fields" });
     clock += 11 * 60 * 1000;
+    // Both windows are still on screen: the reader sends them again (#32 expires a window ten minutes after its last
+    // snapshot). Only the questions lapse.
+    app.show(clock);
+    void helper.handleReader({ ...mailWindow(), at: clock });
     helper.tick(clock);
     site = "https://two.example/apply";
     expect(AskQuestion.parse(await helper.handlePlanRequest(request(3), "s1", true)), "another site asks").toMatchObject({ part: "fields" });
