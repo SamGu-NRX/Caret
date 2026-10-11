@@ -22,7 +22,7 @@ import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNameP
 import { checkSealable, type AskJev, type JevRequest, type JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, pickableOptions, serviceBox, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, PART_SAYS, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { autocompletePart, checkValues, type CheckOptions, CONTRACT_UNSTATED, contractSays, ContractError, isChecked, makeFieldContract, mintDerivation, mintExempt, neverTypedRefusal, provenanceStale, requireChecked, shapeRefusal, textShapeRefusal, VerifierUnavailable, windowProvenance, withReads, readsCopied, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance, type Refused } from "./contract.ts";
+import { autocompletePart, checkValues, type CheckOptions, CONTRACT_UNSTATED, contractSays, ContractError, isChecked, makeFieldContract, mintDerivation, mintExempt, neverTypedRefusal, provenanceStale, requireChecked, shapeRefusal, textShapeRefusal, VerifierUnavailable, windowProvenance, withReads, readsCopied, type Checked, type DigestMemo, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance, type Refused } from "./contract.ts";
 import { type SourceAt, splitLines, TITLE, wholePart } from "../privacy/ledger/source.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { ownedOf, unitKey, unitOf, unitsHolding, windowUnit, type NoteUnit } from "./note-unit.ts";
@@ -2427,6 +2427,9 @@ export async function proposeFill(
   };
   /** Each candidate's source text as Jev was shown it (`judged`, taken before the asks), for its provenance's digests. */
   const judgedText = (c: Candidate): string | undefined => judged.get(nodeKeyOf(c));
+  const digestMemo: DigestMemo = new Map();
+  /** A candidate's provenance from its judged text (provenanceOf's `cand`), its digests taken once per text and span. */
+  const judgedProvenance = (c: Candidate): Provenance => candidateProvenance(model, c, judgedText(c) ?? "", digestMemo);
   /**
    * AC1's Owner slot, which G2's ownership fills and the contract carries for the Ask's scope check; since HA2 the
    * verifier's question no longer says it, so no earlier answer is restated as a screen fact: the user's for what they told Caret and for their own identity on screen (whose.ts), else
@@ -2516,7 +2519,7 @@ export async function proposeFill(
         // Settlement options satisfy the same owner rule as admission.
         if (ownerHold(f, pick) !== null) return veto("otherPerson");
         const chose = read.chose ?? (pick.from === "derived" ? pick.chose : undefined);
-        const proposed: Proposed = { field: contracts[i] as FieldContract, text: read.value, display: read.display, provenance: bindOwned(provenanceOf(model, pick, f.part, read.value, judgedText, f.control, chose)), owner: ownerOf(pick) };
+        const proposed: Proposed = { field: contracts[i] as FieldContract, text: read.value, display: read.display, provenance: bindOwned(provenanceOf(model, pick, f.part, read.value, judgedProvenance, f.control, chose)), owner: ownerOf(pick) };
         // As the write contract will judge it: the verifier's values meet every shape check, an exemption's the never-typed one.
         const verifier = f.control === "text" || f.control === "combobox" || chose !== undefined;
         if (neverTypedRefusal(proposed, scope.instruction) !== null) return veto("neverTyped");
@@ -2558,9 +2561,17 @@ export async function proposeFill(
    * The line a window value was read from, whole when it is a short one (MAX_LINE, the generator's own bound for a line it
    * offers whole), else the clause the generator kept of it; null when neither went through the ledger.
    */
+  // A source text's lines as the generator reads them, once per text for this fill: a 50-field fill asked supportLine
+  // 4,700 times about one note.
+  const bareLines = new Map<string, readonly string[]>();
+  const bareOf = (text: string): readonly string[] => {
+    let lines = bareLines.get(text);
+    if (lines === undefined) bareLines.set(text, (lines = splitLines(text).map(bareLine)));
+    return lines;
+  };
   const supportLine = (c: Candidate): string | null => {
     const node = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
-    const line = node === undefined ? undefined : splitLines(nodeText(node)).map(bareLine).find((l) => l.includes(c.text));
+    const line = node === undefined ? undefined : bareOf(nodeText(node)).find((l) => l.includes(c.text));
     return line !== undefined && line.length <= MAX_LINE ? line : (c.line ?? null);
   };
   const unavailable = m.own("unavailable");
@@ -3067,7 +3078,7 @@ export async function proposeFill(
     // V3 review: a control's value code chose (an order, a year, an option a word names) is no plain conversion, so it
     // meets the verifier as text does, with the choice said in its provenance, and is never minted under an exemption.
     if (f.control !== "text" && f.control !== "combobox" && chose === undefined) continue;
-    proposed.push({ i, p: frozen ?? { field: contracts[i] as FieldContract, text, display: text, provenance: bindOwned(provenanceOf(model, p, f.part, text, judgedText, f.control, chose)), owner: ownerOf(p) } });
+    proposed.push({ i, p: frozen ?? { field: contracts[i] as FieldContract, text, display: text, provenance: bindOwned(provenanceOf(model, p, f.part, text, judgedProvenance, f.control, chose)), owner: ownerOf(p) } });
   }
   /** The whole unit an Ask's window value was read from (its provenance's first window source), as its value questions named it. */
   const verifierUnit = (p: Proposed): { id: ModelText; text: ModelText } | null => {
@@ -3156,7 +3167,7 @@ export async function proposeFill(
     if (exempt === null || picksOf.get(i)?.chose !== undefined) continue;
     const text = o.value ?? o.handoff?.value ?? "";
     const pick = picksOf.get(i);
-    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : (pick.proposed?.provenance ?? bindOwned(provenanceOf(model, pick.p, f.part, text, judgedText, f.control)));
+    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : (pick.proposed?.provenance ?? bindOwned(provenanceOf(model, pick.p, f.part, text, judgedProvenance, f.control)));
     const proposedExempt: Proposed = { field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: pick === undefined ? null : ownerOf(pick.p) };
     // I2: a control outside the Ask's scope is withheld, as the contract would refuse to mint it.
     if (authority.kind === "ask" && scopeRefusal(proposedExempt, authority.scope, documentOf) !== null) {
@@ -3454,8 +3465,8 @@ function deriveHow(part: FillPart | null, written: string, base: string, control
  * of the lines around it (contract.ts windowProvenance), in `text` when given (the source as Jev was shown it), else in
  * the source now.
  */
-export function candidateProvenance(model: ScreenModel, c: Candidate, text?: string): Provenance {
-  const pr = windowProvenance(viewOf(model, c.source.windowId), c, text);
+export function candidateProvenance(model: ScreenModel, c: Candidate, text?: string, memo?: DigestMemo): Provenance {
+  const pr = windowProvenance(viewOf(model, c.source.windowId), c, text, memo);
   // Where its texts were read, in the view they were read from, so the verifier quotes them at those ranges (contract.ts
   // withReads); a refresh since leaves that view as it was, and the recheck before a write decides whether it changed.
   // Each text by its role, never by its spelling: a title that reads like the value is charged as the title, and the
@@ -3471,11 +3482,11 @@ export function candidateProvenance(model: ScreenModel, c: Candidate, text?: str
 }
 
 /**
- * Where a pick's value came from, as the write contract carries it (fill/contract.ts Provenance). `judged` gives each
- * candidate's source text as Jev was shown it, taken before the asks (G2): the model can change while they are out, and
- * the digests the recheck takes again must be of what Jev judged.
+ * Where a pick's value came from, as the write contract carries it (fill/contract.ts Provenance). `cand` gives each
+ * candidate's provenance from its source text as Jev was shown it, taken before the asks (G2): the model can change while
+ * they are out, and the digests the recheck takes again must be of what Jev judged.
  */
-function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, written: string, judged: (c: Candidate) => string | undefined, control: Control | null = null, chose?: Chosen): Provenance {
+function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, written: string, cand: (c: Candidate) => Provenance, control: Control | null = null, chose?: Chosen): Provenance {
   if (p.from === "choice") {
     // Its stated derivation is what keeps it from every exemption (contract.ts statedChoice), so it never goes without one.
     if (chose === undefined) throw new Error(`a source-supported choice '${p.text}' reached provenance without its derivation`);
@@ -3485,11 +3496,10 @@ function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, writte
   }
   if (chose !== undefined) {
     // V3: the value as derived, with the choice code made said, and the extra source it read (a send line) as `also`.
-    const own = provenanceOf(model, p, part, written, judged, control);
+    const own = provenanceOf(model, p, part, written, cand, control);
     const d: Extract<Provenance, { kind: "derived" }> = own.kind === "derived" ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, pickSpan(p)) : "optionFromPart", base: own, also: null };
     return { ...d, ...(chose.how === undefined ? {} : { how: chose.how }), also: chose.also ?? d.also, says: chose.says, ...(chose.via === undefined ? {} : { via: chose.via }) };
   }
-  const cand = (c: Candidate): Provenance => candidateProvenance(model, c, judged(c) ?? "");
   const base = (b: Exclude<Pick, { from: "derived" }>): Provenance =>
     b.from === "window" ? cand(b.c) : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
   if (p.from !== "derived") {

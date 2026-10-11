@@ -56,6 +56,10 @@ export function withFirstLookAllowList<T>(list: FirstLookAllowList, run: () => T
 export function checkFirstLookOpen(): void {
   active.getStore()?.checkOpen();
 }
+/** Whether a first look is in progress here: only then does a request's text need its Spans (Disclosure.verify). */
+export function firstLookActive(): boolean {
+  return active.getStore() !== undefined;
+}
 export function checkFirstLookText(spans: readonly Span[], reasons: ReadonlySet<string> | null, text: string, origins: readonly string[]): void {
   active.getStore()?.check(spans, reasons, text, origins);
 }
