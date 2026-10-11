@@ -53,7 +53,7 @@ async function drive(): Promise<Record<string, unknown>[]> {
   f.state.active.set(9, 2);
   await f.fire("tabs.activated", { tabId: 2, windowId: 9 });
   f.answers.set("1:0:frame", { origin: ORIGIN, viewport: [1280, 900], iframes: [] });
-  f.answers.set("1:0:text", { selection: [], blocks: ["Synthetic text"], cut: false, docsText: null });
+  f.answers.set("1:0:text", { selection: [], blocks: ["Synthetic text"], cut: false, docsText: null, title: "Synthetic page" });
   await helper({ type: "pageReadText", id: "read", expires, tabId: 1 });
   const results = ["walk", "press", "late", "write", "read"];
   for (let i = 0; i < 50 && results.some((id) => !f.sentToHelper.some((m) => m.type === "pageResult" && m.id === id)); i++) await settle();

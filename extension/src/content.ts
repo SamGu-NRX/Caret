@@ -1,5 +1,6 @@
 // Caret's content script, in every http(s) frame and the about:blank and srcdoc frames they own. It stays dormant:
-// no observer, no timer and no walk until the worker asks. It answers only the extension's own worker (a message
+// no timer and no walk until the worker asks, and one observer, of input type attributes and added nodes only, so a
+// password field stays secret after a "show password" button or a replacement (content/password-watch.ts). It answers only the extension's own worker (a message
 // with no tab, from this extension's id), never window.postMessage or the page. On its own it tells the worker two
 // things, neither naming an element: that the document moved in history, so the worker bumps the frame's
 // navigation generation at once; and that focus moved while this document is visible and focused, so the helper
@@ -13,8 +14,8 @@
 // events (the combobox handler's presses) can raise it; nothing about the element or the key travels.
 //
 // S1 adds a passive input listener that sends nothing: per text field, in memory, it notes whether the text came from
-// the user's own typing (content/entry.ts). A walk reports that one word per field, so Caret saves an answer as the
-// user's words only when they typed it.
+// the user's own typing (content/entry.ts), and keeps nothing for a secret field (content/secret.ts). A walk reports
+// that one word per field, so Caret saves an answer as the user's words only when they typed it.
 //
 // P4 adds one more message the worker may ask, never sent on its own: "text", the frame's visible text, read once
 // for the tab the user just left (content/text.ts). A walk also reports the text around the caret of the focused
@@ -24,7 +25,10 @@ import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean, composedParent } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
-import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
+import { deepActiveElement, kindOf, secretOf, shadowRootOf, visible, walkControls } from "./content/walker.ts";
+import { valueWithheld, watchPasswords } from "./content/password-watch.ts";
+import { controlName } from "./content/question.ts";
+import { notePassword } from "./content/secret.ts";
 import { EntryTracker } from "./content/entry.ts";
 import { UserInputs, inOwnList, isUserInput } from "./content/user-input.ts";
 import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
@@ -93,20 +97,24 @@ function selfOf(): FrameSelfAnswer {
  * judged it visible.
  */
 function textOf(until: number): FrameTextAnswer {
-  if (Date.now() > until || window.innerWidth <= 1 || window.innerHeight <= 1) return { selection: [], blocks: [], cut: false, docsText: null };
+  if (Date.now() > until || window.innerWidth <= 1 || window.innerHeight <= 1) return { selection: [], blocks: [], cut: false, docsText: null, title: "" };
   const path = location.protocol === "about:" ? location.href : location.pathname;
   const t = readFrameText(self.origin, path, window.self === window.top);
-  return { selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText };
+  return { selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText, title: clean(document.title, 200) };
 }
 
-function walk(reg: Registry, entries: EntryTracker | null, inputs: UserInputs<Element>, caretText: boolean): FrameReport {
+function walk(reg: Registry, entries: EntryTracker | null, inputs: UserInputs<Element>): FrameReport {
   const t0 = performance.now();
   const href = location.href;
   const nav = navigationEntry();
   const now = Date.now();
   const out = walkControls(
     (el) => reg.idOf(el),
-    (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form }),
+    (el, c) => {
+      reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form });
+      // A field the walk marked secret keeps nothing in the tracker, even with no edit since it turned secret.
+      if (c.excluded !== undefined) entries?.forget(el);
+    },
     (el, value) => entries?.entryOf(el, value),
     (el) => inputs.at(el, now),
   );
@@ -122,11 +130,13 @@ function walk(reg: Registry, entries: EntryTracker | null, inputs: UserInputs<El
       } catch {
         selection = null;
       }
-      // H13: the caret's rect with its text, for the host's inline text; neither on a site on the deny list. SC1 2a: a
-      // marked secret field says only that it has focus, never its text, selection, caret or whether it is empty.
-      focused = c.excluded !== undefined
+      // H13: the caret's rect with its text, for the host's inline text. A site on the deny list is never walked
+      // (worker.ts). SC1 2a: a marked secret field says only that it has focus, never its text, selection, caret or
+      // whether it is empty.
+      // A text input whose type history Caret could not watch gives no text, caret or selection either (password-watch.ts).
+      focused = c.excluded !== undefined || valueWithheld(active)
         ? { id: c.id, selection: null, text: null, caret: null }
-        : { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null, caret: caretText ? caretRect(active) : null };
+        : { id: c.id, selection, look: lookOf(active), text: fieldText(active), caret: caretRect(active) };
     }
   }
   const docs = window.self === window.top ? docsKind(self.origin, location.pathname) : null;
@@ -177,7 +187,33 @@ if (globalThis.__caretContent === undefined) {
    * How each text field's text was entered (S1). Not kept in a late-injected document: edits made before this script
    * arrived were never seen, so no field there can be shown to hold only the user's typing.
    */
-  const entries = late ? null : new EntryTracker();
+  const entries = late ? null : new EntryTracker((el) => el instanceof Element && secretOf(el, controlName(el, kindOf(el) ?? "")) !== null);
+  // A password field stays secret after a "show password" toggle makes it type=text (content/secret.ts): its type
+  // attribute is watched in the document from now on, and in each shadow root met at load, in a walk or by focus.
+  // Known from the start only when this script ran at document_start; a late one can't know what changed before it.
+  watchPasswords(document, !late);
+  const watchShadows = (root: Document | ShadowRoot): void => {
+    for (const el of root.querySelectorAll("*")) {
+      const sr = shadowRootOf(el);
+      if (sr === null) continue;
+      // Met here, not as its host arrived: what happened in it before is unknown (password-watch.ts).
+      watchPasswords(sr, false);
+      watchShadows(sr);
+    }
+  };
+  if (document.readyState === "loading") addEventListener("DOMContentLoaded", () => watchShadows(document), { once: true });
+  else watchShadows(document);
+  // Focus and the first keystroke land on the input itself, found through closed shadow roots too (an event's
+  // composedPath stops at a closed root's host in this world).
+  const seenPassword = (): void => {
+    const el = deepActiveElement();
+    if (el === null) return;
+    const root = el.getRootNode();
+    if (root instanceof ShadowRoot) watchPasswords(root, false);
+    if (el instanceof HTMLInputElement && el.type === "password") notePassword(el);
+  };
+  addEventListener("focusin", seenPassword, { capture: true, passive: true });
+  addEventListener("beforeinput", seenPassword, { capture: true, passive: true });
   if (entries !== null) {
     addEventListener(
       "beforeinput",
@@ -262,7 +298,7 @@ if (globalThis.__caretContent === undefined) {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
-      reply(walk(reg, entries, inputs, m.caretText !== false));
+      reply(walk(reg, entries, inputs));
       return false;
     }
     if (m.op === "frame") {

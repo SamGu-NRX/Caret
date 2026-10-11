@@ -214,8 +214,7 @@ export interface FrameReport {
  * ends (W3). An act arms its document too, until `guardUntil` (its grant's end), so no act runs unarmed.
  */
 export type ToContent =
-  /** `caretText: false` (P4): a frame on a site on the deny list reports no text around the caret. */
-  | { caret: 1; op: "walk"; caretText?: false }
+  | { caret: 1; op: "walk" }
   /** P4: about the frame itself, no text (FrameSelfAnswer), so the worker knows it is visible before it asks for text. */
   | { caret: 1; op: "frame" }
   /**
@@ -253,6 +252,8 @@ export interface FrameTextAnswer {
   blocks: string[];
   cut: boolean;
   docsText: "on" | "off" | null;
+  /** The document's own title, clipped: the read's title comes from the document read, never from the tab. */
+  title: string;
 }
 
 /** Content script to worker, on its own: the document moved in history (pageshow from the back-forward cache, popstate, hashchange). */

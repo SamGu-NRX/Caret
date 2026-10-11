@@ -52,6 +52,11 @@ export class GrantTable {
     return held.map((h) => `${h.scope.tabId}:${h.scope.frameId}`);
   }
 
+  /** Every grant held, live or not yet pruned, with its task. */
+  scopes(): { taskId: string; scope: PageScope }[] {
+    return [...this.byTask].flatMap(([taskId, held]) => held.map((h) => ({ taskId, scope: h.scope })));
+  }
+
   /** Tasks whose grant, live or not yet pruned, covers this frame. */
   tasksIn(tabId: number, frameId: number): string[] {
     return [...this.byTask].filter(([, held]) => held.some((h) => h.scope.tabId === tabId && h.scope.frameId === frameId)).map(([t]) => t);

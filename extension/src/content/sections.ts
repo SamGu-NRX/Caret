@@ -135,7 +135,6 @@ export class Outline {
 export interface OutlineElement<E> {
   readonly localName: string;
   readonly children: ArrayLike<E>;
-  readonly textContent: string | null;
   getAttribute(name: string): string | null;
 }
 
@@ -150,6 +149,8 @@ export interface OutlineReader<E extends OutlineElement<E>> {
   shadowRoot(el: E): { readonly children: ArrayLike<E> } | null;
   /** A slot's assigned elements, flattened, walked where the slot is; null for an element that is no slot. */
   assigned(el: E): readonly E[] | null;
+  /** An element's text, as textContent gives it but without any secret field inside it (secret-dom.ts safeText). */
+  text(el: E): string;
   /**
    * A section text that must not leave the frame (one the walk's exclusions would match), given as sectionName reads
    * it: its occurrence has no text. An occurrence inside an excluded one has none either (context exclusion).
@@ -176,12 +177,12 @@ function headingLevel(el: OutlineElement<unknown>): number | null {
  */
 function labelOf<E extends OutlineElement<E>>(el: E, r: OutlineReader<E>): { text: string; own: boolean } | null {
   if (el.localName === "fieldset") {
-    for (const c of Array.from(el.children)) if (c.localName === "legend") return r.shown(c) && clean(c.textContent, MAX_SECTION_NAME) !== "" ? { text: clean(c.textContent, MAX_SECTION_NAME), own: true } : null;
+    for (const c of Array.from(el.children)) if (c.localName === "legend") return r.shown(c) && clean(r.text(c), MAX_SECTION_NAME) !== "" ? { text: clean(r.text(c), MAX_SECTION_NAME), own: true } : null;
     return null;
   }
   const ids = el.getAttribute("aria-labelledby");
   const targets = ids === null ? [] : r.labelledBy(el, ids);
-  const named = clean(targets.map((t) => t.textContent ?? "").join(" "), MAX_SECTION_NAME);
+  const named = clean(targets.map((t) => r.text(t)).join(" "), MAX_SECTION_NAME);
   if (named !== "") return { text: named, own: !targets.every((t) => headingLevel(t) !== null) };
   const aria = clean(el.getAttribute("aria-label"), MAX_SECTION_NAME);
   return aria === "" ? null : { text: aria, own: true };
@@ -240,7 +241,7 @@ export function sectionOutline<E extends OutlineElement<E>>(root: { readonly chi
         // The heading's context is the chain it opens a section in: the headings it ends are not around it.
         const probe = new Outline(outline);
         probe.heading(level, "");
-        outline.heading(level, occur(true, clean(el.textContent, MAX_SECTION_NAME), probe.here().filter((x) => x !== ""), level));
+        outline.heading(level, occur(true, clean(r.text(el), MAX_SECTION_NAME), probe.here().filter((x) => x !== ""), level));
       }
       if (r.wanted(el)) chains.set(el, outline.here());
       // A heading's content is its text, not more of the outline. A shadow root is a container of its own.

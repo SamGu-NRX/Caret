@@ -8,6 +8,10 @@ import { clean, composedParent, groupNames, labelledBy } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
 import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
+import type { SecretKind } from "./secret.ts";
+import { safeText, secretFieldOf } from "./secret-dom.ts";
+import { valueWithheld, watchPasswords } from "./password-watch.ts";
+import { shadowRootOf } from "./shadow.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -29,19 +33,7 @@ export const SELF_IDENTIFICATION = /\b(self[- ]identif\w*|gender|sex|race|racial
  */
 export const selfIdentifying = (text: string): boolean => SELF_IDENTIFICATION.test(sectionName(text));
 
-/** Field names and ids that mark a card number or code even without autocomplete. */
-const PAYMENT_NAME = /\b(card.?number|cc.?(num|number|csc|cvc|cvv)|cvc|cvv|csc|security.?code)\b/i;
-
-/** An element's shadow root, open or closed. chrome.dom takes HTML elements only and throws on others (SVG). */
-export function shadowRootOf(el: Element): ShadowRoot | null {
-  if (el.shadowRoot !== null) return el.shadowRoot;
-  if (!(el instanceof HTMLElement) || typeof chrome === "undefined" || chrome.dom?.openOrClosedShadowRoot === undefined) return null;
-  try {
-    return (chrome.dom.openOrClosedShadowRoot(el) as ShadowRoot | null) ?? null;
-  } catch {
-    return null;
-  }
-}
+export { shadowRootOf } from "./shadow.ts";
 
 /** The control kind of an element, or null when it is not one Caret reads. */
 export function kindOf(el: Element): PageControlKind | null {
@@ -86,23 +78,16 @@ function ariaHidden(el: Element): boolean {
   return false;
 }
 
-/** Sensitive autocomplete tokens, on any control: a <select autocomplete="cc-exp-month"> is a card field too (W1 review #5). */
-function autocompleteExclusion(el: Element): PageExclusion | null {
-  const ac = (el.getAttribute("autocomplete") ?? "").toLowerCase();
-  if (/(^|\s)cc-/.test(ac)) return "payment";
-  if (/(^|\s)one-time-code(\s|$)/.test(ac)) return "oneTimeCode";
-  return null;
+/** Why `el`, called `name`, holds a password, a one-time code or card details, or null (content/secret.ts). */
+export function secretOf(el: Element, name: string): SecretKind | null {
+  return secretFieldOf(el, name);
 }
 
 /** Why a control must not leave the frame, or null. */
 export function exclusionOf(el: Element, name: string): PageExclusion | null {
-  if (el instanceof HTMLInputElement) {
-    if (el.type === "hidden") return "hidden";
-    if (el.type === "password") return "password";
-  }
-  const ac = autocompleteExclusion(el);
-  if (ac !== null) return ac;
-  if ((el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) && PAYMENT_NAME.test(`${el.name} ${el.id}`)) return "payment";
+  if (el instanceof HTMLInputElement && el.type === "hidden") return "hidden";
+  const secret = secretOf(el, name);
+  if (secret !== null) return secret;
   if (ariaHidden(el)) return "ariaHidden";
   if (!visible(el) && !visibleReactSelect(el) && !ownedFileInput(el)) return "invisible";
   if (selfIdentifying(name) || groupNames(el).some(selfIdentifying)) return "selfIdentification";
@@ -295,7 +280,11 @@ export function* candidates(root: Document | ShadowRoot = document, shadow: "ope
       if (kind !== null) yield { el, kind, name: controlName(el, kind), shadow };
     }
     const sr = shadowRootOf(el);
-    if (sr !== null) yield* candidates(sr, sr.mode);
+    if (sr !== null) {
+      // Its password inputs stay secret from now on, whatever their type becomes (password-watch.ts).
+      watchPasswords(sr, false);
+      yield* candidates(sr, sr.mode);
+    }
   }
 }
 
@@ -331,6 +320,8 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     shadowRoot: shadowRootOf,
     assigned: (el) => (el instanceof HTMLSlotElement ? slotted(el) : null),
     excluded: (name) => SELF_IDENTIFICATION.test(name),
+    // A heading or label that holds a secret field is read without it (secret-dom.ts).
+    text: safeText,
   });
   for (const f of candidates()) {
     const why = exclusionOf(f.el, f.name);
@@ -357,7 +348,8 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       continue;
     }
     const ident = authorIdentifier({ name: f.el.getAttribute("name"), id: f.el.getAttribute("id"), automationId: f.el.getAttribute("data-automation-id") });
-    const value = valueOf(f.el);
+    // A text input whose type history Caret could not watch may be a revealed password: no value (password-watch.ts).
+    const value = valueWithheld(f.el) ? undefined : valueOf(f.el);
     const checked = checkedOf(f.el);
     const c: PageControl = {
       id: idOf(f.el),
