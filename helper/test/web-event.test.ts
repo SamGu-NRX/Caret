@@ -45,7 +45,12 @@ function local(iso: string): { date: string; time: string } {
 /** Jev says yes to both attend asks, as the journey's canned Jev does for the coffee. */
 const yes: AskJev = async () => ({ model: "jev-test", answers: { attend: { choice: "yes", confidence: 0.9 } }, inputTokens: 50, latencyMs: 3, costUsd: 0 });
 
-/** Maya's thread as public/mail/mail.js renderThread draws it and the content script walks it: its reply box and Send. */
+/**
+ * Maya's thread as public/mail/mail.js renderThread draws it and the content script walks it today: its reply box and
+ * Send, title and subject heading. Written by hand, since the extension's tests and these run without a DOM; the real
+ * walker over the real page is the journey's row 1. A change that makes the walk carry message text must add that text
+ * here as the walker would send it, and then turn the it.fails below into it.
+ */
 class ThreadPage extends FakePage {
   constructor() {
     super(() => [c("e1", "textarea", "Reply", { value: "" }), c("e2", "button", "Send")], `${maya?.subject ?? ""} - Mail`);
