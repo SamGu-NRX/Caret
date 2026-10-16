@@ -24,7 +24,8 @@ import { accessibleName, composedParent } from "./names.ts";
 import { flavorOf, shownValue, type Flavor } from "./flavor.ts";
 import { keyEvents, pressEvents, settle, typeInto, until } from "./dom.ts";
 import { deepActiveElement, shadowRootOf, visible } from "./walker.ts";
-import { isInput, readNow, revs } from "./page-state.ts";
+import { beginChoice, choices, isInput, readNow, revs, touchCount } from "./page-state.ts";
+import { choiceCheck } from "./revs.ts";
 
 /** How long the listbox may take to appear, and the options to settle after the filter. From the memo: 1.5 s. */
 const LIST_WAIT_MS = 1500;
@@ -195,7 +196,25 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     if (verb.sameAs === undefined || verb.wrote === undefined) return answer("unsupported", "Caret empties a dropdown only to undo its own pick");
     // The undo names Caret's own pick, never the page's text: the control must still show it.
     if (normalizeName(before) !== normalizeName(verb.wrote)) return answer("stale", "the control shows another choice than the one Caret picked");
-    return clearChoice(el, f, before, check, alive, trusted0);
+    // The pick's page-side record stands between the pick and this undo (issue #54): a person who re-picked Caret's own
+    // option left the text — and so every check above — exactly as the pick left them. The record's anchors say whether
+    // anything trusted has touched the control since the pick; any refusal leaves the choice in place.
+    const refusal = choiceCheck(choices.newest(verb.taskId, el), el, { shown: before, trusted: trusted0, touches: touchCount(el) }, verb.wrote);
+    if (refusal !== null) {
+      const why =
+        refusal === "noRecord"
+          ? "Caret holds no record of picking this option on this page"
+          : refusal === "gone"
+            ? "the control Caret picked is gone"
+            : refusal === "changed"
+              ? "the control shows another choice than the one Caret picked"
+              : "something of the person's has touched the control since Caret picked it";
+      return answer("stale", `the undo is refused: ${why}`);
+    }
+    const undone = await clearChoice(el, f, before, check, alive, trusted0);
+    // The record is spent: a second undo has nothing to stand on (revs.ts ChoiceRecords.pop).
+    if (undone.outcome === "ok") choices.pop(verb.taskId, el);
+    return undone;
   }
   const hiddenBefore = hiddenValue(f);
   const textField = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
@@ -323,6 +342,9 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const again = lbNow === null ? { exact: [], partial: [] } : matchOptions(optionsOf(lbNow), verb.value);
   if (again.exact.length !== 1 || again.exact[0]?.el !== pick.el) return stopped(answer("failed", "the list changed before the pick"), "picking", again.exact.map((o) => o.name));
   if (lbNow !== null && loading(el, f, lbNow)) return stopped(answer("failed", "the list was loading again right before the pick"), "picking", [pick.name]);
+  // The pick is recorded before it goes in, with the control's trusted-event counts as they stand now: its undo runs
+  // only while nothing trusted has touched the control since (page-state.ts beginChoice, revs.ts choiceCheck).
+  beginChoice(verb.taskId, el, pick.name);
   press(pick.el);
   const want = normalizeName(pick.name);
   // The list closing on the press, before any Escape of Caret's, is what shows an ARIA text field took the pick and

@@ -5,6 +5,7 @@
 // type, so the rules are tested on plain objects (test/revs.test.ts); content.ts, walker.ts and actions.ts wire them to
 // the DOM.
 import { equivalentValue } from "../../../helper/src/values/equivalent.ts";
+import { normalizeName } from "../shared/choose.ts";
 import { sha256Hex } from "../shared/sha256.ts";
 
 /**
@@ -271,6 +272,92 @@ export function restoreCheck<E extends object>(rec: WriteRecord<E> | undefined, 
   // `exact`: S1's rule for a write whose answer was lost, recognized only as exactly what Caret was writing.
   if (exact) return now.text === rec.wrote ? null : "changed";
   return equivalentFor({ numeric: now.numeric }, now.text, rec.wrote) ? null : "changed";
+}
+
+/** One choice Caret made in a combobox, kept for its undo: the element, the option name Caret picked, and the trusted-event counts at that moment. */
+export interface ChoiceRecord<E extends object> {
+  el: WeakRef<E>;
+  wrote: string;
+  /** The user's own edit events at the control (revs.trusted) when Caret picked. */
+  trustedAfter: number;
+  /** The trusted pointers and keys that touched the control without editing it (page-state.ts touches) when Caret picked. */
+  touchesAfter: number;
+}
+
+/** Most choice records one document keeps; past it the oldest go, and their undo answers noRecord. As the writes' cap. */
+export const MAX_CHOICE_RECORDS = MAX_RECORDS;
+
+/**
+ * The page-held record of Caret's combobox picks, by task and the element picked, like the writes' before records
+ * (WriteRecords): an undo runs only while its pick's record stands. The walk's rev and the control's shown value miss a
+ * person who re-picked Caret's own option — the text, and so the rev, are exactly what Caret left — so the record holds
+ * the trusted-event counts at that moment and an undo refuses while either has moved. Never sent anywhere.
+ */
+export class ChoiceRecords<E extends object> {
+  private readonly byKey = new Map<string, ChoiceRecord<E>[]>();
+  private readonly serials = new WeakMap<E, number>();
+  private next = 1;
+  private count = 0;
+
+  private key(taskId: string, el: E): string {
+    let n = this.serials.get(el);
+    if (n === undefined) {
+      n = this.next++;
+      this.serials.set(el, n);
+    }
+    return `${taskId}\u0000${n}`;
+  }
+
+  /** A pick is about to be pressed: kept before anything is touched, so a pick whose answer is lost can still be judged. */
+  begin(taskId: string, el: E, wrote: string, trusted: number, touches: number): ChoiceRecord<E> {
+    const k = this.key(taskId, el);
+    const list = this.byKey.get(k) ?? [];
+    const rec: ChoiceRecord<E> = { el: new WeakRef(el), wrote, trustedAfter: trusted, touchesAfter: touches };
+    list.push(rec);
+    this.byKey.set(k, list);
+    this.count++;
+    while (this.count > MAX_CHOICE_RECORDS) this.dropOldest();
+    return rec;
+  }
+
+  private dropOldest(): void {
+    const first = this.byKey.keys().next();
+    if (first.done === true) return;
+    const list = this.byKey.get(first.value) ?? [];
+    list.shift();
+    this.count--;
+    if (list.length === 0) this.byKey.delete(first.value);
+  }
+
+  newest(taskId: string, el: E): ChoiceRecord<E> | undefined {
+    return this.byKey.get(this.key(taskId, el))?.at(-1);
+  }
+
+  /** The pick's undo ran: the record is used up, and a second undo has nothing to stand on. */
+  pop(taskId: string, el: E): void {
+    const k = this.key(taskId, el);
+    const list = this.byKey.get(k);
+    if (list === undefined || list.length === 0) return;
+    list.pop();
+    this.count--;
+    if (list.length === 0) this.byKey.delete(k);
+  }
+}
+
+/** Why a combobox undo is refused, named as pageRestore's refusals are (protocol.ts PageRestored). */
+export type ChoiceRefusal = "noRecord" | "gone" | "changed" | "mayIncludeInput";
+
+/**
+ * Whether the pick's record may be undone now, and if not why: the record is this page's for this task, the undo names
+ * the choice it holds, the control still shows it, and no trusted event has touched the control since Caret picked.
+ */
+export function choiceCheck<E extends object>(rec: ChoiceRecord<E> | undefined, el: E, now: { shown: string; trusted: number; touches: number }, wrote: string): ChoiceRefusal | null {
+  if (rec === undefined) return "noRecord";
+  if (normalizeName(rec.wrote) !== normalizeName(wrote)) return "noRecord";
+  if (rec.el.deref() !== el) return "gone";
+  if (normalizeName(now.shown) !== normalizeName(rec.wrote)) return "changed";
+  if (now.trusted !== rec.trustedAfter || now.touches !== rec.touchesAfter) return "mayIncludeInput";
+  return null;
 }
 
 /** pageCompare's bounds in one document (counsel, "pageCompare as an oracle"). The worker holds the per-origin one. */
