@@ -18,7 +18,7 @@ import { Desk, PEOPLE, grid, roster, type GridWindow, type ListWindow } from "./
 import { captureEdit } from "../src/patterns/preferences.ts";
 import { EDIT_SETTLE_MS } from "../src/patterns/engine.ts";
 import { FIXTURE_APP } from "./builders.ts";
-import { LineClient, SocketReader, loadRecording, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, loadRecording, until, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const F = (s: string): string => `dev.caret.fixture/standard/${s}`;
 const M = (s: string): string => `dev.caret.mail/standard/${s}`;
@@ -116,7 +116,7 @@ describe("offer lifetimes over the socket", () => {
     let n = 0;
     // This test's helper talks to this test's server only. Through the `server` variable, a run still in
     // flight when its test ended published its stop into a later test's host (B13's socket flake).
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       askJev,
@@ -133,7 +133,8 @@ describe("offer lifetimes over the socket", () => {
     server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
   });
 

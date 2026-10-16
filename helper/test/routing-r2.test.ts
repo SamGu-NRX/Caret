@@ -202,7 +202,7 @@ describe("A5's recordings with routing on, over the socket", () => {
     other.send({ type: "skillAnswer", v: PROTOCOL_VERSION, id: "skill-offer-1", answer: "accept", at: 3 });
     expect(await other.waitFor((m) => m.type === "error")).toMatchObject({ message: 'skillAnswer needs a host hello (host: true): only the host shows keep and promote questions' });
     other.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "r1", op: "resume", id: skill.id });
-    expect(await other.waitFor((m) => m.type === "memoryReply")).toMatchObject({ requestId: "r1", error: "resume needs a host hello (host: true): a paused skill comes back only from you", entries: [] });
+    expect(await other.waitFor((m) => m.type === "error" && String(m.message).startsWith("memoryRequest"))).toMatchObject({ message: "memoryRequest needs a host hello (host: true): memory holds what Caret knows about you" });
     expect(answered).toBe(0);
     expect(helper.memory.skill(skill.id)?.paused).toBe(true);
     expect(helper.consent.verify({ kind: "skill", routineId })).toBeNull();
@@ -213,16 +213,21 @@ describe("A5's recordings with routing on, over the socket", () => {
     expect(helper.consent.verify({ kind: "skill", routineId })).not.toBeNull();
   });
 
-  it("lets any consumer resume what carries no consent, and only the host save a skill's document (verification review)", async () => {
+  it("refuses memory to a consumer that is not the host, and lets the host resume what carries no consent and save a skill's document (verification review)", async () => {
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     const other = await connect({ pid: 2, version: "memory-tool", capabilities: ["memoryDocuments"] });
+    const host = await connect({ pid: 1, version: "host-test", host: true, capabilities: ["memoryDocuments"] });
+    // A consumer that is not the proven host is refused memory by name, and nothing it sends changes it (send-gate.ts).
     other.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "a", op: "add", kind: "about", fields: { label: "Name", value: "Sam Rivera", source: "typed" } });
-    const added = await other.waitFor<{ entries: { id: string }[] }>((m) => m.type === "memoryReply" && m.requestId === "a");
+    expect(await other.waitFor((m) => m.type === "error")).toMatchObject({ message: "memoryRequest needs a host hello (host: true): memory holds what Caret knows about you" });
+    expect(JSON.stringify(helper.memory.list("about"))).not.toContain("Sam Rivera");
+    host.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "a", op: "add", kind: "about", fields: { label: "Name", value: "Sam Rivera", source: "typed" } });
+    const added = await host.waitFor<{ entries: { id: string }[] }>((m) => m.type === "memoryReply" && m.requestId === "a");
     const id = added.entries[0]?.id as string;
-    other.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "p", op: "pause", id });
-    await other.waitFor((m) => m.type === "memoryReply" && m.requestId === "p");
-    other.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "r", op: "resume", id });
-    expect(await other.waitFor((m) => m.type === "memoryReply" && m.requestId === "r")).toMatchObject({ error: null });
+    host.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "p", op: "pause", id });
+    await host.waitFor((m) => m.type === "memoryReply" && m.requestId === "p");
+    host.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "r", op: "resume", id });
+    expect(await host.waitFor((m) => m.type === "memoryReply" && m.requestId === "r")).toMatchObject({ error: null });
 
     // A kept skill the user paused in its file: a non-host consumer saving it active does not bring its consent back.
     const step = { shapeHash: "s", srcBundle: "a", srcApp: "A", srcWindowKind: "standard", srcTemplateHash: "t", srcPos: 0, part: "whole", dstBundle: "b", dstApp: "Tracker", dstWindowKind: "standard", dstTemplateHash: "u", dstPos: 0 };
@@ -237,9 +242,8 @@ describe("A5's recordings with routing on, over the socket", () => {
     expect(helper.consent.verify({ kind: "skill", routineId })).toBeNull();
     const now = helper.memory.readDocument(doc as never);
     other.send({ type: "memoryDocumentRequest", v: PROTOCOL_VERSION, requestId: "s", op: "save", doc, baseRevision: now.info.revision, text: now.text.replace(/Status: paused/i, "Status: active") });
-    expect(await other.waitFor((m) => m.type === "memoryDocumentReply" && m.requestId === "s")).toMatchObject({ error: "a skill's document is saved only from the host (host: true): its status is your consent to it" });
+    expect(await other.waitFor((m) => m.type === "error" && String(m.message).startsWith("memoryDocumentRequest"))).toMatchObject({ message: "memoryDocumentRequest needs a host hello (host: true): memory holds what Caret knows about you" });
     expect(helper.consent.verify({ kind: "skill", routineId })).toBeNull();
-    const host = await connect({ pid: 1, version: "host-test", host: true, capabilities: ["memoryDocuments"] });
     host.send({ type: "memoryDocumentRequest", v: PROTOCOL_VERSION, requestId: "h", op: "save", doc, baseRevision: now.info.revision, text: now.text.replace(/Status: paused/i, "Status: active") });
     expect(await host.waitFor((m) => m.type === "memoryDocumentReply" && m.requestId === "h")).toMatchObject({ error: null });
     expect(helper.consent.verify({ kind: "skill", routineId })).not.toBeNull();

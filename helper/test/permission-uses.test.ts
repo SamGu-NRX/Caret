@@ -14,7 +14,7 @@ import { MAX_PERMISSION_USES, MemoryReply, PROTOCOL_VERSION, type ActionType, ty
 import type { Plan, Step } from "../src/executor/schema.ts";
 import { field, focus, jevPickingText, snap } from "./builders.ts";
 import { FakeApp, K, TITLE, executorWindow, wireButtons } from "./fake-app.ts";
-import { LineClient, SocketReader } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const usesOf = (entries: readonly MemoryEntry[], action: ActionType): PermissionUse[] => {
   const e = entries.find((x) => x.kind === "permission" && x.fields.action === action);
@@ -187,7 +187,7 @@ describe("permission uses over the socket", () => {
     dir = mkdtempSync(join(tmpdir(), "caret-uses-sock-"));
     store = new Store(join(dir, "data"));
     let n = 0;
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       askJev: jevPickingText((_, ins) => ({ Name: "Sam Rivera", Email: "sam.rivera@example.com" })[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null),
@@ -201,7 +201,8 @@ describe("permission uses over the socket", () => {
     server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     reader.enforceGrants = true;
   });
