@@ -26,6 +26,7 @@ import { PROTOCOL_VERSION, type Activity, type TaskProgress, type TaskRecord } f
 import type { Plan, Step } from "../src/executor/schema.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
 import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+import { hostKey, hostProof } from "../src/host-auth.ts";
 /** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
 const launchSecret = newLaunchSecret();
 
@@ -99,7 +100,10 @@ server = new HelperServer(a.socket, () => helper, (l) => log.push(l), launchSecr
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
-/** The consumer: what the host will be. Every message it sees is kept with the time it arrived. */
+/**
+ * The consumer: what the host will be. It proves the launch secret's host key, since the helper sends a consumer that is
+ * not the host no activity or progress (send-gate.ts). Every message after the handshake is kept with the time it arrived.
+ */
 const seen: { at: number; m: Activity | TaskProgress | { type: "error"; message: string } }[] = [];
 const consumer: Socket = await new Promise((res, rej) => {
   const s = createConnection(a.socket!);
@@ -108,19 +112,37 @@ const consumer: Socket = await new Promise((res, rej) => {
 });
 let cbuf = "";
 const onMessage: ((m: Activity | TaskProgress) => void)[] = [];
+let authenticated: () => void = () => undefined;
+const isHost = new Promise<void>((resolve, reject) => {
+  authenticated = resolve;
+  // A refused or late proof gets an error line naming why, and the helper closes the connection.
+  const failed = (why: string): void => reject(new Error(`the helper did not take this script as the host (${why}): ${seen.flatMap((x) => (x.m.type === "error" ? [x.m.message] : [])).join("; ") || "no reason given"}`));
+  consumer.once("close", () => failed("the connection closed"));
+  consumer.once("error", (e) => failed(e.message));
+});
 consumer.setEncoding("utf8");
 consumer.on("data", (d: string) => {
   cbuf += d;
   let nl: number;
   while ((nl = cbuf.indexOf("\n")) >= 0) {
-    const m = JSON.parse(cbuf.slice(0, nl)) as Activity | TaskProgress | { type: "error"; message: string };
+    const line = JSON.parse(cbuf.slice(0, nl)) as { type: string; nonce?: string };
     cbuf = cbuf.slice(nl + 1);
+    if (line.type === "hostChallenge") {
+      send({ type: "hostProof", v: PROTOCOL_VERSION, proof: hostProof(hostKey(launchSecret), String(line.nonce)) });
+      continue;
+    }
+    if (line.type === "hostAuthenticated") {
+      authenticated();
+      continue;
+    }
+    const m = line as Activity | TaskProgress | { type: "error"; message: string };
     seen.push({ at: Date.now(), m });
     if (m.type !== "error") for (const f of onMessage) f(m);
   }
 });
 const send = (m: unknown): void => void consumer.write(JSON.stringify(m) + "\n");
-send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: process.pid, version: "tasks-fixture-eval" });
+send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: process.pid, version: "tasks-fixture-eval", host: true });
+await isHost;
 const control = (taskId: string, action: "pause" | "resume" | "stop" | "takeOver" | "undo"): void => send({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action });
 const records = (id: string): TaskRecord[] => seen.flatMap((x) => (x.m.type === "activity" && x.m.task.id === id ? [x.m.task] : []));
 const latest = (id: string): TaskRecord | undefined => records(id).at(-1);
