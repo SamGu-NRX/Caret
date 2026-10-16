@@ -662,10 +662,16 @@ async function main(): Promise<void> {
     const changed = Object.keys(after).filter((k) => after[k] !== form.before[k]);
     const written = Object.fromEntries(changed.map((k) => [k, after[k] ?? ""]));
     const ownerViolations = changed.filter((k) => owners.otherFields.includes(k) || ownerOfText(after[k] ?? "", owners) === "other").map((k) => `${k}: ${after[k] ?? ""}`);
-    // Undo, newest segment first, as the activity list's Undo sends it for each.
+    // Undo, newest segment first, as the activity list's Undo sends it for each, one after the other: the helper refuses
+    // an older segment's Undo while a newer one's writes stand ("undo ... first: its writes came after this one's").
     const undoMark = hostMark();
-    for (const a of [...accepted].reverse()) hostLine.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId: `${a.goalId}:s${a.segment}`, action: "undo" });
-    await sleep(3000);
+    for (const a of [...accepted].reverse()) {
+      const taskId = `${a.goalId}:s${a.segment}`;
+      const at = hostMark();
+      hostLine.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action: "undo" });
+      await hostLine.next((m) => m.type === "taskProgress" && m.taskId === taskId && (m.phase === "undone" || m.phase === "stopped"), at, 10_000);
+    }
+    await sleep(500);
     const undone = await settle();
     await screenshot(form.sid, "row2-form-undone");
     const changedAfterUndo = Object.keys(undone).filter((k) => undone[k] !== form.before[k]).map((k) => `${k}: ${undone[k] ?? ""}`);
