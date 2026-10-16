@@ -148,20 +148,29 @@ export interface WriteRecord<E extends object> {
 export const MAX_RECORDS = 512;
 
 /**
- * The page-held `before` of Caret's writes, by task and control id, newest last per control: an undo restores the
- * newest first, so a field Caret wrote twice goes back step by step. Never sent anywhere.
+ * The page-held `before` of Caret's writes, by task and the element written, newest last per element: an undo restores
+ * the newest first, so a field Caret wrote twice goes back step by step. By the element, not its registry id: a write
+ * that reached a re-rendered field through a strong-key rebind is undone on that very element under the id a later
+ * walk gave it, and an id now naming another element finds no record. Never sent anywhere.
  */
 export class WriteRecords<E extends object> {
   private readonly byKey = new Map<string, WriteRecord<E>[]>();
+  private readonly serials = new WeakMap<E, number>();
+  private next = 1;
   private count = 0;
 
-  private static key(taskId: string, id: string): string {
-    return `${taskId}\u0000${id}`;
+  private key(taskId: string, el: E): string {
+    let n = this.serials.get(el);
+    if (n === undefined) {
+      n = this.next++;
+      this.serials.set(el, n);
+    }
+    return `${taskId}\u0000${n}`;
   }
 
   /** A write is about to change the element: kept before anything is touched, so a write whose answer is lost can still be undone. */
-  begin(taskId: string, id: string, el: E, before: string, wrote: string, rev: number, trusted: number): WriteRecord<E> {
-    const k = WriteRecords.key(taskId, id);
+  begin(taskId: string, el: E, before: string, wrote: string, rev: number, trusted: number): WriteRecord<E> {
+    const k = this.key(taskId, el);
     const list = this.byKey.get(k) ?? [];
     const rec: WriteRecord<E> = { el: new WeakRef(el), before, wrote, revAfter: rev, trustedAfter: trusted };
     list.push(rec);
@@ -180,13 +189,13 @@ export class WriteRecords<E extends object> {
     if (list.length === 0) this.byKey.delete(first.value);
   }
 
-  newest(taskId: string, id: string): WriteRecord<E> | undefined {
-    return this.byKey.get(WriteRecords.key(taskId, id))?.at(-1);
+  newest(taskId: string, el: E): WriteRecord<E> | undefined {
+    return this.byKey.get(this.key(taskId, el))?.at(-1);
   }
 
   /** The newest record was restored or refused for good: the one before it is next. */
-  pop(taskId: string, id: string): void {
-    const k = WriteRecords.key(taskId, id);
+  pop(taskId: string, el: E): void {
+    const k = this.key(taskId, el);
     const list = this.byKey.get(k);
     if (list === undefined || list.length === 0) return;
     list.pop();

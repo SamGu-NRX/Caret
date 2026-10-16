@@ -1,8 +1,9 @@
-// The cloud routes' last check against the focused field's caret text (counsel 2026-10-09, "The focused field"): that
-// text is for inline writing on this Mac only (engines/focus-text.ts), so a request body to a cloud model that holds it
-// is refused, loudly, whatever path put it there. Belt and braces: WRITER_ROUTE is null today (writer/config.ts), and the
-// text is branded so no JSON of it can be made by accident. Holds only the current focused field's text, in memory,
-// replaced at each walk that reports one and dropped when none does.
+// The writer route's last check against the focused field's caret text (counsel 2026-10-09, "The focused field"): that
+// text is for inline writing on this Mac only (engines/focus-text.ts), so a request body writer/chat.ts would send to a
+// cloud model that holds it is refused, loudly, whatever path put it there. Belt and braces: WRITER_ROUTE is null today
+// (writer/config.ts), and the text is branded so no JSON of it can be made by accident. Not on the Jev client: a field
+// Caret filled holds a value Jev requests carry anyway (the user's email from memory, say), so it would refuse those.
+// Holds only the current focused field's text, in memory, replaced at each walk that reports one, dropped when none does.
 
 /**
  * The shortest run of the focused text the check looks for. Assumed, not measured: shorter runs ("Hi", a single word)

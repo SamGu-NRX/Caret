@@ -79,23 +79,24 @@ private func goldenLines() throws -> [Data] {
         let lines = try goldenLines()
         guard case let .pageSnapshot(snap) = try JSONDecoder().decode(PageMessage.self, from: lines[34]),
               case let .pageCommand(cmd) = try JSONDecoder().decode(PageMessage.self, from: lines[35]),
-              case let .chooseOption(t, expect, value, question) = cmd.verb,
+              case let .chooseOption(t, expect, expectRev, value, question) = cmd.verb,
               case let .pageResult(res) = try JSONDecoder().decode(PageMessage.self, from: lines[36]) else { Issue.record("lines 35 to 37"); return }
         let controls = snap.frames[0].controls
         #expect(controls[0].group == PageGroup(id: "e20", name: "Are you authorized to work here?"))
         #expect(controls[2].pressed == false && controls[3].pressed == true)
-        #expect(t.control == .button && expect == "No" && value == "Yes" && question == "Do you have seven years of experience?")
+        #expect(t.control == .button && expect == "No" && expectRev == nil && value == "Yes" && question == "Do you have seven years of experience?")
         #expect(res.choice?.flavor == .pressGroup)
         let again = try JSONDecoder().decode(PageVerb.self, from: JSONEncoder().encode(cmd.verb))
         #expect(again == cmd.verb)
     }
 
     /// W3: an undo's verb carries rebind false and is refused as notSameElement; the user's input; the focused-window flag.
+    /// An undo of a text write is the page's own restore, naming what Caret wrote, never the text before (counsel 2026-10-09).
     @Test func readsTheW3Messages() throws {
         let lines = try goldenLines()
         guard case let .pageCommand(undo) = try JSONDecoder().decode(PageMessage.self, from: lines[31]),
-              case let .write(t, expect, value) = undo.verb else { Issue.record("line 32 is not an undo write"); return }
-        #expect(t.rebind == false && t.sameAs == "m1" && t.mark == nil && expect == "Ada" && value == "")
+              case let .restore(t, wrote, exact) = undo.verb else { Issue.record("line 32 is not an undo restore"); return }
+        #expect(t.rebind == false && t.sameAs == "m1" && t.mark == nil && wrote == "Ada" && exact == nil)
         guard case let .pageResult(refused) = try JSONDecoder().decode(PageMessage.self, from: lines[32]),
               case let .pageInput(input) = try JSONDecoder().decode(PageMessage.self, from: lines[33]),
               case let .pageSnapshot(snap) = try JSONDecoder().decode(PageMessage.self, from: lines[6]) else { Issue.record("lines 33, 34 and 7"); return }
@@ -139,7 +140,7 @@ private func goldenLines() throws -> [Data] {
         #expect(g.scope == .page(engine: "e7c1a2b3c4d5", tabId: 7, frameId: 0, origin: "http://127.0.0.1:4310", navGen: 1))
         #expect(g.expires - g.at == 120_000)
         #expect(n.scope == .native(pid: 5150, windowId: "5150-7"))
-        #expect(w.verb == .write(PageTarget(tabId: 7, frameId: 0, documentId: "DOC0", id: "e1", control: .text, name: "First name", taskId: "t1"), expect: "", value: "Ada"))
+        #expect(w.verb == .write(PageTarget(tabId: 7, frameId: 0, documentId: "DOC0", id: "e1", control: .text, name: "First name", taskId: "t1"), expectRev: 0, value: "Ada"))
     }
 
     @Test func readsTheSnapshotAcrossFramesAndTheClosedShadowRoot() throws {
@@ -149,6 +150,9 @@ private func goldenLines() throws -> [Data] {
         // W2: the page's own autocomplete field name rides on the control; a control with none has no key.
         #expect(s.frames[0].controls.map(\.autocomplete) == ["given-name", nil, nil, nil, nil])
         #expect(s.frames[0].excluded == ["password": 1, "hidden": 2])
+        // A text control's text never travels: it carries hasValue and rev; a select keeps its value (counsel 2026-10-09).
+        #expect(s.frames[0].controls.filter { $0.kind == .text }.allSatisfy { $0.value == nil && $0.hasValue == false && $0.rev == 0 })
+        #expect(s.frames[0].controls.first { $0.kind == .select }?.value == "")
         #expect(s.focused == PageFocus(frameId: 0, id: "e1", selection: [0, 0]))
     }
 

@@ -256,14 +256,14 @@ async function writeText(el: HTMLInputElement | HTMLTextAreaElement, verb: Extra
   if (equivalentFor({ numeric }, before, verb.value)) return answer("alreadyTrue", null, { readings: readings(before, now.rev) });
   if (!rebound && now.rev !== verb.expectRev) return answer("stale", "the field changed since it was walked");
   if (disabled) return answer("failed", "the field is disabled or read-only");
-  const rec = records.begin(verb.taskId, verb.id, el, before, verb.value, now.rev, trusted0);
+  const rec = records.begin(verb.taskId, el, before, verb.value, now.rev, trusted0);
   const keep = (): void => {
     rec.revAfter = revs.caretWrote(el, el.value, revs.trustedCount(el) !== trusted0);
     rec.trustedAfter = revs.trustedCount(el);
   };
   const pushed = await pushValue(el, verb.value, check, gate, () => (el.value !== before ? answer("stale", "the page changed the field when it took focus") : null), keep);
   if (!pushed.done) {
-    if (!pushed.went) records.pop(verb.taskId, verb.id);
+    if (!pushed.went) records.pop(verb.taskId, el);
     return pushed.answer;
   }
   keep();
@@ -284,13 +284,13 @@ async function restoreText(el: HTMLInputElement | HTMLTextAreaElement, verb: Ext
   const refused = (why: RestoreRefusal): ActAnswer => answer(why === "gone" || why === "noRecord" ? "notSameElement" : "stale", RESTORE_SAYS[why], { restore: { outcome: "refused", why } });
   const state = (): { rev: number; trusted: number; text: string; numeric: boolean } => ({ rev: readNow(el, verb.control, false).rev, trusted: revs.trustedCount(el), text: el.value, numeric });
   const why = (): RestoreRefusal | null => {
-    const rec = records.newest(verb.taskId, verb.id);
+    const rec = records.newest(verb.taskId, el);
     if (rec !== undefined && rec.wrote !== verb.wrote) return "noRecord";
     return restoreCheck(rec, el, state(), verb.exact === true);
   };
   const first = why();
   if (first !== null) return refused(first);
-  const rec = records.newest(verb.taskId, verb.id) as NonNullable<ReturnType<typeof records.newest>>;
+  const rec = records.newest(verb.taskId, el) as NonNullable<ReturnType<typeof records.newest>>;
   if (disabled) return answer("failed", "the field is disabled or read-only");
   const trusted0 = revs.trustedCount(el);
   const pushed = await pushValue(el, rec.before, check, gate, () => {
@@ -302,9 +302,9 @@ async function restoreText(el: HTMLInputElement | HTMLTextAreaElement, verb: Ext
   const rev = revs.caretWrote(el, el.value, typed);
   if (typed) return answer("failed", "your input reached the field while Caret put it back");
   if (el.value !== rec.before) return answer("failed", "the page holds other text than Caret put back");
-  records.pop(verb.taskId, verb.id);
+  records.pop(verb.taskId, el);
   // The write before this one, if any, left exactly this text: its own undo is next, from here.
-  const prior = records.newest(verb.taskId, verb.id);
+  const prior = records.newest(verb.taskId, el);
   if (prior !== undefined) {
     prior.revAfter = rev;
     prior.trustedAfter = revs.trustedCount(el);

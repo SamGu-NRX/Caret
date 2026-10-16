@@ -2017,7 +2017,9 @@ export class Executor {
       }
       // A combobox's walk carries no sign of a pick either way (see below): only the lost answer could say.
       if (pageCombobox(field.role, e.windowId)) return { state: "unknown", detail: `Caret cannot tell whether the option was picked; ${fieldContents(e.before, null)}` };
-      return { state: "unknown", detail: `The field may have been written: ${fieldContents(e.before, null)}. Undo puts it back only while the page finds it holding exactly what Caret wrote` };
+      // Named, since the run's result is all that says which field it was (the activity row, journey row 3).
+      const label = (field.label ?? "").trim();
+      return { state: "unknown", detail: `${label === "" ? "The field" : `'${clip(label)}'`} may have been written: ${fieldContents(e.before, null)}. Undo puts it back only while the page finds it holding exactly what Caret wrote` };
     }
     const held = read;
     // Before any reading of the value as Caret's, a whole one or a prefix (issue #26).

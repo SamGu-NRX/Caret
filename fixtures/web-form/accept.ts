@@ -212,6 +212,18 @@ function control(s: PageSnapshot, name: string, origin?: string): { frame: PageF
   return hits[0];
 }
 
+/** The rev the walk read of a text control (protocol.ts TextPageControl): a write names it, never the field's text. */
+function rev(s: PageSnapshot, name: string, origin?: string): number {
+  const { c } = control(s, name, origin);
+  return "rev" in c && c.rev !== null ? c.rev : -1;
+}
+
+/** Whether a walk says the text control holds something; its text never travels. */
+const holds = (s: PageSnapshot, name: string, origin?: string): boolean => {
+  const { c } = control(s, name, origin);
+  return "hasValue" in c && c.hasValue === true;
+};
+
 function target(s: PageSnapshot, name: string, taskId: string, origin?: string) {
   const { frame, c } = control(s, name, origin);
   return { tabId: s.tabId, frameId: frame.frameId, documentId: frame.documentId, id: c.id, control: c.kind, name: c.name, taskId };
@@ -277,30 +289,33 @@ async function checks(e: Engine, site: FixtureSite): Promise<void> {
   grant(e, "t-main");
 
   await check("a pageWrite on the React controlled input holds after blur, and React's state equals it", async () => {
-    const r = await run(e, { kind: "pageWrite", ...target(s, "Preferred name", "t-main"), expect: "", value: "Robin Example" });
+    const r = await run(e, { kind: "pageWrite", ...target(s, "Preferred name", "t-main"), expectRev: rev(s, "Preferred name"), value: "Robin Example" });
     expect(r.outcome === "ok", outcome(r));
-    expect(r.readings?.afterInput === "Robin Example" && r.readings.afterBlur === "Robin Example", `readings ${JSON.stringify(r.readings)}`);
+    expect(r.readings?.landed === true && r.readings.sameAsBefore === false, `readings ${JSON.stringify(r.readings)}`);
     await stateHas(site, "preferred", "Robin Example");
     return `readings ${JSON.stringify(r.readings)}; React state preferred=${JSON.stringify(site.state?.preferred)}`;
   });
 
-  await check("the revert field reports failed", async () => {
-    const r = await run(e, { kind: "pageWrite", ...target(s, "City", "t-main"), expect: "Springfield", value: "Shelbyville" });
-    expect(r.outcome === "failed" && r.detail === "the page kept the old value", outcome(r));
-    expect(r.readings?.afterBlur === "Springfield", `readings ${JSON.stringify(r.readings)}`);
+  // The revert field starts with text the page put there: withheld as prefilled (counsel 2026-10-09), so Caret never
+  // writes over it, and the walk says nothing of it but that it is withheld.
+  await check("the page's prefilled City is withheld, and a write over it is refused", async () => {
+    const city = control(s, "City").c;
+    expect("withheld" in city && city.withheld === "prefilled" && !holds(s, "City"), `City walks as ${JSON.stringify(city)}`);
+    const r = await run(e, { kind: "pageWrite", ...target(s, "City", "t-main"), expectRev: 0, value: "Shelbyville" });
+    expect(r.outcome === "excluded" && (r.detail ?? "").includes("prefilled"), outcome(r));
     await stateHas(site, "city", "Springfield");
-    return `${outcome(r)}; readings ${JSON.stringify(r.readings)}`;
+    return outcome(r);
   });
 
   await check("a native select is verified by selectedOptions", async () => {
     const r = await run(e, { kind: "pageSelect", ...target(s, "Country", "t-main"), expect: "", value: "ca" });
-    expect(r.outcome === "ok" && r.readings?.afterBlur === "ca", `${outcome(r)} ${JSON.stringify(r.readings)}`);
+    expect(r.outcome === "ok" && r.readings?.landed === true, `${outcome(r)} ${JSON.stringify(r.readings)}`);
     expect((await read(site, "#country")) === "ca", "the page's select does not hold ca");
     return `readings ${JSON.stringify(r.readings)}`;
   });
 
   await check("a write with no grant is notAllowed", async () => {
-    const r = await run(e, { kind: "pageWrite", ...target(s, "First name", "t-none"), expect: "", value: "Nobody" });
+    const r = await run(e, { kind: "pageWrite", ...target(s, "First name", "t-none"), expectRev: rev(s, "First name"), value: "Nobody" });
     expect(r.outcome === "notAllowed", outcome(r));
     expect((await read(site, "#first_name")) === "", "the field changed anyway");
     return outcome(r);
@@ -308,10 +323,10 @@ async function checks(e: Engine, site: FixtureSite): Promise<void> {
 
   await check("a write after actRevoke is notAllowed", async () => {
     grant(e, "t-rev");
-    const first = await run(e, { kind: "pageWrite", ...target(s, "Email", "t-rev"), expect: "", value: "robin@example.test" });
+    const first = await run(e, { kind: "pageWrite", ...target(s, "Email", "t-rev"), expectRev: rev(s, "Email"), value: "robin@example.test" });
     expect(first.outcome === "ok", `the granted write did not land: ${outcome(first)}`);
     revoke(e, "t-rev");
-    const r = await run(e, { kind: "pageWrite", ...target(s, "Email", "t-rev"), expect: "robin@example.test", value: "other@example.test" });
+    const r = await run(e, { kind: "pageWrite", ...target(s, "Email", "t-rev"), expectRev: first.readings?.rev ?? -1, value: "other@example.test" });
     expect(r.outcome === "notAllowed", outcome(r));
     expect((await read(site, "#email")) === "robin@example.test", "the field changed after the revoke");
     return `before revoke ${first.outcome}; after ${outcome(r)}`;
@@ -320,17 +335,24 @@ async function checks(e: Engine, site: FixtureSite): Promise<void> {
   await check("a value the page changed between walk and write is stale", async () => {
     s = await walk(e);
     const t = target(s, "First name", "t-main");
+    const was = rev(s, "First name");
     await site.command({ cmd: "mutate", selector: "#first_name", value: "Typed by page" });
-    const r = await run(e, { kind: "pageWrite", ...t, expect: "", value: "Robin" });
-    expect(r.outcome === "stale", outcome(r));
+    const r = await run(e, { kind: "pageWrite", ...t, expectRev: was, value: "Robin" });
+    // The page's own text, with no keystroke, is programmatic: withheld, so a write over it is refused before the rev.
+    expect(r.outcome === "stale" || r.outcome === "excluded", outcome(r));
     expect((await read(site, "#first_name")) === "Typed by page", "the page's text was overwritten");
     return outcome(r);
   });
 
-  await check("a re-rendered field rebinds only by its author identifier and expected value", async () => {
+  // A replacement is matched on the text and rev the walk read of the field, which only the page holds (registry.ts):
+  // the field is emptied first, since a replacement that already holds text is withheld as prefilled.
+  await check("a re-rendered field rebinds only by its author identifier and the walk's own reading of it", async () => {
+    await site.command({ cmd: "mutate", selector: "#first_name", value: "" });
+    s = await walk(e);
     const t = target(s, "First name", "t-main");
+    const was = rev(s, "First name");
     await site.command({ cmd: "replace", selector: "#first_name" });
-    const r = await run(e, { kind: "pageWrite", ...t, expect: "Typed by page", value: "Robin" });
+    const r = await run(e, { kind: "pageWrite", ...t, expectRev: was, value: "Robin" });
     expect(r.outcome === "ok" && (r.detail ?? "").includes("rebound by its strong key"), outcome(r));
     expect((await read(site, "#first_name")) === "Robin", "the replacement field does not hold the value");
     return outcome(r);
@@ -339,11 +361,12 @@ async function checks(e: Engine, site: FixtureSite): Promise<void> {
   await check("writes reach the cross-origin frame and the closed shadow root", async () => {
     s = await walk(e);
     grant(e, "t-frames");
-    const a = await run(e, { kind: "pageWrite", ...target(s, "Portfolio URL", "t-frames", site.embedOrigin), expect: "", value: "https://example.test/robin" });
-    const b = await run(e, { kind: "pageWrite", ...target(s, "Badge code", "t-frames"), expect: "", value: "B-1234" });
+    const a = await run(e, { kind: "pageWrite", ...target(s, "Portfolio URL", "t-frames", site.embedOrigin), expectRev: rev(s, "Portfolio URL", site.embedOrigin), value: "https://example.test/robin" });
+    const b = await run(e, { kind: "pageWrite", ...target(s, "Badge code", "t-frames"), expectRev: rev(s, "Badge code"), value: "B-1234" });
     expect(a.outcome === "ok" && b.outcome === "ok", `portfolio ${outcome(a)}; badge ${outcome(b)}`);
     const again = await walk(e);
-    expect(control(again, "Portfolio URL", site.embedOrigin).c.value === "https://example.test/robin" && control(again, "Badge code").c.value === "B-1234", "a re-walk does not show the values");
+    // The re-walk says both hold text, at the revs the writes left; it carries neither value.
+    expect(holds(again, "Portfolio URL", site.embedOrigin) && rev(again, "Portfolio URL", site.embedOrigin) === a.readings?.rev && holds(again, "Badge code") && rev(again, "Badge code") === b.readings?.rev, "a re-walk does not show the writes");
     return `portfolio ${a.outcome}, badge ${b.outcome}`;
   });
 
@@ -376,10 +399,11 @@ async function checks(e: Engine, site: FixtureSite): Promise<void> {
     s = await walk(e);
     grant(e, "t-nav");
     const t = target(s, "Email", "t-nav");
+    const was = rev(s, "Email");
     const since = Date.now();
     await site.command({ cmd: "navigate", url: `${site.mainOrigin}/form2` });
     await site.waitForLoad((h) => h.endsWith("/form2"), since);
-    const r = await run(e, { kind: "pageWrite", ...t, expect: "robin@example.test", value: "late@example.test" });
+    const r = await run(e, { kind: "pageWrite", ...t, expectRev: was, value: "late@example.test" });
     expect(r.outcome === "stale", outcome(r));
     return outcome(r);
   });
@@ -454,10 +478,10 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
   grant(e, "t-b2");
 
   await check("react-select 'Country of residence' is set to United States, verified by chip, hidden input and aria-expanded=false", async () => {
-    const r = await runSlow(e, { kind: "pageChooseOption", ...target(s, "Country of residence", "t-b2"), expect: "", value: "United States" });
+    const r = await runSlow(e, { kind: "pageChooseOption", ...target(s, "Country of residence", "t-b2"), expectRev: rev(s, "Country of residence"), value: "United States" });
     expect(r.outcome === "ok", `${outcome(r)} ${JSON.stringify(r.choice)}`);
     expect(r.choice?.flavor === "reactSelect" && r.choice.hiddenInput === "set" && r.choice.expanded === false, `choice ${JSON.stringify(r.choice)}`);
-    expect(r.readings?.afterBlur === "United States", `readings ${JSON.stringify(r.readings)}`);
+    expect(r.readings?.landed === true, `readings ${JSON.stringify(r.readings)}`);
     // The same three, read by the page itself, and React's own state.
     const hidden = await read(site, 'input[name="rs_country"]');
     const expanded = await attr(site, "#rs-country", "aria-expanded");
@@ -465,16 +489,16 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
     expect(hidden === "us" && expanded === "false" && chip === "United States", `page: hidden ${hidden}, aria-expanded ${expanded}, chip ${chip}`);
     await stateHas(site, "country", "us");
     s = await walk(e);
-    expect(control(s, "Country of residence").c.value === "United States", `the walk shows ${JSON.stringify(control(s, "Country of residence").c.value)}`);
+    expect(holds(s, "Country of residence") && rev(s, "Country of residence") === r.readings?.rev, `the walk shows ${JSON.stringify(control(s, "Country of residence").c)}`);
     return `chip '${chip}', hidden input '${hidden}', aria-expanded ${expanded}, React country=${JSON.stringify(site.state?.country)}; choice ${JSON.stringify(r.choice)}`;
   });
 
   await check("a filter two options match stops, names both, and leaves the control as it was", async () => {
-    const r = await runSlow(e, { kind: "pageChooseOption", ...target(s, "Country of residence", "t-b2"), expect: "United States", value: "United" });
+    const r = await runSlow(e, { kind: "pageChooseOption", ...target(s, "Country of residence", "t-b2"), expectRev: rev(s, "Country of residence"), value: "United" });
     const m = r.choice?.matches ?? [];
     expect(r.outcome === "failed" && m.includes("United States") && m.includes("United States Minor Outlying Islands") && m.length === 2, `${outcome(r)} ${JSON.stringify(r.choice)}`);
     expect((r.detail ?? "").includes("'United States'") && (r.detail ?? "").includes("'United States Minor Outlying Islands'"), `detail ${r.detail}`);
-    expect(r.readings?.afterBlur === "United States", `readings ${JSON.stringify(r.readings)}`);
+    expect(r.readings?.sameAsBefore === true, `readings ${JSON.stringify(r.readings)}`);
     const hidden = await read(site, 'input[name="rs_country"]');
     const expanded = await attr(site, "#rs-country", "aria-expanded");
     const filter = await read(site, "#rs-country");
@@ -484,7 +508,7 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
   });
 
   await check("an ARIA combobox whose listbox is a portal is set by its option and verified", async () => {
-    const r = await runSlow(e, { kind: "pageChooseOption", ...target(s, "Department", "t-b2"), expect: "", value: "Research" });
+    const r = await runSlow(e, { kind: "pageChooseOption", ...target(s, "Department", "t-b2"), expectRev: rev(s, "Department"), value: "Research" });
     expect(r.outcome === "ok" && r.choice?.flavor === "aria" && r.choice.expanded === false, `${outcome(r)} ${JSON.stringify(r.choice)}`);
     const v = await read(site, "#dept");
     expect(v === "Research", `#dept holds ${v}`);
@@ -577,7 +601,7 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
     grant(e, "t-off");
     e.host.registry.setSitesOff([site.mainOrigin]);
     const w = await e.session.command({ kind: "pageWalk", tabId: e.tabId });
-    const r = await run(e, { kind: "pageWrite", ...t, expect: "", value: "Off site" });
+    const r = await run(e, { kind: "pageWrite", ...t, expectRev: rev(s, "First name"), value: "Off site" });
     const last = e.session.tabs.get(e.tabId);
     await site.command({ cmd: "focus", selector: "#first_name" });
     await sleep(1000);
@@ -728,7 +752,8 @@ async function batch5(e: Engine, site: FixtureSite, published: HelperMessage[]):
   await check("D2-04: one undo restores every field, newest first, each only on the element Caret wrote (rebind: false)", async () => {
     const r = await watched(async (seen) => ({ u: await e.helper.executor.undo(taskId), seen: acts(seen) }));
     expect(r.u.restored === 10 && r.u.notRestored.length === 0, `undo ${JSON.stringify(r.u)}`);
-    expect(r.seen.length === 10 && r.seen.every((v) => v.rebind === false && typeof v.sameAs === "string"), `restores: ${JSON.stringify(r.seen.map((v) => [v.kind, v.rebind, v.sameAs !== undefined]))}`);
+    // A text field's restore is the page's own pageRestore; each names the element Caret wrote.
+    expect(r.seen.length === 10 && r.seen.every((v) => v.kind !== "pageSourceGrant" && v.rebind === false && typeof v.sameAs === "string"), `restores: ${JSON.stringify(r.seen.map((v) => [v.kind, v.kind !== "pageSourceGrant" && v.rebind, v.kind !== "pageSourceGrant" && v.sameAs !== undefined]))}`);
     const got = await readAll();
     expect(diff(got, MIXED_EMPTY) === "", `after undo: ${diff(got, MIXED_EMPTY)}`);
     await stateHas(site, "country", null);
@@ -1253,7 +1278,7 @@ async function lateCheck(o: { exe: string; env: NodeJS.ProcessEnv; bridge: strin
       expect(s !== null, "the late tab was never walked");
       const e: Engine = { host: o.host, helper: o.helper, session, tabId: s!.tabId, cdp };
       grant(e, "t-w4-late");
-      const r = await run(e, { kind: "pageWrite", ...target(s!, "First name", "t-w4-late"), expect: "", value: "Late" });
+      const r = await run(e, { kind: "pageWrite", ...target(s!, "First name", "t-w4-late"), expectRev: rev(s!, "First name"), value: "Late" });
       expect(r.outcome === "notAllowed" && (r.detail ?? "").includes("before Caret was installed"), `the late tab's write: ${outcome(r)}`);
       const { sessionId } = await cdp.page(`${o.site.mainOrigin}/form2`);
       const still = ((await cdp.send("Runtime.evaluate", { expression: "document.getElementById('first_name').value", returnByValue: true }, sessionId)) as { result: { value: string } }).result.value;
@@ -1267,7 +1292,7 @@ async function lateCheck(o: { exe: string; env: NodeJS.ProcessEnv; bridge: strin
         s2 = (await session.command({ kind: "pageWalk", tabId: e.tabId })).snapshot;
       }
       grant(e, "t-w4-late2");
-      const r2 = await run(e, { kind: "pageWrite", ...target(s2!, "First name", "t-w4-late2"), expect: "", value: "Late" });
+      const r2 = await run(e, { kind: "pageWrite", ...target(s2!, "First name", "t-w4-late2"), expectRev: rev(s2!, "First name"), value: "Late" });
       const { sessionId: sid2 } = await cdp.page(`${o.site.mainOrigin}/form2`);
       const now = ((await cdp.send("Runtime.evaluate", { expression: "document.getElementById('first_name').value", returnByValue: true }, sid2)) as { result: { value: string } }).result.value;
       expect(r2.outcome === "ok" && now === "Late", `after the reload: ${outcome(r2)}; the field holds '${now}'`);
@@ -1461,7 +1486,7 @@ function combobox(s: PageSnapshot, prefix: string, taskId: string) {
   const hits = s.frames.flatMap((frame) => frame.controls.filter((c) => c.kind === "combobox" && c.name.startsWith(prefix)).map((c) => ({ frame, c })));
   if (hits.length !== 1 || hits[0] === undefined) throw new Error(`${hits.length} comboboxes named '${prefix}…': ${JSON.stringify(s.frames.flatMap((f) => f.controls.filter((c) => c.kind === "combobox").map((c) => c.name)))}`);
   const { frame, c } = hits[0];
-  return { tabId: s.tabId, frameId: frame.frameId, documentId: frame.documentId, id: c.id, control: c.kind, name: c.name, taskId };
+  return { tabId: s.tabId, frameId: frame.frameId, documentId: frame.documentId, id: c.id, control: c.kind, name: c.name, taskId, expectRev: "rev" in c && c.rev !== null ? c.rev : -1 };
 }
 
 /** Waits until F1's oracle (probe.js, the page's own report) holds `value` for `field` of `page`; says what it holds. */
@@ -1519,7 +1544,7 @@ async function batchC1(e: Engine, site: FixtureSite): Promise<void> {
   await check("C1: wizard-2's School picker, whose list shows only once the field holds text and is fetched as you type, is picked and verified by the page", async () => {
     let s = await open("/tasks/wizard/2", hasBox("School"));
     grant(e, "t-c1-school");
-    const r = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "School", "t-c1-school"), expect: "", value: "Northfield State University" });
+    const r = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "School", "t-c1-school"), value: "Northfield State University" });
     expect(r.outcome === "ok", `${outcome(r)} ${JSON.stringify(r.choice)}`);
     await oracleHolds(site, "wizard-2", "school", "Northfield State University");
     const dom = await pickerValue("school");
@@ -1527,8 +1552,8 @@ async function batchC1(e: Engine, site: FixtureSite): Promise<void> {
     // A value that is only part of an option's name ("Northfield" starts two) is not picked, and the page is as it was.
     s = await open("/tasks/wizard/2", hasBox("School"));
     grant(e, "t-c1-school2");
-    const part = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "School", "t-c1-school2"), expect: "", value: "Northfield" });
-    expect(part.outcome === "failed" && part.readings?.afterBlur === "" && part.choice?.expanded === false, `a partial name: ${outcome(part)} ${JSON.stringify(part.readings)} ${JSON.stringify(part.choice)}`);
+    const part = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "School", "t-c1-school2"), value: "Northfield" });
+    expect(part.outcome === "failed" && part.readings?.empty === true && part.choice?.expanded === false, `a partial name: ${outcome(part)} ${JSON.stringify(part.readings)} ${JSON.stringify(part.choice)}`);
     await oracleHolds(site, "wizard-2", "school", "");
     expect((await pickerText("school")) === "" && (await pickerValue("school")) === "" && (await listboxes()) === 0, "the partial name left text, a pick or an open list on the page");
     return `picked: oracle and DOM 'Northfield State University'; 'Northfield': ${part.detail}`;
@@ -1538,15 +1563,15 @@ async function batchC1(e: Engine, site: FixtureSite): Promise<void> {
     let s = await open("/tasks/ashby", hasBox("Where do you plan on working from"));
     grant(e, "t-c1-ashby");
     const t = combobox(s, "Where do you plan on working from", "t-c1-ashby");
-    const r = await runSlow(e, { kind: "pageChooseOption", ...t, expect: "", value: "San Diego, California, United States" });
+    const r = await runSlow(e, { kind: "pageChooseOption", ...t, value: "San Diego, California, United States" });
     expect(r.outcome === "ok", `${outcome(r)} ${JSON.stringify(r.choice)}`);
     await oracleHolds(site, "ashby", "location", "San Diego, California, United States");
     expect((await pickerValue("location")) === "San Diego, California, United States", "the DOM holds no pick");
     // The note's own words ("San Diego, California") find one option whose name is longer: not picked (exact names only).
     s = await open("/tasks/ashby", hasBox("Where do you plan on working from"));
     grant(e, "t-c1-ashby2");
-    const short = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "Where do you plan on working from", "t-c1-ashby2"), expect: "", value: "San Diego, California" });
-    expect(short.outcome === "failed" && short.readings?.afterBlur === "" && short.choice?.expanded === false, `the shorter name: ${outcome(short)}`);
+    const short = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "Where do you plan on working from", "t-c1-ashby2"), value: "San Diego, California" });
+    expect(short.outcome === "failed" && short.readings?.empty === true && short.choice?.expanded === false, `the shorter name: ${outcome(short)}`);
     await oracleHolds(site, "ashby", "location", "");
     expect((await pickerText("location")) === "" && (await listboxes()) === 0, "the shorter name left text or an open list on the page");
     return `'${t.name}' picked, oracle and DOM agree; 'San Diego, California': ${short.detail}`;
@@ -1631,7 +1656,7 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
     grant(e, "t-w3a");
     const t = target(s, "First name", "t-w3a");
     await site.command({ cmd: "replace", selector: "#first_name" });
-    const r = await run(e, { kind: "pageWrite", ...t, rebind: false, expect: "", value: "Undo target" });
+    const r = await run(e, { kind: "pageWrite", ...t, rebind: false, expectRev: rev(s, "First name"), value: "Undo target" });
     expect(r.outcome === "notSameElement", outcome(r));
     expect((await read(site, "#first_name")) === "", "the replacement field changed");
     return outcome(r);
@@ -1639,7 +1664,7 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
 
   await check("W3 1a: a rebind acts on the replacement but never gives it the replaced element's id, so an undo mark on that id stops matching", async () => {
     const t = target(s, "First name", "t-w3a");
-    const r = await run(e, { kind: "pageWrite", ...t, expect: "", value: "Robin" });
+    const r = await run(e, { kind: "pageWrite", ...t, expectRev: rev(s, "First name"), value: "Robin" });
     expect(r.outcome === "ok" && (r.detail ?? "").includes("rebound"), outcome(r));
     s = await walk(e);
     const now = control(s, "First name").c.id;
@@ -1680,12 +1705,12 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
       await site.command({ cmd: "synthPress", selector: "#h_click" });
       await sleep(500);
       expect(seen.length === 0, `a script's press counted as the user's: ${JSON.stringify(seen)}`);
-      const live = await run(e, { kind: "pageWrite", ...target(s, "Click here", "t-w3b"), expect: "", value: "x" });
+      const live = await run(e, { kind: "pageWrite", ...target(s, "Click here", "t-w3b"), expectRev: rev(s, "Click here"), value: "x" });
       expect(live.outcome === "ok", `the grant did not survive a script's press: ${outcome(live)}`);
       await cdp.click(sessionId, "#h_click");
       for (let i = 0; i < 40 && seen.length === 0; i++) await sleep(50);
       expect(seen.length === 1 && seen[0]?.windowId === windowId && seen[0].kind === "mouse", `seen ${JSON.stringify(seen)}`);
-      const after = await run(e, { kind: "pageWrite", ...target(s, "Click here", "t-w3b"), expect: "x", value: "y" });
+      const after = await run(e, { kind: "pageWrite", ...target(s, "Click here", "t-w3b"), expectRev: live.readings?.rev ?? -1, value: "y" });
       expect(after.outcome === "notAllowed", `a write after the click: ${outcome(after)}`);
       await cdp.click(sessionId, "#h_click");
       await sleep(500);
@@ -1699,11 +1724,11 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
   await check("W3 1c: a revoke while the page holds a write mid-stage stops it there: text at focus, text after input (no change event), a select at focus, a checkbox at focus", async () => {
     s = await walk(e);
     grant(e, "t-w3c");
-    const focus = await revokeAtHold(e, site, "focus", "t-w3c", { kind: "pageWrite", ...target(s, "Hold on focus", "t-w3c"), expect: "", value: "Never" });
+    const focus = await revokeAtHold(e, site, "focus", "t-w3c", { kind: "pageWrite", ...target(s, "Hold on focus", "t-w3c"), expectRev: rev(s, "Hold on focus"), value: "Never" });
     expect(focus.held && focus.r.outcome === "notAllowed", `text at focus: held ${focus.held}, ${outcome(focus.r)}`);
     expect((await read(site, "#h_focus")) === "" && (await dataset(site, "#h_focus", "input")) === "(none)", "text at focus: the value went in after the revoke");
     grant(e, "t-w3c");
-    const input = await revokeAtHold(e, site, "input", "t-w3c", { kind: "pageWrite", ...target(s, "Hold on input", "t-w3c"), expect: "", value: "Landed" });
+    const input = await revokeAtHold(e, site, "input", "t-w3c", { kind: "pageWrite", ...target(s, "Hold on input", "t-w3c"), expectRev: rev(s, "Hold on input"), value: "Landed" });
     expect(input.held && input.r.outcome === "failed" && input.r.readings === undefined && /grant ended/.test(input.r.detail ?? ""), `text after input: held ${input.held}, ${outcome(input.r)}, readings ${JSON.stringify(input.r.readings)}`);
     expect(toVerbOutcome(input.r).outcome === "axError", "the helper does not read it as may-have-landed");
     expect((await read(site, "#h_input")) === "Landed" && (await dataset(site, "#h_input", "change")) === "(none)", "text after input: change ran after the revoke");
@@ -1730,18 +1755,21 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
   // ---- the trust-boundary review's findings (W3 review) ----
 
   await check("W3 review #2: an undo reaches the element its write reached, through a rebind, and no other element", async () => {
+    // Emptied first: a replacement that already holds text is withheld as prefilled, so only an empty one rebinds.
+    await site.command({ cmd: "mutate", selector: "#h_click", value: "" });
     s = await walk(e);
     grant(e, "t-w3m");
     const t = target(s, "Click here", "t-w3m");
     const was = (await read(site, "#h_click")) ?? "";
     await site.command({ cmd: "replace", selector: "#h_click" });
-    const fwd = await run(e, { kind: "pageWrite", ...t, mark: "w3-m1", expect: was, value: "marked" });
+    const fwd = await run(e, { kind: "pageWrite", ...t, mark: "w3-m1", expectRev: rev(s, "Click here"), value: "marked" });
     expect(fwd.outcome === "ok" && (fwd.detail ?? "").includes("rebound"), `forward: ${outcome(fwd)}`);
     s = await walk(e);
-    const wrong = await run(e, { kind: "pageWrite", ...target(s, "Hold on focus", "t-w3m"), rebind: false, sameAs: "w3-m1", expect: "", value: "Not mine" });
+    // An undo is the page's own restore of the text it kept, on the element under the write's mark only.
+    const wrong = await run(e, { kind: "pageRestore", ...target(s, "Hold on focus", "t-w3m"), rebind: false, sameAs: "w3-m1", wrote: "marked" });
     expect(wrong.outcome === "notSameElement" && (await read(site, "#h_focus")) === "", `undo on another element: ${outcome(wrong)}`);
-    const back = await run(e, { kind: "pageWrite", ...target(s, "Click here", "t-w3m"), rebind: false, sameAs: "w3-m1", expect: "marked", value: was });
-    expect(back.outcome === "ok" && (await read(site, "#h_click")) === was, `undo on the replacement it wrote: ${outcome(back)}`);
+    const back = await run(e, { kind: "pageRestore", ...target(s, "Click here", "t-w3m"), rebind: false, sameAs: "w3-m1", wrote: "marked" });
+    expect(back.outcome === "ok" && back.restore?.outcome === "restored" && (await read(site, "#h_click")) === was, `undo on the replacement it wrote: ${outcome(back)}`);
     revoke(e, "t-w3m");
     return `forward ${fwd.outcome} (rebound); undo on another element ${wrong.outcome}; undo on the written replacement ${back.outcome}`;
   });
@@ -1754,7 +1782,7 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
     grant(e, "t-w3l");
     await sleep(300);
     const h = site.armHold("focus");
-    const pending = e.session.command({ kind: "pageWrite", ...target(s, "Hold on focus", "t-w3l"), expect: "", value: "Latched" }, 10_000);
+    const pending = e.session.command({ kind: "pageWrite", ...target(s, "Hold on focus", "t-w3l"), expectRev: rev(s, "Hold on focus"), value: "Latched" }, 10_000);
     const held = await Promise.race([h.arrived.then(() => true), sleep(5000).then(() => false)]);
     // The click waits in the page's input queue while the page is held, and is handled once the write asks for the grant.
     const click = cdp.clickAt(sessionId, at).catch(() => undefined);
@@ -1770,7 +1798,7 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
   await check("W3 review #9, #7: a field the page disables on focus is not written; a select that holds several choices is refused", async () => {
     s = await walk(e);
     grant(e, "t-w3x");
-    const d = await run(e, { kind: "pageWrite", ...target(s, "Disable on focus", "t-w3x"), expect: "", value: "Never" });
+    const d = await run(e, { kind: "pageWrite", ...target(s, "Disable on focus", "t-w3x"), expectRev: rev(s, "Disable on focus"), value: "Never" });
     const dv = await read(site, "#h_disable");
     expect(d.outcome === "failed" && /disabled or read-only/.test(d.detail ?? "") && dv === "", `disable on focus: ${outcome(d)}; holds '${dv}'`);
     const m = await run(e, { kind: "pageSelect", ...target(s, "Several sizes", "t-w3x"), expect: "s", value: "l" });
@@ -1789,7 +1817,7 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
     const inLocked = s.frames.flatMap((f) => f.controls).filter((c) => c.name === "In a locked section");
     let fs = "not walked";
     if (inLocked.length === 1) {
-      const r = await run(e, { kind: "pageWrite", ...target(s, "In a locked section", "t-w3y"), expect: "", value: "Never" });
+      const r = await run(e, { kind: "pageWrite", ...target(s, "In a locked section", "t-w3y"), expectRev: rev(s, "In a locked section"), value: "Never" });
       fs = outcome(r);
       expect(r.outcome === "failed" && /disabled/.test(r.detail ?? "") && (await read(site, "#h_fieldset")) === "", `locked fieldset: ${fs}`);
     }
@@ -1799,11 +1827,11 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
 
   await check("W3 review #10: a revoke between the combobox filter and the pick reports what the filter left as possibly landed", async () => {
     s = await walk(e);
-    const before = control(s, "Hold department").c.value ?? "";
     grant(e, "t-w3f");
-    const p = await revokeAtHold(e, site, "filter", "t-w3f", { kind: "pageChooseOption", ...target(s, "Hold department", "t-w3f"), expect: before, value: "Engineering" });
-    expect(p.held && p.r.outcome === "failed" && p.r.readings?.afterBlur === "Engineering" && toVerbOutcome(p.r).outcome === "axError", `held ${p.held}; ${outcome(p.r)}; readings ${JSON.stringify(p.r.readings)}`);
-    return `${outcome(p.r)}; shows '${p.r.readings?.afterBlur}' (was '${before}')`;
+    const p = await revokeAtHold(e, site, "filter", "t-w3f", { kind: "pageChooseOption", ...target(s, "Hold department", "t-w3f"), expectRev: rev(s, "Hold department"), value: "Engineering" });
+    // The filter text left in the control is a change the page reports, never its text: may have landed.
+    expect(p.held && p.r.outcome === "failed" && p.r.readings?.sameAsBefore === false && p.r.readings.landed === false && toVerbOutcome(p.r).outcome === "axError", `held ${p.held}; ${outcome(p.r)}; readings ${JSON.stringify(p.r.readings)}`);
+    return `${outcome(p.r)}; readings ${JSON.stringify(p.r.readings)}`;
   });
 
   // Last of the checks that use the page's control channel: two tabs would both poll it. A new window takes focus

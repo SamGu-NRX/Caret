@@ -50,7 +50,10 @@ public struct PageOption: Codable, Equatable, Sendable { public var value: Strin
 
 public struct PageControl: Codable, Equatable, Sendable {
     public var id: String, key: String, strongKey: String?, kind: PageControlKind, role: String, name: String
+    /// A choice control's state. A text control never carries `value` (helper protocol.ts TextPageControl): it sends
+    /// `hasValue` and `rev`, page-local, and `withheld` when its text is withheld (counsel 2026-10-09).
     public var value: String?, checked: Bool?, options: [PageOption]?, form: String?, rect: [Double]
+    public var hasValue: Bool?, rev: Int?, withheld: String?
     public var required: Bool?, disabled: Bool?, invalid: Bool?, shadow: String?
     /// W4: the question a radio or a press-group option answers, and its group's id; a press-group option's aria-pressed.
     public var group: PageGroup?, pressed: Bool?
@@ -69,7 +72,7 @@ public struct PageFrame: Codable, Equatable, Sendable {
     public var excluded: [String: Int], truncated: Bool
 }
 
-public struct PageFocus: Codable, Equatable, Sendable { public var frameId: Int, id: String, selection: [Int]? }
+public struct PageFocus: Codable, Equatable, Sendable { public var frameId: Int, id: String, selection: [Int]?, withheld: String? = nil }
 public struct PageMissing: Codable, Equatable, Sendable { public var frameId: Int, reason: String }
 
 public struct PageSnapshot: Codable, Equatable, Sendable {
@@ -93,21 +96,33 @@ public struct PageFile: Codable, Equatable, Sendable { public var name: String, 
 
 public enum PageVerb: Codable, Equatable, Sendable {
     case walk(tabId: Int?)
-    case write(PageTarget, expect: String, value: String)
+    /// `expectRev`: the rev the walk read of the text control; its text never travels either way (counsel 2026-10-09).
+    case write(PageTarget, expectRev: Int, value: String)
     case press(PageTarget)
     case select(PageTarget, expect: String, value: String)
-    /// `question` (W4): a press-group option's question, which the content script requires unchanged.
-    case chooseOption(PageTarget, expect: String, value: String, question: String? = nil)
+    /// A combobox names `expectRev`; a press-group option (W4) names `expect`, the answer pressed before, and `question`.
+    case chooseOption(PageTarget, expect: String?, expectRev: Int?, value: String, question: String? = nil)
     case setChecked(PageTarget, checked: Bool)
     case attachFile(PageTarget, file: PageFile)
     /// P4 item 8: `text` at the caret of the focused field, whose text before the caret must be `expect`.
     case insertText(PageTarget, expect: String, text: String)
+    /// Undo of Caret's own text write, checked and done in the page from the text it kept; `exact` for a lost answer.
+    case restore(PageTarget, wrote: String, exact: Bool?)
+    /// Whole-value comparison of a text control with each candidate, answered by the page.
+    case compare(PageTarget, candidates: [String])
+    /// The text of fields `ids` of one frame the user picked as a copy source.
+    case sourceGrant(tabId: Int, frameId: Int, documentId: String, taskId: String, ids: [String])
 
-    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, mark, sameAs, expect, value, checked, file, question, text }
+    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, mark, sameAs, expect, expectRev, value, checked, file, question, text, wrote, exact, candidates, ids }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         let kind = try c.decode(String.self, forKey: .kind)
         if kind == "pageWalk" { self = .walk(tabId: try c.decodeIfPresent(Int.self, forKey: .tabId)); return }
+        if kind == "pageSourceGrant" {
+            self = .sourceGrant(tabId: try c.decode(Int.self, forKey: .tabId), frameId: try c.decode(Int.self, forKey: .frameId), documentId: try c.decode(String.self, forKey: .documentId),
+                                taskId: try c.decode(String.self, forKey: .taskId), ids: try c.decode([String].self, forKey: .ids))
+            return
+        }
         let t = PageTarget(tabId: try c.decode(Int.self, forKey: .tabId), frameId: try c.decode(Int.self, forKey: .frameId),
                            documentId: try c.decode(String.self, forKey: .documentId), id: try c.decode(String.self, forKey: .id),
                            control: try c.decode(PageControlKind.self, forKey: .control), name: try c.decode(String.self, forKey: .name),
@@ -116,13 +131,15 @@ public enum PageVerb: Codable, Equatable, Sendable {
         // The wire allows only `false` (protocol.ts PageTarget.rebind).
         if t.rebind == true { throw DecodingError.dataCorruptedError(forKey: .rebind, in: c, debugDescription: "rebind is false or absent") }
         switch kind {
-        case "pageWrite": self = .write(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value))
+        case "pageWrite": self = .write(t, expectRev: try c.decode(Int.self, forKey: .expectRev), value: try c.decode(String.self, forKey: .value))
         case "pagePress": self = .press(t)
         case "pageSelect": self = .select(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value))
-        case "pageChooseOption": self = .chooseOption(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value), question: try c.decodeIfPresent(String.self, forKey: .question))
+        case "pageChooseOption": self = .chooseOption(t, expect: try c.decodeIfPresent(String.self, forKey: .expect), expectRev: try c.decodeIfPresent(Int.self, forKey: .expectRev), value: try c.decode(String.self, forKey: .value), question: try c.decodeIfPresent(String.self, forKey: .question))
         case "pageSetChecked": self = .setChecked(t, checked: try c.decode(Bool.self, forKey: .checked))
         case "pageAttachFile": self = .attachFile(t, file: try c.decode(PageFile.self, forKey: .file))
         case "pageInsertText": self = .insertText(t, expect: try c.decode(String.self, forKey: .expect), text: try c.decode(String.self, forKey: .text))
+        case "pageRestore": self = .restore(t, wrote: try c.decode(String.self, forKey: .wrote), exact: try c.decodeIfPresent(Bool.self, forKey: .exact))
+        case "pageCompare": self = .compare(t, candidates: try c.decode([String].self, forKey: .candidates))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown page verb \(kind)")
         }
     }
@@ -138,13 +155,20 @@ public enum PageVerb: Codable, Equatable, Sendable {
         }
         switch self {
         case let .walk(tabId): try c.encode("pageWalk", forKey: .kind); try c.encode(tabId, forKey: .tabId)
-        case let .write(t, expect, value): try target("pageWrite", t); try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value)
+        case let .write(t, expectRev, value): try target("pageWrite", t); try c.encode(expectRev, forKey: .expectRev); try c.encode(value, forKey: .value)
         case let .press(t): try target("pagePress", t)
         case let .select(t, expect, value): try target("pageSelect", t); try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value)
-        case let .chooseOption(t, expect, value, question): try target("pageChooseOption", t); try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value); try c.encodeIfPresent(question, forKey: .question)
+        case let .chooseOption(t, expect, expectRev, value, question):
+            try target("pageChooseOption", t); try c.encodeIfPresent(expect, forKey: .expect); try c.encodeIfPresent(expectRev, forKey: .expectRev)
+            try c.encode(value, forKey: .value); try c.encodeIfPresent(question, forKey: .question)
         case let .setChecked(t, checked): try target("pageSetChecked", t); try c.encode(checked, forKey: .checked)
         case let .attachFile(t, file): try target("pageAttachFile", t); try c.encode(file, forKey: .file)
         case let .insertText(t, expect, text): try target("pageInsertText", t); try c.encode(expect, forKey: .expect); try c.encode(text, forKey: .text)
+        case let .restore(t, wrote, exact): try target("pageRestore", t); try c.encode(wrote, forKey: .wrote); try c.encodeIfPresent(exact, forKey: .exact)
+        case let .compare(t, candidates): try target("pageCompare", t); try c.encode(candidates, forKey: .candidates)
+        case let .sourceGrant(tabId, frameId, documentId, taskId, ids):
+            try c.encode("pageSourceGrant", forKey: .kind); try c.encode(tabId, forKey: .tabId); try c.encode(frameId, forKey: .frameId)
+            try c.encode(documentId, forKey: .documentId); try c.encode(taskId, forKey: .taskId); try c.encode(ids, forKey: .ids)
         }
     }
 }
@@ -153,8 +177,32 @@ public struct PageCommand: Codable, Equatable, Sendable { public var v: Int, id:
 
 public enum PageOutcome: String, Codable, Sendable { case ok, alreadyTrue, notAllowed, stale, failed, handoff, noElement, notSameElement, excluded, unsupported, error, siteOff }
 
+/// What a write found, computed in the page: booleans and the rev it left, never the field's text (counsel 2026-10-09).
 public struct PageWriteReadings: Codable, Equatable, Sendable {
-    public var before: String, afterInput: String, afterBlur: String, invalid: Bool, error: String?
+    public var sameAsBefore: Bool, landed: Bool, equivalent: Bool, empty: Bool, typedBetween: Bool, rev: Int?
+}
+
+/// pageRestore's answer: restored with the field's rev, or refused and why (helper protocol.ts PageRestored).
+public enum PageRestored: Codable, Equatable, Sendable {
+    case restored(rev: Int)
+    case refused(why: String)
+
+    private enum K: String, CodingKey { case outcome, rev, why }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        switch try c.decode(String.self, forKey: .outcome) {
+        case "restored": self = .restored(rev: try c.decode(Int.self, forKey: .rev))
+        case "refused": self = .refused(why: try c.decode(String.self, forKey: .why))
+        case let o: throw DecodingError.dataCorruptedError(forKey: .outcome, in: c, debugDescription: "unknown restore outcome \(o)")
+        }
+    }
+    public func encode(to e: Encoder) throws {
+        var c = e.container(keyedBy: K.self)
+        switch self {
+        case let .restored(rev): try c.encode("restored", forKey: .outcome); try c.encode(rev, forKey: .rev)
+        case let .refused(why): try c.encode("refused", forKey: .outcome); try c.encode(why, forKey: .why)
+        }
+    }
 }
 
 /// What pageChooseOption found and checked (W2).
@@ -179,6 +227,8 @@ public struct PageResult: Codable, Equatable, Sendable {
     public var pageChanged: [String]?
     /// P4: pageReadText's answer, with outcome ok. The bridge relays the line as it came; this is for the golden tests.
     public var text: PageTabText?
+    /// pageRestore's answer; pageCompare's, one per candidate; pageSourceGrant's, each id's text or null.
+    public var restore: PageRestored?, compare: [String]?, source: [String: String?]?
 }
 
 /// P4: the visible text of the tab the user just left, as one read found it (protocol.ts PageTabText).

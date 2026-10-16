@@ -101,31 +101,34 @@ describe("the page-held before of Caret's writes", () => {
   const el = {};
   it("restores only the element Caret wrote, unchanged since, with no input of the user's, equivalent to what Caret wrote", () => {
     const recs = new WriteRecords<object>();
-    const rec = recs.begin("t", "e1", el, "", "1", 0, 0);
+    const rec = recs.begin("t", el, "", "1", 0, 0);
     rec.revAfter = 1;
-    expect(restoreCheck(recs.newest("t", "e1"), el, { rev: 1, trusted: 0, text: "1", numeric: false })).toBeNull();
+    expect(restoreCheck(recs.newest("t", el), el, { rev: 1, trusted: 0, text: "1", numeric: false })).toBeNull();
     // B29: a number field shows Caret's 1 as 1.00.
-    expect(restoreCheck(recs.newest("t", "e1"), el, { rev: 1, trusted: 0, text: "1.00", numeric: true })).toBeNull();
-    expect(restoreCheck(recs.newest("t", "e1"), el, { rev: 1, trusted: 0, text: "1.00", numeric: false })).toBe("changed");
-    expect(restoreCheck(recs.newest("t", "e1"), el, { rev: 2, trusted: 0, text: "1", numeric: false })).toBe("changed");
-    expect(restoreCheck(recs.newest("t", "e1"), el, { rev: 2, trusted: 1, text: "1", numeric: false })).toBe("mayIncludeInput");
-    expect(restoreCheck(recs.newest("t", "e1"), {}, { rev: 1, trusted: 0, text: "1", numeric: false })).toBe("gone");
-    expect(restoreCheck(recs.newest("t", "e2"), el, { rev: 1, trusted: 0, text: "1", numeric: false })).toBe("noRecord");
-    expect(restoreCheck(recs.newest("other", "e1"), el, { rev: 1, trusted: 0, text: "1", numeric: false })).toBe("noRecord");
+    expect(restoreCheck(recs.newest("t", el), el, { rev: 1, trusted: 0, text: "1.00", numeric: true })).toBeNull();
+    expect(restoreCheck(recs.newest("t", el), el, { rev: 1, trusted: 0, text: "1.00", numeric: false })).toBe("changed");
+    expect(restoreCheck(recs.newest("t", el), el, { rev: 2, trusted: 0, text: "1", numeric: false })).toBe("changed");
+    expect(restoreCheck(recs.newest("t", el), el, { rev: 2, trusted: 1, text: "1", numeric: false })).toBe("mayIncludeInput");
+    // Another element, or another task, has no record of this write.
+    expect(restoreCheck(recs.newest("t", {}), el, { rev: 1, trusted: 0, text: "1", numeric: false })).toBe("noRecord");
+    expect(restoreCheck(recs.newest("other", el), el, { rev: 1, trusted: 0, text: "1", numeric: false })).toBe("noRecord");
+    // A record of an element now gone is refused as such.
+    expect(restoreCheck(recs.newest("t", el), {}, { rev: 1, trusted: 0, text: "1", numeric: false })).toBe("gone");
   });
 
   it("goes back newest first, write by write, and forgets the oldest past its bound", () => {
     const recs = new WriteRecords<object>();
-    recs.begin("t", "e1", el, "", "Robin", 0, 0);
-    recs.begin("t", "e1", el, "Robin", "Robin Vale", 1, 0);
-    expect(recs.newest("t", "e1")?.before).toBe("Robin");
-    recs.pop("t", "e1");
-    expect(recs.newest("t", "e1")?.before).toBe("");
-    recs.pop("t", "e1");
-    expect(recs.newest("t", "e1")).toBeUndefined();
-    for (let i = 0; i <= MAX_RECORDS; i++) recs.begin("t", `e${i}`, el, "", "x", 0, 0);
-    expect(recs.newest("t", "e0")).toBeUndefined();
-    expect(recs.newest("t", `e${MAX_RECORDS}`)).toBeDefined();
+    recs.begin("t", el, "", "Robin", 0, 0);
+    recs.begin("t", el, "Robin", "Robin Vale", 1, 0);
+    expect(recs.newest("t", el)?.before).toBe("Robin");
+    recs.pop("t", el);
+    expect(recs.newest("t", el)?.before).toBe("");
+    recs.pop("t", el);
+    expect(recs.newest("t", el)).toBeUndefined();
+    const els = Array.from({ length: MAX_RECORDS + 1 }, () => ({}));
+    for (const x of els) recs.begin("t", x, "", "x", 0, 0);
+    expect(recs.newest("t", els[0] as object)).toBeUndefined();
+    expect(recs.newest("t", els[MAX_RECORDS] as object)).toBeDefined();
   });
 });
 
