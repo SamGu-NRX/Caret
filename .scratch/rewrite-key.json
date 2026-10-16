@@ -1,0 +1,77 @@
+[
+ {
+  "id": 1,
+  "A": "sampled",
+  "B": "list"
+ },
+ {
+  "id": 2,
+  "A": "sampled",
+  "B": "list"
+ },
+ {
+  "id": 3,
+  "A": "sampled",
+  "B": "list"
+ },
+ {
+  "id": 4,
+  "A": "list",
+  "B": "sampled"
+ },
+ {
+  "id": 5,
+  "A": "list",
+  "B": "sampled"
+ },
+ {
+  "id": 6,
+  "A": "sampled",
+  "B": "list"
+ },
+ {
+  "id": 7,
+  "A": "sampled",
+  "B": "list"
+ },
+ {
+  "id": 8,
+  "A": "sampled",
+  "B": "list"
+ },
+ {
+  "id": 9,
+  "A": "sampled",
+  "B": "list"
+ },
+ {
+  "id": 10,
+  "A": "list",
+  "B": "sampled"
+ },
+ {
+  "id": 11,
+  "A": "list",
+  "B": "sampled"
+ },
+ {
+  "id": 12,
+  "A": "sampled",
+  "B": "list"
+ },
+ {
+  "id": 13,
+  "A": "sampled",
+  "B": "list"
+ },
+ {
+  "id": 14,
+  "A": "list",
+  "B": "sampled"
+ },
+ {
+  "id": 15,
+  "A": "list",
+  "B": "sampled"
+ }
+]

@@ -1,0 +1,1 @@
+Writing fixes paste (select, read back, paste, verify, one ⌘Z on mismatch) in apps that paste ghost text (WriteFallback.pastesFirst); this supersedes D2-09 there (lead, 2026-10-09; FixPaste.swift). The tap holds keys typed after a fix's Tab (KeyHold).
