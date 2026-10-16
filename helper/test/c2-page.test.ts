@@ -2,8 +2,9 @@
 // finds in round 2: a month input (lead decision 1), memory values written through a control's conversion (decisions 4
 // and 5), a place's country (decision 2) and a long form in parts of 20 (decision 3). Each write is previewed, needs its
 // own acceptance and is undone with its segment. Every name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { afterEach, describe, expect, it } from "vitest";
-import type { PageControl } from "../src/protocol.ts";
+
 import { c } from "./fake-page.ts";
 import { closeRigs, goalMessages, presses, rig, type Finished, type Segment } from "./page-rig.ts";
 
@@ -11,7 +12,7 @@ afterEach(closeRigs);
 
 describe("a month input (C2 decision 1)", () => {
   it("writes the month and year the user wrote, and undo empties it", async () => {
-    const controls = (): PageControl[] => [c("e1", "text", "Employer", { value: "" }), c("e2", "month", "Start date", { value: "" })];
+    const controls = (): TestField[] => [c("e1", "text", "Employer", { value: "" }), c("e2", "month", "Start date", { value: "" })];
     const r = await rig({ controls, note: "Employer: Tallgrass Mechatronics\nStart date: Aug '22", picks: { Employer: "Tallgrass Mechatronics", "Start date": "Aug '22" } });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     expect(preview.steps.map((s) => s.says)).toEqual(["Employer: Tallgrass Mechatronics", "Start date: 2022-08", "The rest is yours"]);
@@ -28,7 +29,7 @@ describe("a month input (C2 decision 1)", () => {
 
 describe("a value from memory written through a control's conversion (C2 decisions 4 and 5)", () => {
   const options = (labels: string[]) => [{ value: "", label: "Select...", selected: true }, ...labels.map((l) => ({ value: l.toLowerCase(), label: l, selected: false }))];
-  const controls = (): PageControl[] => [
+  const controls = (): TestField[] => [
     c("e1", "text", "First name", { value: "" }),
     c("e2", "date", "Date of birth", { value: "" }),
     c("e3", "select", "Dietary needs", { options: options(["None", "Vegetarian", "Vegan"]) }),
@@ -66,7 +67,7 @@ describe("a value from memory written through a control's conversion (C2 decisio
   });
 
   it("fills street, city, state and ZIP from one address entry, and stops when its ZIP changes before Tab (decision 5)", async () => {
-    const address = (): PageControl[] => [
+    const address = (): TestField[] => [
       c("e1", "text", "Street address", { value: "" }),
       c("e2", "text", "City", { value: "" }),
       c("e3", "select", "State", { options: options(["Ohio", "Oregon", "Texas"]) }),

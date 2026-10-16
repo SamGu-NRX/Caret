@@ -61,7 +61,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "First name / Given name",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       260,
@@ -81,7 +82,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Middle name (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       518.7,
@@ -101,7 +103,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Last name / Surname",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       777.3,
@@ -261,7 +264,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Day",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       518.7,
@@ -282,7 +286,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Year",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       777.3,
@@ -303,7 +308,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Mileage Plan number (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       260,
@@ -323,7 +329,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Known Traveler Number (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       260,
@@ -343,7 +350,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email address",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       260,
@@ -363,7 +371,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Phone number",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       648,
@@ -383,7 +392,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Zip code",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       260,

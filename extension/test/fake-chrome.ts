@@ -7,6 +7,17 @@ export interface Frame {
 }
 
 /** A fake of the chrome APIs the worker uses, with every listener kept so a test can fire the events. */
+/** A chrome.storage area held in a Map, as session storage keeps values for the browser's life. */
+function mapStore(): { get(key: string): Promise<Record<string, unknown>>; set(items: Record<string, unknown>): Promise<void> } {
+  const kept = new Map<string, unknown>();
+  return {
+    get: async (key) => (kept.has(key) ? { [key]: structuredClone(kept.get(key)) } : {}),
+    set: async (items) => {
+      for (const [k, v] of Object.entries(items)) kept.set(k, structuredClone(v));
+    },
+  };
+}
+
 export function fakeChrome() {
   const listeners = new Map<string, Listener[]>();
   const on = (name: string) => ({ addListener: (f: Listener) => void listeners.set(name, [...(listeners.get(name) ?? []), f]) });
@@ -24,7 +35,7 @@ export function fakeChrome() {
   const state = { focusedWindow: 9, active: new Map<number, number>([[9, 1]]), titles: new Map<number, string>() };
   const chrome = {
     runtime: { id: "x", getManifest: () => ({ version: "0" }), connectNative: () => port, onMessage: on("runtime.message"), onInstalled: on("runtime.installed"), lastError: undefined },
-    storage: { local: { get: async () => ({ profile: "p" }), set: async () => {} } },
+    storage: { local: { get: async () => ({ profile: "p" }), set: async () => {} }, session: mapStore() },
     tabs: {
       query: async () => [...state.active].map(([windowId, id]) => ({ id, windowId, active: true })),
       get: async (id: number) => ({ id, windowId: 9, active: state.active.get(9) === id, title: state.titles.get(id) ?? "" }),

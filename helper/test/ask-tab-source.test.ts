@@ -3,6 +3,7 @@
 // Ask's own offer or goal sees it; its sources are checked against it at acceptance, so text that expired before Tab
 // writes nothing; and it goes when the offer or goal ends. The worker's own rules are played by the fake engine, as in
 // tab-source.test.ts. Every name and value is invented.
+import { onWire, readings, textRev, type TestField } from "./page-wire.ts";
 import { answeringScope } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +16,7 @@ import { pageTabReader, type TabSource } from "../src/engines/tab-source.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { LEFT_TAB_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type GoalProgress, type HelperMessage, type HelperToEngine, type PageControl, type PageResult, type PageSnapshot, type PageTabText, type PageVerb, type PlanProposal } from "../src/protocol.ts";
+import { LEFT_TAB_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type GoalProgress, type HelperMessage, type HelperToEngine, type PageResult, type PageSnapshot, type PageTabText, type PageVerb, type PlanProposal } from "../src/protocol.ts";
 import { jevPickingText } from "./builders.ts";
 import { X, chrome, hello, okReader } from "./fake-page.ts";
 import { headsJev } from "./heads-jev.ts";
@@ -35,7 +36,7 @@ const MESSAGE: PageTabText = {
 };
 const PICK: Record<string, string> = { "First name": "Ines", "Last name": "Vandermeer", Email: "ines.vandermeer@example.org", Phone: "555-0147" };
 
-const ctl = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, 0, 200, 20], value: "" });
+const ctl = (id: string, kind: TestField["kind"], name: string): TestField => ({ id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, 0, 200, 20], value: "" });
 
 /** The mail tab (3) the user left and the form tab (7), as the worker answers for them; acts write the form's values. */
 class TwoTabs {
@@ -44,7 +45,7 @@ class TwoTabs {
   form = [ctl("e1", "text", "First name"), ctl("e2", "text", "Last name"), ctl("e3", "email", "Email")];
   left: number | null = null;
   /** A control a verified write to the keyed control shows after it, as a dependent form does (runs.ts followUp). */
-  reveals: Record<string, PageControl> = {};
+  reveals: Record<string, TestField> = {};
   /** What a read of the tab left finds (H13: a Google editor whose text is off finds none). */
   tabText: PageTabText = MESSAGE;
   /** The form field with focus. */
@@ -67,7 +68,7 @@ class TwoTabs {
     const origin = mail ? "https://mail.example.test" : "http://127.0.0.1:4310";
     return {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: Date.now(), tabId, browserWindowId: 1, active: mail ? this.left !== 3 : true, inFocusedWindow: true, title,
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: `D${tabId}`, origin, path: "/", navGen: 1, title, headings: [], iframes: [], excluded: {}, truncated: false, controls: mail ? [ctl("m1", "search", "Search mail")] : structuredClone(this.form) }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: `D${tabId}`, origin, path: "/", navGen: 1, title, headings: [], iframes: [], excluded: {}, truncated: false, controls: (mail ? [ctl("m1", "search", "Search mail")] : structuredClone(this.form)).map((c) => onWire(c)) }],
       missing: [],
       focused: mail ? null : { frameId: 0, id: this.focusedId, selection: [0, 0] },
     };
@@ -85,11 +86,12 @@ class TwoTabs {
     }
     if (v.kind !== "pageWrite") return this.reply(m.id, { outcome: "handoff", detail: "yours", risk: "pageScript" });
     const x = this.form.find((c) => c.id === v.id);
-    if (x === undefined || (x.value ?? "") !== v.expect) return this.reply(m.id, { outcome: "stale", detail: "changed" });
+    if (x === undefined || textRev(x.value ?? "") !== v.expectRev) return this.reply(m.id, { outcome: "stale", detail: "changed" });
+    const before = x.value ?? "";
     x.value = v.value;
     const shown = this.reveals[x.id];
     if (shown !== undefined && !this.form.some((c) => c.id === shown.id)) this.form.splice(this.form.indexOf(x) + 1, 0, shown);
-    return this.reply(m.id, { outcome: "ok", detail: null, readings: { before: v.expect, afterInput: v.value, afterBlur: v.value, invalid: false, error: null } });
+    return this.reply(m.id, { outcome: "ok", detail: null, readings: readings(before, v.value, v.value, textRev(v.value)) });
   }
   get reads(): number[] {
     return this.sent.flatMap((m) => (m.type === "pageReadText" ? [m.tabId] : []));

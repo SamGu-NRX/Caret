@@ -1,11 +1,12 @@
 // The page-goal rig of page-goals.test.ts (P2), shared with P3's tests: a Helper over one page tab (fake-page.ts) and
 // the note the user just left, an Ask's intent the test states (HelperOptions.ask scripted, as a writer maker gave it
 // before the heads maker was the only one), and canned Jev picks by field label. Every name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "vitest";
-import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type HelperMessage, type PageControl } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type HelperMessage } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
@@ -49,7 +50,7 @@ export interface Rig {
   ask(instruction: string): Promise<GoalProgress>;
   accept(s: Segment, more?: Pick<GoalAccept, "confirmedFile">): ReturnType<Helper["handleGoalAccept"]>;
   /** The user's own Next: the tab shows another form as a new document, and the page engine walks it. */
-  next(make: () => PageControl[], title: string, path: string): Promise<void>;
+  next(make: () => TestField[], title: string, path: string): Promise<void>;
   close(): void;
 }
 
@@ -61,7 +62,7 @@ export function closeRigs(): void {
 }
 
 export interface RigOptions {
-  controls?: () => PageControl[];
+  controls?: () => TestField[];
   title?: string;
   note?: string;
   picks?: Record<string, string>;

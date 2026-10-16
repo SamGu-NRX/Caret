@@ -133,7 +133,7 @@ describe("the worker's read of the tab the user just left", () => {
       { frameId: 0, parentFrameId: -1, documentId: "V0", url: "https://accounts.google.com/signin" },
       { frameId: 3, parentFrameId: 0, documentId: "V3", url: "https://forms.example.test/embed" },
     ]);
-    f.answers.set("1:0:walk", { origin: "https://accounts.google.com", path: "/signin", title: "Sign in - Synthetic", headings: ["Choose an account"], controls: [{ id: "e1", key: "k", strongKey: null, kind: "email", role: "textbox", name: "Email or phone", value: "ines@example.test", form: null, rect: [0, 0, 10, 10] }], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: { id: "e1", selection: [0, 0], text: { before: "ines@", after: "", selection: "" }, caret: [10, 10, 1, 16] }, hasFocus: true, walkMs: 1 });
+    f.answers.set("1:0:walk", { origin: "https://accounts.google.com", path: "/signin", title: "Sign in - Synthetic", headings: ["Choose an account"], controls: [{ id: "e1", key: "k", strongKey: null, kind: "email", role: "textbox", name: "Email or phone", hasValue: true, rev: 1, form: null, rect: [0, 0, 10, 10] }], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: { id: "e1", selection: [0, 0], text: { before: "ines@", after: "", selection: "" }, caret: [10, 10, 1, 16] }, hasFocus: true, walkMs: 1 });
     await f.fire("port.message", { type: "pageCommand", v: 1, id: "w1", expires: Date.now() + 5000, verb: { kind: "pageWalk", tabId: 1 } });
     for (let i = 0; i < 20 && !f.sentToHelper.some((m) => m.type === "pageResult"); i++) await settle();
     const r = f.sentToHelper.find((m) => m.type === "pageResult" && m.id === "w1");
@@ -316,7 +316,7 @@ describe("a site switched off while work is in flight (review round 5)", () => {
   const childReport = { ...report(CHILD, "/embed", "Pay"), headings: ["Card details"], iframes: [], viewport: [400, 300] };
   const topReport = { ...report(TOP, "/checkout", "Checkout"), iframes: [{ src: `${CHILD}/embed`, rect: [0, 100, 400, 300], inner: [400, 300] }] };
   const grant = (frameId: number, origin: string) => helperSays({ type: "scopedActGrant", taskId: "t1", at: Date.now(), expires: Date.now() + 5000, scope: { kind: "page", engine: "e1", tabId: 1, frameId, origin, navGen: 2 } });
-  const write = (id: string) => helperSays({ type: "pageCommand", id, expires: Date.now() + 5000, verb: { kind: "pageWrite", tabId: 1, frameId: 3, documentId: "P3", id: "e1", control: "text", name: "Name on card", taskId: "t1", expect: "", value: "Ines" } });
+  const write = (id: string) => helperSays({ type: "pageCommand", id, expires: Date.now() + 5000, verb: { kind: "pageWrite", tabId: 1, frameId: 3, documentId: "P3", id: "e1", control: "text", name: "Name on card", taskId: "t1", expectRev: 0, value: "Ines" } });
 
   it("matches a site switched off with a trailing dot, both ways (#6)", async () => {
     await start(FRAMES);
@@ -370,7 +370,7 @@ describe("a site switched off while work is in flight (review round 5)", () => {
   it("forwards no readings from an act whose top page's site was switched off while it ran (#5)", async () => {
     await start(FRAMES);
     await grant(3, CHILD);
-    f.answers.set("1:3:act", { outcome: "failed", detail: "the page holds another value", readings: { before: "", afterInput: "Ines", afterBlur: "IN-4242", invalid: true, error: "Card ending 4242 declined" } });
+    f.answers.set("1:3:act", { outcome: "failed", detail: "the page holds another value", readings: { sameAsBefore: false, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 3 } });
     f.setDuring((op) => {
       if (op === "act") void helperSays({ type: "pageSitesOff", origins: [TOP] });
     });

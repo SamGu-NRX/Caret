@@ -1,8 +1,6 @@
-// Small DOM pieces every act uses: waiting a frame, the prototype value setter, what the page says about a field
-// after an act, and synthetic pointer, mouse, key and drag events. Only the act modules dispatch events, and only on
+// Small DOM pieces every act uses: waiting a frame, the prototype value setter, and synthetic pointer, mouse, key and
+// drag events. Only the act modules dispatch events, and only on
 // the elements their own rules allow (actions.ts, combobox.ts, attach.ts).
-import { clean } from "./names.ts";
-import { safeText } from "./secret-dom.ts";
 
 /** The next animation frame, or 100 ms in a tab that paints no frames (background tabs pause rAF), then one task. */
 export function settle(): Promise<void> {
@@ -27,19 +25,6 @@ export async function until<T>(read: () => T | null, ms: number): Promise<T | nu
     await settle();
     await new Promise((r) => setTimeout(r, 30));
   }
-}
-
-/** What the page says about `el` after an act: its error message and description, without any secret field they hold. */
-export function errorText(el: Element): string | null {
-  const ids = [el.getAttribute("aria-errormessage"), el.getAttribute("aria-describedby")].filter((s): s is string => s !== null).join(" ");
-  if (ids === "") return null;
-  const root = el.getRootNode() as Document | ShadowRoot;
-  const t = clean(ids.split(/\s+/).map((id) => safeText(root.getElementById(id))).join(" "), 200);
-  return t === "" ? null : t;
-}
-
-export function invalidNow(el: Element): boolean {
-  return el.getAttribute("aria-invalid") === "true" || ((el as HTMLInputElement).validity !== undefined && !(el as HTMLInputElement).validity.valid);
 }
 
 export function setterFor(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): (v: string) => void {

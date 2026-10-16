@@ -8,8 +8,8 @@ Caret for Chrome is the browser extension for Caret, a Mac app that fills in for
 
 The extension reads only when the Caret app on your Mac asks. It reads:
 
-- the fields of the form you are in: each field's label, kind, current value and choices, the page's title and headings, and the page's address;
-- the text just before and after the cursor in the field you are typing in;
+- the fields of the form you are in: each field's label and kind, a list's, checkbox's or radio button's choices and which is chosen, the page's title and headings, and the page's address. For a field you type text into, it reads only whether the field holds anything and a count of how often it changed, never the text;
+- the text just before and after the cursor in the field you are typing in, for inline suggestions written on your Mac. It leaves this out when the page put the field's text there itself, or when the field may have been a password field;
 - when a fill needs a source, the visible text of the tab you just left, once, within two minutes of leaving it, and at most 16 KB of it;
 - that focus moved into a field or you typed in it, and that you clicked or pressed a key while Caret was filling the page. What you typed, which key and what you clicked are not recorded.
 
@@ -22,7 +22,7 @@ It never reads:
 - any site you have switched Caret off for;
 - anything on password managers and account pages, such as 1Password, Bitwarden, passwords.google.com, accounts.google.com and appleid.apple.com: not the page's title, headings, field labels or values.
 
-Other fields are read as they are, so a form that asks about your health, your bank account or salary, or your username has those answers read and passed to the Caret app.
+A list's, checkbox's or radio button's answer is read as it is, so a form that asks about your health or your salary in a list has that answer read and passed to the Caret app. What you type into a text field stays in the page, except the text around the cursor while you type.
 
 The extension stores one thing in Chrome: a random ID for your browser profile, so the Caret app can tell two profiles apart.
 
@@ -49,7 +49,7 @@ The use of information Caret for Chrome receives will adhere to the [Chrome Web 
 ## How long it is kept
 
 - The extension's background worker keeps nothing it reads: it passes each read to the Caret app as it arrives.
-- In the page's own memory, the extension keeps, for each field it read, the field's label, kind and form and the page's address, so Caret can find the same field when you accept; and, for each text field you edited other than a secret one, its current text, so it can tell your typing from pasted text. Both go when the page does: when you close the tab, reload it, or Chrome discards it after you leave.
+- In the page's own memory, the extension keeps, for each field it read, the field's label, kind and form and the page's address, so Caret can find the same field when you accept; for each text field you edited other than a secret one, its current text, so it can tell your typing from pasted text and tell whether the field changed; and, for each field Caret filled, the text it held before, so Undo can put it back. All of it goes when the page does: when you close the tab, reload it, or Chrome discards it after you leave.
 - The Caret app holds screen text, including what the extension read, in memory for ten minutes. On disk it keeps counts, timings and keyed hashes of values, not the values.
 - What you tell Caret about yourself stays on your Mac, encrypted with a key on your Mac.
 - What TypeSafe keeps is set by its terms, quoted above.

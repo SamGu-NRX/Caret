@@ -1,5 +1,6 @@
 // P4 items 7 and 9: what the host's pageField says about the field being typed in on a page, from the tab's walk, and
 // its golden lines (fixtures/golden/page-field-text.ndjson), which the host's Swift mirror decodes (H13).
+import { onWire } from "./page-wire.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -8,7 +9,7 @@ import { fieldKind, nearbyFrames, ownSuggestions, pageFieldText } from "../src/e
 
 const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/page-field-text.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as unknown);
 
-const ctl = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: "textbox", name, form: null, rect: [0, 0, 100, 20] });
+const ctl = (id: string, kind: PageControl["kind"], name: string): PageControl => onWire({ id, key: `${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: "textbox", name, form: null, rect: [0, 0, 100, 20] });
 function snapAt(origin: string, path: string, controls: PageControl[], focused: PageSnapshot["focused"], docs?: PageSnapshot["docs"]): PageSnapshot {
   return PageSnapshot.parse({
     type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w", at: 1, tabId: 1, browserWindowId: 1, active: true, inFocusedWindow: true, title: "t",

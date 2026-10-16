@@ -1,0 +1,21 @@
+{
+  "type": "pageCommand",
+  "v": 1,
+  "id": "fixture-pageChooseOption-undo",
+  "expires": 1000,
+  "verb": {
+    "kind": "pageChooseOption",
+    "tabId": 3,
+    "frameId": 0,
+    "documentId": "fixture-document",
+    "id": "field-2",
+    "control": "combobox",
+    "name": "Country of residence",
+    "taskId": "fixture-task",
+    "rebind": false,
+    "sameAs": "fixture-mark",
+    "expectRev": 4,
+    "value": "",
+    "wrote": "United States"
+  }
+}

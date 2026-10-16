@@ -13,7 +13,11 @@ import { FakePage, KEY, TITLE as PAGE_TITLE, WIN as PAGE_WIN } from "./fake-page
 
 // The injected timer scheduler holds each forward answer until 250 ms. Stop is scheduled relative to dispatch,
 // not to plan preparation. The target changes independently of its acknowledgement, as an AX call or page setter can.
-const ORIGINAL = "Original name";
+/**
+ * What the field holds before Caret writes it. A web page's field Caret writes is empty, or holds only Caret's own text:
+ * its text never reaches the helper (counsel 2026-10-09), so Caret never writes over the user's.
+ */
+const original = (mean: "AX" | "page"): string => (mean === "AX" ? "Original name" : "");
 const INTENDED = "Dana";
 type Answer = "refused" | "ok" | "lost";
 const cleanups: (() => void)[] = [];
@@ -42,7 +46,7 @@ function rig(mean: "AX" | "page", stopAfter: number, answer: Answer, landed = tr
     dispatched = true;
     dispatchAt = Date.now();
     // This row must already exist when the writer receives the command. Its original must precede the setter.
-    expect(helper.journal.load(Date.now()).records[0]?.pending).toMatchObject({ kind: "write", before: ORIGINAL, value: INTENDED });
+    expect(helper.journal.load(Date.now()).records[0]?.pending).toMatchObject({ kind: "write", before: original(mean), value: INTENDED });
     setTimeout(() => pauseFirst ? helper.executor.pause("t", false, "input") : helper.executor.stop("t"), stopAfter);
   };
   let link: ReaderLink;
@@ -50,7 +54,7 @@ function rig(mean: "AX" | "page", stopAfter: number, answer: Answer, landed = tr
   let show: () => void | Promise<unknown>;
   if (mean === "AX") {
     const app = new FakeApp(executorWindow());
-    app.setValue(key, ORIGINAL);
+    app.setValue(key, original(mean));
     const run = app.run.bind(app);
     link = {
       grant: (m) => { if (m.type !== "calendarGrant") app.grant(m); },
@@ -73,7 +77,7 @@ function rig(mean: "AX" | "page", stopAfter: number, answer: Answer, landed = tr
     show = () => { app.helper = helper; app.show(); };
   } else {
     const page = new FakePage();
-    page.find("e1").value = ORIGINAL;
+    page.find("e1").value = original(mean);
     const receive = page.session.receive.bind(page.session);
     const command = page.session.command.bind(page.session);
     page.session.command = (verb, timeout) => {
@@ -81,15 +85,17 @@ function rig(mean: "AX" | "page", stopAfter: number, answer: Answer, landed = tr
       return command(verb, timeout);
     };
     page.onAct = (verb) => {
-      if (verb.kind !== "pageWrite" || verb.sameAs !== undefined) return null;
+      if (verb.kind !== "pageWrite") return null;
       dispatch();
-      if (landed) page.find("e1").value = verb.value;
-      return { outcome: answer === "ok" ? "ok" : "notAllowed", detail: "answer after Stop" };
+      // Caret's write lands as the content script makes it: the page keeps the text before it for its undo, and an ok
+      // answer carries the page's own readings.
+      const readings = landed ? page.write(verb, verb.value) : undefined;
+      return { outcome: answer === "ok" ? "ok" : "notAllowed", detail: "answer after Stop", ...(answer === "ok" && readings !== undefined ? { readings } : {}) };
     };
     page.session.receive = (m) => {
       if (m.type === "pageResult") {
         const command = page.sent.find((s) => s.type === "pageCommand" && s.id === m.id);
-        if (command?.type === "pageCommand" && command.verb.kind === "pageWrite" && command.verb.sameAs === undefined) {
+        if (command?.type === "pageCommand" && command.verb.kind === "pageWrite") {
           if (answer !== "lost") setTimeout(() => receive(m), 250);
           return null;
         }
@@ -138,28 +144,37 @@ describe.each(["AX", "page"] as const)("%s in-flight reconciliation", (mean) => 
   it.each([0, 10, 40, 200])("Stop %i ms after dispatch reconciles a landed write despite a refused answer", async (ms) => {
     const r = rig(mean, ms, "refused");
     const result = await complete(r, 300);
-    expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
-    expect(result.detail).toContain(`Written before stop: ${mean === "AX" ? "Name" : "Full name"}`);
-    expect(result.detail).toContain("Undo puts it back");
-    expect(r.helper.executor.ledger("t")).toMatchObject([{ kind: "write", before: ORIGINAL, after: INTENDED, step: 0 }]);
+    if (mean === "AX") {
+      expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
+      expect(result.detail).toContain("Written before stop: Name");
+      expect(result.detail).toContain("Undo puts it back");
+    } else {
+      // A page sends no text of the field, so the recovery read cannot tell Caret's write from anyone's: the write may
+      // have landed, and Undo still restores it, by the page's own check (pageRestore).
+      expect(result).toMatchObject({ outcome: "stopped", acted: 0, step: 0 });
+      expect(result.detail).toContain("may have been written");
+    }
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ kind: "write", before: original(mean), after: INTENDED, step: 0, ...(mean === "page" ? { unconfirmed: true } : {}) }]);
     expect(r.helper.executor.ledger("t")).toHaveLength(1);
     expect(r.recoveryReads()).toBe(1);
     expect(r.held()).toBe(INTENDED);
-    expect(r.published.filter((m) => m.type === "taskProgress").map((m) => m.phase)).toEqual(["started", "acting", "verified", "stopped"]);
+    expect(r.published.filter((m) => m.type === "taskProgress").map((m) => m.phase)).toEqual(mean === "AX" ? ["started", "acting", "verified", "stopped"] : ["started", "acting", "stopped"]);
     expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
-    expect(r.held()).toBe(ORIGINAL);
+    expect(r.held()).toBe(original(mean));
   });
 
   it.each([false, true])("preserves reconciliation when input pauses first and the goal then stops, read failure %s", async (failRead) => {
     const r = rig(mean, 40, "refused", true, failRead, true);
     await complete(r, 300);
     const stopped = r.published.find((m) => m.type === "taskProgress" && m.phase === "stopped");
-    expect(stopped).toMatchObject({ step: failRead ? 0 : 1, detail: expect.stringContaining(failRead ? "may have been written" : "Written before pause") });
-    expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED }]);
+    // A page's recovery read cannot tell Caret's write from anyone's (it sends no text): the write may have landed.
+    const known = mean === "AX" && !failRead;
+    expect(stopped).toMatchObject({ step: known ? 1 : 0, detail: expect.stringContaining(known ? "Written before pause" : "may have been written") });
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ before: original(mean), after: INTENDED }]);
     expect(r.helper.executor.ledger("t")).toHaveLength(1);
     r.allowReads();
     expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
-    expect(r.held()).toBe(ORIGINAL);
+    expect(r.held()).toBe(original(mean));
   });
 
   it("reports an untouched refused write as not run and removes its undo entry", async () => {
@@ -168,17 +183,17 @@ describe.each(["AX", "page"] as const)("%s in-flight reconciliation", (mean) => 
     expect(r.helper.executor.ledger("t")).toEqual([]);
     expect(r.recoveryReads()).toBe(1);
     expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 0, notRestored: [] });
-    expect(r.held()).toBe(ORIGINAL);
+    expect(r.held()).toBe(original(mean));
   });
 
   it("retains the original for guarded undo when the single recovery read fails", async () => {
     const r = rig(mean, 40, "refused", true, true);
     expect(await complete(r, 300)).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
-    expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+    expect(r.helper.executor.ledger("t")).toMatchObject([{ before: original(mean), after: INTENDED, unconfirmed: true }]);
     expect(r.recoveryReads()).toBe(1);
     r.allowReads();
     expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
-    expect(r.held()).toBe(ORIGINAL);
+    expect(r.held()).toBe(original(mean));
   });
 
   it("bounds the wait for a lost answer and reads only if time remains; Undo restores either way", async () => {
@@ -189,16 +204,17 @@ describe.each(["AX", "page"] as const)("%s in-flight reconciliation", (mean) => 
       // No answer at all uses Stop's whole wait, so a read now would be abandoned and queue ahead of an Undo (PR #21 review).
       expect(result).toMatchObject({ outcome: "stopped", acted: 0, step: 0, detail: expect.stringContaining("may have been written") });
       expect(r.recoveryReads()).toBe(0);
-      expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+      expect(r.helper.executor.ledger("t")).toMatchObject([{ before: original(mean), after: INTENDED, unconfirmed: true }]);
     } else {
-      // The page link gives up at its own 5 s from dispatch, 40 ms before Stop's deadline, so the one read still starts.
-      expect(result).toMatchObject({ outcome: "stopped", acted: 1, step: 1 });
+      // The page link gives up at its own 5 s from dispatch, 40 ms before Stop's deadline, so the one read still starts;
+      // it cannot tell Caret's write from anyone's (the page sends no text), so the write may have landed.
+      expect(result).toMatchObject({ outcome: "stopped", acted: 0, step: 0, detail: expect.stringContaining("may have been written") });
       expect(r.recoveryReads()).toBe(1);
-      expect(r.helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED }]);
+      expect(r.helper.executor.ledger("t")).toMatchObject([{ before: original(mean), after: INTENDED, unconfirmed: true }]);
     }
     // Undo reads first, and restores only while the field holds exactly what Caret was writing.
     expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1, notRestored: [] });
-    expect(r.held()).toBe(ORIGINAL);
+    expect(r.held()).toBe(original(mean));
   });
 });
 
@@ -209,7 +225,7 @@ describe("Stop during a recovery read that began before it", () => {
     const store = new Store(join(dir, "data"));
     const app = new FakeApp(executorWindow());
     const key = K("textfield:name~0");
-    app.setValue(key, ORIGINAL);
+    app.setValue(key, original("AX"));
     // The write lands but its answer is lost, with no Stop yet, so the executor starts its ordinary recovery walk.
     app.timeoutAfterWrite = true;
     let wrote = false;
@@ -241,7 +257,7 @@ describe("Stop during a recovery read that began before it", () => {
     expect(stoppedAt).toBeGreaterThan(0);
     expect(settled).toBe(true);
     expect(await result).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
-    expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: original("AX"), after: INTENDED, unconfirmed: true }]);
   });
 });
 
@@ -252,7 +268,7 @@ describe("one Stop deadline across the in-flight act and its recovery read", () 
     const store = new Store(join(dir, "data"));
     const app = new FakeApp(executorWindow());
     const key = K("textfield:name~0");
-    app.setValue(key, ORIGINAL);
+    app.setValue(key, original("AX"));
     let wrote = false;
     let stoppedAt = 0;
     const run = app.run.bind(app);
@@ -287,7 +303,7 @@ describe("one Stop deadline across the in-flight act and its recovery read", () 
     await vi.advanceTimersByTimeAsync(11);
     expect(settled).toBe(true);
     expect(await result).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
-    expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: original("AX"), after: INTENDED, unconfirmed: true }]);
   });
 });
 
@@ -298,7 +314,7 @@ describe("no recovery read starts after Stop", () => {
     const store = new Store(join(dir, "data"));
     const app = new FakeApp(executorWindow());
     const key = K("textfield:name~0");
-    app.setValue(key, ORIGINAL);
+    app.setValue(key, original("AX"));
     // The answer is lost before any Stop, so the run starts its ordinary recovery walk, which may retry.
     app.timeoutAfterWrite = true;
     let wrote = false;
@@ -338,7 +354,7 @@ describe("the read-back after an ok write with no change", () => {
     const store = new Store(join(dir, "data"));
     const app = new FakeApp(executorWindow());
     const key = K("textfield:name~0");
-    app.setValue(key, ORIGINAL);
+    app.setValue(key, original("AX"));
     let wrote = false;
     let reads = 0;
     let stoppedAt = 0;
@@ -374,7 +390,7 @@ describe("the read-back after an ok write with no change", () => {
     expect(await result).toMatchObject({ outcome: "stopped", acted: 0 });
     // The read-back, then Stop's one recovery read; neither retries.
     expect(reads).toBe(2);
-    expect(helper.executor.ledger("t")).toMatchObject([{ before: ORIGINAL, after: INTENDED, unconfirmed: true }]);
+    expect(helper.executor.ledger("t")).toMatchObject([{ before: original("AX"), after: INTENDED, unconfirmed: true }]);
   });
 });
 
@@ -385,7 +401,7 @@ describe("a read still on its way when Stop's wait ends", () => {
     const store = new Store(join(dir, "data"));
     const app = new FakeApp(executorWindow());
     const key = K("textfield:name~0");
-    app.setValue(key, ORIGINAL);
+    app.setValue(key, original("AX"));
     app.timeoutAfterWrite = true;
     let wrote = false;
     let reads = 0;

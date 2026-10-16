@@ -40,7 +40,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Customer name:",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       117.3,
@@ -56,7 +57,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Telephone:",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       82.9,
@@ -72,7 +74,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "E-mail address:",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       112,
@@ -233,7 +236,8 @@
      "kind": "time",
      "role": "textbox",
      "name": "Preferred delivery time:",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       164.8,
@@ -249,7 +253,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "Delivery instructions:",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       151.1,

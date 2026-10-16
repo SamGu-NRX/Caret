@@ -5,7 +5,8 @@
 // panel continues a page task from (apps/caret PageTask.preview). Driven through the Helper and the page engine of
 // page-rig.ts. Every name and value is invented.
 import { afterEach, describe, expect, it } from "vitest";
-import { PROTOCOL_VERSION, type HelperError, type PageControl } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type HelperError } from "../src/protocol.ts";
+import type { TestField } from "./page-wire.ts";
 import { GOAL_NEW_CHOICES } from "../src/goals/replay.ts";
 import { MAX_SEGMENTS } from "../src/goals/lower.ts";
 import { GROQ_GPT_OSS_20B } from "../src/writer/config.ts";
@@ -22,7 +23,7 @@ const PICKS: Record<string, string> = { "First name": "Ines", "Last name": "Vand
 const ASK = "fill this form from my note";
 
 /** wizard-1's first page as the content script walks it before Country is set: State is hidden, so it is not walked. */
-function wizard(): PageControl[] {
+function wizard(): TestField[] {
   return [
     c("w1", "text", "First name", { value: "" }),
     c("w2", "text", "Last name", { value: "" }),
@@ -33,13 +34,13 @@ function wizard(): PageControl[] {
   ];
 }
 
-const state = (): PageControl => c("w6", "select", "State", { options: [{ value: "", label: "Select...", selected: true }, { value: "CO", label: "Colorado", selected: false }, { value: "TX", label: "Texas", selected: false }] });
+const state = (): TestField => c("w6", "select", "State", { options: [{ value: "", label: "Select...", selected: true }, { value: "CO", label: "Colorado", selected: false }, { value: "TX", label: "Texas", selected: false }] });
 
 /**
  * wizard-1's script: setting Country shows State, empty, right after it (and `more` after State); clearing Country hides
  * them. A Country changed again empties State, as such forms do.
  */
-function dependsOnCountry(page: FakePage, more: () => PageControl[] = () => []): void {
+function dependsOnCountry(page: FakePage, more: () => TestField[] = () => []): void {
   page.onAct = (v, p) => {
     if (v.kind !== "pageSelect" || v.id !== "w5") return null;
     const shown = [state(), ...more()];
@@ -66,7 +67,7 @@ const segmentsOf = (r: Rig, goalId: string): Segment[] => goalMessages(r).filter
 const followUps = (r: Rig, goalId: string): Segment[] => goalMessages(r).filter((m): m is Segment => m.event === "segment" && m.reason === "afterReveal" && m.replaces === goalId);
 const finishedOf = (r: Rig, goalId: string): Finished | undefined => goalMessages(r).find((m): m is Finished => m.event === "finished" && m.goalId === goalId);
 /** Every write, pick or tick dispatched to control `id` (walks are reads). */
-const actsOn = (r: Rig, id: string): number => r.page.verbs.filter((v) => v.kind !== "pageWalk" && v.id === id).length;
+const actsOn = (r: Rig, id: string): number => r.page.verbs.filter((v) => v.kind !== "pageWalk" && "id" in v && v.id === id).length;
 const undo = (r: Rig, taskId: string): ReturnType<Rig["helper"]["handleTask"]> => r.helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action: "undo" });
 
 describe("a field the goal's own write revealed", () => {
@@ -151,7 +152,7 @@ describe("the follow-up stays within the goal's caps", () => {
       },
     };
     const r = await wizardRig({ writer });
-    const city = (): PageControl => c("w8", "text", "City", { value: "" });
+    const city = (): TestField => c("w8", "text", "City", { value: "" });
     r.page.onAct = (v, p) => {
       if (v.kind !== "pageSelect") return null;
       if (v.id === "w5" && v.value !== "" && !p.controls.some((x) => x.id === "w6")) p.controls.splice(p.controls.findIndex((x) => x.id === "w5") + 1, 0, state());
@@ -189,7 +190,7 @@ describe("the follow-up stays within the goal's caps", () => {
     // Country, then 40 answers: the Ask's scope question sees 40 fields (MAX_INTENT_FIELDS), so Answer 40 is the user's
     // and the goal has two parts. Country's write shows State at the end of the form, past 40 fields, filled ones counted.
     const answers = Array.from({ length: 40 }, (_, i) => `Answer ${i + 1}`);
-    const controls = (): PageControl[] => [...wizard().filter((x) => x.id === "w5"), ...answers.map((x, i) => c(`t${i + 1}`, "text", x, { value: "" })), ...wizard().filter((x) => x.id === "w9")];
+    const controls = (): TestField[] => [...wizard().filter((x) => x.id === "w5"), ...answers.map((x, i) => c(`t${i + 1}`, "text", x, { value: "" })), ...wizard().filter((x) => x.id === "w9")];
     const r = await rig({ controls, note: [...answers.map((x, i) => `${x}: value ${i + 1}`), "Country: United States", "State: Colorado"].join("\n"), picks: { ...Object.fromEntries(answers.map((x, i) => [x, `value ${i + 1}`])), Country: "United States", State: "Colorado" } });
     r.page.onAct = (v, p) => {
       if (v.kind === "pageSelect" && v.id === "w5" && v.value !== "" && !p.controls.some((x) => x.id === "w6")) p.controls.splice(p.controls.findIndex((x) => x.id === "w9"), 0, state());

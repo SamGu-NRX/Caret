@@ -2,6 +2,7 @@
 // email). The verifier judges exactness and answered "exact" at 0.85 to 0.89 in W2's eval, so it is no defence here;
 // the owner veto is (fill.ts otherPerson). A page form beside the forty task's note and mail, with a scripted Jev that
 // picks the user's email for the field and answers each whose question as the case says. All values are synthetic.
+import { onWire } from "./page-wire.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +29,7 @@ const USERS = "jo.abernathycole@example.com";
 const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
 const WIN = "page:eng1:7";
-const control = (id: string, name: string): PageControl => ({ id, key: `form[apply]/text:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "text", name, form: "form#apply", rect: [0, Number(id.slice(1)) * 30, 100, 20], value: "" });
+const control = (id: string, name: string): PageControl => onWire({ id, key: `form[apply]/text:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "text", name, form: "form#apply", rect: [0, Number(id.slice(1)) * 30, 100, 20], value: "" });
 const keyOf = (c: PageControl): string => `f0/${c.key}`;
 
 function mailWindow(m: Mail): Snapshot {

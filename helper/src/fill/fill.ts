@@ -13,7 +13,7 @@ import { instructionForModel, redactWindow } from "./redact.ts";
 import { fieldFingerprint, NO_SECTION, PLACEMENT_UNKNOWN, scopeRefusal, UNNAMED_SECTION, windowOutline, type Authority, type DocumentReader } from "./ask-scope.ts";
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
-import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
+import { nodeText, type ScreenModel, type WindowState, holdsText } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, describeCandidate, labelledCandidate, labelledLines, MAX_LINE, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, CANDIDATE_WORDING, candidateSpans, clauseSpans, sourceOf as readOf, associationOf, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, unwrapValue, words } from "./kinds.ts";
 import { WINDOW_CHARS, type Declared } from "../privacy.ts";
@@ -150,7 +150,7 @@ export function formFields(w: WindowState, triggerKey: string, max = MAX_FIELDS)
   if (trigger === undefined) throw new FillError("noField", `field ${triggerKey} is not in window ${w.window.windowId}`);
   if (trigger.editable !== true) throw new FillError("noField", `field ${triggerKey} is not editable`);
   const fields = [...w.nodes.values()].filter(
-    (n) => n.key === triggerKey || (n.editable === true && FILLABLE_ROLES.has(n.role) && (n.value ?? "") === "" && !n.states?.includes("secure") && neverTypedNode(w, n) === null),
+    (n) => n.key === triggerKey || (n.editable === true && FILLABLE_ROLES.has(n.role) && !holdsText(n) && !n.states?.includes("secure") && neverTypedNode(w, n) === null),
   );
   const center = (n: Node): [number, number] => (n.frame === undefined ? [0, 0] : [n.frame[0] + n.frame[2] / 2, n.frame[1] + n.frame[3] / 2]);
   const [tx, ty] = center(trigger);
@@ -196,7 +196,7 @@ export function emptyInput(w: WindowState, key: string): FormInput | null {
   const n = w.nodes.get(key);
   if (n === undefined) return null;
   if (FILLABLE_ROLES.has(n.role) && n.editable === true) {
-    if ((n.value ?? "") !== "" || n.states?.includes("secure") || neverTypedNode(w, n) !== null) return null;
+    if (holdsText(n) || n.states?.includes("secure") || neverTypedNode(w, n) !== null) return null;
     return n.role === "AXComboBox" && inWebArea(w, n) ? { node: n, control: "combobox", form: { node: n, control: "combobox", label: fieldLabelText(n.label), options: null, members: [] } } : { node: n, control: "text", form: null };
   }
   const c = formControls(w).find((x) => x.node.key === key);
@@ -1030,7 +1030,7 @@ export async function proposeFill(
       const n = w.nodes.get(k);
       if (n === undefined) return [];
       if (FILLABLE_ROLES.has(n.role) && n.editable === true) {
-        if ((n.value ?? "") !== "" || n.states?.includes("secure") === true || neverTypedNode(w, n) !== null) return [];
+        if (holdsText(n) || n.states?.includes("secure") === true || neverTypedNode(w, n) !== null) return [];
         return [opts.controls !== false && n.role === "AXComboBox" && inWebArea(w, n) ? { node: n, control: "combobox", form: { node: n, control: "combobox", label: fieldLabelText(n.label), options: null, members: [] } } : { node: n, control: "text", form: null }];
       }
       const c = controls.get(k);

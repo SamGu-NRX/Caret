@@ -4,9 +4,9 @@
 import { describe, expect, it } from "vitest";
 import { DENIED_HOSTS as EXTENSION_HOSTS } from "../../extension/src/worker/left-tab.ts";
 import { DENIED_HOSTS, canonicalOrigin, deniedOrigin } from "../src/privacy/denied-origins.ts";
-import { EngineSession, screenReadings } from "../src/engines/session.ts";
+import { EngineSession } from "../src/engines/session.ts";
 import { toVerbOutcome, topFrameOn } from "../src/engines/page-link.ts";
-import { PROTOCOL_VERSION, type HelperToEngine, type PageFrame, type PageSnapshot } from "../src/protocol.ts";
+import { EngineMessage, PROTOCOL_VERSION, type HelperToEngine, type PageFrame, type PageSnapshot } from "../src/protocol.ts";
 import { X, chrome } from "./fake-page.ts";
 
 describe("DENIED_HOSTS", () => {
@@ -24,7 +24,7 @@ describe("DENIED_HOSTS", () => {
 
 const frame = (frameId: number, origin: string, over: Partial<PageFrame> = {}): PageFrame => ({
   frameId, parentFrameId: frameId === 0 ? -1 : 0, documentId: `D${frameId}`, origin, path: "/", navGen: 1, title: `Frame ${frameId}`, headings: [], iframes: [], excluded: {}, truncated: false,
-  controls: [{ id: `e${frameId}`, key: `textbox:email~${frameId}`, strongKey: null, kind: "email", role: "textbox", name: "Email or phone", value: "ines@example.test", form: null, rect: [0, 0, 200, 20] }],
+  controls: [{ id: `e${frameId}`, key: `textbox:email~${frameId}`, strongKey: null, kind: "email", role: "textbox", name: "Email or phone", hasValue: true, rev: 4, form: null, rect: [0, 0, 200, 20] }],
   ...over,
 });
 
@@ -82,29 +82,36 @@ describe("an engine session and the deny list", () => {
   it("passes an ordinary tab's snapshot and text through unchanged", async () => {
     const { session } = rig([frame(0, "https://jobs.example.test")], 0);
     const a = await session.command({ kind: "pageWalk", tabId: 4 });
-    expect(a.snapshot?.frames[0]?.controls[0]?.value).toBe("ines@example.test");
+    expect(a.snapshot?.frames[0]?.controls[0]).toMatchObject({ hasValue: true, rev: 4 });
     expect((await session.readText(4)).text?.blocks).toEqual(["Recovery code: 1111-2222"]);
   });
 });
 
-describe("an act's readings (review round 3)", () => {
-  it("drops a write's readings when a value in them is one Caret never carries, so the write reads as unverified", async () => {
+describe("an act's readings carry no text of the field (review rounds 3 and 4; counsel 2026-10-09)", () => {
+  // Before, the helper screened a receipt's before and after values for secrets (screenReadings) and kept the rest. The
+  // page now computes its readings itself and sends booleans and a rev, so there is no value left to screen: a receipt
+  // that carries one is refused at the wire, whole, beside the page's own booleans or not.
+  const old = { type: "pageResult", v: PROTOCOL_VERSION, id: "w", at: 0, outcome: "failed", detail: null, readings: { before: "", afterInput: "4111 1111 1111 1111", afterBlur: "4111 1111 1111 1111", invalid: true, error: "Your recovery code swordfish expired" } };
+  it("refuses a receipt whose readings hold a field's text or the page's error text", () => {
+    expect(EngineMessage.safeParse(old).success).toBe(false);
+    const mixed = { ...old, readings: { sameAsBefore: false, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 3, afterBlur: "4111 1111 1111 1111" } };
+    expect(EngineMessage.safeParse(mixed).success).toBe(false);
+    const clean = { ...old, readings: { sameAsBefore: false, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 3 } };
+    expect(EngineMessage.parse(clean)).toEqual(clean);
+  });
+
+  it("reads a failed write that left other text, or no readings, as unverified, and one that left the field as it was as nothing landed", async () => {
     const session: EngineSession = new EngineSession({ engine: "eng1", browser: chrome, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m: HelperToEngine) => {
       queueMicrotask(() => {
-        if (m.type === "pageCommand") session.receive({ type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: Date.now(), outcome: "failed", detail: "the page holds another value than Caret wrote", readings: { before: "", afterInput: "4111 1111 1111 1111", afterBlur: "4111 1111 1111 1111", invalid: true, error: "Code swordfish expired" } });
+        if (m.type === "pageCommand") session.receive({ type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: Date.now(), outcome: "failed", detail: "the page holds another value than Caret wrote", readings: { sameAsBefore: false, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 2 } });
       });
       return true;
     }, 500);
-    const a = await session.command({ kind: "pageWrite", taskId: "t1", tabId: 4, frameId: 0, documentId: "D0", id: "e1", control: "text", name: "Name", value: "Ines", expect: "" });
+    const a = await session.command({ kind: "pageWrite", taskId: "t1", tabId: 4, frameId: 0, documentId: "D0", id: "e1", control: "text", name: "Name", value: "Ines", expectRev: 1 });
     expect(a.result.outcome).toBe("failed");
-    expect(a.result.readings).toBeUndefined();
-    expect(JSON.stringify(a.result)).not.toMatch(/swordfish|4111/u);
     expect(toVerbOutcome(a.result).outcome).toBe("axError");
-  });
-
-  it("never keeps the page's error or description text, and keeps ordinary values for the write's check", () => {
-    const r = screenReadings({ type: "pageResult", v: PROTOCOL_VERSION, id: "w", at: 0, outcome: "failed", detail: null, readings: { before: "", afterInput: "Ines", afterBlur: "", invalid: true, error: "Your recovery code swordfish expired" } });
-    expect(r.readings).toEqual({ before: "", afterInput: "Ines", afterBlur: "", invalid: true, error: null });
+    expect(toVerbOutcome({ ...a.result, readings: undefined }).outcome).toBe("axError");
+    expect(toVerbOutcome({ ...a.result, readings: { sameAsBefore: true, landed: false, equivalent: false, empty: true, typedBetween: false, rev: 1 } }).outcome).toBe("changed");
   });
 });
 

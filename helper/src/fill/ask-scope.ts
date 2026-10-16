@@ -356,7 +356,10 @@ export function fieldFingerprint(w: WindowState, key: string): string {
   const outline = windowOutline(w);
   const chain = outline.chainOf(key);
   const sections = chain === "unknown" ? chain : chain.map((k) => outline.occurrences.find((x) => x.key === k)?.text ?? null);
-  return createHash("sha256").update(JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, sections, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children])).digest("hex");
+  // A web page's text field sends no text: its rev and whether it is unread stand for it (counsel 2026-10-09), and they
+  // join the hash only when present, so a native field hashes as before.
+  const page = n.rev === undefined && n.unread !== true ? [] : [n.rev ?? null, n.unread === true];
+  return createHash("sha256").update(JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, sections, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children, ...page])).digest("hex");
 }
 
 /** What the scope check needs of a write: its target and fingerprint (FieldContract), and whose value it is. */

@@ -1,5 +1,6 @@
 // C2 review (astra, foreground): each finding as a test that failed on the reviewed head (c246be9). Jev is a fake that
 // answers by rule; every name, address and date is invented.
+import { onWire, type TestField } from "./page-wire.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { aboutValues, fieldAsksForPart } from "../src/fill/about.ts";
@@ -9,7 +10,7 @@ import { planPage } from "../src/goals/page-planner.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import { GoalProgress, PROTOCOL_VERSION, type PageControl, type PageSnapshot } from "../src/protocol.ts";
+import { GoalProgress, PROTOCOL_VERSION, type PageSnapshot } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
 import { c, WIN as RIG_WIN } from "./fake-page.ts";
@@ -21,14 +22,14 @@ const ORIGIN = "http://127.0.0.1:4310";
 const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
 const WIN = "page:eng1:7";
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], ...extra });
-const select = (id: string, name: string, options: string[]): PageControl =>
+const control = (id: string, kind: TestField["kind"], name: string, extra: Partial<TestField> = {}): TestField => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], ...extra });
+const select = (id: string, name: string, options: string[]): TestField =>
   control(id, "select", name, { options: [{ value: "", label: "Select...", selected: true }, ...options.map((o, i) => ({ value: `o${i}`, label: o, selected: false }))] });
 
-function scene(note: string, controls: PageControl[]): ScreenModel {
+function scene(note: string, controls: TestField[]): ScreenModel {
   const page: PageSnapshot = {
     type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
-    frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/apply", navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false, controls }],
+    frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/apply", navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false, controls: controls.map((c) => onWire(c)) }],
     missing: [],
     focused: { frameId: 0, id: "e1", selection: [0, 0] },
   };
@@ -99,7 +100,7 @@ describe("finding 5: no About country, so no memory the protocol could not name"
 
 describe("finding 6: a long form's preview stays within the protocol's limits", () => {
   it("keeps the warnings at 24 with the parts' note among them", async () => {
-    const fifty = (): PageControl[] => Array.from({ length: 50 }, (_, i) => c(`t${i + 1}`, "text", `Q${i + 1}`, { value: "" }));
+    const fifty = (): TestField[] => Array.from({ length: 50 }, (_, i) => c(`t${i + 1}`, "text", `Q${i + 1}`, { value: "" }));
     // Three fields of each of the first two parts agreed at 0.95; the rest at 0.5, under the cutoff, so each is left
     // with a sentence: 44 of them.
     const unsure = (inner: AskJev): AskJev => async (req) => {
@@ -118,7 +119,7 @@ describe("finding 6: a long form's preview stays within the protocol's limits", 
   });
 
   it("keeps every part within 24 rows when file controls join the last part", async () => {
-    const forty = (): PageControl[] => [...Array.from({ length: 40 }, (_, i) => c(`t${i + 1}`, "text", `Q${i + 1}`, { value: "" })), ...[1, 2, 3, 4].map((i) => c(`f${i}`, "file", `File ${i}`, { value: "" }))];
+    const forty = (): TestField[] => [...Array.from({ length: 40 }, (_, i) => c(`t${i + 1}`, "text", `Q${i + 1}`, { value: "" })), ...[1, 2, 3, 4].map((i) => c(`f${i}`, "file", `File ${i}`, { value: "" }))];
     const r = await rig({ controls: forty, note: Array.from({ length: 40 }, (_, i) => `Q${i + 1}: a${i + 1}`).join("\n"), picks: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`Q${i + 1}`, `a${i + 1}`])), goalFiles: true });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     expect(GoalProgress.safeParse(preview).success).toBe(true);
@@ -145,7 +146,7 @@ describe("finding 8: an ISO date entry's month fills a menu of month names", () 
 
 describe("finding 9: with no Ask scope, each part's fill asks about exactly that part", () => {
   it("writes all 40 of 40 equally named fields, 20 in each part", async () => {
-    const forty = (): PageControl[] => Array.from({ length: 40 }, (_, i) => c(`t${i + 1}`, "text", `Name ${i + 1}`, { value: "" }));
+    const forty = (): TestField[] => Array.from({ length: 40 }, (_, i) => c(`t${i + 1}`, "text", `Name ${i + 1}`, { value: "" }));
     // A person's name each, of letters only and no surname particle ("Pat Zaa", "Pat Zab"...), as a name field takes one.
     const who = (i: number): string => `Pat Z${String.fromCharCode(97 + Math.floor(i / 26))}${String.fromCharCode(97 + (i % 26))}`;
     const r = await rig({ controls: forty, note: Array.from({ length: 40 }, (_, i) => `Name ${i + 1}: ${who(i)}`).join("\n"), picks: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`Name ${i + 1}`, who(i)])) });
@@ -196,7 +197,7 @@ describe("fix-check 4: a sentence is no place", () => {
 
 describe("fix-check 5: many file controls never push a preview past 24 rows", () => {
   it("offers at most 22 attach rows and names the rest as the user's", async () => {
-    const files = (): PageControl[] => [c("t1", "text", "Q1", { value: "" }), ...Array.from({ length: 24 }, (_, i) => c(`f${i + 1}`, "file", `File ${i + 1}`, { value: "" }))];
+    const files = (): TestField[] => [c("t1", "text", "Q1", { value: "" }), ...Array.from({ length: 24 }, (_, i) => c(`f${i + 1}`, "file", `File ${i + 1}`, { value: "" }))];
     const r = await rig({ controls: files, note: "Q1: a1", picks: { Q1: "a1" }, goalFiles: true });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     expect(GoalProgress.safeParse(preview).success).toBe(true);

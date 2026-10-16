@@ -1,6 +1,7 @@
 import { requireVercelDevelopment } from "../privacy/vercel.ts";
 // One OpenAI Responses or Gateway/Groq chat-completion request. No retry or provider fallback.
 import { sendable, type Sealed, type Sink } from "../privacy/send.ts";
+import { refuseFocusedText } from "../privacy/focus-tripwire.ts";
 import type { HostEnv } from "../host-env.ts";
 import * as z from "zod";
 
@@ -151,10 +152,13 @@ export function chatSink(
 export async function chat(route: ChatRoute, key: string, sealed: Sealed, signal: AbortSignal, fetchFn: typeof fetch = fetch): Promise<ChatResult> {
   if (route.provider === "gateway" || new URL(route.baseUrl).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
   const t0 = performance.now();
+  const body = sendable(sealed);
+  // The focused field's caret text never goes to a cloud model (privacy/focus-tripwire.ts).
+  refuseFocusedText(body, route.provider);
   const res = await fetchFn(`${route.baseUrl}/${route.provider === "openai" ? "responses" : "chat/completions"}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: sendable(sealed),
+    body,
     signal,
   });
   const raw = await res.text();

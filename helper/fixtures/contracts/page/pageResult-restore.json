@@ -1,0 +1,12 @@
+{
+  "type": "pageResult",
+  "v": 1,
+  "id": "fixture-restore",
+  "at": 20,
+  "outcome": "stale",
+  "detail": "the field holds other text now than Caret wrote",
+  "restore": {
+    "outcome": "refused",
+    "why": "changed"
+  }
+}

@@ -3,12 +3,13 @@
 // do not depend on it go on in the same task, under the same undo. A restore that cannot be verified stops the run as
 // before. Driven through the Helper, the goal runs and the page engine of fill-transaction.test.ts. Every name and value
 // is invented.
+import type { TestField } from "./page-wire.ts";
 import { headsJev } from "./heads-jev.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { PROTOCOL_VERSION, type GoalProgress, type HelperMessage, type PageControl, type PageResult, type PageVerb } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type GoalProgress, type HelperMessage, type PageResult, type PageVerb } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
@@ -29,13 +30,16 @@ const NOTE = ["Full name: Robin Vale", "Country: Canada", "City: Toronto", "Emai
 const PICKS: Record<string, string> = { "Full name": "Robin Vale", Country: "Canada", City: "Toronto", Email: "robin@example.test" };
 
 /** A form whose second field is a custom dropdown, with a field after it that depends on it (City) and one that does not. */
-const controls = (): PageControl[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "combobox", "Country", { value: "" }), c("e3", "text", "City", { value: "" }), c("e4", "email", "Email", { value: "" })];
+const controls = (): TestField[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "combobox", "Country", { value: "" }), c("e3", "text", "City", { value: "" }), c("e4", "email", "Email", { value: "" })];
 
-/** The combobox handler's answer when no list opened (content/combobox.ts stopped): the list closed, the text put back. */
+/**
+ * The combobox handler's answer when no list opened (content/combobox.ts stopped): the list closed, the text put back.
+ * Its readings are the page's own: the control shows what it showed before, at the rev the walk last read (0).
+ */
 const putBack = (extra: Partial<PageResult> = {}): object => ({
   outcome: "failed",
   detail: "no list that belongs to this control opened within 1500 ms (opening); Caret put the control back and stopped",
-  readings: { before: "", afterInput: "", afterBlur: "", invalid: false, error: null },
+  readings: { sameAsBefore: true, landed: false, equivalent: false, empty: true, typedBetween: false, rev: 0 },
   choice: { flavor: "reactSelect", matches: [], expanded: false, hiddenInput: "unchanged" },
   ...extra,
 });
@@ -151,7 +155,7 @@ describe("a failed step whose restore is not verified stops the run as before (C
   it("failed with the control showing other text after the stop", async () => {
     const r = await rig((v, p) => {
       p.find(v.id).value = "Can";
-      return putBack({ readings: { before: "", afterInput: "Can", afterBlur: "Can", invalid: false, error: null } });
+      return putBack({ readings: { sameAsBefore: false, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 1 } });
     });
     await stoppedAtCountry(r, /^the reader refused: axError \(failed: no list/);
   });
@@ -171,7 +175,8 @@ describe("a failed step whose restore is not verified stops the run as before (C
       p.find(v.id).value = "Can";
       return putBack();
     });
-    await stoppedAtCountry(r, /Caret read 'Country' back as 'Can', not '' as before, so it stopped$/);
+    // The page sends no text of the control: the read-back says it differs, never what it holds.
+    await stoppedAtCountry(r, /Caret read 'Country' back holding other text, which the page does not send, not '' as before, so it stopped$/);
   });
 
   it("put back, but another field changed while Caret acted", async () => {
@@ -194,7 +199,7 @@ describe("a failed step whose restore is not verified stops the run as before (C
 });
 
 describe("which failed pick reads as put back (engines/page-link.ts restoredPick)", () => {
-  const verb: PageVerb = { kind: "pageChooseOption", tabId: 7, frameId: 0, documentId: "D0", id: "e2", control: "combobox", name: "Country", taskId: "t", expect: "", value: "Canada" };
+  const verb: PageVerb = { kind: "pageChooseOption", tabId: 7, frameId: 0, documentId: "D0", id: "e2", control: "combobox", name: "Country", taskId: "t", expectRev: 0, value: "Canada" };
   const res = (extra: Partial<PageResult> = {}): PageResult => ({ type: "pageResult", v: PROTOCOL_VERSION, id: "x", at: 0, ...(putBack(extra) as Omit<PageResult, "type" | "v" | "id" | "at">) });
   it("is a combobox stop with readings equal before and after, the list closed and the form value unchanged", () => {
     expect(restoredPick(verb, res())).toBe(true);
@@ -202,14 +207,14 @@ describe("which failed pick reads as put back (engines/page-link.ts restoredPick
   });
   it("is nothing else", () => {
     expect(restoredPick(verb, res({ readings: undefined }))).toBe(false);
-    expect(restoredPick(verb, res({ readings: { before: "", afterInput: "C", afterBlur: "C", invalid: false, error: null } }))).toBe(false);
+    expect(restoredPick(verb, res({ readings: { sameAsBefore: false, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 1 } }))).toBe(false);
     expect(restoredPick(verb, res({ choice: undefined }))).toBe(false);
     expect(restoredPick(verb, res({ choice: { flavor: "aria", matches: [], expanded: null, hiddenInput: "none" } }))).toBe(false);
     expect(restoredPick(verb, res({ choice: { flavor: "aria", matches: [], expanded: true, hiddenInput: "none" } }))).toBe(false);
     expect(restoredPick(verb, res({ choice: { flavor: "reactSelect", matches: [], expanded: false, hiddenInput: "set" } }))).toBe(false);
     expect(restoredPick(verb, res({ outcome: "stale" }))).toBe(false);
     expect(restoredPick({ ...verb, control: "button" }, res())).toBe(false);
-    expect(restoredPick({ kind: "pageWrite", tabId: 7, frameId: 0, documentId: "D0", id: "e1", control: "text", name: "Full name", taskId: "t", expect: "", value: "x" }, res())).toBe(false);
+    expect(restoredPick({ kind: "pageWrite", tabId: 7, frameId: 0, documentId: "D0", id: "e1", control: "text", name: "Full name", taskId: "t", expectRev: 0, value: "x" }, res())).toBe(false);
   });
 });
 

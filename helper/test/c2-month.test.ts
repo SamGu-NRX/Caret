@@ -1,6 +1,7 @@
 // C2 (lead decision 1): a month and year the user wrote ("August 2022", "Aug '22", "08/2022") fills an <input type=month>
 // or a month and year pair of menus. It is a conversion of the user's own date, as a date field's is; a season or a bare
 // year stays the user's. Jev is a fake that answers by rule; every name and date is invented.
+import { onWire, type TestField } from "./page-wire.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
@@ -16,7 +17,7 @@ const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome"
 const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
 const WIN = "page:eng1:7";
 
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({
+const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({
   id,
   key: `form[job]/${kind}:${name.toLowerCase()}~0`,
   strongKey: null,

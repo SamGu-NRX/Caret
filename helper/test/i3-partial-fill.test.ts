@@ -3,6 +3,7 @@
 // usual; it asks about the unclear and below-cutoff fields only when they fit one question of MAX_ASK_OPTIONS options;
 // otherwise it leaves each to the user with one sentence. B24 ask-01 ("fill the rest of this from my note", where Jev
 // settled no field and voted for ten) is the reproduction. Every name and value is from the synthetic corpus.
+import type { TestField } from "./page-wire.ts";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +17,7 @@ import { planSpec } from "../src/planner/proposal.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { field, scopeLabel, snap, optionIs } from "./builders.ts";
-import type { PageControl } from "../src/protocol.ts";
+
 import { c } from "./fake-page.ts";
 import { closeRigs, rig, type Segment } from "./page-rig.ts";
 
@@ -182,7 +183,7 @@ describe("a page goal through the helper", () => {
 
   it("says each unsettled field is the user's before Tab, and writes only the settled ones", async () => {
     const labels = ["Full name", "Email", "Phone", "Company", "Job title", "Street", "City", "State", "ZIP", "Country", "Website"];
-    const controls = (): PageControl[] => labels.map((l, i) => c(`e${i + 1}`, "text", l, { value: "" }));
+    const controls = (): TestField[] => labels.map((l, i) => c(`e${i + 1}`, "text", l, { value: "" }));
     // The rig's maker is a writer (page-rig.ts), whose fields the scope ask settles (ask.ts settleFields): Full name and
     // Email, with the nine others unclear, more than one question lists.
     const scoped = (inner: AskJev): AskJev => async (req) => {
@@ -203,7 +204,7 @@ describe("the writer maker's settlement (ask.ts settleFields)", () => {
 
   it("asks about the unclear fields beside the settled one, and the answer fills both on the page", async () => {
     const labels = ["Full name", "Email", "Phone"];
-    const controls = (): PageControl[] => labels.map((l, i) => c(`e${i + 1}`, "text", l, { value: "" }));
+    const controls = (): TestField[] => labels.map((l, i) => c(`e${i + 1}`, "text", l, { value: "" }));
     const scoped = (inner: AskJev): AskJev => async (req) => {
       const r = await inner(req);
       if (req.purpose !== "ask.scope") return r;
