@@ -2638,8 +2638,9 @@ const GoalHead = {
 /**
  * Helper to a host that declared GOAL_PLANS_CAPABILITY (D2-06). `segment`: a segment waits for the user's acceptance
  * (goalAccept with this `digest`) until `expires`; `reason` says why it is separate (`start`, `crossWindow`: another
- * window or the calendar, `afterReveal`: a press showed new fields, `freshPlan`: replanned after a stop, `nextPage`
- * (P3): the user's own Next took the page to a new document, and a goal whose scope was the whole form or a section was
+ * window or the calendar, `afterReveal`: a press, or a page goal's own writes, showed new fields, `freshPlan`:
+ * replanned after a stop, `nextPage` (P3): the user's own Next took the page to a new document, and a goal whose scope
+ * was the whole form or a section was
  * planned again there, its values chosen afresh from the sources as they read now, `moreFields` (C2): the next part of
  * a page form over 20 fields, at most 20 more of its fields, which the goal planned with the rest and runs only on this
  * segment's own acceptance) and `replaces` names the goal it was

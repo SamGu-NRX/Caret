@@ -1,0 +1,1 @@
+Privacy parity tests: app exclusions live in CaretScreenCore/ExcludedApps.swift and helper/privacy/read-policy.ts (sc1-exclusions checks them); sc1-boundary also scans fixtures/web-form, so JSON evidence goes through writeStoreJson/appendStoreJson.

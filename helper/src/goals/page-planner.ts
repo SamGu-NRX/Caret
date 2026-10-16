@@ -135,7 +135,7 @@ export interface PlanPageOptions {
   pageDocument: (windowId: string) => string | null;
   /** From the goal this plan replaces (runs.ts Replan): what it still owed. Receipts need nothing here: done fields are filled. */
   carried?: Pick<Replan, "owed">;
-  /** The controls a finished page goal's writes revealed (runs.ts afterReveal): this plan's only fields. */
+  /** The controls a page goal's own verified writes revealed (runs.ts followUp): this plan's only fields. */
   revealed?: readonly string[];
   /**
    * I2 ruling C: an Ask's goal's scopes (fill/ask-scope.ts ScopeSet); the page's own, for its window and document, holds
@@ -233,6 +233,12 @@ const shortDigest = (s: string): string => sha256(s).slice(0, 16);
 /** The rows one segment's preview shows at most (protocol GoalProgress segment `steps`). */
 const STEP_VIEWS = 24;
 const clip = (s: string, n = 60): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
+
+/** A refusal carrying the fields the plan asked about and left, each with why (GoalError.left). */
+function leaving(e: GoalError, left: readonly LeftItem[]): GoalError {
+  e.left = [...left];
+  return e;
+}
 
 /**
  * A value as Jev would read it in a goal's value question (gates.ts jevGate), with where it came from, as fill's own
@@ -386,8 +392,8 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // has something to offer (before C2: with a file control only). A fill that failed any other way refuses the plan.
   const failed = rounds.find((x) => x.error !== null && x.error.why !== "nothingToCopy")?.error;
   if (failed !== undefined && failed !== null) throw new GoalError("nothingToDo", "Caret couldn't read this form's values", failed.message);
-  if (rounds.every((x) => x.error !== null) && rounds.length > 0 && files.length === 0) throw new GoalError("nothingToDo", saysNoValue(asked.map((x) => viewName(w, x.node))), rounds[0]?.error?.message);
   for (const x of rounds) if (x.error !== null) for (const y of x.part) leave(y.node, "Caret found nothing on screen or in memory for it");
+  if (rounds.every((x) => x.error !== null) && rounds.length > 0 && files.length === 0) throw leaving(new GoalError("nothingToDo", saysNoValue(asked.map((x) => viewName(w, x.node))), rounds[0]?.error?.message), left);
   // What a Fill all would write: text values and the controls fill says it writes, each with its span and source; and
   // (an Ask's own) a value the instruction spells out for the field, which both asks chose as written there.
   const writes = new Map<string, Written>();
@@ -417,7 +423,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   }
   if (writes.size === 0 && files.length === 0) {
     const unsure = left.filter((l) => l.key !== `size:${o.windowId}`);
-    throw new GoalError("nothingToDo", unsure.length > 0 ? clip(unsure.map((l) => l.says).join("; "), 590) : saysNoValue(asked.map((x) => viewName(w, x.node))));
+    const e = new GoalError("nothingToDo", unsure.length > 0 ? clip(unsure.map((l) => l.says).join("; "), 590) : saysNoValue(asked.map((x) => viewName(w, x.node))));
+    // A field fill neither wrote nor said anything about: nothing was found for it.
+    for (const x of asked) if (!left.some((l) => l.key === x.node.key)) leave(x.node, "Caret found nothing on screen or in memory for it");
+    throw leaving(e, left.filter((l) => l.key !== `size:${o.windowId}`));
   }
 
   // 3. The inventory: the page as frozen (revision, document, owed fields), and a target for each field fill writes.
@@ -523,10 +532,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
 }
 
 /**
- * The FillScope a page goal's fresh plan asks under: after a stop, the same scope; for controls its writes revealed, the
- * scope's sources and person alone (planPage asks only the revealed controls, and no value of the instruction is tied
- * to one of them).
+ * The FillScope a page goal goes on under on a page it did not plan, the user's next page (runs.ts keepCarry) or the
+ * controls its own writes revealed (runs.ts followUp): the scope's sources and person alone. planPage asks only about
+ * that page's or those controls' fields, and no value of the instruction is tied to one of them.
  */
-export function continuationScope(page: PageGoal, revealed: boolean): FillScope {
-  return revealed ? { ...page.scope, fields: [], literals: new Map() } : page.scope;
+export function continuationScope(page: PageGoal): FillScope {
+  return { ...page.scope, fields: [], literals: new Map() };
 }
