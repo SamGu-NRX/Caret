@@ -3,9 +3,8 @@
 //   node scripts/fill-eval.ts --gold GOLD.json --record READER_RECORDING.ndjson --rounds N --out DIR --host-key-fd N
 //
 // The helper sends proposals only to the host (src/send-gate.ts), so this script proves the host key, which it reads
-// once from descriptor N: start the helper with `node src/launch.ts ... --host-key-fd M` writing to a pipe, and pass
-// that pipe's read end here, for example through a FIFO (`mkfifo k; launch.ts ... --host-key-fd 3 3>k &` and then
-// `fill-eval.ts ... --host-key-fd 3 3<k`). Never a regular file.
+// once from descriptor N, a pipe and never a regular file. apps/screen-reader/experiments/run-fill-eval.sh passes it
+// as `--host-key-fd 3 3< <(host_key_bytes)` (launch-secret.sh); with src/launch.ts, its --host-key-fd writes the key.
 //
 // Needs a running helper (with Jev) and a caret-screen started with --only-pids <fixture pid>
 // --record READER_RECORDING.ndjson, so the helper's screen model holds the fixture's synthetic
