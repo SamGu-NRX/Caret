@@ -2,14 +2,16 @@
 // walk saw, so the page keeps no element alive for Caret's sake. Alive, connected and in this document means the
 // same object. When React or another framework replaced the node, the strong key the walk recorded may rebind it,
 // but only to exactly one connected control with the same strong key, kind and name whose value is still the one
-// the helper expects (memo: "This is not fuzzy"). Without a strong key, a dead reference is simply gone.
+// the helper expects (memo: "This is not fuzzy"). Without a strong key, a dead reference is simply gone. A text
+// control's expected text never comes from the helper: the walk kept it here with the rev it read (Entry.seen), and a
+// rebind for a verb's expectRev needs that very rev and the same text in the replacement.
 //
 // An id names one element object for good (W3): a rebind acts on the replacement but never moves the old id to it,
 // and the replacement keeps (or gets) an id of its own. So the helper's undo mark, which holds the id it wrote, no
 // longer matches once the element was replaced, and an undo that reaches the frame anyway (`rebind: false`) refuses
 // a dead reference as notSameElement instead of rebinding.
 import type { PageControlKind } from "../shared/messages.ts";
-import { candidates, exclusionOf, formIdentity, valueOf, checkedOf, type Found } from "./walker.ts";
+import { candidates, exclusionOf, formIdentity, type Found } from "./walker.ts";
 import { authorIdentifier, strongKey } from "../shared/ids.ts";
 
 export interface Entry {
@@ -26,6 +28,8 @@ export interface Entry {
    */
   nav: string;
   form: string | null;
+  /** A text control's rev and text as the walk read them, in this frame only; absent while it is withheld. */
+  seen?: { rev: number; text: string };
 }
 
 /** The current history entry's id from the Navigation API, or history.length where the API is missing. */
@@ -84,10 +88,10 @@ export class Registry {
 
   /**
    * The element for `id`: the retained one when it is still connected in this document, else (when `rebind`) the
-   * single strong-key match holding `expect` (when given), else why not. `replaced` says the walked element is gone:
-   * with `rebind` false that is the whole answer.
+   * single strong-key match that `holds` accepts (when given: it still holds what the helper expects), else why not.
+   * `replaced` says the walked element is gone: with `rebind` false that is the whole answer.
    */
-  resolve(id: string, expect: string | null, rebind = true): { el: Element; rebound: boolean } | { missing: string; replaced: boolean } {
+  resolve(id: string, holds: ((el: Element, e: Entry) => boolean) | null, rebind = true): { el: Element; rebound: boolean } | { missing: string; replaced: boolean } {
     const e = this.entries.get(id);
     if (e === undefined) return { missing: `no element ${id} in this frame's walks`, replaced: false };
     const el = e.ref.deref();
@@ -100,7 +104,7 @@ export class Registry {
       const ident = authorIdentifier({ name: f.el.getAttribute("name"), id: f.el.getAttribute("id"), automationId: f.el.getAttribute("data-automation-id") });
       if (strongKey(location.origin, formIdentity(f.el), ident, f.kind) !== e.strongKey) continue;
       if (exclusionOf(f.el, f.name) !== null) continue;
-      if (expect !== null && (valueOf(f.el) ?? String(checkedOf(f.el))) !== expect) continue;
+      if (holds !== null && !holds(f.el, e)) continue;
       matches.push(f);
     }
     if (matches.length !== 1 || matches[0] === undefined) return { missing: `the element was replaced and ${matches.length} controls carry its strong key with the expected value`, replaced: true };

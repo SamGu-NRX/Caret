@@ -69,7 +69,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "First name*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       300,
@@ -89,7 +90,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Last name*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       647,
@@ -109,7 +111,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email address*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       300,
@@ -129,7 +132,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Job title*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       300,
@@ -149,7 +153,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Company or organization*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       647,

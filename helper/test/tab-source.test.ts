@@ -3,6 +3,7 @@
 // tab holding the message and a form tab, with the worker's own rules played by the fake engine. The worker's half
 // is tested in extension/test/tab-text.test.ts and in a real browser in fixtures/web-form/tests/tab-text.test.ts.
 // Every name and value is invented.
+import { onWire, readings, textRev, type TestField } from "./page-wire.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { Helper } from "../src/helper.ts";
 import { ScreenModel } from "../src/model.ts";
 import { Store } from "../src/store.ts";
-import { LEFT_TAB_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type HelperMessage, type HelperToEngine, type OfferPopup, type PageControl, type PageResult, type PageSnapshot, type PageTabText, type PageVerb } from "../src/protocol.ts";
+import { LEFT_TAB_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type HelperMessage, type HelperToEngine, type OfferPopup, type PageResult, type PageSnapshot, type PageTabText, type PageVerb } from "../src/protocol.ts";
 import { field, jevPickingText, snap, text } from "./builders.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { sealRequest } from "../src/fill/jev.ts";
@@ -38,14 +39,14 @@ const MESSAGE: PageTabText = {
   docsText: null,
 };
 
-const ctl = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({
+const ctl = (id: string, kind: TestField["kind"], name: string, extra: Partial<TestField> = {}): TestField => ({
   id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, 0, 200, 20], value: "", ...extra,
 });
 
-function tabSnap(tabId: number, title: string, origin: string, controls: PageControl[], focused: PageSnapshot["focused"], active: boolean): PageSnapshot {
+function tabSnap(tabId: number, title: string, origin: string, controls: TestField[], focused: PageSnapshot["focused"], active: boolean): PageSnapshot {
   return {
     type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w", at: Date.now(), tabId, browserWindowId: 1, active, inFocusedWindow: active, title,
-    frames: [{ frameId: 0, parentFrameId: -1, documentId: `D${tabId}`, origin, path: "/", navGen: 1, title, headings: [], iframes: [], excluded: {}, truncated: false, controls }],
+    frames: [{ frameId: 0, parentFrameId: -1, documentId: `D${tabId}`, origin, path: "/", navGen: 1, title, headings: [], iframes: [], excluded: {}, truncated: false, controls: controls.map((c) => onWire(c)) }],
     missing: [],
     focused,
   };
@@ -288,9 +289,10 @@ describe("one fill from the tab the user just left (rules 1 to 7, through the he
       }
       if (v.kind !== "pageWrite") return this.reply(m.id, { outcome: "handoff", detail: "yours", risk: "pageScript" });
       const x = this.form.find((c) => c.id === v.id);
-      if (x === undefined || (x.value ?? "") !== v.expect) return this.reply(m.id, { outcome: "stale", detail: "changed" });
+      if (x === undefined || textRev(x.value ?? "") !== v.expectRev) return this.reply(m.id, { outcome: "stale", detail: "changed" });
+      const before = x.value ?? "";
       x.value = v.value;
-      return this.reply(m.id, { outcome: "ok", detail: null, readings: { before: v.expect, afterInput: v.value, afterBlur: v.value, invalid: false, error: null } });
+      return this.reply(m.id, { outcome: "ok", detail: null, readings: readings(before, v.value, v.value, textRev(v.value)) });
     }
     get reads(): number[] {
       return this.sent.flatMap((m) => (m.type === "pageReadText" ? [m.tabId] : []));

@@ -1,6 +1,7 @@
 // V6: the alternate-field veto (fill/alternate.ts) on every write path: across a page plan's parts, in goal lowering,
 // against a primary that changes after the proposal, and against primaries Caret can read but not write. Every name
 // and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
@@ -12,7 +13,7 @@ import { planPage } from "../src/goals/page-planner.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import type { DraftPlan } from "../src/codemode/types.ts";
 import type { AskJev } from "../src/fill/jev.ts";
-import type { Node, PageControl } from "../src/protocol.ts";
+import type { Node } from "../src/protocol.ts";
 import { field, jevPickingText, node, snap, text, value, optionIs } from "./builders.ts";
 import { alternateReason } from "../src/fill/alternate.ts";
 import { c } from "./fake-page.ts";
@@ -44,7 +45,7 @@ const alternate = (): Node => field("alternate", "", { label: "Alternate email",
 describe("B1: a page plan's parts see each other's proposals before the verifier", () => {
   it("withholds an Alternate email in the second part that repeats the Email proposed in the first", async () => {
     // 21 empty fields, so the page planner asks in two parts (MAX_FIELDS is 20): Email first, Alternate email last.
-    const controls = (): PageControl[] => [
+    const controls = (): TestField[] => [
       c("e0", "email", "Email", { value: "" }),
       ...Array.from({ length: 19 }, (_, i) => c(`e${i + 1}`, "text", `Field ${i + 1}`, { value: "" })),
       c("e20", "email", "Alternate email", { value: "" }),
@@ -138,7 +139,7 @@ describe("B3: a primary that changes after the proposal", () => {
   });
 
   it("does not write a page's Alternate email when the Email changes to the same value mid-run", async () => {
-    const controls = (): PageControl[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "first@example.test" }), c("e3", "email", "Alternate email", { value: "" })];
+    const controls = (): TestField[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "first@example.test" }), c("e3", "email", "Alternate email", { value: "" })];
     const r = await rig({ controls, note: `Full name: Robin Vale\nEmail: ${EMAIL}`, picks: { "Full name": "Robin Vale", "Alternate email": EMAIL } });
     const preview = await r.ask("fill out this form from my note");
     expect(preview.event === "segment" && preview.steps.map((s) => s.says)).toContain(`Alternate email: ${EMAIL}`);
@@ -184,7 +185,7 @@ describe("R1: a primary's raw label never becomes display text", () => {
   });
 
   it("keeps the canary out of a page plan's warnings and requests", async () => {
-    const controls = (): PageControl[] => [c("e1", "email", `Email API key: ${CANARY}`, { value: EMAIL }), c("e2", "email", "Alternate email", { value: "" })];
+    const controls = (): TestField[] => [c("e1", "email", `Email API key: ${CANARY}`, { value: EMAIL }), c("e2", "email", "Alternate email", { value: "" })];
     const r = await rig({ controls, note: `Email: ${EMAIL}`, picks: { "Alternate email": EMAIL } });
     const ask: AskJev = jevPickingText((_, ins) => (/Label: 'Alternate email'/u.test(ins) ? EMAIL : null), 0.95);
     const sent: JevRequest[] = [];

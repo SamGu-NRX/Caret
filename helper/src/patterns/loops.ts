@@ -8,6 +8,7 @@
 // too. When several source windows explain both rounds (two lists that start alike), the first is the
 // loop and the others' next values are offered beside its own; taking one of those switches the loop
 // to that window. All state is in memory: a loop belongs to one sitting.
+import { holdsText } from "../model.ts";
 import { normalizeValue } from "../normalize.ts";
 import type { ScreenModel } from "../model.ts";
 import type { ValueKind } from "../protocol.ts";
@@ -402,7 +403,7 @@ export class LoopRecognizer {
     for (let i = 0; i < loop.columns.length; i++) {
       const col = loop.columns[i]!;
       const dst = locate(this.model, loop.dstWindowId, col.dstTemplate, dstPos[i]! + 1, "whole");
-      if (dst === null || dst.node.editable !== true || (dst.node.value ?? "") !== "") return null;
+      if (dst === null || dst.node.editable !== true || holdsText(dst.node)) return null;
       const src = locate(this.model, loop.srcWindowId, col.srcTemplate, srcPos[i]! + col.srcStride, col.part);
       if (src === null || src.text === null || valueClass(src.text) !== col.valueClass) return null;
       cells.push({

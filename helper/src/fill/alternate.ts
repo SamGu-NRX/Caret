@@ -138,6 +138,8 @@ export interface ReadableField {
   shown: string | null;
   /** What it holds now; "" when empty or showing a dropdown's prompt. */
   value: string;
+  /** A web page's field that holds text the page never sends (Node.unread): `value` says nothing about it. */
+  unread?: true;
 }
 
 const TEXT_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]);
@@ -156,7 +158,7 @@ export function readableFields(w: WindowState): ReadableField[] {
   };
   const named = (n: Node, value: string): void => {
     const seen = view.nodes.get(n.key);
-    out.push({ key: n.key, name: nameIn(w, n) ?? "unnamed field", shown: seen === undefined ? null : sayable(nameIn(view, seen)), value });
+    out.push({ key: n.key, name: nameIn(w, n) ?? "unnamed field", shown: seen === undefined ? null : sayable(nameIn(view, seen)), value, ...(n.unread === true ? { unread: true as const } : {}) });
   };
   for (const n of w.nodes.values()) {
     if (n.states?.includes("secure") === true) continue;
@@ -218,6 +220,9 @@ export interface AlternateForm {
   saved: readonly SavedValue[];
 }
 
+/** The start of the veto's reason when the form's primary field is a web field Caret cannot read. */
+export const UNREAD_PRIMARY = "Caret cannot read your";
+
 const KIND_SAYS: Record<AlternateKind, string> = { email: "email address", phone: "phone number", address: "address" };
 const MAIN_SAYS: Record<AlternateKind, string> = { email: "email", phone: "phone number", address: "address" };
 
@@ -233,6 +238,10 @@ export function alternateVeto(write: AlternateWrite, form: AlternateForm, kinds:
     const writes = form.writes.filter((x) => x.key !== write.key && primaryKinds(x.name).includes(kind));
     // A form with no primary field of the kind is exempt: the only email field may be labelled alternate.
     if (fields.length === 0 && writes.length === 0) continue;
+    // A web page's primary field whose text the page never sends (counsel 2026-10-09): Caret cannot tell whether the
+    // value repeats it, so it does not write it. Fails closed, and says so.
+    const unread = fields.find((f) => f.unread === true);
+    if (unread !== undefined) return { says: `${UNREAD_PRIMARY} ${unread.shown ?? `main ${MAIN_SAYS[kind]}`} on this page, so it cannot check this would not repeat it`, repeats: { field: unread.key } };
     const field = [...fields.map((f) => ({ key: f.key, shown: f.shown, value: f.value })), ...writes.map((x) => ({ key: x.key, shown: sayable(x.name), value: x.text }))].find((p) => p.value.trim() !== "" && sameValue(kind, p.value, write.text));
     // Named only by what the redacted view shows; otherwise by its kind, so raw comparison data never becomes text.
     if (field !== undefined) return { says: field.shown === null ? `it would repeat the form's main ${MAIN_SAYS[kind]}` : `it would repeat your ${field.shown}`, repeats: { field: field.key } };

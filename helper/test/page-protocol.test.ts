@@ -96,7 +96,7 @@ describe("page verbs", () => {
     const both = PageResult.parse(lines[27]);
     expect(both.outcome).toBe("failed");
     expect(both.choice?.matches).toEqual(["United States", "United States Minor Outlying Islands"]);
-    expect(both.readings?.afterBlur).toBe(both.readings?.before);
+    expect(both.readings?.sameAsBefore).toBe(true);
   });
 
   it("says Not on this site with a whole list of origins, and answers siteOff (W2)", () => {

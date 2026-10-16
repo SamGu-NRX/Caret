@@ -29,6 +29,7 @@ import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import { dependsOn } from "./dependents.ts";
+import { equivalentValue } from "../values/equivalent.ts";
 
 export interface ExecutorDeps {
   model: ScreenModel;
@@ -1109,6 +1110,9 @@ export class Executor {
       task.handedOff = { action: "sensitive", what: "a password field", windowId: w.window.windowId };
       throw StepStop.handoff(`'${step.says}' targets a password field; that is left to you`);
     }
+    // A page field that holds text the page does not send (Node.unread) is never written over: Caret cannot say what
+    // it would replace, nor undo it to that.
+    if (attribute === "value" && node.unread === true) throw StepStop.stop("changed", `'${step.says}' targets a field that already holds text Caret does not read, so Caret did not write over it`);
     const before = node.value ?? "";
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;
     this.checkInterrupt(task);
@@ -1289,6 +1293,10 @@ export class Executor {
       };
       if (now === undefined) {
         kept({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true });
+      } else if (readOf(now) === null) {
+        // A page field that now holds text the page does not send: changed by someone besides Caret's write, which the
+        // page answered for (engines/page-link.ts), so it may hold another's text and Undo leaves it.
+        kept({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, mayIncludeInput: true });
       } else if ((now.value ?? "") !== before) {
         const held = now.value ?? "";
         const ours = sameValue(node, held, value);
@@ -1300,8 +1308,8 @@ export class Executor {
         const partial = !typed && !recorded && !ours && heard && partialReplacement(before, value, held);
         kept({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, ...(partial ? { unconfirmed: true, partialWrite: held } : ours ? {} : { mayIncludeInput: true }) });
       }
-      if (now === undefined || (now.value ?? "") !== value || !recorded) {
-        const detail = `mismatch: expected ${prediction}; ${now === undefined ? `the field is gone; before the write it held ${JSON.stringify(before)}` : fieldContents(before, now.value ?? "")}`;
+      if (now === undefined || readOf(now) !== value || !recorded) {
+        const detail = `mismatch: expected ${prediction}; ${now === undefined ? `the field is gone; before the write it held ${JSON.stringify(before)}` : fieldContents(before, readOf(now))}`;
         if (task.interrupt !== null) throw new Interrupted(detail);
         throw StepStop.stop("mismatch", detail);
       }
@@ -1376,8 +1384,10 @@ export class Executor {
     const seen = [...e.seen, ...(await this.walk(this.window(w.window.windowId)))];
     this.checkInterrupt(task);
     const now = this.window(w.window.windowId).nodes.get(node.key);
-    if (now === undefined || (now.value ?? "") !== before) {
-      throw StepStop.stop("reader", `${e.message}; Caret read '${clip(label)}' back as '${clip(now?.value ?? "(gone)")}', not '${clip(before)}' as before, so it stopped`);
+    const held = now === undefined ? undefined : readOf(now);
+    if (held !== before) {
+      const read = held === undefined ? "as '(gone)'" : held === null ? "holding other text, which the page does not send" : `as '${clip(held)}'`;
+      throw StepStop.stop("reader", `${e.message}; Caret read '${clip(label)}' back ${read}, not '${clip(before)}' as before, so it stopped`);
     }
     // The control itself may have shown the filter and gone back; any other field that changed means more is at work.
     this.checkUnexpected(seen, node.key);
@@ -1785,7 +1795,7 @@ export class Executor {
   /** The reader answered a value write with ok, yet the field still holds what it held before and the model recorded no change to it. */
   private dropped(windowId: string, key: string, before: string, seen: readonly Change[]): boolean {
     const now = this.deps.model.windows.get(windowId)?.nodes.get(key);
-    return now !== undefined && (now.value ?? "") === before && !seen.some((c) => c.kind === "value" && c.key === key);
+    return now !== undefined && readOf(now) === before && !seen.some((c) => c.kind === "value" && c.key === key);
   }
 
   /** A field the step did not target changed while it acted: something other than the plan is at work. */
@@ -1949,7 +1959,7 @@ export class Executor {
         if ("missing" in local) return false;
         const node = "node" in local ? local.node : await this.resolve(task, i, w, end.target, task.plan.steps[i]?.says ?? "");
         if (end.kind === "focused") return w.focusedKey === node.key;
-        const text = node.editable === true ? (node.value ?? "") : nodeText(node);
+        const text = node.editable === true ? readOf(node) : nodeText(node);
         return text === end.value;
       }
     }
@@ -1993,8 +2003,21 @@ export class Executor {
     }
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (field === undefined) return { state: "unknown", detail: `The field may have been written; the field is gone; before the write it held ${JSON.stringify(e.before)}` };
-    const held = field.value ?? "";
-    if (held === e.before) return { state: "untouched", detail: null };
+    const read = readOf(field);
+    if (read === e.before) return { state: "untouched", detail: null };
+    if (read === null) {
+      // A page field whose text changed since the walk before the write, which the page does not send: Caret cannot
+      // tell its own write from anyone else's. The page itself checks, at Undo, that the field holds exactly what Caret
+      // wrote and nothing changed since (engines/page-link.ts pageRestore).
+      const input = watch === null ? null : (watch.seen ?? (field.inputAt !== undefined && field.inputAt >= watch.since ? "you typed in it" : null));
+      if (input !== null) {
+        e.mayIncludeInput = true;
+        this.journalSave(task, null);
+        return { state: "unknown", detail: `${fieldContents(e.before, null)}; ${input} after Caret sent its write, so Caret cannot tell its write from your input and left it as it is` };
+      }
+      return { state: "unknown", detail: `The field may have been written: ${fieldContents(e.before, null)}. Undo puts it back only while the page finds it holding exactly what Caret wrote` };
+    }
+    const held = read;
     // Before any reading of the value as Caret's, a whole one or a prefix (issue #26).
     const input = watch === null ? null : (watch.seen ?? (field.inputAt !== undefined && field.inputAt >= watch.since ? "you typed in it" : null));
     if (input !== null) {
@@ -2038,27 +2061,33 @@ export class Executor {
     // that is gone says nothing either way (a Yes/No press whose page then left, B28 review), so it is not counted.
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (e.unconfirmed === true && field === undefined) return final(`the field is gone; before the write it held ${JSON.stringify(e.before)}`);
-    if (e.unconfirmed === true && field !== undefined && (field.value ?? "") === e.before) return UNTOUCHED;
+    if (e.unconfirmed === true && field !== undefined && readOf(field) === e.before) return UNTOUCHED;
     // The reader rechecks this exact held value and the recorded element right before restoring it.
-    const contents = field === undefined ? "the field is gone" : fieldContents(e.before, field.value ?? "");
+    const contents = field === undefined ? "the field is gone" : fieldContents(e.before, readOf(field));
     if (e.mayIncludeInput === true) return final(`the field changed while Caret wrote it and may hold your typing, so Caret left it as it is; ${contents}`);
     // A page field's own record of the user's input since the write was sent, which a recovery read that failed could
     // not see (PR #33 review). The page keeps that record for 30 s after Caret's grant ends.
     if (field?.inputAt !== undefined && e.sentAt !== undefined && field.inputAt >= e.sentAt) return final(`you typed in the field after Caret sent its write, so it may hold your typing and Caret left it as it is; ${contents}`);
-    const shown = field?.value ?? "";
+    const shown = field === undefined ? "" : readOf(field);
     // A prefix is put back only while the field holds exactly the one Caret read before the window was the user's
     // again (readUnconfirmed). A prefix first read here may be the user's typing (PR #21 review). A legacy `true`
     // records no reading, so it restores nothing.
     const partial = e.unconfirmed === true && field !== undefined && typeof e.partialWrite === "string" && shown === e.partialWrite;
+    // A page field whose text the page does not send (a write whose answer was lost, say): the identity check is the
+    // page's own, in the same step as the restore (pageRestore: the element Caret wrote, its rev unchanged since Caret's
+    // write, no input of the user's, and text equivalent to what Caret wrote). A partial write is never delegated.
+    // Only a write whose answer was lost: for a verified one the helper knew Caret's value at the rev the write left, so a
+    // field it cannot read now changed since, which the check below refuses as before.
+    const delegated = e.unconfirmed === true && field !== undefined && shown === null && e.windowId.startsWith("page:") && e.partialWrite === undefined;
     // An unconfirmed write is recognized only exactly (S1); numeric equivalence applies to a verified one.
-    if (field !== undefined && !partial && !(e.unconfirmed === true ? shown === e.after : sameValue(field, shown, e.after))) {
+    if (field !== undefined && !partial && !delegated && !(shown !== null && (e.unconfirmed === true ? shown === e.after : sameValue(field, shown, e.after)))) {
       if (e.unconfirmed !== true) return final("the field changed after Caret wrote it, so Caret left it as it is");
-      return final(partialReplacement(e.before, e.after, shown)
+      return final(shown !== null && partialReplacement(e.before, e.after, shown)
         ? `the field holds part of what Caret was writing, which may be your typing, so Caret left it as it is; ${contents}`
         : `the field does not hold what Caret was writing, so Caret left it as it is; ${contents}`);
     }
     // A field the walk lost (B15's WebKit window) is left to the reader's own check against what Caret wrote.
-    const held = field === undefined ? e.after : (field.value ?? "");
+    const held = field === undefined || delegated || shown === null ? e.after : shown;
     const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: held, value: e.before, taskId: task.id, sameAs: e.mark };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
@@ -2098,7 +2127,7 @@ export class Executor {
           return final(`${undoRefused(e, r)}; cannot read the field now; before the write it held ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}`);
         }
         const current = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
-        return final(`${undoRefused(e, r)}; ${current === undefined ? `the field is gone; before the write it held ${JSON.stringify(e.before)}` : fieldContents(e.before, current.value ?? "")}`);
+        return final(`${undoRefused(e, r)}; ${current === undefined ? `the field is gone; before the write it held ${JSON.stringify(e.before)}` : fieldContents(e.before, readOf(current))}`);
       }
       // The reader not answering, or refusing for want of a grant, may pass; a field changed or replaced will not.
       const passing = r.outcome === "axError" || r.outcome === "notAllowed" || r.outcome === "noWindow";
@@ -2106,7 +2135,8 @@ export class Executor {
     }
     const now = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (now === undefined) return final("after the restore the field is gone");
-    if ((now.value ?? "") !== e.before) return final(`after the restore the field holds '${clip(now.value ?? "")}'`);
+    const restored = readOf(now);
+    if (restored !== e.before) return final(restored === null ? "after the restore the field holds other text, which the page does not send" : `after the restore the field holds '${clip(restored)}'`);
     return null;
   }
 
@@ -2270,39 +2300,12 @@ function contains(f: [number, number, number, number], p: [number, number]): boo
 const UNTOUCHED = Symbol("untouched");
 
 /**
- * Whether field `n`, read as `held`, holds the value Caret wrote (B29: anything else may be the user's typing). Exactly,
- * except in a page's number field (PAGE_SUBROLE.number), where both are compared as plain decimal numbers, since a page
- * may show "1" as "1.00". Never in a text field, and never across grouping separators, signs of locale or units.
- * The comparison is exact on the digits (canonicalDecimal), not through Number(): review 1 found 9007199254740992 equal
- * to 9007199254740993, 1e309 to 2e309 and 1e-999 to 0 that way, so undo restored over the user's number.
+ * Whether field `n`, read as `held`, holds the value Caret wrote (B29: anything else may be the user's typing): the
+ * shared rule (values/equivalent.ts), numeric only in a page's number field (PAGE_SUBROLE.number). A page field's own
+ * comparison runs in the page with the same module; this one judges what the helper itself read.
  */
 export function sameValue(n: Node, held: string, wrote: string): boolean {
-  if (held === wrote) return true;
-  if (n.subrole !== PAGE_SUBROLE.number) return false;
-  const a = canonicalDecimal(held);
-  return a !== null && a === canonicalDecimal(wrote);
-}
-
-/** A decimal number as an input of type number holds one: optional sign, digits with at most one point, optional exponent. */
-const PLAIN_NUMBER = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d{1,6}))?$/;
-
-/**
- * One spelling per number: "-123e-2" for -1.23, "0" for any zero. Digits keep every place, so two spellings match only
- * when they are the same number exactly. Null for anything PLAIN_NUMBER does not take, or one with no digit.
- */
-export function canonicalDecimal(s: string): string | null {
-  const m = PLAIN_NUMBER.exec(s);
-  if (m === null) return null;
-  const whole = m[2] ?? "";
-  const frac = m[3] ?? "";
-  if (whole === "" && frac === "") return null;
-  let digits = (whole + frac).replace(/^0+/, "");
-  if (digits === "") return "0";
-  let exp = Number(m[4] ?? "0") - frac.length;
-  const trailing = /0+$/.exec(digits)?.[0].length ?? 0;
-  digits = digits.slice(0, digits.length - trailing);
-  exp += trailing;
-  return `${m[1] === "-" ? "-" : ""}${digits}e${exp}`;
+  return equivalentValue(n.subrole === PAGE_SUBROLE.number, held, wrote);
 }
 
 /**
@@ -2318,9 +2321,18 @@ function partialReplacement(before: string, intended: string, held: string): boo
   return held !== before && held.length > 0 && held.length < intended.length && intended.startsWith(held);
 }
 
-/** JSON quoting preserves the full values and makes empty text, newlines and quotes distinguishable. */
-function fieldContents(before: string, held: string): string {
-  return `the field now holds ${JSON.stringify(held)}; before the write it held ${JSON.stringify(before)}`;
+/**
+ * JSON quoting preserves the full values and makes empty text, newlines and quotes distinguishable. `held` is null for
+ * a page field whose text the page does not send (Node.unread), which is never quoted: Caret does not have it. `before`
+ * is always Caret's own knowledge (a page field is written only while empty or holding Caret's own value).
+ */
+function fieldContents(before: string, held: string | null): string {
+  return held === null ? `the field now holds other text, which the page does not send; before the write it held ${JSON.stringify(before)}` : `the field now holds ${JSON.stringify(held)}; before the write it held ${JSON.stringify(before)}`;
+}
+
+/** What a field holds as the helper can read it: its value, or null for a page field whose text the page does not send (Node.unread). */
+function readOf(n: Node): string | null {
+  return n.unread === true ? null : (n.value ?? "");
 }
 
 /** Why the reader refused a restore, in words for the activity row. */

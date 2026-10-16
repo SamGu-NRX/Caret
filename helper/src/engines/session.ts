@@ -5,8 +5,8 @@
 // every grant when its port closes, so a new session starts with none.
 import { randomUUID } from "node:crypto";
 import { canonicalOrigin, deniedOrigin } from "../privacy/denied-origins.ts";
-import { excludedValueUncached } from "../privacy/exclude.ts";
-import { secretTextUncached } from "../memory/sensitive.ts";
+import { noteFocusedText } from "../privacy/focus-tripwire.ts";
+import { focusText } from "./focus-text.ts";
 import { PROTOCOL_VERSION, type AppRef, type EngineMessage, type HelperToEngine, type PageFocusMoved, type PageHello, type PageInput, type PagePong, type PageResult, type PageSnapshot, type PageVerb, type ScopedActGrant } from "../protocol.ts";
 
 export interface EngineInfo {
@@ -157,7 +157,8 @@ export class EngineSession {
           p.resolve({ result: { type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: Date.now(), outcome: "siteOff", detail: "Caret never reads this site" }, snapshot: null });
           return `a snapshot of tab ${m.tabId}, on a site Caret never reads; dropped`;
         }
-        p.snapshot = screened;
+        // The focused field's text is branded: for inline writing on this Mac only, never serialized (focus-text.ts).
+        p.snapshot = brandedFocus(screened);
         // P4 item 7: the text around the caret goes to the one waiting for this walk only; the tab's kept snapshot holds
         // none of it, so the field's text is not kept past the walk that read it (P4 review).
         const kept = withoutFieldText(screened);
@@ -172,7 +173,7 @@ export class EngineSession {
         clearTimeout(p.timer);
         // The deny list again: the text of a tab with a frame on it is never handed on.
         const denied = m.text !== undefined && m.text.frames.some((f) => deniedOrigin(f.origin));
-        p.resolve({ result: denied ? { type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: m.at, outcome: "siteOff", detail: "Caret never reads this site" } : screenReadings(m), snapshot: p.snapshot });
+        p.resolve({ result: denied ? { type: "pageResult", v: PROTOCOL_VERSION, id: m.id, at: m.at, outcome: "siteOff", detail: "Caret never reads this site" } : m, snapshot: p.snapshot });
         return null;
       }
       case "pageFocus": {
@@ -210,24 +211,6 @@ export class EngineSession {
 }
 
 /**
- * An act result with its readings screened before anyone reads them. A second layer only: the extension sends no
- * readings for a control it can't show is non-secret with known history (content/actions.ts receiptFor), and these
- * format and word checks pass "swordfish" or "123456", so they prove nothing on their own. The page's error and
- * description text after a write is never kept: nothing reads it, and it is page text no exclusion screened. The
- * field's values before and after are kept only when none holds a value Caret never carries or a secret marker
- * (privacy/exclude.ts, memory/sensitive.ts); otherwise every reading goes, and a failed write reads as unverified
- * ("may have landed", page-link.ts toVerbOutcome) and an ok write's value as the one Caret wrote.
- */
-export function screenReadings(r: PageResult): PageResult {
-  if (r.readings === undefined) return r;
-  const { readings, ...rest } = r;
-  const values = [readings.before, readings.afterInput, readings.afterBlur];
-  // Uncached: a receipt's values must not stay behind as the recognizers' cache keys.
-  if (values.some((v) => excludedValueUncached(v) !== null || secretTextUncached(v))) return rest;
-  return { ...rest, readings: { ...readings, error: null } };
-}
-
-/**
  * A snapshot without its frames on the deny list (privacy/denied-origins.ts), or null when its top frame is on it or no
  * frame is left. A dropped frame is listed as missing, and focus in it is no focus.
  */
@@ -242,6 +225,21 @@ export function withoutDeniedFrames(s: PageSnapshot): PageSnapshot | null {
     frames,
     missing: [...s.missing, ...denied.map((f) => ({ frameId: f.frameId, reason: "Caret never reads this site" }))].sort((a, b) => a.frameId - b.frameId),
     focused: s.focused !== null && gone.has(s.focused.frameId) ? null : s.focused,
+  };
+}
+
+/**
+ * A snapshot whose focused text (focused.text, docs.field) is branded local-only (focus-text.ts); with none, the cloud
+ * routes' tripwire forgets the last one.
+ */
+export function brandedFocus(s: PageSnapshot): PageSnapshot {
+  const text = s.focused?.text ?? null;
+  const field = s.docs?.field ?? null;
+  if (text === null && field === null) noteFocusedText([]);
+  return {
+    ...s,
+    focused: s.focused === null ? null : { ...s.focused, ...(text === null ? {} : { text: focusText(text) }) },
+    ...(s.docs === undefined ? {} : { docs: { ...s.docs, field: field === null ? null : focusText(field) } }),
   };
 }
 

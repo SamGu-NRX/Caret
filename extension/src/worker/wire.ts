@@ -9,17 +9,33 @@ const nonEmpty = (x: unknown): x is string => typeof x === "string" && x.length 
 const SITE = /^https?:\/\/[^/\s]+$/;
 const KINDS = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea", "select", "checkbox", "radio", "combobox", "button", "link", "file", "contenteditable", "range", "color"]);
 
+/** pageCompare's and pageSourceGrant's caps per verb (protocol.ts PageVerb); the content script bounds compares further. */
+const MAX_CANDIDATES = 8;
+const MAX_SOURCE_IDS = 50;
+
 export function parseVerb(x: unknown): PageVerb | null {
   if (typeof x !== "object" || x === null) return null;
   const v = x as Record<string, unknown>;
   if (v.kind === "pageWalk") return v.tabId === null || int(v.tabId) ? { kind: "pageWalk", tabId: v.tabId as number | null } : null;
+  if (v.kind === "pageSourceGrant") {
+    return int(v.tabId) && int(v.frameId) && nonEmpty(v.documentId) && nonEmpty(v.taskId) && Array.isArray(v.ids) && v.ids.length > 0 && v.ids.length <= MAX_SOURCE_IDS && v.ids.every(nonEmpty) ? (v as unknown as ActVerb) : null;
+  }
   if (!int(v.tabId) || !int(v.frameId) || !nonEmpty(v.documentId) || !nonEmpty(v.id) || !str(v.control) || !KINDS.has(v.control) || !str(v.name) || !nonEmpty(v.taskId)) return null;
   switch (v.kind) {
     case "pageWrite":
+      // A text control's text never comes back from the helper either: only the rev the walk read.
+      return int(v.expectRev) && str(v.value) && v.expect === undefined ? (v as unknown as ActVerb) : null;
     case "pageSelect":
       return str(v.expect) && str(v.value) ? (v as unknown as ActVerb) : null;
     case "pageChooseOption":
-      return str(v.expect) && str(v.value) && (v.question === undefined || str(v.question)) ? (v as unknown as ActVerb) : null;
+      // A combobox names the rev the walk read; a Yes/No option (a button) names the answer pressed before.
+      if (!str(v.value) || (v.question !== undefined && !str(v.question))) return null;
+      if (v.control === "combobox") return int(v.expectRev) && v.expect === undefined ? (v as unknown as ActVerb) : null;
+      return str(v.expect) && v.expectRev === undefined ? (v as unknown as ActVerb) : null;
+    case "pageRestore":
+      return str(v.wrote) && (v.exact === undefined || v.exact === true) ? (v as unknown as ActVerb) : null;
+    case "pageCompare":
+      return Array.isArray(v.candidates) && v.candidates.length > 0 && v.candidates.length <= MAX_CANDIDATES && v.candidates.every(str) ? (v as unknown as ActVerb) : null;
     case "pagePress":
       return v as unknown as ActVerb;
     case "pageInsertText":

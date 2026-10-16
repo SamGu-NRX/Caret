@@ -1,6 +1,7 @@
 // PV2 review of fc6c853: one test per finding, each the reviewer's counterexample. Under the standing rule these broke
 // provenance (1), a shape (2), a budget (3), a structural exclusion (4, 7) or Sites (5, 6); the last is the should-fix
 // for a short secret quoted out of a line redaction removed.
+import { onWire } from "./page-wire.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ import { field, node, snap, text } from "./builders.ts";
 const X = "kcmlnoabcdefghijklmnopabcdefghij";
 const CHROME = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const session = (): EngineSession => new EngineSession({ engine: "eng1", browser: CHROME, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, () => true);
-const control = (id: string, name: string, value: string): PageControl => ({ id, key: `form[a]/text:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "text", name, form: "form#a", rect: [0, 0, 100, 20], value });
+const control = (id: string, name: string, value: string): PageControl => onWire({ id, key: `form[a]/text:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "text", name, form: "form#a", rect: [0, 0, 100, 20], value });
 const page = (frames: { origin: string; controls: PageControl[] }[], title = "Vault: Lumen staging"): PageSnapshot => ({
   type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title,
   frames: frames.map((f, i) => ({ frameId: i, parentFrameId: i === 0 ? -1 : 0, documentId: `D${i}`, origin: f.origin, path: "/", navGen: 1, title, headings: [], iframes: [], excluded: {}, truncated: false, controls: f.controls })),

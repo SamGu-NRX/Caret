@@ -1,4 +1,5 @@
 import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { holdsText } from "../model.ts";
 import { instructionForModel, instructionView, redactWindow } from "../fill/redact.ts";
 // Ask as a scoped fill (B25 lead decision 1). An instruction becomes a small intent, and every part of it is a
 // choice from what code listed or an exact span of the instruction:
@@ -309,7 +310,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
       continue;
     }
     if (d.section !== null && !sections.some((s) => s.name === d.section)) sections.push({ ref: `s${sections.length + 1}`, name: d.section });
-    const filled = x.control === "text" && (x.node.value ?? "") !== "";
+    const filled = x.control === "text" && holdsText(x.node);
     const h = headingOf(x.node.key);
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
     fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, modelName: x.modelName, section: d.section, heading, control: x.control, place: placeOf(x.node.key), filled, neverTyped: x.neverTyped });

@@ -6,11 +6,12 @@
   "outcome": "ok",
   "detail": null,
   "readings": {
-    "before": "",
-    "afterInput": "Ada",
-    "afterBlur": "Ada",
-    "invalid": false,
-    "error": null
+    "sameAsBefore": false,
+    "landed": true,
+    "equivalent": true,
+    "empty": false,
+    "typedBetween": false,
+    "rev": null
   },
   "choice": {
     "flavor": "aria",

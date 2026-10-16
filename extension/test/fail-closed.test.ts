@@ -92,7 +92,7 @@ describe("a text input that may replace a removed password (#3)", () => {
 
 describe("an act's receipt for a withheld control", () => {
   it("carries no readings, and keeps them for a control Caret may read", () => {
-    const a = { outcome: "failed" as const, detail: "x", readings: { before: "", afterInput: "swordfish", afterBlur: "swordfish", invalid: false, error: null } };
+    const a = { outcome: "failed" as const, detail: "x", readings: { sameAsBefore: false, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 4 } };
     expect(receiptFor(a, true)).toEqual({ outcome: "failed", detail: "x" });
     expect(receiptFor(a, false)).toEqual(a);
   });

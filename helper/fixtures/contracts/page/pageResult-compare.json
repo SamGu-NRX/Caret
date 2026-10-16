@@ -1,0 +1,16 @@
+{
+  "type": "pageResult",
+  "v": 1,
+  "id": "fixture-compare",
+  "at": 20,
+  "outcome": "ok",
+  "detail": null,
+  "compare": [
+    "equal",
+    "unknown"
+  ],
+  "source": {
+    "field-1": "Ada",
+    "field-4": null
+  }
+}

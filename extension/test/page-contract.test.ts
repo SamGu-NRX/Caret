@@ -15,7 +15,7 @@ const target = { tabId: 1, frameId: 0, documentId: "D1", id: "field-1", control:
 const walkReport = {
   origin: ORIGIN, path: "/apply", title: "Apply", headings: ["Synthetic form"], iframes: [], viewport: [1280, 900], screen: [0, 0, 1280, 1000],
   excluded: { password: 1 }, truncated: false, focused: { id: "field-1", selection: [0, 3] }, hasFocus: true, walkMs: 1,
-  controls: [{ id: "field-1", key: "k1", strongKey: "[\"form\",\"first\"]", kind: "text", role: "textbox", name: "First name", value: "Ada", form: "apply", rect: [0, 0, 100, 20] }],
+  controls: [{ id: "field-1", key: "k1", strongKey: "[\"form\",\"first\"]", kind: "text", role: "textbox", name: "First name", hasValue: true, rev: 1, form: "apply", rect: [0, 0, 100, 20] }],
 };
 
 const directory = new URL("../../helper/fixtures/contracts/page/", import.meta.url);
@@ -47,8 +47,8 @@ async function drive(): Promise<Record<string, unknown>[]> {
   await helper({ type: "pageCommand", id: "press", expires, verb: { kind: "pagePress", ...target, name: "Submit" } });
   await helper({ type: "pageCommand", id: "late", expires: Date.now() - 1, verb: { kind: "pageWalk", tabId: 1 } });
   await helper({ type: "scopedActGrant", taskId: "t1", at: Date.now(), expires, scope: { kind: "page", engine: "e1", tabId: 1, frameId: 0, origin: ORIGIN, navGen: 2 } });
-  f.answers.set("1:0:act", { outcome: "ok", detail: null, readings: { before: "", afterInput: "Ada", afterBlur: "Ada", invalid: true, error: "Required" } });
-  await helper({ type: "pageCommand", id: "write", expires, verb: { kind: "pageWrite", ...target, expect: "", value: "Ada" } });
+  f.answers.set("1:0:act", { outcome: "ok", detail: null, readings: { sameAsBefore: false, landed: true, equivalent: true, empty: false, typedBetween: false, rev: 2 } });
+  await helper({ type: "pageCommand", id: "write", expires, verb: { kind: "pageWrite", ...target, expectRev: 1, value: "Ada" } });
   await f.fire("runtime.message", { caret: 1, op: "userInput", kind: "key" }, { id: f.chrome.runtime.id, tab: { id: 1 }, frameId: 0 }, () => {});
   f.state.active.set(9, 2);
   await f.fire("tabs.activated", { tabId: 2, windowId: 9 });

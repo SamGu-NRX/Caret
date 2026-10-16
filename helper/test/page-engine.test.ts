@@ -22,12 +22,12 @@ function snapshot(id: string, tabId = 7, navGen = 1): PageSnapshot {
     frames: [
       { frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/form", navGen, title: "Synthetic", headings: [], iframes: [], excluded: {}, truncated: false,
         controls: [
-          { id: "e1", key: "textbox:first name~0", strongKey: null, kind: "text", role: "textbox", name: "First name", value: "", form: null, rect: [0, 0, 100, 20] },
+          { id: "e1", key: "textbox:first name~0", strongKey: null, kind: "text", role: "textbox", name: "First name", hasValue: false, rev: 0, form: null, rect: [0, 0, 100, 20] },
           { id: "e2", key: "combobox:country~0", strongKey: null, kind: "select", role: "combobox", name: "Country", value: "", options: [{ value: "", label: "Choose", selected: true }, { value: "ca", label: "Canada", selected: false }], form: null, rect: [0, 30, 100, 20] },
           { id: "e3", key: "button:submit~0", strongKey: null, kind: "button", role: "button", name: "Submit", form: null, rect: [0, 60, 100, 20] },
         ] },
       { frameId: 4, parentFrameId: 0, documentId: "D4", origin: "http://127.0.0.1:4311", path: "/embed", navGen: 2, title: "", headings: [], iframes: [], excluded: {}, truncated: false,
-        controls: [{ id: "e1", key: "textbox:referral~0", strongKey: null, kind: "text", role: "textbox", name: "Referral", value: "x", form: null, rect: [0, 0, 100, 20] }] },
+        controls: [{ id: "e1", key: "textbox:referral~0", strongKey: null, kind: "text", role: "textbox", name: "Referral", hasValue: true, rev: 1, form: null, rect: [0, 0, 100, 20] }] },
     ],
     missing: [], focused: { frameId: 4, id: "e1", selection: null },
   };
@@ -260,8 +260,8 @@ describe("engine session and page link", () => {
     expect(r("stale")).toBe("changed");
     expect(r("notAllowed")).toBe("notAllowed");
     expect(r("handoff")).toBe("notAllowed");
-    expect(r("failed", { before: "a", afterInput: "b", afterBlur: "a", invalid: false, error: null })).toBe("changed");
-    expect(r("failed", { before: "a", afterInput: "b", afterBlur: "c", invalid: false, error: null })).toBe("axError");
+    expect(r("failed", { sameAsBefore: true, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 2 })).toBe("changed");
+    expect(r("failed", { sameAsBefore: false, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 2 })).toBe("axError");
     expect(r("failed")).toBe("axError");
     expect(r("excluded")).toBe("secure");
   });

@@ -29,9 +29,9 @@ function snapshot(id: string, opts: { focused?: string | null; tabId?: number } 
     frames: [{
       frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/form", navGen: 1, title: "Apply: Synthetic Role", headings: ["Apply: Synthetic Role"], iframes: [], excluded: {}, truncated: false,
       controls: [
-        { id: "e1", key: "form[apply]/textbox:first name~0", strongKey: null, kind: "text", role: "textbox", name: "First name", value: "", form: "form#apply", rect: [0, 0, 200, 20] },
-        { id: "e2", key: "form[apply]/textbox:email~0", strongKey: null, kind: "email", role: "textbox", name: "Email", value: "", form: "form#apply", rect: [0, 30, 200, 20] },
-        { id: "e3", key: "form[react-form]/combobox:country of residence~0", strongKey: null, kind: "combobox", role: "combobox", name: "Country of residence", value: "", form: "form#react-form", rect: [0, 60, 200, 20] },
+        { id: "e1", key: "form[apply]/textbox:first name~0", strongKey: null, kind: "text", role: "textbox", name: "First name", hasValue: false, rev: 0, form: "form#apply", rect: [0, 0, 200, 20] },
+        { id: "e2", key: "form[apply]/textbox:email~0", strongKey: null, kind: "email", role: "textbox", name: "Email", hasValue: false, rev: 0, form: "form#apply", rect: [0, 30, 200, 20] },
+        { id: "e3", key: "form[react-form]/combobox:country of residence~0", strongKey: null, kind: "combobox", role: "combobox", name: "Country of residence", hasValue: false, rev: 0, form: "form#react-form", rect: [0, 60, 200, 20] },
         { id: "e4", key: "form[apply]/button:resume~0", strongKey: null, kind: "file", role: "button", name: "Resume", form: "form#apply", rect: [0, 90, 200, 20] },
       ],
     }],

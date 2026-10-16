@@ -10,16 +10,29 @@ export type PageExclusion = "password" | "hidden" | "payment" | "oneTimeCode" | 
 
 export type Rect = [number, number, number, number];
 
-export interface PageControl {
+/**
+ * Text controls: every input whose type holds typed text (anything but checkbox, radio, file, submit, button, reset,
+ * image, range, color and hidden; walker.ts kindOf maps the rest of them here, so a toggle to number or search cannot
+ * leave the set), a textarea, a combobox's text and a contenteditable region. Their value never leaves the content
+ * script: a walk carries hasValue and rev instead (content/revs.ts), and the type has no `value` to fill in.
+ */
+export const TEXT_CONTROL_KINDS = ["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea", "combobox", "contenteditable"] as const;
+export type TextControlKind = (typeof TEXT_CONTROL_KINDS)[number];
+export type ChoiceControlKind = Exclude<PageControlKind, TextControlKind>;
+
+export function isTextKind(k: PageControlKind): k is TextControlKind {
+  return (TEXT_CONTROL_KINDS as readonly string[]).includes(k);
+}
+
+/** Why a text control's text is withheld from hasValue, rev, the focused text, compares and copies (content/revs.ts). */
+export type Withheld = "secret" | "unknownHistory" | "replacement" | "prefilled" | "programmatic";
+
+interface ControlBase {
   id: string;
   key: string;
   strongKey: string | null;
-  kind: PageControlKind;
   role: string;
   name: string;
-  value?: string;
-  checked?: boolean;
-  options?: { value: string; label: string; selected: boolean }[];
   form: string | null;
   rect: Rect;
   /**
@@ -38,7 +51,7 @@ export interface PageControl {
   group?: { id: string; name: string };
   /** A press-group option's aria-pressed (W4). */
   pressed?: boolean;
-  /** A text input whose inputmode is numeric or decimal (B29): undo compares its value as a number. */
+  /** A text input whose inputmode is numeric or decimal (B29): the page compares its value as a number. */
   numeric?: true;
   /** S1: a text input's or textarea's maxlength, when the page sets one. */
   maxLength?: number;
@@ -65,16 +78,51 @@ export interface PageControl {
   sections?: string[];
 }
 
+/**
+ * A text control as a walk sends it: whether it holds text and its change counter, never its text. `hasValue` and `rev`
+ * are null when its text is withheld and it holds some, and for a secret field always (content/revs.ts presence).
+ */
+export interface TextControl extends ControlBase {
+  kind: TextControlKind;
+  hasValue: boolean | null;
+  rev: number | null;
+  withheld?: Withheld;
+  value?: never;
+  checked?: never;
+  options?: never;
+}
+
+/** A select, checkbox, radio, button, link, file, range or color control: its state is page text, sent as before. */
+export interface ChoiceControl extends ControlBase {
+  kind: ChoiceControlKind;
+  value?: string;
+  checked?: boolean;
+  options?: { value: string; label: string; selected: boolean }[];
+}
+
+export type PageControl = TextControl | ChoiceControl;
+
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";
 export type HandoffRisk = "outbound" | "destructive" | "money" | "system" | "unclassified" | "submitsForm" | "pageScript";
 
+/**
+ * What a write found, computed in the page, so no text of the field travels (protocol.ts PageWriteReadings):
+ * `sameAsBefore`, the field holds exactly what it held before; `landed`, exactly what Caret wrote; `equivalent`, what
+ * Caret wrote under the element's own kind (values/equivalent.ts); `empty`, nothing; `typedBetween`, a trusted event
+ * of the user's reached it while Caret wrote; `rev`, its change counter after the write, null for a choice control (a
+ * select, a Yes/No question), which has none.
+ */
 export interface WriteReadings {
-  before: string;
-  afterInput: string;
-  afterBlur: string;
-  invalid: boolean;
-  error: string | null;
+  sameAsBefore: boolean;
+  landed: boolean;
+  equivalent: boolean;
+  empty: boolean;
+  typedBetween: boolean;
+  rev: number | null;
 }
+
+/** pageRestore's answer (protocol.ts PageRestored). `rev`: the field's change counter after the restore. */
+export type Restored = { outcome: "restored"; rev: number } | { outcome: "refused"; why: "changed" | "mayIncludeInput" | "gone" | "reloaded" | "noRecord" };
 
 /** pageChooseOption's findings (protocol.ts PageChoice). */
 export interface Choice {
@@ -129,6 +177,12 @@ export interface ActAnswer {
    * `unverified`, it changed, but not exactly to its text with the insert at the caret. Nothing is undone.
    */
   insert?: "unchanged" | "unverified";
+  /** pageRestore only. */
+  restore?: Restored;
+  /** pageCompare only, with outcome ok: one answer per candidate, in order. */
+  compare?: ("equal" | "equivalent" | "different" | "unknown")[];
+  /** pageSourceGrant only, with outcome ok: each id's text, null where it is withheld or gone. */
+  source?: Record<string, string | null>;
 }
 
 interface TargetFields {
@@ -148,15 +202,34 @@ interface TargetFields {
 }
 
 export type ActVerb =
-  | ({ kind: "pageWrite"; expect: string; value: string } & TargetFields)
+  /** `expectRev`: the rev the walk reported; any other rev now is stale. */
+  | ({ kind: "pageWrite"; expectRev: number; value: string } & TargetFields)
   | ({ kind: "pagePress" } & TargetFields)
+  /** A select is a choice control: `expect` is the option value the walk sent. */
   | ({ kind: "pageSelect"; expect: string; value: string } & TargetFields)
-  /** `question` (W4): for a press-group option, the question the plan names; the content script requires it unchanged. */
-  | ({ kind: "pageChooseOption"; expect: string; value: string; question?: string } & TargetFields)
+  /**
+   * A combobox takes `expectRev`, its text never having left the page; a press-group option (W4, control "button")
+   * takes `expect`, the names of the options pressed before, and `question`, which the content script requires unchanged.
+   */
+  | ({ kind: "pageChooseOption"; value: string; expectRev?: number; expect?: string; question?: string } & TargetFields)
   | ({ kind: "pageSetChecked"; checked: boolean } & TargetFields)
   | ({ kind: "pageAttachFile"; file: { name: string; type: string; size: number; sha256: string; data: string } } & TargetFields)
   /** P4 item 8: `text` at the caret of the focused field, whose text before the caret must be `expect` (content/insert.ts). */
-  | ({ kind: "pageInsertText"; expect: string; text: string; replace?: number } & TargetFields);
+  | ({ kind: "pageInsertText"; expect: string; text: string; replace?: number } & TargetFields)
+  /**
+   * Undo of Caret's own text write (counsel, pageRestore): restores the `before` this page kept, in one page-side step,
+   * only while the field is the element Caret wrote, unchanged since (its rev), with no input of the user's, and
+   * equivalent to `wrote` (`exact`: equal to it, S1's rule for a write whose answer was lost). The helper never holds
+   * `before`.
+   */
+  | ({ kind: "pageRestore"; wrote: string; exact?: true } & TargetFields)
+  /** Whole-value comparison of the field with each candidate, at most 8 per control and 64 per task in this document. */
+  | ({ kind: "pageCompare"; candidates: string[] } & TargetFields)
+  /**
+   * The text of fields `ids` of one frame the user picked as a copy source (counsel, pageSourceGrant): null for any that
+   * is withheld, secret or gone. Under the task's grant, as every act.
+   */
+  | { kind: "pageSourceGrant"; tabId: number; frameId: number; documentId: string; taskId: string; ids: string[] };
 
 export type PageVerb = { kind: "pageWalk"; tabId: number | null } | ActVerb;
 
@@ -200,7 +273,7 @@ export interface FrameReport {
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
   /** P4 item 7: `text`, the text around the caret of a focused text control (content/field-text.ts); null when it holds none. */
-  focused: { id: string; selection: [number, number] | null; look?: FieldLook; text: FieldText | null; caret?: [number, number, number, number] | null; hasFocus?: boolean } | null;
+  focused: { id: string; selection: [number, number] | null; look?: FieldLook; text: FieldText | null; caret?: [number, number, number, number] | null; hasFocus?: boolean; withheld?: Withheld } | null;
   /** P4 items 6 and 7: a Google Docs or Sheets editor's top frame only (content/field-text.ts docsFocus). */
   docs?: { kind: "document" | "spreadsheet"; text: "on" | "off"; field: FieldText | null };
   hasFocus: boolean;

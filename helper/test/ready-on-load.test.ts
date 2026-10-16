@@ -2,10 +2,11 @@
 // when code finds two empty fields with a candidate from memory or the window the user left (lead decision). A
 // search box, a login form's credentials and a payment form never count, and none of them sends a Jev request. Every
 // name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import type { HelperMessage, Node, PageControl } from "../src/protocol.ts";
+import type { HelperMessage, Node } from "../src/protocol.ts";
 import type { AboutValue } from "../src/fill/about.ts";
 import { readyOnLoad } from "../src/offers/ready-on-load.ts";
 import { field, node, snap, text } from "./builders.ts";
@@ -89,7 +90,7 @@ describe("a page load in the helper (P3)", () => {
   afterEach(closeRigs);
 
   /** The tab loads a new document with no field in focus, and the worker reports it as it reports focus. */
-  async function load(r: Rig, make: () => PageControl[], title: string, path: string): Promise<void> {
+  async function load(r: Rig, make: () => TestField[], title: string, path: string): Promise<void> {
     r.page.focusedId = null;
     r.page.goTo(make, title, path);
     r.page.session.receive({ type: "pageFocus", v: 1, at: Date.now(), tabId: 7, frameId: 0 });
@@ -133,7 +134,7 @@ describe("a page load in the helper (P3)", () => {
   it("sends no Jev request for a login page", async () => {
     const r = await ready();
     r.page.focusedId = null;
-    const login = (): PageControl[] => [c("l1", "email", "Email", { value: "" }), c("l0", "text", "Username", { value: "" }), c("l2", "button", "Sign in")];
+    const login = (): TestField[] => [c("l1", "email", "Email", { value: "" }), c("l0", "text", "Username", { value: "" }), c("l2", "button", "Sign in")];
     await r.setNote(`${NOTE}\nUsername: rvale`);
     r.page.goTo(login, "Sign in", "/login");
     // The walker never reports a password field; it says how many it left out.
@@ -151,8 +152,8 @@ describe("a page load in the helper (P3)", () => {
   // probe/load-w4.txt); the eval loaded them after four corpus pages had spent the hour's four offers, and the hourly
   // budget holds a load before the check. The budget is the user's setting and stays; the hold is now counted.
   // Each page's form is its own (another form id), as each saved page's is: one form's repeat would be covered anyway.
-  const inForm = (i: number, x: PageControl): PageControl => ({ ...x, key: x.key.replace("form[apply]", `form[p${i}]`), form: `form#p${i}` });
-  const five = (i: number) => (): PageControl[] => [inForm(i, c(`p${i}a`, "text", "Full name", { value: "" })), inForm(i, c(`p${i}b`, "email", "Email", { value: "" }))];
+  const inForm = (i: number, x: TestField): TestField => ({ ...x, key: x.key.replace("form[apply]", `form[p${i}]`), form: `form#p${i}` });
+  const five = (i: number) => (): TestField[] => [inForm(i, c(`p${i}a`, "text", "Full name", { value: "" })), inForm(i, c(`p${i}b`, "email", "Email", { value: "" }))];
   const counts = (r: Rig): Record<string, number> => {
     const store = (r.helper as unknown as { opts: { store: Store } }).opts.store;
     store.flush();

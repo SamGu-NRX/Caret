@@ -8,7 +8,7 @@ import { Disclosure, type ModelText } from "./privacy/disclosure.ts";
 import { redactWindow } from "./fill/redact.ts";
 import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
-import { ScreenModel } from "./model.ts";
+import { ScreenModel, holdsText } from "./model.ts";
 import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
 import { askWindows, notifyExpiry, planWindows, popupWindows, type ExpiryList } from "./expiry.ts";
 import { RollingText } from "./rolling-text.ts";
@@ -2287,7 +2287,7 @@ export class Helper {
         this.opts.warn?.(`fill recheck: source window ${id} is not in the model (${this.model.windows.size} windows); ${closed === undefined ? "no windowClosed seen for it" : `windowClosed ${this.now() - closed} ms ago`}`);
         continue;
       }
-      const texty = [...w.nodes.values()].filter((n) => (n.value ?? "") !== "").map((n) => n.key).slice(0, 8);
+      const texty = [...w.nodes.values()].filter((n) => holdsText(n)).map((n) => n.key).slice(0, 8);
       const last = this.lastWalk.get(id);
       this.opts.warn?.(`fill recheck: source window ${id} last walk ${last === undefined ? "unknown" : `${last.reason} ${last.root === null ? "full" : "partial"}${last.truncated ? " TRUNCATED" : ""} of ${last.nodes} nodes`}; has ${w.nodes.size} nodes, updated ${this.now() - w.updatedAt} ms ago; wanted ${wanted.join(", ")} (${wanted.map((k) => (w.nodes.has(k) ? "present" : "missing")).join(", ")}); nodes with text: ${texty.join(", ")}`);
     }
@@ -2357,7 +2357,7 @@ export class Helper {
     if (!this.opts.allowBackgroundFocus && (this.model.frontmostPid === null || this.model.frontmostPid !== w.app.pid)) return;
     const id = w.window.windowId;
     const n = w.nodes.get(w.focusedKey);
-    if (n?.editable !== true || (n.value ?? "") !== "") return;
+    if (n?.editable !== true || holdsText(n)) return;
     void this.fill(id, w.focusedKey, false, true);
   }
 
@@ -3264,7 +3264,7 @@ export class Helper {
 
   /** The fill candidate for the focused field, or null when a focus-triggered fill would not ask (fill's own checks). */
   private fillCandidate(w: WindowState, key: string, node: Node, now: number): RouteCandidate | null {
-    if (!FILLABLE_ROLES.has(node.role) || (node.value ?? "") !== "" || this.gate.holds("fill", now).length > 0) return null;
+    if (!FILLABLE_ROLES.has(node.role) || holdsText(node) || this.gate.holds("fill", now).length > 0) return null;
     // A browser with a page engine is filled from the engine's own page window, not from Accessibility's view of it.
     if (!w.window.windowId.startsWith("page:") && this.opts.pageCovers?.(w.app.pid) === true) return null;
     let fields: Node[];
@@ -3325,7 +3325,7 @@ export class Helper {
     if (this.mode !== "live") return null;
     const w = this.model.windows.get(p.windowId);
     const trigger = w?.nodes.get(p.triggerKey);
-    if (w === undefined || trigger === undefined || (trigger.value ?? "") !== "") return null;
+    if (w === undefined || trigger === undefined || holdsText(trigger)) return null;
     const fields = p.fields.filter((f) => {
       // Read the way proposeFill read it, so a control is judged by its own rules (B24 review).
       const input = emptyInput(w, f.key);

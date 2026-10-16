@@ -42,7 +42,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "First name*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       360,
@@ -61,7 +62,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Last name*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       646,
@@ -80,7 +82,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Work email*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       360,
@@ -99,7 +102,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Phone number",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       360,
@@ -118,7 +122,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Company name*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       360,
@@ -137,7 +142,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Job title*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       646,
@@ -156,7 +162,8 @@
      "kind": "url",
      "role": "textbox",
      "name": "Company website",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       360,
@@ -342,7 +349,8 @@
      "kind": "date",
      "role": "textbox",
      "name": "Preferred demo date (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       360,
@@ -361,7 +369,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "Anything else we should know?",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       360,

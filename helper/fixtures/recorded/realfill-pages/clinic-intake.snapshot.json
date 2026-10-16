@@ -70,7 +70,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Patient full name (legal) (required)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       290,
@@ -90,7 +91,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Preferred name (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       290,
@@ -110,7 +112,8 @@
      "kind": "date",
      "role": "textbox",
      "name": "Date of birth (required)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       647,
@@ -192,7 +195,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email (required)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       290,
@@ -212,7 +216,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Mobile phone (required)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       290,
@@ -232,7 +237,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Home phone (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       647,
@@ -252,7 +258,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Street address (required)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       290,
@@ -272,7 +279,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Apartment or unit (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       761.3,
@@ -292,7 +300,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "City (required)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       290,
@@ -594,7 +603,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "ZIP code (required)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       822,
@@ -689,7 +699,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Emergency contact name (required)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       290,
@@ -766,7 +777,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Emergency contact phone (required)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       290,

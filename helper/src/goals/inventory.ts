@@ -8,7 +8,7 @@ import { redactWindow } from "../fill/redact.ts";
 // spans, memory, and other windows' candidates) plus calendar events code derives from a sentence (event-card.ts).
 // Every text the writer sees went through one SnippetLedger, as for a single-window code plan.
 import { createHash } from "node:crypto";
-import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
+import { nodeText, type ScreenModel, type WindowState, holdsText } from "../model.ts";
 import type { PlanningSnapshot } from "../codemode/types.ts";
 import { formControls, type FormControl } from "../fill/controls.ts";
 import { ContractError, fieldContract, type FieldContract } from "../fill/contract.ts";
@@ -170,7 +170,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
       return { ref, label: shown };
     };
     for (const f of writableFields(w)) {
-      if ((f.node.value ?? "") !== "") continue;
+      if (holdsText(f.node)) continue;
       bind({ key: f.node.key, role: f.node.role, label: f.name, own: f.label, placeholder: f.node.placeholder ?? null, control: "text", value: "", options: null, ...contractOf(w, f.node, null) }, true, [], () => mintFieldName(d, w, f));
     }
     // A page's controls the page engine sets (D2-04, W2). Boxes are left out: a goal plan never ticks one.

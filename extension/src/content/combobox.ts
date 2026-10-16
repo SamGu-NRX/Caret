@@ -18,12 +18,13 @@
 // search-as-you-type picker, C1) gets the filter typed after a short wait for a list, and its list is waited for after.
 // A stop puts the filter text back and closes the list, but only while the grant is alive and the control still
 // eligible.
-import type { ActAnswer, ActVerb, Choice } from "../shared/messages.ts";
+import type { ActAnswer, ActVerb, Choice, WriteReadings } from "../shared/messages.ts";
 import { hiddenAfterStop, matchOptions, normalizeName, pickProblems, settles, typesToOpen, whyNoPick, type ListReading } from "../shared/choose.ts";
-import { accessibleName, clean, composedParent } from "./names.ts";
+import { accessibleName, composedParent } from "./names.ts";
 import { flavorOf, shownValue, type Flavor } from "./flavor.ts";
-import { errorText, invalidNow, keyEvents, pressEvents, settle, typeInto, until } from "./dom.ts";
+import { keyEvents, pressEvents, settle, typeInto, until } from "./dom.ts";
 import { deepActiveElement, shadowRootOf, visible } from "./walker.ts";
+import { isInput, readNow, revs } from "./page-state.ts";
 
 /** How long the listbox may take to appear, and the options to settle after the filter. From the memo: 1.5 s. */
 const LIST_WAIT_MS = 1500;
@@ -159,16 +160,33 @@ async function settledOptions(el: Element, f: Flavor, listbox: () => Element | n
   return lb === null || loading(el, f, lb) ? [] : optionsOf(lb);
 }
 
-export async function chooseOption(el: Element, verb: ChooseVerb, check: () => ActAnswer | null, alive: () => Promise<boolean>): Promise<ActAnswer> {
+/**
+ * The readings of a combobox act from what the control showed before and shows now, computed here: its text never
+ * leaves the frame (content/revs.ts). A change Caret made is Caret's own (revs.caretWrote), so the walk does not take
+ * it for a page script's; text as it was keeps the rev the walk knows.
+ */
+function comboReadings(el: Element, before: string, now: string, picked: string | null, trusted0: number): WriteReadings {
+  const typed = revs.trustedCount(el) !== trusted0;
+  const rev = now === before && !typed ? revs.read(el, now, isInput(el)).rev : revs.caretWrote(el, now, typed);
+  const landed = picked !== null && normalizeName(now) === normalizeName(picked);
+  return { sameAsBefore: now === before, landed, equivalent: landed, empty: now === "", typedBetween: typed, rev };
+}
+
+export async function chooseOption(el: Element, verb: ChooseVerb, check: () => ActAnswer | null, alive: () => Promise<boolean>, rebound = false): Promise<ActAnswer> {
   const f = flavorOf(el);
   const choice = (matches: string[], extra: Partial<Choice> = {}): Choice => ({ flavor: f.kind, matches: matches.slice(0, 20), expanded: expandedOf(el), hiddenInput: hiddenValue(f) === null ? "none" : "unchanged", ...extra });
   const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Partial<ActAnswer> = {}): ActAnswer => ({ outcome, detail, ...extra });
-  const before = shownValue(el, f);
+  const seen = readNow(el, "combobox", false);
+  const before = seen.text;
+  if (seen.withheld !== null && before !== "") return answer("excluded", `the control holds text Caret does not read (${seen.withheld})`);
   if (before !== "" && normalizeName(before) === normalizeName(verb.value)) return answer("alreadyTrue", null, { choice: choice([before]) });
-  if (before !== verb.expect) return answer("stale", "the control shows other text than when it was walked");
+  // The walk's rev, or (a rebound replacement) the walk's own text, which registry.ts matched.
+  if (verb.expectRev === undefined) return answer("unsupported", "a combobox write names the rev the walk read");
+  if (!rebound && seen.rev !== verb.expectRev) return answer("stale", "the control changed since it was walked");
+  const trusted0 = revs.trustedCount(el);
   if ((el as HTMLInputElement).disabled === true || el.getAttribute("aria-disabled") === "true" || el.getAttribute("aria-readonly") === "true") return answer("failed", "the control is disabled or read-only");
   // D2-04: "" is no option's name; it is the undo of Caret's own pick, and only that.
-  if (verb.value === "") return verb.sameAs === undefined ? answer("unsupported", "Caret empties a dropdown only to undo its own pick") : clearChoice(el, f, before, check, alive);
+  if (verb.value === "") return verb.sameAs === undefined ? answer("unsupported", "Caret empties a dropdown only to undo its own pick") : clearChoice(el, f, before, check, alive, trusted0);
   const hiddenBefore = hiddenValue(f);
   const textField = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
   const filterBefore = textField?.value ?? null;
@@ -228,7 +246,7 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     // A stop that left the filter text in the control (a revoke between filtering and the pick) changed what it shows,
     // so it is failed with that reading, never notAllowed, which would leave the change out of undo (W3 review #10).
     const outcome = why.outcome === "notAllowed" && now === before ? "notAllowed" : "failed";
-    return answer(outcome, detail, { readings: { before, afterInput: now, afterBlur: now, invalid: invalidNow(el), error: errorText(el) }, choice: stopChoice() });
+    return answer(outcome, detail, { readings: comboReadings(el, before, now, null, trusted0), choice: stopChoice() });
   };
   const gate = async (stage: string): Promise<ActAnswer | null> => {
     if (!(await alive())) return answer("notAllowed", `the task's grant ended (before ${stage})`);
@@ -309,7 +327,6 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     keyEvents(el, "Escape");
     await settle();
   }
-  const afterPick = shownValue(el, f);
 
   // Stage 4: blur, then verify the shown text, the hidden input and aria-expanded.
   const g5 = await gate("blurring the control");
@@ -322,7 +339,7 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const hiddenAfter = hiddenValue(f);
   const hiddenInput: Choice["hiddenInput"] = hiddenAfter === null ? "none" : hiddenAfter !== "" && hiddenAfter !== hiddenBefore ? "set" : "unchanged";
   const expanded = expandedOf(el);
-  const readings = { before, afterInput: afterPick, afterBlur, invalid: invalidNow(el), error: errorText(el) };
+  const readings = comboReadings(el, before, afterBlur, pick.name, trusted0);
   const result = { readings, choice: choice([pick.name], { expanded, hiddenInput }) };
   const problems = pickProblems({ flavor: f.kind, value: pick.name, before, afterBlur, hiddenInput, expanded, typedText: typed, closedOnPick });
   if (problems.length > 0) return answer("failed", problems.join("; "), result);
@@ -337,7 +354,7 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
  * only to the control itself (W2's owned-element rule). Verified as a pick is: the control shows nothing, react-select's
  * hidden input holds nothing, and the list is closed.
  */
-async function clearChoice(el: Element, f: Flavor, before: string, check: () => ActAnswer | null, alive: () => Promise<boolean>): Promise<ActAnswer> {
+async function clearChoice(el: Element, f: Flavor, before: string, check: () => ActAnswer | null, alive: () => Promise<boolean>, trusted0: number): Promise<ActAnswer> {
   const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Partial<ActAnswer> = {}): ActAnswer => ({ outcome, detail, ...extra });
   const textField = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
   if (textField === null) return answer("unsupported", "this dropdown shows no text field to empty, so its choice is yours to change");
@@ -353,7 +370,6 @@ async function clearChoice(el: Element, f: Flavor, before: string, check: () => 
   if (f.kind === "reactSelect") keyEvents(el, "Backspace");
   else typeInto(textField, "");
   await until(() => (shownValue(el, f) === "" ? true : null), PICK_WAIT_MS);
-  const afterInput = shownValue(el, f);
   // After the key or the text went in, a stop leaves the control alone and is "may have landed" (failed, no readings).
   const g3 = await gate("blurring the control");
   if (g3 !== null) return answer("failed", `the control was emptied, then ${g3.detail ?? g3.outcome}; Caret stopped without touching it again`, { choice: choice() });
@@ -365,10 +381,10 @@ async function clearChoice(el: Element, f: Flavor, before: string, check: () => 
   if (end !== null) return answer("failed", `the control was emptied, then ${end.detail ?? end.outcome}; Caret stopped without touching it again`, { choice: choice() });
   const afterBlur = shownValue(el, f);
   const hiddenAfter = hiddenValue(f);
-  const readings = { before, afterInput, afterBlur, invalid: invalidNow(el), error: errorText(el) };
+  const readings = comboReadings(el, before, afterBlur, "", trusted0);
   const result = { readings, choice: choice({ hiddenInput: hiddenAfter === null ? "none" : hiddenAfter === hiddenBefore ? "unchanged" : "set" }) };
   const problems: string[] = [];
-  if (afterBlur !== "") problems.push(afterBlur === before ? "the dropdown kept its choice (it may not allow emptying)" : `the control shows '${clean(afterBlur, 60)}'`);
+  if (afterBlur !== "") problems.push(afterBlur === before ? "the dropdown kept its choice (it may not allow emptying)" : "the control shows other text");
   if (hiddenAfter !== null && hiddenAfter !== "") problems.push("react-select's form value is still set");
   if (expandedOf(el) === true) problems.push("the list is still open");
   return problems.length > 0 ? answer("failed", problems.join("; "), result) : answer("ok", null, result);

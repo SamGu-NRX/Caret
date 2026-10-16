@@ -13,7 +13,7 @@ import { withFirstLookAllowList, type FirstLookAllowList } from "../privacy/firs
 import type { FirstLookPreview, FirstLookPreviewRequest } from "../protocol.ts";
 import type { OwnerVerdicts } from "../fill/owner-cache.ts";
 import { performance } from "node:perf_hooks";
-import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
+import { nodeText, type ScreenModel, type WindowState, holdsText } from "../model.ts";
 import { FirstLookReply, PROTOCOL_VERSION, type FillProposal, type FirstLook, type FirstLookFound, type OfferPopup, type PatternOffer, type VerbResult } from "../protocol.ts";
 import type { PopupBlock, PopupRef, PopupSpecT } from "../popup.ts";
 import type { AskJev } from "../fill/jev.ts";
@@ -487,7 +487,7 @@ const LOOK_TAIL = 6;
 function emptyFields(w: WindowState): string[] {
   const out: string[] = [];
   for (const n of w.nodes.values()) {
-    if (n.editable === true && FILLABLE_ROLES.has(n.role) && (n.value ?? "") === "" && n.states?.includes("secure") !== true) out.push(n.key);
+    if (n.editable === true && FILLABLE_ROLES.has(n.role) && !holdsText(n) && n.states?.includes("secure") !== true) out.push(n.key);
   }
   return out;
 }
@@ -500,7 +500,7 @@ function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow, 
   const written = writtenFields(p, w);
   const fields = written.fields.filter((f) => {
     const n = w.nodes.get(f.key);
-    return n !== undefined && (n.value ?? "") === "" && (f.source === null || model.windows.has(f.source.windowId));
+    return n !== undefined && !holdsText(n) && (f.source === null || model.windows.has(f.source.windowId));
   });
   const q = { ...written, fields };
   return fields.length >= 2 && recheckFill(model, q, aboutNow, undefined, null, saved) === null ? q : null;

@@ -7,7 +7,7 @@ import { judgePress } from "../src/worker/press-guard.ts";
 
 const still = { navGen: 3, starts: 5 };
 const choice = { flavor: "pressGroup" as const, matches: ["Yes"], expanded: null, hiddenInput: "none" as const };
-const ok: ActAnswer = { outcome: "ok", detail: null, readings: { before: "", afterInput: "Yes", afterBlur: "Yes", invalid: false, error: null }, choice };
+const ok: ActAnswer = { outcome: "ok", detail: null, readings: { sameAsBefore: false, landed: true, equivalent: true, empty: false, typedBetween: false, rev: null }, choice };
 
 describe("judgePress", () => {
   it("lets a press stand when the frame neither moved nor began a navigation, and the page fired nothing", () => {

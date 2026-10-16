@@ -36,7 +36,7 @@ describe("worker Stop with a dispatched page write", () => {
     }));
     await f.fire("port.message", {
       type: "pageCommand", v: 1, id: "write", expires: Date.now() + 5000,
-      verb: { kind: "pageWrite", tabId: 1, frameId: 0, documentId: "D1", id: "field", control: "text", name: "First Name", taskId: "t", expect: "Original name", value: "Dana", mark: "m" },
+      verb: { kind: "pageWrite", tabId: 1, frameId: 0, documentId: "D1", id: "field", control: "text", name: "First Name", taskId: "t", expectRev: 1, value: "Dana", mark: "m" },
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(dispatched).toBe(true);
@@ -51,7 +51,7 @@ describe("worker Stop with a dispatched page write", () => {
     // A later dispatch is refused at the worker, without reaching the content setter again.
     await f.fire("port.message", {
       type: "pageCommand", v: 1, id: "next", expires: Date.now() + 5000,
-      verb: { kind: "pageWrite", tabId: 1, frameId: 0, documentId: "D1", id: "field", control: "text", name: "First Name", taskId: "t", expect: "Dana", value: "Must not run" },
+      verb: { kind: "pageWrite", tabId: 1, frameId: 0, documentId: "D1", id: "field", control: "text", name: "First Name", taskId: "t", expectRev: 2, value: "Must not run" },
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.asked.filter((m) => m.op === "act")).toHaveLength(1);

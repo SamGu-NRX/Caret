@@ -56,7 +56,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Your full name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       330,
@@ -75,7 +76,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       330,
@@ -94,7 +96,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Phone (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       330,
@@ -239,7 +242,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Guest's full name",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       330,
@@ -301,7 +305,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "Dietary restrictions or allergies (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       330,
@@ -321,7 +326,8 @@
      "kind": "time",
      "role": "textbox",
      "name": "Approximate arrival time",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       330,
@@ -341,7 +347,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "A note for the couple (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       330,

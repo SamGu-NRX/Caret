@@ -3,6 +3,7 @@
 // places the field elsewhere, or can't place it. Sections are occurrences, not text: the named heading text must be one
 // occurrence the window shows, and a field is in it when that occurrence contains it. A correct value for a field is no
 // authority to write it. A synthetic service form ("Equipment details", "Service contact"); every name is invented.
+import { onWire } from "./page-wire.ts";
 import { readFileSync } from "node:fs";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -59,7 +60,7 @@ interface Walked {
  * occurrences and each control's chain (`walked`). `extra` adds controls after the four fields.
  */
 function pageSnapshot(headings: readonly string[], walked?: Walked, extra: PageControl[] = []): ReturnType<typeof toWindowSnapshot> {
-  const control = (id: string, name: string, y: number): PageControl => ({ id, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, y, 200, 24] });
+  const control = (id: string, name: string, y: number): PageControl => onWire({ id, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, y, 200, 24] });
   const controls = [control("e1", "Serial number", 80), control("e2", "Model", 120), control("e3", "Contact name", 200), control("e4", "Contact phone", 240), ...extra].map((c) => {
     const chain = walked?.chains[c.name];
     return chain === undefined || chain.length === 0 ? c : { ...c, sections: [...chain] };

@@ -3,6 +3,7 @@
 // pageText; every other consumer gets the field without them. The host's pageInsert puts accepted text in through the
 // page engine, under a grant for that one insert, and the reply says how it went without quoting the page.
 // Every name and value is invented.
+import { onWire } from "./page-wire.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { randomBytes } from "node:crypto";
@@ -255,7 +256,7 @@ describe("the page field the host hears (H13)", () => {
     wirePageEngines({ host, helper, publish: (m) => published.push(m), warn: () => {} });
     const snap = (id: string): PageSnapshot => ({
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin, path, navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false, controls: [{ ...area, kind }] }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin, path, navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false, controls: [onWire({ ...area, kind })] }],
       missing: [], focused, view: VIEW,
     });
     let session: EngineSession;
@@ -330,7 +331,7 @@ describe("the page field the host hears (H13)", () => {
 });
 
 describe("an insert names the element the offer was made for (H13 review)", () => {
-  const CONTROLS: PageControl[] = [{ id: "e1", key: "form[a]/textarea:cover letter~0", strongKey: null, kind: "textarea", role: "textbox", name: "Cover letter", form: "form#a", rect: [0, 0, 100, 20], value: "" }];
+  const CONTROLS: PageControl[] = [onWire({ id: "e1", key: "form[a]/textarea:cover letter~0", strongKey: null, kind: "textarea", role: "textbox", name: "Cover letter", form: "form#a", rect: [0, 0, 100, 20], value: "" })];
   function snap(id: string): PageSnapshot {
     return {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w", at: 1, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",

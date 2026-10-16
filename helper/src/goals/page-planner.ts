@@ -7,6 +7,7 @@
 // run. Caret presses nothing on a page: what the user presses is theirs, and so is every field fill withheld, a kind
 // Caret never types, and a form's fields past what one fill asks about (the size hand-off), each named before Tab.
 // Nothing here acts.
+import { holdsText } from "../model.ts";
 import { scopeKey, type AskScope, type DocumentReader, type ScopeSet } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
@@ -183,7 +184,7 @@ function pageInputs(w: WindowState): { inputs: PageInput[]; neverTyped: Node[] }
       if (c.control === "checkbox" || c.control === "radio" || c.control === "select" || c.control === "date" || c.control === "time") inputs.push({ node: n, control: c.control, label: c.label, options: c.options });
       continue;
     }
-    if (!FILLABLE_ROLES.has(n.role) || n.editable !== true || (n.value ?? "") !== "" || n.states?.includes("secure") === true || n.states?.includes("disabled") === true) continue;
+    if (!FILLABLE_ROLES.has(n.role) || n.editable !== true || holdsText(n) || n.states?.includes("secure") === true || n.states?.includes("disabled") === true) continue;
     if (neverTypedNode(w, n) !== null) {
       neverTyped.push(n);
       continue;
@@ -301,22 +302,22 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       const n = w.nodes.get(k);
       if (x !== undefined) wanted.push(x);
       // (After a stop, a field the goal it replaces already wrote is filled for that reason, and is not left.)
-      else if (o.carried === undefined && n !== undefined && (n.value ?? "") !== "" && neverTypedNode(w, n) === null) leave(n, "it already holds something, and Caret fills only empty fields here");
+      else if (o.carried === undefined && n !== undefined && holdsText(n) && neverTypedNode(w, n) === null) leave(n, "it already holds something, and Caret fills only empty fields here");
     }
   }
   // I3: the fields Jev wasn't sure the request asks for, when still empty, and never one the scope takes.
   for (const k of o.unsure ?? []) {
     const n = w.nodes.get(k);
-    if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, UNSURE_FIELD);
+    if (n !== undefined && !holdsText(n) && !wanted.some((x) => x.node.key === k)) leave(n, UNSURE_FIELD);
   }
   for (const k of o.sectionless ?? []) {
     const n = w.nodes.get(k);
-    if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, SECTION_UNKNOWN_FIELD);
+    if (n !== undefined && !holdsText(n) && !wanted.some((x) => x.node.key === k)) leave(n, SECTION_UNKNOWN_FIELD);
   }
   // Question memory: the fields a question the user put away twice would have offered, left to them as before.
   for (const k of o.quiet ?? []) {
     const n = w.nodes.get(k);
-    if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, QUIET_FIELD);
+    if (n !== undefined && !holdsText(n) && !wanted.some((x) => x.node.key === k)) leave(n, QUIET_FIELD);
   }
   // Fields of a kind Caret never types that the scope takes are named before Tab.
   const scopeKeys = o.scope === null || o.kind === "all" ? null : new Set(o.kind === "list" ? o.scope.fields : []);

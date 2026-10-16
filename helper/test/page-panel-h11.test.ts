@@ -3,13 +3,14 @@
 // and the file inputs Caret leaves to the user. A native Ask whose route is plan stays on the single-window planner when
 // no writer could plan it as a goal. Jev's 402 is said as the account's credits on both the Ask and the page-planning
 // paths, never as "couldn't reach its model". Every name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { headsJev } from "./heads-jev.ts";
 import { scriptedIntent } from "./page-rig.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type GoalProgress, type PageControl, type PageSnapshot, type PlanProposal } from "../src/protocol.ts";
+import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type GoalProgress, type PageSnapshot, type PlanProposal } from "../src/protocol.ts";
 import { makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
@@ -44,7 +45,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => PageControl[]; note?: string; picks?: Record<string, string> } = {}): Promise<Rig> {
+async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => TestField[]; note?: string; picks?: Record<string, string> } = {}): Promise<Rig> {
   const dir = mkdtempSync(join(tmpdir(), "caret-h11-"));
   const store = new Store(join(dir, "data"));
   const page = new FakePage(o.controls ?? mixedControls, "Apply: Mixed controls");
