@@ -29,6 +29,7 @@ import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
 import { LEFT_TAB_MS, LeftTab, canonicalOrigin, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
 import { joinFrames } from "./shared/tab-text.ts";
 import { sectionTokens, type FrameSections } from "./worker/section-names.ts";
+import { CompareSpend } from "./worker/compare-budget.ts";
 
 /** SCP1: a frame's sections as the snapshot carries them: tokens, never digests or the salt. */
 function sectionsOf(s: FrameSections | undefined): { sections?: FrameSections["sections"]; sectionNames?: string[]; sectionsCut?: true } {
@@ -493,23 +494,8 @@ async function fileProblem(f: { size: number; sha256: string; data: string }): P
   return (await sha256(bytes)) === f.sha256 ? null : "the file's data does not match its digest";
 }
 
-/**
- * pageCompare's per-origin bound, across documents (counsel, "pageCompare as an oracle"): at most COMPARE_PER_ORIGIN
- * candidates per origin in any hour; past it every candidate answers unknown. The content script holds the per-control
- * and per-task bounds of its own document.
- */
-export const COMPARE_PER_ORIGIN = 256;
-const COMPARE_WINDOW_MS = 60 * 60 * 1000;
-const compared = new Map<string, number[]>();
-
-/** Spends `n` of `origin`'s hourly compare budget; how many of them are allowed, the rest answering unknown. */
-function compareAllowance(origin: string, n: number, now = Date.now()): number {
-  const recent = (compared.get(origin) ?? []).filter((t) => now - t < COMPARE_WINDOW_MS);
-  const allowed = Math.max(0, Math.min(n, COMPARE_PER_ORIGIN - recent.length));
-  for (let i = 0; i < n; i++) recent.push(now);
-  compared.set(origin, recent.slice(-COMPARE_PER_ORIGIN * 2));
-  return allowed;
-}
+/** pageCompare's per-origin hourly bound, kept in session storage so a worker restart does not reset it (worker/compare-budget.ts). */
+const compareSpend = new CompareSpend(chrome.storage.session, log);
 
 async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   if (verb.kind === "pagePress") {
@@ -546,7 +532,7 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   let unanswered = 0;
   if (verb.kind === "pageCompare") {
     const asked = verb.candidates.length;
-    const allowed = compareAllowance(origin, asked);
+    const allowed = await compareSpend.allowance(origin, asked);
     if (allowed < asked) {
       log(`pageCompare over ${origin}'s hourly budget: ${asked - allowed} candidate(s) answer unknown`);
       if (allowed === 0) return { outcome: "ok", detail: "over this site's hourly compare budget", compare: verb.candidates.map(() => "unknown" as const) };
