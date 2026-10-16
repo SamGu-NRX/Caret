@@ -4,18 +4,47 @@
 import { describe, expect, it } from "vitest";
 import { COMPARE_PER_CONTROL, COMPARE_PER_TASK, CompareBudget, MAX_RECORDS, Revs, WriteRecords, compareAnswers, presence, restoreCheck, withheldFor } from "../src/content/revs.ts";
 
+/** One keystroke of the user's, as the page's tracker reports it: beforeinput with the text it starts from, then input with the text it left. */
+function keystroke(revs: Revs<object>, el: object, from: string, to: string): void {
+  revs.trusted(el, { before: from }, true);
+  revs.trusted(el, { typed: to }, true);
+}
+
+/** A paste of the user's: the paste and beforeinput events with the text it starts from, then an input event that is no typing. */
+function paste(revs: Revs<object>, el: object, from: string): void {
+  revs.trusted(el, { before: from }, true);
+  revs.trusted(el, { before: from }, true);
+  revs.trusted(el, { foreign: true }, true);
+}
+
 describe("rev", () => {
-  it("bumps on a trusted event, on a reading that sees other text, and on Caret's write, and not otherwise", () => {
+  it("bumps on a reading that sees other text and on Caret's write, and not on a trusted event or otherwise", () => {
     const revs = new Revs<object>();
     const el = {};
     expect(revs.read(el, "", true).rev).toBe(0);
     expect(revs.read(el, "", true).rev).toBe(0);
-    revs.trusted(el, "", true);
-    expect(revs.read(el, "a", true).rev).toBe(2);
-    expect(revs.caretWrote(el, "Robin", false)).toBe(3);
-    expect(revs.read(el, "Robin", true).rev).toBe(3);
+    keystroke(revs, el, "", "a");
+    expect(revs.read(el, "a", true).rev).toBe(1);
+    expect(revs.caretWrote(el, "Robin", false)).toBe(2);
+    expect(revs.read(el, "Robin", true).rev).toBe(2);
     // A page script's change, seen by the next reading.
-    expect(revs.read(el, "Robin V", true).rev).toBe(4);
+    expect(revs.read(el, "Robin V", true).rev).toBe(3);
+    // A trusted event that leaves the text as it was read bumps nothing.
+    revs.trusted(el, {}, true);
+    expect(revs.read(el, "Robin V", true).rev).toBe(3);
+  });
+
+  it("changes as much for eight typed characters as for one, so it never tells how much was typed (audit MED 4)", () => {
+    const revs = new Revs<object>();
+    const one = {};
+    const eight = {};
+    const r1 = revs.read(one, "", true).rev;
+    const r8 = revs.read(eight, "", true).rev;
+    keystroke(revs, one, "", "x");
+    const word = "Quarters";
+    for (let i = 0; i < word.length; i++) keystroke(revs, eight, word.slice(0, i), word.slice(0, i + 1));
+    expect(revs.read(one, "x", true).rev - r1).toBe(1);
+    expect(revs.read(eight, word, true).rev - r8).toBe(1);
   });
 });
 
@@ -25,10 +54,10 @@ describe("where an input's text came from", () => {
     const copy = {};
     expect(revs.read(copy, "Tr0mbone-Lattice-91", true).origin).toBe("prefilled");
     // The user typing into it does not make the text theirs: the page's text is still in it.
-    revs.trusted(copy, null, true);
+    keystroke(revs, copy, "Tr0mbone-Lattice-91", "Tr0mbone-Lattice-91x");
     expect(revs.read(copy, "Tr0mbone-Lattice-91x", true).origin).toBe("prefilled");
     expect(revs.read(copy, "", true).origin).toBe("clean");
-    revs.trusted(copy, null, true);
+    keystroke(revs, copy, "", "mine");
     expect(revs.read(copy, "mine", true).origin).toBe("clean");
   });
 
@@ -36,8 +65,43 @@ describe("where an input's text came from", () => {
     const revs = new Revs<object>();
     const el = {};
     // beforeinput is the first contact: the field already held text the page put there.
-    revs.trusted(el, "482913", true);
+    keystroke(revs, el, "482913", "4829131");
     expect(revs.read(el, "4829131", true).origin).toBe("prefilled");
+  });
+
+  it("is withheld after a paste before the first reading: the paste reads the text it starts from (audit MED 3)", () => {
+    const revs = new Revs<object>();
+    const el = {};
+    paste(revs, el, "Tr0mbone-Lattice-91");
+    // First seen holding the page's text (prefilled), then changed by no typing: the page's text, and the paste's.
+    const { origin } = revs.read(el, "Tr0mbone-Lattice-91 and more", true);
+    expect(origin).toBe("programmatic");
+    expect(withheldFor(null, origin)).toBe("programmatic");
+  });
+
+  it("is prefilled when a trusted event with nothing read before it came first, as autofill's input and change do (audit MED 3)", () => {
+    const revs = new Revs<object>();
+    const el = {};
+    // Chrome's autofill: a trusted input event with no inputType and no beforeinput, then change.
+    revs.trusted(el, { foreign: true }, true);
+    revs.trusted(el, {}, true);
+    expect(revs.read(el, "robin@example.test", true).origin).toBe("prefilled");
+  });
+
+  it("is programmatic after the user's paste into an empty field: only typing is the user's own (audit MED 3)", () => {
+    const revs = new Revs<object>();
+    const el = {};
+    revs.read(el, "", true);
+    paste(revs, el, "");
+    expect(revs.read(el, "pasted-from-elsewhere", true).origin).toBe("programmatic");
+  });
+
+  it("is programmatic when a script fills the field after the user's keystroke and before the next reading (audit LOW 8)", () => {
+    const revs = new Revs<object>();
+    const el = {};
+    revs.read(el, "", true);
+    keystroke(revs, el, "", "a");
+    expect(revs.read(el, "filled-by-a-script", true).origin).toBe("programmatic");
   });
 
   it("stays programmatic when a script's text is followed by the user's keystroke before the next reading", () => {
@@ -45,7 +109,7 @@ describe("where an input's text came from", () => {
     const el = {};
     revs.read(el, "", true);
     // A script fills the field; the user's next keystroke starts from that text (beforeinput), then a walk reads it.
-    revs.trusted(el, "filled-by-a-script", true);
+    keystroke(revs, el, "filled-by-a-script", "filled-by-a-scriptx");
     expect(revs.read(el, "filled-by-a-scriptx", true).origin).toBe("programmatic");
   });
 
@@ -75,7 +139,9 @@ describe("where an input's text came from", () => {
     const revs = new Revs<object>();
     const el = {};
     revs.read(el, "", true);
-    revs.trusted(el, "", true);
+    keystroke(revs, el, "", "A");
+    keystroke(revs, el, "A", "AB");
+    // The page's own handler sets the same text again after the event: the reading sees what the keystroke left.
     expect(revs.read(el, "AB", true).origin).toBe("clean");
   });
 
@@ -89,7 +155,7 @@ describe("where an input's text came from", () => {
     const typed = {};
     revs.read(typed, "", true);
     revs.caretWrote(typed, "Robin", false);
-    revs.trusted(typed, null, true);
+    keystroke(revs, typed, "Robin", "Robin V");
     expect(revs.read(typed, "Robin V", true).origin).toBe("clean");
   });
 

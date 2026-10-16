@@ -9,11 +9,13 @@ import { sha256Hex } from "../shared/sha256.ts";
 
 /**
  * Where a text control's current text came from, as far as this page saw:
- * - `clean`: empty when first seen, or since emptied, and changed since only with the user's own trusted events.
+ * - `clean`: empty when first seen, or since emptied, and changed since only by the user's own typing.
  * - `prefilled`: an `<input>` first seen holding text (a React replacement of a password field, an autofilled field, a
- *   copy added later), with no emptying since. Its text is not the user's typing as far as Caret can show.
- * - `programmatic`: an `<input>` whose text changed between two readings with no trusted event between them (a
- *   password manager's fill, a page script's copy).
+ *   copy added later), with no emptying since, whatever trusted events came before that first reading. Its text is not
+ *   the user's typing as far as Caret can show.
+ * - `programmatic`: an `<input>` whose text changed between two readings to text other than the user's last typing
+ *   left: a password manager's fill, a page script's copy, a paste, browser autofill (whose input events are trusted
+ *   but carry no inputType, as Chrome for Testing 154 shows: fixtures/web-form/tests/walk-values.test.ts).
  * - `caret`: exactly what Caret's own last write left, with no change since.
  */
 export type Origin = "clean" | "prefilled" | "programmatic" | "caret";
@@ -27,12 +29,21 @@ interface Rec {
   trusted: number;
   /** `trusted` as of the last reading. */
   seenTrusted: number;
+  /**
+   * A salted digest of the text right after the user's latest typing input event since the last reading, taken at the
+   * event: text a script puts in after the keystroke differs from it. Null after a reading, or after an input event
+   * that is no typing (a paste, a drop, autofill).
+   */
+  typedAt: string | null;
+  /** Since the last reading, some text came in that was not the user's typing: the next change is not theirs. */
+  foreign: boolean;
   origin: Origin;
 }
 
 /**
- * Per-element change counters and origins. `rev` bumps on a trusted input, change, paste or compositionend event on
- * the element; on a reading that sees text other than the last one read; and on a Caret write. It is per content-script
+ * Per-element change counters and origins. `rev` bumps on a reading that sees text other than the last one read, and
+ * on a Caret write: at most once per reading, however many keystrokes came between, so it never counts the user's
+ * typing (audit of PR #52, MED 4). A trusted event only marks the element as edited. It is per content-script
  * instance: a new document starts every element again, which the helper knows from the verb's documentId.
  */
 export class Revs<E extends object> {
@@ -52,7 +63,7 @@ export class Revs<E extends object> {
   private rec(el: E): Rec {
     let r = this.recs.get(el);
     if (r === undefined) {
-      r = { rev: 0, last: null, trusted: 0, seenTrusted: 0, origin: "clean" };
+      r = { rev: 0, last: null, trusted: 0, seenTrusted: 0, typedAt: null, foreign: false, origin: "clean" };
       this.recs.set(el, r);
     }
     return r;
@@ -67,31 +78,47 @@ export class Revs<E extends object> {
     const r = this.rec(el);
     const d = this.digestOf(text);
     if (r.last === null) {
-      r.origin = input && text !== "" && r.trusted === 0 ? "prefilled" : "clean";
+      // The first reading of text in an input is never the user's: a trusted event before it (autofill's, a paste's)
+      // shows no typing that Caret saw start from empty.
+      r.origin = input && text !== "" ? "prefilled" : "clean";
     } else if (d !== r.last) {
       r.rev++;
-      const typed = r.trusted > r.seenTrusted;
+      // The user's own only when the text is exactly what their latest keystroke left, and nothing else came in since.
+      const typed = r.trusted > r.seenTrusted && !r.foreign && r.typedAt === d;
       if (r.origin === "caret") r.origin = typed || !input ? "clean" : "programmatic";
       else if (input && !typed) r.origin = "programmatic";
     }
     if (text === "") r.origin = "clean";
     r.last = d;
     r.seenTrusted = r.trusted;
+    r.typedAt = null;
+    r.foreign = false;
     return { rev: r.rev, origin: r.origin };
   }
 
   /**
-   * A trusted input, change, paste or compositionend event on the element. `before`: its text right before the event,
-   * when the event fires before the change (beforeinput); read first, so text a page put in before the user's first
-   * keystroke still counts as `prefilled`.
+   * A trusted beforeinput, input, change, paste or compositionend event on the element; it marks the element edited,
+   * and bumps no rev. `e.before`: the text right before the event, for one that fires before the change (beforeinput,
+   * paste). Text there that is neither the last reading nor what the user's typing left came from elsewhere since; at
+   * the first sight of the element it is its first reading, so text a page put in before the user's first keystroke
+   * still counts as `prefilled`. `e.typed`: the text right after an input event that is the user's typing (entry.ts
+   * isTyping). `e.foreign`: an input event that is not (a paste, a drop, autofill's event with no inputType).
    */
-  trusted(el: E, before: string | null, input: boolean): void {
-    // Read first, every time: text a script put in since the last reading is then seen as the script's (programmatic),
-    // and the user's keystroke that follows cannot pass it off as typed.
-    if (before !== null) this.read(el, before, input);
+  trusted(el: E, e: { before?: string; typed?: string; foreign?: true }, input: boolean): void {
     const r = this.rec(el);
+    if (e.before !== undefined) {
+      if (r.last === null) this.read(el, e.before, input);
+      else {
+        const d = this.digestOf(e.before);
+        if (d !== r.last && d !== r.typedAt) r.foreign = true;
+      }
+    }
     r.trusted++;
-    r.rev++;
+    if (e.typed !== undefined) r.typedAt = this.digestOf(e.typed);
+    if (e.foreign === true) {
+      r.typedAt = null;
+      r.foreign = true;
+    }
     if (r.origin === "caret") r.origin = "clean";
   }
 
@@ -101,6 +128,8 @@ export class Revs<E extends object> {
     r.rev++;
     r.last = this.digestOf(text);
     r.seenTrusted = r.trusted;
+    r.typedAt = null;
+    r.foreign = false;
     r.origin = text === "" ? "clean" : typed ? "programmatic" : "caret";
     return r.rev;
   }

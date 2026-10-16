@@ -37,6 +37,11 @@ const TYPING: ReadonlySet<string> = new Set([
   "deleteContent",
 ]);
 
+/** Whether a trusted input event of this inputType is the user typing or deleting (content/revs.ts counts only these as theirs). */
+export function isTyping(inputType: string): boolean {
+  return TYPING.has(inputType);
+}
+
 const RANK: Record<Entry, number> = { typed: 0, pasted: 1, other: 2 };
 
 /** The kind of one input event: typing, text from elsewhere, or not the user's. */

@@ -271,6 +271,10 @@ const ROUND4: Record<string, string> = {
   "self-labelled-editor": shell(`<div contenteditable="true" id="ed" aria-labelledby="ed" style="min-height: 2em"></div><input id="other" aria-labelledby="ed">`, `window.reveal = () => {};`),
   // Audit HIGH 1: a title the user types into an editable heading, an editable role=heading and an editable legend.
   "editable-headings": shell(`<h1 contenteditable="true" id="title" style="min-height: 1em"></h1><div role="heading" aria-level="2" contenteditable="true" id="sub" style="min-height: 1em"></div><fieldset><legend contenteditable="true" id="leg" style="min-width: 4em; min-height: 1em"></legend><input id="n" aria-label="Name"></fieldset>`, `window.reveal = () => {};`),
+  // Audit MED 3: an address form Chrome's own autofill fills, recording the events it fires.
+  autofill: shell(`<label>Email <input id="email" name="email" autocomplete="email"></label><label>Street <input id="street" name="street" autocomplete="address-line1"></label><label>City <input id="city" name="city" autocomplete="address-level2"></label><label>ZIP <input id="zip" name="zip" autocomplete="postal-code"></label>`, `window.events = []; for (const t of ["beforeinput", "input", "change"]) addEventListener(t, (e) => { window.events.push({ type: e.type, trusted: e.isTrusted, inputType: e.inputType ?? null }); }, true); window.reveal = () => {};`),
+  // Audit MED 4: two fields to type into, on a page of its own, so no closing tab of another test answers its walk.
+  typing: shell(`<label>Note <input id="note" name="note" autocomplete="off"></label><label>Other note <input id="other" name="other" autocomplete="off"></label><label>Last <input id="last" name="last" autocomplete="off"></label>`, `window.reveal = () => {};`),
   // #6: a "show password" in a shadow root turns the field into a text input the user then types into.
   "text-in-shadow": shell(`<login-box id="host"></login-box>`, `const r = document.getElementById("host").attachShadow({ mode: "open" }); r.innerHTML = '<label>Password <input type="password" id="pw"></label>'; window.reveal = () => { r.getElementById("pw").type = "text"; };`),
 };
@@ -303,6 +307,61 @@ describe("an editable heading's text is the user's draft, not the page's outline
       for (const o of r.sections ?? []) assert.ok(o.text === undefined && o.digest === undefined, `a section carries ${JSON.stringify(o)}`);
       assert.equal(r.sectionOverflow, undefined);
     }
+    await tab.close();
+  });
+});
+
+describe("browser autofill and the user's typing (audit MED 3, MED 4)", () => {
+  test("Chrome's autofill fires trusted input and change events with no inputType, and the fields it filled are withheld", async () => {
+    const url = `${roundsOrigin}/autofill`;
+    const tab = await open(url);
+    const { root } = (await tab.send("DOM.getDocument", { depth: -1 })) as { root: { nodeId: number } };
+    const { nodeId } = (await tab.send("DOM.querySelector", { nodeId: root.nodeId, selector: "#email" })) as { nodeId: number };
+    const { node } = (await tab.send("DOM.describeNode", { nodeId })) as { node: { backendNodeId: number } };
+    const fields = [{ name: "EMAIL_ADDRESS", value: "robin@example.test" }, { name: "ADDRESS_HOME_LINE1", value: "1 Synthetic Way" }, { name: "ADDRESS_HOME_CITY", value: "Testville" }, { name: "ADDRESS_HOME_ZIP", value: "00000" }];
+    await tab.send("Autofill.trigger", { fieldId: node.backendNodeId, address: { fields } });
+    let events: { type: string; trusted: boolean; inputType: string | null }[] = [];
+    for (let i = 0; i < 40 && events.filter((e) => e.type === "change").length < 4; i++) {
+      await sleep(50);
+      events = await tab.evaluate("window.events");
+    }
+    // What this settles: autofill's events are trusted, come with no beforeinput, and carry no inputType. So a
+    // trusted event alone cannot make a field's text the user's typing.
+    assert.ok(events.length >= 8, `autofill fired ${JSON.stringify(events)}`);
+    assert.ok(events.every((e) => e.trusted && e.type !== "beforeinput" && e.inputType === null), `autofill fired ${JSON.stringify(events)}`);
+    const reports = await walk(url);
+    assertNoValues(reports, fields.filter((f) => f.value.length >= 3).map((f) => f.value), "autofill");
+    for (const label of ["Email", "Street", "City", "ZIP"]) {
+      const c = reports.flatMap((r) => r.controls).find((x) => x.name === label);
+      assert.ok(c !== undefined, `no ${label} field walked`);
+      // Prefilled when first read after the fill; programmatic when read empty first (this test's open() walks).
+      assert.ok(c.excluded !== undefined || ((c.withheld === "prefilled" || c.withheld === "programmatic") && c.hasValue === null && c.rev === null), `the autofilled ${label} reads ${JSON.stringify(c)}`);
+    }
+    await tab.close();
+  });
+
+  test("a field's rev moves as much for eight typed characters as for one", async () => {
+    const url = `${roundsOrigin}/typing`;
+    const tab = await open(url);
+    const revOf = async (name: string): Promise<number> => {
+      const c = (await walk(url)).flatMap((r) => r.controls).find((x) => x.name === name);
+      assert.ok(c !== undefined && typeof c.rev === "number", `${name} reads ${JSON.stringify(c)}`);
+      return c.rev;
+    };
+    const note0 = await revOf("Note");
+    const other0 = await revOf("Other note");
+    await tab.click(`document.getElementById("note")`);
+    await tab.type("x");
+    await tab.click(`document.getElementById("other")`);
+    for (const ch of "Quarters") await tab.type(ch);
+    await tab.click(`document.getElementById("last")`);
+    const typed = await tab.evaluate<string[]>(`[document.getElementById("note").value, document.getElementById("other").value]`);
+    assert.deepEqual(typed, ["x", "Quarters"]);
+    assert.equal((await revOf("Note")) - note0, 1);
+    assert.equal((await revOf("Other note")) - other0, 1);
+    // Typed, so the user's own: not withheld.
+    const other = (await walk(url)).flatMap((r) => r.controls).find((x) => x.name === "Other note");
+    assert.ok(other?.hasValue === true && other.withheld === undefined, `the typed field reads ${JSON.stringify(other)}`);
     await tab.close();
   });
 });
