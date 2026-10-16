@@ -25,7 +25,8 @@ import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
 import { planError } from "./planner/proposal.ts";
 import { hostKey, hostProofMatches, newHostNonce } from "./host-auth.ts";
-import { classOf, HOST_ANSWERED, withheldBecause, type Outgoing, type SessionRole } from "./send-gate.ts";
+import { classOf, withheldBecause, type Outgoing, type SessionRole } from "./send-gate.ts";
+import { refusedBecause } from "./request-gate.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
 const MAX_LINE_CHARS = 32 * 1024 * 1024;
@@ -351,14 +352,16 @@ export class HelperServer {
             continue;
           }
           const from = session ?? undefined;
-          // A request answered only with host messages is refused by name before any work, to a consumer that is not
-          // the proven host: the answer could not be sent to it (send-gate.ts).
-          const hostOnly = HOST_ANSWERED[m.data.type];
-          if (hostOnly !== undefined && !this.hosts.has(s)) {
-            this.reject(s, `${m.data.type} needs a host hello (host: true): ${hostOnly}`);
+          // Every request passes the inbound gate before any work (request-gate.ts): only the proven host may make
+          // Caret act, change what it may do, or ask for what is derived from the screen or the user's data.
+          const refused = refusedBecause(this.roleOf(s), m.data.type);
+          if (refused !== null) {
+            this.warn(`refused ${m.data.type} from ${this.labels.get(s) ?? "a connection before its hello"} (${this.roleOf(s)}): ${refused}`);
+            this.send(s, { type: "refusal", message: refused });
             continue;
           }
-          if (m.data.type === "fillRequest") void this.helper().handleConsumer(m.data);
+          if (m.data.type === "hello") this.reject(s, "a connection says hello once; this one already has");
+          else if (m.data.type === "fillRequest") void this.helper().handleConsumer(m.data);
           else if (m.data.type === "runPlan" || m.data.type === "taskControl") void this.helper().handleTask(m.data, from);
           else if (m.data.type === "offerControl") void this.helper().handleOffer(m.data, from);
           // The work an accept starts reports as taskProgress and activity under the offer id; a refusal as error plus a stopped taskProgress.
@@ -457,13 +460,10 @@ export class HelperServer {
           // HA2: only clears the session's owner verdicts, so any consumer may send it.
           else if (m.data.type === "sessionLocked") this.helper().handleSessionLocked(m.data);
           // The user's Keep makes a skill, which is consent the router acts on (routing/consent.ts): only the host,
-          // which shows the question, may answer it.
-          else if (m.data.type === "skillAnswer") {
-            if (!this.hosts.has(s)) this.reject(s, "skillAnswer needs a host hello (host: true): only the host shows keep and promote questions");
-            else this.helper().handleSkillAnswer(m.data);
-          }
+          // which shows the question, may answer it (request-gate.ts).
+          else if (m.data.type === "skillAnswer") this.helper().handleSkillAnswer(m.data);
           // The reply names windows and quotes values, so it goes to the asker only, as memory does, and only to the proven
-          // host, which shows it as consent (HOST_ANSWERED refused anyone else above).
+          // host, which shows it as consent (the request gate refused anyone else above).
           else if (m.data.type === "firstLookPreviewRequest") {
             try {
               this.send(s, this.helper().handleFirstLookPreview(m.data));

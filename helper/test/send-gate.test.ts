@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import { HelperMessage, HelperToReader } from "../src/protocol.ts";
-import { classOf, HOST_ANSWERED, MESSAGE_CLASS, withheldBecause, type SessionRole } from "../src/send-gate.ts";
+import { classOf, MESSAGE_CLASS, withheldBecause, type SessionRole } from "../src/send-gate.ts";
 
 /** The `type` literals of a discriminated union, through nested unions such as taskProgress's phases. */
 function typesOf(schema: z.ZodType): string[] {
@@ -39,11 +39,5 @@ describe("send gate classes", () => {
   it("names why a message is withheld", () => {
     expect(withheldBecause("other", "fillProposal")).toBe("fillProposal is derived from the screen or the user's data, and only a host whose proof checked out is sent that");
     expect(withheldBecause("host", "readerCommand")).toBe("readerCommand is the reader's, and this connection is not the reader");
-  });
-
-  it("refuses up front only requests whose answer is a host message", () => {
-    const answers: Record<string, string> = { fillRequest: "fillProposal", planRequest: "planProposal", askAnswer: "askQuestion", firstLook: "firstLookReply", firstLookPreviewRequest: "firstLookPreview", memoryRequest: "memoryReply", memoryNotRight: "memoryReply", memoryDocumentRequest: "memoryDocumentReply", activityRequest: "activityReply", fileConfirm: "fileConfirmReply" };
-    expect(Object.keys(HOST_ANSWERED).sort()).toEqual(Object.keys(answers).sort());
-    for (const answer of Object.values(answers)) expect(classOf(answer)).toBe("host");
   });
 });
