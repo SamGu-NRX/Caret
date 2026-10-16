@@ -8,7 +8,8 @@
 // called again: one writer call per goal.
 //
 // Everything here lives in memory for the goal's life and is never journaled, so a helper restart ends the goal and
-// leaves the rest to the user.
+// leaves the rest to the user. It goes when the goal ends, or sooner when the screen model lets go of a window the goal
+// read (releaseReplay; GoalRuns.windowExpired).
 import { compileProgram } from "../codemode/compile.ts";
 import { jevChooser } from "../codemode/jev-chooser.ts";
 import { DEFAULT_LIMITS } from "../codemode/limits.ts";
@@ -62,10 +63,31 @@ export interface ReplayState {
   used: { newChoices: number; newSteps: number };
   /** The model that wrote the program, recorded on each later draft's origin as on the first run's. */
   writerModel: string;
+  /** Null while the goal is open; once releaseReplay let go of everything read from the screen, the counts it had. */
+  released: { observations: number; choices: number } | null;
+}
+
+/**
+ * Lets go of every copy of screen text the state holds: the frozen observations, the snapshots and the program (its
+ * literals can quote a label), the ledgers (each holds the window states it minted from), and the pending steps. The
+ * counts stay for GoalRuns.replayCounts. A replay still running on this state is refused when it resumes (continueGoal).
+ */
+export function releaseReplay(s: ReplayState): void {
+  if (s.released !== null) return;
+  const r = s.record;
+  s.released = { observations: r.observations.length, choices: r.choices.length };
+  s.retained.clear();
+  s.ledgers.length = 0;
+  s.pending = null;
+  s.pendingSteps = [];
+  s.record = { programDigest: r.programDigest, source: "", gen0: [], observations: [], choices: [], prefix: [], segments: [] };
 }
 
 /** The window id a frozen observation is kept under: never a reader's window id, so nothing acts in it. */
 export const observationId = (n: number, windowId: string): string => `obs${n}:${windowId}`;
+
+/** The reader's window an id names: the window itself, or for an observation id the window it was read from. */
+export const readerWindow = (id: string): string => /^obs\d+:(.*)$/su.exec(id)?.[1] ?? id;
 
 const gen = (n: number) => (ref: string): string => `g${n}:${ref}`;
 
@@ -277,6 +299,8 @@ export async function continueGoal(model: ScreenModel, o: ContinueOptions): Prom
     limits: { chooseCalls: Math.max(0, Math.min(DEFAULT_LIMITS.chooseCalls, GOAL_NEW_CHOICES - state.used.newChoices)), steps: Math.max(0, Math.min(DEFAULT_LIMITS.steps, GOAL_NEW_STEPS - state.used.newSteps)) },
     ...(o.signal === undefined ? {} : { signal: o.signal }),
   });
+  // The goal ended while the program ran (a stop, or a window it read expired): nothing more is recorded.
+  if (state.released !== null) return { ok: false, kind: "goal", says: "the goal ended while Caret was reading", detail: "released" };
   if (!ran.ok) {
     const says = ran.kind === "observeBudget" ? `Caret reads at most ${MAX_OBSERVES} views for one goal` : ran.kind === "diverged" ? "the plan ran differently the second time" : "the plan broke the rules a plan must keep";
     return { ok: false, kind: ran.kind, says, detail: ran.detail };

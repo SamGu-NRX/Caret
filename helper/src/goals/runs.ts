@@ -43,7 +43,7 @@ import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
 import { effectKey, MAX_SEGMENTS, proposedFor, segmentOf, type DonePress } from "./lower.ts";
 import { itemOpened, rowCells, rowSelected } from "./identity.ts";
-import { retainedView, type ContinueResult, type ReplayState } from "./replay.ts";
+import { readerWindow, releaseReplay, retainedView, type ContinueResult, type ReplayState } from "./replay.ts";
 import type { GoalInventory } from "./plan.ts";
 import { contractStale, ContractError, exemptRefusal, guardFor, mintExempt, type Proposed, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
 import { codeGate } from "./gates.ts";
@@ -310,7 +310,8 @@ export class GoalRuns {
   replayCounts(goalId: string): { observations: number; choices: number; newChoices: number; newSteps: number; pending: boolean } | null {
     const r = this.runs.get(goalId)?.replay;
     if (r === undefined || r === null) return null;
-    return { observations: r.record.observations.length, choices: r.record.choices.length, newChoices: r.used.newChoices, newSteps: r.used.newSteps, pending: r.pending !== null };
+    const kept = r.released ?? { observations: r.record.observations.length, choices: r.record.choices.length };
+    return { ...kept, newChoices: r.used.newChoices, newSteps: r.used.newSteps, pending: r.pending !== null };
   }
 
   /** A copy of the plan a goal was offered with, for evaluations (P2's disagreement report); a copy is never offered. */
@@ -910,6 +911,40 @@ export class GoalRuns {
           : `Done: ${verified} step${verified === 1 ? "" : "s"} verified${skipped > 0 ? `, ${skipped} already so` : ""}.`;
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "finished", outcome, verified, skipped, left: left.slice(0, 24).map((l) => clip(l.says, 300)), says: clip(row === undefined ? says : `${says} ${row.says}.`, 600) });
     this.keepCarry(run, left);
+    // After the message, whose left items may quote an observed value.
+    this.releaseObserved(run);
+  }
+
+  /**
+   * Slice 2: an ended goal that observed lets go of what it read in each observation (Greptile on PR #47): its replay
+   * state (goals/replay.ts releaseReplay) and, in its kept plan, the observed windows' texts and the values and sentences
+   * that quote them (forgetSource). The window read at an observation showed the opened item, so its reader window goes
+   * too. A goal that never observed holds no such copy.
+   */
+  private releaseObserved(run: Run): void {
+    if (run.replay === null) return;
+    releaseReplay(run.replay);
+    const observed = [...run.plan.inventory.windowRefs.values()].filter((id) => readerWindow(id) !== id);
+    if (observed.length > 0) this.forgetSource(run.plan.goalId, new Set(observed.flatMap((id) => [id, readerWindow(id)])));
+  }
+
+  /**
+   * Slice 2: the screen model let go of `windowId` (ten minutes without a read; Helper.onExpiry goalReplays). An open
+   * goal that read it, before its first observe or in one, holds that text in its replay state, so the goal stops and
+   * its copies go now. Its next step could only be refused: its source checks read those copies. A running segment is
+   * revoked; its stop then ends the goal.
+   */
+  windowExpired(windowId: string): void {
+    for (const run of this.runs.values()) {
+      const state = run.replay;
+      if (state === null || state.released !== null || run.state === "finished" || run.state === "stopped") continue;
+      const read = new Set([...run.plan.inventory.windowRefs.values(), ...state.retained.keys()].map(readerWindow));
+      if (!read.has(windowId)) continue;
+      const says = "Caret let go of what it read for this goal after ten minutes without seeing that window. The rest is yours";
+      releaseReplay(state);
+      if (run.state === "running") this.revoke(run, "sourceChanged", says);
+      else this.stop(run, "sourceChanged", null, says);
+    }
   }
 
   /**
@@ -1088,6 +1123,7 @@ export class GoalRuns {
     if (run.state === "stopped") return;
     run.state = "stopped";
     this.deps.ended?.(run.plan.goalId);
+    this.releaseObserved(run);
     const done = run.cursor.receipts.filter((r) => r.status !== "handoff").length;
     const total = run.plan.segments.reduce((n, x) => n + x.steps.filter((y) => y.row !== true).length, 0);
     const sentence = `${says.charAt(0).toUpperCase()}${says.slice(1)}, so Caret stopped after ${done} of ${total} steps.`;
@@ -1100,6 +1136,7 @@ export class GoalRuns {
     if (run.state === "stopped") return;
     run.state = "stopped";
     this.deps.ended?.(run.plan.goalId);
+    this.releaseObserved(run);
     // P3 fix-check: a carried preview that ends untaken (expired, its host gone) gives its page back to the ambient offer.
     const page = run.plan.page;
     const doc = page === undefined ? undefined : run.plan.inventory.documents.get(page.windowId);

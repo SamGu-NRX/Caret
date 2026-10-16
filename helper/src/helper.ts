@@ -3469,6 +3469,8 @@ export class Helper {
     plan: (id) => {
       for (const [k, p] of [...this.planOffers]) if (planWindows(p.draft).has(id)) this.withdrawPlan(k, "stale");
     },
+    // A goal that observed keeps what it read there for its replays (goals/replay.ts): an open one stops and lets go.
+    goalReplays: (id) => this.goals.windowExpired(id),
     goalSegments: () => this.goals.onChanges([]),
     runs: () => this.executor.recheck(),
     router: () => {
