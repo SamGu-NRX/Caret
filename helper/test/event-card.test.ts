@@ -12,7 +12,7 @@ import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
-import { HelperMessage, PROTOCOL_VERSION, type AppRef, type OfferAction, type ReaderMessage, type TypedValue } from "../src/protocol.ts";
+import { HelperMessage, PROTOCOL_VERSION, type AppRef, type Node, type OfferAction, type ReaderMessage, type TypedValue } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { DURATION_CHOICES, resolveEventTime } from "../src/offers/event-time.ts";
 import { EventCards, eventCandidate, eventTitle, MAX_PENDING_EVENT_ASKS, personIn, sentences, spansIn, withZones } from "../src/offers/event-card.ts";
@@ -530,6 +530,133 @@ describe("event cards through the helper", () => {
       { title: "Sync with Priya", start: "2026-10-21T08:00:00-05:00", end: "2026-10-21T09:00:00-05:00", startUtc: "2026-10-21T13:00:00.000Z", endUtc: "2026-10-21T14:00:00.000Z" },
     ]);
   });
+
+  // MARK: - the reply order: a thread read first, then Reply (PR #49's journey, native)
+
+  /** A Mail thread with one event line in it; read first with no field focused, then with its reply focused. */
+  const openThreadThenReply = (): {
+    mail: string;
+    reply: string;
+    sentence: string;
+    read: (focusedKey: string | null, withReply: boolean, lineText?: string) => ReaderMessage;
+    lineKey: string;
+  } => {
+    const mail = "6161-2";
+    const app: AppRef = { pid: 6162, bundleId: "com.apple.mail", name: "Mail" };
+    const lineKey = "com.apple.mail/standard/statictext:m1~0";
+    const sentence = "Coffee with Dana on Oct 20, 2026 from 3:00 to 4:00 PM PT.";
+    const values: TypedValue[] = [
+      { kind: "date", text: "Oct 20, 2026", nodeKey: lineKey },
+      { kind: "time", text: "3:00 to 4:00 PM PT", nodeKey: lineKey },
+    ];
+    const history = ["From: Dana Whitfield", "To: me", "Subject: coffee?", "Sure — when works?", "Thanks!"].map((t, i) => text(`com.apple.mail/standard/statictext:h${i}~0`, t));
+    const replyNode: Node = { key: "com.apple.mail/standard/textarea:reply~0", parent: null, role: "AXTextArea", label: "Reply", editable: true };
+    const read = (focusedKey: string | null, withReply: boolean, lineText = sentence): ReaderMessage =>
+      snap(
+        withReply ? [...history, text(lineKey, lineText), replyNode] : [...history, text(lineKey, lineText)],
+        { at: clock, windowId: mail, app, title: "Coffee this week?", focused: true, focusedKey, values, reason: "focus" },
+      );
+    // The user is in Mail, reading the thread.
+    send({ type: "appSwitch", v: PROTOCOL_VERSION, at: clock, from: MAIL, to: app });
+    return { mail, reply: replyNode.key, sentence, read, lineKey };
+  };
+
+  it("offers the thread's event once the user reads it first and then clicks into its reply, with the right title and time", async () => {
+    jev = attendJev(() => "yes");
+    const { mail, reply, sentence, read } = openThreadThenReply();
+    // The thread is read first, with no field of it focused: nothing is judged, nothing offered.
+    send(read(null, false));
+    await helper.eventsSettled;
+    expect(offers()).toHaveLength(0);
+    expect(jev.asked).toHaveLength(0);
+    // Clicking Reply focuses the reply field: the line already in the window's model is judged now.
+    clock += 1000;
+    send(read(reply, true));
+    await helper.eventsSettled;
+    const o = offers();
+    expect(o).toHaveLength(1);
+    expect(o[0]?.endState.text).toBe("Coffee with Dana, Oct 20 5:00 to 6:00 PM");
+    expect(o[0]?.field).toMatchObject({ windowId: mail, key: reply });
+    expect(jev.asked).toEqual([sentence, sentence]);
+    expect(helper.events.shown()).toEqual([
+      { offerKey: o[0]?.offerKey, title: "Coffee with Dana", when: { start: "2026-10-20T17:00:00-05:00", end: "2026-10-20T18:00:00-05:00" } },
+    ]);
+  });
+
+  it("judges a thread's line once: re-entering the reply asks nothing again, and a stale withdrawal stays withdrawn", async () => {
+    jev = attendJev(() => "yes");
+    const { reply, sentence, read, lineKey } = openThreadThenReply();
+    send(read(null, false));
+    await helper.eventsSettled;
+    clock += 1000;
+    send(read(reply, true));
+    await helper.eventsSettled;
+    expect(helper.events.shown()).toHaveLength(1);
+    const o = offers()[0] as OfferAction;
+    // The user reads on (focus leaves the reply) and clicks back into it: no second ask, no second offer.
+    clock += 1000;
+    send(read(null, true));
+    await helper.eventsSettled;
+    clock += 1000;
+    send(read(reply, true));
+    await helper.eventsSettled;
+    expect(jev.asked).toEqual([sentence, sentence]);
+    expect(offers()).toHaveLength(1);
+    expect(helper.events.shown()).toHaveLength(1);
+    // The line is edited away: the offer is withdrawn as stale.
+    clock += 1000;
+    send(read(reply, true, "Coffee with Dana — moved, I will send a time."));
+    await helper.eventsSettled;
+    expect(published.some((m) => m.type === "offerWithdrawn" && m.id === o.offerKey && m.reason === "stale")).toBe(true);
+    // And re-entering the reply brings nothing back.
+    clock += 1000;
+    send(read(null, true, "Coffee with Dana — moved, I will send a time."));
+    clock += 1000;
+    send(read(reply, true, "Coffee with Dana — moved, I will send a time."));
+    await helper.eventsSettled;
+    expect(jev.asked).toEqual([sentence, sentence]);
+    expect(helper.events.shown()).toHaveLength(0);
+  });
+
+  it("offers nothing when the field the user enters is in a window that is no conversation", async () => {
+    jev = attendJev(() => "yes");
+    const notes = "7777-1";
+    const app: AppRef = { pid: 7777, bundleId: "com.apple.TextEdit", name: "TextEdit" };
+    const lineKey = "com.apple.TextEdit/standard/statictext:m1~0";
+    const sentence = "Coffee with Dana on Oct 20, 2026 from 3:00 to 4:00 PM.";
+    const values: TypedValue[] = [
+      { kind: "date", text: "Oct 20, 2026", nodeKey: lineKey },
+      { kind: "time", text: "3:00 to 4:00 PM", nodeKey: lineKey },
+    ];
+    const body = [...["Groceries", "To do", "call the bank about the mortgage", "pick up the ladder"].map((t, i) => text(`com.apple.TextEdit/standard/statictext:b${i}~0`, t)), text(lineKey, sentence)];
+    const notesNode: Node = { key: "com.apple.TextEdit/standard/textarea:body~0", parent: null, role: "AXTextArea", label: "notes", editable: true, frame: [10, 20, 700, 100] };
+    send({ type: "appSwitch", v: PROTOCOL_VERSION, at: clock, from: MAIL, to: app });
+    send(snap(body, { at: clock, windowId: notes, app, title: "notes", focused: true, focusedKey: null, values }));
+    await helper.eventsSettled;
+    expect(jev.asked).toHaveLength(0);
+    clock += 1000;
+    send(snap([...body, notesNode], { at: clock, windowId: notes, app, title: "notes", focused: true, focusedKey: notesNode.key, values, reason: "focus" }));
+    await helper.eventsSettled;
+    expect(offers()).toHaveLength(0);
+    expect(jev.asked).toHaveLength(0);
+  });
+
+  it("adds the thread's event when the harvested offer is taken, and Undo empties the calendar again", async () => {
+    jev = attendJev(() => "yes");
+    const open = openThreadThenReply();
+    send(open.read(null, false));
+    await helper.eventsSettled;
+    clock += 1000;
+    send(open.read(open.reply, true));
+    await helper.eventsSettled;
+    const o = offers()[0] as OfferAction;
+    expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: o.offerKey, actionId: "add", overrides: {}, at: clock })).toMatchObject({ outcome: "done", acted: 1 });
+    expect([...calendar.events.values()]).toEqual([
+      expect.objectContaining({ calendar: "Caret", title: "Coffee with Dana", start: "2026-10-20T17:00:00-05:00", end: "2026-10-20T18:00:00-05:00" }),
+    ]);
+    expect(await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: o.offerKey, action: "undo" })).toMatchObject({ restored: 1 });
+    expect(calendar.events.size).toBe(0);
+  });
 });
 
 describe("judging a batch of changes (CodeRabbit on PR #5)", () => {
@@ -571,5 +698,59 @@ describe("Q1 bug 9: the dogfood's sentence with PT", () => {
         "Oct 8, 3:00 to 4:00 PM PT (America/Los_Angeles, UTC-07:00) / 5:00 to 6:00 PM America/Chicago (UTC-05:00)",
       ]);
     }
+  });
+});
+
+// MARK: - the reply order, routed (PR #49)
+
+describe("the reply order, routed", () => {
+  it("hands the thread's unjudged lines to routed.heard when the user enters a field of the conversation, once", async () => {
+    const model = new ScreenModel();
+    const app: AppRef = { pid: 6163, bundleId: "com.apple.mail", name: "Mail" };
+    const windowId = "6163-1";
+    const lineKey = "com.apple.mail/standard/statictext:m1~0";
+    const sentence = "Coffee with Dana on Oct 20, 2026 from 3:00 to 4:00 PM.";
+    const values: TypedValue[] = [
+      { kind: "date", text: "Oct 20, 2026", nodeKey: lineKey },
+      { kind: "time", text: "3:00 to 4:00 PM", nodeKey: lineKey },
+    ];
+    model.apply(snap([text(lineKey, sentence)], { at: 1000, windowId, app, title: "Coffee this week?", values }));
+    const reply = "com.apple.mail/standard/textarea:reply~0";
+    const changes = model.apply(
+      snap([text(lineKey, sentence), { key: reply, parent: null, role: "AXTextArea", label: "Reply", editable: true }], {
+        at: 2000,
+        windowId,
+        app,
+        title: "Coffee this week?",
+        focused: true,
+        focusedKey: reply,
+        values,
+      }),
+    );
+    model.frontmostPid = app.pid;
+    let heard = 0;
+    const cards = new EventCards({
+      model,
+      askJev: null,
+      publish: () => true,
+      run: () => Promise.reject(new Error("nothing runs")),
+      gate: new OfferGate(DEFAULT_SETTINGS),
+      people: () => [],
+      calendar: "Caret",
+      live: () => true,
+      now: () => 2000,
+      routed: { heard: () => heard++ },
+    });
+    await cards.onChanges(changes);
+    expect(heard).toBe(1);
+    const lines = cards.heard();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.key).toBe(lineKey);
+    expect(lines[0]?.sentence).toBe(sentence);
+    expect(lines[0]?.field).toMatchObject({ windowId, key: reply });
+    // Entering the field again hears nothing more: the lines are already heard.
+    await cards.onChanges([]);
+    expect(heard).toBe(1);
+    expect(cards.heard()).toHaveLength(1);
   });
 });

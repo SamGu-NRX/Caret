@@ -14,6 +14,7 @@ import { nodeText, type Change, type ScreenModel, type WindowState } from "../mo
 import { PROTOCOL_VERSION, type HelperMessage, type OfferAction, type OfferField, type OfferWithdrawn } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import { isConversation } from "../conversation.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import type { PopupBlock, PopupSpecT } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { TaskResult } from "../executor/executor.ts";
@@ -355,6 +356,8 @@ export interface HeardLine {
 export class EventCards {
   /** Sentences already judged, by window and text, so nothing is offered or asked about twice. */
   private readonly judged = new Set<string>();
+  /** The reply field the user last entered, `windowId\0key`, so entering it is noticed once. */
+  private lastField: string | null = null;
   private readonly entries = new Map<string, Entry>();
   private seq = 0;
   /** Bumped when a new reader connects: an answer to a question asked before then is about other windows. */
@@ -409,10 +412,20 @@ export class EventCards {
         const last = this.deps.routed === undefined ? sentences(c.after, false).at(-1) : undefined;
         if (last !== undefined) work.push(this.consider(w, c.key, last, offerField(w, c.key), "typed"));
       } else if (!c.editable && isChat(w)) {
-        const field = this.typingField();
-        if (field !== null) lines.push({ w, key: c.key, text: c.after, field });
+        const t = this.typingField();
+        if (t !== null) lines.push({ w, key: c.key, text: c.after, field: t.field });
       }
     }
+    // The reply order (PR #49): the user read a thread first and then clicked into its reply field. The
+    // focus snapshot arrives with the lines already in the window's model and no change of its own, so
+    // they are judged now - the latest few unjudged ones, newest first, through the same judged set - as
+    // if they had arrived while the user was already typing. Only text the model already holds is read,
+    // and only native conversations: a page window still carries no message text, so it is skipped.
+    const t = this.typingField();
+    const at = t === null ? null : `${t.field.windowId}\u0000${t.field.key}`;
+    const entered = t !== null && at !== this.lastField;
+    this.lastField = at;
+    if (entered && t !== null) { console.log("[DBG] harvest entered", JSON.stringify({ w: t.field.windowId, key: t.field.key })); work.push(...this.enteredConversation(t.w, t.field.key, isChat)); }
     // A conversation that loads its history arrives as many new lines at once; only the latest few are
     // judged, newest first, so the newest line is not the one left waiting for a free ask.
     const routed = this.deps.routed;
@@ -429,14 +442,48 @@ export class EventCards {
     return Promise.all(work).then(() => undefined);
   }
 
-  /** The editable field the user is in now, in the frontmost app; null when there is none. */
-  private typingField(): OfferField | null {
+  /**
+   * Focus entered `field` in a conversation the user had been reading (the reply order, PR #49): the
+   * thread's latest unjudged lines are offered now, newest first, so the offer is on screen as the user
+   * starts the reply rather than only when a sentence finishes. Lines already judged are skipped, and
+   * the judged set is shared with the change path, so nothing is judged twice; routed, the same lines
+   * are heard instead (heardLines runs newest last, so the harvested lines go in oldest first, as
+   * change-driven ones do). Reads only text the model holds - no new walk, and no page-window text.
+   */
+  private enteredConversation(w: WindowState, enteredKey: string, isChat: (w: WindowState) => boolean): Promise<void>[] {
+    const field = offerField(w, enteredKey);
+    if (w.window.kind === PAGE_WINDOW_KIND || !isChat(w)) return [];
+    const fresh: { key: string; fresh: string[] }[] = [];
+    for (const n of [...w.nodes.values()].reverse()) {
+      if (fresh.length >= MAX_NEW_LINES) break;
+      if (n.editable === true || n.states?.includes("secure")) continue;
+      const text = nodeText(n);
+      if (text === null) continue;
+      const unseen = sentences(text, true).filter((s) => !this.judged.has(`${w.window.windowId}\u0000${s}`) && !this.heardLines.some((h) => h.w.window.windowId === w.window.windowId && h.sentence === s));
+      if (unseen.length > 0) fresh.push({ key: n.key, fresh: unseen });
+    }
+    if (fresh.length === 0) { console.log("[DBG] enteredConversation: no fresh"); return []; }
+    console.log("[DBG] enteredConversation fresh:", JSON.stringify(fresh.map((f) => ({ key: f.key, n: f.fresh.length }))));
+    this.deps.count?.("event.replayed");
+    const routed = this.deps.routed;
+    if (routed !== undefined) {
+      const before = this.heardLines.length;
+      for (const f of fresh) for (const s of f.fresh) this.heardLines.push({ w, key: f.key, sentence: s, field });
+      this.heardLines.splice(0, Math.max(0, this.heardLines.length - MAX_NEW_LINES));
+      if (this.heardLines.length !== before) routed.heard();
+      return [];
+    }
+    return fresh.flatMap((f) => f.fresh.map((s) => this.consider(w, f.key, s, field, "conversation")));
+  }
+
+  /** The editable field the user is in now, in the frontmost app, with its window; null when there is none. */
+  private typingField(): { w: WindowState; field: OfferField } | null {
     const model = this.deps.model;
     const id = model.focusedWindowId;
     const w = id === null ? undefined : model.windows.get(id);
     const key = w?.focusedKey ?? null;
     if (w === undefined || key === null || w.nodes.get(key)?.editable !== true || model.frontmostPid !== w.app.pid) return null;
-    return offerField(w, key);
+    return { w, field: offerField(w, key) };
   }
 
   /** The event's start has come (for a card that asks, every possible start): too late to offer or add it. */
@@ -662,6 +709,7 @@ export class EventCards {
     this.entries.clear();
     this.judged.clear();
     this.heardLines.length = 0;
+    this.lastField = null;
   }
 
   private withdraw(offerKey: string, reason: Exclude<OfferWithdrawn["reason"], "reoffered">): void {
