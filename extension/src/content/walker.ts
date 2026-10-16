@@ -261,14 +261,16 @@ export function choiceValueOf(el: Element): string | undefined {
 }
 
 /**
- * A text control's text, for this frame only (content/revs.ts, a write's checks, a restore): an input's or a textarea's
- * value, the text a combobox shows (react-select's chip, not its filter box), an editor's text nodes. The one reader of
- * a text control's text; what it returns is compared in the page and never sent.
+ * A text control's text, for this frame only: an input's or a textarea's value, the text a combobox shows (react-select's
+ * chip, not its filter box), an editor's text. `safe`: an editor's text nodes without embedded controls, secret fields
+ * and hidden subtrees (field-text.ts editorPlainText), for what an answer depends on (a compare, a copy). Without it, an
+ * editor's raw textContent, which only rev and hasValue read: no page-side style lookups on every walk of a large
+ * editor, and never part of any answer. The one reader of a text control's text.
  */
-export function textOf(el: Element, kind: PageControlKind): string {
+export function textOf(el: Element, kind: PageControlKind, safe = false): string {
   if (kind === "combobox" && !(el instanceof HTMLSelectElement)) return shownValue(el);
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
-  if (kind === "contenteditable" && el instanceof HTMLElement) return editorPlainText(el);
+  if (kind === "contenteditable" && el instanceof HTMLElement) return safe ? editorPlainText(el) : (el.textContent ?? "");
   return "";
 }
 

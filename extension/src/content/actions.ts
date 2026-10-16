@@ -136,7 +136,7 @@ export function receiptFor(a: ActAnswer, withheld: boolean): ActAnswer {
 function compare(el: Element, verb: Extract<ActVerb, { kind: "pageCompare" }>): ActAnswer {
   if (!isTextKind(verb.control)) return answer("unsupported", `a ${verb.control} is not a text control`);
   const now = readNow(el, verb.control, false);
-  const answers = compareAnswers(now.withheld === null ? now.text : null, numericOf(el), verb.candidates, () => compareBudget.take(verb.taskId, verb.id));
+  const answers = compareAnswers(now.withheld === null ? textOf(el, verb.control, true) : null, numericOf(el), verb.candidates, () => compareBudget.take(verb.taskId, verb.id));
   return answer("ok", null, { compare: answers });
 }
 
@@ -155,7 +155,7 @@ function sourceGrant(reg: Registry, ids: readonly string[], deadline: number): A
       continue;
     }
     const now = readNow(r.el, kind, false);
-    out[id] = now.withheld === null ? now.text.slice(0, MAX_SOURCE_CHARS) : null;
+    out[id] = now.withheld === null ? textOf(r.el, kind, true).slice(0, MAX_SOURCE_CHARS) : null;
   }
   return answer("ok", null, { source: out });
 }

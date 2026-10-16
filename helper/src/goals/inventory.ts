@@ -54,7 +54,8 @@ export function windowRevision(w: WindowState): string {
   w = redactWindow(w);
   // Slice 2: a selected node adds its selection, so a row selected between a preview and its Tab is another revision. A
   // window with nothing selected hashes as it did before.
-  return digest(JSON.stringify([w.window.title, ...[...w.nodes.values()].map((n) => [n.key, n.role, n.label ?? "", n.value ?? "", n.editable === true, ...(n.states?.includes("selected") === true ? ["selected"] : [])])]));
+  // A web page's text field joins by its rev and whether it is unread, since it sends no text (counsel 2026-10-09).
+  return digest(JSON.stringify([w.window.title, ...[...w.nodes.values()].map((n) => [n.key, n.role, n.label ?? "", n.value ?? "", n.editable === true, ...(n.states?.includes("selected") === true ? ["selected"] : []), ...(n.rev === undefined && n.unread !== true ? [] : [n.rev ?? null, n.unread === true])])]));
 }
 
 /** Roles whose text is a message's own words, not a control's: what a message header is read from. */
