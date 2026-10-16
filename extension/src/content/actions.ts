@@ -112,7 +112,10 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
   if (verb.kind === "pageChooseOption") {
     a = verb.control === "combobox" ? await chooseOption(r.el, verb, check, alive, r.rebound) : verb.control === "button" ? await pressOption(r.el, verb, check, alive) : answer("unsupported", `a ${verb.control} is not a custom listbox; a native select takes pageSelect`);
   } else if (verb.kind === "pageInsertText") {
-    a = await insertAtCaret(r.el, verb, gateWith(alive, check));
+    // A withheld field's text is not read, and an insert checks the text before its caret against `expect`: answering
+    // that would confirm a guess of it. Refused before the check (audit of PR #52, MED 5).
+    const held = isTextKind(verb.control) ? readNow(r.el, verb.control, false).withheld : null;
+    a = held !== null ? answer("excluded", `the field holds text Caret does not read (${held})`) : await insertAtCaret(r.el, verb, gateWith(alive, check));
   } else if (verb.kind === "pageAttachFile") {
     // Once the file is in, an upload widget often writes its name or a status line into the field's label (Lever,
     // Ashby): after that point the name may change and the element is still the one Caret wrote (W4 review #6).

@@ -248,6 +248,18 @@ describe("the page's own writes, restores and compares, end to end, and no copy"
     const emailTarget = { ...target, id: email.id, control: email.kind, name: email.name };
     assert.deepEqual((await command({ kind: "pageCompare", ...emailTarget, candidates: ["set-by-page@example.test"] })).compare, ["unknown"]);
     assert.equal((await command({ kind: "pageWrite", ...emailTarget, expectRev: 0, value: "robin@example.test" })).outcome, "excluded");
+    // Nor an insert at the caret of a text field the page's script filled, which would confirm a guess of its text by
+    // the insert's check of the text before the caret (audit MED 5): refused before that check.
+    await tab.evaluate(`(() => { document.getElementById("m_name").value = "Dana from the page"; return true; })()`);
+    s = await walked();
+    const named = field("Full name") as ReturnType<typeof field> & { withheld?: string };
+    assert.equal(named.withheld, "programmatic");
+    await tab.click(`document.getElementById("m_name")`);
+    await tab.evaluate(`(() => { const e = document.getElementById("m_name"); e.setSelectionRange(e.value.length, e.value.length); return true; })()`);
+    await helperSays({ type: "scopedActGrant", taskId: "t1", at: Date.now(), expires: Date.now() + 60_000, scope: { kind: "page", engine: "e-walk", tabId, frameId: top.frameId, origin: top.origin, navGen: top.navGen } });
+    const inserted = await command({ kind: "pageInsertText", ...target, id: named.id, expect: "Dana from the page", text: "x" });
+    assert.equal(inserted.outcome, "excluded", JSON.stringify(inserted));
+    assert.equal(await tab.evaluate<string>(`document.getElementById("m_name").value`), "Dana from the page");
     const sent = await inWorker<string>("JSON.stringify(globalThis.__sent)");
     assert.ok(!sent.includes("set-by-page@example.test"), "the worker sent the page's own text");
     await tab.close();
