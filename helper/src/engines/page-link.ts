@@ -785,10 +785,10 @@ export class PageEngineLink implements ReaderLink {
    * Acts, then brings the model up to date before the executor reads the answer.
    *
    * A text write or tick/radio check the page verified (ok or alreadyTrue) is not followed by a walk:
-   * the model is patched for that one control from what the verb set and the page read back (patched()). P1 measured
+   * the model is patched for that one control from what the verb set and the page's readings say (patched(), learn()). P1 measured
    * about 110 ms per re-walk on Lever against about 1 ms for the hop (~/.caret-run/evidence/screen/p1/loop-canned/
    * page-loop.md), and the executor walks the window again at the start of its next step anyway, so each write paid
-   * for two walks. The content script's `expect` check still guards each write against a field that changed since the
+   * for two walks. The content script's rev check still guards each write against a field that changed since the
    * walk. What the page does in reaction (a revealed field, reformatting, another injector's write) is seen by the next
    * step's refresh walk, and after the last such act by one trailing walk (TRAILING_WALK_MS).
    *
