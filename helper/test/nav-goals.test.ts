@@ -5,6 +5,8 @@
 // code is new, so a value Caret did not read cannot pass.
 import { afterEach, describe, expect, it } from "vitest";
 import type { AskJev } from "../src/fill/jev.ts";
+import { observationId } from "../src/goals/replay.ts";
+import { holdsLineTable } from "../src/privacy.ts";
 import { PROTOCOL_VERSION, type GoalProgress, type ReaderVerb, type TaskProgress } from "../src/protocol.ts";
 import { confirmationCode, goalScene, mailboxWindow, mailMessages, MAILBOX, MAILBOX_REPLY, mailboxRowKey, standInJev, userOpens, WEBMAIL_ID, WEBMAIL_REPLY, webmailWindow, type DeskMessage, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 
@@ -174,6 +176,8 @@ describe("native task: open Kayak's message, then Dana's, and draft the reply (m
     const run = kept(sc, goalId);
     expect(run).toBeDefined();
     for (const text of [KAYAK_ONLY, code, "Could you send me the confirmation number"]) expect(quotes(run?.replay, text)).toBe(false);
+    // Nor does the line-table cache keep either frozen copy (privacy.ts; Greptile on #50).
+    for (const n of [1, 2]) expect(holdsLineTable(observationId(n, "6262-1"))).toBe(false);
     // The kept plan quotes neither message's body; the reply Caret wrote, with its code, stays as written.
     for (const text of [KAYAK_ONLY, "Could you send me the confirmation number"]) expect(quotes(run?.plan, text)).toBe(false);
     expect(sc.helper.goals.replayCounts(goalId)).toMatchObject({ observations: 2, pending: false });
@@ -186,10 +190,12 @@ describe("native task: open Kayak's message, then Dana's, and draft the reply (m
     const first = await sc.request(INSTRUCTION);
     await acceptAndDo(sc, first.goalId, () => userOpens(sc.desk, "6262-1", messages, "kayak"));
     expect(quotes(kept(sc, first.goalId)?.replay, KAYAK_ONLY)).toBe(true);
+    expect(holdsLineTable(observationId(1, "6262-1"))).toBe(true);
     await sc.helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: `${first.goalId}:s0`, action: "stop" }, sc.session);
     expect(last(sc, "stopped")).toMatchObject({ reason: "you" });
     const run = kept(sc, first.goalId);
     for (const text of [KAYAK_ONLY, code]) expect(quotes(run?.replay, text)).toBe(false);
+    expect(holdsLineTable(observationId(1, "6262-1"))).toBe(false);
     expect(quotes(run?.plan, KAYAK_ONLY)).toBe(false);
     expect(sc.helper.goals.replayCounts(first.goalId)).toMatchObject({ observations: 1 });
   });
@@ -212,10 +218,12 @@ describe("native task: open Kayak's message, then Dana's, and draft the reply (m
     sc.helper.tick(lastRead + 10 * MIN - 10_000);
     expect(sc.helper.model.windows.has("6262-1")).toBe(true);
     expect(quotes(kept(sc, first.goalId)?.replay, KAYAK_ONLY)).toBe(true);
+    expect(holdsLineTable(observationId(1, "6262-1"))).toBe(true);
     sc.helper.tick(lastRead + 10 * MIN + 1_000);
     expect(sc.helper.model.windows.has("6262-1")).toBe(false);
     // At once, from the expiry list: the running segment's own stop comes later.
     for (const text of [KAYAK_ONLY, code]) expect(quotes(kept(sc, first.goalId)?.replay, text)).toBe(false);
+    expect(holdsLineTable(observationId(1, "6262-1"))).toBe(false);
     await done;
     expect(last(sc, "stopped")).toMatchObject({ reason: "sourceChanged", says: expect.stringContaining("Caret let go of what it read for this goal after ten minutes") });
     expect(quotes(kept(sc, first.goalId)?.plan, KAYAK_ONLY)).toBe(false);
