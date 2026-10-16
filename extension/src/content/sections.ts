@@ -149,7 +149,7 @@ export interface OutlineReader<E extends OutlineElement<E>> {
   shadowRoot(el: E): { readonly children: ArrayLike<E> } | null;
   /** A slot's assigned elements, flattened, walked where the slot is; null for an element that is no slot. */
   assigned(el: E): readonly E[] | null;
-  /** An element's text, as textContent gives it but without any secret field inside it (secret-dom.ts safeText). */
+  /** An element's text, as textContent gives it but without any field inside it, and none for an element that is itself a field or editing host (secret-dom.ts outlineText). */
   text(el: E): string;
   /**
    * A section text that must not leave the frame (one the walk's exclusions would match), given as sectionName reads

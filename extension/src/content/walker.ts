@@ -13,7 +13,7 @@ import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
 import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
 import type { SecretKind } from "./secret.ts";
-import { safeText, secretFieldOf } from "./secret-dom.ts";
+import { outlineText, secretFieldOf } from "./secret-dom.ts";
 import { watchPasswords } from "./password-watch.ts";
 import { editorPlainText } from "./field-text.ts";
 import { shadowRootOf } from "./shadow.ts";
@@ -343,8 +343,8 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     shadowRoot: shadowRootOf,
     assigned: (el) => (el instanceof HTMLSlotElement ? slotted(el) : null),
     excluded: (name) => SELF_IDENTIFICATION.test(name),
-    // A heading or label that holds a secret field is read without it (secret-dom.ts).
-    text: safeText,
+    // A heading or label that holds a secret field is read without it, and one that is itself editable reads as none (secret-dom.ts).
+    text: outlineText,
   });
   for (const f of candidates()) {
     const why = exclusionOf(f.el, f.name);

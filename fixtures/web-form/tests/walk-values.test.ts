@@ -266,6 +266,8 @@ const ROUND4: Record<string, string> = {
   "slotted-otp": shell(`<otp-box id="host"><input id="d1" aria-label="Digit 1" maxlength="1"><input id="d2" aria-label="Digit 2" maxlength="1"><input id="d3" aria-label="Digit 3" maxlength="1"></otp-box>`, `document.getElementById("host").attachShadow({ mode: "open" }).innerHTML = '<div role="textbox" aria-label="Verification code"><slot></slot></div>'; window.reveal = () => {};`),
   // The label rule: an editor named by its own id would be named by its draft.
   "self-labelled-editor": shell(`<div contenteditable="true" id="ed" aria-labelledby="ed" style="min-height: 2em"></div><input id="other" aria-labelledby="ed">`, `window.reveal = () => {};`),
+  // Audit HIGH 1: a title the user types into an editable heading, an editable role=heading and an editable legend.
+  "editable-headings": shell(`<h1 contenteditable="true" id="title" style="min-height: 1em"></h1><div role="heading" aria-level="2" contenteditable="true" id="sub" style="min-height: 1em"></div><fieldset><legend contenteditable="true" id="leg" style="min-width: 4em; min-height: 1em"></legend><input id="n" aria-label="Name"></fieldset>`, `window.reveal = () => {};`),
   // #6: a "show password" in a shadow root turns the field into a text input the user then types into.
   "text-in-shadow": shell(`<login-box id="host"></login-box>`, `const r = document.getElementById("host").attachShadow({ mode: "open" }); r.innerHTML = '<label>Password <input type="password" id="pw"></label>'; window.reveal = () => { r.getElementById("pw").type = "text"; };`),
 };
@@ -278,6 +280,26 @@ describe("names never read from an editable element (the counsel's label rule)",
     await tab.click(`document.getElementById("other")`);
     const reports = await walk(url);
     assertNoValues(reports, ["Dear Maya", "locker code"], "self-labelled-editor");
+    await tab.close();
+  });
+});
+
+describe("an editable heading's text is the user's draft, not the page's outline", () => {
+  test("a typed h1, role=heading and legend reach no heading list, section text or section digest", async () => {
+    const url = `${roundsOrigin}/editable-headings`;
+    const tab = await open(url);
+    await typeInto(tab, `document.getElementById("title")`, "Plan for Maya's surprise");
+    await typeInto(tab, `document.getElementById("sub")`, "Budget kept from Ravi");
+    await typeInto(tab, `document.getElementById("leg")`, "Locker 7130 notes");
+    await tab.click(`document.getElementById("n")`);
+    const reports = await walk(url) as (Report & { headings: string[]; sections?: { text?: string; digest?: string }[]; sectionOverflow?: string[] })[];
+    assertNoValues(reports, ["Maya", "Ravi", "7130"], "editable-headings");
+    for (const r of reports) {
+      assert.deepEqual(r.headings, [], "an editable heading's text reached the heading list");
+      // The page has no other heading or legend, so any section digest would be one of the typed titles, unsalted.
+      for (const o of r.sections ?? []) assert.ok(o.text === undefined && o.digest === undefined, `a section carries ${JSON.stringify(o)}`);
+      assert.equal(r.sectionOverflow, undefined);
+    }
     await tab.close();
   });
 });
