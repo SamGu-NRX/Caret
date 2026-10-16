@@ -338,6 +338,8 @@ const ROUND4: Record<string, string> = {
   typing: shell(`<label>Note <input id="note" name="note" autocomplete="off"></label><label>Other note <input id="other" name="other" autocomplete="off"></label><label>Last <input id="last" name="last" autocomplete="off"></label>`, `window.reveal = () => {};`),
   // Audit LOW 7: a field whose own script keeps only the first five characters of what is written into it.
   trims: shell(`<label>Short name <input id="short" name="short"></label>`, `document.getElementById("short").addEventListener("input", (e) => { e.target.value = e.target.value.slice(0, 5); }); window.reveal = () => {};`),
+  // Greptile on PR #52: an editor holding a non-editable one-time-code widget, whose code the page then changes.
+  "editor-with-code": shell(`<div contenteditable="true" id="ed" aria-label="Notes"><p>Meeting notes</p><div role="textbox" contenteditable="false" aria-label="Verification code" id="code">482913</div></div>`, `window.reveal = () => { document.getElementById("code").textContent = "771204"; };`),
   // #6: a "show password" in a shadow root turns the field into a text input the user then types into.
   "text-in-shadow": shell(`<login-box id="host"></login-box>`, `const r = document.getElementById("host").attachShadow({ mode: "open" }); r.innerHTML = '<label>Password <input type="password" id="pw"></label>'; window.reveal = () => { r.getElementById("pw").type = "text"; };`),
 };
@@ -425,6 +427,20 @@ describe("browser autofill and the user's typing (audit MED 3, MED 4)", () => {
     // Typed, so the user's own: not withheld.
     const other = (await walk(url)).flatMap((r) => r.controls).find((x) => x.name === "Other note");
     assert.ok(other?.hasValue === true && other.withheld === undefined, `the typed field reads ${JSON.stringify(other)}`);
+    await tab.close();
+  });
+});
+
+describe("an editor with a secret widget inside it (Greptile, PR #52)", () => {
+  test("is read without the widget: a change of the code leaves the editor's rev as it was", async () => {
+    const url = `${roundsOrigin}/editor-with-code`;
+    const tab = await open(url);
+    const notes = async () => (await walk(url)).flatMap((r) => r.controls).find((c) => c.name === "Notes");
+    const before = await notes();
+    assert.ok(before !== undefined && typeof before.rev === "number" && before.hasValue === true, `the editor reads ${JSON.stringify(before)}`);
+    await tab.evaluate("window.reveal()");
+    const after = await notes();
+    assert.equal(after?.rev, before.rev, "the editor's rev moved with the code inside it");
     await tab.close();
   });
 });

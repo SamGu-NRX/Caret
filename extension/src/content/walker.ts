@@ -262,15 +262,17 @@ export function choiceValueOf(el: Element): string | undefined {
 
 /**
  * A text control's text, for this frame only: an input's or a textarea's value, the text a combobox shows (react-select's
- * chip, not its filter box), an editor's text. `safe`: an editor's text nodes without embedded controls, secret fields
- * and hidden subtrees (field-text.ts editorPlainText), for what an answer depends on (a compare, a copy). Without it, an
- * editor's raw textContent, which only rev and hasValue read: no page-side style lookups on every walk of a large
- * editor, and never part of any answer. The one reader of a text control's text.
+ * chip, not its filter box), an editor's text nodes without embedded controls, secret fields and hidden subtrees
+ * (field-text.ts editorPlainText). Raw textContent would skip editorPlainText's style lookups on every walk of a large
+ * editor, but it holds a secret widget's text, which rev would then digest. The cost of reading a large editor this
+ * way on each walk is unmeasured. The one reader of a text control's text.
  */
-export function textOf(el: Element, kind: PageControlKind, safe = false): string {
+export function textOf(el: Element, kind: PageControlKind): string {
   if (kind === "combobox" && !(el instanceof HTMLSelectElement)) return shownValue(el);
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
-  if (kind === "contenteditable" && el instanceof HTMLElement) return safe ? editorPlainText(el) : (el.textContent ?? "");
+  // An editor is read as its own text nodes, never with a secret widget or another control inside it (field-text.ts),
+  // for its rev as for every comparison, so no secret's text is read or digested (Greptile, PR #52).
+  if (kind === "contenteditable" && el instanceof HTMLElement) return editorPlainText(el);
   return "";
 }
 
