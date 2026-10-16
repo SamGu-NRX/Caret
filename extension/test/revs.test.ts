@@ -25,7 +25,7 @@ describe("rev", () => {
     expect(revs.read(el, "", true).rev).toBe(0);
     keystroke(revs, el, "", "a");
     expect(revs.read(el, "a", true).rev).toBe(1);
-    expect(revs.caretWrote(el, "Robin", false)).toBe(2);
+    expect(revs.caretWrote(el, "Robin", false, true)).toBe(2);
     expect(revs.read(el, "Robin", true).rev).toBe(2);
     // A page script's change, seen by the next reading.
     expect(revs.read(el, "Robin V", true).rev).toBe(3);
@@ -149,14 +149,28 @@ describe("where an input's text came from", () => {
     const revs = new Revs<object>();
     const el = {};
     revs.read(el, "", true);
-    revs.caretWrote(el, "Robin Vale", false);
+    revs.caretWrote(el, "Robin Vale", false, true);
     expect(revs.read(el, "Robin Vale", true).origin).toBe("caret");
     expect(revs.read(el, "Robin Vale!", true).origin).toBe("programmatic");
     const typed = {};
     revs.read(typed, "", true);
-    revs.caretWrote(typed, "Robin", false);
+    revs.caretWrote(typed, "Robin", false, true);
     keystroke(revs, typed, "Robin", "Robin V");
     expect(revs.read(typed, "Robin V", true).origin).toBe("clean");
+  });
+
+  it("is programmatic, not Caret's, when Caret's write did not land as written (audit LOW 7)", () => {
+    const revs = new Revs<object>();
+    const el = {};
+    revs.read(el, "", true);
+    // The page kept part of the value, or merged it with its own text.
+    revs.caretWrote(el, "Robin Va", false, false);
+    const { origin } = revs.read(el, "Robin Va", true);
+    expect(origin).toBe("programmatic");
+    expect(withheldFor(null, origin)).toBe("programmatic");
+    // Emptied by the write: nothing to withhold.
+    revs.caretWrote(el, "", false, false);
+    expect(revs.read(el, "", true).origin).toBe("clean");
   });
 
   it("never applies prefilled or programmatic to a textarea or an editor", () => {

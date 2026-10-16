@@ -291,6 +291,30 @@ describe("a combobox holding the user's own text (audit LOW 6)", () => {
   });
 });
 
+describe("a write the page changed (audit LOW 7)", () => {
+  test("leaves text that is not Caret's own, so the walk withholds it", async () => {
+    const url = `${roundsOrigin}/trims`;
+    const tab = await open(url);
+    await helperSays({ type: "engineReady", engine: "e-trim" });
+    const tabId = await inWorker<number>(`chrome.tabs.query({ url: ${JSON.stringify(`${url}*`)} }).then(([t]) => t.id)`);
+    const snapshot = async (id: string) => {
+      await helperSays({ type: "pageCommand", id, expires: Date.now() + 8000, verb: { kind: "pageWalk", tabId } }, id);
+      const s = await inWorker<{ frames: { frameId: number; documentId: string; origin: string; navGen: number; controls: (Report["controls"][number] & { id: string })[] }[] }>(`globalThis.__sent.findLast((x) => x.type === "pageSnapshot")`);
+      const top = s.frames[0] as (typeof s.frames)[number];
+      return { top, short: top.controls.find((c) => c.name === "Short name") as Report["controls"][number] & { id: string } };
+    };
+    const { top, short } = await snapshot("tw1");
+    await helperSays({ type: "scopedActGrant", taskId: "t3", at: Date.now(), expires: Date.now() + 60_000, scope: { kind: "page", engine: "e-trim", tabId, frameId: top.frameId, origin: top.origin, navGen: top.navGen } });
+    const verb = { kind: "pageWrite", tabId, frameId: top.frameId, documentId: top.documentId, id: short.id, control: short.kind, name: short.name, taskId: "t3", expectRev: short.rev, value: "Robin Vale" };
+    const wrote = (await helperSays({ type: "pageCommand", id: "tc1", expires: Date.now() + 8000, verb }, "tc1")) as Record<string, unknown>;
+    assert.equal(wrote.outcome, "failed", JSON.stringify(wrote));
+    assert.equal(await tab.evaluate<string>(`document.getElementById("short").value`), "Robin");
+    const after = (await snapshot("tw2")).short;
+    assert.ok(after.withheld === "programmatic" && after.hasValue === null && after.rev === null, `the trimmed field reads ${JSON.stringify(after)}`);
+    await tab.close();
+  });
+});
+
 /** The six round-4 cases of PR #14, each a page whose script does what the review found, after the user typed a secret. */
 const shell = (body: string, script: string): string => `<!doctype html><meta charset="utf-8"><title>Round 4</title><form id="f">${body}</form><script>${script}</script>`;
 const ROUND4: Record<string, string> = {
@@ -312,6 +336,8 @@ const ROUND4: Record<string, string> = {
   autofill: shell(`<label>Email <input id="email" name="email" autocomplete="email"></label><label>Street <input id="street" name="street" autocomplete="address-line1"></label><label>City <input id="city" name="city" autocomplete="address-level2"></label><label>ZIP <input id="zip" name="zip" autocomplete="postal-code"></label>`, `window.events = []; for (const t of ["beforeinput", "input", "change"]) addEventListener(t, (e) => { window.events.push({ type: e.type, trusted: e.isTrusted, inputType: e.inputType ?? null }); }, true); window.reveal = () => {};`),
   // Audit MED 4: two fields to type into, on a page of its own, so no closing tab of another test answers its walk.
   typing: shell(`<label>Note <input id="note" name="note" autocomplete="off"></label><label>Other note <input id="other" name="other" autocomplete="off"></label><label>Last <input id="last" name="last" autocomplete="off"></label>`, `window.reveal = () => {};`),
+  // Audit LOW 7: a field whose own script keeps only the first five characters of what is written into it.
+  trims: shell(`<label>Short name <input id="short" name="short"></label>`, `document.getElementById("short").addEventListener("input", (e) => { e.target.value = e.target.value.slice(0, 5); }); window.reveal = () => {};`),
   // #6: a "show password" in a shadow root turns the field into a text input the user then types into.
   "text-in-shadow": shell(`<login-box id="host"></login-box>`, `const r = document.getElementById("host").attachShadow({ mode: "open" }); r.innerHTML = '<label>Password <input type="password" id="pw"></label>'; window.reveal = () => { r.getElementById("pw").type = "text"; };`),
 };

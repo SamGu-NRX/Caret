@@ -249,7 +249,7 @@ async function writeText(el: HTMLInputElement | HTMLTextAreaElement, verb: Extra
   if (disabled) return answer("failed", "the field is disabled or read-only");
   const rec = records.begin(verb.taskId, el, before, verb.value, now.rev, trusted0);
   const keep = (): void => {
-    rec.revAfter = revs.caretWrote(el, el.value, revs.trustedCount(el) !== trusted0);
+    rec.revAfter = revs.caretWrote(el, el.value, revs.trustedCount(el) !== trusted0, equivalentFor({ numeric }, el.value, verb.value));
     rec.trustedAfter = revs.trustedCount(el);
   };
   const pushed = await pushValue(el, verb.value, check, gate, () => (el.value !== before ? answer("stale", "the page changed the field when it took focus") : null), keep);
@@ -287,10 +287,10 @@ async function restoreText(el: HTMLInputElement | HTMLTextAreaElement, verb: Ext
   const pushed = await pushValue(el, rec.before, check, gate, () => {
     const w = why();
     return w === null ? null : refused(w);
-  }, () => void revs.caretWrote(el, el.value, revs.trustedCount(el) !== trusted0));
+  }, () => void revs.caretWrote(el, el.value, revs.trustedCount(el) !== trusted0, el.value === rec.before));
   if (!pushed.done) return pushed.answer;
   const typed = revs.trustedCount(el) !== trusted0;
-  const rev = revs.caretWrote(el, el.value, typed);
+  const rev = revs.caretWrote(el, el.value, typed, el.value === rec.before);
   if (typed) return answer("failed", "your input reached the field while Caret put it back");
   if (el.value !== rec.before) return answer("failed", "the page holds other text than Caret put back");
   records.pop(verb.taskId, el);

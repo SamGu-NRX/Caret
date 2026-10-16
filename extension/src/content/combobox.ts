@@ -167,8 +167,9 @@ async function settledOptions(el: Element, f: Flavor, listbox: () => Element | n
  */
 function comboReadings(el: Element, before: string, now: string, picked: string | null, trusted0: number): WriteReadings {
   const typed = revs.trustedCount(el) !== trusted0;
-  const rev = now === before && !typed ? revs.read(el, now, isInput(el)).rev : revs.caretWrote(el, now, typed);
   const landed = picked !== null && normalizeName(now) === normalizeName(picked);
+  // Caret's own only when it shows Caret's pick; any other text the act left is the page's (revs.caretWrote).
+  const rev = now === before && !typed ? revs.read(el, now, isInput(el)).rev : revs.caretWrote(el, now, typed, landed);
   return { sameAsBefore: now === before, landed, equivalent: landed, empty: now === "", typedBetween: typed, rev };
 }
 

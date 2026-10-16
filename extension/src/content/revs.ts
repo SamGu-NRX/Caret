@@ -122,15 +122,20 @@ export class Revs<E extends object> {
     if (r.origin === "caret") r.origin = "clean";
   }
 
-  /** Caret's own write left `text` in the element. `typed`: a trusted event came while it wrote, so the text may be the user's too. */
-  caretWrote(el: E, text: string, typed: boolean): number {
+  /**
+   * Caret's own write left `text` in the element. `ours`: `text` is equivalent to what Caret wrote (the write landed);
+   * `typed`: a trusted event came while it wrote, so the text may be the user's too. Only Caret's own text, with no
+   * input of the user's, is `caret`; other non-empty text a write left (the page kept, merged or changed it) is
+   * `programmatic`, so it is withheld (audit of PR #52, LOW 7).
+   */
+  caretWrote(el: E, text: string, typed: boolean, ours: boolean): number {
     const r = this.rec(el);
     r.rev++;
     r.last = this.digestOf(text);
     r.seenTrusted = r.trusted;
     r.typedAt = null;
     r.foreign = false;
-    r.origin = text === "" ? "clean" : typed ? "programmatic" : "caret";
+    r.origin = text === "" ? "clean" : typed || !ours ? "programmatic" : "caret";
     return r.rev;
   }
 
