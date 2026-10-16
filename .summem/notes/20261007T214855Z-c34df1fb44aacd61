@@ -1,0 +1,1 @@
+helper/test/pv1-structure.test.ts counts every raw model.windows.get/values call per function in request builders; a new local-only read (e.g. re-reading the form after Jev asks) fails it until its count is raised with a comment.
