@@ -243,14 +243,27 @@ describe("undo and stop across the two segments", () => {
     expect(r.page.shown("w6")).toBe("");
   });
 
-  it("a Stop while the goal reads what its writes revealed offers no follow-up and dispatches nothing more", async () => {
-    const r = await wizardRig();
+  it("a Stop while the goal plans what its writes revealed offers no follow-up and dispatches nothing more", async () => {
+    // The follow-up's scope question waits until the user's Stop has arrived.
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let scopeAsks = 0;
+    const r = await wizardRig({
+      jev: (inner) => async (req) => {
+        if (req.purpose === "ask.scope" && ++scopeAsks > 2) await held;
+        return inner(req);
+      },
+    });
     dependsOnCountry(r.page);
     const first = (await r.ask(ASK)) as Segment;
     await r.accept(first);
-    // The run ended; the goal is reading the page and planning what appeared. The user's Stop arrives now.
+    for (let i = 0; i < 200 && scopeAsks <= 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(scopeAsks).toBeGreaterThan(2);
     const acts = r.page.verbs.length;
     await r.helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: `${first.goalId}:s0`, action: "stop" });
+    release();
     await r.helper.goals.idle();
     expect(followUps(r, first.goalId)).toEqual([]);
     expect(goalMessages(r).find((m): m is Stopped => m.event === "stopped" && m.goalId === first.goalId)).toMatchObject({ reason: "you" });

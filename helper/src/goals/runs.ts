@@ -21,6 +21,11 @@
 // Slice 2: a goal whose program observes after a list navigation is never replanned. Once its navigation is verified,
 // the goal reads the window and replays the same program (goals/replay.ts); the steps after what already ran become
 // further segments of the same goal, each with its own acceptance. A stop ends such a goal with the rest left to the user.
+//
+// A page goal's own verified writes can show fields that were not on the page when it was planned (a State that appears
+// once Country is set). After its last segment it reads the page again and plans the empty fields that appeared
+// (followUp); once it has finished, that plan is offered as a follow-up goal replacing it (reason afterReveal), which
+// needs its own acceptance. Once per request, within MAX_SEGMENTS.
 import type { SavedReader } from "../fill/alternate.ts";
 import { fieldFingerprint } from "../fill/ask-scope.ts";
 import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
@@ -43,7 +48,7 @@ import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
 import { effectKey, MAX_SEGMENTS, proposedFor, segmentOf, type DonePress } from "./lower.ts";
 import { itemOpened, rowCells, rowSelected } from "./identity.ts";
-import { retainedView, type ContinueResult, type ReplayState } from "./replay.ts";
+import { GOAL_NEW_CHOICES, retainedView, type ContinueResult, type ReplayState } from "./replay.ts";
 import type { GoalInventory } from "./plan.ts";
 import { contractStale, ContractError, exemptRefusal, guardFor, mintExempt, type Proposed, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
 import { codeGate } from "./gates.ts";
@@ -90,7 +95,10 @@ export interface GoalCursor {
   bindings: Record<string, { windowId: string | null; key: string; role: string; label: string }>;
 }
 
-/** `observing`: a navigation was verified and the goal is reading the window and replaying its program; nothing runs. */
+/**
+ * `observing`: a navigation was verified and the goal is reading the window and replaying its program, or a page goal's
+ * last segment ran and the goal is reading the page and planning what its writes revealed (followUp); nothing runs.
+ */
 type State = "awaiting" | "running" | "observing" | "finished" | "stopped";
 
 interface Run {
@@ -138,6 +146,8 @@ interface Run {
   replay: ReplayState | null;
   /** Slice 2: the warnings a replay's lowering added, shown with the first segment it added (by that segment's index). */
   laterWarnings: Map<number, string[]>;
+  /** Whether this goal is, or replaces, a follow-up for fields a page goal's writes revealed (followUp): there is one per request. */
+  followedUp: boolean;
 }
 
 /**
@@ -174,13 +184,26 @@ export interface Replan {
   why: GoalStopReason | "nextPage";
   /** P3: the host session the goal was offered to: what its previews may show (an attach row needs GOAL_FILES_CAPABILITY). */
   session: string | undefined;
-  /**
-   * P2: a page goal's continuation context (GoalPlan.page), so the replanner plans the page again (page-planner.ts)
-   * rather than asking a writer; `revealed` names the controls a finished page goal's writes showed, which are then the
-   * fresh plan's only fields.
-   */
-  page?: PageGoal & { revealed?: readonly string[] };
+  /** P2: a page goal's continuation context (GoalPlan.page), so the replanner plans the page again (page-planner.ts) rather than asking a writer. */
+  page?: PageGoal;
   /** I2 ruling C: the stopped plan's scopes (GoalPlan.scopes), which the fresh plan reuses and adds to only for a new document. */
+  scopes?: ScopeSet;
+}
+
+/** A page goal's follow-up request (GoalRunDeps.planRevealed): the fields its own verified writes revealed on its page. */
+export interface Revealed {
+  /** The follow-up goal's id. */
+  goalId: string;
+  /** The goal whose writes revealed them: the follow-up reads the sources it holds (the tab the user left, I6). */
+  from: string;
+  instruction: string;
+  page: PageGoal;
+  /** The revealed controls, in document order: the plan's only fields. */
+  keys: readonly string[];
+  /** What the goal already did, verified: a file control it attached to gets no second file. */
+  completed: readonly StepReceipt[];
+  session: string | undefined;
+  /** The goal's scopes (GoalPlan.scopes): the revealed fields join its page scope only as the Ask's scope question chooses them. */
   scopes?: ScopeSet;
 }
 
@@ -202,6 +225,11 @@ export interface GoalRunDeps {
   pageOrigin?: (windowId: string) => string | null;
   /** Builds a fresh plan for what remains, from the screen as it is now; null when none can be offered. */
   replan?: (r: Replan) => Promise<GoalPlan | null>;
+  /**
+   * Plans the fields a page goal's own verified writes revealed (followUp) as a goal of its own: a plan for some of them,
+   * its left items naming the rest, or every one left to the user with why. Absent: a page goal ends without them.
+   */
+  planRevealed?: (r: Revealed) => Promise<{ plan: GoalPlan } | { left: LeftItem[] }>;
   /**
    * P2: reads a page window again (the executor's walk verb). A page goal's last write is no longer followed by a walk
    * (engines/page-link.ts act), so the goal reads the page once before it ends, to see what its writes revealed.
@@ -268,6 +296,8 @@ export class GoalRuns {
   private readonly tasks = new Map<string, string>();
   /** Every task id a goal ever ran: none of them is resumed or run by any other path (owns). */
   private readonly ever = new Set<string>();
+  /** The goal tasks an undo was made of (undoRefusal): whatever it could not restore, it is no longer in the way. */
+  private readonly undone = new Set<string>();
   private replans = 0;
   /** P3: host sessions that left (hostGone): a fresh plan that finishes planning after its host left is not offered. Never reused. */
   private readonly goneHosts = new Set<string>();
@@ -368,6 +398,7 @@ export class GoalRuns {
       mints,
       replay: replay ?? null,
       laterWarnings: new Map(),
+      followedUp: false,
     };
     this.runs.set(plan.goalId, run);
     return this.segmentMessage(run, replaces === null ? undefined : "freshPlan");
@@ -663,6 +694,7 @@ export class GoalRuns {
    * receipt and a step message; the run's end moves the goal on.
    */
   onProgress(m: TaskProgress): void {
+    if (m.phase === "undone" && this.ever.has(m.taskId)) this.undone.add(m.taskId);
     const goalId = this.tasks.get(m.taskId);
     const run = goalId === undefined ? undefined : this.runs.get(goalId);
     if (run === undefined || run.task === null || run.task.id !== m.taskId) return;
@@ -757,16 +789,24 @@ export class GoalRuns {
       this.track(this.stopAndReplan(run, "revealed", null, SAYS.revealed, "afterReveal"));
       return;
     }
-    // P2: a page goal reads its page once more before it ends (its writes are no longer each followed by a walk), then
-    // offers a fresh plan for any control its writes revealed in its scope.
+    // P2: a page goal reads its page once more before it ends (its writes are no longer each followed by a walk) and
+    // plans what its writes revealed there (followUp). It then finishes, and the follow-up, if any, is offered right
+    // after. A Stop, a host leaving or a reader restart meanwhile ends it (userStop, hostGone, readerRestarted), and
+    // nothing follows.
     const page = run.plan.page;
     if (page !== undefined && this.deps.walk !== undefined) {
       const walk = this.deps.walk;
+      run.state = "observing";
       this.track(
         (async () => {
           await walk(page.windowId).catch(() => undefined);
+          const next = run.state === "observing" ? await this.followUp(run, page) : null;
+          if (run.state !== "observing") {
+            if (next !== null) this.deps.ended?.(next.goalId);
+            return;
+          }
           this.finish(run, "done", this.notHeld(run));
-          await this.afterReveal(run, page);
+          if (next !== null) this.offerFollowUp(run, page, next);
         })(),
       );
       return;
@@ -839,6 +879,13 @@ export class GoalRuns {
         this.stop(run, "you", null, SAYS.you);
         return true;
       }
+      // A page goal that finished and offered a follow-up for the fields its writes revealed: the follow-up's preview
+      // ends too, and its Tab then runs nothing.
+      const next = this.replacing(run).find((r) => r.firstReason === "afterReveal" && r.state === "awaiting");
+      if (next !== undefined) {
+        this.stop(next, "you", null, SAYS.you);
+        return true;
+      }
     }
     return false;
   }
@@ -861,17 +908,23 @@ export class GoalRuns {
   }
 
   /**
-   * The controls a finished page goal's writes revealed (P2): empty controls the page now shows in the goal's scope that
-   * were not on the page when it was planned, on the same document. A list scope takes none (the user named fields that
-   * existed); a section scope, those under the same section. For them, a fresh goal with segment reason afterReveal,
-   * which needs its own acceptance. A new document is P3's (carry), not a reveal.
+   * The fields a page goal's own verified writes revealed (P2): empty controls the page now shows in the goal's scope that
+   * were not on it when the goal was planned, on the same document. A list scope takes none (the user named fields that
+   * existed); a section scope, those under the same section. A new document is P3's (carry), not a reveal.
+   *
+   * They are planned as a goal of their own (Helper.planRevealed: the Ask's scope question about them alone, then the
+   * page planner), which offerFollowUp offers once this goal has finished. At most GOAL_NEW_CHOICES of them are asked
+   * about, once per request (a follow-up's own reveals are the user's), and only while the request stays within
+   * MAX_SEGMENTS. Each one not planned is left to the user and named, with why, when this goal ends (leftNow). Nothing
+   * is dispatched here.
    */
-  private async afterReveal(run: Run, page: PageGoal): Promise<void> {
-    if (page.kind === "list" || this.deps.replan === undefined) return;
+  private async followUp(run: Run, page: PageGoal): Promise<GoalPlan | null> {
+    const planRevealed = this.deps.planRevealed;
+    if (page.kind === "list" || planRevealed === undefined) return null;
     const w = this.deps.model.windows.get(page.windowId);
-    if (w === undefined) return;
+    if (w === undefined) return null;
     const doc = run.plan.inventory.documents.get(page.windowId);
-    if (doc === undefined || this.deps.pageDocument?.(page.windowId) !== doc) return;
+    if (doc === undefined || this.deps.pageDocument?.(page.windowId) !== doc) return null;
     const before = new Set(page.keys);
     const revealed = pageInputKeys(w).filter((k) => {
       if (before.has(k)) return false;
@@ -879,9 +932,55 @@ export class GoalRuns {
       const n = w.nodes.get(k);
       return n !== undefined && describeField(w, n).section === page.section;
     });
-    if (revealed.length === 0) return;
-    const next = await this.fresh(run, "revealed", "afterReveal", revealed);
-    if (next !== null) this.deps.publish(next);
+    if (revealed.length === 0) return null;
+    const leave = (keys: readonly string[], why: string): null => {
+      this.owe(run, leftRevealed(w, keys, why));
+      return null;
+    };
+    if (run.followedUp) return leave(revealed, "it appeared after Caret's second round of writes, and Caret plans the fields its writes reveal once per request");
+    const parts = `this request already has the ${MAX_SEGMENTS} parts Caret previews for one request`;
+    if (run.plan.segments.length >= MAX_SEGMENTS) return leave(revealed, parts);
+    const keys = revealed.slice(0, GOAL_NEW_CHOICES);
+    leave(revealed.slice(GOAL_NEW_CHOICES), `Caret asks about at most ${GOAL_NEW_CHOICES} fields its writes reveal`);
+    const goalId = `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`;
+    let r: { plan: GoalPlan } | { left: LeftItem[] };
+    try {
+      r = await planRevealed({ goalId, from: run.plan.goalId, instruction: run.plan.instruction, page, keys, completed: [...run.carried, ...run.cursor.receipts.filter((x) => x.status !== "handoff")], session: run.session, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
+    } catch (e) {
+      r = { left: leftRevealed(w, keys, `${SAYS.error} while Caret planned it (${e instanceof Error ? e.message.slice(0, 200) : String(e)})`) };
+    }
+    if ("plan" in r && run.plan.segments.length + r.plan.segments.length <= MAX_SEGMENTS) return r.plan;
+    // A follow-up never offered lets go of what it held for its plan (the tab text, I6).
+    this.deps.ended?.(goalId);
+    if ("left" in r) this.owe(run, r.left);
+    else leave(keys, parts);
+    return null;
+  }
+
+  /**
+   * Offers a page goal's follow-up (followUp) right after the goal finished: a goal that replaces it, with reason
+   * afterReveal and the goal's receipts carried, which the host shows as the same page task going on. Not offered when
+   * the host left or the page went to another document while it was planned.
+   */
+  private offerFollowUp(run: Run, page: PageGoal, plan: GoalPlan): void {
+    if (this.runs.has(plan.goalId) || this.gone(run.session) || this.deps.pageDocument?.(page.windowId) !== run.plan.inventory.documents.get(page.windowId)) {
+      if (!this.runs.has(plan.goalId)) this.deps.ended?.(plan.goalId);
+      return;
+    }
+    const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")];
+    // What this goal left was said when it finished; the follow-up accounts only for its own.
+    const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed], owed: [] });
+    const next = this.runs.get(plan.goalId);
+    if (next !== undefined) {
+      next.firstReason = "afterReveal";
+      next.followedUp = true;
+    }
+    this.deps.publish(msg.event === "segment" ? { ...msg, reason: "afterReveal" } : msg);
+  }
+
+  /** Fields the goal leaves to the user, each with why: said when it ends (leftNow), as a write it dropped is. */
+  private owe(run: Run, left: readonly LeftItem[]): void {
+    for (const l of left) if (!run.owed.some((x) => x.windowId === l.windowId && x.key === l.key)) run.owed.push(l);
   }
 
   /**
@@ -939,7 +1038,7 @@ export class GoalRuns {
     const qualify = (windowId: string | null, key: string): string => (windowId === page.windowId && !key.startsWith("doc(") ? `doc(${doc}):${key}` : key);
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")].map((r) => ({ ...r, target: { ...r.target, key: qualify(r.target.windowId, r.target.key) } }));
     const owed = left.map((l): LeftItem => ({ ...l, key: qualify(l.windowId, l.key), why: "dropped", says: l.key.startsWith("doc(") ? l.says : `On an earlier page, ${l.says.charAt(0).toLowerCase()}${l.says.slice(1)}` }));
-    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, origin, until: this.deps.now() + CARRY_MS, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
+    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page), keys: [] }, document: doc, session: run.session, completed, owed, origin, until: this.deps.now() + CARRY_MS, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
   }
 
   /**
@@ -1111,7 +1210,7 @@ export class GoalRuns {
    * Asks the replanner for what remains and returns its first segment's preview, as a new goal that needs its own
    * acceptance; null when there is no replanner or it offers nothing.
    */
-  private async fresh(run: Run, why: GoalStopReason, reason: "afterReveal" | "freshPlan", revealed?: readonly string[]): Promise<GoalProgress | null> {
+  private async fresh(run: Run, why: GoalStopReason, reason: "afterReveal" | "freshPlan"): Promise<GoalProgress | null> {
     const replan = this.deps.replan;
     // Slice 2: a goal that observes is never replanned, which would call the writer again; it ends with the rest left.
     if (replan === undefined || run.replay !== null) return null;
@@ -1124,8 +1223,7 @@ export class GoalRuns {
     const owed = [...run.owed, ...unmade.filter((u) => !run.owed.some((o) => o.windowId === u.windowId && o.key === u.key))];
     let plan: GoalPlan | null;
     try {
-      const page = run.plan.page === undefined ? undefined : { ...run.plan.page, ...(revealed === undefined ? {} : { revealed }) };
-      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, session: run.session, ...(page === undefined ? {} : { page }), ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
+      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, session: run.session, ...(run.plan.page === undefined ? {} : { page: run.plan.page }), ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
     } catch {
       plan = null;
     }
@@ -1138,7 +1236,10 @@ export class GoalRuns {
     }
     const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed], owed });
     const fresh = this.runs.get(plan.goalId);
-    if (fresh !== undefined) fresh.firstReason = reason;
+    if (fresh !== undefined) {
+      fresh.firstReason = reason;
+      fresh.followedUp = run.followedUp;
+    }
     return msg.event === "segment" ? { ...msg, reason } : msg;
   }
 
@@ -1282,8 +1383,38 @@ export class GoalRuns {
    * on load leave that page to it (helper.ts goalOnPage), so neither reads the tab the goal's plan holds.
    */
   previewing(windowId: string): boolean {
-    for (const r of this.runs.values()) if ((r.state === "awaiting" || r.state === "running") && r.plan.page?.windowId === windowId) return true;
+    for (const r of this.runs.values()) if ((r.state === "awaiting" || r.state === "running" || r.state === "observing") && r.plan.page?.windowId === windowId) return true;
     return false;
+  }
+
+  /**
+   * Why a goal's segment may not be undone yet, or null: a request's writes are undone newest first. While a later segment
+   * of the same goal, or of a goal that replaced it (a follow-up for the fields its writes revealed, a fresh plan after a
+   * stop), holds writes no undo was made of, undoing this one first could change what those writes depend on (a Country
+   * put back empties the State a follow-up wrote), so it is refused before anything is restored. Null for any task that
+   * is not a goal's segment.
+   */
+  undoRefusal(taskId: string): string | null {
+    if (!this.ever.has(taskId)) return null;
+    for (const run of this.runs.values()) {
+      const at = [...run.accepted].find((i) => segmentTaskId(run.plan.goalId, i) === taskId);
+      if (at === undefined) continue;
+      const own = [...run.accepted].filter((i) => i > at).sort((a, b) => a - b).map((i) => segmentTaskId(run.plan.goalId, i));
+      const after = [...own, ...this.replacing(run).flatMap((r) => this.tasksOf(r))];
+      const blocking = after.filter((id) => !this.undone.has(id) && this.deps.executor.ledger(id).some((e) => e.kind === "write"));
+      return blocking.length === 0 ? null : `undo ${blocking.at(-1)} first: its writes came after this one's`;
+    }
+    return null;
+  }
+
+  /** The goals that replaced `run` (a follow-up, a fresh plan), which ran after it. */
+  private replacing(run: Run): Run[] {
+    return [...this.runs.values()].filter((r) => r.replaces === run.plan.goalId);
+  }
+
+  /** The segment tasks a goal and the goals that replaced it ran, oldest first. */
+  private tasksOf(run: Run): string[] {
+    return [...[...run.accepted].sort((a, b) => a - b).map((i) => segmentTaskId(run.plan.goalId, i)), ...this.replacing(run).flatMap((r) => this.tasksOf(r))];
   }
 
   /**
@@ -1364,6 +1495,15 @@ export class GoalRuns {
 }
 
 const clip = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
+
+/** Revealed fields of page window `w` a goal leaves to the user, each named with why, as the page planner names one. */
+export function leftRevealed(w: WindowState, keys: readonly string[], why: string): LeftItem[] {
+  return keys.map((key) => {
+    const n = w.nodes.get(key);
+    const label = n === undefined ? key : fieldName(w, n);
+    return { windowId: w.window.windowId, key, label, why: "dropped", says: `'${label}' is yours: ${why}` };
+  });
+}
 
 /** The executor task id of a goal's segment. */
 const segmentTaskId = (goalId: string, segment: number): string => `${goalId}:s${segment}`;
