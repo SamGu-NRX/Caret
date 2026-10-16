@@ -340,6 +340,9 @@ const ROUND4: Record<string, string> = {
   trims: shell(`<label>Short name <input id="short" name="short"></label>`, `document.getElementById("short").addEventListener("input", (e) => { e.target.value = e.target.value.slice(0, 5); }); window.reveal = () => {};`),
   // Greptile on PR #52: an editor holding a non-editable one-time-code widget, whose code the page then changes.
   "editor-with-code": shell(`<div contenteditable="true" id="ed" aria-label="Notes"><p>Meeting notes</p><div role="textbox" contenteditable="false" aria-label="Verification code" id="code">482913</div></div>`, `window.reveal = () => { document.getElementById("code").textContent = "771204"; };`),
+  // Greptile on PR #52: a field whose label the page renames when it is set back to "Robin" while armed, so an undo of
+  // the second write stops after its setter ran.
+  "restore-stop": shell(`<label for="nick" id="nick-label">Nick</label><input id="nick" name="nick">`, `window.armed = false; document.getElementById("nick").addEventListener("input", (e) => { if (window.armed && e.target.value === "Robin") document.getElementById("nick-label").textContent = "Nickname"; }); window.reveal = () => {};`),
   // #6: a "show password" in a shadow root turns the field into a text input the user then types into.
   "text-in-shadow": shell(`<login-box id="host"></login-box>`, `const r = document.getElementById("host").attachShadow({ mode: "open" }); r.innerHTML = '<label>Password <input type="password" id="pw"></label>'; window.reveal = () => { r.getElementById("pw").type = "text"; };`),
 };
@@ -441,6 +444,40 @@ describe("an editor with a secret widget inside it (Greptile, PR #52)", () => {
     await tab.evaluate("window.reveal()");
     const after = await notes();
     assert.equal(after?.rev, before.rev, "the editor's rev moved with the code inside it");
+    await tab.close();
+  });
+});
+
+describe("an undo that stops after its setter ran (Greptile, PR #52)", () => {
+  test("does not block the undo of the write before it", async () => {
+    const url = `${roundsOrigin}/restore-stop`;
+    const tab = await open(url);
+    await helperSays({ type: "engineReady", engine: "e-undo" });
+    const tabId = await inWorker<number>(`chrome.tabs.query({ url: ${JSON.stringify(`${url}*`)} }).then(([t]) => t.id)`);
+    let k = 0;
+    const say = async (verb: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      const id = `u${++k}`;
+      return (await helperSays({ type: "pageCommand", id, expires: Date.now() + 8000, verb }, id)) as Record<string, unknown>;
+    };
+    await say({ kind: "pageWalk", tabId });
+    const s = await inWorker<{ frames: { frameId: number; documentId: string; origin: string; navGen: number; controls: (Report["controls"][number] & { id: string })[] }[] }>(`globalThis.__sent.findLast((x) => x.type === "pageSnapshot")`);
+    const top = s.frames[0] as (typeof s.frames)[number];
+    const nick = top.controls.find((c) => c.name === "Nick") as Report["controls"][number] & { id: string };
+    await helperSays({ type: "scopedActGrant", taskId: "t4", at: Date.now(), expires: Date.now() + 60_000, scope: { kind: "page", engine: "e-undo", tabId, frameId: top.frameId, origin: top.origin, navGen: top.navGen } });
+    const target = { tabId, frameId: top.frameId, documentId: top.documentId, id: nick.id, control: nick.kind, name: "Nick", taskId: "t4" };
+    const a = await say({ kind: "pageWrite", ...target, expectRev: nick.rev, value: "Robin" });
+    assert.equal(a.outcome, "ok", JSON.stringify(a));
+    const b = await say({ kind: "pageWrite", ...target, expectRev: (a.readings as { rev: number }).rev, value: "Robin Vale" });
+    assert.equal(b.outcome, "ok", JSON.stringify(b));
+    // The undo of the second write puts "Robin" back; the page renames the field then, so the undo stops midway.
+    await tab.evaluate("(window.armed = true)");
+    const stopped = await say({ kind: "pageRestore", ...target, wrote: "Robin Vale" });
+    assert.equal(stopped.outcome, "failed", JSON.stringify(stopped));
+    assert.equal(await tab.evaluate<string>(`document.getElementById("nick").value`), "Robin");
+    // The field holds the first write's text, so the first write's undo is next, under the field's new name.
+    const first = await say({ kind: "pageRestore", ...target, name: "Nickname", wrote: "Robin" });
+    assert.equal(first.outcome, "ok", JSON.stringify(first));
+    assert.equal(await tab.evaluate<string>(`document.getElementById("nick").value`), "");
     await tab.close();
   });
 });

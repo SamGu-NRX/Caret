@@ -289,18 +289,32 @@ async function restoreText(el: HTMLInputElement | HTMLTextAreaElement, verb: Ext
     const w = why();
     return w === null ? null : refused(w);
   }, () => void revs.caretWrote(el, el.value, revs.trustedCount(el) !== trusted0, el.value === rec.before));
-  if (!pushed.done) return pushed.answer;
-  const typed = revs.trustedCount(el) !== trusted0;
-  const rev = revs.caretWrote(el, el.value, typed, el.value === rec.before);
-  if (typed) return answer("failed", "your input reached the field while Caret put it back");
-  if (el.value !== rec.before) return answer("failed", "the page holds other text than Caret put back");
-  records.pop(verb.taskId, el);
-  // The write before this one, if any, left exactly this text: its own undo is next, from here.
-  const prior = records.newest(verb.taskId, el);
-  if (prior !== undefined) {
-    prior.revAfter = rev;
-    prior.trustedAfter = revs.trustedCount(el);
+  /**
+   * Settles the record once the setter ran: the field holds this write's `before`, with no input of the user's, so
+   * this undo is done and the write before it, if any, is next from here, whether or not the act ran to its end. A
+   * stop after the setter otherwise left this record on top, and blocked every earlier undo (Greptile, PR #52).
+   */
+  const settled = (): { rev: number; restored: boolean } => {
+    const typed = revs.trustedCount(el) !== trusted0;
+    const rev = revs.caretWrote(el, el.value, typed, el.value === rec.before);
+    const restored = !typed && el.value === rec.before;
+    if (restored) {
+      records.pop(verb.taskId, el);
+      const prior = records.newest(verb.taskId, el);
+      if (prior !== undefined) {
+        prior.revAfter = rev;
+        prior.trustedAfter = revs.trustedCount(el);
+      }
+    }
+    return { rev, restored };
+  };
+  if (!pushed.done) {
+    if (pushed.went) settled();
+    return pushed.answer;
   }
+  const { rev, restored } = settled();
+  if (revs.trustedCount(el) !== trusted0) return answer("failed", "your input reached the field while Caret put it back");
+  if (!restored) return answer("failed", "the page holds other text than Caret put back");
   return answer("ok", null, { restore: { outcome: "restored", rev } });
 }
 
