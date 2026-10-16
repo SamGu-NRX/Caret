@@ -110,6 +110,19 @@ before(async () => {
     else await sleep(100);
   }
   assert.ok(worker !== undefined, "the extension's worker never started");
+  // The target can be attached before the extension's bindings exist in it.
+  for (let i = 0; i < 100 && !(await inWorker<boolean>("typeof chrome === 'object' && typeof chrome.runtime?.id === 'string'").catch(() => false)); i++) await sleep(50);
+  // No bridge runs: the worker's next reconnect gets a port this test holds, so the test speaks for the helper.
+  await inWorker(`(() => {
+    globalThis.__sent = [];
+    chrome.runtime.connectNative = () => ({
+      onMessage: { addListener: (f) => { globalThis.__inject = f; } },
+      onDisconnect: { addListener: () => {} },
+      postMessage: (m) => { globalThis.__sent.push(m); },
+      disconnect: () => {},
+    });
+    return true;
+  })()`);
 });
 
 after(async () => {
@@ -143,6 +156,94 @@ describe("every fixture page's walk", () => {
       await tab.close();
     });
   }
+});
+
+/** Sends the worker a helper message through the port this test holds, and waits for the pageResult of `id`, if any. */
+async function helperSays(m: Record<string, unknown>, id?: string): Promise<Record<string, unknown> | null> {
+  for (let i = 0; i < 400 && !(await inWorker<boolean>("typeof globalThis.__inject === 'function'")); i++) await sleep(250);
+  await inWorker(`(globalThis.__inject(${JSON.stringify({ v: 1, ...m })}), true)`);
+  if (id === undefined) return null;
+  for (let i = 0; i < 100; i++) {
+    const r = await inWorker<Record<string, unknown> | null>(`globalThis.__sent.find((x) => x.type === "pageResult" && x.id === ${JSON.stringify(id)}) ?? null`);
+    if (r !== null) return r;
+    await sleep(100);
+  }
+  throw new Error(`no pageResult for ${id}`);
+}
+
+describe("the page's own writes, restores, compares and copies, end to end", () => {
+  let n = 0;
+  const command = async (verb: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const id = `c${++n}`;
+    try {
+      return (await helperSays({ type: "pageCommand", id, expires: Date.now() + 8000, verb }, id)) as Record<string, unknown>;
+    } catch (e) {
+      throw new Error(`${String(verb.kind)} ${id}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  test("writes by rev, answers in booleans, restores the text it kept, compares whole values, and never answers with withheld text", async () => {
+    const url = `${site.mainOrigin}/mixed`;
+    const tab = await open(url);
+    await helperSays({ type: "engineReady", engine: "e-walk" });
+    const tabId = await inWorker<number>(`chrome.tabs.query({ url: ${JSON.stringify(`${url}*`)} }).then(([t]) => t.id)`);
+    const walked = async (): Promise<{ frames: { frameId: number; documentId: string; origin: string; navGen: number; controls: Report["controls"] & { id: string }[] }[] }> => {
+      const id = `w${++n}`;
+      await helperSays({ type: "pageCommand", id, expires: Date.now() + 8000, verb: { kind: "pageWalk", tabId } }, id);
+      return inWorker(`globalThis.__sent.findLast((x) => x.type === "pageSnapshot")`);
+    };
+    let s = await walked();
+    const top = s.frames[0] as (typeof s.frames)[number];
+    // From the latest walk, which `s` holds.
+    const field = (name: string) => (s.frames[0] as typeof top).controls.find((c) => c.name === name) as { id: string; kind: string; name: string; rev: number; hasValue: boolean };
+    await helperSays({ type: "scopedActGrant", taskId: "t1", at: Date.now(), expires: Date.now() + 60_000, scope: { kind: "page", engine: "e-walk", tabId, frameId: top.frameId, origin: top.origin, navGen: top.navGen } });
+    const name = field("Full name");
+    const target = { tabId, frameId: top.frameId, documentId: top.documentId, id: name.id, control: name.kind, name: name.name, taskId: "t1" };
+    const read = () => tab.evaluate<string>(`[...document.querySelectorAll("input")].find((e) => e.labels?.[0]?.textContent?.includes("Full name"))?.value ?? null`);
+
+    const wrote = await command({ kind: "pageWrite", ...target, expectRev: name.rev, value: "Robin Vale" });
+    assert.equal(wrote.outcome, "ok", JSON.stringify(wrote));
+    assert.deepEqual({ ...(wrote.readings as object), rev: 0 }, { sameAsBefore: false, landed: true, equivalent: true, empty: false, typedBetween: false, rev: 0 });
+    assert.equal(await read(), "Robin Vale");
+    assert.ok(!JSON.stringify(wrote).includes("Robin Vale"), "the answer holds the field's text");
+    // The walk's rev, now old, makes another write stale.
+    assert.equal((await command({ kind: "pageWrite", ...target, expectRev: name.rev, value: "Someone" })).outcome, "stale");
+    assert.deepEqual((await command({ kind: "pageCompare", ...target, candidates: ["Robin Vale", "Robin", "Someone Else"] })).compare, ["equal", "different", "different"]);
+    s = await walked();
+    assert.equal(field("Full name").hasValue, true);
+    assert.equal(field("Full name").rev, (wrote.readings as { rev: number }).rev);
+    assert.deepEqual((await command({ kind: "pageSourceGrant", tabId, frameId: top.frameId, documentId: top.documentId, taskId: "t1", ids: [name.id] })).source, { [name.id]: "Robin Vale" });
+    const restored = await command({ kind: "pageRestore", ...target, wrote: "Robin Vale" });
+    assert.equal(restored.outcome, "ok", JSON.stringify(restored));
+    assert.equal((restored.restore as { outcome: string }).outcome, "restored");
+    assert.equal(await read(), "");
+
+    // Written again, then the user types in it: the page refuses to restore over their input.
+    s = await walked();
+    const again = await command({ kind: "pageWrite", ...target, expectRev: field("Full name").rev, value: "Robin Vale" });
+    assert.equal(again.outcome, "ok", JSON.stringify(again));
+    await tab.click(`[...document.querySelectorAll("input")].find((e) => e.labels?.[0]?.textContent?.includes("Full name"))`).catch((e: unknown) => { throw new Error(`click: ${String(e)}`); });
+    await tab.evaluate(`(() => { const e = document.activeElement; e.setSelectionRange(e.value.length, e.value.length); return true; })()`).catch((e: unknown) => { throw new Error(`caret to end: ${String(e)}`); });
+    await tab.type("!").catch((e: unknown) => { throw new Error(`type: ${String(e)}`); });
+    // The user's click ended the frame's grants (W3); the undo comes under a new one, as the helper grants it.
+    await helperSays({ type: "scopedActGrant", taskId: "t1", at: Date.now(), expires: Date.now() + 60_000, scope: { kind: "page", engine: "e-walk", tabId, frameId: top.frameId, origin: top.origin, navGen: top.navGen } });
+    const refused = await command({ kind: "pageRestore", ...target, wrote: "Robin Vale" });
+    assert.deepEqual(refused.restore, { outcome: "refused", why: "mayIncludeInput" });
+    assert.equal(await read(), "Robin Vale!");
+
+    // The page's own script puts text in another field: withheld, so no copy, no compare and no write over it.
+    await tab.evaluate(`(() => { const e = [...document.querySelectorAll("input")].find((x) => x.labels?.[0]?.textContent?.includes("Email")); e.value = "set-by-page@example.test"; return true; })()`);
+    s = await walked();
+    const email = field("Email") as ReturnType<typeof field> & { withheld?: string };
+    assert.equal(email.withheld, "programmatic");
+    assert.equal(email.hasValue, null);
+    const emailTarget = { ...target, id: email.id, control: email.kind, name: email.name };
+    assert.deepEqual((await command({ kind: "pageSourceGrant", tabId, frameId: top.frameId, documentId: top.documentId, taskId: "t1", ids: [email.id] })).source, { [email.id]: null });
+    assert.deepEqual((await command({ kind: "pageCompare", ...emailTarget, candidates: ["set-by-page@example.test"] })).compare, ["unknown"]);
+    assert.equal((await command({ kind: "pageWrite", ...emailTarget, expectRev: 0, value: "robin@example.test" })).outcome, "excluded");
+    const sent = await inWorker<string>("JSON.stringify(globalThis.__sent)");
+    assert.ok(!sent.includes("set-by-page@example.test"), "the worker sent the page's own text");
+    await tab.close();
+  });
 });
 
 /** The six round-4 cases of PR #14, each a page whose script does what the review found, after the user typed a secret. */
