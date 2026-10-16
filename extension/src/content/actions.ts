@@ -29,8 +29,8 @@ import { classifyPress } from "../shared/risk.ts";
 import { navigationEntry, type Entry, type Registry } from "./registry.ts";
 import { clean } from "./names.ts";
 import { controlName } from "./question.ts";
-import { checkedOf, choiceValueOf, exclusionOf, kindOf, textOf } from "./walker.ts";
-import { setterFor, settle } from "./dom.ts";
+import { checkedOf, choiceValueOf, exclusionOf, kindOf, navCellsOf, textOf } from "./walker.ts";
+import { openClick, setterFor, settle } from "./dom.ts";
 import { chooseOption } from "./combobox.ts";
 import { pressOption } from "./press.ts";
 import { attachFile } from "./attach.ts";
@@ -44,7 +44,7 @@ const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Par
  * Every verb this page takes. Any other kind is refused by name before anything is read: in particular the counsel's
  * pageSourceGrant, a field's text for a copy, has no handler until a flow where the user picks the source window exists.
  */
-const ACT_KINDS: Readonly<Record<ActVerb["kind"], true>> = { pageWrite: true, pagePress: true, pageSelect: true, pageChooseOption: true, pageSetChecked: true, pageAttachFile: true, pageInsertText: true, pageRestore: true, pageCompare: true };
+const ACT_KINDS: Readonly<Record<ActVerb["kind"], true>> = { pageWrite: true, pagePress: true, pageSelect: true, pageChooseOption: true, pageSetChecked: true, pageAttachFile: true, pageInsertText: true, pageRestore: true, pageCompare: true, pageActivateItem: true };
 
 type Mutating = Extract<ActVerb, { kind: "pageWrite" | "pageSelect" | "pageSetChecked" | "pageRestore" }>;
 
@@ -78,6 +78,24 @@ function rebindMatch(verb: ActVerb): ((el: Element, e: Entry) => boolean) | null
 }
 
 /**
+ * Why the activation must not go on now, or null: the walked row's own checks (actions.ts header), without name
+ * matching — the row's identity is its cells, read the same way the walk read them (walker.ts navCellsOf).
+ */
+function navIneligible(el: Element, verb: Extract<ActVerb, { kind: "pageActivateItem" }>, entry: Entry | undefined, deadline: number): ActAnswer | null {
+  if (!el.isConnected || el.ownerDocument !== document) return answer("stale", "the row left the document");
+  if (entry !== undefined && entry.href !== location.href) return answer("stale", "the page's address changed since the walk");
+  if (entry !== undefined && entry.nav !== navigationEntry()) return answer("stale", "the page moved in history since the walk");
+  const kind = (el.getAttribute("role") ?? "").trim().toLowerCase();
+  if (kind !== verb.control) return answer("stale", `the element is now a ${clean(kind || "control", 40)}, not a ${verb.control}`);
+  if (el.getAttribute("aria-disabled") === "true") return answer("failed", "the row is disabled");
+  const cells = navCellsOf(el, verb.control);
+  if (cells === null) return answer("stale", "the row's cells are gone");
+  if (cells.join(" · ") !== verb.name) return answer("stale", `the row is now '${clean(cells.join(" · "), 60)}', not '${clean(verb.name, 60)}'`);
+  if (Date.now() >= deadline) return answer("notAllowed", "the grant or command expired");
+  return null;
+}
+
+/**
  * Runs one verb the worker has checked. `alive` asks the worker whether the task's grant for this frame still holds;
  * the multi-stage acts (combobox, attach) ask it before each stage (memo section 2).
  */
@@ -87,6 +105,29 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
   if (verb.kind === "pagePress") {
     const risk = classifyPress(verb.name);
     return answer("handoff", `'${clean(verb.name, 60)}' runs the page's own script, so you press it`, { risk: risk === "safe" || risk === "unclassified" ? "pageScript" : risk });
+  }
+  // Slice 2: the one activation the page takes — the walked row opens through its own click handler. It resolves with
+  // no rebind (the exact walked element, or nothing: registry.ts resolve with no rebindMatch), checks eligibility as
+  // the walk did (the exact row kind in the verb, a list-target role) — the control kinds are all list-target roles.
+  if (verb.kind === "pageActivateItem") {
+    const r = reg.resolve(verb.id, null, false);
+    if ("missing" in r) return answer("noElement", r.missing);
+    const entry = reg.entry(verb.id);
+    const navCheck = (stage?: string): ActAnswer | null => {
+      const stop = navIneligible(r.el, verb, entry, deadline);
+      return stop === null || stage === undefined ? stop : { ...stop, detail: `${stop.detail ?? stop.outcome} (${stage})` };
+    };
+    const first = navCheck();
+    if (first !== null) return first;
+    if (!(await alive())) return answer("notAllowed", "the task's grant ended");
+    (r.el as HTMLElement).focus?.();
+    const afterFocus = navCheck("focus");
+    if (afterFocus !== null) return afterFocus;
+    openClick(r.el);
+    await settle();
+    // No post-click eligibility: the open itself may have emptied the row, replaced its cells or moved the page in
+    // history — the transitions the open is allowed. The helper's own judge decides what the page now shows.
+    return answer("ok", null);
   }
   // P4: an insert goes only to the element the walk kept when the offer was made, never to one rebound by its strong
   // key; a restore, a compare and an undo only to the element Caret wrote.

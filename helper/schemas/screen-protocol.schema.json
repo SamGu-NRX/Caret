@@ -398,6 +398,17 @@
                     "items": {
                       "type": "string"
                     }
+                  },
+                  "inForm": {
+                    "type": "boolean"
+                  },
+                  "href": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "hash",
+                      "other"
+                    ]
                   }
                 },
                 "required": [
