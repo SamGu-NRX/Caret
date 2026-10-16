@@ -169,17 +169,19 @@ describe("taking control back (B22)", () => {
     const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/protocol.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
     const action = { ...golden.find((l) => l.type === "action" && l.offerKey === "offer-5"), offerKey: "accept-2" } as unknown as OfferAction;
     helper.offers.record(action, () => helper.executor.run("accept-2", two(), {}, undefined, { grant: true }));
+    // A second proven host: one that is not the host is refused before the helper sees the request (request-gate.ts,
+    // test/nonhost-commands.test.ts), so only another host's resume and accept reach the helper's own refusals.
     const other = await LineClient.connect(join(dir, "screen.sock"));
-    other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "other-consumer" });
+    other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "other-consumer", host: true });
+    await authenticateHost(other);
     reader.setValue(FORM, NAME, "");
     reader.setValue(FORM, EMAIL, "old@example.com");
     await until(() => helper.model.windows.get(FORM)?.nodes.get(EMAIL)?.value === "old@example.com" && helper.model.windows.get(FORM)?.nodes.get(NAME)?.value === undefined);
     whileQueued = async () => {
       other.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "accept-2", action: "resume" });
       other.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "accept-2", actionId: "finish", overrides: {}, at: 2 });
-      // The helper publishes both refusals as errors, which only the host is sent (send-gate.ts).
-      await host.waitFor((m) => m.type === "error" && String(m.message).includes("not paused"));
-      await host.waitFor((m) => m.type === "error" && String(m.message).includes("already accepted"));
+      await other.waitFor((m) => m.type === "error" && String(m.message).includes("not paused"));
+      await other.waitFor((m) => m.type === "error" && String(m.message).includes("already accepted"));
       host.close();
     };
     host.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "accept-2", actionId: "finish", overrides: {}, at: 1 });
