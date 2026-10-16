@@ -148,13 +148,15 @@ def frame_arg(frame):
 
 
 def record_proposals(path):
-    """A second consumer on the helper's socket, saving every helper message with its arrival
-    time. Fixture runs only: the proposals carry synthetic values."""
+    """A second host on the helper's socket, saving every helper message with its arrival time. It proves the run's
+    host key (launch_secret.host_proof): the helper sends a consumer that is not the host no proposal. It declares no
+    capability, so it gets proposals as a host without saved answers does. Fixture runs only: the proposals carry
+    synthetic values."""
     def run():
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.connect(HELPER_SOCK)
         s.sendall(json.dumps({"type": "hello", "v": 1, "role": "consumer", "mode": "live", "pid": os.getpid(),
-                              "version": "fill_acceptance"}).encode() + b"\n")
+                              "version": "fill_acceptance", "host": True}).encode() + b"\n")
         buf = b""
         with open(path, "a") as out:
             while True:
@@ -164,7 +166,10 @@ def record_proposals(path):
                 buf += chunk
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
-                    out.write(json.dumps({"receivedAtMs": time.time() * 1000, "message": json.loads(line)}) + "\n")
+                    message = json.loads(line)
+                    if message.get("type") == "hostChallenge":
+                        s.sendall(json.dumps({"type": "hostProof", "v": 1, "proof": launch_secret.host_proof(message["nonce"])}).encode() + b"\n")
+                    out.write(json.dumps({"receivedAtMs": time.time() * 1000, "message": message}) + "\n")
                     out.flush()
     threading.Thread(target=run, daemon=True).start()
 
