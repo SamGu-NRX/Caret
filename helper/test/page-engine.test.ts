@@ -176,7 +176,9 @@ describe("engine session and page link", () => {
   const walker = (session: EngineSession, snap: (id: string) => PageSnapshot = (id) => snapshot(id)) => (m: HelperToEngine): void => {
     if (m.type !== "pageCommand") return;
     if (m.verb.kind === "pageWalk") session.receive(snap(m.id));
-    session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: "ok", detail: null });
+    // A verified text write comes with the page's own readings, as the content script sends them.
+    const readings = m.verb.kind === "pageWrite" ? { readings: { sameAsBefore: false, landed: true, equivalent: true, empty: false, typedBetween: false, rev: 2 } } : {};
+    session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: "ok", detail: null, ...readings });
   };
 
   it("turns a tab into one window: an AXWebArea per frame, controls under it, a select showing its selected label", () => {
