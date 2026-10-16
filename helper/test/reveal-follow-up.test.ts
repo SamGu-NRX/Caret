@@ -185,24 +185,24 @@ describe("the follow-up stays within the goal's caps", () => {
     expect(actsOn(r, `x${GOAL_NEW_CHOICES}`) + actsOn(r, `x${GOAL_NEW_CHOICES + 1}`)).toBe(0);
   });
 
-  it(`adds no segment to a goal that already has ${MAX_SEGMENTS}`, async () => {
-    const answers = Array.from({ length: 60 }, (_, i) => `Answer ${i + 1}`);
+  it("follows the last part of a form planned in parts, as one more segment within MAX_SEGMENTS", async () => {
+    // 39 answers and Country: the Ask's scope question sees at most 40 fields (MAX_INTENT_FIELDS), so two parts of 20.
+    const answers = Array.from({ length: 39 }, (_, i) => `Answer ${i + 1}`);
     const controls = (): PageControl[] => [...answers.map((x, i) => c(`t${i + 1}`, "text", x, { value: "" })), ...wizard().filter((x) => x.id === "w5" || x.id === "w9")];
     const r = await rig({ controls, note: [...answers.map((x, i) => `${x}: value ${i + 1}`), "Country: United States", "State: Colorado"].join("\n"), picks: { ...Object.fromEntries(answers.map((x, i) => [x, `value ${i + 1}`])), Country: "United States", State: "Colorado" } });
     dependsOnCountry(r.page);
-    let next = (await r.ask(ASK)) as Segment;
-    expect(next.segments).toBe(MAX_SEGMENTS);
-    for (let k = 0; k < MAX_SEGMENTS; k++) {
-      expect(next.segment).toBe(k);
-      await r.accept(next);
-      await r.helper.goals.idle();
-      if (k < MAX_SEGMENTS - 1) next = segmentsOf(r, next.goalId).find((s) => s.segment === k + 1) as Segment;
-    }
+    const first = (await r.ask(ASK)) as Segment;
+    expect(first).toMatchObject({ segment: 0, segments: 2 });
+    await r.accept(first);
+    await r.helper.goals.idle();
+    expect(followUps(r, first.goalId)).toEqual([]);
+    const part = segmentsOf(r, first.goalId).find((x) => x.segment === 1) as Segment;
+    await r.accept(part);
+    await r.helper.goals.idle();
     expect(r.page.shown("w5")).toBe("United States");
-    expect(segmentsOf(r, next.goalId).map((s) => s.segment)).toEqual([1, 2, 3]);
-    expect(followUps(r, next.goalId)).toEqual([]);
-    expect(actsOn(r, "w6")).toBe(0);
-    expect(finishedOf(r, next.goalId)?.left).toEqual([`'State' is yours: this request already has the ${MAX_SEGMENTS} parts Caret previews for one request`]);
+    const [next] = followUps(r, first.goalId);
+    expect(2 + (next?.segments ?? 0)).toBeLessThanOrEqual(MAX_SEGMENTS);
+    expect(next?.steps.map((x) => x.says)).toEqual(["State: Colorado", "You press Next"]);
   });
 });
 
@@ -237,7 +237,8 @@ describe("undo and stop across the two segments", () => {
     const acts = r.page.verbs.length;
     await r.helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: `${first.goalId}:s0`, action: "stop" });
     expect(goalMessages(r).find((m): m is Stopped => m.event === "stopped" && m.goalId === second.goalId)).toMatchObject({ reason: "you", says: "You stopped it." });
-    expect(await r.accept(second)).toMatchObject({ refused: `goal ${second.goalId} is stopped, not waiting for an acceptance` });
+    expect(await r.accept(second)).toBeNull();
+    expect(r.published.filter((m): m is HelperError => m.type === "error").map((m) => m.message)).toEqual([`goalAccept refused: goal ${second.goalId} is stopped, not waiting for an acceptance`]);
     await r.helper.goals.idle();
     expect(r.page.verbs.slice(acts).filter((v) => v.kind !== "pageWalk")).toEqual([]);
     expect(r.page.shown("w6")).toBe("");

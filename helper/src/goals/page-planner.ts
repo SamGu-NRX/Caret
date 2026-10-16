@@ -423,7 +423,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   }
   if (writes.size === 0 && files.length === 0) {
     const unsure = left.filter((l) => l.key !== `size:${o.windowId}`);
-    throw leaving(new GoalError("nothingToDo", unsure.length > 0 ? clip(unsure.map((l) => l.says).join("; "), 590) : saysNoValue(asked.map((x) => viewName(w, x.node)))), unsure);
+    const e = new GoalError("nothingToDo", unsure.length > 0 ? clip(unsure.map((l) => l.says).join("; "), 590) : saysNoValue(asked.map((x) => viewName(w, x.node))));
+    // A field fill neither wrote nor said anything about: nothing was found for it.
+    for (const x of asked) if (!left.some((l) => l.key === x.node.key)) leave(x.node, "Caret found nothing on screen or in memory for it");
+    throw leaving(e, left.filter((l) => l.key !== `size:${o.windowId}`));
   }
 
   // 3. The inventory: the page as frozen (revision, document, owed fields), and a target for each field fill writes.

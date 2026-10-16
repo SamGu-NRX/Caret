@@ -949,7 +949,11 @@ export class GoalRuns {
     } catch (e) {
       r = { left: leftRevealed(w, keys, `${SAYS.error} while Caret planned it (${e instanceof Error ? e.message.slice(0, 200) : String(e)})`) };
     }
-    if ("plan" in r && run.plan.segments.length + r.plan.segments.length <= MAX_SEGMENTS) return r.plan;
+    if ("plan" in r && run.plan.segments.length + r.plan.segments.length <= MAX_SEGMENTS) {
+      // A revealed field fill offered nothing for and the planner did not name is named here, so none is left unsaid.
+      const named = new Set([...r.plan.segments.flatMap((g) => g.steps.map((x) => x.target.key)), ...r.plan.left.map((l) => l.key)]);
+      return { ...r.plan, left: [...r.plan.left, ...leftRevealed(w, keys.filter((k) => !named.has(k)), NOTHING_FOUND)] };
+    }
     // A follow-up never offered lets go of what it held for its plan (the tab text, I6).
     this.deps.ended?.(goalId);
     if ("left" in r) this.owe(run, r.left);
@@ -1495,6 +1499,9 @@ export class GoalRuns {
 }
 
 const clip = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
+
+/** Why a revealed field fill found no value for is the user's, in the page planner's words. */
+const NOTHING_FOUND = "Caret found nothing on screen or in memory for it";
 
 /** Revealed fields of page window `w` a goal leaves to the user, each named with why, as the page planner names one. */
 export function leftRevealed(w: WindowState, keys: readonly string[], why: string): LeftItem[] {
