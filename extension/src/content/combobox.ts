@@ -179,6 +179,9 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const seen = readNow(el, "combobox", false);
   const before = seen.text;
   if (seen.withheld !== null && before !== "") return answer("excluded", `the control holds text Caret does not read (${seen.withheld})`);
+  // Caret chooses over no text but its own pick, and compares no one else's with the option asked for: an alreadyTrue
+  // on it would confirm a guess (audit of PR #52, LOW 6).
+  if (before !== "" && seen.origin !== "caret") return answer("stale", "the control shows text Caret did not choose, so Caret does not choose over it");
   // Named by the option asked for, never by the control's own text, which never leaves the page.
   if (before !== "" && normalizeName(before) === normalizeName(verb.value)) return answer("alreadyTrue", null, { choice: choice([verb.value]) });
   // The walk's rev, or (a rebound replacement) the walk's own text, which registry.ts matched.

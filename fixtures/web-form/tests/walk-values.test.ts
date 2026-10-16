@@ -238,6 +238,10 @@ describe("the page's own writes, restores and compares, end to end, and no copy"
     const over = await command({ kind: "pageWrite", ...target, expectRev: field("Full name").rev ?? 0, value: "Someone Else" });
     assert.equal(over.outcome, "stale", JSON.stringify(over));
     assert.equal(await read(), "Robin Vale!");
+    // Nor does it answer alreadyTrue on the user's text when asked for exactly that text, which would confirm a guess
+    // of it (audit LOW 6): stale before any comparison.
+    const guess = await command({ kind: "pageWrite", ...target, expectRev: field("Full name").rev ?? 0, value: "Robin Vale!" });
+    assert.equal(guess.outcome, "stale", JSON.stringify(guess));
 
     // The page's own script puts text in another field: withheld, so no copy, no compare and no write over it.
     await tab.evaluate(`(() => { const e = [...document.querySelectorAll("input")].find((x) => x.labels?.[0]?.textContent?.includes("Email")); e.value = "set-by-page@example.test"; return true; })()`);
@@ -262,6 +266,27 @@ describe("the page's own writes, restores and compares, end to end, and no copy"
     assert.equal(await tab.evaluate<string>(`document.getElementById("m_name").value`), "Dana from the page");
     const sent = await inWorker<string>("JSON.stringify(globalThis.__sent)");
     assert.ok(!sent.includes("set-by-page@example.test"), "the worker sent the page's own text");
+    await tab.close();
+  });
+});
+
+describe("a combobox holding the user's own text (audit LOW 6)", () => {
+  test("answers stale, not alreadyTrue, when asked to choose exactly what the user typed", async () => {
+    const url = `${site.mainOrigin}/form`;
+    const tab = await open(url);
+    await helperSays({ type: "engineReady", engine: "e-combo" });
+    const tabId = await inWorker<number>(`chrome.tabs.query({ url: ${JSON.stringify(`${url}*`)} }).then(([t]) => t.id)`);
+    await typeInto(tab, `document.getElementById("dept")`, "Engineering");
+    await helperSays({ type: "pageCommand", id: "cw1", expires: Date.now() + 8000, verb: { kind: "pageWalk", tabId } }, "cw1");
+    const s = await inWorker<{ frames: { frameId: number; documentId: string; origin: string; navGen: number; controls: (Report["controls"][number] & { id: string })[] }[] }>(`globalThis.__sent.findLast((x) => x.type === "pageSnapshot")`);
+    const top = s.frames[0] as (typeof s.frames)[number];
+    const dept = top.controls.find((c) => c.name === "Department");
+    assert.ok(dept !== undefined && dept.kind === "combobox" && dept.hasValue === true && typeof dept.rev === "number", `Department reads ${JSON.stringify(dept)}`);
+    await helperSays({ type: "scopedActGrant", taskId: "t2", at: Date.now(), expires: Date.now() + 60_000, scope: { kind: "page", engine: "e-combo", tabId, frameId: top.frameId, origin: top.origin, navGen: top.navGen } });
+    const verb = { kind: "pageChooseOption", tabId, frameId: top.frameId, documentId: top.documentId, id: dept.id, control: "combobox", name: dept.name, taskId: "t2", expectRev: dept.rev, value: "Engineering" };
+    const r = (await helperSays({ type: "pageCommand", id: "cc1", expires: Date.now() + 8000, verb }, "cc1")) as Record<string, unknown>;
+    assert.equal(r.outcome, "stale", JSON.stringify(r));
+    assert.equal(await tab.evaluate<string>(`document.getElementById("dept").value`), "Engineering");
     await tab.close();
   });
 });

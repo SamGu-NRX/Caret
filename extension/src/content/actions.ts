@@ -239,8 +239,9 @@ async function writeText(el: HTMLInputElement | HTMLTextAreaElement, verb: Extra
   const before = now.text;
   if (now.withheld !== null && before !== "") return answer("excluded", `the field holds text Caret does not read (${now.withheld})`);
   // The page writes over no text but Caret's own (counsel 2026-10-09): the helper never asks, and the text kept for
-  // Undo is then never the user's.
-  if (before !== "" && now.origin !== "caret" && !equivalentFor({ numeric }, before, verb.value)) return answer("stale", "the field holds text Caret did not write, so Caret does not write over it");
+  // Undo is then never the user's. Before any comparison with the value: an alreadyTrue on someone else's text would
+  // confirm a guess of it (audit of PR #52, LOW 6).
+  if (before !== "" && now.origin !== "caret") return answer("stale", "the field holds text Caret did not write, so Caret does not write over it");
   const trusted0 = revs.trustedCount(el);
   const readings = (final: string, rev: number): WriteReadings => ({ sameAsBefore: final === before, landed: final === verb.value, equivalent: equivalentFor({ numeric }, final, verb.value), empty: final === "", typedBetween: revs.trustedCount(el) !== trusted0, rev });
   if (equivalentFor({ numeric }, before, verb.value)) return answer("alreadyTrue", null, { readings: readings(before, now.rev) });
