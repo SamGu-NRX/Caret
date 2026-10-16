@@ -101,7 +101,8 @@ public enum PageVerb: Codable, Equatable, Sendable {
     case press(PageTarget)
     case select(PageTarget, expect: String, value: String)
     /// A combobox names `expectRev`; a press-group option (W4) names `expect`, the answer pressed before, and `question`.
-    case chooseOption(PageTarget, expect: String?, expectRev: Int?, value: String, question: String? = nil)
+    /// `wrote`: an undo's clear of a combobox (value ""), Caret's own pick, which the page requires the control still shows.
+    case chooseOption(PageTarget, expect: String?, expectRev: Int?, value: String, question: String? = nil, wrote: String? = nil)
     case setChecked(PageTarget, checked: Bool)
     case attachFile(PageTarget, file: PageFile)
     /// P4 item 8: `text` at the caret of the focused field, whose text before the caret must be `expect`.
@@ -134,7 +135,9 @@ public enum PageVerb: Codable, Equatable, Sendable {
         case "pageWrite": self = .write(t, expectRev: try c.decode(Int.self, forKey: .expectRev), value: try c.decode(String.self, forKey: .value))
         case "pagePress": self = .press(t)
         case "pageSelect": self = .select(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value))
-        case "pageChooseOption": self = .chooseOption(t, expect: try c.decodeIfPresent(String.self, forKey: .expect), expectRev: try c.decodeIfPresent(Int.self, forKey: .expectRev), value: try c.decode(String.self, forKey: .value), question: try c.decodeIfPresent(String.self, forKey: .question))
+        case "pageChooseOption":
+            self = .chooseOption(t, expect: try c.decodeIfPresent(String.self, forKey: .expect), expectRev: try c.decodeIfPresent(Int.self, forKey: .expectRev), value: try c.decode(String.self, forKey: .value),
+                                 question: try c.decodeIfPresent(String.self, forKey: .question), wrote: try c.decodeIfPresent(String.self, forKey: .wrote))
         case "pageSetChecked": self = .setChecked(t, checked: try c.decode(Bool.self, forKey: .checked))
         case "pageAttachFile": self = .attachFile(t, file: try c.decode(PageFile.self, forKey: .file))
         case "pageInsertText": self = .insertText(t, expect: try c.decode(String.self, forKey: .expect), text: try c.decode(String.self, forKey: .text))
@@ -158,9 +161,9 @@ public enum PageVerb: Codable, Equatable, Sendable {
         case let .write(t, expectRev, value): try target("pageWrite", t); try c.encode(expectRev, forKey: .expectRev); try c.encode(value, forKey: .value)
         case let .press(t): try target("pagePress", t)
         case let .select(t, expect, value): try target("pageSelect", t); try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value)
-        case let .chooseOption(t, expect, expectRev, value, question):
+        case let .chooseOption(t, expect, expectRev, value, question, wrote):
             try target("pageChooseOption", t); try c.encodeIfPresent(expect, forKey: .expect); try c.encodeIfPresent(expectRev, forKey: .expectRev)
-            try c.encode(value, forKey: .value); try c.encodeIfPresent(question, forKey: .question)
+            try c.encode(value, forKey: .value); try c.encodeIfPresent(question, forKey: .question); try c.encodeIfPresent(wrote, forKey: .wrote)
         case let .setChecked(t, checked): try target("pageSetChecked", t); try c.encode(checked, forKey: .checked)
         case let .attachFile(t, file): try target("pageAttachFile", t); try c.encode(file, forKey: .file)
         case let .insertText(t, expect, text): try target("pageInsertText", t); try c.encode(expect, forKey: .expect); try c.encode(text, forKey: .text)

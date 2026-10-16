@@ -79,7 +79,7 @@ private func goldenLines() throws -> [Data] {
         let lines = try goldenLines()
         guard case let .pageSnapshot(snap) = try JSONDecoder().decode(PageMessage.self, from: lines[34]),
               case let .pageCommand(cmd) = try JSONDecoder().decode(PageMessage.self, from: lines[35]),
-              case let .chooseOption(t, expect, expectRev, value, question) = cmd.verb,
+              case let .chooseOption(t, expect, expectRev, value, question, _) = cmd.verb,
               case let .pageResult(res) = try JSONDecoder().decode(PageMessage.self, from: lines[36]) else { Issue.record("lines 35 to 37"); return }
         let controls = snap.frames[0].controls
         #expect(controls[0].group == PageGroup(id: "e20", name: "Are you authorized to work here?"))
