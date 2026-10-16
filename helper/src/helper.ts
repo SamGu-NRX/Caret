@@ -1525,7 +1525,7 @@ export class Helper {
     const w = this.model.windows.get(windowId);
     const ask = this.ask;
     if (w === undefined || ask === null) return { askId, windowId, document: doc, seen: {}, asks: [], unresolved: [], section: held };
-    const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory());
+    const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory(), only);
     const seen = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldFingerprint(w, f.key)]));
     const { asks, unresolved, sectionless, section, notFound } = await settleFields(snap, ask, only, held);
     return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unresolved: unresolved.map((f) => f.key), sectionless: sectionless.map((f) => f.key), section, ...(notFound ? { notFound } : {}) };
@@ -1964,6 +1964,13 @@ export class Helper {
       fillModel: async (formWindowId) => {
         if (tried || this.tabSource === null) return this.fillModel(offerKey);
         tried = true;
+        // A page goal's follow-up already holds the text the goal it follows read (planRevealed, TabSource.pass): it
+        // plans from that text, never from a new read that could find the tab changed or no longer the one left.
+        if (this.tabSource.holds(offerKey)) {
+          read = true;
+          windowRead = this.tabSource.holding();
+          return this.fillModel(offerKey);
+        }
         const r = await this.tabSource.readFor(formWindowId, offerKey).catch(() => ({ refused: "refused" as const }));
         read = "windowId" in r;
         windowRead = "windowId" in r ? r.windowId : null;

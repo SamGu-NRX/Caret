@@ -141,7 +141,7 @@ describe("a field the goal's own write revealed", () => {
 });
 
 describe("the follow-up stays within the goal's caps", () => {
-  it("plans one follow-up per goal: a field the follow-up's own write reveals is the user's, said, and calls no writer", async () => {
+  it("plans one follow-up per page: a field the follow-up's own write reveals is the user's, said, and calls no writer", async () => {
     let writes = 0;
     const writer: WriterPort = {
       route: GROQ_GPT_OSS_20B,
@@ -166,7 +166,7 @@ describe("the follow-up stays within the goal's caps", () => {
     // City showed after State's write: no second follow-up, no write to it, and the follow-up says why.
     expect(followUps(r, (second as Segment).goalId)).toEqual([]);
     expect(actsOn(r, "w8")).toBe(0);
-    expect(finishedOf(r, (second as Segment).goalId)).toMatchObject({ outcome: "partial", verified: 1, left: ["'City' is yours: it appeared after Caret's second round of writes, and Caret plans the fields its writes reveal once per request"] });
+    expect(finishedOf(r, (second as Segment).goalId)).toMatchObject({ outcome: "partial", verified: 1, left: ["'City' is yours: it appeared after Caret's second round of writes, and Caret plans the fields its writes reveal once per page"] });
     expect(writes).toBe(0);
   });
 
@@ -185,21 +185,25 @@ describe("the follow-up stays within the goal's caps", () => {
     expect(actsOn(r, `x${GOAL_NEW_CHOICES}`) + actsOn(r, `x${GOAL_NEW_CHOICES + 1}`)).toBe(0);
   });
 
-  it("follows the last part of a form planned in parts, as one more segment within MAX_SEGMENTS", async () => {
-    // 39 answers and Country: the Ask's scope question sees at most 40 fields (MAX_INTENT_FIELDS), so two parts of 20.
-    const answers = Array.from({ length: 39 }, (_, i) => `Answer ${i + 1}`);
-    const controls = (): PageControl[] => [...answers.map((x, i) => c(`t${i + 1}`, "text", x, { value: "" })), ...wizard().filter((x) => x.id === "w5" || x.id === "w9")];
+  it("follows a form planned in parts, and asks about a field revealed past the scope question's 40 fields", async () => {
+    // Country, then 40 answers: the Ask's scope question sees 40 fields (MAX_INTENT_FIELDS), so Answer 40 is the user's
+    // and the goal has two parts. Country's write shows State at the end of the form, past 40 fields, filled ones counted.
+    const answers = Array.from({ length: 40 }, (_, i) => `Answer ${i + 1}`);
+    const controls = (): PageControl[] => [...wizard().filter((x) => x.id === "w5"), ...answers.map((x, i) => c(`t${i + 1}`, "text", x, { value: "" })), ...wizard().filter((x) => x.id === "w9")];
     const r = await rig({ controls, note: [...answers.map((x, i) => `${x}: value ${i + 1}`), "Country: United States", "State: Colorado"].join("\n"), picks: { ...Object.fromEntries(answers.map((x, i) => [x, `value ${i + 1}`])), Country: "United States", State: "Colorado" } });
-    dependsOnCountry(r.page);
+    r.page.onAct = (v, p) => {
+      if (v.kind === "pageSelect" && v.id === "w5" && v.value !== "" && !p.controls.some((x) => x.id === "w6")) p.controls.splice(p.controls.findIndex((x) => x.id === "w9"), 0, state());
+      return null;
+    };
     const first = (await r.ask(ASK)) as Segment;
     expect(first).toMatchObject({ segment: 0, segments: 2 });
     await r.accept(first);
     await r.helper.goals.idle();
+    expect(r.page.shown("w5")).toBe("United States");
     expect(followUps(r, first.goalId)).toEqual([]);
     const part = segmentsOf(r, first.goalId).find((x) => x.segment === 1) as Segment;
     await r.accept(part);
     await r.helper.goals.idle();
-    expect(r.page.shown("w5")).toBe("United States");
     const [next] = followUps(r, first.goalId);
     expect(2 + (next?.segments ?? 0)).toBeLessThanOrEqual(MAX_SEGMENTS);
     expect(next?.steps.map((x) => x.says)).toEqual(["State: Colorado", "You press Next"]);

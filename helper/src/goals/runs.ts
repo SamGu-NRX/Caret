@@ -25,7 +25,7 @@
 // A page goal's own verified writes can show fields that were not on the page when it was planned (a State that appears
 // once Country is set). After its last segment it reads the page again and plans the empty fields that appeared
 // (followUp); once it has finished, that plan is offered as a follow-up goal replacing it (reason afterReveal), which
-// needs its own acceptance. Once per request, within MAX_SEGMENTS.
+// needs its own acceptance. Once per page, within MAX_SEGMENTS.
 import type { SavedReader } from "../fill/alternate.ts";
 import { fieldFingerprint } from "../fill/ask-scope.ts";
 import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
@@ -146,7 +146,7 @@ interface Run {
   replay: ReplayState | null;
   /** Slice 2: the warnings a replay's lowering added, shown with the first segment it added (by that segment's index). */
   laterWarnings: Map<number, string[]>;
-  /** Whether this goal is, or replaces, a follow-up for fields a page goal's writes revealed (followUp): there is one per request. */
+  /** Whether this goal is, or replaces, a follow-up for fields a page goal's writes revealed (followUp): there is one per page. */
   followedUp: boolean;
 }
 
@@ -909,18 +909,20 @@ export class GoalRuns {
 
   /**
    * The fields a page goal's own verified writes revealed (P2): empty controls the page now shows in the goal's scope that
-   * were not on it when the goal was planned, on the same document. A list scope takes none (the user named fields that
-   * existed); a section scope, those under the same section. A new document is P3's (carry), not a reveal.
+   * were not on it when the goal was planned, on the same document; for a section scope, those under the same section.
+   * A new document is P3's (carry), not a reveal.
    *
    * They are planned as a goal of their own (Helper.planRevealed: the Ask's scope question about them alone, then the
    * page planner), which offerFollowUp offers once this goal has finished. At most GOAL_NEW_CHOICES of them are asked
-   * about, once per request (a follow-up's own reveals are the user's), and only while the request stays within
-   * MAX_SEGMENTS. Each one not planned is left to the user and named, with why, when this goal ends (leftNow). Nothing
+   * about, once per page (a follow-up's own reveals are the user's; the user's Next starts a new page, P3), and only
+   * while the request stays within MAX_SEGMENTS. Each one not planned is left to the user and named, with why, when this goal ends (leftNow). Nothing
    * is dispatched here.
    */
   private async followUp(run: Run, page: PageGoal): Promise<GoalPlan | null> {
     const planRevealed = this.deps.planRevealed;
-    if (page.kind === "list" || planRevealed === undefined) return null;
+    // A list the user named takes none: they named fields that existed. A list of every empty field (FillScope.wholeForm,
+    // how the heads maker states a whole-form Ask, planner/intent-heads.ts) is the form, as "all" is.
+    if ((page.kind === "list" && page.scope.wholeForm !== true) || planRevealed === undefined) return null;
     const w = this.deps.model.windows.get(page.windowId);
     if (w === undefined) return null;
     const doc = run.plan.inventory.documents.get(page.windowId);
@@ -937,7 +939,7 @@ export class GoalRuns {
       this.owe(run, leftRevealed(w, keys, why));
       return null;
     };
-    if (run.followedUp) return leave(revealed, "it appeared after Caret's second round of writes, and Caret plans the fields its writes reveal once per request");
+    if (run.followedUp) return leave(revealed, "it appeared after Caret's second round of writes, and Caret plans the fields its writes reveal once per page");
     const parts = `this request already has the ${MAX_SEGMENTS} parts Caret previews for one request`;
     if (run.plan.segments.length >= MAX_SEGMENTS) return leave(revealed, parts);
     const keys = revealed.slice(0, GOAL_NEW_CHOICES);
