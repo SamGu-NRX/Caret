@@ -24,7 +24,7 @@ import { GrantTable } from "./shared/grants.ts";
 import { classifyPress } from "./shared/risk.ts";
 import { FrameDocs, NavGens, frameOrigin } from "./worker/frames.ts";
 import { composeFrames, isCaptchaUrl, type CaptchaFrame } from "./worker/compose.ts";
-import { judgePress, type FrameMarks } from "./worker/press-guard.ts";
+import { judgeActivation, judgePress, type FrameMarks } from "./worker/press-guard.ts";
 import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
 import { LEFT_TAB_MS, LeftTab, canonicalOrigin, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
 import { joinFrames } from "./shared/tab-text.ts";
@@ -546,6 +546,9 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   }
   // A Yes/No press (W4) must not navigate or submit (B28): the frame is read before it and after its answer.
   const press = verb.kind === "pageChooseOption" && verb.question !== undefined;
+  // Slice 2: a page-row activation is judged like a press, but a history update alone is the open's expected shape
+  // (press-guard.ts judgeActivation), so only a navigation begun or a document gone counts as a change.
+  const activation = verb.kind === "pageActivateItem";
   const marks = (): FrameMarks => ({ navGen: navGens.get(verb.tabId, verb.frameId), starts: navStarts.get(verb.tabId, verb.frameId) });
   const before = marks();
   let a: ActAnswer | null;
@@ -558,9 +561,9 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
     } else a = got;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // A press was delivered and its document went before it answered (the channel closed under it, or the page went
-    // into the back-forward cache): it may have landed, so it is judged below as a change, never as stale.
-    if (press && /message (?:channel|port) closed|back\/forward cache/i.test(msg)) a = null;
+    // A press or activation was delivered and its document went before it answered (the channel closed under it, or
+    // the page went into the back-forward cache): it may have landed, so it is judged below as a change, never as stale.
+    if ((press || activation) && /message (?:channel|port) closed|back\/forward cache/i.test(msg)) a = null;
     // The pinned document is gone between the check and the delivery: a navigation won the race.
     else if (/Could not establish connection|Receiving end does not exist|No frame|document/i.test(msg)) return { outcome: "stale", detail: `the document is gone: ${msg}` };
     else if (!press) return { outcome: "error", detail: msg };

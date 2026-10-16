@@ -6,7 +6,7 @@
 // A text control's text never leaves the frame (counsel 2026-10-09): the walk sends whether it holds text and its
 // change counter (content/revs.ts), read through `readText`, and the PageControl type has no value for it. Only a
 // choice control (a select, a range or a color input) sends its value, which is page state, not typed text.
-import { isTextKind, type ChoiceControl, type PageControl, type PageControlKind, type PageExclusion, type Rect, type TextControl, type Withheld } from "../shared/messages.ts";
+import { isTextKind, NAV_CONTROL_KINDS, type ChoiceControl, type NavControlKind, type PageControl, type PageControlKind, type PageExclusion, type Rect, type TextControl, type Withheld } from "../shared/messages.ts";
 import { authorIdentifier, isGeneratedId, strongKey } from "../shared/ids.ts";
 import { clean, composedParent, groupNames, labelledBy } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
@@ -19,6 +19,27 @@ import { editorPlainText } from "./field-text.ts";
 import { shadowRootOf } from "./shadow.ts";
 
 export const MAX_CONTROLS = 1000;
+
+/** The most list rows one walk reports; more set the frame's truncated flag like controls past the cap do. */
+export const MAX_NAV_TARGETS = 64;
+const NAV_TARGET = "[role=row], [role=option], [role=listitem]";
+/** A row's cells, in the row's order; a row without cell roles falls back to its own table cells. */
+const NAV_CELL = "[role=cell], [role=gridcell], [role=columnheader], [role=rowheader]";
+/** Which list role hosts which nav-target role (walker and the activation's re-check read the same list). */
+const NAV_HOST: Record<string, string> = { row: "[role=grid], [role=treegrid], [role=table]", option: "[role=listbox]", listitem: "[role=list]" };
+
+/**
+ * The cells of the nav-target element `el` of role `kind`, in order and clean: the element's own cell roles, else its
+ * table cells, else the element's own text (an option, a listitem). Null when the element is no nav target of that
+ * kind (not in its list role) or has no cells; the activation re-check reads the same cells the walk read.
+ */
+export function navCellsOf(el: Element, kind: string): string[] | null {
+  if (el.closest(NAV_HOST[kind] ?? "") === null) return null;
+  let cellEls = [...el.querySelectorAll(NAV_CELL)];
+  if (cellEls.length === 0 && kind === "row") cellEls = [...el.children].filter((x) => x.matches("td, th"));
+  const cells = (cellEls.length > 0 ? cellEls : [el]).slice(0, 8).map((x) => clean(x.textContent ?? "", 200)).filter((t) => t !== "");
+  return cells.length === 0 ? null : cells;
+}
 const MAX_OPTIONS = 200;
 
 const CANDIDATE = "input, select, textarea, button, a[href], [role=button], [role=link], [role=checkbox], [role=radio], [role=switch], [role=combobox], [role=textbox], [contenteditable='' i], [contenteditable='true' i]";
@@ -73,6 +94,7 @@ const IMPLIED_ROLE: Record<PageControlKind, string> = {
   text: "textbox", email: "textbox", tel: "textbox", url: "textbox", number: "spinbutton", search: "searchbox", date: "textbox", time: "textbox",
   datetime: "textbox", month: "textbox", week: "textbox", textarea: "textbox", select: "combobox", checkbox: "checkbox", radio: "radio",
   combobox: "combobox", button: "button", link: "link", file: "button", contenteditable: "textbox", range: "slider", color: "button",
+  row: "row", option: "option", listitem: "listitem",
 };
 
 function ariaHidden(el: Element): boolean {
@@ -334,6 +356,7 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
   const origin = location.origin;
   const forms = [...document.forms];
   const controls: PageControl[] = [];
+  const seen = new Set<Element>();
   const excluded: Partial<Record<PageExclusion, number>> = {};
   const ordinals = new Map<string, number>();
   let truncated = false;
@@ -437,6 +460,47 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     if (inside.length > 0) c.sections = inside;
     controls.push(c);
     onKept(f.el, c);
+    seen.add(f.el);
+  }
+  // Slice 2: the list rows a navigate opens, as their own controls. A row is never a form control, so this pass runs
+  // after the controls and skips anything they already kept (an anchor row would be both). The page fields (cells,
+  // inForm, href) are what goals/capabilities.ts navVerdict reads to pick the actor; the cells are page state.
+  let kept = 0;
+  for (const el of document.querySelectorAll(NAV_TARGET)) {
+    if (seen.has(el) || controls.length >= MAX_CONTROLS) continue;
+    const role = (el.getAttribute("role") ?? "").trim().toLowerCase();
+    if (!(NAV_CONTROL_KINDS as readonly string[]).includes(role)) continue;
+    const kind = role as NavControlKind;
+    if (kept >= MAX_NAV_TARGETS) {
+      truncated = true;
+      break;
+    }
+    // A row the page hides or marks disabled is not one Caret opens; hidden rows count as the frame's exclusions.
+    if (ariaHidden(el)) {
+      excluded.ariaHidden = (excluded.ariaHidden ?? 0) + 1;
+      continue;
+    }
+    if (!visible(el)) {
+      excluded.invisible = (excluded.invisible ?? 0) + 1;
+      continue;
+    }
+    if (el.getAttribute("aria-disabled") === "true") continue;
+    // The row's own link decides href: none, a same-document fragment (a page-row click's expected shape), or another
+    // URL (which navVerdict leaves to the user — that click would commit a navigation).
+    const a = el instanceof HTMLAnchorElement ? el : el.closest("a[href]");
+    const href: "none" | "hash" | "other" = a === null ? "none" : (a.getAttribute("href") ?? "").trim().startsWith("#") ? "hash" : "other";
+    // The cells, in order: the row's own cell roles, else its table cells, else the row's own text (an option, a listitem).
+    const cells = navCellsOf(el, kind);
+    if (cells === null) continue;
+    const name = cells.join(" · ");
+    if (selfIdentifying(name)) continue;
+    const base = `${kind}:${clean(name, 60).toLowerCase()}`;
+    const ordinal = ordinals.get(base) ?? 0;
+    ordinals.set(base, ordinal + 1);
+    const c: ChoiceControl = { id: idOf(el), key: `${base}~${ordinal}`, strongKey: null, role: kind, name, form: formIdentity(el, forms), rect: rectOf(el), kind, cells, inForm: el.closest("form") !== null, href };
+    controls.push(c);
+    onKept(el, c);
+    kept++;
   }
   return { controls, excluded, truncated, sections: outline.occurrences, sectionOverflow: outline.overflow, sectionsCut: outline.cut, headings: outline.headings };
 }
