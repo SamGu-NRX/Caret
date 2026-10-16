@@ -12,6 +12,7 @@ import { wirePageEngines } from "../src/engines/wire.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import type { IntentMaker } from "../src/planner/intent.ts";
+import type { WriterPort } from "../src/writer/port.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
 import { byLabel, chrome, FakePage, hello, mixedControls, NOTE, okReader, PICKS, TEXTEDIT, WIN } from "./fake-page.ts";
 
@@ -73,6 +74,8 @@ export interface RigOptions {
   now?: () => number;
   /** I6: the offers an hour may show (HelperOptions.offersPerHour); the settings' own by default. */
   offersPerHour?: number;
+  /** The code-mode plan writer (HelperOptions.writer); none by default, as a page goal needs none. */
+  writer?: WriterPort;
 }
 
 /** A Helper over one page tab and the note the user just left, with canned picks by field label (fake-page.ts PICKS). */
@@ -113,6 +116,7 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     ...(o.goalFiles === true ? { goalFiles: true } : {}),
     ...(o.now === undefined ? {} : { now: o.now }),
     ...(o.offersPerHour === undefined ? {} : { offersPerHour: o.offersPerHour }),
+    ...(o.writer === undefined ? {} : { writer: o.writer }),
   });
   wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
   host.registry.add(page.session);
