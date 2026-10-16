@@ -113,7 +113,13 @@ const consumer: Socket = await new Promise((res, rej) => {
 let cbuf = "";
 const onMessage: ((m: Activity | TaskProgress) => void)[] = [];
 let authenticated: () => void = () => undefined;
-const isHost = new Promise<void>((r) => (authenticated = r));
+const isHost = new Promise<void>((resolve, reject) => {
+  authenticated = resolve;
+  // A refused or late proof gets an error line naming why, and the helper closes the connection.
+  const failed = (why: string): void => reject(new Error(`the helper did not take this script as the host (${why}): ${seen.flatMap((x) => (x.m.type === "error" ? [x.m.message] : [])).join("; ") || "no reason given"}`));
+  consumer.once("close", () => failed("the connection closed"));
+  consumer.once("error", (e) => failed(e.message));
+});
 consumer.setEncoding("utf8");
 consumer.on("data", (d: string) => {
   cbuf += d;
