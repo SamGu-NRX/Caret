@@ -546,7 +546,7 @@ export class PageEngineLink implements ReaderLink {
   }
 
   private report(verb: PageVerb, outcome: PageResult["outcome"], commandMs: number, extensionMs: number | null, rewalk: VerbTiming["rewalk"]): void {
-    this.onTiming?.({ verb: verb.kind, control: verb.kind === "pageWalk" || verb.kind === "pageSourceGrant" ? null : verb.control, outcome, commandMs, extensionMs, rewalk, at: Date.now() });
+    this.onTiming?.({ verb: verb.kind, control: verb.kind === "pageWalk" ? null : verb.control, outcome, commandMs, extensionMs, rewalk, at: Date.now() });
   }
 
   async run(verb: ReaderVerb): Promise<VerbResult> {
@@ -840,7 +840,7 @@ export class PageEngineLink implements ReaderLink {
    * text); a restore holds what the executor puts back. Each at the rev the page reported.
    */
   private learn(verb: PageVerb, r: PageResult, expectText: string): void {
-    if (verb.kind === "pageWalk" || verb.kind === "pageSourceGrant") return;
+    if (verb.kind === "pageWalk") return;
     // Under the element the act reached: a rebound write went to a replacement with an id of its own.
     const id = r.reboundTo ?? verb.id;
     const at = (text: string, rev: number | null | undefined): void => {

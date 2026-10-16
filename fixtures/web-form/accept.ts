@@ -753,7 +753,7 @@ async function batch5(e: Engine, site: FixtureSite, published: HelperMessage[]):
     const r = await watched(async (seen) => ({ u: await e.helper.executor.undo(taskId), seen: acts(seen) }));
     expect(r.u.restored === 10 && r.u.notRestored.length === 0, `undo ${JSON.stringify(r.u)}`);
     // A text field's restore is the page's own pageRestore; each names the element Caret wrote.
-    expect(r.seen.length === 10 && r.seen.every((v) => v.kind !== "pageSourceGrant" && v.rebind === false && typeof v.sameAs === "string"), `restores: ${JSON.stringify(r.seen.map((v) => [v.kind, v.kind !== "pageSourceGrant" && v.rebind, v.kind !== "pageSourceGrant" && v.sameAs !== undefined]))}`);
+    expect(r.seen.length === 10 && r.seen.every((v) => v.rebind === false && typeof v.sameAs === "string"), `restores: ${JSON.stringify(r.seen.map((v) => [v.kind, v.rebind, v.sameAs !== undefined]))}`);
     const got = await readAll();
     expect(diff(got, MIXED_EMPTY) === "", `after undo: ${diff(got, MIXED_EMPTY)}`);
     await stateHas(site, "country", null);

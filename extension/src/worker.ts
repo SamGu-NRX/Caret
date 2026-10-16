@@ -84,15 +84,15 @@ async function dropOffGrants(): Promise<void> {
  * a site switched off while the act ran gets the outcome alone.
  */
 async function admitted(verb: ActVerb, a: ActAnswer): Promise<ActAnswer> {
-  if (a.readings === undefined && a.choice === undefined && a.compare === undefined && a.source === undefined) return a;
+  if (a.readings === undefined && a.choice === undefined && a.compare === undefined) return a;
   const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId }).catch(() => null)) ?? [];
   const here = frameOrigin(all, verb.frameId);
   const top = frameOrigin(all, 0);
   const ok = here !== null && top !== null && !offSite(here) && !offSite(top) && !deniedOrigin(here) && !deniedOrigin(top) && grants.check(verb.taskId, verb.tabId, verb.frameId).ok;
   if (ok) return a;
-  const { readings: _readings, choice: _choice, compare: _compare, source: _source, ...rest } = a;
-  // A compare or a copy that cannot be handed on is no answer at all: the outcome says why.
-  return a.compare !== undefined || a.source !== undefined ? { outcome: "siteOff", detail: "Caret is off on this site now" } : rest;
+  const { readings: _readings, choice: _choice, compare: _compare, ...rest } = a;
+  // A compare that cannot be handed on is no answer at all: the outcome says why.
+  return a.compare !== undefined ? { outcome: "siteOff", detail: "Caret is off on this site now" } : rest;
 }
 /** Frames armed to report the user's input ("tabId:frameId"), and until when. */
 const armed = new Map<string, number>();
@@ -163,7 +163,6 @@ function result(id: string, a: ActAnswer): void {
     ...(a.restore === undefined ? {} : { restore: a.restore }),
     ...(a.reboundTo === undefined ? {} : { reboundTo: a.reboundTo }),
     ...(a.compare === undefined ? {} : { compare: a.compare }),
-    ...(a.source === undefined ? {} : { source: a.source }),
   });
 }
 

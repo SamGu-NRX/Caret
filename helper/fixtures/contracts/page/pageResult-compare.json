@@ -8,9 +8,5 @@
   "compare": [
     "equal",
     "unknown"
-  ],
-  "source": {
-    "field-1": "Ada",
-    "field-4": null
-  }
+  ]
 }

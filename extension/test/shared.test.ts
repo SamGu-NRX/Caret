@@ -172,9 +172,10 @@ describe("bridge messages", () => {
     expect(cmd({ ...target, kind: "pageCompare", candidates: ["Ada Lovelace"] })).not.toBeNull();
     expect(cmd({ ...target, kind: "pageCompare", candidates: Array.from({ length: 9 }, (_, i) => `candidate ${i}`) })).toBeNull();
     expect(cmd({ ...target, kind: "pageCompare", candidates: [] })).toBeNull();
-    expect(cmd({ kind: "pageSourceGrant", tabId: 7, frameId: 0, documentId: "D", taskId: "t1", ids: ["e1", "e2"] })).not.toBeNull();
-    expect(cmd({ kind: "pageSourceGrant", tabId: 7, frameId: 0, documentId: "D", ids: ["e1"] })).toBeNull();
-    expect(cmd({ kind: "pageSourceGrant", tabId: 7, frameId: 0, documentId: "D", taskId: "t1", ids: [] })).toBeNull();
+    // No verb gives a field's text out of the page until the user can pick a source window (audit HIGH 2): the copy
+    // verb is dropped at the wire, whatever fields it carries.
+    expect(cmd({ kind: "pageSourceGrant", tabId: 7, frameId: 0, documentId: "D", taskId: "t1", ids: ["e1", "e2"] })).toBeNull();
+    expect(cmd({ ...target, kind: "pageSourceGrant", ids: ["e1"] })).toBeNull();
   });
   it("joins chunks in order, and starts over on a gap", () => {
     const c = new Chunks();

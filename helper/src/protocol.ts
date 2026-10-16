@@ -3222,11 +3222,11 @@ const PageTarget = {
  * different, or unknown (a withheld field, a candidate under 3 code points, or over the budget: 8 per control and 64 per
  * document per task in the page, 256 per origin per hour in the worker). Only engines/page-compare.ts sends it.
  *
- * `pageSourceGrant` reads the text of fields `ids` of one frame, for a copy from a window the user picked as the source
- * (null for any withheld, secret or gone). Only engines/page-source.ts sends it.
+ * No verb reads a field's text out of the page. The counsel's `pageSourceGrant`, for a copy from a window the user
+ * picked as the source, waits for that pick flow: engines/page-source.ts refuses by name until then, and the extension
+ * refuses the verb.
  */
 export const MAX_COMPARE_CANDIDATES = 8;
-export const MAX_SOURCE_IDS = 50;
 export const PageVerb = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pageWalk"), tabId: z.number().int().nonnegative().nullable() }),
   /**
@@ -3248,14 +3248,6 @@ export const PageVerb = z.discriminatedUnion("kind", [
   /** `exact`: the field must hold exactly `wrote`, S1's rule for a write whose answer was lost; else equivalent under its kind. */
   z.object({ kind: z.literal("pageRestore"), ...PageTarget, wrote: z.string(), exact: z.literal(true).optional() }),
   z.object({ kind: z.literal("pageCompare"), ...PageTarget, candidates: z.array(z.string()).min(1).max(MAX_COMPARE_CANDIDATES) }),
-  z.object({
-    kind: z.literal("pageSourceGrant"),
-    tabId: z.number().int().nonnegative(),
-    frameId: z.number().int().nonnegative(),
-    documentId: z.string().min(1),
-    taskId: z.string().min(1),
-    ids: z.array(z.string().min(1)).min(1).max(MAX_SOURCE_IDS),
-  }),
   z.object({ kind: z.literal("pageSetChecked"), ...PageTarget, checked: z.boolean() }),
   z.object({
     kind: z.literal("pageAttachFile"),
@@ -3440,14 +3432,12 @@ export const PageResult = z
     reboundTo: z.string().min(1).optional(),
     /** pageCompare only, with outcome ok: one answer per candidate, in order. */
     compare: z.array(PageCompareAnswer).max(MAX_COMPARE_CANDIDATES).optional(),
-    /** pageSourceGrant only, with outcome ok: each id's text, null where it is withheld, secret or gone. */
-    source: z.record(z.string(), z.string().max(2000).nullable()).optional(),
   })
   .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] })
   .refine((r) => r.pageChanged === undefined || (r.outcome === "failed" && r.readings === undefined), { message: "pageChanged comes with outcome failed and no readings", path: ["pageChanged"] })
   .refine((r) => r.text === undefined || r.outcome === "ok", { message: "text comes with outcome ok", path: ["text"] })
   .refine((r) => r.insert === undefined || r.outcome === "failed", { message: "insert comes with outcome failed", path: ["insert"] })
-  .refine((r) => (r.compare === undefined && r.source === undefined) || r.outcome === "ok", { message: "compare and source come with outcome ok", path: ["compare"] })
+  .refine((r) => r.compare === undefined || r.outcome === "ok", { message: "compare comes with outcome ok", path: ["compare"] })
   .refine((r) => r.restore?.outcome !== "restored" || r.outcome === "ok", { message: "a restore comes with outcome ok", path: ["restore"] });
 export type PageResult = z.infer<typeof PageResult>;
 

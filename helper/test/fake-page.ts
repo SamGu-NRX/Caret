@@ -236,14 +236,6 @@ export class FakePage {
     const custom = this.onAct?.(verb, this) ?? null;
     if (custom !== null) return this.reply(id, custom);
     if (this.grantedGen !== this.navGen || verb.documentId !== this.documentId) return this.reply(id, { outcome: "notAllowed", detail: "the frame navigated since the grant" });
-    if (verb.kind === "pageSourceGrant") {
-      const out: Record<string, string | null> = {};
-      for (const id of verb.ids) {
-        const f = this.controls.find((y) => y.id === id);
-        out[id] = f === undefined || !isTextKind(f.kind) || f.withheld !== undefined || f.excluded !== undefined ? null : (f.value ?? "");
-      }
-      return this.reply(id, { outcome: "ok", detail: null, source: out });
-    }
     const x = this.find(verb.id);
     switch (verb.kind) {
       case "pageWrite":

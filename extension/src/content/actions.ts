@@ -40,14 +40,16 @@ import { compareBudget, numericOf, readNow, records, revs } from "./page-state.t
 
 const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Partial<ActAnswer> = {}): ActAnswer => ({ outcome, detail, ...extra });
 
-/** The longest text pageSourceGrant gives for one field. Assumed: the bound the walk once put on a value. */
-export const MAX_SOURCE_CHARS = 2000;
+/**
+ * Every verb this page takes. Any other kind is refused by name before anything is read: in particular the counsel's
+ * pageSourceGrant, a field's text for a copy, has no handler until a flow where the user picks the source window exists.
+ */
+const ACT_KINDS: Readonly<Record<ActVerb["kind"], true>> = { pageWrite: true, pagePress: true, pageSelect: true, pageChooseOption: true, pageSetChecked: true, pageAttachFile: true, pageInsertText: true, pageRestore: true, pageCompare: true };
 
-type ElementVerb = Exclude<ActVerb, { kind: "pageSourceGrant" }>;
 type Mutating = Extract<ActVerb, { kind: "pageWrite" | "pageSelect" | "pageSetChecked" | "pageRestore" }>;
 
 /** Why the act must not go on now, or null. */
-function ineligible(el: Element, verb: ElementVerb, entry: Entry | undefined, deadline: number, opts: { name: boolean } = { name: true }): ActAnswer | null {
+function ineligible(el: Element, verb: ActVerb, entry: Entry | undefined, deadline: number, opts: { name: boolean } = { name: true }): ActAnswer | null {
   if (!el.isConnected || el.ownerDocument !== document) return answer("stale", "the element left the document");
   if (entry !== undefined && entry.href !== location.href) return answer("stale", "the page's address changed since the walk");
   if (entry !== undefined && entry.nav !== navigationEntry()) return answer("stale", "the page moved in history since the walk");
@@ -65,7 +67,7 @@ function ineligible(el: Element, verb: ElementVerb, entry: Entry | undefined, de
  * the same text the walk read at the rev the verb expects, which only this frame knows (Entry.seen); for a select, the
  * option value the verb expects. Null: no value to hold (a check, a file, an insert never rebinds).
  */
-function rebindMatch(verb: ElementVerb): ((el: Element, e: Entry) => boolean) | null {
+function rebindMatch(verb: ActVerb): ((el: Element, e: Entry) => boolean) | null {
   if (verb.kind === "pageWrite" || (verb.kind === "pageChooseOption" && verb.expectRev !== undefined)) {
     const rev = verb.kind === "pageWrite" ? verb.expectRev : verb.expectRev;
     return (el, e) => e.seen !== undefined && e.seen.rev === rev && revs.digestOf(textOf(el, e.kind)) === e.seen.digest;
@@ -80,11 +82,12 @@ function rebindMatch(verb: ElementVerb): ((el: Element, e: Entry) => boolean) | 
  * the multi-stage acts (combobox, attach) ask it before each stage (memo section 2).
  */
 export async function act(reg: Registry, verb: ActVerb, deadline: number, alive: () => Promise<boolean>): Promise<ActAnswer> {
+  const kind: unknown = (verb as { kind?: unknown }).kind;
+  if (typeof kind !== "string" || !Object.hasOwn(ACT_KINDS, kind)) return answer("unsupported", `this page takes no '${clean(String(kind), 40)}' verb; nothing was read`);
   if (verb.kind === "pagePress") {
     const risk = classifyPress(verb.name);
     return answer("handoff", `'${clean(verb.name, 60)}' runs the page's own script, so you press it`, { risk: risk === "safe" || risk === "unclassified" ? "pageScript" : risk });
   }
-  if (verb.kind === "pageSourceGrant") return sourceGrant(reg, verb.ids, deadline);
   // P4: an insert goes only to the element the walk kept when the offer was made, never to one rebound by its strong
   // key; a restore, a compare and an undo only to the element Caret wrote.
   const rebind = verb.rebind !== false && verb.kind !== "pageInsertText" && verb.kind !== "pageRestore" && verb.kind !== "pageCompare";
@@ -139,26 +142,6 @@ function compare(el: Element, verb: Extract<ActVerb, { kind: "pageCompare" }>): 
   const now = readNow(el, verb.control, false);
   const answers = compareAnswers(now.withheld === null ? textOf(el, verb.control, true) : null, numericOf(el), verb.candidates, () => compareBudget.take(verb.taskId, verb.id));
   return answer("ok", null, { compare: answers });
-}
-
-/**
- * pageSourceGrant: the text of each field the helper names, for a copy from a window the user picked. A field that is
- * gone, replaced, excluded, not a text control, or withheld gives null; none is rebound.
- */
-function sourceGrant(reg: Registry, ids: readonly string[], deadline: number): ActAnswer {
-  if (Date.now() >= deadline) return answer("notAllowed", "the grant or command expired");
-  const out: Record<string, string | null> = {};
-  for (const id of ids) {
-    const r = reg.resolve(id, null, false);
-    const kind = "missing" in r ? null : kindOf(r.el);
-    if ("missing" in r || kind === null || !isTextKind(kind) || exclusionOf(r.el, controlName(r.el, kind)) !== null) {
-      out[id] = null;
-      continue;
-    }
-    const now = readNow(r.el, kind, false);
-    out[id] = now.withheld === null ? textOf(r.el, kind, true).slice(0, MAX_SOURCE_CHARS) : null;
-  }
-  return answer("ok", null, { source: out });
 }
 
 /** A stage boundary: the task's grant still covers the frame (asked of the worker), then the element is still eligible. */

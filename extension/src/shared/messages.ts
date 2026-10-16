@@ -183,8 +183,6 @@ export interface ActAnswer {
   reboundTo?: string;
   /** pageCompare only, with outcome ok: one answer per candidate, in order. */
   compare?: ("equal" | "equivalent" | "different" | "unknown")[];
-  /** pageSourceGrant only, with outcome ok: each id's text, null where it is withheld or gone. */
-  source?: Record<string, string | null>;
 }
 
 interface TargetFields {
@@ -227,12 +225,10 @@ export type ActVerb =
    */
   | ({ kind: "pageRestore"; wrote: string; exact?: true } & TargetFields)
   /** Whole-value comparison of the field with each candidate, at most 8 per control and 64 per task in this document. */
-  | ({ kind: "pageCompare"; candidates: string[] } & TargetFields)
-  /**
-   * The text of fields `ids` of one frame the user picked as a copy source (counsel, pageSourceGrant): null for any that
-   * is withheld, secret or gone. Under the task's grant, as every act.
-   */
-  | { kind: "pageSourceGrant"; tabId: number; frameId: number; documentId: string; taskId: string; ids: string[] };
+  | ({ kind: "pageCompare"; candidates: string[] } & TargetFields);
+// No verb gives a field's text out of the page. The counsel's pageSourceGrant, a copy from a window the user picked,
+// waits for that pick flow to exist (helper/src/engines/page-source.ts refuses until then): a grant to act alone is no
+// pick, so the page must not answer it with text.
 
 export type PageVerb = { kind: "pageWalk"; tabId: number | null } | ActVerb;
 

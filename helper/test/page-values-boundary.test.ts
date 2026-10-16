@@ -5,7 +5,8 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { EngineMessage, PageControl, PROTOCOL_VERSION, TextPageControl, type HelperToEngine, type PageSnapshot } from "../src/protocol.ts";
+import { EngineMessage, PageControl, PageVerb, PROTOCOL_VERSION, TextPageControl, type HelperToEngine, type PageSnapshot } from "../src/protocol.ts";
+import { PAGE_SOURCE_REFUSAL, readPickedSource } from "../src/engines/page-source.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { FocusTextSerialized, focusText, forHost } from "../src/engines/focus-text.ts";
 import { FocusTextLeak, MIN_TRIPWIRE_CHARS, noteFocusedText, refuseFocusedText } from "../src/privacy/focus-tripwire.ts";
@@ -107,10 +108,17 @@ describe("the modules that may touch a page field's text", () => {
     for (const route of ["writer/chat.ts", "fill/jev.ts"]) expect([...reach(join(SRC, route))], route).not.toContain(focus);
   });
 
-  it("builds pageCompare in engines/page-compare.ts and pageSourceGrant in engines/page-source.ts only", () => {
-    for (const [verb, owner] of [["pageCompare", "engines/page-compare.ts"], ["pageSourceGrant", "engines/page-source.ts"]] as const) {
+  it("builds pageCompare in engines/page-compare.ts only, and pageSourceGrant nowhere", () => {
+    for (const [verb, owners] of [["pageCompare", ["engines/page-compare.ts"]], ["pageSourceGrant", []]] as const) {
       const builders = sources(SRC).filter((f) => new RegExp(`kind: "${verb}"`, "u").test(readFileSync(f, "utf8")));
-      expect(builders.map((f) => f.slice(SRC.length)).sort(), verb).toEqual([owner]);
+      expect(builders.map((f) => f.slice(SRC.length)).sort(), verb).toEqual(owners);
     }
+  });
+
+  it("refuses a copy from a web page's fields by name, whatever pick it is handed, and the protocol has no verb for one", () => {
+    const frame = { tabId: 7, frameId: 0, documentId: "D" };
+    expect(readPickedSource(frame, "t1", ["e1"], null)).toEqual({ refused: PAGE_SOURCE_REFUSAL });
+    expect(readPickedSource(frame, "t1", ["e1"], { by: "user", windowId: "w1" })).toEqual({ refused: PAGE_SOURCE_REFUSAL });
+    expect(PageVerb.safeParse({ kind: "pageSourceGrant", ...frame, taskId: "t1", ids: ["e1"] }).success).toBe(false);
   });
 });

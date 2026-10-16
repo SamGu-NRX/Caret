@@ -171,7 +171,7 @@ async function helperSays(m: Record<string, unknown>, id?: string): Promise<Reco
   throw new Error(`no pageResult for ${id}`);
 }
 
-describe("the page's own writes, restores, compares and copies, end to end", () => {
+describe("the page's own writes, restores and compares, end to end, and no copy", () => {
   let n = 0;
   const command = async (verb: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const id = `c${++n}`;
@@ -211,7 +211,11 @@ describe("the page's own writes, restores, compares and copies, end to end", () 
     s = await walked();
     assert.equal(field("Full name").hasValue, true);
     assert.equal(field("Full name").rev, (wrote.readings as { rev: number }).rev);
-    assert.deepEqual((await command({ kind: "pageSourceGrant", tabId, frameId: top.frameId, documentId: top.documentId, taskId: "t1", ids: [name.id] })).source, { [name.id]: "Robin Vale" });
+    // No verb copies a field's text out (audit HIGH 2): the content script itself refuses the counsel's copy verb by
+    // name, even under a live grant and sent straight to the frame, past the worker that drops it.
+    const copy = await inWorker<Record<string, unknown>>(`chrome.tabs.sendMessage(${tabId}, { caret: 1, op: "act", deadline: Date.now() + 5000, guardUntil: Date.now() + 5000, verb: ${JSON.stringify({ kind: "pageSourceGrant", tabId, frameId: top.frameId, documentId: top.documentId, taskId: "t1", ids: [name.id] })} }, { frameId: ${top.frameId} })`);
+    assert.equal(copy.outcome, "unsupported", JSON.stringify(copy));
+    assert.ok(!("source" in copy) && !JSON.stringify(copy).includes("Robin Vale"), "the content script answered the copy verb with text");
     const restored = await command({ kind: "pageRestore", ...target, wrote: "Robin Vale" });
     assert.equal(restored.outcome, "ok", JSON.stringify(restored));
     assert.equal((restored.restore as { outcome: string }).outcome, "restored");
@@ -242,7 +246,6 @@ describe("the page's own writes, restores, compares and copies, end to end", () 
     assert.equal(email.withheld, "programmatic");
     assert.equal(email.hasValue, null);
     const emailTarget = { ...target, id: email.id, control: email.kind, name: email.name };
-    assert.deepEqual((await command({ kind: "pageSourceGrant", tabId, frameId: top.frameId, documentId: top.documentId, taskId: "t1", ids: [email.id] })).source, { [email.id]: null });
     assert.deepEqual((await command({ kind: "pageCompare", ...emailTarget, candidates: ["set-by-page@example.test"] })).compare, ["unknown"]);
     assert.equal((await command({ kind: "pageWrite", ...emailTarget, expectRev: 0, value: "robin@example.test" })).outcome, "excluded");
     const sent = await inWorker<string>("JSON.stringify(globalThis.__sent)");

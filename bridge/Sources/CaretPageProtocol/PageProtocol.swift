@@ -111,19 +111,12 @@ public enum PageVerb: Codable, Equatable, Sendable {
     case restore(PageTarget, wrote: String, exact: Bool?)
     /// Whole-value comparison of a text control with each candidate, answered by the page.
     case compare(PageTarget, candidates: [String])
-    /// The text of fields `ids` of one frame the user picked as a copy source.
-    case sourceGrant(tabId: Int, frameId: Int, documentId: String, taskId: String, ids: [String])
 
-    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, mark, sameAs, expect, expectRev, value, checked, file, question, text, wrote, exact, candidates, ids }
+    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, mark, sameAs, expect, expectRev, value, checked, file, question, text, wrote, exact, candidates }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         let kind = try c.decode(String.self, forKey: .kind)
         if kind == "pageWalk" { self = .walk(tabId: try c.decodeIfPresent(Int.self, forKey: .tabId)); return }
-        if kind == "pageSourceGrant" {
-            self = .sourceGrant(tabId: try c.decode(Int.self, forKey: .tabId), frameId: try c.decode(Int.self, forKey: .frameId), documentId: try c.decode(String.self, forKey: .documentId),
-                                taskId: try c.decode(String.self, forKey: .taskId), ids: try c.decode([String].self, forKey: .ids))
-            return
-        }
         let t = PageTarget(tabId: try c.decode(Int.self, forKey: .tabId), frameId: try c.decode(Int.self, forKey: .frameId),
                            documentId: try c.decode(String.self, forKey: .documentId), id: try c.decode(String.self, forKey: .id),
                            control: try c.decode(PageControlKind.self, forKey: .control), name: try c.decode(String.self, forKey: .name),
@@ -169,9 +162,6 @@ public enum PageVerb: Codable, Equatable, Sendable {
         case let .insertText(t, expect, text): try target("pageInsertText", t); try c.encode(expect, forKey: .expect); try c.encode(text, forKey: .text)
         case let .restore(t, wrote, exact): try target("pageRestore", t); try c.encode(wrote, forKey: .wrote); try c.encodeIfPresent(exact, forKey: .exact)
         case let .compare(t, candidates): try target("pageCompare", t); try c.encode(candidates, forKey: .candidates)
-        case let .sourceGrant(tabId, frameId, documentId, taskId, ids):
-            try c.encode("pageSourceGrant", forKey: .kind); try c.encode(tabId, forKey: .tabId); try c.encode(frameId, forKey: .frameId)
-            try c.encode(documentId, forKey: .documentId); try c.encode(taskId, forKey: .taskId); try c.encode(ids, forKey: .ids)
         }
     }
 }
@@ -230,8 +220,8 @@ public struct PageResult: Codable, Equatable, Sendable {
     public var pageChanged: [String]?
     /// P4: pageReadText's answer, with outcome ok. The bridge relays the line as it came; this is for the golden tests.
     public var text: PageTabText?
-    /// pageRestore's answer; pageCompare's, one per candidate; pageSourceGrant's, each id's text or null.
-    public var restore: PageRestored?, compare: [String]?, source: [String: String?]?
+    /// pageRestore's answer; pageCompare's, one per candidate.
+    public var restore: PageRestored?, compare: [String]?
     /// The registry id of the element a strong-key rebind reached.
     public var reboundTo: String?
 }
