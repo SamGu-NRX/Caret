@@ -107,8 +107,9 @@ export class LeftTab {
  * Sites whose pages Caret never reads text from, whatever the user's "Not on this site" list says: the web side of the
  * reader's deny list (apps/screen-reader DenyList, ~/.caret-run/deny-apps.txt), which keeps password managers and the
  * system's password store out of every read. A vault's page shows passwords and recovery codes as ordinary text.
+ * The helper keeps a copy (helper/src/privacy/denied-origins.ts), checked equal to this one by its test.
  */
-const DENIED_HOSTS: readonly RegExp[] = [
+export const DENIED_HOSTS: readonly RegExp[] = [
   /(^|\.)1password\.(com|eu|ca)$/,
   /(^|\.)bitwarden\.(com|eu)$/,
   /(^|\.)lastpass\.com$/,
@@ -134,6 +135,25 @@ export function deniedOrigin(origin: string): boolean {
     return true;
   }
   if (u.protocol !== "http:" && u.protocol !== "https:") return true;
-  const host = u.hostname.toLowerCase();
+  // "accounts.google.com." is the same host as "accounts.google.com": a fully qualified name's trailing dot goes.
+  const host = u.hostname.toLowerCase().replace(/\.$/u, "");
   return DENIED_HOSTS.some((h) => h.test(host));
+}
+
+/** An origin without its host's trailing dot ("https://example.com.:8443" gives "https://example.com:8443"). */
+export function bareOrigin(origin: string): string {
+  return origin.replace(/\.(?=(:\d+)?$)/u, "");
+}
+
+/**
+ * The one form every site-policy comparison uses, for the origins the helper configures and the ones a frame has: the
+ * URL parser's origin (lower case, default port dropped), without the host's trailing dot. The helper applies the same
+ * function to its own sets (helper/src/privacy/denied-origins.ts canonicalOrigin).
+ */
+export function canonicalOrigin(origin: string): string {
+  try {
+    return bareOrigin(new URL(origin).origin);
+  } catch {
+    return bareOrigin(origin.trim().toLowerCase());
+  }
 }

@@ -9,6 +9,7 @@ import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
+import { authenticateRawHost, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 function connect(path: string): Promise<{ s: Socket; lines: Record<string, unknown>[] }> {
   return new Promise((resolve, reject) => {
@@ -45,7 +46,7 @@ describe("saved files on the socket (H14)", () => {
     store = new Store(join(dir, "data"));
     let s: HelperServer | null = null;
     helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => s?.publish(m) });
-    server = new HelperServer(path, () => helper, () => {});
+    server = new HelperServer(path, () => helper, () => {}, TEST_LAUNCH_SECRET);
     s = server;
     await server.listen();
   });
@@ -62,6 +63,8 @@ describe("saved files on the socket (H14)", () => {
     const other = await connect(path);
     send(asker.s, hello(1, ["goalPlans", "goalFiles"]));
     send(other.s, hello(2, ["goalPlans", "goalFiles"]));
+    await authenticateRawHost(asker.s, asker.lines);
+    await authenticateRawHost(other.s, other.lines);
     await tick();
     send(asker.s, list);
     await tick();
@@ -74,6 +77,7 @@ describe("saved files on the socket (H14)", () => {
   it("refuses a host that did not declare goalFiles", async () => {
     const plain = await connect(path);
     send(plain.s, hello(2, ["goalPlans"]));
+    await authenticateRawHost(plain.s, plain.lines);
     await tick();
     send(plain.s, list);
     await tick();

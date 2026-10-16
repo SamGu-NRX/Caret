@@ -31,6 +31,18 @@ final class WordFixTests: XCTestCase {
         XCTAssertEqual(WordFix.closedWord(previous: "it dosen't", value: text, selection: .caret(11)), span("dosen't", in: text))
     }
 
+    /// PR #16 review: a quoted misspelling kept its quotes, failed `eligible`, and got no fix.
+    func testQuotesAtTheWordsEdgesAreNotPartOfIt() {
+        for text in ["I said 'teh' ", "I said \u{2018}teh\u{2019} "] {
+            let previous = String(text.dropLast())
+            let word = WordFix.closedWord(previous: previous, value: text, selection: .caret(UTF16Text.length(text)))
+            XCTAssertEqual(word, span("teh", in: text), text)
+            XCTAssertTrue(word.map { WordFix.eligible($0, in: text) } ?? false, text)
+        }
+        let possessive = "the boyz' "
+        XCTAssertEqual(WordFix.closedWord(previous: "the boyz'", value: possessive, selection: .caret(10)), span("boyz", in: possessive))
+    }
+
     func testASentenceEndIsLeftToTheSentenceCheck() {
         XCTAssertNil(WordFix.closedWord(previous: "It is teh.", value: "It is teh. ", selection: .caret(11)))
         XCTAssertNil(WordFix.closedWord(previous: "It is teh", value: "It is teh.", selection: .caret(10)))

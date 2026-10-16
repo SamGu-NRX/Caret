@@ -52,6 +52,8 @@ final class PageSightCoordinator {
     private var observer: NSObjectProtocol?
     /// Whether Caret is paused now.
     var paused: () -> Bool = { false }
+    /// Whether Caret is turned off in this browser process (`AppSwitch`).
+    var appOff: (Int32) -> Bool = { _ in false }
     /// Add to Chrome (H4's `ChromeBridgeInstaller`, run by the app shell).
     var onAddToChrome: () -> Void = {}
     /// Off screen in a headless run: decided and reported, never drawn.
@@ -74,10 +76,16 @@ final class PageSightCoordinator {
     }
 
     func receive(_ m: PageEngineState) {
-        sight.receive(m, frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier, paused: paused())
+        let pid = Int32(truncatingIfNeeded: m.browser.pid)
+        sight.receive(m, frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier, paused: paused() || appOff(pid))
     }
 
-    func frontmostChanged(_ pid: Int32?) { sight.frontmostChanged(pid, paused: paused()) }
+    func frontmostChanged(_ pid: Int32?) { sight.frontmostChanged(pid, paused: paused() || pid.map(appOff) == true) }
+
+    /// The apps Caret is off in changed: a line over a browser now off goes (PR #16 review).
+    func appSwitchChanged() {
+        if let pid = sight.shown?.browserPID, appOff(pid) { sight.turnedOff(pid) }
+    }
 
     func shutdown() {
         if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }

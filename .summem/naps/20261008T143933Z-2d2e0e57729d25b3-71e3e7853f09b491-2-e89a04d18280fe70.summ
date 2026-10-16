@@ -1,1 +1,0 @@
-Oracle and choices: realfill-asks seals requests before the canned oracle answers, so FillTrace.owns(req) is false there; keep oracle rules off the trace. A source-supported choice needs its whole unit sent, so only Asks naming the source window get unit-based choices.

@@ -1,14 +1,15 @@
 // P4 item 8: the page link's insert at the caret, for an accepted inline offer on a page. Only into the field the tab's
 // last walk shows focused, only a kind with a caret, under the task's grant, and the page answers for the rest
 // (extension content/insert.ts; in a real browser in fixtures/web-form/tests/tab-text.test.ts).
+import { onWire, type TestField } from "./page-wire.ts";
 import { describe, expect, it } from "vitest";
 import { RoutedReaderLink } from "../src/executor/means.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { PageEngineLink, toVerbOutcome } from "../src/engines/page-link.ts";
-import { PROTOCOL_VERSION, PageInsert, PageVerb, PageResult, VerbResult, type HelperToEngine, type PageControl, type PageSnapshot } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, PageInsert, PageVerb, PageResult, VerbResult, type HelperToEngine, type PageSnapshot } from "../src/protocol.ts";
 import { X, chrome, hello } from "./fake-page.ts";
 
-const ctl = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: "textbox", name, form: "form#a", rect: [0, 0, 100, 20], value: "" });
+const ctl = (id: string, kind: TestField["kind"], name: string): TestField => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: "textbox", name, form: "form#a", rect: [0, 0, 100, 20], value: "" });
 const CONTROLS = [ctl("e1", "textarea", "Cover letter"), ctl("e2", "email", "Email"), ctl("e3", "checkbox", "Subscribe")];
 const KEY = (id: string): string => `f0/${CONTROLS.find((c) => c.id === id)?.key ?? id}`;
 
@@ -30,7 +31,7 @@ function link(focusedId: string): { link: PageEngineLink; sent: HelperToEngine[]
 function snap(focusedId: string): PageSnapshot {
   return {
     type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w", at: 1, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
-    frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/apply", navGen: 1, title: "Apply", headings: [], controls: CONTROLS, iframes: [], excluded: {}, truncated: false }],
+    frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/apply", navGen: 1, title: "Apply", headings: [], controls: CONTROLS.map((c) => onWire(c)), iframes: [], excluded: {}, truncated: false }],
     missing: [], focused: { frameId: 0, id: focusedId, selection: [0, 0], text: { before: "", after: "", selection: "" } },
   };
 }

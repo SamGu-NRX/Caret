@@ -3,6 +3,7 @@
 // pageText; every other consumer gets the field without them. The host's pageInsert puts accepted text in through the
 // page engine, under a grant for that one insert, and the reply says how it went without quoting the page.
 // Every name and value is invented.
+import { onWire } from "./page-wire.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { randomBytes } from "node:crypto";
@@ -19,6 +20,7 @@ import { pageHost } from "../src/engines/host.ts";
 import { PageEngineLink } from "../src/engines/page-link.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
 import { X, chrome, hello as pageHello } from "./fake-page.ts";
+import { authenticateRawHost, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const golden = readFileSync(new URL("../fixtures/golden/page-inline.ndjson", import.meta.url), "utf8").trim().split("\n");
 const at = (i: number): Record<string, unknown> => JSON.parse(golden[i] as string) as Record<string, unknown>;
@@ -97,7 +99,7 @@ describe("page text on the socket (H13)", () => {
     fake = fakeLink("ok");
     let s: HelperServer | null = null;
     helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, readerLink: fake.link, publish: (m) => s?.publish(m), warn: (l) => void warnings.push(l) });
-    server = new HelperServer(path, () => helper, (l) => void warnings.push(l));
+    server = new HelperServer(path, () => helper, (l) => void warnings.push(l), TEST_LAUNCH_SECRET);
     s = server;
     await server.listen();
   });
@@ -118,22 +120,26 @@ describe("page text on the socket (H13)", () => {
     send(plain.s, hostHello(2, []));
     // A consumer that is not the host cannot get the text by naming the capability.
     send(tool.s, hostHello(3, ["pageText"], false));
+    await authenticateRawHost(texted.s, texted.lines);
+    await authenticateRawHost(plain.s, plain.lines);
     await tick();
     server.publish(HelperMessage.parse(at(1)));
     await tick();
     const field = (c: { lines: Record<string, unknown>[] }) => c.lines.find((l) => l.type === "pageField");
     expect(field(texted)).toEqual(at(1));
-    for (const c of [plain, tool]) {
-      expect(field(c)).toEqual(withoutPageText(HelperMessage.parse(at(1)) as PageField));
-      expect(JSON.stringify(field(c))).not.toContain("apply for the");
-      expect(field(c)?.caret).toBeUndefined();
-    }
+    // A host without pageText gets the field's key and frame, no text.
+    expect(field(plain)).toEqual(withoutPageText(HelperMessage.parse(at(1)) as PageField));
+    expect(JSON.stringify(field(plain))).not.toContain("apply for the");
+    expect(field(plain)?.caret).toBeUndefined();
+    // A consumer that is not the proven host gets no part of it (send-gate.ts).
+    expect(tool.lines.filter((l) => l.type !== "error")).toEqual([]);
     for (const c of [texted, plain, tool]) c.s.destroy();
   });
 
   it("takes pageInsert only from a host that declared pageText", async () => {
     const plain = await connect(path);
     send(plain.s, hostHello(2, []));
+    await authenticateRawHost(plain.s, plain.lines);
     await tick();
     send(plain.s, at(2));
     await tick();
@@ -145,6 +151,7 @@ describe("page text on the socket (H13)", () => {
   it("inserts under a grant for that insert alone, revokes it, and answers the asker", async () => {
     const texted = await connect(path);
     send(texted.s, hostHello(1, ["pageText"]));
+    await authenticateRawHost(texted.s, texted.lines);
     await tick();
     send(texted.s, at(2));
     await tick();
@@ -250,7 +257,7 @@ describe("the page field the host hears (H13)", () => {
     wirePageEngines({ host, helper, publish: (m) => published.push(m), warn: () => {} });
     const snap = (id: string): PageSnapshot => ({
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin, path, navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false, controls: [{ ...area, kind }] }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin, path, navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false, controls: [onWire({ ...area, kind })] }],
       missing: [], focused, view: VIEW,
     });
     let session: EngineSession;
@@ -325,7 +332,7 @@ describe("the page field the host hears (H13)", () => {
 });
 
 describe("an insert names the element the offer was made for (H13 review)", () => {
-  const CONTROLS: PageControl[] = [{ id: "e1", key: "form[a]/textarea:cover letter~0", strongKey: null, kind: "textarea", role: "textbox", name: "Cover letter", form: "form#a", rect: [0, 0, 100, 20], value: "" }];
+  const CONTROLS: PageControl[] = [onWire({ id: "e1", key: "form[a]/textarea:cover letter~0", strongKey: null, kind: "textarea", role: "textbox", name: "Cover letter", form: "form#a", rect: [0, 0, 100, 20], value: "" })];
   function snap(id: string): PageSnapshot {
     return {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w", at: 1, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",

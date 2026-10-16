@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import AutocompleteCore
+import Carbon
 import CaretHostCore
 import CaretScreenCore
 import CompletionUI
@@ -179,8 +180,11 @@ private final class FillWorldAdapter: FillWorld {
         lastRead.flatMap { $0.id == readID ? $0.element : nil }
     }
 
+    /// Secure Event Input silences fills too (ExcludedApps.allowsOffers): read at each check, so a proposal that
+    /// arrives, or is drawn, while it is on goes nowhere. An app the user turned Caret off in gets none either.
     nonisolated func allows(pid: Int32, bundleID: String?) -> Bool {
-        policy.allows(pid: pid, bundleID: bundleID) && !AppSwitch.shared.isOff(bundleID: bundleID ?? NSRunningApplicationBundle.id(of: pid))
+        ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) && policy.allows(pid: pid, bundleID: bundleID)
+            && !AppSwitch.shared.isOff(bundleID: bundleID ?? NSRunningApplicationBundle.id(of: pid))
     }
 
     nonisolated func bundleID(pid: Int32) -> String? { NSRunningApplicationBundle.id(of: pid) }

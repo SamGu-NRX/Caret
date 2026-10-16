@@ -4,6 +4,7 @@ import type { AppRef, Node, Snapshot, TypedValue, WindowRef } from "./protocol.t
 import { PAGE_WINDOW_KIND } from "./engines/windows.ts";
 import { admitNode, admitTitle, admitValues, confers, inherited } from "./privacy/exclude.ts";
 import { appOff, DEFAULT_APPS_OFF, noteSwitchedOff } from "./privacy/read-policy.ts";
+import { readerValue } from "./fill/kinds.ts";
 
 export interface WindowState {
   app: AppRef;
@@ -31,16 +32,45 @@ export interface Change {
   after: string | null;
 }
 
+/**
+ * How long the helper keeps screen text that was not read again: the change log's entries, and a window's text
+ * (ScreenModel.expire). Ten minutes because Caret for Chrome's privacy policy says the app holds screen text in memory
+ * for ten minutes (docs/privacy/chrome-extension.md); PRIVACY_PROMISE names no limit.
+ */
 export const ROLLING_WINDOW_MS = 10 * 60 * 1000;
 /** Bound on in-memory change entries, so a window that streams text cannot grow the log without limit. No measurement behind the number. */
 const MAX_CHANGES = 50_000;
 
 /** The text a node contributes to matching: an editable field's value, or everything else's visible text. */
+/**
+ * Whether a field holds anything: a value, or text a page field holds that the page never sends (Node.unread). The one
+ * test fill, goals and offers use for "already filled", so a page field Caret cannot read is never taken for empty.
+ */
+export function holdsText(node: Node): boolean {
+  return node.unread === true || (node.value ?? "") !== "";
+}
+
+/** What a field holds as the helper can read it: its value, or null for a page field whose text the page never sends (Node.unread). */
+export function heldText(node: Node): string | null {
+  return node.unread === true ? null : (node.value ?? "");
+}
+
+/**
+ * Whether a node is a web page's text field (engines/page-link.ts): it carries the page's change counter, or holds text
+ * the page never sends. Its text never left the page, so it is no copy source and no note (counsel 2026-10-09).
+ */
+export function pageTextField(node: Node): boolean {
+  return node.rev !== undefined || node.unread === true;
+}
+
 export function nodeText(node: Node): string {
   if (node.editable) return node.value ?? "";
   if (node.label !== undefined && node.value !== undefined) return `${node.label}\n${node.value}`;
   return node.value ?? node.label ?? "";
 }
+
+/** Bound on the expired window ids kept (ScreenModel.expired); an id past it opens again as a new window. Not measured. */
+const MAX_EXPIRED = 500;
 
 /** Bound on the focus history; a form looks back one entry, so this is generous. */
 const MAX_FOCUS_HISTORY = 100;
@@ -63,13 +93,18 @@ export class ScreenModel {
   /** Arrival order breaks same-millisecond focus ties; timestamps still order out-of-order reader events. */
   private focusArrival = 0;
   private readonly focusArrivals = new Map<string, number>();
+  /** When expire last found each window to be the one the user is in. */
+  private readonly frontSeen = new Map<string, number>();
+  /** Ids of the windows expire dropped, oldest first, until their close or next snapshot, which then logs no window opening. */
+  private readonly expired = new Set<string>();
   /** Bundle identifier prefixes of apps the user switched off (privacy/read-policy.ts): their windows never enter the model. */
   private appsOff: readonly string[] = DEFAULT_APPS_OFF;
 
-  /** Sets the apps whose windows never enter the model, and closes any of their windows it holds. */
+  /** Adds user exclusions to the required set, and closes any excluded windows it holds. */
   setAppsOff(prefixes: readonly string[], at = Date.now()): void {
     if (prefixes.some((p) => !this.appsOff.includes(p))) noteSwitchedOff();
-    this.appsOff = [...prefixes];
+    // beta.1 deny-list files lack terminals, settings and Caret. No file or caller may remove required exclusions.
+    this.appsOff = [...new Set([...DEFAULT_APPS_OFF, ...prefixes])];
     for (const [id, w] of [...this.windows]) if (appOff(w.app.bundleId, this.appsOff)) this.close(id, at);
   }
 
@@ -82,6 +117,9 @@ export class ScreenModel {
       return c === null ? [] : [c];
     }
     const prior = this.windows.get(id);
+    // A subtree walk of a window expire dropped would stand for the whole window. It stays out until a full walk, which the
+    // reader sends next: a subtree walk clears the window's content hash (AppWorker.swift walkSubtree).
+    if (prior === undefined && snap.root !== null && this.expired.has(id)) return [];
     const out: Change[] = [];
     let nodes: Map<string, Node>;
     let values: TypedValue[];
@@ -93,7 +131,8 @@ export class ScreenModel {
     } else if (snap.root === null || prior === undefined) {
       nodes = new Map(snap.nodes.map((n) => [n.key, n]));
       values = snap.values;
-      if (prior === undefined) {
+      // A window expire dropped was open all along: Caret had only stopped holding its text.
+      if (prior === undefined && !this.expired.delete(id)) {
         out.push({ at: snap.at, windowId: id, kind: "windowOpened", key: null, editable: false, before: null, after: null });
       }
     } else {
@@ -137,7 +176,8 @@ export class ScreenModel {
       // V4 review: a pop-up menu's option is a choice the window offers, not a fact it states, so a value read in one (a date
       // in "Deliver on Oct 17") is no window's value: kept, it was offered to other forms as a source and could mint as a
       // plain date. The reader keeps a pop-up's own menu items as its options (Compactor.swift popUpMenu).
-      values: admitValues(values.filter((v) => !menuOption(nodes, v.nodeKey) && !dropped.has(v.nodeKey)), nodes),
+      // A reader phone that its line says is a loyalty or membership number is an ID (kinds.ts readerValue).
+      values: admitValues(values.filter((v) => !menuOption(nodes, v.nodeKey) && !dropped.has(v.nodeKey)), nodes).map((v) => readerValue(v, [nodes.get(v.nodeKey)?.value, nodes.get(v.nodeKey)?.label])),
       focusedKey,
       updatedAt: snap.at,
       lastFocusedAt: snap.focused ? snap.at : (prior?.lastFocusedAt ?? 0),
@@ -198,13 +238,63 @@ export class ScreenModel {
     return null;
   }
 
+  /** Drops a closed window and, at once, every change-log entry that holds its text. */
   close(windowId: string, at: number): Change | null {
-    if (!this.windows.delete(windowId)) return null;
-    this.focusArrivals.delete(windowId);
-    if (this.focusedWindowId === windowId) this.focusedWindowId = null;
+    this.expired.delete(windowId);
+    if (!this.forget(windowId)) return null;
     const c: Change = { at, windowId, kind: "windowClosed", key: null, editable: false, before: null, after: null };
     this.changes.push(c);
     return c;
+  }
+
+  /**
+   * SC1 2a: replaces a window's text with a walk that leaves out a site the user just switched off (Helper.purgeWindow).
+   * Nothing of the text it removes is kept: the window's change-log entries go with it, the ones this apply made included.
+   * A window the model no longer holds (closed, or expired) is not brought back by its purge.
+   */
+  purge(snap: Snapshot): void {
+    if (!this.windows.has(snap.window.windowId)) return;
+    this.apply(snap);
+    this.dropLoggedText(snap.window.windowId);
+  }
+
+  private forget(windowId: string): boolean {
+    if (!this.windows.delete(windowId)) return false;
+    this.focusArrivals.delete(windowId);
+    this.frontSeen.delete(windowId);
+    if (this.focusedWindowId === windowId) this.focusedWindowId = null;
+    this.dropLoggedText(windowId);
+    return true;
+  }
+
+  private dropLoggedText(windowId: string): void {
+    this.changes = this.changes.filter((c) => c.windowId !== windowId || (c.before === null && c.after === null));
+  }
+
+  /**
+   * Drops every window whose text has not been fresh within ROLLING_WINDOW_MS, and returns their ids. Text is fresh when
+   * a snapshot of its window arrives, and while its window is `inFront`, the one the user is in: the reader reads the
+   * frontmost app on every change, so the model's copy is what the user sees. The reader sends nothing for a walk that
+   * finds a window unchanged (AppWorker.swift walkWindow), so an open window left alone expires as well. Expiry is not a
+   * close, since the window may still be open: no change is logged, and its next snapshot does not log it opening.
+   */
+  expire(now: number, inFront: string | null): string[] {
+    if (inFront !== null && this.windows.has(inFront)) this.frontSeen.set(inFront, now);
+    const cutoff = now - ROLLING_WINDOW_MS;
+    const out: string[] = [];
+    for (const [id, w] of [...this.windows]) {
+      if (this.freshAt(w) >= cutoff) continue;
+      this.forget(id);
+      this.expired.add(id);
+      out.push(id);
+    }
+    while (this.expired.size > MAX_EXPIRED) this.expired.delete(this.expired.values().next().value as string);
+    return out;
+  }
+
+  /** The last time the window's text was known to be what the screen showed (expire). */
+  freshAt(w: WindowState): number {
+    return Math.max(w.updatedAt, this.frontSeen.get(w.window.windowId) ?? 0);
   }
 
   /** Drops change-log entries older than the rolling window, and the oldest beyond MAX_CHANGES. */
@@ -228,6 +318,8 @@ export class ScreenModel {
     this.focusHistory.length = 0;
     this.focusArrival = 0;
     this.focusArrivals.clear();
+    this.frontSeen.clear();
+    this.expired.clear();
   }
 
   /**
@@ -376,7 +468,8 @@ function diffNodes(before: Map<string, Node>, after: Map<string, Node>, snap: Sn
     }
     const a = nodeText(old);
     const b = nodeText(n);
-    if (a !== b) out.push({ at: snap.at, windowId, kind: "value", key: k, editable: n.editable === true, before: a, after: b });
+    // A page field's text that the page does not send changes without its node's text changing: its rev says so.
+    if (a !== b || old.rev !== n.rev || old.unread !== n.unread) out.push({ at: snap.at, windowId, kind: "value", key: k, editable: n.editable === true, before: a, after: b });
   }
   const removedScope = snap.root === null ? null : subtreeKeys(before, snap.root);
   for (const [k, n] of before) {

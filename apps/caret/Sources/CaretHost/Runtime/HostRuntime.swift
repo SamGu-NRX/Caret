@@ -14,6 +14,11 @@ public final class HostRuntime {
         public var socketPath: String
         public var helperSocketPath: String
         public var modelURL: URL
+        /// Where the engine keeps its token profiles (`CaretHome.profilesDirectory`): a run with its own `--home`
+        /// keeps them there, not in the user's Library.
+        public var profileDirectory: URL = EngineLoader.profileDirectory
+        /// Where a model download goes (`CaretHome.modelsDirectory`); nil is the user's Caret's models folder.
+        public var modelDownloadDirectory: URL?
         /// When set, offers are made only in these apps. For test runs on a shared Mac, so the host
         /// never draws over or takes Tab from windows it did not create. Nil means every app.
         public var allowedBundleIDs: Set<String>?
@@ -55,6 +60,10 @@ public final class HostRuntime {
         /// on the pasteboard after the field settles, so an acceptance run can copy in the middle of a
         /// paste on cue. Ignored in normal use.
         public var pasteRestoreDelay: TimeInterval
+        /// The key this Caret proves to the helper it is the host with (`HostAuth`), from `CaretServices.hostKey`: in
+        /// memory, never on argv or in a file. Nil connects as a plain consumer, which the helper sends no page text,
+        /// saved answer, route decision or goal to.
+        public var hostKey: Data?
 
         public init(
             socketPath: String = HostRuntime.defaultSocketPath,
@@ -152,7 +161,8 @@ public final class HostRuntime {
     /// How long after this host sent an accept the session counts as owning a run, before the run's
     /// activity record arrives. Assumed: activity follows an accept within a second on this Mac.
     static let rehelloAcceptGrace: TimeInterval = 30
-    private var engineTask: Task<Void, Never>?
+    /// Loads and releases the model as the settings need it (`ModelNeed`). Nil with `--no-ghost` or a replay.
+    private var residency: ModelResidency?
     private var trustPoll: Timer?
     private let servicesBox = ServicesBox()
     private var sessionLock: SessionLockWatch?
@@ -190,9 +200,8 @@ public final class HostRuntime {
         self.pageInline = pageInline
         pageInline.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
         // Brief item 4: the user's personal instructions in every completion prompt; a page's site from the page path.
-        engine.instructions = { [weak pageInline] context in
-            let id = context.target.bundleIdentifier
-            return SettingsStore.shared.settings.instructions.lines(bundleID: id, origin: pageInline?.origin(forBundleID: id))
+        engine.instructions = { context, origin in
+            SettingsStore.shared.settings.instructions.lines(bundleID: context.target.bundleIdentifier, origin: origin)
         }
         let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
         self.writing = writing
@@ -202,12 +211,18 @@ public final class HostRuntime {
         writing.route = routeLink
         routeLink.onChange = [{ coordinator.routeChanged() }, { writing.routeChanged() }]
         writing.allowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
+        // List mode: the blind judge preferred its rewrites 11 to 4 over sampled ones, which changed
+        // the meaning of 16 of 41 (rewrite probe 02f3cda9; judge verdicts in the PR).
+        let rewriteEngine = engine
+        writing.rewriter = { text in try? await rewriteEngine.rewrites(of: text, mode: .list)?.rewrites }
         // Every host write asks this right before it acts; pause, stop, take over and the helper's
         // connection closing end it (S1 audit #2).
         let authority = HostAuthority()
+        let keyHold = KeyHold()
         let executor = InsertionExecutor(
             arbiter: arbiter, status: status, compatibilityStore: compatibilityStore, policy: policy,
             authority: authority, advanceAfterFill: configuration.fillAdvances, pasteRestoreDelay: configuration.testHooks ? configuration.pasteRestoreDelay : 0,
+            keyHold: keyHold,
             onFinished: { result in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
@@ -256,7 +271,7 @@ public final class HostRuntime {
         let activity = ActivityCenter()
         self.activity = activity
         let memory = MemoryController(testHooks: configuration.testHooks)
-        let modelKeeper = ModelKeeper(configured: configuration.modelURL)
+        let modelKeeper = ModelKeeper(configured: configuration.modelURL, downloadFolder: configuration.modelDownloadDirectory)
         self.modelKeeper = modelKeeper
         let showModel: () -> Void = { [weak memory, unowned modelKeeper] in
             memory?.showModel(WritingPage.ModelPanel(line: modelKeeper.line, action: modelKeeper.action(menu: false), status: modelKeeper.status))
@@ -271,6 +286,9 @@ public final class HostRuntime {
         let pageSight = PageSightCoordinator(draws: !configuration.surfacesHeadless)
         self.pageSight = pageSight
         pageSight.paused = { MainActor.assumeIsolated { SettingsStore.shared.settings.paused } }
+        pageSight.appOff = { pid in
+            NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map { AppSwitch.shared.isOff(bundleID: $0) } ?? false
+        }
         pageSight.sight.onChange = { [weak pageSight] line in
             pageSight?.redraw(line)
             status.update { $0.pageSight = pageSight?.sight.debugInfo }
@@ -334,6 +352,7 @@ public final class HostRuntime {
                 if !perch.ask.receive(goal, toForm: { pageTask.machine.start($0) }) { pageTask.machine.receive(goal) }
             case .error(let e):
                 pageTask.machine.helperError(e)
+                perch.ask.helperError(e)
                 // H13: a fill found nothing because the tab left is a Google editor whose text is off: say so at the field.
                 if let app = e.sourceOff { pageInline.sourceOff(app, says: e.message) }
             // S1: keep an answer the user typed; only ⌘1 on the line says yes.
@@ -355,7 +374,10 @@ public final class HostRuntime {
                 perch.ask.provenance(provenance)
             // W2: whether Caret can see the front browser's pages.
             case .pageEngine(let m):
-                if m.state == .connected { onboarding.browserConnected() }
+                if m.state == .connected {
+                    let known = BridgeBrowser.allCases.first { $0.bundleIdentifier == m.browser.bundleId }
+                    onboarding.browserConnected(known?.displayName ?? m.browser.name)
+                }
                 pageSight.receive(m)
                 status.update { $0.pageSight = pageSight.sight.debugInfo }
             default: break
@@ -378,13 +400,14 @@ public final class HostRuntime {
                     memory.linkChanged(up)
                     perch.ask.linkChanged(up)
                     pageTask.machine.linkChanged(up: up)
+                    onboarding.helperLinkChanged(up)
                     if !up {
                         surface.helperGone()
                         pageSight.sight.helperGone()
                     }
                 }
             }
-        }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } }, goalFiles: { filesWired })
+        }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } }, goalFiles: { filesWired }, hostKey: configuration.hostKey)
         linkedClient.client = helper
         let routeClient = helper
         routeLink.send = { routeClient.send($0) }
@@ -412,13 +435,7 @@ public final class HostRuntime {
             guard case .suggestion(let s)? = try? await ghostEngine.suggest(for: context) else { return nil }
             return s.text
         }
-        onboarding.modelReadiness = {
-            switch ghostEngine.state {
-            case .ready: return .ready
-            case .loading: return .loading(nil)
-            case .unavailable: return .unavailable
-            }
-        }
+        onboarding.modelReadiness = { Self.onboardingReadiness(ghostEngine.state, SettingsStore.shared.settings) }
         onboarding.sendFirstLook = { firstLookClient.send($0) }
         onboarding.sendPreview = { id, families, level in
             firstLookClient.send(FirstLookPreviewRequest(requestId: id, at: Int64(Date().timeIntervalSince1970 * 1000), families: families, level: level))
@@ -452,6 +469,8 @@ public final class HostRuntime {
             case .control(let control): return askClient.send(control)
             case .confirmFile(let confirm): return askClient.send(confirm)
             case .answer(let answer): return askClient.send(answer)
+            case .goalAccept(let accept): return askClient.send(accept)
+            case .goalEdit(let edit): return askClient.send(edit)
             }
         }
         // Caret never searches the disk for a file (lead decision, H11): H5's guess by name in Documents, Downloads and
@@ -497,6 +516,7 @@ public final class HostRuntime {
                 pageInline.gateClosed()
                 fill.gateClosed()
                 surface.gateClosed()
+                pageSight.appSwitchChanged()
             }
             if !HostGate.allowsGhostText(settings) {
                 coordinator.gateClosed()
@@ -534,8 +554,12 @@ public final class HostRuntime {
             for control in InputPause.controls(for: taskIds) { pauseClient.send(control) }
             activity.notePause(taskIds, kind: kind)
         }
+        let focusObserver = focus
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
+                // Before the Tab returns: no key typed after it reaches the app while Caret writes there (a
+                // word selected for a fix, offsets approved for an insert). The executor ends the hold.
+                if claim.insertsText, !writesNothing { keyHold.begin(pid: claim.offer.target.pid) }
                 if claim.insertsText {
                     // A headless host writes nothing: the claim is decided and recorded, never applied.
                     if writesNothing { arbiter.abandon(claimID: claim.claimID, reason: "headless") } else { executor.submit(claim) }
@@ -579,6 +603,8 @@ public final class HostRuntime {
                         }
                     }
                 } else {
+                    // The same for Caret's own Undo: keys after the ⌘Z wait until its "" is written.
+                    if !writesNothing { keyHold.begin(pid: grant.target.pid) }
                     executor.submitUndo(grant)
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
@@ -617,8 +643,17 @@ public final class HostRuntime {
                         pageInline.offerChanged(.closed)
                     }
                 }
-            }
-        ))
+            },
+            typed: { pid in
+                DispatchQueue.main.async { MainActor.assumeIsolated { focusObserver.keyTyped(pid: pid) } }
+            },
+            rewrite: { pid in
+                DispatchQueue.main.async { MainActor.assumeIsolated { writing.requestRewrite(pid: pid) } }
+            },
+            takesRewrite: { pid in AppSwitch.shared.takesRewriteKey(pid: pid) }
+        ), keyHold: keyHold)
+        let fixMethods = executor.writeMethods
+        writing.fixesStopped = { pid in fixMethods.fixesStopped(pid: pid) }
         let tap = self.tap
         // Accessibility granted in onboarding: a key tap the system refused at launch is made now.
         onboarding.onPermissionsChanged = { granted in
@@ -789,8 +824,33 @@ public final class HostRuntime {
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
 
+    /// Whether work is running in this copy: an accepted offer the helper has not ended, or a surface's working line. The
+    /// hand-off to the login item stops the helper, so it waits while this is true.
+    public var isRunningWork: Bool { helper.hasRunningWork || surfaceWorking }
+
+    /// Stops taking offers (the key tap goes, and the trust watch that would make it again), so nothing new starts
+    /// between the hand-off's last check and its shutdown.
+    public func stopTakingOffers() {
+        trustPoll?.invalidate()
+        trustPoll = nil
+        if let axObserver { DistributedNotificationCenter.default().removeObserver(axObserver) }
+        axObserver = nil
+        tap.stop()
+    }
+
+    /// Onboarding holds the cloud roles until the person sends or keeps (`RoleMenu`).
+    public var rolesCap: Set<CaretRole>? { SettingsStore.shared.rolesCap }
+
+    /// The menu's held role: setup opens where the hold is decided.
+    public func openSetupToFinish() { onboarding.openToFinishSetup() }
+
     /// The menu's "Turn on Accessibility…": the switch step on its own, with the panel in System Settings.
     public func openAccessSwitch() { onboarding.openAccess() }
+
+    /// Add to <browser>'s outcome, for onboarding's browser step (`ChromeBridgeInstaller.Result.ok`).
+    public func browserAddFinished(ok: Bool, message: String, opened: String?) {
+        onboarding.browserAddFinished(ok: ok, message: message, opened: opened)
+    }
 
     /// The menu's "Jev is off. Add a key…": the key step on its own.
     public func openJevKeyStep() { onboarding.openKey() }
@@ -902,6 +962,7 @@ public final class HostRuntime {
         startTapWhenTrusted()
         InputMethodState.shared.start()
         // The perch no longer follows focus: it sits on the task's window (v3 rim and perch).
+        focus.onNote = { [status] in status.increment($0) }
         focus.onChange = { [coordinator, writing] change in
             coordinator.handle(change)
             writing.handle(change)
@@ -929,19 +990,39 @@ public final class HostRuntime {
             }
             return
         }
-        status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
         let modelURL = configuration.modelURL
-        engineTask = Task { [weak self] in
-            guard let self else { return }
-            await self.engine.load(modelURL: modelURL)
-            self.publishEngineState()
-            self.focus.requestRead()
+        let profileDirectory = configuration.profileDirectory
+        let residency = ModelResidency(
+            load: { [weak self] in
+                guard let self else { return }
+                self.status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
+                await self.engine.load(modelURL: modelURL, profileDirectory: profileDirectory)
+            },
+            loaded: { [weak self] in
+                guard let self else { return }
+                self.publishEngineState()
+                self.focus.requestRead()
+                self.pageInline.modelLoaded()
+            },
+            release: { [weak self] in
+                guard let self else { return }
+                await self.engine.release()
+                self.publishEngineState()
+            }
+        )
+        self.residency = residency
+        if !ModelNeed.wanted(SettingsStore.shared.settings) {
+            engine.stayOff()
+            publishEngineState()
         }
+        residency.follow(SettingsStore.shared)
     }
 
     /// Stops input first, then joins model work and frees llama/Metal resources. Must finish
     /// before the process exits (ggml-metal aborts otherwise; KeyType ADR-021/132).
     public func shutdown() async {
+        // Before the fields are torn down: a load that ends during quit must not wake them.
+        residency?.close()
         tap.stop()
         focus.stop()
         helper.stop()
@@ -960,18 +1041,37 @@ public final class HostRuntime {
         arbiter.invalidate()
         // A paste in progress must finish and put the user's clipboard back before exit.
         await executor.waitUntilIdle()
-        await engineTask?.value
-        // No generation may still be inside llama when its resources are freed.
+        // A load or release in progress finishes; none starts after it (`close` above).
+        await residency?.settled()
+        // No generation may still be inside llama when its resources are freed. The engine also waits for page inline
+        // text's and rewrites' calls (`GhostTextEngine.release`).
         await coordinator.drain()
         await engine.shutdown()
         socket.stop()
     }
+
+    /// The menu's status line while the helper refuses this Caret as its host, which then says why in place of the engine's
+    /// state (`HostRetry.statusLine`); nil once the helper accepts it, and for a Caret with no host key.
+    public var helperRefusalLine: String? { helper.snapshot().hostRefused }
 
     public var engineSummary: String {
         switch engine.state {
         case .loading: return "Loading model"
         case .ready: return "Ready"
         case .unavailable(let reason): return "Unavailable: \(reason)"
+        case .off: return "\(CaretRole.words.title) is off"
+        }
+    }
+
+    /// The hello field's readiness. The words role decides first: switching it off reads `.off` at once, while the
+    /// release that follows still has calls to drain and the engine may read `.ready` (Codex on #30).
+    static func onboardingReadiness(_ state: GhostTextEngine.State, _ settings: CaretSettings) -> ModelReadiness {
+        guard ModelNeed.wanted(settings) else { return .off }
+        switch state {
+        case .ready: return .ready
+        case .loading: return .loading(nil)
+        case .unavailable: return .unavailable
+        case .off: return .off
         }
     }
 
@@ -981,6 +1081,7 @@ public final class HostRuntime {
         case .loading: state = .init(state: "loading", modelFile: configuration.modelURL.lastPathComponent)
         case .ready: state = .init(state: "ready", modelFile: configuration.modelURL.lastPathComponent)
         case .unavailable(let reason): state = .init(state: "unavailable", detail: reason, modelFile: configuration.modelURL.lastPathComponent)
+        case .off: state = .init(state: "off", modelFile: configuration.modelURL.lastPathComponent)
         }
         status.update { $0.engine = state }
     }

@@ -38,7 +38,8 @@ public struct WritingOffer: Equatable, Sendable {
     }
 
     public struct Alternative: Equatable, Sendable {
-        public enum Kind: Equatable, Sendable { case fix, original, fixAll }
+        /// `rewrite`: another way to say the whole span (`WritingOffer.rewrite`).
+        public enum Kind: Equatable, Sendable { case fix, original, fixAll, rewrite }
         public var kind: Kind
         /// The row's words: the replacement, "Original", or "Fix all in this paragraph".
         public var label: String
@@ -115,6 +116,34 @@ public struct WritingOffer: Equatable, Sendable {
         return WritingOffer(
             producer: .correction, marks: sorted, active: active, alternatives: alternatives, current: 0,
             presentation: presentation
+        )
+    }
+
+    /// Other ways to say `span` of the field (the rewrite key), open at once with the first one
+    /// highlighted: ↑ and ↓ move through them and Original, Tab takes the highlighted one, Esc
+    /// leaves the text as it is. Each is one range edit over the whole span, through the same guard
+    /// and routes as a fix. Nil when no rewrite makes a valid edit.
+    public static func rewrite(
+        span: UTF16Span, rewrites: [String], live: RangeEdit.Live, language: String = "en", now: Date = Date()
+    ) -> WritingOffer? {
+        guard let original = UTF16Text.slice(live.value, start: span.start, end: span.end) else { return nil }
+        var alternatives: [Alternative] = []
+        for rewrite in rewrites {
+            guard let edit = try? RangeEdit.make(live: live, replace: span, replacement: rewrite, language: language, now: now).get() else { continue }
+            alternatives.append(Alternative(
+                kind: .rewrite, label: rewrite, detail: nil, edit: edit,
+                diff: [Preview(before: "", original: original, replacement: rewrite, after: "")]
+            ))
+        }
+        guard let first = alternatives.first else { return nil }
+        alternatives.append(Alternative(kind: .original, label: WritingCopy.original, detail: original, edit: nil, diff: []))
+        let active = WritingCorrection(
+            span: span, original: original, replacement: first.label,
+            otherReplacements: alternatives.dropFirst().filter { $0.kind == .rewrite }.map(\.label),
+            kind: .rewrite, reason: WritingCopy.rewriteReason, source: .model
+        )
+        return WritingOffer(
+            producer: .explicitRequest, marks: [], active: active, alternatives: alternatives, current: 0, presentation: .expanded
         )
     }
 
@@ -215,6 +244,9 @@ public struct WritingOffer: Equatable, Sendable {
 
     /// What VoiceOver reads for the line.
     public var spokenLine: String {
+        if active.kind == .rewrite {
+            return WritingCopy.spokenRewrite(count: alternatives.filter { $0.kind == .rewrite }.count, first: active.replacement)
+        }
         if active.needsChoice {
             let fixes = alternatives.filter { $0.kind == .fix }.map(\.label)
             return WritingCopy.spokenChoice(reason: active.reason, original: active.original, choices: fixes)
@@ -232,6 +264,11 @@ public struct WritingOffer: Equatable, Sendable {
             text = WritingCopy.fixed(original: change.original, replacement: change.replacement)
         case .fixAll:
             text = WritingCopy.fixedAll(alternative.diff.count)
+        case .rewrite:
+            return LineContent(
+                figure: .done, lead: WritingCopy.rewrittenLead, text: WritingCopy.rewrittenAs(alternative.label), emphasis: .plain,
+                hints: [Hint(key: "⌘Z", label: WritingCopy.undoHint)]
+            )
         }
         return LineContent(
             figure: .done, lead: WritingCopy.fixedLead, text: text, emphasis: .plain,

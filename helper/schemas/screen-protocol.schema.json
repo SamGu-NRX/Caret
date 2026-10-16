@@ -215,6 +215,15 @@
                   "value": {
                     "type": "string"
                   },
+                  "unread": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "rev": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
                   "placeholder": {
                     "type": "string"
                   },
@@ -268,6 +277,12 @@
                       "pasted",
                       "other"
                     ]
+                  },
+                  "inputAt": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "Milliseconds since the Unix epoch"
                   },
                   "accept": {
                     "maxItems": 20,
@@ -864,6 +879,51 @@
             "pid",
             "kind",
             "point"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "fieldInput"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "pid": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "windowId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "pid",
+            "windowId",
+            "key"
           ],
           "additionalProperties": false
         },
@@ -2371,6 +2431,29 @@
             "v",
             "at",
             "why"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hostProof"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "proof": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "proof"
           ],
           "additionalProperties": false
         }
@@ -8513,7 +8596,8 @@
                 "fields",
                 "source",
                 "person",
-                "value"
+                "value",
+                "task"
               ]
             },
             "text": {
@@ -8691,6 +8775,36 @@
                     "required": [
                       "kind",
                       "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "task"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "label": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 80
+                      },
+                      "says": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "label",
+                      "says"
                     ],
                     "additionalProperties": false
                   }
@@ -8910,6 +9024,16 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 600
+                      },
+                      "tier": {
+                        "type": "string",
+                        "enum": [
+                          "read",
+                          "navigate",
+                          "write",
+                          "attach",
+                          "yours"
+                        ]
                       },
                       "file": {
                         "oneOf": [
@@ -9363,6 +9487,11 @@
                       "type": "null"
                     }
                   ]
+                },
+                "taskId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
                 }
               },
               "required": [
@@ -10417,6 +10546,47 @@
             "requestId",
             "error",
             "files"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hostChallenge"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "nonce": {
+              "type": "string",
+              "minLength": 16
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "nonce"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hostAuthenticated"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            }
+          },
+          "required": [
+            "type",
+            "v"
           ],
           "additionalProperties": false
         }

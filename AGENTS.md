@@ -44,7 +44,7 @@ When the task needs project, architecture, or stack context, read the relevant p
   - browser control as its own layer: Caret for Chrome (`extension/`) and its native-messaging host (`bridge/`);
   - no Screenpipe. v2 does not use it; only the v1 Python path (`caret/screenpipe.py`) pins Screenpipe 0.4.50.
 - Merge KeyType/GhostType components into one Caret app with one input/acceptance owner. GhostType mode means Teddy's action hoverable, not a second running autocomplete app.
-- One shared Jev judge chooses ABSTAIN/INLINE/ACTION at most once per two seconds of changed active context, then selects a workflow/task only for ACTION. A fast Groq-hosted model generates inline text. Discard stale results; never execute from ambient classification alone.
+- One shared Jev judge chooses ABSTAIN/INLINE/ACTION at most once per two seconds of changed active context, then selects a workflow/task only for ACTION. Inline text is written on the Mac by the host's local model (KeyType's engine over a Gemma file, `apps/caret/Sources/CaretHost/Engine/`); none goes to Groq or another cloud model. Discard stale results; never execute from ambient classification alone.
 - Tab accepts only the current visible offer that owns it; Command–1/2/3 choose visible actions. Otherwise preserve the host app's shortcuts. Revalidate the original target before applying any edit.
 - Teddy owns UI and Accessibility onboarding; the context teammate owns Screenpipe; Sam owns the two demo workflow definitions. Coordinate through docs/input-pipeline.md before editing another owner's implementation.
 - Paul owns `jev-scheduler/`, proposed in PR #1. Adapt its actual interface when pushed; do not duplicate his implementation or confuse him with the author of the native Computer Use Jev upstream.
@@ -54,3 +54,15 @@ When the task needs project, architecture, or stack context, read the relevant p
 - Treat packages/ as pinned upstream code. Preserve authorship and licenses; do not bulk rename upstream files.
 - For v2, run `pnpm test` in `helper/` and `swift test` in `apps/screen-reader/`. For the v1 starter, run make check on Mac, or make test plus python3 scripts/check_sources.py for core-only Linux work.
 - Preserve other contributors' changes. Use branches and PRs after the initial repository setup.
+
+<!-- agent-skills:start -->
+## Agent skills
+
+Before starting work, read the skills below that apply to the task; each SKILL.md says when to use it. They are Sam's working playbooks and Lauren Tan's pstack (`pstack-*`), chosen for this repo. Obvious Autobuild loads them from `.obvious/skills/` on the default branch.
+
+PR titles and bodies follow `.obvious/skills/pr-writing` and `.github/pull_request_template.md`, with before/after screenshots, a recording for motion or interaction, and a simple diagram where they help.
+
+- [`pr-writing`](.obvious/skills/pr-writing/SKILL.md): Writes or revises pull request titles, descriptions and visual evidence
+- [`pstack-principle-prove-it-works`](.obvious/skills/pstack-principle-prove-it-works/SKILL.md): Apply after completing a task, before declaring done
+- [`pstack-principle-test-behavior-not-implementation`](.obvious/skills/pstack-principle-test-behavior-not-implementation/SKILL.md): Apply when you write, change, or keep a test
+<!-- agent-skills:end -->

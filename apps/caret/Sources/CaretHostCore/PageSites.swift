@@ -142,6 +142,12 @@ public final class PageSight {
     /// Caret was paused: it says nothing.
     public func paused() { hide() }
 
+    /// Caret was turned off in the browser `pid` (`CaretSettings.appsOff`): its line goes now. The
+    /// caller passes `paused: true` for that browser from then on, so it does not come back.
+    public func turnedOff(_ pid: Int32) {
+        if shown?.browserPID == pid { hide() }
+    }
+
     /// The helper went away: what it said about browsers no longer holds.
     public func helperGone() {
         missing = [:]
@@ -214,9 +220,9 @@ public enum SitesPage {
         public var pageInline = PageInlineSettings()
         /// H14: the two switches for inline text in pages (`CaretSettings.pageInlineText`, `pageInlineContentEditable`).
         public var pageInlineText = true
-        public var pageInlineContentEditable = false
+        public var pageInlineContentEditable = true
         public init(off: [String] = [], here: String? = nil, draft: String = "", problem: String? = nil, pageInline: PageInlineSettings = PageInlineSettings(),
-                    pageInlineText: Bool = true, pageInlineContentEditable: Bool = false) {
+                    pageInlineText: Bool = true, pageInlineContentEditable: Bool = true) {
             self.pageInline = pageInline
             self.pageInlineText = pageInlineText
             self.pageInlineContentEditable = pageInlineContentEditable

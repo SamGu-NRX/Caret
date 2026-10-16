@@ -47,6 +47,8 @@ final class HostCoordinator {
     private var anchor: GhostSuggestion?
     private var lastContextKey: String?
     private var lastCaretRect: CGRect?
+    /// The last focus read, for an extension to draw at the caret's current place.
+    private var latest: (field: TargetIdentity, snapshot: FocusedFieldSnapshot)?
     private var generation: Task<Void, Never>?
     private var generationSerial: UInt64 = 0
     /// Every generation task that may still be inside the model, including cancelled ones:
@@ -54,6 +56,10 @@ final class HostCoordinator {
     private var inFlight: [UInt64: Task<Void, Never>] = [:]
     /// The one extension of the shown suggestion (`GhostExtend`), cancelled with the generation.
     private var extending: Task<Void, Never>?
+    /// Every extension request until it finishes, cancelled or not, so shutdown waits for each before the model
+    /// goes (PR #16 review: `drain` used to await only the current one, which `cancelGeneration` had just cleared).
+    private var extensionsInFlight: [UInt64: Task<Void, Never>] = [:]
+    private var extensionSerial: UInt64 = 0
     private var isShuttingDown = false
     /// The key-down whose paint was last measured, so one keystroke yields at most one sample.
     private var measuredKeySequence: UInt64 = 0
@@ -78,19 +84,17 @@ final class HostCoordinator {
     // MARK: - Focus
 
     func handle(_ change: FocusObserver.Change) {
-        // Which step of the read failed, by count: no focused element at all, an element KeyType's reader could not
-        // turn into a snapshot, or one the field reader could not read (DF1: state.focus stayed null in TextEdit in
-        // every VM run, with Accessibility granted).
-        status.increment(change.element == nil ? "focus.noElement" : change.snapshot == nil ? "focus.noSnapshot" : "focus.read")
         guard let snapshot = change.snapshot, let element = change.element,
               let field = FieldReader.read(element) else {
-            if change.element != nil, change.snapshot != nil { status.increment("focus.noField") }
+            // Which step failed, for the debug state: a field Caret cannot see shows only as no focus.
+            status.increment(change.element == nil ? "focus.read.noElement" : change.snapshot == nil ? "focus.read.noSnapshot" : "focus.read.unreadable")
             status.update { $0.focus = nil }
             onFocus?(nil)
             route?.observe(nil)
             return reset()
         }
         onFocus?(field.identity)
+        latest = (field.identity, snapshot)
         // Every read, a selection or an app Caret skips included: the router hears of each breakpoint.
         route?.observe(field)
         let context = snapshot.context
@@ -240,7 +244,9 @@ final class HostCoordinator {
         for task in Array(inFlight.values) {
             await task.value
         }
-        await extending?.value
+        for task in Array(extensionsInFlight.values) {
+            await task.value
+        }
     }
 
     private func finishGeneration(
@@ -322,7 +328,10 @@ final class HostCoordinator {
         let context = held.snapshot.context.replacingBeforeCursor(held.snapshot.context.beforeCursor + offer.text)
         let engine = self.engine
         extending?.cancel()
+        extensionSerial &+= 1
+        let serial = extensionSerial
         extending = Task { [weak self] in
+            defer { self?.extensionsInFlight.removeValue(forKey: serial) }
             let outcome = try? await engine.suggest(for: context, tokens: GhostExtend.tokens)
             guard let self, !Task.isCancelled else { return }
             guard case .suggestion(let more)? = outcome else { return self.status.increment("ghost.extend.none") }
@@ -338,7 +347,8 @@ final class HostCoordinator {
             let full = offer.text + more.text
             // Publishing the longer offer displaces the shorter one (which takes its text down) and draws the whole
             // in the same turn of the main thread, so the words already shown stay where they were.
-            guard self.present(full, snapshot: held.snapshot, element: held.element, field: fresh, keyStamp: held.keyStamp) else {
+            let at = Self.drawSnapshot(held: held.snapshot, heldField: held.field.identity, latest: self.latest)
+            guard self.present(full, snapshot: at, element: held.element, field: fresh, keyStamp: held.keyStamp) else {
                 // Never leave an offer on the arbiter that is not drawn.
                 self.clearOffer()
                 return self.status.increment("ghost.extend.notDrawn")
@@ -346,6 +356,17 @@ final class HostCoordinator {
             self.anchor = GhostSuggestion(text: full, context: held.suggestion.context, generationMs: held.suggestion.generationMs)
             self.status.increment("ghost.extended")
         }
+        extensionsInFlight[serial] = extending
+    }
+
+    /// The snapshot an extension draws at: the latest read of the same field (same element and value), which has the
+    /// caret's current place, else the one the suggestion was made on. A scroll during the second request moves the
+    /// caret without changing the text, and drawing at the old place moved a correct ghost back (PR #16 review).
+    static func drawSnapshot(
+        held: FocusedFieldSnapshot, heldField: TargetIdentity, latest: (field: TargetIdentity, snapshot: FocusedFieldSnapshot)?
+    ) -> FocusedFieldSnapshot {
+        guard let latest, latest.field == heldField else { return held }
+        return latest.snapshot
     }
 
     /// Records which window held a ghost as covered, in the debug state, and logs it when the

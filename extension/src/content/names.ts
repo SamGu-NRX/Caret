@@ -1,6 +1,10 @@
 // Accessible names, the way a person reads the control: aria-labelledby, aria-label, the <label>, title, then
 // placeholder for fields and text for buttons and links. ID references resolve in the element's own tree (document
-// or shadow root). Text is whitespace-collapsed and clipped; nothing here reads body prose beyond a label.
+// or shadow root). Text is whitespace-collapsed and clipped; nothing here reads body prose beyond a label. Every text is
+// read without the secret fields inside it (secret-dom.ts safeText), so a label wrapped around a one-time-code box
+// doesn't carry its code.
+import { readable, safeText } from "./secret-dom.ts";
+import { composedParent } from "./shadow.ts";
 
 const MAX_NAME = 200;
 
@@ -9,9 +13,21 @@ export function clean(s: string | null | undefined, max = MAX_NAME): string {
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
 }
 
-/** The elements an aria-labelledby value names, in `el`'s own tree (document or shadow root). */
+/**
+ * Whether an element an aria reference names holds a field's text, so it never counts as a name (counsel 2026-10-09,
+ * "The boundary"): it is editable, sits inside an editable region, or contains a form control. A contenteditable
+ * labelled by its own id would otherwise be named by its draft.
+ */
+export function editableReference(e: Element): boolean {
+  if (e instanceof HTMLInputElement || e instanceof HTMLTextAreaElement || e instanceof HTMLSelectElement) return true;
+  if (e instanceof HTMLElement && e.isContentEditable) return true;
+  if (/^(textbox|searchbox|combobox|spinbutton)$/u.test(e.getAttribute("role")?.trim() ?? "")) return true;
+  return e.querySelector('input, textarea, select, [contenteditable=""], [contenteditable="true" i], [role="textbox"], [role="searchbox"], [role="combobox"], [role="spinbutton"]') !== null;
+}
+
+/** The elements an aria-labelledby value names, in `el`'s own tree (document or shadow root), none of them editable. */
 export function labelledBy(el: Element, ids: string): Element[] {
-  return byIds(el, ids);
+  return byIds(el, ids).filter((e) => !editableReference(e));
 }
 
 function byIds(el: Element, ids: string): Element[] {
@@ -21,7 +37,10 @@ function byIds(el: Element, ids: string): Element[] {
 
 /** A label's text without the text of the control inside it (a select's options, a field's own value). */
 function labelText(label: Element, control: Element): string {
-  if (!label.contains(control)) return label.textContent ?? "";
+  // A label inside a field (a password editor) is that field's text: refused before it is cloned, since a clone has no
+  // ancestors left to tell.
+  if (!readable(label)) return "";
+  if (!label.contains(control)) return safeText(label);
   const clone = label.cloneNode(true) as Element;
   // `control` may be an element around the control (W4: an upload widget inside its label): its text goes too. Found
   // in the clone by its path of child indices, taken before anything is removed.
@@ -33,7 +52,7 @@ function labelText(label: Element, control: Element): string {
     if (at !== clone) at?.remove();
   }
   for (const c of clone.querySelectorAll("input, select, textarea, button")) c.remove();
-  return clone.textContent ?? "";
+  return safeText(clone);
 }
 
 export function accessibleName(el: Element): string {
@@ -47,7 +66,7 @@ export type NameSource = "labelledby" | "label" | "labels" | "value" | "title" |
 export function named(el: Element): { name: string; from: NameSource } {
   const labelledby = el.getAttribute("aria-labelledby");
   if (labelledby !== null) {
-    const t = clean(byIds(el, labelledby).map((e) => e.textContent ?? "").join(" "));
+    const t = clean(labelledBy(el, labelledby).map((e) => safeText(e)).join(" "));
     if (t !== "") return { name: t, from: "labelledby" };
   }
   const aria = clean(el.getAttribute("aria-label"));
@@ -71,7 +90,7 @@ export function named(el: Element): { name: string; from: NameSource } {
   }
   const role = el.getAttribute("role");
   if (el instanceof HTMLButtonElement || el instanceof HTMLAnchorElement || role === "button" || role === "link" || role === "checkbox" || role === "radio" || role === "switch" || role === "option") {
-    return { name: clean(el.textContent), from: "text" };
+    return { name: clean(safeText(el)), from: "text" };
   }
   return { name: "", from: "none" };
 }
@@ -81,31 +100,8 @@ export function textOfLabel(label: Element, control: Element): string {
   return clean(labelText(label, control));
 }
 
-/**
- * The node's parent in the flat tree, the tree that is rendered: a slotted light-DOM node's slot (in an open or a
- * closed shadow root), else through a shadow root to its host, else its parent element (W1 review, round 2, #6).
- */
-export function composedParent(n: Node): Element | null {
-  const p = n.parentNode;
-  if (p instanceof Element) {
-    const root = p.shadowRoot ?? closedRootOf(p);
-    if (root !== null) {
-      for (const slot of root.querySelectorAll("slot")) if (slot.assignedNodes().includes(n as ChildNode)) return slot;
-    }
-    return p;
-  }
-  if (p instanceof ShadowRoot) return p.host;
-  return null;
-}
-
-function closedRootOf(el: Element): ShadowRoot | null {
-  if (!(el instanceof HTMLElement) || typeof chrome === "undefined" || chrome.dom?.openOrClosedShadowRoot === undefined) return null;
-  try {
-    return (chrome.dom.openOrClosedShadowRoot(el) as ShadowRoot | null) ?? null;
-  } catch {
-    return null;
-  }
-}
+/** The node's parent in the flat tree (shadow.ts), shared with secret classification. */
+export { composedParent } from "./shadow.ts";
 
 /**
  * The names of every group the control sits in, nearest first: fieldset legends and ARIA groups, through shadow
@@ -117,7 +113,7 @@ export function groupNames(el: Element): string[] {
   for (let p = composedParent(el); p !== null; p = composedParent(p)) {
     if (p instanceof HTMLFieldSetElement) {
       const legend = p.querySelector(":scope > legend");
-      if (legend !== null) out.push(clean(legend.textContent));
+      if (legend !== null) out.push(clean(safeText(legend)));
     }
     const role = p.getAttribute("role");
     if (role === "group" || role === "radiogroup") {

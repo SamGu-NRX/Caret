@@ -58,6 +58,24 @@ export type Target = z.infer<typeof Target>;
 
 const InWindow = { window: WindowSel, target: Target };
 
+/**
+ * Slice 2: a list row as the plan read it. `anchors` index the cells a detail must show for the row's item to count as
+ * open; lowering sets them (goals/identity.ts identityOf), never a program.
+ */
+export const Identity = z
+  .object({
+    cells: z.array(z.string().min(1).max(200)).min(1).max(8),
+    anchors: z.array(z.number().int().nonnegative()).min(1),
+    /**
+     * The anchor cells of the list's other rows, as the plan read them (goals/identity.ts itemOpened): a detail that
+     * shows one of them at least as fully as this row's anchors is not this row's item. Absent: no other row was read.
+     */
+    others: z.array(z.array(z.string().min(1).max(200)).min(1).max(8)).max(50).optional(),
+  })
+  .strict()
+  .refine((id) => id.anchors.every((a) => a < id.cells.length) && new Set(id.anchors).size === id.anchors.length, { message: "each anchor names a different cell" });
+export type Identity = z.infer<typeof Identity>;
+
 export const EndState = z.discriminatedUnion("kind", [
   /** The element's text equals `value`: an editable field's value, or any other node's visible text. */
   z.object({ kind: z.literal("valueEquals"), ...InWindow, value: z.string() }),
@@ -92,6 +110,18 @@ export const EndState = z.discriminatedUnion("kind", [
    * capability describes (goals/capabilities.ts). `target` is the control pressed.
    */
   z.object({ kind: z.literal("fieldsRevealed"), ...InWindow }),
+  /**
+   * Slice 2: `target` (the exact row) is selected in `container` (the exact table, outline or list) and no other row of the
+   * container is, by the reader's `selected` state on the row node. Holds before the act when already so: a no-op.
+   */
+  z.object({ kind: z.literal("rowSelected"), ...InWindow, container: Target, identity: Identity }),
+  /**
+   * Slice 2: the item the row `target` names is shown outside its list: each anchor cell's first 24 characters are in the
+   * text of a node that is not a row, option or list item (nor inside one) and is not editable (goals/identity.ts
+   * itemOpened). Before an act, and while the user makes the transition, that weak form is checked; after a Caret act only
+   * nodes new or changed since the read right before it count (the strong form, an event).
+   */
+  z.object({ kind: z.literal("itemOpened"), ...InWindow, identity: Identity }),
   /** An event with this title, start and end exists in the named calendar. Checked through the calendar interface, not the screen. */
   z.object({
     kind: z.literal("calendarEvent"),
@@ -110,7 +140,14 @@ export type EndState = z.infer<typeof EndState>;
  */
 export const Via = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("press"), target: Target }),
+  /** G2: kept so journal rows saved before it still parse; the executor hands every URL to the user ("open <url> yourself"). */
   z.object({ kind: z.literal("openUrl"), url: z.url() }),
+  /**
+   * Slice 2: reach rowSelected or itemOpened on the exact row `target` through a navigation capability
+   * (goals/capabilities.ts). `actor` "you": the user makes the transition; the executor waits for the end state, acts on
+   * nothing and journals nothing.
+   */
+  z.object({ kind: z.literal("navigate"), target: Target, capability: z.enum(["selectRow", "openItem"]), actor: z.enum(["caret", "you"]) }),
 ]);
 export type Via = z.infer<typeof Via>;
 
@@ -129,7 +166,9 @@ export const Step = z
   })
   // I6: a hand-off is the user's press, never Caret's action: a plan that gives one a means to act is refused whole
   // before anything runs, rather than run up to it.
-  .refine((s) => s.end.kind !== "handoff" || s.via === undefined, { message: "a hand-off is the user's to do; it cannot carry a press or a URL for Caret", path: ["via"] });
+  .refine((s) => s.end.kind !== "handoff" || s.via === undefined, { message: "a hand-off is the user's to do; it cannot carry a press or a URL for Caret", path: ["via"] })
+  // Slice 2: a navigation end state is reached only through its own capability, and a navigation reaches nothing else.
+  .refine((s) => (s.end.kind === "rowSelected" || s.end.kind === "itemOpened") === (s.via?.kind === "navigate") && (s.via?.kind !== "navigate" || s.via.capability === (s.end.kind === "rowSelected" ? "selectRow" : "openItem")), { message: "rowSelected is reached by selectRow and itemOpened by openItem, and a navigate reaches nothing else", path: ["via"] });
 export type Step = z.infer<typeof Step>;
 
 export const Plan = z.object({

@@ -29,6 +29,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   "patterns/memory.ts": "opens its SQLite database at a checked path; SQLite writes only through that file and its -wal and -shm beside it",
   "executor/journal.ts": "opens its SQLite database at a checked path; SQLite writes only through that file and its -wal and -shm beside it",
   "engines/attach.ts": "opens an attachment read-only (O_RDONLY | O_NOFOLLOW) to check and read it; writes nothing",
+  "launch.ts": "writeSync of the 32-byte host key to the descriptor its parent named with --host-key-fd, then closes it; opens no path",
 };
 
 // A folder at the filesystem's root is outside every root wherever HOME is, and this user cannot create it: a module
@@ -51,7 +52,8 @@ describe("every file a helper store writes goes through the checked writer", () 
   });
 
   it("every allowed module other than the writer refuses a folder outside the roots", () => {
-    expect(Object.keys(ALLOWED).filter((f) => f !== "privacy/store-path.ts" && f !== "engines/attach.ts").sort()).toEqual(Object.keys(REFUSES).sort());
+    // attach.ts writes nothing and launch.ts writes only to a descriptor its parent passed: neither takes a path to refuse.
+    expect(Object.keys(ALLOWED).filter((f) => f !== "privacy/store-path.ts" && f !== "engines/attach.ts" && f !== "launch.ts").sort()).toEqual(Object.keys(REFUSES).sort());
     for (const [file, run] of Object.entries(REFUSES)) expect(run, file).toThrow(SyncedStorePath);
   });
 

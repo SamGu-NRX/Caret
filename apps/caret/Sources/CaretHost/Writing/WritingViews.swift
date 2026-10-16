@@ -87,6 +87,10 @@ struct CorrectionLineView: View {
 struct WritingAlternativesView: View {
     var offer: WritingOffer
 
+    /// Rewrites are whole sentences: their rows wrap to three lines in a wider panel, where a fix's
+    /// row is one word on one line.
+    private var rewrites: Bool { offer.active.kind == .rewrite }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(offer.active.reason)
@@ -98,7 +102,8 @@ struct WritingAlternativesView: View {
                 WritingAlternativeRow(
                     alternative: alternative,
                     number: index < WritingOffer.numberedRows ? index + 1 : nil,
-                    highlighted: index == offer.current
+                    highlighted: index == offer.current,
+                    lines: rewrites ? 3 : 1
                 )
             }
             let highlighted = offer.alternatives[offer.current]
@@ -113,15 +118,14 @@ struct WritingAlternativesView: View {
             Rectangle().fill(Color(token: Tokens.border)).frame(height: 1).padding(.vertical, 6)
             HStack(spacing: 12) {
                 HintView(hint: Hint(key: "Tab", label: WritingCopy.tabAction(highlighted.kind)))
-                HintView(hint: Hint(key: "Esc", label: nil))
+                HintView(hint: Hint(key: "Esc", label: WritingCopy.closeHint))
             }
             .padding(.leading, PopupView.indent)
         }
         .padding(.top, 4)
         .padding(.bottom, 8)
         .padding(.horizontal, 12)
-        .frame(minWidth: 240, maxWidth: 360, alignment: .leading)
-        .fixedSize()
+        .modifier(PanelWidth(rewrites: rewrites))
         .panelChrome(radius: 8)
     }
 }
@@ -132,10 +136,13 @@ private struct WritingAlternativeRow: View {
     var alternative: WritingOffer.Alternative
     var number: Int?
     var highlighted: Bool
+    /// More than 1 wraps the words, the hint and keycap staying on the first line.
+    var lines = 1
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(label).foregroundStyle(Color(token: Tokens.ink)).lineLimit(1)
+        HStack(alignment: lines > 1 ? .firstTextBaseline : .center, spacing: 8) {
+            Text(label).foregroundStyle(Color(token: Tokens.ink)).lineLimit(lines)
+                .fixedSize(horizontal: false, vertical: lines > 1)
             Spacer(minLength: 12)
             // On the Carrot wash Secondary falls under 4.5:1 (4.47 light, 4.20 dark), so the
             // highlighted row sets its hint and keycap in Ink.
@@ -146,7 +153,8 @@ private struct WritingAlternativeRow: View {
         }
         .font(Tokens.Font.body)
         .padding(.leading, PopupView.indent)
-        .frame(height: 24)
+        .padding(.vertical, lines > 1 ? 4 : 0)
+        .frame(minHeight: 24, maxHeight: lines > 1 ? nil : 24)
         .padding(.horizontal, 12)
         .background {
             if highlighted {
@@ -166,14 +174,14 @@ private struct WritingAlternativeRow: View {
     /// words are the text that row leaves in the field.
     private var label: String {
         switch alternative.kind {
-        case .fix, .fixAll: return alternative.label
+        case .fix, .fixAll, .rewrite: return alternative.label
         case .original: return alternative.detail ?? alternative.label
         }
     }
 
     private var hint: String? {
         switch alternative.kind {
-        case .fix: return nil
+        case .fix, .rewrite: return nil
         case .original: return alternative.label
         case .fixAll: return alternative.detail
         }
@@ -181,9 +189,24 @@ private struct WritingAlternativeRow: View {
 
     private var spokenLabel: String {
         switch alternative.kind {
-        case .fix: return alternative.label
+        case .fix, .rewrite: return alternative.label
         case .original: return "\(alternative.label), “\(alternative.detail ?? "")”"
         case .fixAll: return "\(alternative.label), \(alternative.detail ?? "")"
+        }
+    }
+}
+
+/// A fix's list sizes to its words, 240 to 360 wide. Rewrites take a fixed 440, so their rows can
+/// wrap and the list grows down to hold them: a list sized to its ideal width would measure each
+/// rewrite on one line and clip the wrapped rows, its first line and its hints.
+private struct PanelWidth: ViewModifier {
+    var rewrites: Bool
+
+    func body(content: Content) -> some View {
+        if rewrites {
+            content.frame(width: 440, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+        } else {
+            content.frame(minWidth: 240, maxWidth: 360, alignment: .leading).fixedSize()
         }
     }
 }

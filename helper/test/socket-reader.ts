@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { HelperToReader, isCalendarVerb, PROTOCOL_VERSION, ReaderMessage, type CalendarVerb, type ReaderCommand, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
+import { hostKey, hostProof } from "../src/host-auth.ts";
 import { FakeGrants } from "./fake-grants.ts";
 import { FakeMarks } from "./fake-marks.ts";
 
@@ -73,6 +74,31 @@ export class LineClient {
   close(): void {
     this.s.destroy();
   }
+}
+
+/** The launch secret tests start a HelperServer with when a host connects to it: 32 bytes, synthetic. */
+export const TEST_LAUNCH_SECRET = Buffer.from("caret-test-launch-secret-32bytes");
+
+/**
+ * Answers the helper's hostChallenge as Caret does, after the caller sent a hello with `host: true`, and waits for
+ * hostAuthenticated: only then is the connection the host (src/host-auth.ts).
+ */
+export async function authenticateHost(c: LineClient, launchSecret: Buffer = TEST_LAUNCH_SECRET): Promise<void> {
+  const challenge = await c.waitFor<{ nonce: string }>((m) => m.type === "hostChallenge");
+  c.send({ type: "hostProof", v: PROTOCOL_VERSION, proof: hostProof(hostKey(launchSecret), challenge.nonce) });
+  await c.waitFor((m) => m.type === "hostAuthenticated");
+}
+
+/**
+ * authenticateHost for a test's own connection, whose received lines collect in `lines`. The two handshake lines are
+ * taken out of `lines`, so the test's expectations start after them (test/host-auth.test.ts checks them).
+ */
+export async function authenticateRawHost(s: Socket, lines: Record<string, unknown>[], launchSecret: Buffer = TEST_LAUNCH_SECRET): Promise<void> {
+  await until(() => lines.some((l) => l.type === "hostChallenge"));
+  const nonce = String(lines.find((l) => l.type === "hostChallenge")?.nonce);
+  s.write(JSON.stringify({ type: "hostProof", v: PROTOCOL_VERSION, proof: hostProof(hostKey(launchSecret), nonce) }) + "\n");
+  await until(() => lines.some((l) => l.type === "hostAuthenticated"));
+  for (const type of ["hostChallenge", "hostAuthenticated"]) lines.splice(lines.findIndex((l) => l.type === type), 1);
 }
 
 /** A recorded session from fixtures/recorded, each line checked against the protocol. */

@@ -10,7 +10,8 @@ import type { EventClock } from "../offers/event-time.ts";
 import { disclosureFor } from "../planner/codeplan.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { WRITER_MAX_OUTPUT_TOKENS } from "../writer/config.ts";
-import type { WriterPort } from "../writer/port.ts";
+import { WriterUnavailable, type WriterPort } from "../writer/port.ts";
+import { SaidError, SAYS } from "../planner/says.ts";
 import { draftAsk } from "../writer/local-draft.ts";
 import { LocalModelUnavailable, type LocalModelPort } from "../writer/local-port.ts";
 import type { DraftPlan } from "../codemode/types.ts";
@@ -19,6 +20,7 @@ import { buildInventory } from "./inventory.ts";
 import { frozenBasis, GoalError, lowerGoal, type DonePress } from "./lower.ts";
 import { addsRecipient, confirmClaims, DraftRefused } from "./drafts.ts";
 import type { GoalPlan, LeftItem } from "./plan.ts";
+import type { ReplayState } from "./replay.ts";
 
 export interface GoalWriterUse {
   model: string;
@@ -74,13 +76,31 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
   try {
     written = await o.writer.write(inv.ledger.seal({ kind: "goal", disclosureId: o.goalId, disclosed, input: { goal: inv.ledger.slice(inv.ledger.instruction(o.instruction), 500), snapshots: inv.snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) }));
   } catch (e) {
+    if (e instanceof WriterUnavailable) {
+      const said = new SaidError("unavailable", SAYS.writerBudget, e.message);
+      throw new GoalError("nothingToDo", said.message, said.detail);
+    }
     throw new GoalError("nothingToDo", "the plan writer is not available now", e instanceof Error ? e.message.slice(0, 200) : String(e));
   }
   use.value = { model: written.model, latencyMs: written.latencyMs, costUsd: written.costUsd, inputTokens: written.inputTokens, outputTokens: written.outputTokens, program: written.output.program };
   if (written.output.program === null) throw new GoalError("schema", "the plan writer wrote no program");
   const choose: ChooserPort = o.askJev === null ? async () => null : jevChooser(o.askJev, o.instruction, inv.ledger);
-  const ran = await runCodePlan(written.output.program, inv.snapshots, choose, { multiWindow: true, drafts: true, ...(o.signal === undefined ? {} : { signal: o.signal }) });
+  const ran = await runCodePlan(written.output.program, inv.snapshots, choose, { multiWindow: true, drafts: true, navigation: true, ...(o.signal === undefined ? {} : { signal: o.signal }) });
   if (!ran.ok) throw new GoalError("schema", "the plan program broke the rules a plan must keep", `${ran.kind}: ${ran.detail.slice(0, 200)}`);
+  // Slice 2: a program that stopped at an observe goes on by replay (goals/replay.ts), never by another writer call.
+  const replay: ReplayState | undefined =
+    ran.pending === null
+      ? undefined
+      : {
+          record: { programDigest: ran.plan.programDigest, source: written.output.program, gen0: inv.snapshots, observations: [], choices: ran.plan.choices.map((c) => ({ requestDigest: c.requestDigest, chosen: c.chosen })), prefix: [], segments: [] },
+          pending: ran.pending,
+          pendingSteps: ran.plan.steps,
+          ledgers: [inv.ledger],
+          retained: new Map(),
+          used: { newChoices: ran.stats.chooseCalls, newSteps: ran.stats.steps },
+          writerModel: written.model,
+          released: null,
+        };
   const local = o.drafter === undefined || ran.plan.drafts.length === 0 ? null : await localDrafts(o.drafter, o.instruction, ran.plan, inv.inventory, o.now, o.signal);
   // A draft's origin names the model that wrote its words: the local model's when it did.
   const plan = await lowerGoal(o.goalId, o.instruction, local?.plan ?? ran.plan, inv.inventory, { done: o.done ?? [], writerModel: local?.model ?? written.model, askJev: o.askJev, ledger: inv.ledger, ...(o.carried === undefined ? {} : { carried: o.carried }), ...(o.scopes === undefined ? {} : { scopes: o.scopes, documentOf: o.documentOf ?? null }), ...(o.settleScope === undefined ? {} : { settleScope: o.settleScope }) });
@@ -92,7 +112,7 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
     if (e instanceof DraftRefused) throw new GoalError("draft", e.says, `${e.why}: ${e.word ?? ""}`);
     throw e;
   }
-  return plan;
+  return replay === undefined ? plan : { ...plan, replay };
 }
 
 /**

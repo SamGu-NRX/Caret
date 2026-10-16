@@ -13,16 +13,16 @@ import { instructionForModel, redactWindow } from "./redact.ts";
 import { fieldFingerprint, NO_SECTION, PLACEMENT_UNKNOWN, scopeRefusal, UNNAMED_SECTION, windowOutline, type Authority, type DocumentReader } from "./ask-scope.ts";
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
-import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
+import { nodeText, type ScreenModel, type WindowState, holdsText } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, describeCandidate, labelledCandidate, labelledLines, MAX_LINE, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, CANDIDATE_WORDING, candidateSpans, clauseSpans, sourceOf as readOf, associationOf, type Candidate } from "./candidates.ts";
-import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
+import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, unwrapValue, words } from "./kinds.ts";
 import { WINDOW_CHARS, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import { checkSealable, type AskJev, type JevRequest, type JevResult } from "./jev.ts";
-import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, pickableOptions, serviceBox, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, optionKinds, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, pickableOptions, serviceBox, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, PART_SAYS, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { autocompletePart, checkValues, type CheckOptions, CONTRACT_UNSTATED, contractSays, ContractError, isChecked, makeFieldContract, mintDerivation, mintExempt, neverTypedRefusal, provenanceStale, requireChecked, shapeRefusal, textShapeRefusal, VerifierUnavailable, windowProvenance, withReads, readsCopied, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance, type Refused } from "./contract.ts";
+import { autocompletePart, checkValues, type CheckOptions, CONTRACT_UNSTATED, contractSays, ContractError, isChecked, makeFieldContract, mintDerivation, mintExempt, neverTypedRefusal, provenanceStale, requireChecked, shapeRefusal, textShapeRefusal, VerifierUnavailable, windowProvenance, withReads, readsCopied, type Checked, type DigestMemo, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance, type Refused } from "./contract.ts";
 import { type SourceAt, splitLines, TITLE, wholePart } from "../privacy/ledger/source.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { ownedOf, unitKey, unitOf, unitsHolding, windowUnit, type NoteUnit } from "./note-unit.ts";
@@ -150,7 +150,7 @@ export function formFields(w: WindowState, triggerKey: string, max = MAX_FIELDS)
   if (trigger === undefined) throw new FillError("noField", `field ${triggerKey} is not in window ${w.window.windowId}`);
   if (trigger.editable !== true) throw new FillError("noField", `field ${triggerKey} is not editable`);
   const fields = [...w.nodes.values()].filter(
-    (n) => n.key === triggerKey || (n.editable === true && FILLABLE_ROLES.has(n.role) && (n.value ?? "") === "" && !n.states?.includes("secure") && neverTypedNode(w, n) === null),
+    (n) => n.key === triggerKey || (n.editable === true && FILLABLE_ROLES.has(n.role) && !holdsText(n) && !n.states?.includes("secure") && neverTypedNode(w, n) === null),
   );
   const center = (n: Node): [number, number] => (n.frame === undefined ? [0, 0] : [n.frame[0] + n.frame[2] / 2, n.frame[1] + n.frame[3] / 2]);
   const [tx, ty] = center(trigger);
@@ -196,7 +196,7 @@ export function emptyInput(w: WindowState, key: string): FormInput | null {
   const n = w.nodes.get(key);
   if (n === undefined) return null;
   if (FILLABLE_ROLES.has(n.role) && n.editable === true) {
-    if ((n.value ?? "") !== "" || n.states?.includes("secure") || neverTypedNode(w, n) !== null) return null;
+    if (holdsText(n) || n.states?.includes("secure") || neverTypedNode(w, n) !== null) return null;
     return n.role === "AXComboBox" && inWebArea(w, n) ? { node: n, control: "combobox", form: { node: n, control: "combobox", label: fieldLabelText(n.label), options: null, members: [] } } : { node: n, control: "text", form: null };
   }
   const c = formControls(w).find((x) => x.node.key === key);
@@ -1030,7 +1030,7 @@ export async function proposeFill(
       const n = w.nodes.get(k);
       if (n === undefined) return [];
       if (FILLABLE_ROLES.has(n.role) && n.editable === true) {
-        if ((n.value ?? "") !== "" || n.states?.includes("secure") === true || neverTypedNode(w, n) !== null) return [];
+        if (holdsText(n) || n.states?.includes("secure") === true || neverTypedNode(w, n) !== null) return [];
         return [opts.controls !== false && n.role === "AXComboBox" && inWebArea(w, n) ? { node: n, control: "combobox", form: { node: n, control: "combobox", label: fieldLabelText(n.label), options: null, members: [] } } : { node: n, control: "text", form: null }];
       }
       const c = controls.get(k);
@@ -1533,8 +1533,22 @@ export async function proposeFill(
   // field takes; a name may have been kept out of a field that takes one; or the field names no kind and a cut took a
   // value of some kind, which may be the one it wants. A recognized field consulted only its kinds, so a note's closing
   // "Do not use any of the dates above" left Meeting date filled with the first of them.
-  const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean =>
-    opts.cutRule !== false && (isCut(f.kinds) || [...f.terms].some((t) => t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f)));
+  const pageSelect = (f: Field): f is Field & { form: FormControl & { options: string[] } } => pageOwned && f.control === "select" && f.form?.options != null;
+  // A page select's kinds are what its own option labels could be (a month is a date, a state an address), and an address
+  // when its field asks for a place or a country, whose names optionKinds does not know (review: a cut address holding
+  // Canada left a France option writable).
+  // A select's label kinds count too ("Student ID" takes an ID, whatever its options look like): Greptile review on #22,
+  // a menu of reference codes had no kind, so a cut of the window's IDs left it writable.
+  const selectKinds = new Map(fields.filter(pageSelect).map((f) => {
+    const kinds = new Set([...optionKinds(f.form.options, f.part), ...fieldKinds(f.labelWords)]);
+    if (asksCountry(f.form.label) || asksPlace(f.form.label)) kinds.add("address");
+    return [f.id, kinds] as const;
+  }));
+  const fieldCut = (f: Field): boolean =>
+    opts.cutRule !== false &&
+    // A page select keeps every other cut rule (its label's terms, a name kept out); only the rule that withholds a field
+    // naming no kind for any cut at all is replaced by its menu's own kinds: a date cut can hide a month, not a meal.
+    (isCut(pageSelect(f) ? (selectKinds.get(f.id) as Set<ValueKind>) : f.kinds) || [...f.terms].some((t) => t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (!pageSelect(f) && f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f)));
   // A select whose options the app does not show cannot be matched to a value, so it is named and left (controls.ts).
   // A web dropdown's options are hidden too, but the page engine's handler picks the one option named exactly the
   // value and verifies it, so it is asked (B27).
@@ -2076,6 +2090,11 @@ export async function proposeFill(
     const a2 = x2?.answers[q2];
     return a1 !== undefined && a2 !== undefined && a1.choice === a2.choice && a1.choice in WHOSE_CRITERIA ? a1.choice : null;
   };
+  /** Whether either ask answered a question with fixed options with `choice`, at any confidence. */
+  const eitherChoice = (q: string, choice: string): boolean => {
+    const [x1, x2] = staged ? [w1, w2] : [r1, r2];
+    return x1?.answers[q]?.choice === choice || x2?.answers[q]?.choice === choice;
+  };
   /** Both asks' answer to a question with fixed options (whose, owner), agreed at the whose cutoff, or null. */
   const agreedChoice = (q: string, q2: string = q): string | null => {
     const [x1, x2] = staged ? [w1, w2] : [r1, r2];
@@ -2136,6 +2155,13 @@ export async function proposeFill(
     // (evidence/screen/b27/b2b-probe, seed 24). The field's whose answers count at any confidence too: with both at
     // 0.49 "user", the settled `wants` was null and the colleague's phone went in (B27 second review).
     if (sameChoice(whoseId(f.id)) === "user" && c.identity === undefined && sameChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? "")) === "other") return true;
+    // The mirror: either ask calling the field someone else's, at any confidence, withholds the user's own value; the user
+    // never finds their own detail in a field one wording took for another person's (lead decision, Oct 9). W2's b-032
+    // put the user's email in Reference 2 email, and the verifier, which judges exactness, answered "exact" at 0.85 to
+    // 0.89; with the field's whose answers both "other" at 0.4, under WHOSE_CUTOFF, or split between "other" and "user",
+    // nothing else stopped it, even with the email in memory (test/act-b032-owner.test.ts). The field is left to the user
+    // as otherPerson: an Ask's value question lists no value this veto holds (optionsOf), so there is nothing to ask.
+    if (is === "user" && eitherChoice(whoseId(f.id), "other")) return true;
     // Someone else's value goes only in a field both asks say wants someone else's: an RSVP's Phone, its whose
     // answer split at 0.48 and 0.60, took the sender's signature phone, which both asks called hers (dev-10).
     if (is === "other") return true;
@@ -2232,8 +2258,8 @@ export async function proposeFill(
   /**
    * A source-supported choice as its control takes it: the output only when it is still one of the control's pickable
    * options, or a service box's tick, frozen as proposed. It never passes statesFact or leavesChoiceOpen, which read
-   * literal wording and cannot judge a paraphrase; its derivation says that code proposes it for judgment, so it reaches
-   * both value questions and the verifier and is never minted under optionLabel or boxFromLabelledLine (`chose`).
+   * literal wording and cannot judge a paraphrase. A page select goes through both bounded value questions and exact
+   * optionLabel minting. Other controls keep the stated code choice and the verifier (`chose`).
    */
   const supportedValue = (f: Field, p: Extract<Pick, { from: "choice" }>): Read | { why: FillWithheld } => {
     const against = p.basis.from === "unit" ? "its whole source text" : p.basis.from === "memory" ? "the user's saved entry" : "the user's whole request";
@@ -2244,6 +2270,10 @@ export async function proposeFill(
       return { value: PAGE_CHECKED, display: "Ticked", writes: pageOwned && f.node.subrole !== PAGE_SUBROLE.switch, chose };
     }
     if ((f.control !== "select" && f.control !== "radio") || f.form === null || !pickableOptions(w, f.form).includes(p.text)) return { why: "ambiguous" };
+    // A page select's option supported by a window's text is settled by the bounded pair, not a mapping code inferred.
+    // One supported only by memory or the request keeps the verifier and its stated choice, as native menus and radios
+    // do: the goal's lowering and memory recheck read those literally (review).
+    if (pageSelect(f) && p.basis.from === "unit") return { value: p.text, display: p.text, writes: true };
     const chose: Chosen = { says: `Caret proposes the listed option '${p.text}' for judgment against ${against}; code did not check that it names it`, also: null, how: "sourceSupported" };
     return { value: p.text, display: p.text, writes: pageOwned && f.node.subrole !== PAGE_SUBROLE.pressGroup, chose };
   };
@@ -2370,12 +2400,26 @@ export async function proposeFill(
         const placed = asksPlace(f.name) ? placeWithCountry(text) : null;
         if (placed !== null) return { value: placed, display: placed, writes: page };
         return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
-      case "text":
-        // W2: the write contract (checkValues, below) decides whether it may be written.
-        return { value: text, display: text, writes: true };
+      case "text": {
+        // W2: the write contract (checkValues, below) decides whether it may be written. A value in quotes, brackets or
+        // with sentence punctuation after it, for a field of an email, URL, phone or ID kind, is typed without them, as
+        // the page would read it; the verifier still judges it against its source (kinds.ts unwrapValue).
+        const core = unwrapValue(text, f.kinds);
+        return core === null ? { value: text, display: text, writes: true } : { value: core, display: core, writes: true };
+      }
     }
   };
-  const sourceOf = (p: Pick): FillSource | null => windowOf(p)?.source ?? null;
+  const sourceOf = (p: Pick, f: Field): FillSource | null => {
+    if (pageSelect(f) && p.from === "choice" && p.basis.from === "unit") {
+      const b = p.basis;
+      // The source ref locates the evidence window for the existing write consumer. The mint's unit digest,
+      // not a claim that this node literally contains the option label, owns the source recheck.
+      const view = viewOf(model, b.unit.windowId);
+      const nodeKey = b.unit.nodeKey ?? view?.nodes.keys().next().value;
+      return nodeKey === undefined || view === undefined ? null : { windowId: b.unit.windowId, nodeKey, appName: b.app, windowTitle: b.title, pid: view.app.pid, bundleId: view.app.bundleId, kind: null };
+    }
+    return windowOf(p)?.source ?? null;
+  };
   const memoryRef = (p: Pick, f: Field): FillMemory | null => {
     // A choice judged against a memory entry names it, so the write is checked against the entry (memoryWrites), which
     // holds only while the entry still is the option: a paraphrase in memory is handed off, never written.
@@ -2427,6 +2471,9 @@ export async function proposeFill(
   };
   /** Each candidate's source text as Jev was shown it (`judged`, taken before the asks), for its provenance's digests. */
   const judgedText = (c: Candidate): string | undefined => judged.get(nodeKeyOf(c));
+  const digestMemo: DigestMemo = new Map();
+  /** A candidate's provenance from its judged text (provenanceOf's `cand`), its digests taken once per text and span. */
+  const judgedProvenance = (c: Candidate): Provenance => candidateProvenance(model, c, judgedText(c) ?? "", digestMemo);
   /**
    * AC1's Owner slot, which G2's ownership fills and the contract carries for the Ask's scope check; since HA2 the
    * verifier's question no longer says it, so no earlier answer is restated as a screen fact: the user's for what they told Caret and for their own identity on screen (whose.ts), else
@@ -2516,12 +2563,12 @@ export async function proposeFill(
         // Settlement options satisfy the same owner rule as admission.
         if (ownerHold(f, pick) !== null) return veto("otherPerson");
         const chose = read.chose ?? (pick.from === "derived" ? pick.chose : undefined);
-        const proposed: Proposed = { field: contracts[i] as FieldContract, text: read.value, display: read.display, provenance: bindOwned(provenanceOf(model, pick, f.part, read.value, judgedText, f.control, chose)), owner: ownerOf(pick) };
+        const proposed: Proposed = { field: contracts[i] as FieldContract, text: read.value, display: read.display, provenance: bindOwned(provenanceOf(model, pick, f.part, read.value, judgedProvenance, f.control, chose)), owner: ownerOf(pick) };
         // As the write contract will judge it: the verifier's values meet every shape check, an exemption's the never-typed one.
         const verifier = f.control === "text" || f.control === "combobox" || chose !== undefined;
         if (neverTypedRefusal(proposed, scope.instruction) !== null) return veto("neverTyped");
         if (verifier && (shapeRefusal(proposed) ?? textShapeRefusal(proposed)) !== null) return veto("shape");
-        return [{ id, second, pick, read, proposed, output: read.value, owner: proposed.owner, assumptions: saysOf(proposed.provenance), verifier, ...evidenceOf(pick) }];
+        return [{ id, second, pick, read, proposed, output: read.value, owner: proposed.owner, assumptions: pick.from === "choice" && pick.basis.from === "unit" && pageSelect(f) ? ["bounded Jev page option"] : saysOf(proposed.provenance), verifier, ...evidenceOf(pick) }];
       });
       optionsOf.set(f.id, groupOptions(members));
     }
@@ -2558,9 +2605,17 @@ export async function proposeFill(
    * The line a window value was read from, whole when it is a short one (MAX_LINE, the generator's own bound for a line it
    * offers whole), else the clause the generator kept of it; null when neither went through the ledger.
    */
+  // A source text's lines as the generator reads them, once per text for this fill: a 50-field fill asked supportLine
+  // 4,700 times about one note.
+  const bareLines = new Map<string, readonly string[]>();
+  const bareOf = (text: string): readonly string[] => {
+    let lines = bareLines.get(text);
+    if (lines === undefined) bareLines.set(text, (lines = splitLines(text).map(bareLine)));
+    return lines;
+  };
   const supportLine = (c: Candidate): string | null => {
     const node = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
-    const line = node === undefined ? undefined : splitLines(nodeText(node)).map(bareLine).find((l) => l.includes(c.text));
+    const line = node === undefined ? undefined : bareOf(nodeText(node)).find((l) => l.includes(c.text));
     return line !== undefined && line.length <= MAX_LINE ? line : (c.line ?? null);
   };
   const unavailable = m.own("unavailable");
@@ -2652,7 +2707,9 @@ export async function proposeFill(
     const output = f.control === "checkbox" ? m.own(PAGE_CHECKED) : m.descriptor(w, p.text);
     // mintDerivation leaves out a choice's sentence it cannot mint; here that sentence is mandatory.
     const says = proposed.provenance.kind === "derived" && proposed.provenance.says !== undefined ? m.heldText(proposed.provenance.says) : null;
-    const derivation = says === null ? null : mintDerivation(m, proposed, () => says);
+    const derivation = proposed.provenance.kind === "derived" && proposed.provenance.how === "jevOption"
+      ? m.own("not copied from the source; select one of the page's listed options only when its evidence supports it")
+      : says === null ? null : mintDerivation(m, proposed, () => says);
     if (output === null || derivation === null) return null;
     const b = p.basis;
     const units = new Set<string>();
@@ -2886,7 +2943,7 @@ export async function proposeFill(
     const handoff: FillHandoff | null =
       f.control === "text" || p === undefined || got === null
         ? null
-        : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f), ...(context === null ? {} : { context }), ...(got.writes ? { writes: true as const } : {}) };
+        : { value: got.value, display: got.display, source: sourceOf(p, f), memory: memoryRef(p, f), ...(context === null ? {} : { context }), ...(got.writes ? { writes: true as const } : {}) };
     const text = f.control === "text" && p !== undefined && got !== null;
     // V3: a choice code made (controlValue's, or a derived pick's) travels with the pick to the verifier.
     const chose = got?.chose ?? (p?.from === "derived" ? p.chose : undefined);
@@ -2908,7 +2965,7 @@ export async function proposeFill(
       choice: p === undefined ? NONE : asks[0].choice,
       confidence,
       value: text ? got.value : null,
-      source: text ? sourceOf(p) : null,
+      source: text ? sourceOf(p, f) : null,
       memory: text ? memoryRef(p, f) : null,
       withheld,
       asks,
@@ -3067,7 +3124,7 @@ export async function proposeFill(
     // V3 review: a control's value code chose (an order, a year, an option a word names) is no plain conversion, so it
     // meets the verifier as text does, with the choice said in its provenance, and is never minted under an exemption.
     if (f.control !== "text" && f.control !== "combobox" && chose === undefined) continue;
-    proposed.push({ i, p: frozen ?? { field: contracts[i] as FieldContract, text, display: text, provenance: bindOwned(provenanceOf(model, p, f.part, text, judgedText, f.control, chose)), owner: ownerOf(p) } });
+    proposed.push({ i, p: frozen ?? { field: contracts[i] as FieldContract, text, display: text, provenance: bindOwned(provenanceOf(model, p, f.part, text, judgedProvenance, f.control, chose)), owner: ownerOf(p) } });
   }
   /** The whole unit an Ask's window value was read from (its provenance's first window source), as its value questions named it. */
   const verifierUnit = (p: Proposed): { id: ModelText; text: ModelText } | null => {
@@ -3156,7 +3213,7 @@ export async function proposeFill(
     if (exempt === null || picksOf.get(i)?.chose !== undefined) continue;
     const text = o.value ?? o.handoff?.value ?? "";
     const pick = picksOf.get(i);
-    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : (pick.proposed?.provenance ?? bindOwned(provenanceOf(model, pick.p, f.part, text, judgedText, f.control)));
+    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : (pick.proposed?.provenance ?? bindOwned(provenanceOf(model, pick.p, f.part, text, judgedProvenance, f.control)));
     const proposedExempt: Proposed = { field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: pick === undefined ? null : ownerOf(pick.p) };
     // I2: a control outside the Ask's scope is withheld, as the contract would refuse to mint it.
     if (authority.kind === "ask" && scopeRefusal(proposedExempt, authority.scope, documentOf) !== null) {
@@ -3165,7 +3222,7 @@ export async function proposeFill(
     }
     // V3 review: a contract failure for one value withholds that value, said loudly; it never aborts the fill.
     try {
-      fieldMints.set(o, mintExempt(proposedExempt, exempt, now, scope?.instruction ?? "", authority, documentOf));
+      fieldMints.set(o, mintExempt(proposedExempt, exempt, now, scope?.instruction ?? "", authority, documentOf, viewOf(model, windowId) ?? null));
     } catch (e) {
       if (!(e instanceof ContractError)) throw e;
       console.error(`caret fill: the write contract refused field ${o.key} (${e.code}): ${e.message}`);
@@ -3197,6 +3254,11 @@ export async function proposeFill(
     const view = viewOf(model, r.c.source.windowId);
     const title = view?.window.title || view?.app.name || r.c.source.appName;
     return `${title}: ${supportLine(r.c) ?? r.c.text}`;
+  };
+  /** The windows a value option was read from: none for memory or the user's request. */
+  const rowWindows = (p: Pick): string[] => {
+    if (p.from === "choice") return p.basis.from === "memory" || p.basis.from === "instruction" ? [] : [p.basis.unit.windowId];
+    return rootsOf(p).flatMap((r) => (r.from === "memory" || r.from === "instruction" ? [] : [r.c.source.windowId]));
   };
   const eligible = (f: Field, o: ValueOption<Member>): boolean => {
     const first = o.members[0] as Member;
@@ -3240,7 +3302,7 @@ export async function proposeFill(
       const unsure = askedAgain.has(f) && (o.withheld === "disagree" || o.withheld === "lowConfidence" || (o.withheld === null && a1?.choice === NONE && a2?.choice === NONE && !noneSure));
       const why = refused !== undefined ? "verifier" : unsure ? "selection" : null;
       if (why === null || offered.length === 0) return [];
-      return [{ key: f.node.key, name: f.name, kind: kindOf(f), why, options: offered.map((x) => ({ id: x.id, value: x.output, display: (x.members[0] as Member).read.display, source: rowSource((x.members[0] as Member).pick) })) }];
+      return [{ key: f.node.key, name: f.name, kind: kindOf(f), why, options: offered.map((x) => ({ id: x.id, value: x.output, display: (x.members[0] as Member).read.display, source: rowSource((x.members[0] as Member).pick), windows: rowWindows((x.members[0] as Member).pick) })) }];
     });
   /** `u` with only the values a pick of which can be sent (clarifiable), or null when none can: what an Ask may offer. */
   const sendableOf = (u: UnresolvedValue): UnresolvedValue | null => {
@@ -3299,7 +3361,7 @@ export async function proposeFill(
         }
       } else if (exempt !== null) {
         try {
-          fieldMints.set(field, mintExempt(frozen, exempt, now, scope?.instruction ?? "", authority, documentOf));
+          fieldMints.set(field, mintExempt(frozen, exempt, now, scope?.instruction ?? "", authority, documentOf, viewOf(at.model, windowId) ?? null));
         } catch (e) {
           if (!(e instanceof ContractError)) throw e;
           field = blank(e.code === "outOfScope" ? "outOfScope" : "wrongKind");
@@ -3365,6 +3427,8 @@ export interface ValueChoice {
   value: string;
   display: string;
   source: string;
+  /** The windows it was read from, by id (expiry.ts askWindows). */
+  windows: readonly string[];
 }
 /**
  * A field in an Ask's settled scope whose value did not settle, with every value nothing but Jev's confidence keeps out:
@@ -3454,8 +3518,8 @@ function deriveHow(part: FillPart | null, written: string, base: string, control
  * of the lines around it (contract.ts windowProvenance), in `text` when given (the source as Jev was shown it), else in
  * the source now.
  */
-export function candidateProvenance(model: ScreenModel, c: Candidate, text?: string): Provenance {
-  const pr = windowProvenance(viewOf(model, c.source.windowId), c, text);
+export function candidateProvenance(model: ScreenModel, c: Candidate, text?: string, memo?: DigestMemo): Provenance {
+  const pr = windowProvenance(viewOf(model, c.source.windowId), c, text, memo);
   // Where its texts were read, in the view they were read from, so the verifier quotes them at those ranges (contract.ts
   // withReads); a refresh since leaves that view as it was, and the recheck before a write decides whether it changed.
   // Each text by its role, never by its spelling: a title that reads like the value is charged as the title, and the
@@ -3471,25 +3535,26 @@ export function candidateProvenance(model: ScreenModel, c: Candidate, text?: str
 }
 
 /**
- * Where a pick's value came from, as the write contract carries it (fill/contract.ts Provenance). `judged` gives each
- * candidate's source text as Jev was shown it, taken before the asks (G2): the model can change while they are out, and
- * the digests the recheck takes again must be of what Jev judged.
+ * Where a pick's value came from, as the write contract carries it (fill/contract.ts Provenance). `cand` gives each
+ * candidate's provenance from its source text as Jev was shown it, taken before the asks (G2): the model can change while
+ * they are out, and the digests the recheck takes again must be of what Jev judged.
  */
-function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, written: string, judged: (c: Candidate) => string | undefined, control: Control | null = null, chose?: Chosen): Provenance {
+function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, written: string, cand: (c: Candidate) => Provenance, control: Control | null = null, chose?: Chosen): Provenance {
   if (p.from === "choice") {
-    // Its stated derivation is what keeps it from every exemption (contract.ts statedChoice), so it never goes without one.
-    if (chose === undefined) throw new Error(`a source-supported choice '${p.text}' reached provenance without its derivation`);
+    // Only a page select's bounded Jev choice on a window's text has no code-inferred assumption. All other choices keep theirs.
     const b = p.basis;
+    if (chose === undefined && !(control === "select" && b.from === "unit")) throw new Error(`a source-supported choice '${p.text}' reached provenance without its derivation`);
     const base: Provenance = b.from === "unit" ? { kind: "unit", windowId: b.unit.windowId, app: b.app, title: b.title, digest: b.unit.digest } : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
-    return { kind: "derived", how: "sourceSupported", base, also: null, says: chose.says };
+    return chose === undefined
+      ? { kind: "derived", how: "jevOption", base, also: null }
+      : { kind: "derived", how: "sourceSupported", base, also: null, says: chose.says };
   }
   if (chose !== undefined) {
     // V3: the value as derived, with the choice code made said, and the extra source it read (a send line) as `also`.
-    const own = provenanceOf(model, p, part, written, judged, control);
+    const own = provenanceOf(model, p, part, written, cand, control);
     const d: Extract<Provenance, { kind: "derived" }> = own.kind === "derived" ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, pickSpan(p)) : "optionFromPart", base: own, also: null };
     return { ...d, ...(chose.how === undefined ? {} : { how: chose.how }), also: chose.also ?? d.also, says: chose.says, ...(chose.via === undefined ? {} : { via: chose.via }) };
   }
-  const cand = (c: Candidate): Provenance => candidateProvenance(model, c, judged(c) ?? "");
   const base = (b: Exclude<Pick, { from: "derived" }>): Provenance =>
     b.from === "window" ? cand(b.c) : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
   if (p.from !== "derived") {

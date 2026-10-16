@@ -31,6 +31,32 @@
 // ("Caret") is only a label in this scope.
 import Foundation
 
+/// What a person can change on an event besides its title, calendar and times, as the store reads it. Undo removes an
+/// event only while all of it is as Caret saved it (Greptile review on #13: an undo deleted an event the user had edited).
+public struct EventState: Equatable, Sendable {
+    public var notes: String
+    public var location: String
+    public var url: String
+    /// Each alarm as the store reads it: its offset in seconds, or its date.
+    public var alarms: [String]
+    /// Each attendee the store lets the reader read, by its address.
+    public var attendees: [String]
+    public var allDay: Bool
+    /// When the store last saw the event change, if it says.
+    public var lastModified: Date?
+    public init(notes: String = "", location: String = "", url: String = "", alarms: [String] = [], attendees: [String] = [], allDay: Bool = false, lastModified: Date? = nil) {
+        self.notes = notes; self.location = location; self.url = url; self.alarms = alarms; self.attendees = attendees; self.allDay = allDay; self.lastModified = lastModified
+    }
+
+    /// Whether `now` is this state still. A modification date counts only when both reads have one: the store may give
+    /// none for the copy Caret saved.
+    public func unchanged(in now: EventState) -> Bool {
+        var a = self, b = now
+        if a.lastModified == nil || b.lastModified == nil { a.lastModified = nil; b.lastModified = nil }
+        return a == b
+    }
+}
+
 /// An event as a backend reports it.
 public struct BackendEvent: Equatable, Sendable {
     public var id: String
@@ -38,9 +64,22 @@ public struct BackendEvent: Equatable, Sendable {
     public var title: String
     public var start: Date
     public var end: Date
-    public init(id: String, calendarID: String, title: String, start: Date, end: Date) {
-        self.id = id; self.calendarID = calendarID; self.title = title; self.start = start; self.end = end
+    public var state: EventState
+    public init(id: String, calendarID: String, title: String, start: Date, end: Date, state: EventState = EventState()) {
+        self.id = id; self.calendarID = calendarID; self.title = title; self.start = start; self.end = end; self.state = state
     }
+
+    /// Whether `now`, a fresh read of this event, is still what Caret saved: the same calendar, title, times and state.
+    public func unchanged(in now: BackendEvent) -> Bool {
+        now.id == id && now.calendarID == calendarID && now.title == title && abs(now.start.timeIntervalSince(start)) < 1
+            && abs(now.end.timeIntervalSince(end)) < 1 && state.unchanged(in: now.state)
+    }
+}
+
+/// A removal the backend refused because a fresh read of the event no longer matches what Caret saved.
+public struct CalendarEventChanged: Error, CustomStringConvertible {
+    public init() {}
+    public var description: String { CalendarAdapter.changedByYou }
 }
 
 /// The calendar store the adapter drives. EventKitBackend is the real one; tests use a fake.
@@ -53,10 +92,13 @@ public protocol CalendarBackend: AnyObject {
     func deleteCalendar(id: String) throws
     /// Throws when the store cannot be read; an empty answer means it was read and holds none.
     func events(calendarID: String, from: Date, to: Date) throws -> [BackendEvent]
-    func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> String
+    /// The event as saved, with its id and state.
+    func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> BackendEvent
     /// Throws when the store cannot be read; nil means it was read and holds no such event.
     func event(id: String) throws -> BackendEvent?
-    func removeEvent(id: String) throws
+    /// Removes the event only if a fresh read, inside the removal, is still `saved` (BackendEvent.unchanged); otherwise
+    /// throws CalendarEventChanged and removes nothing. A check before the call would leave a race with the user's edit.
+    func removeEvent(id: String, ifStill saved: BackendEvent) throws
     /// The user's default calendar for new events, when it accepts them; nil when there is none (H8).
     func defaultCalendarID() -> String?
     /// The calendar exists and accepts new events (H8).
@@ -95,7 +137,10 @@ public final class CalendarAdapter: @unchecked Sendable {
     /// Each event this adapter added and has not removed, by id: the name of its calendar, the id of the calendar it went
     /// into, and the task that added it.
     private var events: [String: Added] = [:]
-    private struct Added { var calendar: String; var calendarID: String; var taskId: String }
+    private struct Added { var calendar: String; var calendarID: String; var taskId: String; var saved: BackendEvent }
+
+    /// What undo says of an event the user changed after Caret added it.
+    public static let changedByYou = "You've changed this event, so Caret left it"
     /// Events this adapter removed, by id, with their calendars, newest last: a get of one reads the store, so undo's check
     /// after a removal is a real read that can fail, never the adapter's own word (B23 review, S1 audit #16).
     private var removed: [(id: String, calendar: String, calendarID: String)] = []
@@ -161,9 +206,9 @@ public final class CalendarAdapter: @unchecked Sendable {
                     owned[calendar] = cid
                 }
                 if let no = allowed() { return .refused(.notAllowed, no) }
-                let id = try backend.saveEvent(calendarID: cid, title: title, start: s, end: e)
-                events[id] = Added(calendar: calendar, calendarID: cid, taskId: taskId)
-                return .ok(record(BackendEvent(id: id, calendarID: cid, title: title, start: s, end: e), calendar))
+                let saved = try backend.saveEvent(calendarID: cid, title: title, start: s, end: e)
+                events[saved.id] = Added(calendar: calendar, calendarID: cid, taskId: taskId, saved: saved)
+                return .ok(record(BackendEvent(id: saved.id, calendarID: cid, title: title, start: s, end: e), calendar))
             case let .calendarGet(id):
                 if events[id] == nil, let gone = removed.last(where: { $0.id == id }) {
                     // Removed by this adapter: whether it is really gone is read from the store.
@@ -178,7 +223,7 @@ public final class CalendarAdapter: @unchecked Sendable {
                 guard try ownEvent(id) != nil, let added = events[id] else { return .refused(.notAllowed, notOurs) }
                 guard added.taskId == taskId else { return .refused(.notAllowed, "another task added this event; only that task removes it") }
                 if let no = allowed() { return .refused(.notAllowed, no) }
-                try backend.removeEvent(id: id)
+                do { try backend.removeEvent(id: id, ifStill: added.saved) } catch is CalendarEventChanged { return .refused(.changed, Self.changedByYou) }
                 events.removeValue(forKey: id)
                 removed.append((id, added.calendar, added.calendarID))
                 if removed.count > Self.removedKept { removed.removeFirst(removed.count - Self.removedKept) }

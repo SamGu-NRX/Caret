@@ -12,6 +12,12 @@ import Foundation
 @MainActor
 final class ElectronAccess {
     private var asked: Set<pid_t> = []
+    /// Asks that failed for a reason that can pass (the app was busy past the messaging timeout), by
+    /// process: asked again on its next activation, up to `maxAttempts` in all.
+    private var failedAttempts: [pid_t: Int] = [:]
+    /// Chosen, not measured: enough for a launch or a busy moment to pass, few enough that an app
+    /// that never answers is not asked on every activation.
+    static let maxAttempts = 3
     private let family: (URL) -> AppFamily
     private let set: (pid_t) -> AXError
 
@@ -27,9 +33,24 @@ final class ElectronAccess {
     /// asked and the app accepted, so its tree is on its way and the caller should read again shortly.
     func ask(pid: pid_t, bundleURL: URL?) -> Bool {
         guard !asked.contains(pid), let bundleURL else { return false }
-        asked.insert(pid)
-        guard family(bundleURL).setsManualAccessibility else { return false }
-        return set(pid) == .success
+        guard family(bundleURL).setsManualAccessibility else {
+            asked.insert(pid)
+            return false
+        }
+        let result = set(pid)
+        if result == .success || !Self.mayPass(result) || failedAttempts[pid, default: 0] + 1 >= Self.maxAttempts {
+            asked.insert(pid)
+            failedAttempts[pid] = nil
+        } else {
+            failedAttempts[pid, default: 0] += 1
+        }
+        return result == .success
+    }
+
+    /// An error the next activation may not get: the app was busy or slow (PR #16 review). An app that
+    /// does not support the attribute says so every time.
+    static func mayPass(_ error: AXError) -> Bool {
+        error == .cannotComplete || error == .failure || error == .notificationUnsupported
     }
 
     nonisolated static func setManualAccessibility(_ pid: pid_t) -> AXError {

@@ -2,8 +2,9 @@
 // node (engines/page-link.ts), and a page segment's view (protocol GoalPageView.files) gives each attach step's row its
 // control's name and those types. A control the plan attaches to is not also named as the user's (`attach`). Every
 // name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { afterEach, describe, expect, it } from "vitest";
-import { HelperMessage, PROTOCOL_VERSION, type PageControl } from "../src/protocol.ts";
+import { HelperMessage, PROTOCOL_VERSION } from "../src/protocol.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { c } from "./fake-page.ts";
@@ -37,7 +38,7 @@ describe("a file control's accepted types in the screen model (H14)", () => {
 });
 
 /** A documents page: a name, a file input that takes PDF and Word files, a dropzone's hidden input, and Submit. */
-function documents(): PageControl[] {
+function documents(): TestField[] {
   return [
     c("r0", "text", "Full name", { value: "" }),
     c("r1", "file", "Resume", { accept: [".pdf", ".doc", ".docx"] }),

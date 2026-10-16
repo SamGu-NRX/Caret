@@ -37,8 +37,9 @@ describe("plan prompt", () => {
     const exposed = [...worker.matchAll(/api\("(\w+)"/g)].map((m) => m[1]).sort();
     const documented = [...GOAL_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort();
     expect(documented).toEqual(exposed);
-    // A single-window plan's writer never reads draft(), which the worker refuses outside a goal (B30).
-    expect([...PLAN_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort()).toEqual(exposed.filter((x) => x !== "draft"));
+    // A single-window plan's writer never reads draft() (B30), navigate() or observe() (slice 2), which the worker refuses
+    // outside a goal.
+    expect([...PLAN_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort()).toEqual(exposed.filter((x) => x !== "draft" && x !== "navigate" && x !== "observe"));
   });
 
   test("the goal API says which targets fill takes and which press takes (G2)", () => {

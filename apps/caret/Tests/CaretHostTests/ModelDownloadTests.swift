@@ -82,6 +82,29 @@ final class ModelDownloadTests: XCTestCase {
         XCTAssertNil(Stub.requests.first?.value(forHTTPHeaderField: "Range"))
     }
 
+    /// PR #16 review: a part with every byte, left when a run ended before moving it, used to ask for bytes past the
+    /// end and fail 416 forever. It is checked and installed with no request.
+    func testACompletePartIsInstalledWithoutARequest() async throws {
+        let d = download()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try body.write(to: d.partURL)
+        let url = try await d.run()
+        XCTAssertEqual(try Data(contentsOf: url), body)
+        XCTAssertTrue(Stub.requests.isEmpty, "nothing fetched")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: d.licenseURL.path))
+    }
+
+    func testACompletePartWithTheWrongFingerprintStartsOver() async throws {
+        let d = download()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var wrong = body
+        wrong[0] ^= 0xFF
+        try wrong.write(to: d.partURL)
+        let url = try await d.run()
+        XCTAssertEqual(try Data(contentsOf: url), body)
+        XCTAssertNil(Stub.requests.first?.value(forHTTPHeaderField: "Range"), "a fresh download from the start")
+    }
+
     func testAPartLeftByAnEarlierTryIsContinued() async throws {
         let d = download()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

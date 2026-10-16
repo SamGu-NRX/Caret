@@ -1,16 +1,24 @@
 // The controls-only walk (memo section 1, read path). It visits every element of the frame's document in order,
 // descending into open shadow roots and closed ones through chrome.dom.openOrClosedShadowRoot, and keeps each
-// visible interactive control with its name, kind, value, options, form and rect. Exclusions are decided here, by
+// visible interactive control with its name, kind, options, form and rect. Exclusions are decided here, by
 // code, before anything leaves the frame: such controls are counted by reason and never named or read.
-import type { PageControl, PageControlKind, PageExclusion, Rect } from "../shared/messages.ts";
+//
+// A text control's text never leaves the frame (counsel 2026-10-09): the walk sends whether it holds text and its
+// change counter (content/revs.ts), read through `readText`, and the PageControl type has no value for it. Only a
+// choice control (a select, a range or a color input) sends its value, which is page state, not typed text.
+import { isTextKind, type ChoiceControl, type PageControl, type PageControlKind, type PageExclusion, type Rect, type TextControl, type Withheld } from "../shared/messages.ts";
 import { authorIdentifier, isGeneratedId, strongKey } from "../shared/ids.ts";
 import { clean, composedParent, groupNames, labelledBy } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
 import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
+import type { SecretKind } from "./secret.ts";
+import { outlineText, secretFieldOf } from "./secret-dom.ts";
+import { watchPasswords } from "./password-watch.ts";
+import { editorPlainText } from "./field-text.ts";
+import { shadowRootOf } from "./shadow.ts";
 
 export const MAX_CONTROLS = 1000;
-const MAX_VALUE = 2000;
 const MAX_OPTIONS = 200;
 
 const CANDIDATE = "input, select, textarea, button, a[href], [role=button], [role=link], [role=checkbox], [role=radio], [role=switch], [role=combobox], [role=textbox], [contenteditable='' i], [contenteditable='true' i]";
@@ -29,19 +37,7 @@ export const SELF_IDENTIFICATION = /\b(self[- ]identif\w*|gender|sex|race|racial
  */
 export const selfIdentifying = (text: string): boolean => SELF_IDENTIFICATION.test(sectionName(text));
 
-/** Field names and ids that mark a card number or code even without autocomplete. */
-const PAYMENT_NAME = /\b(card.?number|cc.?(num|number|csc|cvc|cvv)|cvc|cvv|csc|security.?code)\b/i;
-
-/** An element's shadow root, open or closed. chrome.dom takes HTML elements only and throws on others (SVG). */
-export function shadowRootOf(el: Element): ShadowRoot | null {
-  if (el.shadowRoot !== null) return el.shadowRoot;
-  if (!(el instanceof HTMLElement) || typeof chrome === "undefined" || chrome.dom?.openOrClosedShadowRoot === undefined) return null;
-  try {
-    return (chrome.dom.openOrClosedShadowRoot(el) as ShadowRoot | null) ?? null;
-  } catch {
-    return null;
-  }
-}
+export { shadowRootOf } from "./shadow.ts";
 
 /** The control kind of an element, or null when it is not one Caret reads. */
 export function kindOf(el: Element): PageControlKind | null {
@@ -86,23 +82,16 @@ function ariaHidden(el: Element): boolean {
   return false;
 }
 
-/** Sensitive autocomplete tokens, on any control: a <select autocomplete="cc-exp-month"> is a card field too (W1 review #5). */
-function autocompleteExclusion(el: Element): PageExclusion | null {
-  const ac = (el.getAttribute("autocomplete") ?? "").toLowerCase();
-  if (/(^|\s)cc-/.test(ac)) return "payment";
-  if (/(^|\s)one-time-code(\s|$)/.test(ac)) return "oneTimeCode";
-  return null;
+/** Why `el`, called `name`, holds a password, a one-time code or card details, or null (content/secret.ts). */
+export function secretOf(el: Element, name: string): SecretKind | null {
+  return secretFieldOf(el, name);
 }
 
 /** Why a control must not leave the frame, or null. */
 export function exclusionOf(el: Element, name: string): PageExclusion | null {
-  if (el instanceof HTMLInputElement) {
-    if (el.type === "hidden") return "hidden";
-    if (el.type === "password") return "password";
-  }
-  const ac = autocompleteExclusion(el);
-  if (ac !== null) return ac;
-  if ((el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) && PAYMENT_NAME.test(`${el.name} ${el.id}`)) return "payment";
+  if (el instanceof HTMLInputElement && el.type === "hidden") return "hidden";
+  const secret = secretOf(el, name);
+  if (secret !== null) return secret;
   if (ariaHidden(el)) return "ariaHidden";
   if (!visible(el) && !visibleReactSelect(el) && !ownedFileInput(el)) return "invisible";
   if (selfIdentifying(name) || groupNames(el).some(selfIdentifying)) return "selfIdentification";
@@ -261,16 +250,37 @@ export function formIdentity(el: Element, forms: HTMLFormElement[] = [...documen
   return `form@${i < 0 ? "?" : i}`;
 }
 
-/** What the control holds as its value. A combobox's is the text it shows: react-select's chip, not its filter box. */
-export function valueOf(el: Element): string | undefined {
-  if (el.getAttribute("role") === "combobox" && !(el instanceof HTMLSelectElement)) return shownValue(el).slice(0, MAX_VALUE);
-  if (el instanceof HTMLInputElement) {
-    if (el.type === "checkbox" || el.type === "radio" || el.type === "file" || el.type === "submit" || el.type === "button" || el.type === "reset" || el.type === "image") return undefined;
-    return el.value.slice(0, MAX_VALUE);
-  }
-  if (el instanceof HTMLTextAreaElement) return el.value.slice(0, MAX_VALUE);
+/**
+ * The value a choice control sends: a select's selected option value, a range's or a color input's value. Undefined for
+ * every other control: a text control's text is read only through textOf, and never sent.
+ */
+export function choiceValueOf(el: Element): string | undefined {
   if (el instanceof HTMLSelectElement) return el.value;
+  if (el instanceof HTMLInputElement && (el.type === "range" || el.type === "color")) return el.value;
   return undefined;
+}
+
+/**
+ * A text control's text, for this frame only: an input's or a textarea's value, the text a combobox shows (react-select's
+ * chip, not its filter box), an editor's text nodes without embedded controls, secret fields and hidden subtrees
+ * (field-text.ts editorPlainText). Raw textContent would skip editorPlainText's style lookups on every walk of a large
+ * editor, but it holds a secret widget's text, which rev would then digest. The cost of reading a large editor this
+ * way on each walk is unmeasured. The one reader of a text control's text.
+ */
+export function textOf(el: Element, kind: PageControlKind): string {
+  if (kind === "combobox" && !(el instanceof HTMLSelectElement)) return shownValue(el);
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
+  // An editor is read as its own text nodes, never with a secret widget or another control inside it (field-text.ts),
+  // for its rev as for every comparison, so no secret's text is read or digested (Greptile, PR #52).
+  if (kind === "contenteditable" && el instanceof HTMLElement) return editorPlainText(el);
+  return "";
+}
+
+/** What the walk sends for a text control in place of its text (content/revs.ts presence). */
+export interface TextReading {
+  hasValue: boolean | null;
+  rev: number | null;
+  withheld?: Withheld;
 }
 
 export function checkedOf(el: Element): boolean | undefined {
@@ -295,7 +305,11 @@ export function* candidates(root: Document | ShadowRoot = document, shadow: "ope
       if (kind !== null) yield { el, kind, name: controlName(el, kind), shadow };
     }
     const sr = shadowRootOf(el);
-    if (sr !== null) yield* candidates(sr, sr.mode);
+    if (sr !== null) {
+      // Its password inputs stay secret from now on, whatever their type becomes (password-watch.ts).
+      watchPasswords(sr, false);
+      yield* candidates(sr, sr.mode);
+    }
   }
 }
 
@@ -316,7 +330,7 @@ export interface WalkOutput {
  * Walks the document. `idOf` gives each kept element its registry id (the same element keeps its id across walks);
  * `onKept` sees each kept element with the control it became.
  */
-export function walkControls(idOf: (el: Element) => string, onKept: (el: Element, c: PageControl) => void, entryOf: (el: Element, value: string) => PageControl["entry"] = () => undefined): WalkOutput {
+export function walkControls(idOf: (el: Element) => string, onKept: (el: Element, c: PageControl) => void, readText: (el: Element, kind: PageControlKind, secret: boolean) => TextReading, entryOf: (el: Element, value: string) => PageControl["entry"] = () => undefined, inputAtOf: (el: Element) => number | undefined = () => undefined): WalkOutput {
   const origin = location.origin;
   const forms = [...document.forms];
   const controls: PageControl[] = [];
@@ -331,6 +345,8 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     shadowRoot: shadowRootOf,
     assigned: (el) => (el instanceof HTMLSlotElement ? slotted(el) : null),
     excluded: (name) => SELF_IDENTIFICATION.test(name),
+    // A heading or label that holds a secret field is read without it, and one that is itself editable reads as none (secret-dom.ts).
+    text: outlineText,
   });
   for (const f of candidates()) {
     const why = exclusionOf(f.el, f.name);
@@ -351,27 +367,37 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     const ordinal = ordinals.get(base) ?? 0;
     ordinals.set(base, ordinal + 1);
     if (marked !== null) {
-      const c: PageControl = { id: idOf(f.el), key: `${base}~${ordinal}`, strongKey: null, kind: f.kind, role, name: f.name, form, rect: rectOf(f.el), excluded: marked };
+      const head = { id: idOf(f.el), key: `${base}~${ordinal}`, strongKey: null, role, name: f.name, form, rect: rectOf(f.el), excluded: marked };
+      // Never read: a secret field's text is not kept either (content.ts drops what was kept of it before).
+      const c: PageControl = isTextKind(f.kind) ? { ...head, kind: f.kind, hasValue: null, rev: null, withheld: "secret" } : { ...head, kind: f.kind };
       controls.push(c);
       onKept(f.el, c);
       continue;
     }
     const ident = authorIdentifier({ name: f.el.getAttribute("name"), id: f.el.getAttribute("id"), automationId: f.el.getAttribute("data-automation-id") });
-    const value = valueOf(f.el);
-    const checked = checkedOf(f.el);
-    const c: PageControl = {
+    const head = {
       id: idOf(f.el),
       key: `${base}~${ordinal}`,
       strongKey: strongKey(origin, form, ident, f.kind),
-      kind: f.kind,
       role,
       name: f.name,
-      ...(value === undefined ? {} : { value }),
-      ...(checked === undefined ? {} : { checked }),
       form,
       // An owned file input is where its owner is (W4).
       rect: rectOf(f.el instanceof HTMLInputElement && f.kind === "file" && !visible(f.el) ? (fileOwner(f.el) ?? f.el) : f.el),
     };
+    let c: PageControl;
+    if (isTextKind(f.kind)) {
+      const t = readText(f.el, f.kind, false);
+      const text: TextControl = { ...head, kind: f.kind, hasValue: t.hasValue, rev: t.rev };
+      if (t.withheld !== undefined) text.withheld = t.withheld;
+      c = text;
+    } else {
+      const value = choiceValueOf(f.el);
+      const checked = checkedOf(f.el);
+      const choice: ChoiceControl = { ...head, kind: f.kind, ...(value === undefined ? {} : { value }), ...(checked === undefined ? {} : { checked }) };
+      if (f.el instanceof HTMLSelectElement) choice.options = [...f.el.options].slice(0, MAX_OPTIONS).map((o) => ({ value: o.value, label: clean(o.label || o.text, 120), selected: o.selected }));
+      c = choice;
+    }
     const labelRect = labelRectOf(f.el);
     if (labelRect !== undefined) c.labelRect = labelRect;
     if (f.kind === "radio") {
@@ -384,7 +410,6 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       c.group = { id: idOf(press.container), name: press.question };
       c.pressed = f.el.getAttribute("aria-pressed") === "true";
     }
-    if (f.el instanceof HTMLSelectElement) c.options = [...f.el.options].slice(0, MAX_OPTIONS).map((o) => ({ value: o.value, label: clean(o.label || o.text, 120), selected: o.selected }));
     if ((f.el as HTMLInputElement).required === true || f.el.getAttribute("aria-required") === "true") c.required = true;
     if ((f.el as HTMLInputElement).disabled === true || f.el.getAttribute("aria-disabled") === "true") c.disabled = true;
     if (f.el.getAttribute("aria-invalid") === "true") c.invalid = true;
@@ -405,6 +430,9 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       if (token !== undefined) c.autocomplete = token;
     }
     if (f.shadow !== undefined) c.shadow = f.shadow;
+    // Issue #26: when the user's own input last reached it, which the helper's read after Stop checks.
+    const inputAt = inputAtOf(f.el);
+    if (inputAt !== undefined) c.inputAt = inputAt;
     const inside = outline.chains.get(f.el) ?? [];
     if (inside.length > 0) c.sections = inside;
     controls.push(c);

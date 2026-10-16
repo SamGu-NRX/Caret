@@ -29,6 +29,14 @@ if CommandLine.arguments.dropFirst().first == "--unregister" {
     exit(result.ok ? 0 : 1)
 }
 
+// `Caret --trust-probe` prints whether a fresh process of this app has Accessibility (`AXIsProcessTrusted`) and exits.
+// The onboarding debug hook `trust-probe` runs it beside the host's own answer: the VM after-runs saw a running host
+// stay untrusted after the grant until it was relaunched, and this tells a stale answer from a missing grant.
+if CommandLine.arguments.dropFirst().first == "--trust-probe" {
+    print(AXIsProcessTrusted())
+    exit(0)
+}
+
 var configuration = HostRuntime.Configuration()
 
 // Dev mode: `Caret --probe-typing <text>` times one generation per typed prefix.
@@ -58,6 +66,20 @@ if CommandLine.arguments.dropFirst().first == "--probe-length", CommandLine.argu
     MainActor.assumeIsolated {
         Task {
             print(await DevProbe.length(modelURL: modelURL, cases: cases, out: out, caps: caps, extend: extend, normalized: normalized), terminator: "")
+            exit(0)
+        }
+    }
+    RunLoop.main.run()
+}
+
+// Dev mode: `Caret --probe-rewrite <sentences.txt> <out.ndjson>` times the rewrite generator's modes.
+if CommandLine.arguments.dropFirst().first == "--probe-rewrite", CommandLine.arguments.count >= 4 {
+    let sentences = URL(fileURLWithPath: CommandLine.arguments[2])
+    let out = URL(fileURLWithPath: CommandLine.arguments[3])
+    let modelURL = configuration.modelURL
+    MainActor.assumeIsolated {
+        Task {
+            print(await DevProbe.rewrite(modelURL: modelURL, sentences: sentences, out: out), terminator: "")
             exit(0)
         }
     }
@@ -293,7 +315,12 @@ case .run(let mode):
     }
 }
 configuration.helperSocketPath = MainActor.assumeIsolated { services.helperSocket }
+// In memory only: the runtime's helper client proves with it that this Caret is the host (HostAuth).
+configuration.hostKey = MainActor.assumeIsolated { services.hostKey }
 
+// The engine's token profiles follow the home: a test run's --home keeps them out of the user's Library.
+configuration.profileDirectory = URL(fileURLWithPath: home.profilesDirectory(userHome: NSHomeDirectory()), isDirectory: true)
+configuration.modelDownloadDirectory = URL(fileURLWithPath: home.modelsDirectory(userHome: NSHomeDirectory()), isDirectory: true)
 let launchConfiguration = configuration
 let launchStatusItem = showsStatusItem
 let launchManifestDirectory = manifestDirectory

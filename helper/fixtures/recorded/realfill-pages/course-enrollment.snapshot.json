@@ -63,7 +63,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "First name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       555.2,
@@ -83,7 +84,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Middle name",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       555.2,
@@ -103,7 +105,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Last name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       555.2,
@@ -123,7 +126,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Preferred name (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       555.2,
@@ -143,7 +147,8 @@
      "kind": "date",
      "role": "textbox",
      "name": "Date of birth *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       555.2,
@@ -163,7 +168,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       555.2,
@@ -183,7 +189,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Phone *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       555.2,
@@ -203,7 +210,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Student ID (returning students)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       555.2,

@@ -69,6 +69,14 @@ export const Node = z.object({
   label: z.string().optional(),
   /** String value. Omitted when equal to label, and never present for secure fields. */
   value: z.string().optional(),
+  /**
+   * Page text fields only: the field holds text the page engine never sends (PageControl.hasValue true, or withheld while
+   * it holds some), so `value` is absent and says nothing about it. Fill reads such a field as filled, never empty
+   * (model.ts holdsText), and the page link refuses any write over it (engines/page-link.ts).
+   */
+  unread: z.literal(true).optional(),
+  /** Page text fields only: the page's change counter for the field (PageControl.rev); a different one is a change. */
+  rev: z.number().int().nonnegative().optional(),
   placeholder: z.string().optional(),
   frame: Frame.optional(),
   editable: z.literal(true).optional(),
@@ -77,6 +85,8 @@ export const Node = z.object({
   maxLength: z.number().int().nonnegative().optional(),
   /** S1, page text fields only: how the field's text was entered (PageEntry). */
   entry: PageEntry.optional(),
+  /** Issue #26, page controls only: when the user's own input last reached the control (PageControl.inputAt). */
+  inputAt: ms.optional(),
   /** H14, page file controls only: the accept attribute's tokens, lowercased. */
   accept: z.array(z.string().min(1).max(100)).max(20).optional(),
   /**
@@ -134,7 +144,8 @@ export const Hello = z
     version: z.string(),
     /**
      * A consumer that is the host app: only its session counts as "host connected", and only it keeps a run
-     * with no Tab alive (B23). Other consumers (evaluation scripts, the page engine) leave it out.
+     * with no Tab alive (B23). Other consumers (evaluation scripts, the page engine) leave it out. The helper answers
+     * it with hostChallenge and treats the connection as the host only after a valid hostProof (src/host-auth.ts).
      */
     host: z.literal(true).optional(),
     /**
@@ -397,6 +408,37 @@ export const HelperAuth = z.object({
 });
 export type HelperAuth = z.infer<typeof HelperAuth>;
 
+/**
+ * The helper's answer to a consumer hello with `host: true`, sent before anything else on that connection: base64 of
+ * 32 random bytes, fresh per connection and good for one proof. Until the host answers it with hostProof the helper
+ * grants the connection nothing and sends it nothing else (src/host-auth.ts).
+ */
+export const HostChallenge = z.object({
+  type: z.literal("hostChallenge"),
+  v: z.literal(PROTOCOL_VERSION),
+  nonce: z.string().min(16),
+});
+export type HostChallenge = z.infer<typeof HostChallenge>;
+
+/**
+ * The host's answer to hostChallenge, its next line after hello: base64 of HMAC-SHA256(hostKey, "caret-host-proof\n" +
+ * nonce), where hostKey is HMAC-SHA256(launch secret, "caret-host-key"). A wrong proof, any other line first, or none
+ * within 5 s closes the connection.
+ */
+export const HostProof = z.object({
+  type: z.literal("hostProof"),
+  v: z.literal(PROTOCOL_VERSION),
+  proof: z.string().min(1),
+});
+export type HostProof = z.infer<typeof HostProof>;
+
+/** The proof checked out: from here on the connection is the host, with the capabilities its hello listed. */
+export const HostAuthenticated = z.object({
+  type: z.literal("hostAuthenticated"),
+  v: z.literal(PROTOCOL_VERSION),
+});
+export type HostAuthenticated = z.infer<typeof HostAuthenticated>;
+
 export const VerbOutcome = z.enum([
   "ok",
   /** No live act grant covers this task, process and window, and the process is not in `--act-pids`; `detail` says which. */
@@ -476,6 +518,25 @@ export const UserInput = z.object({
 export type UserInput = z.infer<typeof UserInput>;
 
 /**
+ * A key the user pressed in a watched process that may have changed text (issue #26): sent with the window-level
+ * userInput for every key except Esc, which types nothing and is Caret's Stop key. It names the element the key went
+ * to, never the key: the element with keyboard focus as the reader last read it. `windowId` is null when the reader
+ * does not know which of the process's windows had focus; `key` is null when it does not know the element. Both
+ * are null from a Tab, or from Caret focusing a field for a write, until the reader reads where focus went. The executor counts it against a write whose
+ * answer was lost (executor.ts readUnconfirmed): typing in that field after the write was sent makes Caret's own value
+ * indistinguishable from the user's.
+ */
+export const FieldInput = z.object({
+  type: z.literal("fieldInput"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  pid: z.number().int(),
+  windowId: z.string().nullable(),
+  key: z.string().nullable(),
+});
+export type FieldInput = z.infer<typeof FieldInput>;
+
+/**
  * The user pressed something in a window under a press watch (B20): the pressable element under their
  * click, or the button a key pressed (B21), its role and its label as the reader last read it, and when the
  * button or key went down. `key` is the element's key in the window's latest walk, null when that walk did
@@ -500,7 +561,7 @@ export const UserPress = z.object({
 });
 export type UserPress = z.infer<typeof UserPress>;
 
-export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard, VerbResult, UserInput, UserPress]);
+export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard, VerbResult, UserInput, FieldInput, UserPress]);
 export type ReaderMessage = z.infer<typeof ReaderMessage>;
 
 /** Consumer asks for a fill proposal for the form around one field, without waiting for a focus event. */
@@ -1441,7 +1502,7 @@ export const SavedFilesRequest = z
   .refine((m) => (m.op === "forget") === (m.id !== undefined), { message: "forget names the file's id; list names none", path: ["id"] });
 export type SavedFilesRequest = z.infer<typeof SavedFilesRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, FirstLookPreviewRequest, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, FirstLookPreviewRequest, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked, HostProof]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -2299,6 +2360,15 @@ export const ASK_CHOICES_CAPABILITY = "askChoices";
  * values left to the user, as before, so a host that cannot draw value rows never receives one.
  */
 export const ASK_VALUES_CAPABILITY = "askValues";
+/**
+ * The hello capability for task questions (design CU-COUNSEL-20261009, "Floors become questions"): a consumer that
+ * declares it beside ASK_CHOICES_CAPABILITY may get an askQuestion whose part is `task`, when Jev's route question
+ * stopped between filling and a larger task and both can run. Any other consumer gets the Ask as before, read as a fill.
+ */
+export const ASK_TASK_CAPABILITY = "askTask";
+/** A task option's label and sentence, at most (AskOption kind task). */
+export const MAX_TASK_LABEL = 80;
+export const MAX_TASK_SAYS = 200;
 
 /**
  * One choice of an askQuestion, typed by what it fixes. `id` is the helper's, valid for that question only; the host
@@ -2306,7 +2376,9 @@ export const ASK_VALUES_CAPABILITY = "askValues";
  * heading). `window`: an open window to copy from, as the user knows it. `memory`: what the user told Caret about
  * themselves. `you`: the user's own details. `person`: someone named in the instruction or on screen. `value`: a value
  * for the question's field, exactly as Caret would put it in (`value`), and where Caret read it, in the user's words
- * (`source`: "Your saved Email", or a window's title and the line). `blank`: leave the field blank.
+ * (`source`: "Your saved Email", or a window's title and the line). `blank`: leave the field blank. `task`: one reading
+ * of what the user asked Caret to do, as a short `label` ("Fill 3 fields") and one sentence of what Caret then does and
+ * leaves to the user (`says`).
  */
 export const AskOption = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("field"), id: z.string().min(1), label: z.string().min(1), section: z.string().nullable() }),
@@ -2316,14 +2388,16 @@ export const AskOption = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("person"), id: z.string().min(1), name: z.string().min(1) }),
   z.object({ kind: z.literal("value"), id: z.string().min(1), value: z.string().min(1), source: z.string().min(1) }),
   z.object({ kind: z.literal("blank"), id: z.string().min(1) }),
+  z.object({ kind: z.literal("task"), id: z.string().min(1), label: z.string().min(1).max(MAX_TASK_LABEL), says: z.string().min(1).max(MAX_TASK_SAYS) }),
 ]);
 export type AskOption = z.infer<typeof AskOption>;
 
 /**
  * Helper to the asker, in place of a planProposal (B29): the Ask needs one part settled, and code listed that part's
  * real choices from the screen. `part` says which: `fields` (pick one or more), `source` (one window, or memory), `person` (whose
- * details) or `value` (which value goes in one field: its values, then exactly one `blank`; only to a consumer that
- * declared ASK_VALUES_CAPABILITY). `text` is the question as the user reads it. Answered with askAnswer naming
+ * details), `value` (which value goes in one field: its values, then exactly one `blank`; only to a consumer that
+ * declared ASK_VALUES_CAPABILITY) or `task` (which reading of the request: one `task` option each, at least two; only to a
+ * consumer that declared ASK_TASK_CAPABILITY). `text` is the question as the user reads it. Answered with askAnswer naming
  * `questionId` and the picks, once, before `expires`; the answer's reply is a planProposal or another askQuestion.
  * `window` is the form. `filling`, on a fields question, labels the fields Caret fills whatever is picked; with it, an
  * answer with no picks fills those alone, so the user can decline the offered fields without dismissing the Ask. On a
@@ -2336,7 +2410,7 @@ export const AskQuestion = z
     requestId: z.string(),
     at: ms,
     questionId: z.string().min(1),
-    part: z.enum(["fields", "source", "person", "value"]),
+    part: z.enum(["fields", "source", "person", "value", "task"]),
     text: z.string().min(1),
     pick: z.enum(["one", "many"]),
     options: z.array(AskOption).min(1).max(MAX_ASK_OPTIONS),
@@ -2345,7 +2419,7 @@ export const AskQuestion = z
     expires: ms,
   })
   .superRefine((m, ctx) => {
-    const kinds = { fields: ["field"], source: ["window", "memory"], person: ["you", "person"], value: ["value", "blank"] }[m.part];
+    const kinds = { fields: ["field"], source: ["window", "memory"], person: ["you", "person"], value: ["value", "blank"], task: ["task"] }[m.part];
     const pick = m.part === "fields" ? "many" : "one";
     const problem = m.pick !== pick
       ? `a ${m.part} question picks ${pick}`
@@ -2355,9 +2429,11 @@ export const AskQuestion = z
           ? `a ${m.part} question lists only ${kinds.join(" or ")} options`
           : m.part === "value" && (m.options.filter((o) => o.kind === "blank").length !== 1 || m.options.at(-1)?.kind !== "blank" || m.options.length < 2)
             ? "a value question lists its values, then one blank"
-            : new Set(m.options.map((o) => o.id)).size !== m.options.length
-              ? "option ids repeat"
-              : null;
+            : m.part === "task" && m.options.length < 2
+              ? "a task question lists at least two readings"
+              : new Set(m.options.map((o) => o.id)).size !== m.options.length
+                ? "option ids repeat"
+                : null;
     if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["options"] });
   });
 export type AskQuestion = z.infer<typeof AskQuestion>;
@@ -2488,6 +2564,13 @@ export const GoalStepView = z
     says: z.string().min(1).max(900),
     drafted: z.string().min(1).max(600).optional(),
     /**
+     * The trust tier the step is in (design CU-COUNSEL-20261009, "Tiers"), so a host draws each row by what it risks:
+     * `navigate` a press Caret makes from the capability table; `write` a value written, or a field handed to the user to
+     * set; `attach` a file; `yours` a press handed to the user (send, submit, delete, pay), which Caret never makes and
+     * a host draws last and set apart. `read` is reserved for steps that only read. Absent from a helper before it.
+     */
+    tier: z.enum(["read", "navigate", "write", "attach", "yours"]).optional(),
+    /**
      * P3: on an attach step only, the file its row offers. `choose`: none yet; the host's row says "Choose a file" and
      * opens a file chooser. `saved`: a file the user saved for this question before (fileSave), which a Jev choice matched
      * to this field; the row shows its `name` and when it was last `edited` (its modification time, so a stale resume
@@ -2563,8 +2646,9 @@ const GoalHead = {
 /**
  * Helper to a host that declared GOAL_PLANS_CAPABILITY (D2-06). `segment`: a segment waits for the user's acceptance
  * (goalAccept with this `digest`) until `expires`; `reason` says why it is separate (`start`, `crossWindow`: another
- * window or the calendar, `afterReveal`: a press showed new fields, `freshPlan`: replanned after a stop, `nextPage`
- * (P3): the user's own Next took the page to a new document, and a goal whose scope was the whole form or a section was
+ * window or the calendar, `afterReveal`: a press, or a page goal's own writes, showed new fields, `freshPlan`:
+ * replanned after a stop, `nextPage` (P3): the user's own Next took the page to a new document, and a goal whose scope
+ * was the whole form or a section was
  * planned again there, its values chosen afresh from the sources as they read now, `moreFields` (C2): the next part of
  * a page form over 20 fields, at most 20 more of its fields, which the goal planned with the rest and runs only on this
  * segment's own acceptance) and `replaces` names the goal it was
@@ -2608,6 +2692,12 @@ export const GoalProgress = z.discriminatedUnion("event", [
     reason: GoalStopReason,
     says: z.string().min(1).max(600),
     freshPlan: z.string().min(1).max(240).nullable(),
+    /**
+     * The executor task that ran in the stopped segment, when one did: its writes are in that task's undo ledger, though a
+     * write that landed and never read back has no verified receipt to name it (Codex review on #22). Absent when the stop
+     * came before any task ran (a precheck at acceptance, a reload), so a host never offers an undo of a task that isn't.
+     */
+    taskId: z.string().min(1).max(240).optional(),
   }),
   z
     .object({
@@ -2750,6 +2840,7 @@ export type SavedFilesReply = z.infer<typeof SavedFilesReply>;
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, FirstLookPreview, PlanProposal, SkillOffer,
   PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply, PageInsertReply, SavedFilesReply,
+  HostChallenge, HostAuthenticated,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -2843,25 +2934,29 @@ export const PAGE_CHECKED = "checked";
 export const PageRect = z.tuple([z.number(), z.number(), z.number(), z.number()]);
 
 /**
- * One visible interactive control. Never a password, hidden, credit-card or one-time-code input, nor anything
- * hidden, zero-size, off-screen or aria-hidden, nor a consent or self-identification group: the content
- * script drops those before anything leaves the frame and counts them only in PageFrame.excluded.
+ * Text controls (extension shared/messages.ts TEXT_CONTROL_KINDS): every input that holds typed text, a textarea, a
+ * combobox's text and a contenteditable region. Their value never leaves the content script (counsel 2026-10-09).
  */
-export const PageControl = z.object({
+export const TEXT_CONTROL_KINDS = ["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea", "combobox", "contenteditable"] as const;
+export const TextControlKind = z.enum(TEXT_CONTROL_KINDS);
+export type TextControlKind = z.infer<typeof TextControlKind>;
+export const isTextKind = (k: PageControlKind): k is TextControlKind => (TEXT_CONTROL_KINDS as readonly string[]).includes(k);
+
+/** Why a text control's text is withheld (extension content/revs.ts): from hasValue and rev, the focused text, compares and copies. */
+export const PageWithheld = z.enum(["secret", "unknownHistory", "replacement", "prefilled", "programmatic"]);
+export type PageWithheld = z.infer<typeof PageWithheld>;
+
+const PageControlBase = {
   /** The frame's registry id for the element: valid only in this document (PageFrame.documentId). */
   id: z.string().min(1),
   /** Structural key (ancestors, role, name, ordinal). Fills Node.key; never a basis for rebinding. */
   key: z.string().min(1),
   /** JSON array (origin, form, name|id|data-automation-id, kind) when the page author named it; null for a generated or missing identifier. */
   strongKey: z.string().nullable(),
-  kind: PageControlKind,
   /** The ARIA role the control has or implies. */
   role: z.string().min(1),
   /** The accessible name the user sees. */
   name: z.string(),
-  value: z.string().optional(),
-  checked: z.boolean().optional(),
-  options: z.array(z.object({ value: z.string(), label: z.string(), selected: z.boolean() })).optional(),
   /** The form identity the strong key uses; null outside a form. */
   form: z.string().nullable(),
   rect: PageRect,
@@ -2885,6 +2980,13 @@ export const PageControl = z.object({
   maxLength: z.number().int().nonnegative().optional(),
   /** S1: how a text input's or textarea's text was entered since it was last empty (PageEntry); absent when no edit was seen. */
   entry: PageEntry.optional(),
+  /**
+   * Issue #26: when the user's own input last reached the control, on the frame's wall clock: a trusted beforeinput or
+   * input event on it or inside it, or a trusted key going down while it or an element inside it had focus, other than
+   * Esc (extension content/user-input.ts). Noted only while a grant covers the frame and for 30 s after it ends; absent
+   * when there was none in the last 30 s. Nothing about the input travels. The executor counts it against a write whose answer was lost (executor.ts readUnconfirmed).
+   */
+  inputAt: ms.optional(),
   /** H14, page file controls only: the accept attribute's tokens, lowercased. */
   accept: z.array(z.string().min(1).max(100)).max(20).optional(),
   /** W2: the autocomplete attribute's field name (extension walker.ts autocompleteOf), which the write contract reads. */
@@ -2900,7 +3002,41 @@ export const PageControl = z.object({
    * content/sections.ts). Absent when it is in none.
    */
   sections: z.array(z.string().min(1).max(40)).max(8).optional(),
+};
+
+/**
+ * A text control as the walk sends it: whether it holds text and the page's change counter for it, never its text.
+ * Both are null while its text is withheld and it holds some, and for a secret field always. A `value`, `checked` or
+ * `options` here is refused, loudly, with the whole snapshot: no path may carry a text control's text.
+ */
+export const TextPageControl = z.object({
+  ...PageControlBase,
+  kind: TextControlKind,
+  hasValue: z.boolean().nullable(),
+  rev: z.number().int().nonnegative().nullable(),
+  withheld: PageWithheld.optional(),
+  value: z.never({ error: "a text control's value never leaves the page (counsel 2026-10-09)" }).optional(),
+  checked: z.never().optional(),
+  options: z.never().optional(),
 });
+export type TextPageControl = z.infer<typeof TextPageControl>;
+
+/** A select, checkbox, radio, button, link, file, range or color control: its state is page state, sent as before. */
+export const ChoicePageControl = z.object({
+  ...PageControlBase,
+  kind: PageControlKind.exclude(TEXT_CONTROL_KINDS),
+  value: z.string().optional(),
+  checked: z.boolean().optional(),
+  options: z.array(z.object({ value: z.string(), label: z.string(), selected: z.boolean() })).optional(),
+});
+export type ChoicePageControl = z.infer<typeof ChoicePageControl>;
+
+/**
+ * One visible interactive control. Never a password, hidden, credit-card or one-time-code input, nor anything
+ * hidden, zero-size, off-screen or aria-hidden, nor a consent or self-identification group: the content
+ * script drops those before anything leaves the frame and counts them only in PageFrame.excluded.
+ */
+export const PageControl = z.union([TextPageControl, ChoicePageControl]);
 export type PageControl = z.infer<typeof PageControl>;
 
 /** Why controls were left out, by count only: what they were called or held never leaves the frame. */
@@ -2984,6 +3120,8 @@ export const PageSnapshot = z.object({
       caret: Frame.nullable().optional(),
       /** H13 review: the focused control's document has focus (not the browser's address bar, nor another window). */
       hasFocus: z.boolean().optional(),
+      /** Why the field's text, caret and selection were withheld (PageWithheld); absent when they were not. */
+      withheld: PageWithheld.optional(),
     })
     .nullable(),
   /**
@@ -3049,14 +3187,16 @@ const PageTarget = {
  * The helper asks the engine to read or act. `pageWalk` reads a tab (null: the active tab of the focused
  * browser window) and answers with a pageSnapshot, then a pageResult. Every other verb acts on one element
  * under a live ScopedActGrant for its task, after the worker's check (task, tab, frame, origin, navGen,
- * expiry, revocation) and the content script's (element alive or strongly rebound, kind, name, value before).
- * `pageWrite` sets a text control: `expect` is the value it must hold right before. `pageSelect` picks the
+ * expiry, revocation) and the content script's (element alive or strongly rebound, kind, name, state before).
+ * `pageWrite` sets a text control: `expectRev` is the rev the walk read (PageControl.rev), which the field must still
+ * have; its text never travels either way. `pageSelect` picks the
  * option of a native <select> whose value is `value`; `expect` is the selected value before. `pageSetChecked`
  * sets a checkbox or radio. `pagePress` is always a hand-off in v1: the engine names the risk and leaves the press to
  * the user, without touching the page.
  *
- * `pageChooseOption` picks an option of a custom listbox (generic ARIA or react-select, memo section 2): `expect` is
- * the text the control shows before (react-select's chip, an ARIA combobox's own value), `value` the option's name.
+ * `pageChooseOption` picks an option of a custom listbox (generic ARIA or react-select, memo section 2): `expectRev` is
+ * the rev the walk read of the control's shown text (react-select's chip, an ARIA combobox's own value), which never
+ * leaves the page, and `value` the option's name.
  * The handler opens the control, types `value` as the filter, and picks only an option whose normalized name
  * equals it; zero or several such options stop it with their names in `choice.matches`. Its mousedown, click and
  * keys land only on the control it was given and that control's own listbox options: the one exception to "every
@@ -3072,7 +3212,21 @@ const PageTarget = {
  * DataTransfer. `file.data` is the whole file, base64; a line over Chrome's 1 MB frame reaches the extension as
  * pageChunk parts. The worker checks `size` and `sha256` against the bytes before the page sees them. The helper
  * builds this verb only from the file the user confirmed for the run (engines/attach.ts).
+ *
+ * `pageRestore` is the undo of Caret's own text write (counsel 2026-10-09): the content script kept the field's text
+ * before the write, keyed by task and control id, and restores it in one page-side step only while the field is the
+ * element Caret wrote, its rev is the one the write left, no trusted input of the user's reached it, and its text is
+ * equivalent to `wrote` (values/equivalent.ts). The helper never holds that `before`.
+ *
+ * `pageCompare` asks whether a text control holds each candidate, whole: equal, equivalent under the element's own kind,
+ * different, or unknown (a withheld field, a candidate under 3 code points, or over the budget: 8 per control and 64 per
+ * document per task in the page, 256 per origin per hour in the worker). Only engines/page-compare.ts sends it.
+ *
+ * No verb reads a field's text out of the page. The counsel's `pageSourceGrant`, for a copy from a window the user
+ * picked as the source, waits for that pick flow: engines/page-source.ts refuses by name until then, and the extension
+ * refuses the verb.
  */
+export const MAX_COMPARE_CANDIDATES = 8;
 export const PageVerb = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pageWalk"), tabId: z.number().int().nonnegative().nullable() }),
   /**
@@ -3083,10 +3237,17 @@ export const PageVerb = z.discriminatedUnion("kind", [
    */
   z.object({ kind: z.literal("pageInsertText"), ...PageTarget, expect: z.string().max(FIELD_BEFORE_MAX), text: z.string().min(1).max(FIELD_BEFORE_MAX), replace: z.number().int().min(0).max(FIELD_BEFORE_MAX).optional() })
     .refine((m) => (m.replace ?? 0) <= m.expect.length, { message: "replace exceeds the text before the caret", path: ["replace"] }),
-  z.object({ kind: z.literal("pageWrite"), ...PageTarget, expect: z.string(), value: z.string() }),
+  z.object({ kind: z.literal("pageWrite"), ...PageTarget, expectRev: z.number().int().nonnegative(), value: z.string() }),
   z.object({ kind: z.literal("pagePress"), ...PageTarget }),
   z.object({ kind: z.literal("pageSelect"), ...PageTarget, expect: z.string(), value: z.string() }),
-  z.object({ kind: z.literal("pageChooseOption"), ...PageTarget, expect: z.string(), value: z.string(), question: z.string().min(1).optional() }),
+  /** A combobox names `expectRev`; a press-group option (control "button", W4) names `expect`, the answer pressed before. */
+  /** `wrote`: an undo's clear of a combobox (value ""), Caret's own pick, which the page requires the control still shows. */
+  z.object({ kind: z.literal("pageChooseOption"), ...PageTarget, expectRev: z.number().int().nonnegative().optional(), expect: z.string().optional(), value: z.string(), question: z.string().min(1).optional(), wrote: z.string().optional() })
+    .refine((m) => (m.control === "combobox" ? m.expectRev !== undefined && m.expect === undefined : m.expect !== undefined && m.expectRev === undefined), { message: "a combobox names expectRev, a press-group option expect", path: ["expect"] })
+    .refine((m) => m.wrote === undefined || (m.value === "" && m.sameAs !== undefined), { message: "wrote comes only with an undo's clear", path: ["wrote"] }),
+  /** `exact`: the field must hold exactly `wrote`, S1's rule for a write whose answer was lost; else equivalent under its kind. */
+  z.object({ kind: z.literal("pageRestore"), ...PageTarget, wrote: z.string(), exact: z.literal(true).optional() }),
+  z.object({ kind: z.literal("pageCompare"), ...PageTarget, candidates: z.array(z.string()).min(1).max(MAX_COMPARE_CANDIDATES) }),
   z.object({ kind: z.literal("pageSetChecked"), ...PageTarget, checked: z.boolean() }),
   z.object({
     kind: z.literal("pageAttachFile"),
@@ -3138,20 +3299,41 @@ export const PageOutcome = z.enum([
 ]);
 export type PageOutcome = z.infer<typeof PageOutcome>;
 
-/** The two readings a write is judged on, and what the page said about the field after blur. */
-export const PageWriteReadings = z.object({
-  before: z.string(),
-  afterInput: z.string(),
-  afterBlur: z.string(),
-  invalid: z.boolean(),
-  /** The error text aria-describedby or aria-errormessage pointed at after blur, clipped; null when none. */
-  error: z.string().nullable(),
+/**
+ * What a write found, computed in the page (counsel 2026-10-09), so no text of the field travels: `sameAsBefore`, the
+ * field holds exactly what it held before; `landed`, exactly what Caret wrote; `equivalent`, what Caret wrote under the
+ * element's own kind (values/equivalent.ts); `empty`, nothing; `typedBetween`, a trusted event of the user's reached it
+ * while Caret wrote; `rev`, its change counter after the write, null for a choice control (a select, a Yes/No question).
+ */
+export const PageWriteReadings = z.strictObject({
+  sameAsBefore: z.boolean(),
+  landed: z.boolean(),
+  equivalent: z.boolean(),
+  empty: z.boolean(),
+  typedBetween: z.boolean(),
+  rev: z.number().int().nonnegative().nullable(),
 });
 export type PageWriteReadings = z.infer<typeof PageWriteReadings>;
 
 /**
- * What pageChooseOption found and checked. The readings carry the control's shown text (before, after the pick,
- * after blur). `matches`: the names of the options whose normalized name equals the value, or, when none does,
+ * pageRestore's answer: restored, with the field's rev after it, or refused and why. `changed`: the field holds other
+ * text than Caret wrote, or its rev moved; `mayIncludeInput`: a trusted input of the user's reached it since; `gone`: the
+ * element Caret wrote is not there; `reloaded`: the frame holds another document; `noRecord`: the page keeps no record of
+ * that write (it forgot it past its bound, or never made it).
+ */
+export const PageRestored = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("restored"), rev: z.number().int().nonnegative() }),
+  z.object({ outcome: z.literal("refused"), why: z.enum(["changed", "mayIncludeInput", "gone", "reloaded", "noRecord"]) }),
+]);
+export type PageRestored = z.infer<typeof PageRestored>;
+
+/** pageCompare's answer for one candidate. */
+export const PageCompareAnswer = z.enum(["equal", "equivalent", "different", "unknown"]);
+export type PageCompareAnswer = z.infer<typeof PageCompareAnswer>;
+
+/**
+ * What pageChooseOption found and checked. The readings are the page's own booleans about the control's shown text
+ * (before, after the pick, after blur), never the text. `matches`: the names of the options whose normalized name equals the value, or, when none does,
  * those that contain it; exactly one exact match is picked, anything else stops with these named. `expanded`:
  * aria-expanded on the control at the end (null when it has none). `hiddenInput`: react-select's hidden form input
  * took a new, non-empty value (`set`), did not (`unchanged`), or the control has none (`none`); its value never
@@ -3241,11 +3423,22 @@ export const PageResult = z
      * The page leaves either as it is; nothing is undone.
      */
     insert: z.enum(["unchanged", "unverified"]).optional(),
+    /** pageRestore only. */
+    restore: PageRestored.optional(),
+    /**
+     * The registry id of the element an act reached through a strong-key rebind (a replacement of the walked one), valid
+     * in the frame's document, so the helper keeps what it knows of the field under the element Caret wrote.
+     */
+    reboundTo: z.string().min(1).optional(),
+    /** pageCompare only, with outcome ok: one answer per candidate, in order. */
+    compare: z.array(PageCompareAnswer).max(MAX_COMPARE_CANDIDATES).optional(),
   })
   .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] })
   .refine((r) => r.pageChanged === undefined || (r.outcome === "failed" && r.readings === undefined), { message: "pageChanged comes with outcome failed and no readings", path: ["pageChanged"] })
   .refine((r) => r.text === undefined || r.outcome === "ok", { message: "text comes with outcome ok", path: ["text"] })
-  .refine((r) => r.insert === undefined || r.outcome === "failed", { message: "insert comes with outcome failed", path: ["insert"] });
+  .refine((r) => r.insert === undefined || r.outcome === "failed", { message: "insert comes with outcome failed", path: ["insert"] })
+  .refine((r) => r.compare === undefined || r.outcome === "ok", { message: "compare comes with outcome ok", path: ["compare"] })
+  .refine((r) => r.restore?.outcome !== "restored" || r.outcome === "ok", { message: "a restore comes with outcome ok", path: ["restore"] });
 export type PageResult = z.infer<typeof PageResult>;
 
 /** The worker's first message once the bridge says the engine is ready. One per worker instance and connection. */

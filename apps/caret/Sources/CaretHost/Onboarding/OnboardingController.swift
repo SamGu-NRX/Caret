@@ -43,7 +43,7 @@ final class OnboardingController {
 
     let mode: Mode
     private let testHooks: Bool
-    private let store: SettingsStore
+    let store: SettingsStore
     /// Where `OnboardingProgress` is kept: beside the settings file, so a test run with its own settings never reads
     /// or writes the user's.
     private let progressPath: String?
@@ -95,6 +95,35 @@ final class OnboardingController {
         self.store = store
         self.progressPath = progressPath
         store.observe { [weak self] settings in self?.flow?.send(.settingsChanged(settings)) }
+        // A hold left by an undecided onboarding (Set up later, a quit) lasts across launches until Send or Keep: the
+        // consent pane promised nothing leaves before then (Codex on PR #17).
+        if progress?.heldRoles != nil { store.rolesCap = [.words] }
+    }
+
+    /// A preview request held while the helper restarts, and what decides when it goes.
+    private var restartGate = HelperRestartGate()
+    private var heldPreview: (id: String, families: [String], level: CaretLevel)?
+
+    /// The helper connection went down or came up (HostRuntime's link). A held preview goes once the new helper is up.
+    func helperLinkChanged(_ up: Bool) {
+        restartGate.link(up: up)
+        if up { sendHeldPreview() }
+    }
+
+    private func sendHeldPreview() {
+        guard let held = heldPreview, !restartGate.holds(at: ProcessInfo.processInfo.systemUptime) else { return }
+        heldPreview = nil
+        if !sendPreview(held.id, held.families, held.level) { flow?.send(.previewFailed(requestId: held.id, "helperNotConnected")) }
+    }
+
+    /// The cloud roles are held: the menu shows them as unavailable (`RoleMenu`).
+    var holdsCloudRoles: Bool { store.rolesCap != nil }
+
+    /// The menu's held role: setup opens where the hold is decided, the "Caret is on" step, or the switch first when
+    /// Caret can't see apps yet.
+    func openToFinishSetup() {
+        let trusted = readPermissions().accessibility
+        open(drawing: true, opening: OnboardingLaunch.Opening(step: trusted ? .on : .access, reopened: true))
     }
 
     private var drawsWindow = false
@@ -129,16 +158,28 @@ final class OnboardingController {
     /// that ask the cloud model are held (written down first, so a relaunch holds the same ones) and given back on
     /// Send. Returns the roles the flow looks with.
     private func holdCloudRoles() -> Set<CaretRole> {
-        if let held = progress?.heldRoles ?? heldRoles { return Set(held.compactMap(CaretRole.init(rawValue:))) }
-        let roles = store.settings.roles
-        // Kept here as well as in the file, so a run whose progress cannot be written never loses the roles.
-        heldRoles = roles.map(\.rawValue).sorted()
-        updateProgress { $0.heldRoles = roles.map(\.rawValue).sorted() }
+        let roles: Set<CaretRole>
+        if let held = progress?.heldRoles ?? heldRoles {
+            roles = Set(held.compactMap(CaretRole.init(rawValue:)))
+        } else {
+            roles = store.settings.roles
+            // Kept here as well as in the file, so a run whose progress cannot be written never loses the roles.
+            heldRoles = roles.map(\.rawValue).sorted()
+            updateProgress { $0.heldRoles = roles.map(\.rawValue).sorted() }
+        }
+        // Always, even when resuming from a saved snapshot: Caret may have stopped after saving progress but before
+        // saving settings, and the live roles must be words only until the person decides (Greptile on PR #17). The cap
+        // keeps them so while onboarding is open, whatever the menu turns on (Codex on PR #17).
+        store.rolesCap = [.words]
         store.update(source: .onboarding) { $0.roles = $0.roles.intersection([.words]) }
         return roles
     }
 
     private func decided(sent: Bool) {
+        store.rolesCap = nil
+        // Keep means the cloud roles are off, with or without a held snapshot: an onboarded person reopening the pane
+        // from the menu was never held, and Keep left their cloud roles on while the pane said off (Greptile on PR #17).
+        if !sent { store.update(source: .onboarding) { $0.roles = $0.roles.intersection([.words]) } }
         guard let held = progress?.heldRoles ?? heldRoles else { return }
         if sent { store.update(source: .onboarding) { $0.roles = Set(held.compactMap(CaretRole.init(rawValue:))) } }
         heldRoles = nil
@@ -233,6 +274,7 @@ final class OnboardingController {
 
     /// Ends the window and polling. An unfinished flow is dropped; its progress file says where to resume.
     func close() {
+        // Closed undecided (Set up later) keeps the cap: the menu offers to finish setup instead.
         stopPolling()
         stopGrantDetection()
         completion?.cancel()
@@ -258,7 +300,16 @@ final class OnboardingController {
     func receive(_ reply: FirstLookReply) { flow?.send(.firstLookReply(reply)) }
 
     /// The helper heard a page engine say hello: the extension is connected through the bridge.
-    func browserConnected() { flow?.send(.browserConnected) }
+    func browserConnected(_ name: String?) { flow?.send(.browserConnected(name)) }
+
+    /// What Add to <browser> did: a failure goes back to the step, which says why and offers Add again.
+    func browserAddFinished(ok: Bool, message: String, opened: String?) {
+        if !ok {
+            flow?.send(.browserAddFailed(message))
+        } else if let opened {
+            flow?.send(.browserOpened(opened))
+        }
+    }
 
     /// Installed Chromium browsers, the default one first: those Caret's bridge trusts and those it does not yet.
     static func readBrowsers() -> OnboardingFlow.Event {
@@ -303,7 +354,13 @@ final class OnboardingController {
             followFrame()
         case .finished:
             store.update(source: .onboarding) { $0.onboarded = true }
-            if drawsWindow, registersLoginItemLater() { onLoginItemDue() }
+            // The login item's copy reads `onboarded` from disk: if the write failed it would open onboarding again and
+            // hand off again. This copy keeps running instead, and says why in the host log.
+            if store.lastWriteFailed {
+                FileHandle.standardError.write(Data("caret: onboarding finished but settings were not saved (\(store.loadError ?? "unknown")); the login item waits\n".utf8))
+            } else if drawsWindow, registersLoginItemLater() {
+                onLoginItemDue()
+            }
         case .saveProgress(let step):
             saveProgress(step)
         case .addToBrowser:
@@ -325,8 +382,12 @@ final class OnboardingController {
             // macOS's alert is what first puts Caret in the list; after that it shows nothing, so only the pane opens.
             if AccessibilityAccess.shouldPrompt(asked: progress?.axAsked == true, trusted: AXIsProcessTrusted()) {
                 updateProgress { $0.axAsked = true }
+                // Caret in front first: from the login item or a launch behind another app, macOS's alert otherwise
+                // opened behind the front app, where a person can miss it (after-run 263afe5, stale leg).
+                NSApp.activate(ignoringOtherApps: true)
                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(options)
+                bringAlertForward()
             }
             openedSettingsAt = Date()
             Self.openAccessibilityPane()
@@ -343,10 +404,22 @@ final class OnboardingController {
             let complete = self.complete
             completion = Task { @MainActor [weak self] in
                 let ghost = await complete(text)
-                guard !Task.isCancelled else { return }
-                self?.flow?.send(.ghost(requestId: id, text: ghost))
+                guard !Task.isCancelled, let self else { return }
+                // Complete words may have gone off while the model answered, and the flow hears that only at the next
+                // poll. Telling it first drops the request, so the answer can't show or be taken (Codex on #30).
+                let readiness = self.readModel()
+                if readiness != self.flow?.state.hello.model { self.flow?.send(.model(readiness)) }
+                self.flow?.send(.ghost(requestId: id, text: ghost))
             }
         case .askPreview(let id, let families, let level):
+            // Saving a key restarts the helper: the preview waits for the new one (HelperRestartGate).
+            if restartGate.holds(at: ProcessInfo.processInfo.systemUptime) {
+                heldPreview = (id, families, level)
+                DispatchQueue.main.asyncAfter(deadline: .now() + HelperRestartGate.waitLimit) { [weak self] in
+                    MainActor.assumeIsolated { self?.sendHeldPreview() }
+                }
+                return
+            }
             if !sendPreview(id, families, level) { flow?.send(.previewFailed(requestId: id, "helperNotConnected")) }
         case .checkJevKey(let key):
             checkJevKey(key)
@@ -384,7 +457,10 @@ final class OnboardingController {
             var saved = false
             if outcome.keepsKey, self?.jevKeyGeneration == generation {
                 saved = hooks.save(key.reveal)
-                if saved { hooks.saved() }
+                if saved {
+                    self?.restartGate.restartRequested(at: ProcessInfo.processInfo.systemUptime)
+                    hooks.saved()
+                }
             }
             guard let self, let flow = self.flow, flow === asking else { return }
             flow.send(.jevKeyChecked(outcome, saved: saved))
@@ -429,6 +505,20 @@ final class OnboardingController {
         return unique.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// macOS's Accessibility alert belongs to its own process (universalAccessAuthWarn), which can open behind the front
+    /// app. Brings that process forward once its window is up: checked every 0.1 s for up to 2 s after the ask.
+    private func bringAlertForward(attempt: Int = 0) {
+        let alert = NSWorkspace.shared.runningApplications.first { $0.executableURL?.lastPathComponent == "universalAccessAuthWarn" }
+        if let alert, !alert.isTerminated {
+            alert.activate()
+            return
+        }
+        guard attempt < 20 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            MainActor.assumeIsolated { self?.bringAlertForward(attempt: attempt + 1) }
+        }
+    }
+
     /// Removes Caret's own Accessibility entry (never another app's: `AccessibilityAccess.resetArguments`), forgets
     /// that macOS was asked, and opens the pane again, alert first, so Caret goes back into the list.
     private func resetOwnGrant() {
@@ -466,6 +556,7 @@ final class OnboardingController {
     /// Settings has not shown its window within 6 s, or closes before the switch, the window comes back as the guide.
     private func startDragPanel() {
         dragPanel.onSettingsClosed = { [weak self] in self?.showGuideWindow() }
+        dragPanel.onDismissed = { [weak self] in self?.showGuideWindow() }
         // The panel's first appearance travels from where Caret's window was.
         dragPanel.start(from: window?.isVisible == true ? window?.frame : nil)
         window?.orderOut(nil)
@@ -727,11 +818,13 @@ final class OnboardingController {
     ///   onboarding type <text...>                  (the Hello field's whole text)
     ///   onboarding key tab|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other
     ///   onboarding permissions on|off on|off      (Accessibility, Input Monitoring)
-    ///   onboarding model ready|loading|unavailable
-    ///   onboarding browsers none|<name...>       onboarding browser-connected    onboarding skip-browser
+    ///   onboarding model ready|loading|unavailable|off
+    ///   onboarding browsers none|<name...>       onboarding browser-connected [<name...>]    onboarding skip-browser
     ///   onboarding preview empty|fail|<n windows>  (a stand-in preview for the open request)
     ///   onboarding tab-owners none|<name...>      onboarding reply <firstLookReply json>
     ///   onboarding jev-key <text>
+    ///   onboarding trust-probe                    (this host's AXIsProcessTrusted beside a fresh `Caret --trust-probe`'s)
+    ///   onboarding reset-probe                    (`tccutil reset Accessibility dev.caret.host` from this process: exit, output)
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -742,6 +835,8 @@ final class OnboardingController {
         guard words.count > 1 else { return reply() }
         guard testHooks else { return #"{"error":"onboarding commands are test hooks: start the host with --test-hooks"}"# }
         let rest = Array(words.dropFirst())
+        if rest == ["trust-probe"] { return Self.trustProbe() }
+        if rest == ["reset-probe"] { return Self.resetProbe() }
         if rest.first == "open" {
             let step = rest.count > 1 ? OnboardingStep(rawValue: rest[1]) : nil
             if rest.count > 1, step == nil { return #"{"error":"usage: onboarding open [hello|access|on|first]"}"# }
@@ -757,7 +852,7 @@ final class OnboardingController {
         case ("keep", 1): flow.send(.keep)
         case ("help", 1): flow.send(.toggleHelp)
         case ("skip-browser", 1): flow.send(.skipBrowser)
-        case ("browser-connected", 1): flow.send(.browserConnected)
+        case ("browser-connected", _): flow.send(.browserConnected(rest.count > 1 ? rest.dropFirst().joined(separator: " ") : nil))
         case ("browsers", _) where rest.count >= 2:
             flow.send(.browsers(trusted: rest[1] == "none" ? [] : Array(rest.dropFirst()), untrusted: []))
         case ("accept", 1): flow.send(.accept)
@@ -785,7 +880,8 @@ final class OnboardingController {
             case "ready": modelOverride = .ready
             case "loading": modelOverride = .loading(nil)
             case "unavailable": modelOverride = .unavailable
-            default: return #"{"error":"usage: onboarding model ready|loading|unavailable"}"#
+            case "off": modelOverride = .off
+            default: return #"{"error":"usage: onboarding model ready|loading|unavailable|off"}"#
             }
             poll()
         case ("preview", 2):
@@ -815,6 +911,49 @@ final class OnboardingController {
             return #"{"error":"unknown onboarding command"}"#
         }
         return reply()
+    }
+}
+
+extension OnboardingController {
+    /// Runs Caret's own reset from this process, as `resetOwnEntries` does, and returns its exit status and output with
+    /// this process's pid and parent (launchd's 1 for the login item). A test hook for finding where the reset takes:
+    /// in the VM it exited 0 from the app and left the entry.
+    static func resetProbe() -> String {
+        guard let args = try? AccessibilityAccess.resetArguments(service: "Accessibility", bundleID: Bundle.main.bundleIdentifier) else {
+            return #"{"error":"not dev.caret.host"}"#
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch {
+            return "{\"error\":\(HostRuntime.jsonString(String(describing: error)))}"
+        }
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        return "{\"exit\":\(p.terminationStatus),\"out\":\(HostRuntime.jsonString(out)),\"pid\":\(getpid()),\"ppid\":\(getppid())}"
+    }
+
+    /// This process's Accessibility answer and a fresh child's (`Caret --trust-probe`), as JSON. A test hook: it blocks
+    /// the main thread for the child's run, about a tenth of a second.
+    static func trustProbe() -> String {
+        let own = AXIsProcessTrusted()
+        guard let exe = Bundle.main.executableURL else { return #"{"error":"no executable"}"# }
+        let child = Process()
+        child.executableURL = exe
+        child.arguments = ["--trust-probe"]
+        let pipe = Pipe()
+        child.standardOutput = pipe
+        child.standardError = FileHandle.nullDevice
+        do { try child.run() } catch {
+            return "{\"error\":\(HostRuntime.jsonString(String(describing: error)))}"
+        }
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        child.waitUntilExit()
+        let answer = out == "true" ? "true" : (out == "false" ? "false" : "null")
+        return "{\"own\":\(own),\"child\":\(answer)}"
     }
 }
 
@@ -880,7 +1019,7 @@ enum HelloAppsReader {
             guard let url, let bundle = Bundle(url: url), let id = bundle.bundleIdentifier else { return nil }
             return HelloApp(bundleId: id, name: FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: ""))
         }
-        let running = ws.runningApplications.filter { $0.activationPolicy == .regular }.compactMap { r -> HelloApp? in
+        let running = ws.runningApplications.filter { $0.activationPolicy == .regular && HelloApps.isPersonApp(path: $0.bundleURL?.path) }.compactMap { r -> HelloApp? in
             guard let id = r.bundleIdentifier, let name = r.localizedName else { return nil }
             return HelloApp(bundleId: id, name: name)
         }

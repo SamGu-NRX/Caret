@@ -39,15 +39,14 @@ describe("no Groq call on any default path", () => {
   it("configures Jev as Ask's maker and keeps no default chat route", () => {
     expect(config.ASK_MAKER).toBe("heads");
     expect(config.WRITER_ROUTE).toBeNull();
-    expect(config.INTENT_ROUTE).toBeNull();
   });
 
   it("the helper's start takes its writers from writersOnStart only", () => {
     const main = src("main.ts");
     expect(main).toContain("writersOnStart(");
-    expect(main).not.toMatch(/GROQ_|CANDIDATES|devWriterRoute|makeWriterPort|WRITER_ROUTE|INTENT_ROUTE/);
+    expect(main).not.toMatch(/GROQ_|CANDIDATES|devWriterRoute|makeWriterPort|WRITER_ROUTE/);
     // Outside writer/, no source file names a Groq route or the helper's old defaults.
-    for (const f of ["helper.ts", "planner/ask.ts", "planner/intent-makers.ts", "goals/propose.ts", "codemode/sandbox.ts"]) expect(src(f), f).not.toMatch(/GROQ_|api\.groq\.com|WRITER_ROUTE|INTENT_ROUTE/);
+    for (const f of ["helper.ts", "planner/ask.ts", "goals/propose.ts", "codemode/sandbox.ts"]) expect(src(f), f).not.toMatch(/GROQ_|api\.groq\.com|WRITER_ROUTE/);
     // The routes a developer may name live apart from writer/config.ts, and none of them is configured.
     expect(src("writer/routes.ts")).not.toMatch(/export const \w+: ChatRoute =/);
   });

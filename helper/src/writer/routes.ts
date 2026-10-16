@@ -33,13 +33,22 @@ export function gatewayRoute(model: string): ChatRoute {
   return { provider: "gateway", baseUrl: GATEWAY_BASE_URL, keyName: ENV.ai_gateway_api_key, model, maxTokensParam: "max_tokens", ...m };
 }
 
-/** "groq:<model>" or "gateway:<model>"; anything else is an error that lists what may be named. */
+/** Explicit developer routes only; unknown names fail with the accepted route list. */
 export function devWriterRoute(spec: string): ChatRoute {
   const cut = spec.indexOf(":");
   const provider = cut < 0 ? "" : spec.slice(0, cut);
   const model = cut < 0 ? "" : spec.slice(cut + 1);
   if (provider === "gateway") return gatewayRoute(model);
+  if (provider === "openai" && (model === "gpt-6-luna" || model === "gpt-6-luna@none")) {
+    return {
+      provider: "openai", baseUrl: "https://api.openai.com/v1", keyName: ENV.openai_api_key_personal,
+      model: "gpt-6-luna", maxTokensParam: "max_output_tokens",
+      extraBody: { reasoning: { effort: model.endsWith("@none") ? "none" : "low" } },
+      // Standard short context. Reasoning tokens are included in billed output_tokens.
+      pricing: { inputUsdPerMTok: 0.10, outputUsdPerMTok: 0.50, source: "developers.openai.com/api/docs/pricing, 2026-10-09" },
+    };
+  }
   const groq = provider === "groq" ? CANDIDATES.find((r) => r.model === model) : undefined;
   if (groq !== undefined) return groq;
-  throw new Error(`writer '${spec}' is not a route: name one of ${[...CANDIDATES.map((r) => `groq:${r.model}`), ...GATEWAY_MODEL_IDS.map((m) => `gateway:${m}`)].join(", ")}`);
+  throw new Error(`writer '${spec}' is not a route: name one of ${[...CANDIDATES.map((r) => `groq:${r.model}`), ...GATEWAY_MODEL_IDS.map((m) => `gateway:${m}`), "openai:gpt-6-luna", "openai:gpt-6-luna@none"].join(", ")}`);
 }

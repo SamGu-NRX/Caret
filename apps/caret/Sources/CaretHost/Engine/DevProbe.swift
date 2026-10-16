@@ -256,4 +256,36 @@ public enum DevProbe {
         return "keystrokes=\(times.count) shown=\(shown) p50=\(pct(0.5))ms p95=\(pct(0.95))ms max=\(pct(1.0))ms\n"
             + "samples_ms=" + times.map { String(format: "%.1f", $0) }.joined(separator: ",") + "\n"
     }
+
+    /// `Caret --probe-rewrite <sentences.txt> <out.ndjson>`: each sentence's rewrites in each mode
+    /// (`RewriteGenerator`), timed, with what `RewriteFilter` would offer. One untimed warm-up first.
+    @MainActor
+    public static func rewrite(modelURL: URL, sentences: URL, out: URL) async -> String {
+        guard let corpus = try? String(contentsOf: sentences, encoding: .utf8) else { return "cannot read \(sentences.path)\n" }
+        let lines = corpus.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty }
+        let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
+        await engine.load(modelURL: modelURL)
+        guard engine.state == .ready else { return "engine: \(engine.state)\n" }
+        let modes: [(String, RewriteGenerator.Mode)] = [("list", .list), ("sampled", .sampled(count: 3, temperature: 0.8, seed: 7))]
+        _ = try? await engine.rewrites(of: "Thanks for the quick reply.", mode: .list)
+        var rows: [String] = []
+        var summary: [String] = []
+        for (name, mode) in modes {
+            var first: [Double] = [], total: [Double] = []
+            for line in lines {
+                guard let o = try? await engine.rewrites(of: line, mode: mode) else { continue }
+                first.append(o.firstMs)
+                total.append(o.totalMs)
+                let row: [String: Any] = ["mode": name, "sentence": line, "rewrites": o.rewrites,
+                                          "offered": RewriteFilter.offered(o.rewrites, original: line),
+                                          "firstMs": o.firstMs, "totalMs": o.totalMs, "tokens": o.tokens]
+                if let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) { rows.append(String(decoding: data, as: UTF8.self)) }
+            }
+            func p(_ xs: [Double], _ q: Double) -> String { String(format: "%.0f", LatencyRecorder.percentile(xs.sorted(), q) ?? -1) }
+            summary.append("\(name): first rewrite p50 \(p(first, 0.5)) / p95 \(p(first, 0.95)) ms; all p50 \(p(total, 0.5)) / p95 \(p(total, 0.95)) ms; n \(total.count)")
+        }
+        try? (rows.joined(separator: "\n") + "\n").write(to: out, atomically: true, encoding: .utf8)
+        await engine.shutdown()
+        return summary.joined(separator: "\n") + "\n"
+    }
 }

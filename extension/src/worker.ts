@@ -26,9 +26,10 @@ import { FrameDocs, NavGens, frameOrigin } from "./worker/frames.ts";
 import { composeFrames, isCaptchaUrl, type CaptchaFrame } from "./worker/compose.ts";
 import { judgePress, type FrameMarks } from "./worker/press-guard.ts";
 import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
-import { LEFT_TAB_MS, LeftTab, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
+import { LEFT_TAB_MS, LeftTab, canonicalOrigin, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
 import { joinFrames } from "./shared/tab-text.ts";
 import { sectionTokens, type FrameSections } from "./worker/section-names.ts";
+import { CompareSpend } from "./worker/compare-budget.ts";
 
 /** SCP1: a frame's sections as the snapshot carries them: tokens, never digests or the salt. */
 function sectionsOf(s: FrameSections | undefined): { sections?: FrameSections["sections"]; sectionNames?: string[]; sectionsCut?: true } {
@@ -58,6 +59,42 @@ let retryMs = 2000;
 let chunks = new Chunks();
 /** "Not on this site": origins the helper says Caret is off for. Kept in this worker only; the helper resends it after every hello. */
 let sitesOff = new Set<string>();
+/** Whether Caret is off for `origin`: both sides in canonicalOrigin's form, so a trailing dot matches either way. */
+const offSite = (origin: string): boolean => sitesOff.has(canonicalOrigin(origin));
+
+/** Whether a tab's top page is at a site Caret may act or read in: it has an http(s) origin, not off, not denied. */
+async function topAllowed(tabId: number): Promise<boolean> {
+  const top = frameOrigin((await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null)) ?? [], 0);
+  return top !== null && !offSite(top) && !deniedOrigin(top);
+}
+
+/**
+ * "Not on this site" changed: every grant for a frame at a site now off ends at once, and every grant in a tab whose top
+ * page is now off ends as soon as the tab's frames are read. grantAlive and act check the top page too, so a stage
+ * that runs before that read is refused all the same.
+ */
+async function dropOffGrants(): Promise<void> {
+  const held = grants.scopes();
+  for (const { taskId, scope } of held) if (offSite(scope.origin)) revokeTask(taskId);
+  for (const { taskId, scope } of held) if (!(await topAllowed(scope.tabId))) revokeTask(taskId);
+}
+
+/**
+ * An act's answer as the helper may have it: its readings and choice (the field's values, the page's error text, the
+ * options it showed) only while the frame's and the top page's sites are still allowed and the task's grant is live;
+ * a site switched off while the act ran gets the outcome alone.
+ */
+async function admitted(verb: ActVerb, a: ActAnswer): Promise<ActAnswer> {
+  if (a.readings === undefined && a.choice === undefined && a.compare === undefined) return a;
+  const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId }).catch(() => null)) ?? [];
+  const here = frameOrigin(all, verb.frameId);
+  const top = frameOrigin(all, 0);
+  const ok = here !== null && top !== null && !offSite(here) && !offSite(top) && !deniedOrigin(here) && !deniedOrigin(top) && grants.check(verb.taskId, verb.tabId, verb.frameId).ok;
+  if (ok) return a;
+  const { readings: _readings, choice: _choice, compare: _compare, ...rest } = a;
+  // A compare that cannot be handed on is no answer at all: the outcome says why.
+  return a.compare !== undefined ? { outcome: "siteOff", detail: "Caret is off on this site now" } : rest;
+}
 /** Frames armed to report the user's input ("tabId:frameId"), and until when. */
 const armed = new Map<string, number>();
 /** Last focus report per tab, for the 150 ms limit. */
@@ -92,9 +129,11 @@ function send(m: object): void {
 function guard(tabId: number, frameId: number, until: number): void {
   const k = `${tabId}:${frameId}`;
   // `until` is the end of the last grant covering the frame (GrantTable.coverUntil), never one task's alone.
-  if (until === 0) {
-    if (!armed.delete(k)) return;
-  } else armed.set(k, until);
+  // A disarm is sent even to a frame the map no longer holds: an act arms its document itself when a guard message
+  // failed (and the failure dropped the frame from the map), and that document must stop noting the user's input
+  // 30 s after the grant ends, not after the grant's own expiry (PR #33 review).
+  if (until === 0) armed.delete(k);
+  else armed.set(k, until);
   const msg: ToContent = { caret: 1, op: "guard", until };
   chrome.tabs.sendMessage(tabId, msg, { frameId }).catch(() => armed.delete(k));
 }
@@ -122,6 +161,9 @@ function result(id: string, a: ActAnswer): void {
     ...(a.pageChanged === undefined ? {} : { pageChanged: a.pageChanged }),
     ...(a.text === undefined ? {} : { text: a.text }),
     ...(a.insert === undefined ? {} : { insert: a.insert }),
+    ...(a.restore === undefined ? {} : { restore: a.restore }),
+    ...(a.reboundTo === undefined ? {} : { reboundTo: a.reboundTo }),
+    ...(a.compare === undefined ? {} : { compare: a.compare }),
   });
 }
 
@@ -185,7 +227,8 @@ async function onHelper(raw: unknown): Promise<void> {
     case "pageChunk":
       return;
     case "pageSitesOff":
-      sitesOff = new Set(m.origins);
+      sitesOff = new Set(m.origins.map(canonicalOrigin));
+      await dropOffGrants();
       return;
     case "pageReadText": {
       if (engine === null) return;
@@ -200,7 +243,7 @@ async function onHelper(raw: unknown): Promise<void> {
       if (Date.now() >= m.expires) return result(m.id, { outcome: "error", detail: "the command expired before it arrived" });
       try {
         if (m.verb.kind === "pageWalk") await walk(m.id, m.verb.tabId);
-        else result(m.id, await act(m.verb, m.expires));
+        else result(m.id, await admitted(m.verb, await act(m.verb, m.expires)));
       } catch (e) {
         result(m.id, { outcome: "error", detail: e instanceof Error ? e.message : String(e) });
       }
@@ -218,7 +261,17 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   if (tab?.id === undefined) return result(id, { outcome: "noElement", detail: tabId === null ? "no active tab in the focused window" : `no tab ${tabId}` });
   const frames = (await chrome.webNavigation.getAllFrames({ tabId: tab.id })) ?? [];
   const top = frameOrigin(frames, 0);
-  if (top !== null && sitesOff.has(top)) return result(id, { outcome: "siteOff", detail: `Caret is off on ${top}` });
+  // A tab whose top page has no http(s) origin (an about:blank popup a vault opened) can't be checked against the
+  // lists below, so none of its frames is asked.
+  if (top === null) return result(id, { outcome: "siteOff", detail: "Caret can't tell which site this tab is on" });
+  if (offSite(top)) return result(id, { outcome: "siteOff", detail: `Caret is off on ${top}` });
+  // A tab whose page is on the deny list (password managers, account pages) is not walked at all: no frame of it is
+  // asked, so no title, heading, label or value of it leaves the page.
+  if (deniedOrigin(top)) return result(id, { outcome: "siteOff", detail: "Caret never reads this site" });
+  // Each frame's document and navigation generation as it is asked. A frame that holds another document or moved in
+  // history by the time the snapshot is sent is dropped, and the walk is stale if the top frame did: a tab that went
+  // to a vault meanwhile must not lend the snapshot anything of its own.
+  const pinned = new Map(frames.map((f) => [f.frameId, { documentId: f.documentId, navGen: navGens.get(tab.id as number, f.frameId) }]));
   const missing: { frameId: number; reason: string }[] = [];
   const captchas: CaptchaFrame[] = [];
   const reports = await Promise.all(
@@ -229,8 +282,12 @@ async function walk(id: string, tabId: number | null): Promise<void> {
         return null;
       }
       // Not asked at all: a frame on a site Caret is off for is never walked.
-      if (sitesOff.has(origin)) {
+      if (offSite(origin)) {
         missing.push({ frameId: f.frameId, reason: "Caret is off on this site" });
+        return null;
+      }
+      if (deniedOrigin(origin)) {
+        missing.push({ frameId: f.frameId, reason: "Caret never reads this site" });
         return null;
       }
       // A captcha frame is never walked; only its viewport is asked, for the frame count (compose.ts, W4).
@@ -242,9 +299,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
         return null;
       }
       try {
-        // P4: the text around the caret is never taken on a site on the deny list, as no text read is; the frame is
-        // told before it walks, so it never reads it there (P4 review).
-        const msg: ToContent = deniedOrigin(origin) || (top !== null && deniedOrigin(top)) ? { caret: 1, op: "walk", caretText: false } : { caret: 1, op: "walk" };
+        const msg: ToContent = { caret: 1, op: "walk" };
         const r = (await withTimeout(chrome.tabs.sendMessage(tab.id as number, msg, { frameId: f.frameId, documentId: f.documentId }), FRAME_WALK_MS, `frame ${f.frameId}`)) as FrameReport | undefined;
         if (r === undefined || typeof r !== "object" || !Array.isArray(r.controls)) throw new Error("no report");
         // The worker's own view of the frame wins over what its script says: origin from the URL Chrome reports.
@@ -267,13 +322,33 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   const kept = composed.kept;
   missing.push(...composed.missing);
   if (kept.length === 0) return result(id, { outcome: "noElement", detail: `no frame of tab ${tab.id} answered: ${missing.map((m) => m.reason).join("; ")}` });
-  const focusedFrame = kept.filter((k) => k.r.focused !== null).sort((a, b) => Number(b.r.hasFocus) - Number(a.r.hasFocus))[0];
-  // H10: where the tab's viewport is on screen, so the helper can give each control a screen frame. From the top frame
-  // only: a child frame reports its own viewport, and the window is the same for every frame.
-  const topReport = answered.find((x) => x.f.frameId === 0)?.r;
   const zoom = await chrome.tabs.getZoom(tab.id).catch(() => null);
   // SCP1: section name tokens across every kept frame, under one salt made for this snapshot (worker/section-names.ts).
   const named = await sectionTokens(kept.map((k) => k.r));
+  // The last await: the frames as they are now, against the documents the walk asked.
+  const framesNow = (await chrome.webNavigation.getAllFrames({ tabId: tab.id }).catch(() => null)) ?? [];
+  const unmoved = (frameId: number): boolean => {
+    const was = pinned.get(frameId);
+    const now = framesNow.find((x) => x.frameId === frameId);
+    return was !== undefined && now !== undefined && now.documentId === was.documentId && navGens.get(tab.id as number, frameId) === was.navGen;
+  };
+  const topNow = frameOrigin(framesNow, 0);
+  if (!unmoved(0) || topNow === null || offSite(topNow) || deniedOrigin(topNow)) return result(id, { outcome: "stale", detail: "the tab's page changed during the walk" });
+  const rows = kept.map((k, i) => ({ ...k, named: named[i] })).filter((k) => {
+    // A frame whose site was switched off while the walk ran is dropped too: the policy is read again here.
+    if (offSite(k.origin) || deniedOrigin(k.origin)) {
+      missing.push({ frameId: k.f.frameId, reason: "Caret is off on this site" });
+      return false;
+    }
+    if (unmoved(k.f.frameId)) return true;
+    missing.push({ frameId: k.f.frameId, reason: "it navigated during the walk" });
+    return false;
+  });
+  const focusedFrame = rows.filter((k) => k.r.focused !== null).sort((a, b) => Number(b.r.hasFocus) - Number(a.r.hasFocus))[0];
+  // H10: where the tab's viewport is on screen, so the helper can give each control a screen frame. From the top frame
+  // only: a child frame reports its own viewport, and the window is the same for every frame. Its title is the tab's:
+  // the walked document's own, never Chrome's tab title, which may already be the next page's.
+  const topReport = rows.find((x) => x.f.frameId === 0)?.r;
   const view = topReport !== undefined && Array.isArray(topReport.screen) && zoom !== null && zoom > 0 ? { window: topReport.screen, viewport: topReport.viewport, zoom } : null;
   send({
     type: "pageSnapshot",
@@ -284,17 +359,17 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     browserWindowId: tabNow.windowId,
     active: tabNow.active,
     inFocusedWindow: lastFocused?.id !== undefined && lastFocused.id === tabNow.windowId && lastFocused.focused,
-    title: tabNow.title ?? "",
-    frames: kept.map(({ f, r, origin }, i) => ({
+    title: topReport?.title ?? "",
+    frames: rows.map(({ f, r, origin, named: tokens }) => ({
       frameId: f.frameId,
       parentFrameId: f.parentFrameId,
       documentId: f.documentId,
       origin,
       path: r.path,
-      navGen: navGens.get(tab.id as number, f.frameId),
+      navGen: pinned.get(f.frameId)?.navGen ?? 0,
       title: r.title,
       headings: r.headings,
-      ...sectionsOf(named[i]),
+      ...sectionsOf(tokens),
       controls: r.controls,
       iframes: r.iframes.map((i) => ({ src: i.src, rect: i.rect })),
       excluded: r.excluded,
@@ -302,7 +377,6 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       ...(typeof r.walkMs === "number" ? { walkMs: r.walkMs } : {}),
     })),
     missing: missing.sort((a, b) => a.frameId - b.frameId),
-    // P4: and stripped here too, should a frame not have heeded it.
     focused:
       focusedFrame?.r.focused === undefined || focusedFrame.r.focused === null
         ? null
@@ -312,7 +386,6 @@ async function walk(id: string, tabId: number | null): Promise<void> {
             // H13 review: whether that frame's document has focus now; after a click in the address bar none does, and
             // the host takes its inline text down rather than let Tab take it.
             hasFocus: focusedFrame.r.hasFocus === true,
-            ...(deniedOrigin(focusedFrame.origin) || (top !== null && deniedOrigin(top)) ? { text: null, caret: null } : {}),
           },
     view,
     walkMs: Math.round((performance.now() - t0) * 10) / 10,
@@ -332,7 +405,7 @@ function isTextAnswer(x: unknown): x is FrameTextAnswer {
   if (typeof x !== "object" || x === null) return false;
   const a = x as Record<string, unknown>;
   const strings = (v: unknown): boolean => Array.isArray(v) && v.every((s) => typeof s === "string");
-  return strings(a.selection) && strings(a.blocks) && typeof a.cut === "boolean" && (a.docsText === null || a.docsText === "on" || a.docsText === "off");
+  return strings(a.selection) && strings(a.blocks) && typeof a.cut === "boolean" && (a.docsText === null || a.docsText === "on" || a.docsText === "off") && typeof a.title === "string";
 }
 
 /**
@@ -351,7 +424,7 @@ async function readText(tabId: number): Promise<ActAnswer> {
   const record = leftTab.last();
   if (record === null) return { outcome: "notAllowed", detail: "it is not the tab you just left" };
   const top = frameOrigin(rows, 0);
-  if (top === null || sitesOff.has(top) || deniedOrigin(top)) return { outcome: "siteOff", detail: "Caret never reads this site" };
+  if (top === null || offSite(top) || deniedOrigin(top)) return { outcome: "siteOff", detail: "Caret never reads this site" };
   // A frame refuses to give text after the moment the read may no longer happen (rule 2's LEFT_TAB_MS).
   const until = record.at + LEFT_TAB_MS;
   const ask = async (frameId: number, documentId: string, op: "frame" | "text"): Promise<unknown> => {
@@ -364,7 +437,7 @@ async function readText(tabId: number): Promise<ActAnswer> {
       const origin = frameOrigin(rows, m.frameId);
       if (f === undefined || origin === null) return null;
       // Never asked: a frame on a site that is off or denied, and a captcha's, which is the user's to answer.
-      if (sitesOff.has(origin) || deniedOrigin(origin) || isCaptchaUrl(f.url)) return null;
+      if (offSite(origin) || deniedOrigin(origin) || isCaptchaUrl(f.url)) return null;
       const r = await ask(m.frameId, m.documentId, "frame");
       return isFrameSelf(r) ? { f, r, origin } : null;
     }),
@@ -377,7 +450,7 @@ async function readText(tabId: number): Promise<ActAnswer> {
   const still = leftTab.check(tabId, Date.now(), marksOf(rowsNow));
   if (!still.ok) return { outcome: "stale", detail: still.why };
   const topNow = frameOrigin(rowsNow, 0);
-  if (topNow === null || sitesOff.has(topNow) || deniedOrigin(topNow) || composed.kept.some((k) => sitesOff.has(k.origin))) return { outcome: "siteOff", detail: "Caret never reads this site" };
+  if (topNow === null || offSite(topNow) || deniedOrigin(topNow) || composed.kept.some((k) => offSite(k.origin))) return { outcome: "siteOff", detail: "Caret never reads this site" };
   const texts = await Promise.all(composed.kept.filter((k) => still.frames.some((m) => m.frameId === k.f.frameId)).map(async (k) => {
     const t = await ask(k.f.frameId, k.f.documentId, "text");
     return isTextAnswer(t) ? { ...k, t } : null;
@@ -387,11 +460,12 @@ async function readText(tabId: number): Promise<ActAnswer> {
   const kept = texts.filter((k): k is NonNullable<typeof k> => k !== null && again.frames.some((m) => m.frameId === k.f.frameId));
   if (!kept.some((k) => k.f.frameId === 0)) return { outcome: "noElement", detail: "the tab's top frame gave no text" };
   const joined = joinFrames(kept.map((k) => ({ selection: k.t.selection, blocks: k.t.blocks })));
-  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  // The title is the read document's own (content.ts textOf), not Chrome's tab title, which a navigation after the
+  // last check could already have changed.
   const text: TabText = {
     tabId,
     leftAt: record.at,
-    title: tab?.title ?? "",
+    title: kept.find((k) => k.f.frameId === 0)?.t.title ?? "",
     frames: kept.map((k) => ({ frameId: k.f.frameId, origin: k.origin })),
     selection: joined.selection,
     blocks: joined.blocks,
@@ -420,6 +494,9 @@ async function fileProblem(f: { size: number; sha256: string; data: string }): P
   return (await sha256(bytes)) === f.sha256 ? null : "the file's data does not match its digest";
 }
 
+/** pageCompare's per-origin hourly bound, kept in session storage so a worker restart does not reset it (worker/compare-budget.ts). */
+const compareSpend = new CompareSpend(chrome.storage.session, log);
+
 async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   if (verb.kind === "pagePress") {
     // Every page press is a hand-off in v1: the button runs the page's own script (content/actions.ts). The page is not touched.
@@ -428,21 +505,22 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   }
   const g = grants.check(verb.taskId, verb.tabId, verb.frameId);
   if (!g.ok) return { outcome: "notAllowed", detail: g.reason };
-  if (sitesOff.has(g.scope.origin)) return { outcome: "siteOff", detail: `Caret is off on ${g.scope.origin}` };
+  if (offSite(g.scope.origin)) return { outcome: "siteOff", detail: `Caret is off on ${g.scope.origin}` };
   if (verb.kind === "pageAttachFile") {
     const bad = await fileProblem(verb.file);
     if (bad !== null) return { outcome: "error", detail: bad };
   }
   const frame = await chrome.webNavigation.getFrame({ tabId: verb.tabId, frameId: verb.frameId }).catch(() => null);
-  if (frame === null || frame === undefined) return { outcome: "stale", detail: "the frame is gone" };
-  if (frame.documentId !== verb.documentId) return { outcome: "stale", detail: "the frame holds another document than when it was walked" };
+  if (frame === null || frame === undefined) return { outcome: "stale", detail: "the frame is gone", ...(verb.kind === "pageRestore" ? { restore: { outcome: "refused", why: "reloaded" } as const } : {}) };
+  // An undo after a reload is refused: the page that kept the field's text before Caret's write is gone with it.
+  if (frame.documentId !== verb.documentId) return { outcome: "stale", detail: "the frame holds another document than when it was walked", ...(verb.kind === "pageRestore" ? { restore: { outcome: "refused", why: "reloaded" } as const } : {}) };
   const gen = navGens.get(verb.tabId, verb.frameId);
   if (gen !== g.scope.navGen) return { outcome: "stale", detail: `the frame navigated since the grant (navGen ${g.scope.navGen}, now ${gen})` };
   const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId })) ?? [];
   const origin = frameOrigin(all, verb.frameId);
   if (origin !== g.scope.origin) return { outcome: "notAllowed", detail: `the grant covers ${g.scope.origin}, the frame is at ${String(origin)}` };
   const topNow = frameOrigin(all, 0);
-  if (topNow !== null && sitesOff.has(topNow)) return { outcome: "siteOff", detail: `Caret is off on ${topNow}` };
+  if (topNow !== null && offSite(topNow)) return { outcome: "siteOff", detail: `Caret is off on ${topNow}` };
   // The frame lookups above awaited; a revoke or expiry that landed meanwhile stops the act here, before the page.
   const live = grants.check(verb.taskId, verb.tabId, verb.frameId);
   if (!live.ok) return { outcome: "notAllowed", detail: live.reason };
@@ -450,6 +528,22 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   const genNow = navGens.get(verb.tabId, verb.frameId);
   if (live.scope.navGen !== genNow || live.scope.origin !== origin) return { outcome: "stale", detail: `the frame moved during the check (navGen ${live.scope.navGen}, now ${genNow})` };
   const deadline = Math.min(expires, live.expires);
+  // The candidates past the origin's hourly budget are not sent to the page; they answer unknown.
+  let unanswered = 0;
+  if (verb.kind === "pageCompare") {
+    const asked = verb.candidates.length;
+    const allowed = await compareSpend.allowance(origin, asked);
+    // The budget is read from storage: a Stop, or a navigation, during that wait ends the compare before it is sent.
+    const still = grants.check(verb.taskId, verb.tabId, verb.frameId);
+    if (!still.ok) return { outcome: "notAllowed", detail: still.reason };
+    if (navGens.get(verb.tabId, verb.frameId) !== genNow) return { outcome: "stale", detail: "the frame moved while the compare budget was read" };
+    if (allowed < asked) {
+      log(`pageCompare over ${origin}'s hourly budget: ${asked - allowed} candidate(s) answer unknown`);
+      if (allowed === 0) return { outcome: "ok", detail: "over this site's hourly compare budget", compare: verb.candidates.map(() => "unknown" as const) };
+      unanswered = asked - allowed;
+      verb = { ...verb, candidates: verb.candidates.slice(0, allowed) };
+    }
+  }
   // A Yes/No press (W4) must not navigate or submit (B28): the frame is read before it and after its answer.
   const press = verb.kind === "pageChooseOption" && verb.question !== undefined;
   const marks = (): FrameMarks => ({ navGen: navGens.get(verb.tabId, verb.frameId), starts: navStarts.get(verb.tabId, verb.frameId) });
@@ -472,7 +566,7 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
     else if (!press) return { outcome: "error", detail: msg };
     else a = { outcome: "error", detail: msg };
   }
-  if (!press) return a as ActAnswer;
+  if (!press) return a !== null && a.compare !== undefined && unanswered > 0 ? { ...a, compare: [...a.compare, ...Array.from({ length: unanswered }, () => "unknown" as const)] } : (a as ActAnswer);
   if (a?.outcome === "ok") await new Promise((r) => setTimeout(r, POST_PRESS_MS));
   const judged = judgePress(a, before, marks());
   // The run stops at once: the task's grants end here, before the helper hears of it, so nothing else of it acts.
@@ -493,18 +587,25 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 /**
  * A content script mid-act asks whether its task's grant still covers its own frame: the grant is live, the frame's
- * navigation generation is the one the grant pinned, and its site is not off. Answered only for the asking frame.
+ * navigation generation is the one the grant pinned, its site is not off, and neither is its tab's top page. Answered
+ * only for the asking frame.
  */
 chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
   const x = m as { caret?: unknown; op?: unknown; taskId?: unknown } | null;
   if (x?.caret !== 1 || x.op !== "grantAlive" || typeof x.taskId !== "string") return false;
-  if (sender.id !== chrome.runtime.id || sender.tab?.id === undefined || sender.frameId === undefined) {
+  const tabId = sender.tab?.id;
+  const frameId = sender.frameId;
+  const taskId = x.taskId;
+  if (sender.id !== chrome.runtime.id || tabId === undefined || frameId === undefined) {
     reply(false);
     return false;
   }
-  const g = grants.check(x.taskId, sender.tab.id, sender.frameId);
-  reply(g.ok && navGens.get(sender.tab.id, sender.frameId) === g.scope.navGen && !sitesOff.has(g.scope.origin));
-  return false;
+  void topAllowed(tabId).then((topOk) => {
+    // The grant is read after the await: a revoke that landed meanwhile counts.
+    const g = grants.check(taskId, tabId, frameId);
+    reply(topOk && g.ok && navGens.get(tabId, frameId) === g.scope.navGen && !offSite(g.scope.origin));
+  });
+  return true;
 });
 
 /**
@@ -512,7 +613,8 @@ chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
  * is the active tab of the last focused browser window, its site and its frame's site are not off, and an engine is
  * connected; at most one per FOCUS_EVERY_MS per tab. One that comes sooner is held and sent when that time is up, the
  * latest frame's, so the last keystroke of a burst is never lost: the host's inline text would stay on the text before
- * it. Nothing about the element travels.
+ * it. Nothing about the element travels. A page on the deny list reports too, with the same three numbers: the walk
+ * the helper then asks for is refused (siteOff), which tells the host no field of Caret's has focus there.
  */
 const heldFocus = new Map<number, { frameId: number; timer: ReturnType<typeof setTimeout> }>();
 function forwardFocus(tabId: number, frameId: number): void {
@@ -523,7 +625,7 @@ function forwardFocus(tabId: number, frameId: number): void {
     if (engine === null || tab === undefined || !tab.active || win === undefined || tab.windowId !== win.id || !win.focused) return;
     const top = frameOrigin(all ?? [], 0);
     const here = frameOrigin(all ?? [], frameId);
-    if ((top !== null && sitesOff.has(top)) || (here !== null && sitesOff.has(here))) return;
+    if ((top !== null && offSite(top)) || (here !== null && offSite(here))) return;
     send({ type: "pageFocus", v: 1, at: now, tabId, frameId });
   })();
 }

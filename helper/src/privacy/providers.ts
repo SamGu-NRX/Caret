@@ -26,6 +26,6 @@ export function jevPolicy(route: { provider: "typesafe" | "gateway"; model: stri
 }
 
 /** A writer route's policy (writer/chat.ts ChatRoute): Groq's and the gateway's listed models, all unverified. */
-export function writerPolicy(_route: Pick<ChatRoute, "provider" | "model">): ProviderPolicy {
-  return NOT_KNOWN_TO_RETAIN;
+export function writerPolicy(route: Pick<ChatRoute, "provider" | "model">): ProviderPolicy {
+  return route.provider === "openai" ? { retains: true, verified: false, source: "OpenAI may retain requests; fixture-only evaluations until Sam decides (CU-COUNSEL-20261009)." } : NOT_KNOWN_TO_RETAIN;
 }

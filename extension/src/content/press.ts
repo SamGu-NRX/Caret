@@ -17,7 +17,7 @@
 // the combobox one, runs page script on the user's accepted plan (W4 review #1, a lead decision). A press that the
 // page does not show as taken is `failed` with readings, which the helper treats as "may have landed". A press after
 // which the page left or submitted is `failed` with `pageChanged` and no readings: the run stops there.
-import type { ActAnswer, ActVerb, Choice, PageChange } from "../shared/messages.ts";
+import type { ActAnswer, ActVerb, Choice, PageChange, WriteReadings } from "../shared/messages.ts";
 import { normalizeName } from "../shared/choose.ts";
 import { clean } from "./names.ts";
 import { pressToggle, settle, until } from "./dom.ts";
@@ -75,6 +75,7 @@ export async function pressOption(el: Element, verb: ChooseVerb, check: () => Ac
   if (normalizeName(mine) !== normalizeName(verb.value)) return answer("unsupported", `this option is '${clean(mine, 40)}', not '${clean(verb.value, 40)}'`);
   const before = pressedValue(g);
   if (pressed(el) && g.options.every((b) => b === el || !pressed(b))) return answer("alreadyTrue", null, { choice: choice([mine]) });
+  if (verb.expect === undefined) return answer("unsupported", "a Yes/No press names the answer it expects before");
   if (before !== verb.expect) return answer("stale", `the question shows '${clean(before, 40)}' answered, not '${clean(verb.expect, 40)}'`);
 
   // The grant check awaits, so the group is read again after it: the same container, options and question.
@@ -116,8 +117,8 @@ export async function pressOption(el: Element, verb: ChooseVerb, check: () => Ac
   // A group the page no longer shows as one cannot be read: failed with no readings, "may have landed" (W4 review #5).
   if (now === null) return answer("failed", "after the press the page no longer shows a Yes/No question here, so Caret cannot read the answer", { choice: choice([mine]) });
   const after = pressedValue(now);
-  const readings = { before, afterInput: after, afterBlur: after, invalid: false, error: null };
   const others = now.options.filter((b) => b !== el && pressed(b)).map((b) => controlName(b, "button"));
+  const readings: WriteReadings = { sameAsBefore: after === before, landed: pressed(el) && others.length === 0, equivalent: pressed(el) && others.length === 0, empty: after === "", typedBetween: false, rev: null };
   if (!pressed(el)) return answer("failed", after === before ? "the page did not take the press" : `the page shows '${clean(after, 40)}'`, { readings, choice: choice([mine]) });
   if (others.length > 0) return answer("failed", `the page shows ${others.map((o) => `'${clean(o, 40)}'`).join(", ")} pressed too`, { readings, choice: choice([mine]) });
   return answer("ok", null, { readings, choice: choice([mine]) });

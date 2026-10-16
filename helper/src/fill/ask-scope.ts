@@ -42,7 +42,8 @@ export type DocumentReader = (windowId: string) => string | null;
  * What an Ask settled, once, by the per-field scope question (planner/intent-heads.ts), and never changed after: the only
  * fields it may write, by node key in one window; the page document they were on; how each read when the question was
  * asked (fieldFingerprint); and the person the user picked, when they picked one, whose details alone may go in.
- * Anything that would change a scope is a new settle, for a new document or a new Ask (I2 lead ruling B).
+ * Anything that would change a scope is a new settle, for a new document or a new Ask (I2 lead ruling B), with one
+ * exception: fields a page goal's own verified writes revealed on the same document (withRevealed).
  */
 export interface AskScope {
   /**
@@ -115,6 +116,30 @@ export function withScope(set: ScopeSet, x: AskScope): ScopeSet {
   if (x.section !== set.section) throw new Error(`a scope held to section ${JSON.stringify(x.section)} cannot join a goal held to ${JSON.stringify(set.section)}`);
   const k = scopeKey(x.windowId, x.document);
   return set.scopes[k] !== undefined ? set : Object.freeze({ ...set, scopes: Object.freeze({ ...set.scopes, [k]: x }) });
+}
+
+/**
+ * The one exception to "a scope is settled once": a page goal's own verified writes revealed fields on the document its
+ * Ask's scope was settled on (goals/runs.ts followUp), and the per-field scope question, asked about those fields alone,
+ * chose `settled.asks`. The set with that window and document's scope widened by exactly those fields, as they read
+ * when asked. A field the scope's record saw when it was settled is never added: the Ask already decided it.
+ */
+export function withRevealed(set: ScopeSet, settled: Settled): ScopeSet {
+  if (settled.askId !== set.askId) throw new Error(`fields settled for Ask ${settled.askId} cannot join the goal of Ask ${set.askId}`);
+  const k = scopeKey(settled.windowId, settled.document);
+  const held = set.scopes[k];
+  if (held === undefined) throw new Error(`Ask ${set.askId} settled no scope on ${settled.windowId} for revealed fields to join`);
+  const decided = settled.asks.filter((key) => held.seen[key] !== undefined);
+  if (decided.length > 0) throw new Error(`fields ${decided.join(", ")} were on the page when Ask ${set.askId} settled its scope; a reveal cannot add them`);
+  if (settled.asks.length === 0) return set;
+  const seen: Record<string, string> = { ...held.seen };
+  for (const key of settled.asks) {
+    const s = settled.seen[key];
+    if (s === undefined) throw new Error(`the scope question chose revealed field ${key}, which its record of the form lacks`);
+    seen[key] = s;
+  }
+  const widened = askScope(held.windowId, held.document, [...held.fields, ...settled.asks], seen, held.person, held.askId, held.picked, held.section);
+  return Object.freeze({ ...set, scopes: Object.freeze({ ...set.scopes, [k]: widened }) });
 }
 
 /** A heading node's text: its label, else its first static text child's. */
@@ -331,7 +356,10 @@ export function fieldFingerprint(w: WindowState, key: string): string {
   const outline = windowOutline(w);
   const chain = outline.chainOf(key);
   const sections = chain === "unknown" ? chain : chain.map((k) => outline.occurrences.find((x) => x.key === k)?.text ?? null);
-  return createHash("sha256").update(JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, sections, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children])).digest("hex");
+  // A web page's text field sends no text: its rev and whether it is unread stand for it (counsel 2026-10-09), and they
+  // join the hash only when present, so a native field hashes as before.
+  const page = n.rev === undefined && n.unread !== true ? [] : [n.rev ?? null, n.unread === true];
+  return createHash("sha256").update(JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, sections, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children, ...page])).digest("hex");
 }
 
 /** What the scope check needs of a write: its target and fingerprint (FieldContract), and whose value it is. */

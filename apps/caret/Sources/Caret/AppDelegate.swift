@@ -118,7 +118,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Onboarding is done (or the browser step needs the bridge): register the login item, which launchd starts, and
     /// stop this copy. Services stop first, so the agent's copy finds the sockets free. If the hand-off fails, a fresh
     /// copy opens and runs in-process as before.
+    /// The login item is due but work is running in this copy: checked every second until it ends.
+    private var handOffWait: Timer?
+
     private func handOffToLoginItem() {
+        guard !shutdown.started else { return }
+        // Accepted work (the first look's fill, say) runs in this copy's helper. Handing off stops the helper, and the
+        // next one restores the task as stopped, so a fill could end half done (Codex and Greptile on PR #17). The
+        // runtime counts each accepted offer from its accept to the helper's end for it (RunningWork), so Done pressed
+        // right after Tab waits too. Work that never ends keeps this copy running; the next launch registers the agent.
+        if runtime.isRunningWork {
+            guard handOffWait == nil else { return }
+            handOffWait = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.runtime.isRunningWork else { return }
+                    self.handOffWait?.invalidate()
+                    self.handOffWait = nil
+                    self.handOffToLoginItem()
+                }
+            }
+            return
+        }
+        // Nothing new starts from here: the tap goes before the shutdown's await.
+        runtime.stopTakingOffers()
         guard shutdown.start({ [weak self] in await self?.stopEverything() }) else { return }
         Task {
             if await !shutdown.wait() {
@@ -154,8 +176,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        stateItem.title = browserInstallResult?.message ?? runtime.engineSummary
-        // Show the install result on one menu opening, then resume reporting the engine state.
+        stateItem.title = browserInstallResult?.message ?? runtime.helperRefusalLine ?? runtime.engineSummary
+        // Show the install result on one menu opening, then resume reporting the helper's refusal, if any, or the engine state.
         browserInstallResult = nil
         modelItem.title = runtime.modelLine
         modelItem.toolTip = runtime.modelStatus
@@ -186,9 +208,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for item in keysItems {
             item.state = item.representedObject as? String == settings.ghostKeys.rawValue ? .on : .off
         }
+        let cap = runtime.rolesCap
         for item in roleItems {
             let role = (item.representedObject as? String).flatMap(CaretRole.init(rawValue:))
             item.state = role.map(settings.roles.contains) == true ? .on : .off
+            // Held by an undecided onboarding: shown as unavailable, and choosing it opens setup.
+            let note = role.flatMap { RoleMenu.note($0, cap: cap) }
+            if #available(macOS 14.4, *) { item.subtitle = note }
+            item.toolTip = note
         }
         for item in levelItems {
             item.state = item.representedObject as? String == settings.level.rawValue ? .on : .off
@@ -232,6 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         browserInstallResult = result
         stateItem.title = result.message
         stateItem.toolTip = ([result.detail].filter { !$0.isEmpty } + result.manualSteps.enumerated().map { "\($0.offset + 1). \($0.element)" }).joined(separator: "\n")
+        runtime.browserAddFinished(ok: result.ok, message: result.message, opened: result.opened)
     }
 
     @objc private func addJevKey(_ sender: NSMenuItem) {
@@ -282,6 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleRole(_ sender: NSMenuItem) {
         guard let role = (sender.representedObject as? String).flatMap(CaretRole.init(rawValue:)) else { return }
+        if RoleMenu.choice(role, cap: runtime.rolesCap) == .finishSetup { return runtime.openSetupToFinish() }
         SettingsStore.shared.update(source: .menu) { s in
             if s.roles.contains(role) { s.roles.remove(role) } else { s.roles.insert(role) }
         }

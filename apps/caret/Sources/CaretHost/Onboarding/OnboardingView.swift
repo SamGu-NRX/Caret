@@ -315,6 +315,7 @@ struct HelloPane: View {
     private var coachKey: String {
         let h = state.hello
         if h.model == .unavailable { return OnboardingCopy.Hello.unavailable }
+        if h.model == .off { return OnboardingCopy.Hello.wordsOff }
         if case .loading = h.model { return OnboardingCopy.Hello.loading }
         if h.ghost != nil { return OnboardingCopy.Hello.coachShown }
         return h.taken ? OnboardingCopy.Hello.coachTaken : ""
@@ -576,7 +577,7 @@ struct BrowserPane: View {
         VStack(alignment: .leading, spacing: 0) {
             ScreenTitle(title: OnboardingCopy.Browser.title,
                         detail: b.target == nil ? OnboardingCopy.Browser.none : OnboardingCopy.Browser.line(HelloApps.list(b.trusted.map { HelloApp(bundleId: $0, name: $0) })))
-            if let target = b.target {
+            if let target = b.waitingFor {
                 HStack(spacing: 12) {
                     GrantMark(granted: b.connected, animated: animated)
                     SwappingLine(key: b.connected ? OnboardingCopy.Browser.connected(target) : (b.opened ? OnboardingCopy.Browser.waiting : target), animated: animated) {
@@ -586,6 +587,11 @@ struct BrowserPane: View {
                     }
                 }
                 .padding(.top, 20)
+                if let failure = b.failure, !b.opened {
+                    // Add installed nothing: say why, and Add stays the primary to try again.
+                    Text(OnboardingCopy.Browser.failed(failure)).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink))
+                        .fixedSize(horizontal: false, vertical: true).padding(.top, 10)
+                }
                 // Until the store listing exists: the three steps of loading the extension from the folder Caret shows.
                 if b.opened, !b.connected, BrowserExtension.storeURL == nil {
                     VStack(alignment: .leading, spacing: 6) {

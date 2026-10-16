@@ -82,9 +82,9 @@ export class FakeApp implements ReaderLink {
     else n.value = value;
   }
 
-  /** Sends the window's current state to the helper, as a full walk. */
-  show(): void {
-    this.at += 10;
+  /** Sends the window's current state to the helper, as a full walk, stamped `at` when given. */
+  show(at?: number): void {
+    this.at = at ?? this.at + 10;
     const nodes = this.vanished === null ? this.nodes : this.nodes.filter((n) => n.key !== this.vanished?.key);
     void this.helper?.handleReader(
       snap(structuredClone(nodes), { at: this.at, windowId: WIN, title: this.title, focusedKey: this.focusedKey, reason: "request", number: WIN_NUMBER, kind: this.windowKind }),

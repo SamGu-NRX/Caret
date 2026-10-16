@@ -49,7 +49,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       340,
@@ -118,7 +119,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "First name (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       340,
@@ -137,7 +139,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Last name",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       646,
@@ -156,7 +159,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Company (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       340,
@@ -175,7 +179,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Address",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       340,
@@ -194,7 +199,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Apartment, suite, etc. (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       340,
@@ -213,7 +219,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "City",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       340,
@@ -513,7 +520,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "ZIP code",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       748,
@@ -532,7 +540,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Phone (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       340,
@@ -642,7 +651,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "Add a gift note (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       340,

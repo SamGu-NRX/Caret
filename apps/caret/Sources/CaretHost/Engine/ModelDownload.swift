@@ -92,6 +92,24 @@ final class ModelDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable
             try? fm.removeItem(at: partURL)
             have = 0
         }
+        // Every byte came in last time but the run ended before the part was moved into place. A request from its
+        // end would be answered 416 every time (PR #16 review): check it here, and install it or start over.
+        if have == spec.bytes {
+            if (try? Self.digest(of: partURL)) == spec.sha256 {
+                do {
+                    if fm.fileExists(atPath: finalURL.path) { try fm.removeItem(at: finalURL) }
+                    try fm.moveItem(at: partURL, to: finalURL)
+                    try writeLicense()
+                    return finalURL
+                } catch let f as Failure {
+                    throw f
+                } catch {
+                    throw Failure.file(error.localizedDescription)
+                }
+            }
+            try? fm.removeItem(at: partURL)
+            have = 0
+        }
         if let why = ModelFiles.diskRefusal(freeBytes: freeBytes(folder), alreadyHave: have, total: spec.bytes) { throw Failure.disk(why) }
         hasher = SHA256()
         if have > 0 {

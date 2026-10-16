@@ -247,8 +247,3 @@ export class ReaderCalendar implements CalendarPort {
     await this.call({ kind: "calendarDispose", calendar, taskId });
   }
 }
-
-/** Opens a URL. The only implementation here is a recording fake; a real one belongs in the host. */
-export interface UrlOpener {
-  open(url: string): Promise<void>;
-}

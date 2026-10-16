@@ -13,6 +13,8 @@ enum OnboardingCopy {
         static let coachTaken = "That's it. That's most of Caret."
         static let loading = "Getting the writing model ready. The field wakes up when it's done."
         static let unavailable = "The writing model isn't on this Mac yet. Caret still turns on, and the next words start once it is."
+        /// The model is released while the words role is off (`ModelNeed`), so "isn't on this Mac" would be untrue.
+        static let wordsOff = "Complete words is off, so this field stays quiet. Turn it on under Help With in Caret's menu to try it."
         static func apps(_ list: String) -> String { "It'll be there in \(list)." }
         static let primary = "Turn on Caret"
         static let caption = "One switch in System Settings. Caret moves on by itself."
@@ -23,8 +25,10 @@ enum OnboardingCopy {
         static let title = "Drag Caret into the list."
         /// The list's name on this Mac: "Accessibility", or "Device Control and Data Access" from macOS 27.
         static var pane: String { AccessibilityAccess.paneName(osMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion) }
+        /// Shown while macOS's own alert may still be up and System Settings not yet open (after-run a25c13e,
+        /// shots/027-stale-what-caret-says.png), so it names where to go rather than saying System Settings is open.
         static var line: String {
-            "System Settings is open at Privacy & Security, \(pane). Turn on Caret there, or drag it in from here. macOS asks for your password or Touch ID."
+            "Turn on Caret in Privacy & Security, \(pane), or drag it in from here. macOS asks for your password or Touch ID."
         }
         static var reopened: String {
             "Caret opened again, and it isn't on yet. Open System Settings, then turn on Caret in the \(pane) list."
@@ -114,6 +118,8 @@ enum OnboardingCopy {
         static func connected(_ name: String) -> String { "Caret is in \(name)." }
         static func add(_ name: String) -> String { "Add to \(name)" }
         static func untrusted(_ name: String) -> String { "Caret can't connect to \(name) yet." }
+        /// `why` is the installer's own sentence (ChromeBridgeInstaller.Result.message).
+        static func failed(_ why: String) -> String { "\(why) Try Add again, or skip and add it later from the menu bar." }
         static let stepsHead = "In the Extensions page:"
         /// What Skip costs, said before the person chooses (AltTab states each optional permission's cost).
         static func cost(_ name: String) -> String { "Without it, Caret can't read or fill web pages in \(name). You can add it later from the menu bar." }

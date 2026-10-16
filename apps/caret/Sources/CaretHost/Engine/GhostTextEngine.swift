@@ -28,6 +28,8 @@ final class GhostTextEngine {
         case loading
         case ready
         case unavailable(String)
+        /// Released, or never loaded, because no feature that uses the model is on (`ModelNeed`).
+        case off
     }
 
     enum Outcome: Equatable {
@@ -44,11 +46,17 @@ final class GhostTextEngine {
     /// Probe only (`Caret --probe-length`, mode `norm-4`): order the beam's candidates by mean log probability per
     /// token instead of KeyType's cumulative score, which favors short candidates. A re-rank of what the beam returned,
     /// not a different beam: KeyType's search and early stop (pinned upstream) still decide which candidates exist.
+    /// Not the default: it lengthened the first paint (mean 2.8 words against 2.4) at no extra model work, but on 60
+    /// positions where the two picked differently, a blind judge (pairs shuffled, labels hidden) preferred it 18 times,
+    /// the cumulative score 31 times, and tied 11: 48 % won or tied, under the 50 % bar set for adopting it
+    /// (~/.caret-run/evidence/host/inline/norm-judge, probe run length-norm-d9f6b6e1).
     var normalizesLength = false
     var displayWidth = GhostTextEngine.maxDisplayWidth
     /// The user's personal instructions for a field (brief item 4, `PersonalInstructions.lines`). They replace KeyType's
-    /// `policy.customInstructions`, which nothing in Caret sets.
-    var instructions: (TextFieldContext) -> [String] = { _ in [] }
+    /// `policy.customInstructions`, which nothing in Caret sets. The origin is the web page's, passed only by the page
+    /// path for its own field: a native field in the browser (its address bar) never gets a site's instructions
+    /// (PR #16 review).
+    var instructions: (TextFieldContext, _ origin: String?) -> [String] = { _, _ in [] }
     /// Candidates looked at, best first, when the better ones are refused at the seam or do not
     /// fit the text after the caret. KeyType's own filter still decides about the first.
     static let candidatesTried = 3
@@ -72,6 +80,8 @@ final class GhostTextEngine {
     private(set) var lastFitMs: Double?
     private var engine: ConstrainedGenerationEngine?
     private var scorer: SuffixScorer?
+    /// The runtime the engine decodes with, shared with `RewriteGenerator`.
+    private var runtime: LocalModelRuntime?
     /// `Caret --probe-replay`: every candidate is scored, refused or not, for calibration. The
     /// outcome is decided as in a normal run.
     var diagnostic = false
@@ -81,24 +91,31 @@ final class GhostTextEngine {
     private let compatibilityStore: AppCompatibilityStore
     private let filter: DefaultCandidateFilter
     private let promptBuilder = PromptBuilder()
+    /// Calls inside the model now: a suggestion, a rewrite or the warm-up. `release` frees llama's memory only when
+    /// none is left, since the runtime is inert once freed and a call between two of its awaits would decode on freed
+    /// memory (KeyType ADR-021).
+    let calls = InFlight()
 
     init(compatibilityStore: AppCompatibilityStore) {
         self.compatibilityStore = compatibilityStore
         self.filter = DefaultCandidateFilter(compatibilityStore: compatibilityStore, wordRecognizer: SystemWordRecognizer())
     }
 
-    func load(modelURL: URL, prependBOS: Bool? = nil) async {
+    func load(modelURL: URL, prependBOS: Bool? = nil, profileDirectory: URL = EngineLoader.profileDirectory) async {
         state = .loading
         let store = compatibilityStore
         let result = await Task.detached(priority: .userInitiated) {
-            Result { try EngineLoader.load(modelURL: modelURL, compatibilityStore: store, prependBOS: prependBOS) }
+            Result { try EngineLoader.load(modelURL: modelURL, compatibilityStore: store, prependBOS: prependBOS, profileDirectory: profileDirectory) }
         }.value
         switch result {
         case .success(let loaded):
             engine = loaded.engine
             scorer = SuffixScorer(runtime: loaded.runtime)
+            runtime = loaded.runtime
             state = .ready
+            calls.enter()
             await warmUp(loaded.engine)
+            calls.leave()
         case .failure(let error):
             state = .unavailable(String(describing: error))
         }
@@ -115,16 +132,55 @@ final class GhostTextEngine {
         state = .unavailable("disabled")
     }
 
-    func shutdown() async {
+    /// No feature needs the model at launch (`ModelNeed`): it stays unloaded until one does.
+    func stayOff() {
+        precondition(engine == nil, "stayOff with a model loaded; release it instead")
+        state = .off
+    }
+
+    /// Rewrites of `sentence` with the same model (`RewriteGenerator`); nil when it isn't loaded.
+    func rewrites(of sentence: String, mode: RewriteGenerator.Mode) async throws -> RewriteGenerator.Output? {
+        if let replay {
+            return replay.rewrites?[sentence].map { RewriteGenerator.Output(rewrites: $0, firstMs: 0, totalMs: 0, tokens: 0) }
+        }
+        guard let runtime else { return nil }
+        calls.enter()
+        defer { calls.leave() }
+        return try await RewriteGenerator(runtime: runtime).rewrites(of: sentence, mode: mode)
+    }
+
+    /// Frees the model and leaves `state` at `next`. A call that starts from now on finds no model; one already inside
+    /// it finishes first, and then llama's context and weights are freed. `load` may run again afterwards.
+    func release(to next: State = .off) async {
         let engine = self.engine
+        let runtime = self.runtime
         self.engine = nil
-        state = .unavailable("shut down")
+        scorer = nil
+        self.runtime = nil
+        state = next
+        await calls.drained()
+        // The decoder runs on `runtime` (`EngineLoader.Loaded`), so either call frees llama. Both, because a runtime's
+        // shutdown is idempotent (`LocalModelRuntime.shutdown`) and one left unfreed aborts the process at exit.
         await engine?.shutdown()
+        await runtime?.shutdown()
+    }
+
+    /// Tests only: a runtime in place as `load` leaves one, with no decoder over it, so `release` can be watched
+    /// without llama.
+    func adoptForTesting(runtime: LocalModelRuntime) {
+        self.runtime = runtime
+        state = .ready
+    }
+
+    /// Before the process exits: every call already inside the model, page inline text's and rewrites' included,
+    /// leaves before llama is freed (ggml-metal aborts at exit otherwise).
+    func shutdown() async {
+        await release(to: .unavailable("shut down"))
     }
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
     /// `tokens` overrides `completionTokens` for this one request (the extension after the first paint).
-    func suggest(for context: TextFieldContext, tokens: Int? = nil) async throws -> Outcome {
+    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil) async throws -> Outcome {
         if let replay {
             switch replay.outcome(before: context.beforeCursor, after: context.afterCursor) {
             case .text(let text)?: return .suggestion(GhostSuggestion(text: text, context: context, generationMs: 0))
@@ -135,6 +191,8 @@ final class GhostTextEngine {
         lastNotes = []
         lastFitMs = nil
         guard let engine else { return .suppressed("engineNotReady") }
+        calls.enter()
+        defer { calls.leave() }
         let policy = compatibilityStore.policy(for: context)
         guard policy.isCompletionEnabled else { return .suppressed("completionsDisabled") }
         guard policy.allowsMidLineCompletion || context.afterCursor.isEmpty else { return .suppressed("midLineDisabled") }
@@ -146,7 +204,7 @@ final class GhostTextEngine {
             return .suppressed("numericMidWordStem")
         }
 
-        let request = makeRequest(for: context, policy: policy, tokens: tokens)
+        let request = makeRequest(for: context, policy: policy, tokens: tokens, origin: origin)
         let started = DispatchTime.now().uptimeNanoseconds
         var candidates = try await engine.completions(for: request)
         if normalizesLength {
@@ -215,18 +273,20 @@ final class GhostTextEngine {
     }
 
     /// The request `suggest` sends for `context`, under the app's policy.
-    func request(for context: TextFieldContext) -> CompletionRequest {
-        makeRequest(for: context, policy: compatibilityStore.policy(for: context))
+    func request(for context: TextFieldContext, origin: String? = nil) -> CompletionRequest {
+        makeRequest(for: context, policy: compatibilityStore.policy(for: context), origin: origin)
     }
 
-    private func makeRequest(for context: TextFieldContext, policy: CompletionPolicy, tokens override: Int? = nil) -> CompletionRequest {
+    private func makeRequest(
+        for context: TextFieldContext, policy: CompletionPolicy, tokens override: Int? = nil, origin: String? = nil
+    ) -> CompletionRequest {
         // Token healing: prompt from the last clean token boundary and force the typed stem back
         // out, so the model can reach the whole-word token (ADR-019).
         let heal = MidWordHealing.plan(for: context)
         let promptContext = heal.map { context.replacingBeforeCursor($0.head) } ?? context
         let prompt = promptBuilder.buildPrompt(
             context: promptContext,
-            customInstructions: instructions(context),
+            customInstructions: instructions(context, origin),
             includeEnvironmentContext: policy.includesEnvironmentContext
         ).prompt
         let healSlack = heal?.heal.count ?? 0

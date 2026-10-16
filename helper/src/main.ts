@@ -3,7 +3,8 @@
 //   node src/main.ts --auth-fd N [--socket PATH] [--page-socket PATH | --no-page] [--data-dir DIR] [--memory-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C] [--dev-writer provider:model]
 // --auth-fd names an inherited descriptor holding the 32-byte launch secret, which caret-screen also got from the
 // launcher (src/launch.ts); the helper answers the reader's challenge with it, and page.sock's handshake uses a key
-// derived from it (engines/auth.ts). It never comes on argv or in the environment. Without it page.sock is not started.
+// derived from it (engines/auth.ts), as is the key a host proves itself with (host-auth.ts). It never comes on argv or in
+// the environment. Without it page.sock is not started and every host hello is refused.
 //   node src/main.ts --audit-out FILE --audit-seen FILE --socket PATH --data-dir DIR [--audit-probe-every SECONDS]
 // The second form is the read-only audit (src/audit.ts): shadow mode, Jev off, counts written to
 // --audit-out every minute and at exit, the seen-text hashes to --audit-seen at exit. With
@@ -110,7 +111,7 @@ function launchSecret(fdArg: string | undefined): Buffer | null {
   return secret;
 }
 const secret = launchSecret(args["auth-fd"]);
-if (secret === null) warn("no --auth-fd: caret-screen asks the helper to prove itself and will refuse this helper; start both with src/launch.ts");
+if (secret === null) warn("no --auth-fd: caret-screen asks the helper to prove itself and will refuse this helper, and no host can authenticate; start both with src/launch.ts");
 
 const store = new Store(args["data-dir"]);
 let server: HelperServer | null = null;
@@ -143,7 +144,7 @@ helper = new Helper({
   // The code-mode plan and goal writer (B24, D2-06): only a developer's --dev-writer route (L1).
   writer: writers?.plan == null ? null : ledgeredWriter(writers.plan, spend),
   // Ask as a scoped fill (B25), its intent from the configured maker.
-  ask: writers === null ? null : writers.ask.maker === "writer" ? { maker: "writer", writer: ledgeredWriter(writers.ask.writer, spend) } : writers.ask,
+  ask: writers === null ? null : writers.ask,
   // D2-02: one router above the producers whenever Jev is on. No host consumes a write decision yet (no routeDecision
   // message on the wire), so write is not a legal outcome: a document with nothing else due costs no model call.
   routing: args["no-jev"] || args.shadow ? null : {},

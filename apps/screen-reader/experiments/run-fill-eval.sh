@@ -46,4 +46,5 @@ for _ in $(seq 1 60); do
   [[ -f "$OUT/reader-record.ndjson" ]] && grep -q 'Claim form' "$OUT/reader-record.ndjson" && grep -q 'Schedule follow-up' "$OUT/reader-record.ndjson" && break
   sleep 0.25
 done
-(cd "$HELPER" && node scripts/fill-eval.ts --gold "$OUT/gold.json" --record "$OUT/reader-record.ndjson" --rounds "$ROUNDS" --out "$OUT" --wait-focus $((14 + 3 * NVISIT)))
+# fill-eval proves the host key (launch-secret.sh host_key_bytes): the helper sends proposals only to the host.
+(cd "$HELPER" && node scripts/fill-eval.ts --gold "$OUT/gold.json" --record "$OUT/reader-record.ndjson" --rounds "$ROUNDS" --out "$OUT" --wait-focus $((14 + 3 * NVISIT)) --host-key-fd 3 3< <(host_key_bytes))

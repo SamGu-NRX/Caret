@@ -8,6 +8,7 @@ import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as ver
 // T-E4 an editable control whose own label, placeholder or group names a sensitive kind keeps no value;
 // T-E5 a window of an app, or a frame of a site, that the user switched off never enters the model or a request;
 // T-E6 a route whose provider keeps what it is sent is refused outside an evaluation, in the Jev client and the writer.
+import { onWire, type TestField } from "./page-wire.ts";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,7 +17,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { PROTOCOL_VERSION, ReaderMessage, type Node, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
 import { excludedValue, HIGH_ENTROPY_BITS, HIGH_ENTROPY_CHARS, WITHHELD, withholdValues } from "../src/privacy/exclude.ts";
-import { DEFAULT_APPS_OFF } from "../src/privacy/read-policy.ts";
+import { DEFAULT_APPS_OFF, readAppsOff } from "../src/privacy/read-policy.ts";
+import { writeFileSync } from "node:fs";
 import { jevPolicy, writerPolicy } from "../src/privacy/providers.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
@@ -79,7 +81,7 @@ describe("T-E1: a secure field", () => {
 
 const CHROME = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const session = (): EngineSession => new EngineSession({ engine: "eng1", browser: CHROME, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], ...extra });
+const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], ...extra });
 const page = (frames: { origin: string; controls: PageControl[]; frameId?: number; parentFrameId?: number }[], focused: PageSnapshot["focused"] = null): PageSnapshot => ({
   type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
   frames: frames.map((f, i) => ({ frameId: f.frameId ?? i, parentFrameId: f.parentFrameId ?? (i === 0 ? -1 : 0), documentId: `D${i}`, origin: f.origin, path: "/apply", navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false, controls: f.controls })),
@@ -235,15 +237,14 @@ describe("T-E3: values in a secret format, generated", () => {
     for (const p of pieces(x)) expect(JSON.stringify([...m.windows.values()].map((v) => [v.window.title, [...v.nodes.values()], v.values]))).not.toContain(p);
   }
 
+  // The eight independent API-key instances took 5.813 s in one 5 s test under full-suite CPU stress.
   for (const [family, xs] of Object.entries(FAMILIES)) {
-    it(`${family}: no wire string of any builder holds an instance in any position`, async () => {
-      for (const x of xs) {
-        const before = fetched.length;
-        await flows(x);
-        const bodies = fetched.slice(before);
-        expect(bodies.length, family).toBeGreaterThan(0);
-        for (const b of bodies) for (const p of pieces(x)) expect(b.includes(p), `${family}: ${p}`).toBe(false);
-      }
+    it.each(xs.map((x, index) => ({ x, index })))(`${family} instance $index: no wire string of any builder holds it in any position`, async ({ x }) => {
+      const before = fetched.length;
+      await flows(x);
+      const bodies = fetched.slice(before);
+      expect(bodies.length, family).toBeGreaterThan(0);
+      for (const b of bodies) for (const p of pieces(x)) expect(b.includes(p), `${family}: ${p}`).toBe(false);
     });
   }
 });
@@ -281,13 +282,35 @@ describe("T-E4: a control labelled with a sensitive kind", () => {
 });
 
 describe("T-E5: apps and sites switched off", () => {
-  it("the helper's default deny list is the reader's, word for word", () => {
-    const swift = readFileSync(join(here, "../../apps/screen-reader/Sources/CaretScreenAX/ScreenReader.swift"), "utf8");
-    const block = /static let defaults = \[([\s\S]*?)\]/u.exec(swift)?.[1] ?? "";
-    expect([...block.matchAll(/"([^"]+)"/gu)].map((x) => x[1])).toEqual([...DEFAULT_APPS_OFF]);
+  it("the helper's required deny list matches the shared Swift exclusions", () => {
+    const swift = readFileSync(join(here, "../../apps/screen-reader/Sources/CaretScreenCore/ExcludedApps.swift"), "utf8");
+    const ids = [...swift.matchAll(/Entry\(bundleIdentifier: "([^"]+)"/gu)].map((x) => x[1]);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toEqual([...DEFAULT_APPS_OFF]);
   });
 
   const line = "Vault item: Lumen staging, user dana";
+  it("a deny file an older Caret wrote still gets every default, and keeps the user's own lines", () => {
+    const dir = mkdtempSync(join(tmpdir(), "deny-"));
+    try {
+      const path = join(dir, "deny-apps.txt");
+      writeFileSync(path, "# old\ncom.apple.keychainaccess\ncom.example.private\n");
+      // readAppsOff returns the user's lines; the model adds every required entry on top (#37, required-apps.test.ts).
+      const got = readAppsOff(path)!;
+      expect(got).toContain("com.example.private");
+      for (const d of DEFAULT_APPS_OFF) {
+        const m = new ScreenModel();
+        m.setAppsOff(got);
+        m.apply(snap([text("t", line)], { at: 1000, windowId: "old-file", app: { pid: 9000, bundleId: d, name: d } }));
+        expect(m.windows.has("old-file"), d).toBe(false);
+      }
+      expect(readAppsOff(join(dir, "absent.txt"))).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("a window of an app switched off never enters the model, and one already there closes", () => {
     const m = new ScreenModel();
     const vault = { pid: 8100, bundleId: "com.1password.1password", name: "1Password" };

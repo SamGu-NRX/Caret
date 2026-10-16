@@ -3,8 +3,9 @@
 // runs it, one undo restores it, and controls the writes reveal are offered as a second segment (afterReveal). Caret
 // presses nothing on the page. Driven through the Helper and the page engine of fill-transaction.test.ts. Every name and
 // value is invented.
+import { readings, type TestField } from "./page-wire.ts";
 import { afterEach, describe, expect, it } from "vitest";
-import { PROTOCOL_VERSION, type GoalProgress, type PageControl } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type GoalProgress } from "../src/protocol.ts";
 import { MAX_FIELDS } from "../src/fill/fill.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
 import type { AskJev } from "../src/fill/jev.ts";
@@ -99,9 +100,10 @@ function revealing(page: FakePage): void {
 }
 
 describe("the reveal continuation (P2)", () => {
-  // I2 lead ruling B: an Ask's scope is settled once, by the scope question, and changes only for a new document or a new
-  // Ask. A field the writes revealed on the same page was never asked about, so an Ask's goal leaves it to the user.
-  it("leaves the fields an Ask's writes revealed to the user: no second preview writes them (I2 ruling B)", async () => {
+  // The Ask's scope is settled once (I2 ruling B), with one exception: a field the goal's own verified writes revealed on
+  // the same document is asked about by the scope question alone and, when chosen, planned as a follow-up that needs its
+  // own acceptance (runs.ts followUp; reveal-follow-up.test.ts holds its caps, Stop and Undo).
+  it("offers the fields the writes revealed as a second preview, which one more acceptance fills", async () => {
     const r = await rig({ note: `${NOTE}\nProvince: Ontario`, picks: { ...PICKS, Province: "Ontario" } });
     revealing(r.page);
     const preview = (await r.ask("fill out this form from my note")) as Segment;
@@ -111,8 +113,12 @@ describe("the reveal continuation (P2)", () => {
     await r.helper.goals.idle();
     const next = goalMessages(r).find((m): m is Segment => m.event === "segment" && m.goalId !== preview.goalId);
     expect(Date.now() - t0).toBeLessThan(1500);
-    expect(next?.steps.some((s) => s.says.startsWith("Province")) ?? false).toBe(false);
+    expect(next).toMatchObject({ reason: "afterReveal", replaces: preview.goalId, segment: 0 });
+    expect(next?.steps.map((s) => s.says)).toEqual(["Province: Ontario", "You press Submit Application"]);
     expect(r.page.shown("e20")).toBe("");
+    await r.accept(next as Segment);
+    await r.helper.goals.idle();
+    expect(r.page.shown("e20")).toBe("Ontario");
     expect(presses(r)).toBe(0);
   });
 
@@ -125,12 +131,12 @@ describe("the reveal continuation (P2)", () => {
     await r.helper.goals.idle();
     // The first preview was the Ask's reply; nothing more is published.
     expect(goalMessages(r).filter((m) => m.event === "segment")).toHaveLength(0);
-    expect(r.page.verbs.filter((v) => v.kind !== "pageWalk").map((v) => v.id)).toEqual(["e3"]);
+    expect(r.page.verbs.filter((v) => v.kind !== "pageWalk").map((v) => ("id" in v ? v.id : null))).toEqual(["e3"]);
   });
 });
 
 describe("the size hand-off (P2), in parts since C2", () => {
-  const forty = (): PageControl[] => Array.from({ length: 40 }, (_, i) => c(`t${i + 1}`, "text", `Answer ${i + 1}`, { value: "" }));
+  const forty = (): TestField[] => Array.from({ length: 40 }, (_, i) => c(`t${i + 1}`, "text", `Answer ${i + 1}`, { value: "" }));
   const note = Array.from({ length: 40 }, (_, i) => `Answer ${i + 1}: value ${i + 1}`).join("\n");
   const picks = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`Answer ${i + 1}`, `value ${i + 1}`]));
 
@@ -168,7 +174,7 @@ describe("the size hand-off (P2), in parts since C2", () => {
   });
 
   it("names the fields past four parts as the user's before Tab", async () => {
-    const many = (): PageControl[] => Array.from({ length: 85 }, (_, i) => c(`t${i + 1}`, "text", `Q${i + 1}`, { value: "" }));
+    const many = (): TestField[] => Array.from({ length: 85 }, (_, i) => c(`t${i + 1}`, "text", `Q${i + 1}`, { value: "" }));
     const firsts = [1, 21, 41, 61, 81];
     const r = await rig({ controls: many, note: firsts.map((i) => `Q${i}: a${i}`).join("\n"), picks: Object.fromEntries(firsts.map((i) => [`Q${i}`, `a${i}`])) });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
@@ -210,13 +216,14 @@ describe("a page goal's checks before and while it writes (P2)", () => {
   });
 
   it("is not done when the page changes a written value after its last write (P2 review: the final walk is read)", async () => {
-    const two = (): PageControl[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "" })];
+    const two = (): TestField[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "" })];
     const r = await rig({ controls: two });
     r.page.onAct = (v, p) => {
       // Caret's write is read back as written; then the page's own script changes the field before the next walk.
       if (v.kind !== "pageWrite" || v.id !== "e2" || v.sameAs !== undefined) return null;
+      const rev = p.caretWrote("e2", v.value);
       p.find("e2").value = "robin@";
-      return { outcome: "ok", detail: null, readings: { before: "", afterInput: v.value, afterBlur: v.value, invalid: false, error: null } };
+      return { outcome: "ok", detail: null, readings: readings("", v.value, v.value, rev) };
     };
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     expect((await r.accept(preview))?.outcome).toBe("done");
@@ -227,7 +234,7 @@ describe("a page goal's checks before and while it writes (P2)", () => {
   });
 
   it("drops a fill pick for a subject line, as every goal write is held to (code gates still run)", async () => {
-    const withSubject = (): PageControl[] => [...mixedControls().slice(0, 2), c("e30", "text", "Subject", { value: "" })];
+    const withSubject = (): TestField[] => [...mixedControls().slice(0, 2), c("e30", "text", "Subject", { value: "" })];
     const r = await rig({ controls: withSubject, note: `${NOTE}\nSubject: Hello there`, picks: { ...PICKS, Subject: "Hello there" } });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     expect(preview.steps.map((x) => x.says)).toEqual(["Full name: Robin Vale", "Email: robin@example.test", "The rest is yours"]);

@@ -9,6 +9,7 @@ import { redactWindow } from "./redact.ts";
 //   3. It fits. A field whose maxlength is shorter than the answer gets nothing: Caret never cuts the user's words.
 // An answer that passes is still never written unseen: the host shows it whole first (SAVED_ANSWERS_CAPABILITY), and
 // the helper's own Fill all writes one only from a pop-up row that shows it (offers/fill-popup.ts).
+import { holdsText } from "../model.ts";
 import type { WindowState } from "../model.ts";
 import type { AnswerWithheld, FillAnswer, Node, PageExclusion } from "../protocol.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
@@ -41,7 +42,7 @@ const QUESTION = /\?\s*$|^(?:why|what|how|describe|tell us|please (?:describe|te
  * one-line input whose label asks a question and names no kind. A field Caret never types is not one (fill.ts filters it).
  */
 export function isAnswerField(n: Node): boolean {
-  if (n.editable !== true || n.states?.includes("secure") === true || (n.value ?? "") !== "") return false;
+  if (n.editable !== true || n.states?.includes("secure") === true || holdsText(n)) return false;
   const label = fieldLabelText(n.label) ?? fieldLabelText(n.placeholder);
   if (label === null) return false;
   const kinds = fieldKinds([label]);

@@ -1,1 +1,0 @@
-Caret for Chrome store build (pnpm build:store) strips the manifest key, so the store ID differs from extension/EXTENSION_ID until the store's public key replaces it; tabs was dropped because the http(s) host permissions already expose tab title/url (checked in Chromium).
