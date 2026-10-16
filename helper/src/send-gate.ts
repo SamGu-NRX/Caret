@@ -2,7 +2,7 @@
 // HelperServer.send, which looks the message's type up here and refuses, with a log line naming why, a message the
 // connection's role may not receive. Any same-user process can connect to the socket, so a consumer that has not proven
 // the launch secret's host key (host-auth.ts) gets only status: nothing derived from the screen or the user's data.
-import type { ConsumerMessage, HelperMessage, HelperToReader } from "./protocol.ts";
+import type { HelperMessage, HelperToReader } from "./protocol.ts";
 
 /**
  * Who a connection has shown itself to be.
@@ -101,22 +101,3 @@ export function withheldBecause(role: SessionRole, type: string): string | null 
   if (cls === "reader") return `${type} is the reader's, and this connection is not the reader`;
   return `a ${role} connection is not sent ${cls} messages`;
 }
-
-/**
- * Requests a consumer may send whose only answer is a host message. One from a connection that is not the proven host
- * is refused by name before any work starts: it could not be sent the answer, and the work can call Jev. Each reason
- * completes "<type> needs a host hello (host: true): ". Requests already held to a host capability (pageInsert,
- * answerSave, goalRequest and the rest) are refused by that check and are not listed.
- */
-export const HOST_ANSWERED: { readonly [K in ConsumerMessage["type"]]?: string } = {
-  fillRequest: "a fillProposal quotes values and labels from the screen",
-  planRequest: "a plan's proposal or question quotes values and names windows",
-  askAnswer: "a plan's proposal or question quotes values and names windows",
-  firstLook: "a first look's offer names a window and quotes its values",
-  firstLookPreviewRequest: "only the host shows the preview as consent",
-  memoryRequest: "memory holds what Caret knows about you",
-  memoryNotRight: "memory holds what Caret knows about you",
-  memoryDocumentRequest: "memory holds what Caret knows about you",
-  activityRequest: "activity records hold window titles and status lines",
-  fileConfirm: "the reply names the file you chose and its path",
-};
