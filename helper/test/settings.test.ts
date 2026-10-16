@@ -17,7 +17,7 @@ import { FIXTURE_APP, MAIL_APP, focus, jevPickingText, snap, text } from "./buil
 
 /** Jev calls one fill makes: since B24, whose details first and then values, each asked twice (fill.ts). A held ask stops after the first stage's two. */
 const PER_FILL = 4;
-import { LineClient, SocketReader, loadRecording } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, loadRecording, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const HOUR = 60 * 60 * 1000;
 const ALL: SettingsRole[] = ["fill", "repeat", "watch", "calendar", "words"];
@@ -190,7 +190,7 @@ describe("settings over the socket take effect on the next decision", () => {
     const pick = jevPickingText((_, instructions) => VALUES[/Label: '([^']+)'/.exec(instructions)?.[1] ?? ""] ?? null);
     // This test's helper talks to this test's server only. Through the `server` variable, a run still in
     // flight when its test ended published its stop into a later test's host (B13's socket flake).
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       askJev: async (req) => {
@@ -208,7 +208,8 @@ describe("settings over the socket take effect on the next decision", () => {
     server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
   });
 

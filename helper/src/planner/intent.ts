@@ -267,9 +267,11 @@ export function personSpans(instruction: string): string[] {
 /**
  * The snapshot an intent maker chooses from, with its text taken through one ledger: the form's title and
  * field names as descriptors, the other windows' titles and memory labels as plan text, and the instruction.
- * Throws PlannerError("privacy") when the instruction cannot go out.
+ * `only`: the fields and upload fields it holds, when not every one of the window's (a page goal's revealed fields,
+ * helper.ts planRevealed), so MAX_INTENT_FIELDS counts those alone. Throws PlannerError("privacy") when the instruction
+ * cannot go out.
  */
-export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[]): IntentSnapshot {
+export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], only?: ReadonlySet<string>): IntentSnapshot {
   const local = w;
   w = redactWindow(w);
   const ledger = new Disclosure(model);
@@ -295,6 +297,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   let fieldsCut = false;
   // I2 ruling: the one inventory the native planner reads too (targets.ts): a field with no readable name is in neither.
   for (const x of localTargets(local)) {
+    if (only !== undefined && !only.has(x.node.key)) continue;
     if (fields.length >= MAX_INTENT_FIELDS) {
       fieldsCut = true;
       break;
@@ -317,7 +320,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   // File controls, as upload fields for the scope question: the name and its group taken together, as a field's are.
   const uploads: IntentField[] = [];
   for (const n of w.window.kind === PAGE_WINDOW_KIND ? w.nodes.values() : []) {
-    if (n.subrole !== FILE_INPUT_SUBROLE || n.states?.includes("disabled") === true || !inWebArea(w, n)) continue;
+    if (n.subrole !== FILE_INPUT_SUBROLE || n.states?.includes("disabled") === true || !inWebArea(w, n) || (only !== undefined && !only.has(n.key))) continue;
     const d = describeField(w, n);
     const name = d.label ?? d.nearest;
     if (name === null || !ledger.take(w, "descriptor", [name, d.section])) continue;

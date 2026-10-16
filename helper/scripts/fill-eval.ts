@@ -1,6 +1,10 @@
 // Grounded-fill evaluation against caret-fixture with live Jev.
 //
-//   node scripts/fill-eval.ts --gold GOLD.json --record READER_RECORDING.ndjson --rounds N --out DIR
+//   node scripts/fill-eval.ts --gold GOLD.json --record READER_RECORDING.ndjson --rounds N --out DIR --host-key-fd N
+//
+// The helper sends proposals only to the host (src/send-gate.ts), so this script proves the host key, which it reads
+// once from descriptor N, a pipe and never a regular file. apps/screen-reader/experiments/run-fill-eval.sh passes it
+// as `--host-key-fd 3 3< <(host_key_bytes)` (launch-secret.sh); with src/launch.ts, its --host-key-fd writes the key.
 //
 // Needs a running helper (with Jev) and a caret-screen started with --only-pids <fixture pid>
 // --record READER_RECORDING.ndjson, so the helper's screen model holds the fixture's synthetic
@@ -8,13 +12,14 @@
 // the recorded snapshots. For each form it sends one fillRequest per round, and it also records any
 // proposal that a focus event produced on its own. Scores exact match against the gold values.
 import { writeStore, writeStoreJson } from "../src/privacy/send.ts";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { positiveInt } from "./flags.ts";
 import { FillProposal, PROTOCOL_VERSION, Snapshot, type Frame } from "../src/protocol.ts";
+import { hostProof } from "../src/host-auth.ts";
 
 const { values: a } = parseArgs({
   options: {
@@ -24,9 +29,12 @@ const { values: a } = parseArgs({
     out: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "screen.sock") },
     "wait-focus": { type: "string", default: "0" },
+    "host-key-fd": { type: "string" },
   },
 });
 if (a.gold === undefined || a.record === undefined || a.out === undefined) throw new Error("--gold, --record and --out are required");
+if (a["host-key-fd"] === undefined) throw new Error("--host-key-fd is required: the helper sends a fillProposal only to a consumer that proves the host key (src/launch.ts --host-key-fd)");
+const hostKey = readHostKey(a["host-key-fd"]);
 const rounds = positiveInt("rounds", a.rounds);
 // Before any request: a missing directory would otherwise throw at the first write, after Jev was paid.
 mkdirSync(a.out, { recursive: true });
@@ -65,6 +73,12 @@ const targets: Target[] = gold.forms.map((form) => {
 });
 
 const sock = createConnection(a.socket);
+let authenticated: () => void = () => undefined;
+const isHost = new Promise<void>((resolve, reject) => {
+  authenticated = resolve;
+  // A wrong key is refused by the helper with an error line naming why, and the socket closes.
+  sock.once("close", () => reject(new Error(`the helper closed the connection before it took this script as the host: ${errors.join("; ") || "no reason given"}`)));
+});
 const proposals: FillProposal[] = [];
 const errors: string[] = [];
 let waiter: ((p: FillProposal | null) => void) | null = null;
@@ -74,9 +88,11 @@ sock.on("data", (d: string) => {
   buf += d;
   let nl: number;
   while ((nl = buf.indexOf("\n")) >= 0) {
-    const m = JSON.parse(buf.slice(0, nl)) as { type: string; message?: string };
+    const m = JSON.parse(buf.slice(0, nl)) as { type: string; message?: string; nonce?: string };
     buf = buf.slice(nl + 1);
-    if (m.type === "error") {
+    if (m.type === "hostChallenge") sock.write(JSON.stringify({ type: "hostProof", v: PROTOCOL_VERSION, proof: hostProof(hostKey, String(m.nonce)) }) + "\n");
+    else if (m.type === "hostAuthenticated") authenticated();
+    else if (m.type === "error") {
       errors.push(m.message ?? "");
       const w = waiter;
       waiter = null;
@@ -91,7 +107,8 @@ sock.on("data", (d: string) => {
   }
 });
 await new Promise<void>((r) => sock.once("connect", () => r()));
-sock.write(JSON.stringify({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: process.pid, version: "fill-eval" }) + "\n");
+sock.write(JSON.stringify({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: process.pid, version: "fill-eval", host: true }) + "\n");
+await isHost;
 
 // Proposals that arrive from focus events before the explicit requests start.
 const waitFocusMs = Number(a["wait-focus"]) * 1000;
@@ -204,3 +221,19 @@ for (const r of rows) {
 if (errors.length > 0) md.push("", "Errors:", ...errors.map((e) => `- ${e}`));
 writeStore(join(a.out, "fill-eval.md"), md.join("\n") + "\n");
 console.log(md.slice(0, 14).join("\n"));
+
+/** The 32-byte host key, read once from an inherited descriptor (3 and above), which is then closed. */
+function readHostKey(fdArg: string): Buffer {
+  const fd = Number(fdArg);
+  if (!/^[0-9]+$/.test(fdArg) || fd < 3) throw new Error(`--host-key-fd ${fdArg} is not an inherited descriptor (3 and above)`);
+  const key = Buffer.alloc(32);
+  let got = 0;
+  while (got < key.length) {
+    const n = readSync(fd, key, got, key.length - got, null);
+    if (n === 0) break;
+    got += n;
+  }
+  closeSync(fd);
+  if (got !== key.length) throw new Error(`--host-key-fd ${fd}: read ${got} of ${key.length} host key bytes`);
+  return key;
+}

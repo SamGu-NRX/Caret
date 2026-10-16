@@ -7,8 +7,10 @@ the host; without it Caret connects as a plain consumer and is sent no route dec
 Neither the secret nor the key is ever on argv, in a file or in an environment value.
 
 fill_acceptance.py and surface_acceptance.py start processes through these, so every script built on either one shares
-a single secret.
+a single secret. A script's own connection to the helper proves the host key with host_proof, since the helper sends a
+consumer that is not the host only status (helper/src/send-gate.ts).
 """
+import base64
 import hashlib
 import hmac
 import os
@@ -22,6 +24,12 @@ def host_key(secret=SECRET):
     if len(secret) != 32:
         raise ValueError(f"a launch secret is 32 bytes, not {len(secret)}")
     return hmac.new(secret, b"caret-host-key", hashlib.sha256).digest()
+
+
+def host_proof(nonce, secret=SECRET):
+    """The hostProof answering the helper's hostChallenge `nonce`: base64 HMAC-SHA256(host key, "caret-host-proof\n" + nonce),
+    as helper/src/host-auth.ts hostProof makes it."""
+    return base64.b64encode(hmac.new(host_key(secret), f"caret-host-proof\n{nonce}".encode(), hashlib.sha256).digest()).decode()
 
 
 def popen_with_secret(args, secret=SECRET, **popen_kwargs):

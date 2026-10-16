@@ -136,15 +136,16 @@ function revealing(page: FakePage): void {
 }
 
 describe("a reveal's preview (H11)", () => {
-  it("shows no row for a field an Ask's writes revealed (I2 ruling B: the scope is settled once)", async () => {
+  it("carries a view of its own: the revealed field's row, the same page window", async () => {
     const r = await rig({ note: `${NOTE}\nProvince: Ontario`, picks: { ...PICKS, Province: "Ontario" } });
     revealing(r.page);
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     await r.helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: preview.goalId, segment: 0, digest: preview.digest, at: Date.now() });
     await r.helper.goals.idle();
     const next = r.published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.goalId !== preview.goalId);
-    // I2 lead ruling B: the revealed Province was never asked about, so an Ask's goal shows no row that writes it.
-    expect(next?.page?.rows?.some((x) => x.label === "Province") ?? false).toBe(false);
+    expect(next).toMatchObject({ reason: "afterReveal", replaces: preview.goalId });
+    expect(next?.page?.windowId).toBe(WIN);
+    expect(next?.page?.rows).toEqual([{ step: 0, label: "Province", value: "Ontario", picked: true }]);
   });
 });
 

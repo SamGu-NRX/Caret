@@ -75,8 +75,8 @@ export const ROWS: readonly RowSpec[] = [
   {
     id: "privacy-non-host",
     number: "5b",
-    oracle: "A consumer that connects without host: true gets no proposal and no first-look preview while the screen has a fillable field.",
-    owner: "#36 (fix/host-auth; first-look preview #17)",
+    oracle: "A consumer that connects without host: true gets 0 proposals and no first-look preview or first look while the screen has a fillable field.",
+    owner: "#46 (fix/nonhost-nothing; host proof #36, first-look preview #17)",
   },
   {
     id: "deny-site-off",

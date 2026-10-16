@@ -6,7 +6,7 @@
 import { OwnerVerdicts } from "./fill/owner-cache.ts";
 import { Disclosure, type ModelText } from "./privacy/disclosure.ts";
 import { redactWindow } from "./fill/redact.ts";
-import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
+import { askScope, fieldFingerprint, scopeKey, scopeSet, withRevealed, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
 import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
@@ -103,7 +103,7 @@ import { planWithCode } from "./planner/codeplan.ts";
 import { ConfirmedFiles } from "./engines/attach.ts";
 import { SavedFiles, type AttachedFile } from "./goals/saved-files.ts";
 import { readyOnLoad } from "./offers/ready-on-load.ts";
-import { GoalRuns, type Replan } from "./goals/runs.ts";
+import { GoalRuns, leftRevealed, type Replan, type Revealed } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
 import { continueGoal } from "./goals/replay.ts";
 import { continuationScope, fileControls, planPage } from "./goals/page-planner.ts";
@@ -158,12 +158,13 @@ function originOf(site: string | null): string | null {
 
 declare const settleMark: unique symbol;
 /**
- * I2 lead ruling: the capability to settle an Ask's scope by its per-field question. Only two entry points hold one: a
- * fresh Ask (handlePlanRequest with no question being answered) and an explicit carry to the next page (replanPage on
- * "nextPage"). A continued Ask, a replan after a stop, a reveal and every other path hold none, so nothing they reach
- * can settle a scope: they go on from the frozen one, or write nothing.
+ * I2 lead ruling: the capability to settle an Ask's scope by its per-field question. Only three entry points hold one: a
+ * fresh Ask (handlePlanRequest with no question being answered), an explicit carry to the next page (replanPage on
+ * "nextPage"), and a page goal's follow-up (planRevealed), which asks only about the fields the goal's own verified writes
+ * revealed on the same document. A continued Ask, a replan after a stop and every other path hold none, so nothing they
+ * reach can settle a scope: they go on from the frozen one, or write nothing.
  */
-type SettleTicket = { readonly from: "freshAsk" | "carry"; readonly [settleMark]: true };
+type SettleTicket = { readonly from: "freshAsk" | "carry" | "reveal"; readonly [settleMark]: true };
 const settleTicket = (from: SettleTicket["from"]): SettleTicket => ({ from }) as SettleTicket;
 
 /**
@@ -690,6 +691,7 @@ export class Helper {
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
       replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed, r.scopes) : this.replanPage(r.goalId, r.instruction, r.page, r.owed, r)),
+      planRevealed: (r) => this.planRevealed(r),
       // Slice 2: a goal that observes goes on by replay, never by another writer call (goals/replay.ts).
       replay: async (r) => {
         const out = await continueGoal(this.model, {
@@ -1513,16 +1515,19 @@ export class Helper {
     return askScope(windowId, r.document, r.asks, r.seen, of.person, of.askId, [], of.section);
   }
 
-  /** The per-field scope question on a window for a request holding a ticket: what it settled (fill/ask-scope.ts Settled). */
-  private async settleRequest(_ticket: SettleTicket, instruction: string, windowId: string, askId: string, document?: string | null, held: string | null = null): Promise<Settled> {
+  /**
+   * The per-field scope question on a window for a request holding a ticket: what it settled (fill/ask-scope.ts Settled).
+   * `only`: the fields it asks about, when not every field of the window (a follow-up's revealed fields).
+   */
+  private async settleRequest(_ticket: SettleTicket, instruction: string, windowId: string, askId: string, document?: string | null, held: string | null = null, only?: ReadonlySet<string>): Promise<Settled> {
     const reader = this.documentReader();
     const doc = document !== undefined ? document : reader === null ? null : reader(windowId);
     const w = this.model.windows.get(windowId);
     const ask = this.ask;
     if (w === undefined || ask === null) return { askId, windowId, document: doc, seen: {}, asks: [], unresolved: [], section: held };
-    const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory());
+    const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory(), only);
     const seen = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldFingerprint(w, f.key)]));
-    const { asks, unresolved, sectionless, section, notFound } = await settleFields(snap, ask, undefined, held);
+    const { asks, unresolved, sectionless, section, notFound } = await settleFields(snap, ask, only, held);
     return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unresolved: unresolved.map((f) => f.key), sectionless: sectionless.map((f) => f.key), section, ...(notFound ? { notFound } : {}) };
   }
 
@@ -1589,7 +1594,8 @@ export class Helper {
     // Planned and not yet offered (pagePlan's entry stays until the goal is offered and ends, or is never offered), or
     // waiting or running: no gap between planning and the preview in which an ambient read could take the text.
     if (g === null) return this.pagePlanning.has(owner);
-    return g.state === "awaiting" || g.state === "running";
+    // A page goal reading what its writes revealed (runs.ts followUp) plans from the same text.
+    return g.state === "awaiting" || g.state === "running" || g.state === "observing";
   }
 
   /**
@@ -1658,19 +1664,16 @@ export class Helper {
     return session === undefined ? this.opts.goalFiles === true : this.goalFileHosts.has(session);
   }
 
-  /**
-   * A fresh plan for a page goal (P2): after a stop, the same scope on the page as it is now; after its writes revealed
-   * controls (runs.ts afterReveal), those controls alone, under the scope's sources and person. Null when none.
-   */
-  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[], r: Pick<Replan, "completed" | "session" | "why" | "scopes">): Promise<GoalPlan | null> {
+  /** A fresh plan for a page goal (P2): after a stop, or on the user's next page, its scope on the page as it is now. Null when none. */
+  private async replanPage(goalId: string, instruction: string, page: PageGoal, owed: readonly LeftItem[], r: Pick<Replan, "completed" | "session" | "why" | "scopes">): Promise<GoalPlan | null> {
     if (this.mode !== "live" || this.gate.settings.paused) return null;
     // P3: a file control this goal (or one it replaces) already attached to, on this document, gets no second file. A
     // carried goal's receipts name the old document's keys (runs.ts keepCarry), so none of them match the new page.
     const attached = new Set(r.completed.filter((x) => x.target.windowId === page.windowId).map((x) => x.target.key));
     try {
-      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(r.scopes === undefined ? {} : { scopes: await this.withPageScope(r.why === "nextPage" ? settleTicket("carry") : null, instruction, page.windowId, r.scopes) }), ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
+      return await this.pagePlan(goalId, instruction, page.windowId, { scope: page.scope, kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(r.scopes === undefined ? {} : { scopes: await this.withPageScope(r.why === "nextPage" ? settleTicket("carry") : null, instruction, page.windowId, r.scopes) }) });
     } catch (e) {
-      // I2: the scope ask for a next page or a reveal failing (settleScopeFor) leaves no fresh plan, as a planner refusal does.
+      // I2: the scope ask for a next page failing (settleScopeFor) leaves no fresh plan, as a planner refusal does.
       if (e instanceof PlannerError) {
         this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.code}: ${e.message}`);
         return null;
@@ -1682,6 +1685,44 @@ export class Helper {
   }
 
 
+
+  /**
+   * A page goal's follow-up (runs.ts followUp): the fields its own verified writes revealed on the document its Ask's
+   * scope was settled on. The Ask's per-field scope question is asked about those fields alone; the ones it chooses join
+   * that scope (fill/ask-scope.ts withRevealed), and the page planner plans them as the follow-up goal, holding the tab
+   * text the goal it follows read (I6), so its values pass fill and the write contract as that goal's did. Each revealed
+   * field it does not plan is left to the user with why.
+   */
+  private async planRevealed(r: Revealed): Promise<{ plan: GoalPlan } | { left: LeftItem[] }> {
+    const w = this.model.windows.get(r.page.windowId);
+    if (w === undefined) return { left: [] };
+    if (this.mode !== "live" || this.gate.settings.paused) return { left: leftRevealed(w, r.keys, "Caret is paused") };
+    this.tabSource?.pass(r.from, r.goalId);
+    let scopes = r.scopes;
+    if (scopes !== undefined) {
+      const doc = this.documentReader()?.(r.page.windowId) ?? null;
+      const held = scopes.scopes[scopeKey(r.page.windowId, doc)];
+      // With no scope for this document the planner refuses below, loudly; nothing is settled for it here.
+      if (held !== undefined) {
+        try {
+          const settled = await this.settleRequest(settleTicket("reveal"), r.instruction, r.page.windowId, scopes.askId, doc, scopes.section, new Set(r.keys.filter((k) => held.seen[k] === undefined)));
+          scopes = withRevealed(scopes, settled);
+        } catch (e) {
+          if (!(e instanceof PlannerError)) throw e;
+          this.opts.warn?.(`goal ${r.goalId}: no follow-up for revealed fields: ${e.code}`);
+          return { left: leftRevealed(w, r.keys, "Caret couldn't check that your request covers it") };
+        }
+      }
+    }
+    const attached = new Set(r.completed.filter((x) => x.target.windowId === r.page.windowId).map((x) => x.target.key));
+    try {
+      return { plan: await this.pagePlan(r.goalId, r.instruction, r.page.windowId, { scope: continuationScope(r.page), kind: r.page.kind, section: r.page.section }, { session: r.session, attached, revealed: r.keys, ...(scopes === undefined ? {} : { scopes }) }) };
+    } catch (e) {
+      if (!(e instanceof GoalError)) throw e;
+      this.opts.warn?.(`goal ${r.goalId}: no follow-up for revealed fields: ${e.fromTab ? `${e.code}; not logged, since it may quote the tab you left` : e.message}`);
+      return { left: e.left.length > 0 ? [...e.left] : leftRevealed(w, r.keys, e.says) };
+    }
+  }
 
   /** A fresh plan for a stopped goal's instruction, from the screen as it is now; null when none can be offered. */
   private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[], carried: readonly LeftItem[], scopes?: ScopeSet): Promise<GoalPlan | null> {
@@ -1923,6 +1964,13 @@ export class Helper {
       fillModel: async (formWindowId) => {
         if (tried || this.tabSource === null) return this.fillModel(offerKey);
         tried = true;
+        // A page goal's follow-up already holds the text the goal it follows read (planRevealed, TabSource.pass): it
+        // plans from that text, never from a new read that could find the tab changed or no longer the one left.
+        if (this.tabSource.holds(offerKey)) {
+          read = true;
+          windowRead = this.tabSource.holding();
+          return this.fillModel(offerKey);
+        }
         const r = await this.tabSource.readFor(formWindowId, offerKey).catch(() => ({ refused: "refused" as const }));
         read = "windowId" in r;
         windowRead = "windowId" in r ? r.windowId : null;
@@ -2128,20 +2176,6 @@ export class Helper {
     } catch (e) {
       if (e instanceof MemoryError) return reply([], e.message);
       throw e;
-    }
-  }
-
-  /**
-   * Whether resuming this memory entry would bring back consent the router acts on (routing/consent.ts): a skill, or
-   * the routine a skill is made from. Unknown ids carry none; the store answers them with its own error.
-   */
-  resumeRestoresConsent(id: string | undefined): boolean {
-    if (id === undefined) return false;
-    try {
-      const kind = this.memory.get(id).kind;
-      return kind === "skill" || kind === "routine";
-    } catch {
-      return false;
     }
   }
 
@@ -2709,7 +2743,10 @@ export class Helper {
           if (this.goals.owns(m.taskId)) throw new Error(`task ${m.taskId} is a goal's step; a goal goes on only from a fresh acceptance`);
           this.rebind(m.taskId, session, this.executor.resumeRefusal(m.taskId));
           return await this.executor.resume(m.taskId);
-        case "undo":
+        case "undo": {
+          // A goal's segments are undone newest first (runs.ts undoRefusal): refused before anything is restored.
+          const order = this.goals.undoRefusal(m.taskId);
+          if (order !== null) throw new Error(order);
           // Asking to undo a skill's run resets its clean runs and puts it back on Tab (B19), before the restore
           // is awaited: a restore that is refused or fails (a reader restart since the run, S1 audit #15) must
           // not leave the skill running on its own.
@@ -2717,6 +2754,7 @@ export class Helper {
           this.patterns.skills.reversed(m.taskId, this.now());
           this.rebind(m.taskId, session, this.executor.undoRefusal(m.taskId));
           return await this.executor.undo(m.taskId);
+        }
         case "pause":
         case "takeOver":
           // The run's own promise resolves as paused at the next step boundary.

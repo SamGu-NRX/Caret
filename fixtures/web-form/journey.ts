@@ -748,8 +748,7 @@ async function main(): Promise<void> {
       driven: true,
       observed: { proposals: proposals.length, previews: previews.length },
       expected: { proposals: 0, previews: 0 },
-      expectedFailure: "known gap: #36's non-host rule, focus task caret-host-nonhost-f1",
-      cause: `the plain consumer got ${JSON.stringify(counts(proposals))} over the run (${whileField} while form.html's First name was focused) and previews ${JSON.stringify(counts(previews))}; its firstLookPreviewRequest was ${got.some((m) => m.type === "error" && /firstLookPreviewRequest/.test(String(m.message))) ? "refused" : "answered"}. Known on alpha: fill proposals are published to every consumer (server.ts publish); PR #36's queued non-host rule owns it`,
+      cause: `the plain consumer got ${JSON.stringify(counts(proposals))} over the run (${whileField} while form.html's First name was focused) and previews ${JSON.stringify(counts(previews))}; its firstLookPreviewRequest was ${got.some((m) => m.type === "error" && /firstLookPreviewRequest/.test(String(m.message))) ? "refused" : "answered"}. Every send passes helper/src/send-gate.ts, which gives a consumer that has not proven the host key only status`,
     });
   }
 

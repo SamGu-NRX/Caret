@@ -13,7 +13,7 @@ import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type OfferPopup } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { jevPickingText } from "./builders.ts";
-import { LineClient, SocketReader, loadRecording, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, loadRecording, until, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 // The fill producer's builder, wrapped so one test can make it emit a spec the host would refuse. The
 // message still goes through the helper's real publish path.
@@ -88,7 +88,7 @@ describe("offers over the socket", () => {
     let n = 0;
     // This test's helper talks to this test's server only. Through the `server` variable, a run still in
     // flight when its test ended published its stop into a later test's host (B13's socket flake).
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       askJev,
@@ -102,7 +102,8 @@ describe("offers over the socket", () => {
     server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     // As caret-screen started without --act-pids: every act needs the helper's grant for its task (B15).
     reader.enforceGrants = true;

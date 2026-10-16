@@ -33,7 +33,7 @@ const MESSAGE: PageTabText = {
   cut: false,
   docsText: null,
 };
-const PICK: Record<string, string> = { "First name": "Ines", "Last name": "Vandermeer", Email: "ines.vandermeer@example.org" };
+const PICK: Record<string, string> = { "First name": "Ines", "Last name": "Vandermeer", Email: "ines.vandermeer@example.org", Phone: "555-0147" };
 
 const ctl = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, 0, 200, 20], value: "" });
 
@@ -43,6 +43,8 @@ class TwoTabs {
   readonly session: EngineSession;
   form = [ctl("e1", "text", "First name"), ctl("e2", "text", "Last name"), ctl("e3", "email", "Email")];
   left: number | null = null;
+  /** A control a verified write to the keyed control shows after it, as a dependent form does (runs.ts followUp). */
+  reveals: Record<string, PageControl> = {};
   /** What a read of the tab left finds (H13: a Google editor whose text is off finds none). */
   tabText: PageTabText = MESSAGE;
   /** The form field with focus. */
@@ -85,6 +87,8 @@ class TwoTabs {
     const x = this.form.find((c) => c.id === v.id);
     if (x === undefined || (x.value ?? "") !== v.expect) return this.reply(m.id, { outcome: "stale", detail: "changed" });
     x.value = v.value;
+    const shown = this.reveals[x.id];
+    if (shown !== undefined && !this.form.some((c) => c.id === shown.id)) this.form.splice(this.form.indexOf(x) + 1, 0, shown);
     return this.reply(m.id, { outcome: "ok", detail: null, readings: { before: v.expect, afterInput: v.value, afterBlur: v.value, invalid: false, error: null } });
   }
   get reads(): number[] {
@@ -241,6 +245,54 @@ describe("an Ask reads the tab the user just left (I6)", () => {
       const kept = JSON.stringify(helper.goals.planOf(s.goalId), (_, v: unknown) => (v instanceof Map ? [...v.entries()] : v));
       expect(kept).not.toMatch(/Gareth|Vandermeer|ines\.vandermeer|Ines/);
       expect(helper.goals.planOf(s.goalId)?.segments[0]?.steps.map((x) => x.says)).toEqual(["First name: …", "Last name: …", "Email: …", "The rest is yours"]);
+    });
+
+    // The heads maker states this whole-form Ask as a list of every empty field (FillScope.wholeForm), as the journey's is.
+    it("plans a field the goal's writes revealed from the text the goal read, with no second read of the tab", async () => {
+      tabs.tabText = { ...MESSAGE, blocks: [...MESSAGE.blocks.slice(0, 2), "Your details as we have them:\nFirst name: Ines\nLast name: Vandermeer\nEmail: ines.vandermeer@example.org\nPhone: 555-0147"] };
+      tabs.reveals = { e3: ctl("e4", "tel", "Phone") };
+      const s = (await askGoal()) as Segment;
+      await acceptGoal(s);
+      await helper.goals.idle();
+      const next = published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.reason === "afterReveal" && m.replaces === s.goalId);
+      expect(next?.steps.map((x) => x.says)).toEqual(["Phone: 555-0147", "The rest is yours"]);
+      expect(tabs.reads).toEqual([3]);
+      expect(tabSource().holds((next as Segment).goalId)).toBe(true);
+      await acceptGoal(next as Segment);
+      await helper.goals.idle();
+      expect(tabs.form.map((c) => c.value)).toEqual(["Ines", "Vandermeer", "ines.vandermeer@example.org", "555-0147"]);
+      expect(tabs.reads).toEqual([3]);
+      expect(tabSource().holding()).toBeNull();
+    });
+
+    /** The Ask's goal run, and the follow-up its writes' revealed Phone field got, holding the tab text (planRevealed). */
+    async function followUp(): Promise<{ first: Segment; next: Segment }> {
+      tabs.tabText = { ...MESSAGE, blocks: [...MESSAGE.blocks.slice(0, 2), "Your details as we have them:\nFirst name: Ines\nLast name: Vandermeer\nEmail: ines.vandermeer@example.org\nPhone: 555-0147"] };
+      tabs.reveals = { e3: ctl("e4", "tel", "Phone") };
+      const first = (await askGoal()) as Segment;
+      await acceptGoal(first);
+      await helper.goals.idle();
+      const next = published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.reason === "afterReveal" && m.replaces === first.goalId);
+      if (next === undefined) throw new Error("no follow-up was offered");
+      expect(tabSource().holds(next.goalId)).toBe(true);
+      return { first, next };
+    }
+
+    it("lets go of the tab text a follow-up holds when the follow-up is stopped before its Tab (#50)", async () => {
+      const { first, next } = await followUp();
+      await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: `${first.goalId}:s0`, action: "stop" });
+      expect(published.find((m) => m.type === "goalProgress" && m.event === "stopped" && m.goalId === next.goalId)).toMatchObject({ reason: "you" });
+      expect(tabSource().holds(next.goalId)).toBe(false);
+      expect(tabSource().holding()).toBeNull();
+    });
+
+    it("stops a follow-up and lets go of its tab text when the model expires the tab it read (#50)", async () => {
+      const { next } = await followUp();
+      helper.onExpiry.goalReplays?.(MAIL);
+      expect(published.find((m) => m.type === "goalProgress" && m.event === "stopped" && m.goalId === next.goalId)).toMatchObject({ reason: "sourceChanged" });
+      expect(tabSource().holding()).toBeNull();
+      expect(await acceptGoal(next)).toBeNull();
+      expect(tabs.form.map((c) => c.value)).toEqual(["Ines", "Vandermeer", "ines.vandermeer@example.org", ""]);
     });
 
     it("forgets the values from the tab in a preview that stopped untaken, and logs no refusal that could quote it", async () => {

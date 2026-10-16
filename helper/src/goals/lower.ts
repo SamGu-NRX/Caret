@@ -63,6 +63,11 @@ export class GoalError extends Error {
    * user is told, and logs name the code only (P4 rule 6).
    */
   fromTab = false;
+  /**
+   * The page planner's refusal of a page with nothing to write (page-planner.ts): each field it asked about and left,
+   * with why. A page goal's follow-up names them as the user's (runs.ts followUp).
+   */
+  left: readonly LeftItem[] = [];
   constructor(code: GoalRefusal, says: string, detail?: string) {
     super(detail === undefined ? says : `${says} (${detail})`);
     this.code = code;
