@@ -1,0 +1,1 @@
+Helper socket (fix/nonhost-nothing): a consumer without a valid hostProof is sent only status (helper/src/send-gate.ts); a test or script that reads proposals, memory or activity must prove the host key (test/socket-reader.ts authenticateHost, launch_secret.host_proof).

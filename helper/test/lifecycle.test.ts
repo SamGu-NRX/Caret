@@ -17,7 +17,7 @@ import { PROTOCOL_VERSION, type OfferAction } from "../src/protocol.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
 import { field, FIXTURE_APP, snap } from "./builders.ts";
-import { LineClient, SocketReader, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, until, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const K = (s: string): string => `dev.caret.fixture/standard/${s}`;
 const FORM = "5150-1";
@@ -46,7 +46,7 @@ describe("taking control back (B22)", () => {
     store = new Store(join(dir, "data"));
     whileQueued = null;
     slowArmed = false;
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       askJev: null,
@@ -68,7 +68,8 @@ describe("taking control back (B22)", () => {
     helper = mine;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     reader.serial = true;
     reader.enforceGrants = true;
@@ -176,8 +177,9 @@ describe("taking control back (B22)", () => {
     whileQueued = async () => {
       other.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "accept-2", action: "resume" });
       other.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "accept-2", actionId: "finish", overrides: {}, at: 2 });
-      await other.waitFor((m) => m.type === "error" && String(m.message).includes("not paused"));
-      await other.waitFor((m) => m.type === "error" && String(m.message).includes("already accepted"));
+      // The helper publishes both refusals as errors, which only the host is sent (send-gate.ts).
+      await host.waitFor((m) => m.type === "error" && String(m.message).includes("not paused"));
+      await host.waitFor((m) => m.type === "error" && String(m.message).includes("already accepted"));
       host.close();
     };
     host.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "accept-2", actionId: "finish", overrides: {}, at: 1 });

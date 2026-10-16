@@ -62,7 +62,8 @@ describe("memory as markdown, through the helper", () => {
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true, capabilities: [MEMORY_DOCUMENTS_CAPABILITY] });
     await authenticateHost(host);
     oldHost = await LineClient.connect(join(dir, "screen.sock"));
-    oldHost.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "host-before-m1" });
+    oldHost.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "host-before-m1", host: true });
+    await authenticateHost(oldHost);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     reader.enforceGrants = true;
   });

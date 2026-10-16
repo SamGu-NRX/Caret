@@ -127,11 +127,12 @@ describe("page text on the socket (H13)", () => {
     await tick();
     const field = (c: { lines: Record<string, unknown>[] }) => c.lines.find((l) => l.type === "pageField");
     expect(field(texted)).toEqual(at(1));
-    for (const c of [plain, tool]) {
-      expect(field(c)).toEqual(withoutPageText(HelperMessage.parse(at(1)) as PageField));
-      expect(JSON.stringify(field(c))).not.toContain("apply for the");
-      expect(field(c)?.caret).toBeUndefined();
-    }
+    // A host without pageText gets the field's key and frame, no text.
+    expect(field(plain)).toEqual(withoutPageText(HelperMessage.parse(at(1)) as PageField));
+    expect(JSON.stringify(field(plain))).not.toContain("apply for the");
+    expect(field(plain)?.caret).toBeUndefined();
+    // A consumer that is not the proven host gets no part of it (send-gate.ts).
+    expect(tool.lines.filter((l) => l.type !== "error")).toEqual([]);
     for (const c of [texted, plain, tool]) c.s.destroy();
   });
 
