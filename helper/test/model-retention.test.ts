@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { releaseSources } from "../src/executor/executor.ts";
 import { provenanceWindows, type Provenance } from "../src/fill/contract.ts";
-import { askWindows, notifyExpiry, planWindows, WINDOW_STATE_HOLDERS, type ExpiryList } from "../src/expiry.ts";
+import { askWindows, notifyExpiry, planWindows, WINDOW_STATE_HOLDERS, type ExpiryList, type WindowStateHolder } from "../src/expiry.ts";
 import { OFFER_LIFETIMES } from "../src/offers/lifetimes.ts";
 import { Helper } from "../src/helper.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -187,6 +187,12 @@ describe("the helper's copies of a window's text", () => {
     expect(Object.keys(h.onExpiry).sort()).toEqual([...Object.keys(OFFER_LIFETIMES), ...WINDOW_STATE_HOLDERS].sort());
     // Holders that let go of nothing, each for the reason given beside it in the list.
     expect(Object.entries(h.onExpiry).flatMap(([k, f]) => (f === null ? [k] : [])).sort()).toEqual(["caretWrites", "pendingWatches", "recentTransfers", "skill"]);
+  });
+
+  it("include the goals that keep what they read for their replays (Greptile on PR #47)", () => {
+    // tsc refuses the name unless the list's type has it, so Helper.onExpiry must say how replays let go.
+    const replays = "goalReplays" satisfies WindowStateHolder;
+    expect(h.onExpiry[replays]).toBeTypeOf("function");
   });
 
   it("drop it from the model at once when its window closes", () => {

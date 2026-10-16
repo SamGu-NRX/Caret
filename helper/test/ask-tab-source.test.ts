@@ -265,6 +265,36 @@ describe("an Ask reads the tab the user just left (I6)", () => {
       expect(tabSource().holding()).toBeNull();
     });
 
+    /** The Ask's goal run, and the follow-up its writes' revealed Phone field got, holding the tab text (planRevealed). */
+    async function followUp(): Promise<{ first: Segment; next: Segment }> {
+      tabs.tabText = { ...MESSAGE, blocks: [...MESSAGE.blocks.slice(0, 2), "Your details as we have them:\nFirst name: Ines\nLast name: Vandermeer\nEmail: ines.vandermeer@example.org\nPhone: 555-0147"] };
+      tabs.reveals = { e3: ctl("e4", "tel", "Phone") };
+      const first = (await askGoal()) as Segment;
+      await acceptGoal(first);
+      await helper.goals.idle();
+      const next = published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.reason === "afterReveal" && m.replaces === first.goalId);
+      if (next === undefined) throw new Error("no follow-up was offered");
+      expect(tabSource().holds(next.goalId)).toBe(true);
+      return { first, next };
+    }
+
+    it("lets go of the tab text a follow-up holds when the follow-up is stopped before its Tab (#50)", async () => {
+      const { first, next } = await followUp();
+      await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: `${first.goalId}:s0`, action: "stop" });
+      expect(published.find((m) => m.type === "goalProgress" && m.event === "stopped" && m.goalId === next.goalId)).toMatchObject({ reason: "you" });
+      expect(tabSource().holds(next.goalId)).toBe(false);
+      expect(tabSource().holding()).toBeNull();
+    });
+
+    it("stops a follow-up and lets go of its tab text when the model expires the tab it read (#50)", async () => {
+      const { next } = await followUp();
+      helper.onExpiry.goalReplays?.(MAIL);
+      expect(published.find((m) => m.type === "goalProgress" && m.event === "stopped" && m.goalId === next.goalId)).toMatchObject({ reason: "sourceChanged" });
+      expect(tabSource().holding()).toBeNull();
+      expect(await acceptGoal(next)).toBeNull();
+      expect(tabs.form.map((c) => c.value)).toEqual(["Ines", "Vandermeer", "ines.vandermeer@example.org", ""]);
+    });
+
     it("forgets the values from the tab in a preview that stopped untaken, and logs no refusal that could quote it", async () => {
       const s = (await askGoal()) as Segment;
       host.registry.setSitesOff(["https://mail.example.test"]);

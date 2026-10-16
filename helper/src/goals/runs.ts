@@ -48,7 +48,7 @@ import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
 import { effectKey, MAX_SEGMENTS, proposedFor, segmentOf, type DonePress } from "./lower.ts";
 import { itemOpened, rowCells, rowSelected } from "./identity.ts";
-import { GOAL_NEW_CHOICES, retainedView, type ContinueResult, type ReplayState } from "./replay.ts";
+import { GOAL_NEW_CHOICES, readerWindow, releaseReplay, retainedView, type ContinueResult, type ReplayState } from "./replay.ts";
 import type { GoalInventory } from "./plan.ts";
 import { contractStale, ContractError, exemptRefusal, guardFor, mintExempt, type Proposed, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
 import { codeGate } from "./gates.ts";
@@ -340,7 +340,8 @@ export class GoalRuns {
   replayCounts(goalId: string): { observations: number; choices: number; newChoices: number; newSteps: number; pending: boolean } | null {
     const r = this.runs.get(goalId)?.replay;
     if (r === undefined || r === null) return null;
-    return { observations: r.record.observations.length, choices: r.record.choices.length, newChoices: r.used.newChoices, newSteps: r.used.newSteps, pending: r.pending !== null };
+    const kept = r.released ?? { observations: r.record.observations.length, choices: r.record.choices.length };
+    return { ...kept, newChoices: r.used.newChoices, newSteps: r.used.newSteps, pending: r.pending !== null };
   }
 
   /** A copy of the plan a goal was offered with, for evaluations (P2's disagreement report); a copy is never offered. */
@@ -997,7 +998,6 @@ export class GoalRuns {
   private finish(run: Run, reached: "done" | "handoff", notHeld: readonly LeftItem[] = []): void {
     this.endTask(run);
     run.state = "finished";
-    this.deps.ended?.(run.plan.goalId);
     const verified = run.cursor.receipts.filter((r) => r.status === "verified").length;
     const skipped = run.cursor.receipts.filter((r) => r.status === "alreadyTrue").length;
     const left = [...notHeld, ...this.leftNow(run).filter((l) => !notHeld.some((x) => x.windowId === l.windowId && x.key === l.key))];
@@ -1015,6 +1015,42 @@ export class GoalRuns {
           : `Done: ${verified} step${verified === 1 ? "" : "s"} verified${skipped > 0 ? `, ${skipped} already so` : ""}.`;
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "finished", outcome, verified, skipped, left: left.slice(0, 24).map((l) => clip(l.says, 300)), says: clip(row === undefined ? says : `${says} ${row.says}.`, 600) });
     this.keepCarry(run, left);
+    // After the message, whose left items may quote an observed value.
+    this.releaseHeld(run);
+  }
+
+  /**
+   * What a goal holds of the screen goes, when it ends or when a window it read expires (windowExpired); a second call
+   * finds nothing more. First the tab text it holds (deps.ended, Helper.goalEnded), which a follow-up for revealed fields
+   * holds from the goal it follows (Helper.planRevealed). Then, for a goal that observed (Greptile on PR #47), its replay
+   * state (goals/replay.ts releaseReplay) and, once it has ended, the observed windows' texts in its kept plan with the
+   * values and sentences that quote them (forgetSource). The window read at an observation showed the opened item, so its
+   * reader window goes too.
+   */
+  private releaseHeld(run: Run): void {
+    this.deps.ended?.(run.plan.goalId);
+    if (run.replay === null) return;
+    releaseReplay(run.replay);
+    const observed = [...run.plan.inventory.windowRefs.values()].filter((id) => readerWindow(id) !== id);
+    if (observed.length > 0) this.forgetSource(run.plan.goalId, new Set(observed.flatMap((id) => [id, readerWindow(id)])));
+  }
+
+  /**
+   * The screen model let go of `windowId` (ten minutes without a read; Helper.onExpiry goalReplays). Two kinds of open
+   * goal keep text read from a window past the model: one that observes (slice 2), in its replay state, and a follow-up
+   * for revealed fields (followUp), in the tab text it holds. One that read the window stops, and what it holds goes now
+   * (releaseHeld). Its next step could only be refused: its source checks read those copies. A running segment is
+   * revoked; its stop then ends the goal.
+   */
+  windowExpired(windowId: string): void {
+    for (const run of this.runs.values()) {
+      if ((run.replay === null && !run.followedUp) || run.state === "finished" || run.state === "stopped") continue;
+      if (!readWindows(run).has(windowId)) continue;
+      const says = "Caret let go of what it read for this goal after ten minutes without seeing that window. The rest is yours";
+      this.releaseHeld(run);
+      if (run.state === "running") this.revoke(run, "sourceChanged", says);
+      else this.stop(run, "sourceChanged", null, says);
+    }
   }
 
   /**
@@ -1192,7 +1228,7 @@ export class GoalRuns {
   private async stopAndReplan(run: Run, reason: GoalStopReason, step: number | null, says: string, fresh: "afterReveal" | "freshPlan" = "freshPlan", taskId: string | null = null): Promise<void> {
     if (run.state === "stopped") return;
     run.state = "stopped";
-    this.deps.ended?.(run.plan.goalId);
+    this.releaseHeld(run);
     const done = run.cursor.receipts.filter((r) => r.status !== "handoff").length;
     const total = run.plan.segments.reduce((n, x) => n + x.steps.filter((y) => y.row !== true).length, 0);
     const sentence = `${says.charAt(0).toUpperCase()}${says.slice(1)}, so Caret stopped after ${done} of ${total} steps.`;
@@ -1204,7 +1240,7 @@ export class GoalRuns {
   private stop(run: Run, reason: GoalStopReason, step: number | null, says: string): void {
     if (run.state === "stopped") return;
     run.state = "stopped";
-    this.deps.ended?.(run.plan.goalId);
+    this.releaseHeld(run);
     // P3 fix-check: a carried preview that ends untaken (expired, its host gone) gives its page back to the ambient offer.
     const page = run.plan.page;
     const doc = page === undefined ? undefined : run.plan.inventory.documents.get(page.windowId);
@@ -1512,6 +1548,15 @@ export function leftRevealed(w: WindowState, keys: readonly string[], why: strin
     const label = n === undefined ? key : fieldName(w, n);
     return { windowId: w.window.windowId, key, label, why: "dropped", says: `'${label}' is yours: ${why}` };
   });
+}
+
+/**
+ * The reader windows a goal read: each window its plan names, each window a value it copies was read from (the tab the
+ * user left, for a page goal's), and each window it observed.
+ */
+function readWindows(run: Run): Set<string> {
+  const values = [...run.plan.inventory.values.values()].flatMap((v) => [...(v.source === null ? [] : [v.source.windowId]), ...(v.origin.kind === "span" ? [v.origin.source] : [])]);
+  return new Set([...run.plan.inventory.windowRefs.values(), ...values, ...(run.replay?.retained.keys() ?? [])].map(readerWindow));
 }
 
 /** The executor task id of a goal's segment. */
