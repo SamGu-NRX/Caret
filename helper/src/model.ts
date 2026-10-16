@@ -63,9 +63,6 @@ export function pageTextField(node: Node): boolean {
   return node.rev !== undefined || node.unread === true;
 }
 
-/** Why a web page's field is not copied from or read as a note: the named reason for what went dark. */
-export const WEB_FIELD_NOT_A_SOURCE = "Caret does not copy from a field on a web page: what is typed there stays in the page";
-
 export function nodeText(node: Node): string {
   if (node.editable) return node.value ?? "";
   if (node.label !== undefined && node.value !== undefined) return `${node.label}\n${node.value}`;

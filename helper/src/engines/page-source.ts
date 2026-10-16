@@ -1,6 +1,6 @@
 // The one sender of pageSourceGrant (counsel 2026-10-09): the text of a web page's fields, read only after the user
 // picked that window as the source of a copy. Until a caller holds that pick, copying from a web field stays dark
-// (model.ts WEB_FIELD_NOT_A_SOURCE): no fill or planner path calls this yet. A test asserts no other module builds the
+// (fill/candidates.ts sourceField): no fill or planner path calls this yet. A test asserts no other module builds the
 // verb (test/page-values-boundary.test.ts). The page answers null for a withheld, secret or gone field.
 import type { EngineSession } from "./session.ts";
 

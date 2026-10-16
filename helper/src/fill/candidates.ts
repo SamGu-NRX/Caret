@@ -46,8 +46,8 @@ function* newestFirst(n: number, order: MessageOrder): Generator<number> {
 /**
  * Whether an editable field's text is a copy source. A web page's text field never is (counsel 2026-10-09): its text
  * stays in the page, and the node holds at most what Caret itself wrote there (engines/page-link.ts KnownText), which
- * is no source either. Copying from a web field needs the user to pick that window (engines/page-source.ts); until then
- * it is dark (model.ts WEB_FIELD_NOT_A_SOURCE).
+ * is no source either. Copying from a web field needs the user to pick that window (engines/page-source.ts); until a
+ * fill asks for that pick, it is dark, and nothing says so to the user.
  */
 function sourceField(node: Node): boolean {
   if (pageTextField(node)) return false;

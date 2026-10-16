@@ -46,11 +46,6 @@ export class Revs<E extends object> {
     return r;
   }
 
-  /** Whether the element was ever read or saw a trusted event. */
-  known(el: E): boolean {
-    return this.recs.has(el);
-  }
-
   /**
    * Reads `text`, the element's current text. `input`: the element is an `<input>`, the only kind `prefilled` and
    * `programmatic` apply to (a password cannot become a textarea or editor on an honest page, and a reopened draft or a
