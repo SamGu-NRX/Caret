@@ -1,0 +1,1 @@
+Ledger: a builder filling a chat to its limit at mint must first reserve its request wording (reserveWording; fill.ts fillWording): rule E charges short chat lines the wording holds ('You' in 'can you not tell?') only at seal, which refuses the request.
