@@ -68,7 +68,7 @@ function ineligible(el: Element, verb: ElementVerb, entry: Entry | undefined, de
 function rebindMatch(verb: ElementVerb): ((el: Element, e: Entry) => boolean) | null {
   if (verb.kind === "pageWrite" || (verb.kind === "pageChooseOption" && verb.expectRev !== undefined)) {
     const rev = verb.kind === "pageWrite" ? verb.expectRev : verb.expectRev;
-    return (el, e) => e.seen !== undefined && e.seen.rev === rev && textOf(el, e.kind) === e.seen.text;
+    return (el, e) => e.seen !== undefined && e.seen.rev === rev && revs.digestOf(textOf(el, e.kind)) === e.seen.digest;
   }
   if (verb.kind === "pageSelect") return (el) => choiceValueOf(el) === verb.expect;
   if (verb.kind === "pageChooseOption") return (el) => String(checkedOf(el)) === verb.expect;
@@ -117,8 +117,9 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
   } else {
     a = await actOn(r.el, verb, check, alive, r.rebound);
   }
-  // A rebind is the one way an act reaches an element other than the walked object; the receipt says so.
-  const said = r.rebound && (a.outcome === "ok" || a.outcome === "alreadyTrue") ? { ...a, detail: a.detail === null ? "rebound by its strong key" : `${a.detail}; rebound by its strong key` } : a;
+  // A rebind is the one way an act reaches an element other than the walked object; the receipt says so, and names the
+  // replacement's own registry id, so the helper keeps what it knows of the field under the element it wrote.
+  const said = r.rebound ? { ...a, reboundTo: reg.idOf(r.el), ...(a.outcome === "ok" || a.outcome === "alreadyTrue" ? { detail: a.detail === null ? "rebound by its strong key" : `${a.detail}; rebound by its strong key` } : {}) } : a;
   return receiptFor(said, isTextKind(verb.control) && readNow(r.el, verb.control, false).withheld !== null);
 }
 
@@ -251,6 +252,9 @@ async function writeText(el: HTMLInputElement | HTMLTextAreaElement, verb: Extra
   const now = readNow(el, verb.control, false);
   const before = now.text;
   if (now.withheld !== null && before !== "") return answer("excluded", `the field holds text Caret does not read (${now.withheld})`);
+  // The page writes over no text but Caret's own (counsel 2026-10-09): the helper never asks, and the text kept for
+  // Undo is then never the user's.
+  if (before !== "" && now.origin !== "caret" && !equivalentFor({ numeric }, before, verb.value)) return answer("stale", "the field holds text Caret did not write, so Caret does not write over it");
   const trusted0 = revs.trustedCount(el);
   const readings = (final: string, rev: number): WriteReadings => ({ sameAsBefore: final === before, landed: final === verb.value, equivalent: equivalentFor({ numeric }, final, verb.value), empty: final === "", typedBetween: revs.trustedCount(el) !== trusted0, rev });
   if (equivalentFor({ numeric }, before, verb.value)) return answer("alreadyTrue", null, { readings: readings(before, now.rev) });

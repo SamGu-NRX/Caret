@@ -13,9 +13,21 @@ export function clean(s: string | null | undefined, max = MAX_NAME): string {
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
 }
 
-/** The elements an aria-labelledby value names, in `el`'s own tree (document or shadow root). */
+/**
+ * Whether an element an aria reference names holds a field's text, so it never counts as a name (counsel 2026-10-09,
+ * "The boundary"): it is editable, sits inside an editable region, or contains a form control. A contenteditable
+ * labelled by its own id would otherwise be named by its draft.
+ */
+export function editableReference(e: Element): boolean {
+  if (e instanceof HTMLInputElement || e instanceof HTMLTextAreaElement || e instanceof HTMLSelectElement) return true;
+  if (e instanceof HTMLElement && e.isContentEditable) return true;
+  if (/^(textbox|searchbox|combobox|spinbutton)$/u.test(e.getAttribute("role")?.trim() ?? "")) return true;
+  return e.querySelector('input, textarea, select, [contenteditable=""], [contenteditable="true" i], [role="textbox"], [role="searchbox"], [role="combobox"], [role="spinbutton"]') !== null;
+}
+
+/** The elements an aria-labelledby value names, in `el`'s own tree (document or shadow root), none of them editable. */
 export function labelledBy(el: Element, ids: string): Element[] {
-  return byIds(el, ids);
+  return byIds(el, ids).filter((e) => !editableReference(e));
 }
 
 function byIds(el: Element, ids: string): Element[] {
@@ -54,7 +66,7 @@ export type NameSource = "labelledby" | "label" | "labels" | "value" | "title" |
 export function named(el: Element): { name: string; from: NameSource } {
   const labelledby = el.getAttribute("aria-labelledby");
   if (labelledby !== null) {
-    const t = clean(byIds(el, labelledby).map((e) => safeText(e)).join(" "));
+    const t = clean(labelledBy(el, labelledby).map((e) => safeText(e)).join(" "));
     if (t !== "") return { name: t, from: "labelledby" };
   }
   const aria = clean(el.getAttribute("aria-label"));

@@ -179,7 +179,8 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const seen = readNow(el, "combobox", false);
   const before = seen.text;
   if (seen.withheld !== null && before !== "") return answer("excluded", `the control holds text Caret does not read (${seen.withheld})`);
-  if (before !== "" && normalizeName(before) === normalizeName(verb.value)) return answer("alreadyTrue", null, { choice: choice([before]) });
+  // Named by the option asked for, never by the control's own text, which never leaves the page.
+  if (before !== "" && normalizeName(before) === normalizeName(verb.value)) return answer("alreadyTrue", null, { choice: choice([verb.value]) });
   // The walk's rev, or (a rebound replacement) the walk's own text, which registry.ts matched.
   if (verb.expectRev === undefined) return answer("unsupported", "a combobox write names the rev the walk read");
   if (!rebound && seen.rev !== verb.expectRev) return answer("stale", "the control changed since it was walked");
@@ -195,6 +196,8 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const hiddenBefore = hiddenValue(f);
   const textField = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
   const filterBefore = textField?.value ?? null;
+  // React-select shows its chip, not its filter, as its value: text in the filter is someone's search, never typed over.
+  if (f.kind === "reactSelect" && filterBefore !== null && filterBefore !== "") return answer("stale", "the dropdown holds typed filter text");
   const owned = f.kind === "reactSelect" ? [el, f.box] : [el];
   let listbox: Element | null = null;
   /** Refuses any event target that is not the control, its box, or an option of the listbox this control opened. */

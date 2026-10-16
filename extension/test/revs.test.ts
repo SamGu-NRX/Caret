@@ -40,6 +40,30 @@ describe("where an input's text came from", () => {
     expect(revs.read(el, "4829131", true).origin).toBe("prefilled");
   });
 
+  it("stays programmatic when a script's text is followed by the user's keystroke before the next reading", () => {
+    const revs = new Revs<object>();
+    const el = {};
+    revs.read(el, "", true);
+    // A script fills the field; the user's next keystroke starts from that text (beforeinput), then a walk reads it.
+    revs.trusted(el, "filled-by-a-script", true);
+    expect(revs.read(el, "filled-by-a-scriptx", true).origin).toBe("programmatic");
+  });
+
+  it("keeps a digest of the text, never the text, and forgets a field that turned secret", () => {
+    const kept: string[] = [];
+    const revs = new Revs<object>((t) => {
+      kept.push(t);
+      return `d${t.length}`;
+    });
+    const el = {};
+    revs.read(el, "Robin", true);
+    expect(kept).toEqual(["Robin"]);
+    // Same digest, same rev: what is compared is the digest the page keeps.
+    expect(revs.read(el, "Dana!", true).rev).toBe(0);
+    revs.forget(el);
+    expect(revs.read(el, "", true)).toEqual({ rev: 0, origin: "clean" });
+  });
+
   it("is programmatic when the text changed between two readings with no trusted event", () => {
     const revs = new Revs<object>();
     const el = {};

@@ -229,6 +229,11 @@ describe("the page's own writes, restores, compares and copies, end to end", () 
     const refused = await command({ kind: "pageRestore", ...target, wrote: "Robin Vale" });
     assert.deepEqual(refused.restore, { outcome: "refused", why: "mayIncludeInput" });
     assert.equal(await read(), "Robin Vale!");
+    // Nor does the page write over it, whatever rev it is named by: the field holds the user's text now, not Caret's.
+    s = await walked();
+    const over = await command({ kind: "pageWrite", ...target, expectRev: field("Full name").rev ?? 0, value: "Someone Else" });
+    assert.equal(over.outcome, "stale", JSON.stringify(over));
+    assert.equal(await read(), "Robin Vale!");
 
     // The page's own script puts text in another field: withheld, so no copy, no compare and no write over it.
     await tab.evaluate(`(() => { const e = [...document.querySelectorAll("input")].find((x) => x.labels?.[0]?.textContent?.includes("Email")); e.value = "set-by-page@example.test"; return true; })()`);
@@ -259,9 +264,23 @@ const ROUND4: Record<string, string> = {
   "number-in-shadow": shell(`<pin-box id="host"></pin-box>`, `const r = document.getElementById("host").attachShadow({ mode: "open" }); r.innerHTML = '<label>PIN <input type="password" id="pw"></label>'; window.reveal = () => { r.getElementById("pw").type = "number"; };`),
   // #5: one-time-code digit boxes slotted into a shadow textbox named "Verification code".
   "slotted-otp": shell(`<otp-box id="host"><input id="d1" aria-label="Digit 1" maxlength="1"><input id="d2" aria-label="Digit 2" maxlength="1"><input id="d3" aria-label="Digit 3" maxlength="1"></otp-box>`, `document.getElementById("host").attachShadow({ mode: "open" }).innerHTML = '<div role="textbox" aria-label="Verification code"><slot></slot></div>'; window.reveal = () => {};`),
+  // The label rule: an editor named by its own id would be named by its draft.
+  "self-labelled-editor": shell(`<div contenteditable="true" id="ed" aria-labelledby="ed" style="min-height: 2em"></div><input id="other" aria-labelledby="ed">`, `window.reveal = () => {};`),
   // #6: a "show password" in a shadow root turns the field into a text input the user then types into.
   "text-in-shadow": shell(`<login-box id="host"></login-box>`, `const r = document.getElementById("host").attachShadow({ mode: "open" }); r.innerHTML = '<label>Password <input type="password" id="pw"></label>'; window.reveal = () => { r.getElementById("pw").type = "text"; };`),
 };
+
+describe("names never read from an editable element (the counsel's label rule)", () => {
+  test("an editor, and another field, named by the editor's own id carry none of the draft", async () => {
+    const url = `${roundsOrigin}/self-labelled-editor`;
+    const tab = await open(url);
+    await typeInto(tab, `document.getElementById("ed")`, "Dear Maya, my locker code is 7130");
+    await tab.click(`document.getElementById("other")`);
+    const reports = await walk(url);
+    assertNoValues(reports, ["Dear Maya", "locker code"], "self-labelled-editor");
+    await tab.close();
+  });
+});
 
 describe("PR #14's review-round-4 cases: the walk holds none of the secret", () => {
   const cases: { page: string; typeAt: string; secret: string; focus: string; wait?: number }[] = [

@@ -3,8 +3,8 @@
 // same object. When React or another framework replaced the node, the strong key the walk recorded may rebind it,
 // but only to exactly one connected control with the same strong key, kind and name whose value is still the one
 // the helper expects (memo: "This is not fuzzy"). Without a strong key, a dead reference is simply gone. A text
-// control's expected text never comes from the helper: the walk kept it here with the rev it read (Entry.seen), and a
-// rebind for a verb's expectRev needs that very rev and the same text in the replacement.
+// control's expected text never comes from the helper: the walk kept a salted digest of it here with the rev it read
+// (Entry.seen), and a rebind for a verb's expectRev needs that very rev and the same text in the replacement.
 //
 // An id names one element object for good (W3): a rebind acts on the replacement but never moves the old id to it,
 // and the replacement keeps (or gets) an id of its own. So the helper's undo mark, which holds the id it wrote, no
@@ -28,8 +28,8 @@ export interface Entry {
    */
   nav: string;
   form: string | null;
-  /** A text control's rev and text as the walk read them, in this frame only; absent while it is withheld. */
-  seen?: { rev: number; text: string };
+  /** A text control's rev, and a salted digest of its text, as the walk read them; absent while it is withheld. */
+  seen?: { rev: number; digest: string };
 }
 
 /** The current history entry's id from the Navigation API, or history.length where the API is missing. */

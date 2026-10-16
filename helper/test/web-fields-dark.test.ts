@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { alternateVeto, readableFields } from "../src/fill/alternate.ts";
 import { capture, WEB_ANSWER_DARK } from "../src/memory/answers.ts";
+import { owedFields } from "../src/goals/left.ts";
 import { unitOf } from "../src/fill/note-unit.ts";
 import { textValueOf } from "../src/engines/page-link.ts";
 import { ScreenModel, holdsText } from "../src/model.ts";
@@ -71,6 +72,41 @@ describe("saving an answer typed in a web field (S1)", () => {
     const w = model.windows.get("page:eng1:7");
     if (w === undefined) throw new Error("no window");
     expect(capture(w, "f0/why", { site: "https://jobs.example.test/apply", caretWrote: [] })).toEqual({ ok: false, why: "unavailable", says: WEB_ANSWER_DARK });
+  });
+});
+
+describe("a required web field the user filled", () => {
+  it("is owed nothing: unread text is text, for the goal's left-to-you check", () => {
+    const model = new ScreenModel();
+    model.apply(web([{ key: "f0/email", parent: null, role: "AXTextField", label: "Email *", editable: true, unread: true, rev: 3 }, { key: "f0/start", parent: null, role: "AXDateField", label: "Start date *", editable: true, unread: true, rev: 1 }]));
+    const w = model.windows.get("page:eng1:7");
+    if (w === undefined) throw new Error("no window");
+    expect(owedFields(w).map((f) => [f.label, f.empty])).toEqual([["Email", false], ["Start date", false]]);
+  });
+});
+
+describe("a write that reached a re-rendered field through a strong-key rebind", () => {
+  it("keeps what the helper knows of the field under the element it wrote, so its node holds Caret's text and Undo can reach it", async () => {
+    const page = new FakePage(() => [c("e1", "text", "Full name", { value: "" })]);
+    const model = new ScreenModel();
+    const link = new PageEngineLink(page.session, (s) => model.apply(s));
+    page.session.receive({ type: "pageHello", v: 1, extensionId: page.session.info.extensionId, version: "0", profile: "p", instance: "w", startedAt: 1, capabilities: [] });
+    await link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
+    link.grant({ type: "actGrant", v: 1, taskId: "t1", pid: chrome.pid, windowId: WIN, at: Date.now(), expires: Date.now() + 10_000 });
+    const key = `f0/${page.controls[0]?.key}`;
+    // The page re-rendered the field before the write: the content script rebinds and names the replacement, e9.
+    page.onAct = (v, p) => {
+      if (v.kind !== "pageWrite") return null;
+      const x = p.find("e1");
+      x.id = "e9";
+      const readings = p.write({ ...v, id: "e9" }, v.value);
+      return { outcome: "ok", detail: "rebound by its strong key", readings, reboundTo: "e9" };
+    };
+    expect((await link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key, role: "AXTextField", attribute: "value", expect: "", value: "Robin Vale", taskId: "t1", mark: "m1" })).outcome).toBe("ok");
+    page.onAct = null;
+    await link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
+    expect(model.windows.get(WIN)?.nodes.get(key)).toMatchObject({ value: "Robin Vale" });
+    expect(model.windows.get(WIN)?.nodes.get(key)?.unread).toBeUndefined();
   });
 });
 

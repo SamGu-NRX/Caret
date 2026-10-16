@@ -2,9 +2,10 @@
 // and the acts (actions.ts, combobox.ts): change counters and origins, the page-held `before` of Caret's writes, and
 // the compare budget. Nothing here is ever sent; the walk and the receipts send only what these say about a field.
 import type { PageControlKind, Withheld } from "../shared/messages.ts";
-import { CompareBudget, Revs, WriteRecords, presence, withheldFor } from "./revs.ts";
+import { CompareBudget, Revs, WriteRecords, presence, withheldFor, type Origin } from "./revs.ts";
 import { historyDoubt } from "./password-watch.ts";
-import { textOf, type TextReading } from "./walker.ts";
+import { controlName } from "./question.ts";
+import { deepActiveElement, kindOf, secretOf, shadowRootOf, textOf, type TextReading } from "./walker.ts";
 
 export const revs = new Revs<Element>();
 export const records = new WriteRecords<Element>();
@@ -19,15 +20,24 @@ export function numericOf(el: Element): boolean {
   return el.type === "number" || (el.type === "text" && /^(numeric|decimal)$/i.test(el.getAttribute("inputmode")?.trim() ?? ""));
 }
 
+/** Whether the element is a password, card or one-time-code field (walker.ts secretOf), whose text is never read. */
+export function isSecret(el: Element): boolean {
+  return secretOf(el, controlName(el, kindOf(el) ?? "")) !== null;
+}
+
 /**
- * Reads a text control now: its text (for this frame only), its rev, and why it is withheld, if it is. `secret`: the
- * walker marked it (a password, card or one-time-code field), which withholds everything.
+ * Reads a text control now: its text (for this frame only), its rev, its origin, and why it is withheld, if it is. A
+ * secret field (`secret`: the walker marked it; or it is one now) is never read: nothing of it is kept, and it reads
+ * as withheld with no text.
  */
-export function readNow(el: Element, kind: PageControlKind, secret: boolean): { text: string; rev: number; withheld: Withheld | null } {
+export function readNow(el: Element, kind: PageControlKind, secret: boolean): { text: string; rev: number; origin: Origin; withheld: Withheld | null } {
+  if (secret || isSecret(el)) {
+    revs.forget(el);
+    return { text: "", rev: 0, origin: "clean", withheld: "secret" };
+  }
   const text = textOf(el, kind);
   const r = revs.read(el, text, isInput(el));
-  const withheld: Withheld | null = secret ? "secret" : withheldFor(historyDoubt(el), r.origin);
-  return { text, rev: r.rev, withheld };
+  return { text, rev: r.rev, origin: r.origin, withheld: withheldFor(historyDoubt(el), r.origin) };
 }
 
 /** What a walk sends for a text control (walker.ts walkControls readText). */
@@ -60,7 +70,14 @@ export function trackTrustedEdits(): void {
       if (parent !== null) revs.trusted(editingHostOf(parent), null, false);
       return;
     }
-    const el = editingHostOf(t);
+    // Seen from outside a closed shadow root, the target is its host: the field the user edits is the focused one inside.
+    const inner = shadowRootOf(t) !== null ? (deepActiveElement() ?? t) : t;
+    const el = editingHostOf(inner);
+    // A secret field's text is never read, and what was kept of it before it turned secret is dropped.
+    if (isSecret(el)) {
+      revs.forget(el);
+      return;
+    }
     const before = e.type === "beforeinput" && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) ? el.value : null;
     revs.trusted(el, before, isInput(el));
   };

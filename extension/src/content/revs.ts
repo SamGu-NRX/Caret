@@ -5,6 +5,7 @@
 // type, so the rules are tested on plain objects (test/revs.test.ts); content.ts, walker.ts and actions.ts wire them to
 // the DOM.
 import { equivalentValue } from "../../../helper/src/values/equivalent.ts";
+import { sha256Hex } from "../shared/sha256.ts";
 
 /**
  * Where a text control's current text came from, as far as this page saw:
@@ -20,7 +21,7 @@ export type Origin = "clean" | "prefilled" | "programmatic" | "caret";
 interface Rec {
   /** The page-local change counter the walk sends. */
   rev: number;
-  /** The text last read, or null before any reading (a trusted event came first). */
+  /** A salted digest of the text last read, never the text; null before any reading (a trusted event came first). */
   last: string | null;
   /** Trusted input, change, paste and compositionend events seen on the element. */
   trusted: number;
@@ -36,6 +37,17 @@ interface Rec {
  */
 export class Revs<E extends object> {
   private readonly recs = new WeakMap<E, Rec>();
+  /** How text is kept for comparison: a salted digest (saltedDigest), so no text sits in the page's memory here. */
+  readonly digestOf: (text: string) => string;
+
+  constructor(digestOf: (text: string) => string = saltedDigest()) {
+    this.digestOf = digestOf;
+  }
+
+  /** Forgets everything kept for the element: it turned out to be a secret field, which keeps nothing. */
+  forget(el: E): void {
+    this.recs.delete(el);
+  }
 
   private rec(el: E): Rec {
     let r = this.recs.get(el);
@@ -53,16 +65,17 @@ export class Revs<E extends object> {
    */
   read(el: E, text: string, input: boolean): { rev: number; origin: Origin } {
     const r = this.rec(el);
+    const d = this.digestOf(text);
     if (r.last === null) {
       r.origin = input && text !== "" && r.trusted === 0 ? "prefilled" : "clean";
-    } else if (text !== r.last) {
+    } else if (d !== r.last) {
       r.rev++;
       const typed = r.trusted > r.seenTrusted;
       if (r.origin === "caret") r.origin = typed || !input ? "clean" : "programmatic";
       else if (input && !typed) r.origin = "programmatic";
     }
     if (text === "") r.origin = "clean";
-    r.last = text;
+    r.last = d;
     r.seenTrusted = r.trusted;
     return { rev: r.rev, origin: r.origin };
   }
@@ -73,8 +86,9 @@ export class Revs<E extends object> {
    * keystroke still counts as `prefilled`.
    */
   trusted(el: E, before: string | null, input: boolean): void {
-    const seen = this.recs.get(el);
-    if (before !== null && (seen === undefined || seen.last === null)) this.read(el, before, input);
+    // Read first, every time: text a script put in since the last reading is then seen as the script's (programmatic),
+    // and the user's keystroke that follows cannot pass it off as typed.
+    if (before !== null) this.read(el, before, input);
     const r = this.rec(el);
     r.trusted++;
     r.rev++;
@@ -85,7 +99,7 @@ export class Revs<E extends object> {
   caretWrote(el: E, text: string, typed: boolean): number {
     const r = this.rec(el);
     r.rev++;
-    r.last = text;
+    r.last = this.digestOf(text);
     r.seenTrusted = r.trusted;
     r.origin = text === "" ? "clean" : typed ? "programmatic" : "caret";
     return r.rev;
@@ -95,6 +109,15 @@ export class Revs<E extends object> {
   trustedCount(el: E): number {
     return this.recs.get(el)?.trusted ?? 0;
   }
+}
+
+/**
+ * A salted SHA-256 of a text, random per content script, as content/entry.ts keeps one: enough to tell that a field's
+ * text changed, and no use against a list of common values, since the salt never leaves this script.
+ */
+export function saltedDigest(): (text: string) => string {
+  const salt = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return (text) => sha256Hex(`${salt}\u0000${text}`);
 }
 
 /** Why a text control's text is withheld: from the walk's hasValue and rev, the focused text, compares and copies. */

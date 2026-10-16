@@ -3432,6 +3432,11 @@ export const PageResult = z
     insert: z.enum(["unchanged", "unverified"]).optional(),
     /** pageRestore only. */
     restore: PageRestored.optional(),
+    /**
+     * The registry id of the element an act reached through a strong-key rebind (a replacement of the walked one), valid
+     * in the frame's document, so the helper keeps what it knows of the field under the element Caret wrote.
+     */
+    reboundTo: z.string().min(1).optional(),
     /** pageCompare only, with outcome ok: one answer per candidate, in order. */
     compare: z.array(PageCompareAnswer).max(MAX_COMPARE_CANDIDATES).optional(),
     /** pageSourceGrant only, with outcome ok: each id's text, null where it is withheld, secret or gone. */

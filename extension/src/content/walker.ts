@@ -366,9 +366,8 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     ordinals.set(base, ordinal + 1);
     if (marked !== null) {
       const head = { id: idOf(f.el), key: `${base}~${ordinal}`, strongKey: null, role, name: f.name, form, rect: rectOf(f.el), excluded: marked };
+      // Never read: a secret field's text is not kept either (content.ts drops what was kept of it before).
       const c: PageControl = isTextKind(f.kind) ? { ...head, kind: f.kind, hasValue: null, rev: null, withheld: "secret" } : { ...head, kind: f.kind };
-      // Read as secret, so a later reading of the same element starts from what its text was here (content/revs.ts).
-      if (isTextKind(f.kind)) readText(f.el, f.kind, true);
       controls.push(c);
       onKept(f.el, c);
       continue;

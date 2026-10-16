@@ -179,6 +179,8 @@ export interface ActAnswer {
   insert?: "unchanged" | "unverified";
   /** pageRestore only. */
   restore?: Restored;
+  /** The registry id of the element a strong-key rebind reached, when the act went to a replacement of the walked one. */
+  reboundTo?: string;
   /** pageCompare only, with outcome ok: one answer per candidate, in order. */
   compare?: ("equal" | "equivalent" | "different" | "unknown")[];
   /** pageSourceGrant only, with outcome ok: each id's text, null where it is withheld or gone. */

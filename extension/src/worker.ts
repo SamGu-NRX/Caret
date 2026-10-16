@@ -161,6 +161,7 @@ function result(id: string, a: ActAnswer): void {
     ...(a.text === undefined ? {} : { text: a.text }),
     ...(a.insert === undefined ? {} : { insert: a.insert }),
     ...(a.restore === undefined ? {} : { restore: a.restore }),
+    ...(a.reboundTo === undefined ? {} : { reboundTo: a.reboundTo }),
     ...(a.compare === undefined ? {} : { compare: a.compare }),
     ...(a.source === undefined ? {} : { source: a.source }),
   });

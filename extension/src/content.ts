@@ -27,7 +27,7 @@ import { clean, composedParent } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, kindOf, secretOf, shadowRootOf, textOf as controlText, visible, walkControls } from "./content/walker.ts";
 import { watchPasswords } from "./content/password-watch.ts";
-import { trackTrustedEdits, walkReading } from "./content/page-state.ts";
+import { revs, trackTrustedEdits, walkReading } from "./content/page-state.ts";
 import { controlName } from "./content/question.ts";
 import { notePassword } from "./content/secret.ts";
 import { EntryTracker } from "./content/entry.ts";
@@ -112,9 +112,12 @@ function walk(reg: Registry, entries: EntryTracker | null, inputs: UserInputs<El
   const out = walkControls(
     (el) => reg.idOf(el),
     (el, c) => {
-      reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form, ...("rev" in c && c.rev !== null ? { seen: { rev: c.rev, text: controlText(el, c.kind) } } : {}) });
-      // A field the walk marked secret keeps nothing in the tracker, even with no edit since it turned secret.
-      if (c.excluded !== undefined) entries?.forget(el);
+      reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form, ...("rev" in c && c.rev !== null ? { seen: { rev: c.rev, digest: revs.digestOf(controlText(el, c.kind)) } } : {}) });
+      // A field the walk marked secret keeps nothing in the trackers, even with no edit since it turned secret.
+      if (c.excluded !== undefined) {
+        entries?.forget(el);
+        revs.forget(el);
+      }
     },
     walkReading,
     (el, value) => entries?.entryOf(el, value),
@@ -138,7 +141,8 @@ function walk(reg: Registry, entries: EntryTracker | null, inputs: UserInputs<El
       // before the user's first edit, or text that changed with no trusted event) gives no text, caret or selection
       // either, and says why.
       const withheld = c.excluded !== undefined ? "secret" : "withheld" in c ? c.withheld : undefined;
-      focused = withheld !== undefined
+      // A combobox's walk reading is of its shown choice, not of the filter text its input holds: no caret text there.
+      focused = withheld !== undefined || c.kind === "combobox"
         ? { id: c.id, selection: null, text: null, caret: null, withheld }
         : { id: c.id, selection, look: lookOf(active), text: fieldText(active), caret: caretRect(active) };
     }

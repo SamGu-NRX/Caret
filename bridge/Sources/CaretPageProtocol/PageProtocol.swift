@@ -232,6 +232,8 @@ public struct PageResult: Codable, Equatable, Sendable {
     public var text: PageTabText?
     /// pageRestore's answer; pageCompare's, one per candidate; pageSourceGrant's, each id's text or null.
     public var restore: PageRestored?, compare: [String]?, source: [String: String?]?
+    /// The registry id of the element a strong-key rebind reached.
+    public var reboundTo: String?
 }
 
 /// P4: the visible text of the tab the user just left, as one read found it (protocol.ts PageTabText).

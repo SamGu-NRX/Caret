@@ -841,8 +841,10 @@ export class PageEngineLink implements ReaderLink {
    */
   private learn(verb: PageVerb, r: PageResult, expectText: string): void {
     if (verb.kind === "pageWalk" || verb.kind === "pageSourceGrant") return;
+    // Under the element the act reached: a rebound write went to a replacement with an id of its own.
+    const id = r.reboundTo ?? verb.id;
     const at = (text: string, rev: number | null | undefined): void => {
-      if (rev !== null && rev !== undefined) this.know(verb.tabId, verb.frameId, verb.documentId, verb.id, text, rev);
+      if (rev !== null && rev !== undefined) this.know(verb.tabId, verb.frameId, verb.documentId, id, text, rev);
     };
     if (verb.kind === "pageRestore") {
       if (r.restore?.outcome === "restored") at(this.restoring.get(restoreKey(verb)) ?? "", r.restore.rev);
@@ -864,6 +866,8 @@ export class PageEngineLink implements ReaderLink {
    */
   private patched(verb: PageVerb, r: PageResult): PageSnapshot | null {
     if (r.outcome !== "ok" && r.outcome !== "alreadyTrue") return null;
+    // A rebound act reached another element than the walked one: only a walk names it.
+    if (r.reboundTo !== undefined) return null;
     if (verb.kind !== "pageWrite" && verb.kind !== "pageSetChecked") return null;
     const last = this.session.tabs.get(verb.tabId);
     if (last === undefined) return null;
