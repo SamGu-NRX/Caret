@@ -544,10 +544,10 @@ describe("event cards through the helper", () => {
     const mail = "6161-2";
     const app: AppRef = { pid: 6162, bundleId: "com.apple.mail", name: "Mail" };
     const lineKey = "com.apple.mail/standard/statictext:m1~0";
-    const sentence = "Coffee with Dana on Oct 20, 2026 from 3:00 to 4:00 PM.";
+    const sentence = "Coffee with Dana on Oct 20, 2026 from 3:00 to 4:00 PM PT.";
     const values: TypedValue[] = [
       { kind: "date", text: "Oct 20, 2026", nodeKey: lineKey },
-      { kind: "time", text: "3:00 to 4:00 PM", nodeKey: lineKey },
+      { kind: "time", text: "3:00 to 4:00 PM PT", nodeKey: lineKey },
     ];
     const history = ["From: Dana Whitfield", "To: me", "Subject: coffee?", "Sure — when works?", "Thanks!"].map((t, i) => text(`com.apple.mail/standard/statictext:h${i}~0`, t));
     const replyNode: Node = { key: "com.apple.mail/standard/textarea:reply~0", parent: null, role: "AXTextArea", label: "Reply", editable: true };
@@ -556,6 +556,8 @@ describe("event cards through the helper", () => {
         withReply ? [...history, text(lineKey, lineText), replyNode] : [...history, text(lineKey, lineText)],
         { at: clock, windowId: mail, app, title: "Coffee this week?", focused: true, focusedKey, values, reason: "focus" },
       );
+    // The user is in Mail, reading the thread.
+    send({ type: "appSwitch", v: PROTOCOL_VERSION, at: clock, from: MAIL, to: app });
     return { mail, reply: replyNode.key, sentence, read, lineKey };
   };
 
@@ -573,11 +575,11 @@ describe("event cards through the helper", () => {
     await helper.eventsSettled;
     const o = offers();
     expect(o).toHaveLength(1);
-    expect(o[0]?.endState.text).toBe("Coffee with Dana, Oct 20 3:00 to 4:00 PM");
+    expect(o[0]?.endState.text).toBe("Coffee with Dana, Oct 20 5:00 to 6:00 PM");
     expect(o[0]?.field).toMatchObject({ windowId: mail, key: reply });
     expect(jev.asked).toEqual([sentence, sentence]);
     expect(helper.events.shown()).toEqual([
-      { offerKey: o[0]?.offerKey, title: "Coffee with Dana", when: { start: "2026-10-20T15:00:00-05:00", end: "2026-10-20T16:00:00-05:00" } },
+      { offerKey: o[0]?.offerKey, title: "Coffee with Dana", when: { start: "2026-10-20T17:00:00-05:00", end: "2026-10-20T18:00:00-05:00" } },
     ]);
   });
 
@@ -650,7 +652,7 @@ describe("event cards through the helper", () => {
     const o = offers()[0] as OfferAction;
     expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: o.offerKey, actionId: "add", overrides: {}, at: clock })).toMatchObject({ outcome: "done", acted: 1 });
     expect([...calendar.events.values()]).toEqual([
-      expect.objectContaining({ calendar: "Caret", title: "Coffee with Dana", start: "2026-10-20T15:00:00-05:00", end: "2026-10-20T16:00:00-05:00" }),
+      expect.objectContaining({ calendar: "Caret", title: "Coffee with Dana", start: "2026-10-20T17:00:00-05:00", end: "2026-10-20T18:00:00-05:00" }),
     ]);
     expect(await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: o.offerKey, action: "undo" })).toMatchObject({ restored: 1 });
     expect(calendar.events.size).toBe(0);
@@ -745,7 +747,7 @@ describe("the reply order, routed", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]?.key).toBe(lineKey);
     expect(lines[0]?.sentence).toBe(sentence);
-    expect(lines[0]?.field).toEqual({ windowId, key: reply });
+    expect(lines[0]?.field).toMatchObject({ windowId, key: reply });
     // Entering the field again hears nothing more: the lines are already heard.
     await cards.onChanges([]);
     expect(heard).toBe(1);
