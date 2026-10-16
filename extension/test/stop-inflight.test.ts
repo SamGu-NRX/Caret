@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fakeChrome } from "./fake-chrome.ts";
+import { fakeChrome, settle } from "./fake-chrome.ts";
 
 const ORIGIN = "https://form.example.test";
 afterEach(() => {
@@ -56,5 +56,39 @@ describe("worker Stop with a dispatched page write", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(f.asked.filter((m) => m.op === "act")).toHaveLength(1);
     expect(f.sentToHelper.find((m) => m.type === "pageResult" && m.id === "next")).toMatchObject({ outcome: "notAllowed" });
+  });
+});
+
+describe("worker Stop while a compare waits for its budget (Greptile, PR #52)", () => {
+  it("sends no pageCompare to the page once the grant ended during the wait", async () => {
+    const f = fakeChrome();
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    const session = f.chrome.storage.session;
+    // The budget read waits until the test lets it go, as a slow storage read would.
+    f.chrome.storage.session = { get: async (key: string) => (await held, session.get(key)), set: session.set };
+    vi.stubGlobal("chrome", f.chrome);
+    vi.resetModules();
+    f.frames.set(1, [{ frameId: 0, parentFrameId: -1, documentId: "D1", url: `${ORIGIN}/apply` }]);
+    await import("../src/worker.ts");
+    await settle();
+    await f.fire("port.message", { type: "engineReady", v: 1, engine: "e1" });
+    await f.fire("nav.committed", { tabId: 1, frameId: 0, documentId: "D1" });
+    await f.fire("port.message", {
+      type: "scopedActGrant", v: 1, taskId: "t", at: Date.now(), expires: Date.now() + 5000,
+      scope: { kind: "page", engine: "e1", tabId: 1, frameId: 0, origin: ORIGIN, navGen: 2 },
+    });
+    f.answers.set("1:0:act", { outcome: "ok", detail: null, compare: ["equal"] });
+    const sent = f.fire("port.message", {
+      type: "pageCommand", v: 1, id: "cmp", expires: Date.now() + 5000,
+      verb: { kind: "pageCompare", tabId: 1, frameId: 0, documentId: "D1", id: "field", control: "text", name: "First Name", taskId: "t", candidates: ["Dana Vale"] },
+    });
+    for (let i = 0; i < 5; i++) await settle();
+    await f.fire("port.message", { type: "actRevoke", v: 1, taskId: "t", at: Date.now() });
+    release();
+    await sent;
+    for (let i = 0; i < 5; i++) await settle();
+    expect(f.asked.filter((m) => m.op === "act")).toHaveLength(0);
+    expect(f.sentToHelper.find((m) => m.type === "pageResult" && m.id === "cmp")).toMatchObject({ outcome: "notAllowed" });
   });
 });

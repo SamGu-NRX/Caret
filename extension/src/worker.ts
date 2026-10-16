@@ -533,6 +533,10 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   if (verb.kind === "pageCompare") {
     const asked = verb.candidates.length;
     const allowed = await compareSpend.allowance(origin, asked);
+    // The budget is read from storage: a Stop, or a navigation, during that wait ends the compare before it is sent.
+    const still = grants.check(verb.taskId, verb.tabId, verb.frameId);
+    if (!still.ok) return { outcome: "notAllowed", detail: still.reason };
+    if (navGens.get(verb.tabId, verb.frameId) !== genNow) return { outcome: "stale", detail: "the frame moved while the compare budget was read" };
     if (allowed < asked) {
       log(`pageCompare over ${origin}'s hourly budget: ${asked - allowed} candidate(s) answer unknown`);
       if (allowed === 0) return { outcome: "ok", detail: "over this site's hourly compare budget", compare: verb.candidates.map(() => "unknown" as const) };

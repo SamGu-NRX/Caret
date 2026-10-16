@@ -105,7 +105,8 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
   const check = (): ActAnswer | null => ineligible(r.el, verb, entry, deadline);
   const first = check();
   if (first !== null) return first;
-  if (verb.kind === "pageCompare") return compare(r.el, verb);
+  // The field is read only while the task's grant still holds: a Stop that reached the worker after it sent the compare ends it here.
+  if (verb.kind === "pageCompare") return (await alive()) ? compare(r.el, verb) : answer("notAllowed", "the task's grant ended");
   // Kept before anything is touched, so an act that stops midway ("may have landed") can still be undone on it.
   if (verb.mark !== undefined) reg.mark(verb.mark, r.el);
   let a: ActAnswer;
