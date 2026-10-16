@@ -2,8 +2,9 @@
 // and the acts (actions.ts, combobox.ts): change counters and origins, the page-held `before` of Caret's writes, and
 // the compare budget. Nothing here is ever sent; the walk and the receipts send only what these say about a field.
 import type { PageControlKind, Withheld } from "../shared/messages.ts";
-import { CompareBudget, Revs, WriteRecords, presence, withheldFor, type Origin } from "./revs.ts";
+import { CompareBudget, ChoiceRecords, Revs, WriteRecords, presence, withheldFor, type Origin } from "./revs.ts";
 import { isTyping } from "./entry.ts";
+import { composedParent } from "./shadow.ts";
 import { historyDoubt } from "./password-watch.ts";
 import { controlName } from "./question.ts";
 import { deepActiveElement, kindOf, secretOf, shadowRootOf, textOf, type TextReading } from "./walker.ts";
@@ -94,4 +95,41 @@ export function trackTrustedEdits(): void {
     revs.trusted(el, says, isInput(el));
   };
   for (const type of ["beforeinput", "input", "change", "paste", "compositionend"]) addEventListener(type, on, opts);
+}
+
+/** The trusted pointers and keys that touched each control without editing it, counted for a choice record's undo check (revs.ts). */
+const touches = new WeakMap<Element, number>();
+
+/** How many trusted pointers and keys have touched the control since this page began keeping choice records (revs.ts choiceCheck). */
+export function touchCount(el: Element): number {
+  return touches.get(el) ?? 0;
+}
+/** Nothing is counted until a choice record exists for some control, so pages Caret only reads stay untouched by the listener's walk. */
+let anyChoiceRecorded = false;
+
+/** The page's record of Caret's combobox picks, by task and the element picked (revs.ts ChoiceRecords). */
+export const choices = new ChoiceRecords<Element>();
+
+/**
+ * Listens, from document_start, for the trusted events that touch a control without editing it: a pointer going down, a
+ * key going down. A person re-picking Caret's own option leaves the text — and so the rev and the edit counters —
+ * exactly as Caret's pick left them, so the pick's record counts these touches too: the click that opens the control's
+ * list is itself a trusted pointer (issue #54). Caret's own acts dispatch untrusted events only, which never count.
+ */
+export function trackTrustedTouches(): void {
+  const on = (e: Event): void => {
+    if (!anyChoiceRecorded || !e.isTrusted) return;
+    const t = e.composedPath()[0];
+    if (!(t instanceof Element)) return;
+    // A touch counts for every recorded choice it could undo: the control itself, or an element within it.
+    for (let n: Element | null = t; n !== null; n = composedParent(n)) if (touches.has(n)) touches.set(n, (touches.get(n) ?? 0) + 1);
+  };
+  for (const type of ["pointerdown", "mousedown", "keydown", "touchstart"]) addEventListener(type, on, { capture: true, passive: true });
+}
+
+/** Begins the page-side record of a pick Caret is about to make, anchoring the control's trusted-event counts at this moment (revs.ts choiceCheck). */
+export function beginChoice(taskId: string, el: Element, wrote: string): void {
+  if (!touches.has(el)) touches.set(el, 0);
+  anyChoiceRecorded = true;
+  choices.begin(taskId, el, wrote, revs.trustedCount(el), touches.get(el) ?? 0);
 }

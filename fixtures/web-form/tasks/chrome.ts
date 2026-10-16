@@ -27,6 +27,8 @@ export class Cdp {
   private buf = "";
   private readonly pending = new Map<number, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
   private readonly out: Writable;
+  /** Protocol events (id-less messages), newest last, capped: diagnostics for tests. */
+  readonly events: { method: string; params: Record<string, unknown> }[] = [];
 
   constructor(out: Writable, inp: Readable) {
     this.out = out;
@@ -34,10 +36,15 @@ export class Cdp {
     inp.on("data", (d: string) => {
       this.buf += d;
       for (let i = this.buf.indexOf("\0"); i >= 0; i = this.buf.indexOf("\0")) {
-        const m = JSON.parse(this.buf.slice(0, i)) as { id?: number; result?: Record<string, unknown>; error?: { message: string } };
+        const m = JSON.parse(this.buf.slice(0, i)) as { id?: number; method?: string; params?: Record<string, unknown>; result?: Record<string, unknown>; error?: { message: string } };
         this.buf = this.buf.slice(i + 1);
-        const p = m.id === undefined ? undefined : this.pending.get(m.id);
-        if (p === undefined || m.id === undefined) continue;
+        if (m.id === undefined) {
+          if (m.method !== undefined) this.events.push({ method: m.method, params: m.params ?? {} });
+          if (this.events.length > 400) this.events.splice(0, this.events.length - 400);
+          continue;
+        }
+        const p = this.pending.get(m.id);
+        if (p === undefined) continue;
         this.pending.delete(m.id);
         if (m.error !== undefined) p.reject(new Error(m.error.message));
         else p.resolve(m.result ?? {});
