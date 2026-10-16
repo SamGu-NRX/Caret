@@ -186,7 +186,12 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const trusted0 = revs.trustedCount(el);
   if ((el as HTMLInputElement).disabled === true || el.getAttribute("aria-disabled") === "true" || el.getAttribute("aria-readonly") === "true") return answer("failed", "the control is disabled or read-only");
   // D2-04: "" is no option's name; it is the undo of Caret's own pick, and only that.
-  if (verb.value === "") return verb.sameAs === undefined ? answer("unsupported", "Caret empties a dropdown only to undo its own pick") : clearChoice(el, f, before, check, alive, trusted0);
+  if (verb.value === "") {
+    if (verb.sameAs === undefined || verb.wrote === undefined) return answer("unsupported", "Caret empties a dropdown only to undo its own pick");
+    // The undo names Caret's own pick, never the page's text: the control must still show it.
+    if (normalizeName(before) !== normalizeName(verb.wrote)) return answer("stale", "the control shows another choice than the one Caret picked");
+    return clearChoice(el, f, before, check, alive, trusted0);
+  }
   const hiddenBefore = hiddenValue(f);
   const textField = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
   const filterBefore = textField?.value ?? null;

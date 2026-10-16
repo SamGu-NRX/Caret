@@ -3240,8 +3240,10 @@ export const PageVerb = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pagePress"), ...PageTarget }),
   z.object({ kind: z.literal("pageSelect"), ...PageTarget, expect: z.string(), value: z.string() }),
   /** A combobox names `expectRev`; a press-group option (control "button", W4) names `expect`, the answer pressed before. */
-  z.object({ kind: z.literal("pageChooseOption"), ...PageTarget, expectRev: z.number().int().nonnegative().optional(), expect: z.string().optional(), value: z.string(), question: z.string().min(1).optional() })
-    .refine((m) => (m.control === "combobox" ? m.expectRev !== undefined && m.expect === undefined : m.expect !== undefined && m.expectRev === undefined), { message: "a combobox names expectRev, a press-group option expect", path: ["expect"] }),
+  /** `wrote`: an undo's clear of a combobox (value ""), Caret's own pick, which the page requires the control still shows. */
+  z.object({ kind: z.literal("pageChooseOption"), ...PageTarget, expectRev: z.number().int().nonnegative().optional(), expect: z.string().optional(), value: z.string(), question: z.string().min(1).optional(), wrote: z.string().optional() })
+    .refine((m) => (m.control === "combobox" ? m.expectRev !== undefined && m.expect === undefined : m.expect !== undefined && m.expectRev === undefined), { message: "a combobox names expectRev, a press-group option expect", path: ["expect"] })
+    .refine((m) => m.wrote === undefined || (m.value === "" && m.sameAs !== undefined), { message: "wrote comes only with an undo's clear", path: ["wrote"] }),
   /** `exact`: the field must hold exactly `wrote`, S1's rule for a write whose answer was lost; else equivalent under its kind. */
   z.object({ kind: z.literal("pageRestore"), ...PageTarget, wrote: z.string(), exact: z.literal(true).optional() }),
   z.object({ kind: z.literal("pageCompare"), ...PageTarget, candidates: z.array(z.string()).min(1).max(MAX_COMPARE_CANDIDATES) }),

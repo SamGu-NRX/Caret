@@ -126,8 +126,9 @@ describe("W3 page findings, helper side", () => {
     it("an undo's page verb says rebind: false and names the forward write's mark; the forward write carries the mark", async () => {
       expect((await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "", value: "Ada", taskId: "t1", mark: "m1" })).outcome).toBe("ok");
       await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "Ada", value: "", taskId: "t1", sameAs: "m1" });
-      const writes = page.verbs.filter((v) => v.kind === "pageWrite").map((v) => ({ rebind: v.rebind, mark: v.mark, sameAs: v.sameAs }));
-      expect(writes).toEqual([{ rebind: undefined, mark: "m1", sameAs: undefined }, { rebind: false, mark: undefined, sameAs: "m1" }]);
+      // The undo of a text write is the page's own restore (pageRestore), under the same identity rules.
+      const writes = page.verbs.filter((v) => v.kind === "pageWrite" || v.kind === "pageRestore").map((v) => ({ kind: v.kind, rebind: v.rebind, mark: v.mark, sameAs: v.sameAs }));
+      expect(writes).toEqual([{ kind: "pageWrite", rebind: undefined, mark: "m1", sameAs: undefined }, { kind: "pageRestore", rebind: false, mark: undefined, sameAs: "m1" }]);
     });
 
     it("leaves the element's identity to the page: an undo goes on when a rebind gave the field another registry id (W3 review #2)", async () => {
@@ -136,7 +137,7 @@ describe("W3 page findings, helper side", () => {
       page.controls[0] = { ...page.controls[0]!, id: "e9" };
       await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
       await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "Ada", value: "", taskId: "t1", sameAs: "m1" });
-      expect(page.verbs.filter((v) => v.kind === "pageWrite").at(-1)).toMatchObject({ id: "e9", sameAs: "m1", rebind: false });
+      expect(page.verbs.filter((v) => v.kind === "pageRestore").at(-1)).toMatchObject({ id: "e9", sameAs: "m1", rebind: false });
     });
 
     it("the page's notSameElement reaches the executor as notSameElement, so the restore is settled as refused", () => {
@@ -147,7 +148,7 @@ describe("W3 page findings, helper side", () => {
       const r = await helper.executor.run("t1", plan([step(KEY.first, "Ada")]), {}, undefined, { grant: true });
       expect(r.outcome).toBe("done");
       // The content script answers the restore as it does for a replaced element under rebind: false.
-      page.onAct = (v) => (v.kind === "pageWrite" && v.rebind === false ? { outcome: "notSameElement", detail: "the element Caret wrote was replaced" } : null);
+      page.onAct = (v) => (v.kind === "pageRestore" && v.rebind === false ? { outcome: "notSameElement", detail: "the element Caret wrote was replaced" } : null);
       const u = await helper.executor.undo("t1");
       expect(u).toMatchObject({ restored: 0, notRestored: [{ step: 0 }] });
       expect(u.notRestored[0]?.reason).toContain("no longer the element");
@@ -205,7 +206,8 @@ describe("W3 page findings, helper side", () => {
       const u = await helper.executor.undo("t1");
       expect(u).toMatchObject({ restored: 1, notRestored: [] });
       expect(page.shown("e3")).toBe("");
-      expect(page.verbs.filter((v) => v.kind === "pageChooseOption").at(-1)).toMatchObject({ rebind: false, expect: "Research", value: "" });
+      // The undo's clear names Caret's own pick, which the page requires the control still shows.
+      expect(page.verbs.filter((v) => v.kind === "pageChooseOption").at(-1)).toMatchObject({ rebind: false, wrote: "Research", value: "" });
     });
   });
 

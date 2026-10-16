@@ -110,9 +110,10 @@ function rig(mean: "AX" | "page", o: { landed: boolean; user?: { at: number; act
     page.onAct = (verb) => {
       if (verb.kind !== "pageWrite") return null;
       dispatch();
-      // Caret's write lands as the content script makes it: the page keeps the text before it for its undo.
-      if (o.landed) page.write(verb, verb.value);
-      return { outcome: o.answer ?? "notAllowed", detail: "answer after Stop" };
+      // Caret's write lands as the content script makes it: the page keeps the text before it for its undo, and an ok
+      // answer carries the page's own readings.
+      const readings = o.landed ? page.write(verb, verb.value) : undefined;
+      return { outcome: o.answer ?? "notAllowed", detail: "answer after Stop", ...(o.answer === "ok" && readings !== undefined ? { readings } : {}) };
     };
     const receive = page.session.receive.bind(page.session);
     page.session.receive = (m) => {
@@ -302,7 +303,8 @@ describe("page: the walk's record of the user's input", () => {
   // its inputAt (extension content/user-input.ts). W3's revoked pick keeps its Undo (page-w3.test.ts 1d).
   it.each(["key", "mouse"] as const)("does not count a %s the page reports without naming a control", async (kind) => {
     const r = rig("page", { landed: true, user: { at: STOP_AT - 10, act: (x) => x.helper.executor.onPageInput(PAGE_WIN, kind) } });
-    expect(await run(r)).toMatchObject({ acted: 1 });
+    // The page sends no text, so the recovery read cannot say the write landed (acted 0); Undo still restores it.
+    expect(await run(r)).toMatchObject({ acted: 0 });
     expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1 });
   });
 
@@ -328,7 +330,7 @@ describe("page: the walk's record of the user's input", () => {
 
   it("keeps Undo off a reconciled write the user retyped with the same text, which changes only inputAt (PR #33 review)", async () => {
     const r = rig("page", { landed: true });
-    expect(await run(r)).toMatchObject({ acted: 1, detail: expect.stringContaining("Written before stop") });
+    expect(await run(r)).toMatchObject({ acted: 0, detail: expect.stringContaining("may have been written") });
     // The user selects the field's text and types the same value: the walk shows no change of text, only the input time.
     r.type(INTENDED);
     await r.walk();
@@ -372,7 +374,7 @@ describe("page: the walk's record of the user's input", () => {
 
   it("does not count input from before the write was sent, such as the key that accepted the fill", async () => {
     const r = rig("page", { landed: true, inputBefore: 1000 });
-    expect(await run(r)).toMatchObject({ outcome: "stopped", acted: 1, detail: expect.stringContaining("Written before stop") });
+    expect(await run(r)).toMatchObject({ outcome: "stopped", acted: 0, detail: expect.stringContaining("may have been written") });
     expect(await r.helper.executor.undo("t")).toMatchObject({ restored: 1 });
     expect(r.held()).toBe(original("page"));
   });
@@ -411,7 +413,7 @@ describe("FieldInput on the wire", () => {
   });
 
   it("is a page control's inputAt only as a timestamp", () => {
-    const c = { id: "e1", key: "textbox:name~0", strongKey: null, kind: "text", role: "textbox", name: "Name", form: null, rect: [0, 0, 10, 10] };
+    const c = { id: "e1", key: "textbox:name~0", strongKey: null, kind: "text", role: "textbox", name: "Name", hasValue: false, rev: 0, form: null, rect: [0, 0, 10, 10] };
     expect(PageControl.parse({ ...c, inputAt: 1790000000000 }).inputAt).toBe(1790000000000);
     expect(() => PageControl.parse({ ...c, inputAt: "now" })).toThrow();
   });

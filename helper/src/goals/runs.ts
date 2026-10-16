@@ -26,7 +26,7 @@ import { fieldFingerprint } from "../fill/ask-scope.ts";
 import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
 import type { Change, ScreenModel } from "../model.ts";
 import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
-import { nodeText } from "../model.ts";
+import { heldText, nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, type GoalStepView, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
@@ -560,8 +560,9 @@ export class GoalRuns {
           return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' is gone or was replaced` };
         }
         if (s.kind === "write") {
-          const now = n.value ?? "";
-          if (now !== s.target.value && now !== s.writes) return { reason: "targetChanged", says: `'${s.target.label}' changed since Caret planned this` };
+          // A page field that now holds text the page never sends was typed into: Caret planned it empty.
+          const now = heldText(n);
+          if (now === null || (now !== s.target.value && now !== s.writes)) return { reason: "targetChanged", says: `'${s.target.label}' changed since Caret planned this` };
           // The gates judged the value against this field's name (G2): a field that now reads as another is not that field.
           if (!sameField(w, s)) return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' now reads as another field` };
           // W2: nor one whose input kind, autocomplete field name or maxlength changed since its value was checked.

@@ -211,7 +211,8 @@ export type ActVerb =
    * A combobox takes `expectRev`, its text never having left the page; a press-group option (W4, control "button")
    * takes `expect`, the names of the options pressed before, and `question`, which the content script requires unchanged.
    */
-  | ({ kind: "pageChooseOption"; value: string; expectRev?: number; expect?: string; question?: string } & TargetFields)
+  /** `wrote` (an undo's clear of a combobox, value ""): Caret's own pick, which the control must still show. */
+  | ({ kind: "pageChooseOption"; value: string; expectRev?: number; expect?: string; question?: string; wrote?: string } & TargetFields)
   | ({ kind: "pageSetChecked"; checked: boolean } & TargetFields)
   | ({ kind: "pageAttachFile"; file: { name: string; type: string; size: number; sha256: string; data: string } } & TargetFields)
   /** P4 item 8: `text` at the caret of the focused field, whose text before the caret must be `expect` (content/insert.ts). */

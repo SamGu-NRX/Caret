@@ -14,7 +14,7 @@
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt, randomUUID } from "node:crypto";
 import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type FieldInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
-import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
+import { heldText as readOf, nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink } from "./means.ts";
 
@@ -1112,7 +1112,7 @@ export class Executor {
     }
     // A page field that holds text the page does not send (Node.unread) is never written over: Caret cannot say what
     // it would replace, nor undo it to that.
-    if (attribute === "value" && node.unread === true) throw StepStop.stop("changed", `'${step.says}' targets a field that already holds text Caret does not read, so Caret did not write over it`);
+    if (attribute === "value" && node.unread === true) throw StepStop.stop("changed", `the field for '${step.says}' changed since Caret planned it and holds text Caret does not read, so Caret did not write over it`);
     const before = node.value ?? "";
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;
     this.checkInterrupt(task);
@@ -2015,6 +2015,8 @@ export class Executor {
         this.journalSave(task, null);
         return { state: "unknown", detail: `${fieldContents(e.before, null)}; ${input} after Caret sent its write, so Caret cannot tell its write from your input and left it as it is` };
       }
+      // A combobox's walk carries no sign of a pick either way (see below): only the lost answer could say.
+      if (pageCombobox(field.role, e.windowId)) return { state: "unknown", detail: `Caret cannot tell whether the option was picked; ${fieldContents(e.before, null)}` };
       return { state: "unknown", detail: `The field may have been written: ${fieldContents(e.before, null)}. Undo puts it back only while the page finds it holding exactly what Caret wrote` };
     }
     const held = read;
@@ -2330,10 +2332,6 @@ function fieldContents(before: string, held: string | null): string {
   return held === null ? `the field now holds other text, which the page does not send; before the write it held ${JSON.stringify(before)}` : `the field now holds ${JSON.stringify(held)}; before the write it held ${JSON.stringify(before)}`;
 }
 
-/** What a field holds as the helper can read it: its value, or null for a page field whose text the page does not send (Node.unread). */
-function readOf(n: Node): string | null {
-  return n.unread === true ? null : (n.value ?? "");
-}
 
 /** Why the reader refused a restore, in words for the activity row. */
 function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult): string {

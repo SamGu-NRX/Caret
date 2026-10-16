@@ -139,7 +139,7 @@ describe("B3: a primary that changes after the proposal", () => {
   });
 
   it("does not write a page's Alternate email when the Email changes to the same value mid-run", async () => {
-    const controls = (): TestField[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "first@example.test" }), c("e3", "email", "Alternate email", { value: "" })];
+    const controls = (): TestField[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "" }), c("e3", "email", "Alternate email", { value: "" })];
     const r = await rig({ controls, note: `Full name: Robin Vale\nEmail: ${EMAIL}`, picks: { "Full name": "Robin Vale", "Alternate email": EMAIL } });
     const preview = await r.ask("fill out this form from my note");
     expect(preview.event === "segment" && preview.steps.map((s) => s.says)).toContain(`Alternate email: ${EMAIL}`);

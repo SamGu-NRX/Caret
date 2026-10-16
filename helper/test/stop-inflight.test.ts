@@ -87,9 +87,10 @@ function rig(mean: "AX" | "page", stopAfter: number, answer: Answer, landed = tr
     page.onAct = (verb) => {
       if (verb.kind !== "pageWrite") return null;
       dispatch();
-      // Caret's write lands as the content script makes it: the page keeps the text before it for its undo.
-      if (landed) page.write(verb, verb.value);
-      return { outcome: answer === "ok" ? "ok" : "notAllowed", detail: "answer after Stop" };
+      // Caret's write lands as the content script makes it: the page keeps the text before it for its undo, and an ok
+      // answer carries the page's own readings.
+      const readings = landed ? page.write(verb, verb.value) : undefined;
+      return { outcome: answer === "ok" ? "ok" : "notAllowed", detail: "answer after Stop", ...(answer === "ok" && readings !== undefined ? { readings } : {}) };
     };
     page.session.receive = (m) => {
       if (m.type === "pageResult") {

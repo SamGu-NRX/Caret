@@ -125,7 +125,8 @@ describe("PV2 review: Sites", () => {
     reg.add(s);
     s.receive({ type: "pageHello", v: 1, extensionId: X, version: "0.1.0", profile: "p", instance: "w", startedAt: 1, capabilities: [] });
     await new Promise((r) => setTimeout(r, 0));
-    const p = page([{ origin: "https://vault.example", controls: [control("e1", "Note", "Lumen staging token")] }], "Apply");
+    // A field's text never reaches the model (counsel 2026-10-09), so the page text it holds is the field's label.
+    const p = page([{ origin: "https://vault.example", controls: [control("e1", "Lumen staging token", "")] }], "Apply");
     s.tabs.set(7, p);
     s.onSnapshot?.(p, s);
     expect(JSON.stringify([...(m.windows.get("page:eng1:7")?.nodes.values() ?? [])])).toContain("Lumen staging token");

@@ -938,7 +938,7 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
       frames: frames.map((f) => ({
         frameId: f.frameId, parentFrameId: f.parentFrameId, documentId: `doc-${f.frameId}`, origin: "https://service.example", path: `/f${f.frameId}`, navGen: 0, title: "Service request", headings: f.headings,
         sections: f.walked.occurrences, ...(f.sectionNames === undefined ? {} : { sectionNames: f.sectionNames }), ...(f.sectionsCut === undefined ? {} : { sectionsCut: true }),
-        controls: f.controls.map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, 80 + i * 40, 200, 24], ...((f.walked.chains[name] ?? []).length === 0 ? {} : { sections: [...(f.walked.chains[name] ?? [])] }) })),
+        controls: f.controls.map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, hasValue: false, rev: 0, form: "form@0", rect: [20, 80 + i * 40, 200, 24], ...((f.walked.chains[name] ?? []).length === 0 ? {} : { sections: [...(f.walked.chains[name] ?? [])] }) })),
         iframes: [], excluded: {}, truncated: false,
       })),
       missing: [], focused: null,
@@ -1098,7 +1098,7 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
     const f = top(t);
     return {
       type: "pageSnapshot" as const, v: 1 as const, id: "walk-3", at: 2000, tabId: 43, browserWindowId: 40, active: true, inFocusedWindow: true, title: "Service request",
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: "doc-0", origin: "https://service.example", path: "/f0", navGen: 0, title: "Service request", headings: f.headings, sections: f.walked.occurrences, controls: [{ id: "e1", key: "form@0/textbox:serial number~0", strongKey: null, kind: "text" as const, role: "textbox", name: "Serial number", value: "", form: "form@0", rect: [20, 80, 200, 24] as [number, number, number, number], sections: ["o1"] }], iframes: [], excluded: {}, truncated: false }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: "doc-0", origin: "https://service.example", path: "/f0", navGen: 0, title: "Service request", headings: f.headings, sections: f.walked.occurrences, controls: [{ id: "e1", key: "form@0/textbox:serial number~0", strongKey: null, kind: "text" as const, role: "textbox", name: "Serial number", hasValue: false, rev: 0, form: "form@0", rect: [20, 80, 200, 24] as [number, number, number, number], sections: ["o1"] }], iframes: [], excluded: {}, truncated: false }],
       missing: [], focused: null,
     };
   }
@@ -1121,7 +1121,7 @@ describe("final check of 781ff11: an incomplete name inventory proves nothing un
       type: "pageSnapshot", v: 1, id: "walk-4", at: 2000, tabId: 44, browserWindowId: 40, active: true, inFocusedWindow: true, title: "Service request",
       frames: [{ frameId: 0, parentFrameId: -1, documentId: "doc-0", origin: "https://service.example", path: "/f0", navGen: 0, title: "Service request", headings: [],
         sections: f.occurrences, ...(f.sectionNames.length === 0 ? {} : { sectionNames: f.sectionNames }), ...(f.cut ? { sectionsCut: true } : {}),
-        controls: ["Serial number", "Model"].map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, 80 + i * 40, 200, 24], sections: ["o1"] })),
+        controls: ["Serial number", "Model"].map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, hasValue: false, rev: 0, form: "form@0", rect: [20, 80 + i * 40, 200, 24], sections: ["o1"] })),
         iframes: [], excluded: {}, truncated: false }],
       missing: [], focused: null,
     });

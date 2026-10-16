@@ -50,6 +50,11 @@ export function holdsText(node: Node): boolean {
   return node.unread === true || (node.value ?? "") !== "";
 }
 
+/** What a field holds as the helper can read it: its value, or null for a page field whose text the page never sends (Node.unread). */
+export function heldText(node: Node): string | null {
+  return node.unread === true ? null : (node.value ?? "");
+}
+
 /**
  * Whether a node is a web page's text field (engines/page-link.ts): it carries the page's change counter, or holds text
  * the page never sends. Its text never left the page, so it is no copy source and no note (counsel 2026-10-09).

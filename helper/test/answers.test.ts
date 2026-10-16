@@ -554,7 +554,7 @@ describe("the page engine carries what saved answers need", () => {
         type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
         frames: [{
           frameId: 0, parentFrameId: -1, documentId: "D0", origin: "https://jobs.ashbyhq.com", path: "/ramp/1/application", navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false,
-          controls: [{ id: "e1", key: "form/textbox:why~0", strongKey: null, kind: "textarea", role: "textbox", name: "Why Ramp?", value: "Because", form: null, rect: [0, 0, 100, 40], maxLength: 500, entry: "typed" }],
+          controls: [{ id: "e1", key: "form/textbox:why~0", strongKey: null, kind: "textarea", role: "textbox", name: "Why Ramp?", hasValue: true, rev: 1, form: null, rect: [0, 0, 100, 40], maxLength: 500, entry: "typed" }],
         }],
         focused: null, missing: [],
       } as never,

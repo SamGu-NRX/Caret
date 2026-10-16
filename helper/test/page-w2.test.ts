@@ -197,7 +197,8 @@ describe("page link: combobox and attach", () => {
     expect(applied[0]?.nodes.find((n) => n.label === "Country of residence")).toMatchObject({ role: "AXComboBox", editable: true, value: "" });
     const r = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f0/form[react-form]/combobox:country of residence~0", role: "AXComboBox", attribute: "value", expect: "", value: "United States", taskId: "t1" });
     expect(r.outcome).toBe("ok");
-    expect(commands(sent)[1]).toEqual({ kind: "pageChooseOption", tabId: 7, frameId: 0, documentId: "D0", id: "e3", control: "combobox", name: "Country of residence", taskId: "t1", expect: "", value: "United States" });
+    // The control's shown text never travels: the pick names the rev the walk read.
+    expect(commands(sent)[1]).toEqual({ kind: "pageChooseOption", tabId: 7, frameId: 0, documentId: "D0", id: "e3", control: "combobox", name: "Country of residence", taskId: "t1", expectRev: 0, value: "United States" });
     // The pick waits for the page, so its command lives longer than a write's.
     const cmd = sent.find((m) => m.type === "pageCommand" && m.verb.kind === "pageChooseOption");
     expect(cmd?.type === "pageCommand" && cmd.expires - Date.now()).toBeGreaterThan(5000);
@@ -254,7 +255,8 @@ describe("page link: undo writes only the element its write went to (B23 on page
     await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
     expect((await link.run(write({ mark: "m1" }))).outcome).toBe("ok");
     expect((await link.run(write({ sameAs: "m1" }, "", "robin@example.test"))).outcome).toBe("ok");
-    expect(commands(sent).filter((v) => v.kind === "pageWrite")).toHaveLength(2);
+    // The undo is the page's own restore, under the forward write's mark.
+    expect(commands(sent).filter((v) => v.kind === "pageWrite" || v.kind === "pageRestore").map((v) => v.kind)).toEqual(["pageWrite", "pageRestore"]);
   });
 
   it("refuses an undo whose mark it never recorded, and sends the page nothing", async () => {
@@ -263,7 +265,7 @@ describe("page link: undo writes only the element its write went to (B23 on page
     await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
     const r = await link.run(write({ sameAs: "m-from-before-a-restart" }, "", "robin@example.test"));
     expect(r.outcome).toBe("notSameElement");
-    expect(commands(sent).filter((v) => v.kind === "pageWrite")).toEqual([]);
+    expect(commands(sent).filter((v) => v.kind === "pageWrite" || v.kind === "pageRestore")).toEqual([]);
   });
 
   it("refuses an undo when the key is now in another document; another registry id goes to the page, which checks the object under the mark (W3)", async () => {
@@ -283,9 +285,9 @@ describe("page link: undo writes only the element its write went to (B23 on page
       moved = true;
       await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
       const r = await link.run(write({ sameAs: "m1" }, "", "robin@example.test"));
-      expect(commands(sent).filter((v) => v.kind === "pageWrite"), JSON.stringify(change)).toHaveLength(change.sent);
+      expect(commands(sent).filter((v) => v.kind === "pageWrite" || v.kind === "pageRestore"), JSON.stringify(change)).toHaveLength(change.sent);
       if (change.sent === 1) expect(r.outcome, JSON.stringify(change)).toBe("notSameElement");
-      else expect(commands(sent).filter((v) => v.kind === "pageWrite").at(-1)).toMatchObject({ id: "e9", sameAs: "m1", rebind: false });
+      else expect(commands(sent).filter((v) => v.kind === "pageRestore").at(-1)).toMatchObject({ id: "e9", sameAs: "m1", rebind: false });
     }
   });
 });

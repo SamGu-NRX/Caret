@@ -303,7 +303,8 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
       const selected = c.kind === "select" ? c.options?.find((o) => o.selected) : undefined;
       const box = c.kind === "checkbox";
       // A text control's text never came: the node holds "" for an empty one, the helper's own known text, or is unread.
-      const text = "hasValue" in c ? textValueOf(c, known(f.frameId, f.documentId, c.id)) : null;
+      // By kind, never by shape: a text control that came with no hasValue is unread, and its value is never read.
+      const text = isTextKind(c.kind) ? ("hasValue" in c ? textValueOf(c, known(f.frameId, f.documentId, c.id)) : { unread: true as const }) : null;
       const value = text !== null ? ("value" in text ? text.value : undefined) : c.kind === "select" ? (selected === undefined ? undefined : selected.value === "" ? "" : selected.label) : box ? (c.checked === true ? PAGE_CHECKED : "") : c.value;
       const subrole = subroleOf(c);
       nodes.push({
@@ -612,10 +613,16 @@ export class PageEngineLink implements ReaderLink {
           }
         } else if (t.control.kind === "combobox" && "hasValue" in t.control) {
           // The model shows what the control shows (react-select's chip), as far as the helper knows it; the handler
-          // picks the option named `value`, while the control's rev is the one the walk read.
-          const refused = this.writable(w.tabId, t.frameId, t.documentId, t.control, verb.expect);
-          if (refused !== null) return refused;
-          page = { kind: "pageChooseOption", ...base, expectRev: t.control.rev as number, value: verb.value };
+          // picks the option named `value`, while the control's rev is the one the walk read. An undo's clear names
+          // Caret's own pick (`wrote`), which the page requires the control still shows: the helper may not know.
+          if (verb.sameAs !== undefined && verb.value === "") {
+            if (t.control.rev === null) return verbResult("changed", `'${t.control.name}' holds text Caret does not read, so Caret will not change it`);
+            page = { kind: "pageChooseOption", ...base, expectRev: t.control.rev, value: "", wrote: verb.expect };
+          } else {
+            const refused = this.writable(w.tabId, t.frameId, t.documentId, t.control, verb.expect);
+            if (refused !== null) return refused;
+            page = { kind: "pageChooseOption", ...base, expectRev: t.control.rev as number, value: verb.value };
+          }
         } else if (t.control.kind === "checkbox") {
           // D2-04: the model shows a box as PAGE_CHECKED or "" (toWindowSnapshot), so a write of one of the two sets the
           // checked state, which the content script verifies; it never toggles blindly (alreadyTrue when it holds).

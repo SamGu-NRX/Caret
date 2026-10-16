@@ -27,7 +27,7 @@ function snapshot(id: string, tabId = 7, navGen = 1): PageSnapshot {
           { id: "e3", key: "button:submit~0", strongKey: null, kind: "button", role: "button", name: "Submit", form: null, rect: [0, 60, 100, 20] },
         ] },
       { frameId: 4, parentFrameId: 0, documentId: "D4", origin: "http://127.0.0.1:4311", path: "/embed", navGen: 2, title: "", headings: [], iframes: [], excluded: {}, truncated: false,
-        controls: [{ id: "e1", key: "textbox:referral~0", strongKey: null, kind: "text", role: "textbox", name: "Referral", hasValue: true, rev: 1, form: null, rect: [0, 0, 100, 20] }] },
+        controls: [{ id: "e1", key: "textbox:referral~0", strongKey: null, kind: "text", role: "textbox", name: "Referral", hasValue: false, rev: 1, form: null, rect: [0, 0, 100, 20] }] },
     ],
     missing: [], focused: { frameId: 4, id: "e1", selection: null },
   };
@@ -228,12 +228,13 @@ describe("engine session and page link", () => {
     expect(verbs[1]).toEqual({ kind: "pageSelect", tabId: 7, frameId: 0, documentId: "D0", id: "e2", control: "select", name: "Country", taskId: "t1", expect: "", value: "ca" });
     expect(verbs[2]).toEqual({ kind: "pageWalk", tabId: 7 });
     expect(applied.length).toBe(before + 1);
-    const text = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f4/textbox:referral~0", role: "AXTextField", attribute: "value", expect: "x", value: "ABC", taskId: "t1" });
+    const text = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f4/textbox:referral~0", role: "AXTextField", attribute: "value", expect: "", value: "ABC", taskId: "t1" });
     expect(text.outcome).toBe("ok");
     expect(verbs.length).toBe(3);
     // A verified text write is not walked after (P2's deferred walk): it is the last command.
     const last = sent.filter((m) => m.type === "pageCommand").at(-1);
-    expect(last?.type === "pageCommand" && last.verb).toMatchObject({ kind: "pageWrite", frameId: 4, documentId: "D4", id: "e1", expect: "x", value: "ABC" });
+    // The page checks the rev the walk read, never a text: the field's text never travels either way.
+    expect(last?.type === "pageCommand" && last.verb).toEqual({ kind: "pageWrite", tabId: 7, frameId: 4, documentId: "D4", id: "e1", control: "text", name: "Referral", taskId: "t1", expectRev: 1, value: "ABC" });
   });
 
   it("refuses a write without a task, a focus write, and a raise, without asking the engine", async () => {

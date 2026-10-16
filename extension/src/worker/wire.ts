@@ -29,7 +29,7 @@ export function parseVerb(x: unknown): PageVerb | null {
       return str(v.expect) && str(v.value) ? (v as unknown as ActVerb) : null;
     case "pageChooseOption":
       // A combobox names the rev the walk read; a Yes/No option (a button) names the answer pressed before.
-      if (!str(v.value) || (v.question !== undefined && !str(v.question))) return null;
+      if (!str(v.value) || (v.question !== undefined && !str(v.question)) || (v.wrote !== undefined && (!str(v.wrote) || v.value !== ""))) return null;
       if (v.control === "combobox") return int(v.expectRev) && v.expect === undefined ? (v as unknown as ActVerb) : null;
       return str(v.expect) && v.expectRev === undefined ? (v as unknown as ActVerb) : null;
     case "pageRestore":

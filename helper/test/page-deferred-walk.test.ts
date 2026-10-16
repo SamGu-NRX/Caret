@@ -41,7 +41,10 @@ function snapshot(id: string): PageSnapshot {
 const readings = (before: string, after: string) => pageReadings(before, after, after, textRev(after));
 
 /** A session whose engine answers walks with snapshot() and every act with `result`. */
-function rig(result: (v: Exclude<PageVerb, { kind: "pageWalk" }>) => object = () => ({ outcome: "ok", detail: null })) {
+/** An act's answer as the content script gives it: a verified text write comes with the page's own readings. */
+const verified = (v: Exclude<PageVerb, { kind: "pageWalk" }>): object => ({ outcome: "ok", detail: null, ...(v.kind === "pageWrite" ? { readings: readings("", v.value) } : {}) });
+
+function rig(result: (v: Exclude<PageVerb, { kind: "pageWalk" }>) => object = verified) {
   const sent: HelperToEngine[] = [];
   const session = new EngineSession({ engine: "eng1", browser, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => {
     sent.push(m);
@@ -89,19 +92,29 @@ describe("a verified write patches the model instead of walking the tab", () => 
     expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite"]);
     expect(r.node(KEY.name)?.value).toBe("Robin Example");
     expect(r.changes).toEqual([expect.objectContaining({ kind: "value", windowId: WIN, key: KEY.name, before: "", after: "Robin Example" })]);
-    expect(r.tab("e1")?.value).toBe("Robin Example");
+    // The stored walk holds what the page said, never the text: the field holds something, at the rev the write left.
+    expect(r.tab("e1")).toMatchObject({ hasValue: true, rev: textRev("Robin Example") });
+    expect(r.tab("e1")).not.toHaveProperty("value");
     expect(r.session.tabs.get(7)).not.toBe(before);
-    expect(before?.frames[0]?.controls[0]?.value).toBe("");
+    expect(before?.frames[0]?.controls[0]).toMatchObject({ hasValue: false });
     expect(r.timings).toEqual([expect.objectContaining({ verb: "pageWrite", outcome: "ok", rewalk: null })]);
     r.link.cancelTrailingWalks();
   });
 
-  it("text answered alreadyTrue with no readings: the field holds the value written", async () => {
-    const r = rig(() => ({ outcome: "alreadyTrue", detail: null }));
+  it("text answered alreadyTrue: the field holds the value written, as the page's readings say", async () => {
+    const r = rig((v) => ({ outcome: "alreadyTrue", detail: null, readings: pageReadings("Robin Example", "Robin Example", v.kind === "pageWrite" ? v.value : "", textRev("Robin Example")) }));
     const n = await walked(r);
     expect((await r.write(KEY.name, "AXTextField", "", "Robin Example")).outcome).toBe("ok");
     expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite"]);
     expect(r.node(KEY.name)?.value).toBe("Robin Example");
+    r.link.cancelTrailingWalks();
+  });
+
+  it("text answered alreadyTrue with no readings: the helper cannot vouch for the field, so it walks the tab", async () => {
+    const r = rig(() => ({ outcome: "alreadyTrue", detail: null }));
+    const n = await walked(r);
+    expect((await r.write(KEY.name, "AXTextField", "", "Robin Example")).outcome).toBe("ok");
+    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite", "pageWalk"]);
     r.link.cancelTrailingWalks();
   });
 

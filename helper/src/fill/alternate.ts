@@ -220,9 +220,6 @@ export interface AlternateForm {
   saved: readonly SavedValue[];
 }
 
-/** The start of the veto's reason when the form's primary field is a web field Caret cannot read. */
-export const UNREAD_PRIMARY = "Caret cannot read your";
-
 const KIND_SAYS: Record<AlternateKind, string> = { email: "email address", phone: "phone number", address: "address" };
 const MAIN_SAYS: Record<AlternateKind, string> = { email: "email", phone: "phone number", address: "address" };
 
@@ -241,7 +238,7 @@ export function alternateVeto(write: AlternateWrite, form: AlternateForm, kinds:
     // A web page's primary field whose text the page never sends (counsel 2026-10-09): Caret cannot tell whether the
     // value repeats it, so it does not write it. Fails closed, and says so.
     const unread = fields.find((f) => f.unread === true);
-    if (unread !== undefined) return { says: `${UNREAD_PRIMARY} ${unread.shown ?? `main ${MAIN_SAYS[kind]}`} on this page, so it cannot check this would not repeat it`, repeats: { field: unread.key } };
+    if (unread !== undefined) return { says: `it may repeat ${unread.shown === null ? `the form's main ${MAIN_SAYS[kind]}` : `your ${unread.shown}`}, which Caret cannot read on this page`, repeats: { field: unread.key } };
     const field = [...fields.map((f) => ({ key: f.key, shown: f.shown, value: f.value })), ...writes.map((x) => ({ key: x.key, shown: sayable(x.name), value: x.text }))].find((p) => p.value.trim() !== "" && sameValue(kind, p.value, write.text));
     // Named only by what the redacted view shows; otherwise by its kind, so raw comparison data never becomes text.
     if (field !== undefined) return { says: field.shown === null ? `it would repeat the form's main ${MAIN_SAYS[kind]}` : `it would repeat your ${field.shown}`, repeats: { field: field.key } };
