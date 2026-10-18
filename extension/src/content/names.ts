@@ -68,7 +68,11 @@ export type NameSource = "labelledby" | "label" | "labels" | "value" | "title" |
 export function named(el: Element): { name: string; from: NameSource } {
   const labelledby = el.getAttribute("aria-labelledby");
   if (labelledby !== null) {
-    const t = clean(labelledBy(el, labelledby).map((e) => safeText(e)).join(" "));
+    // The element a control is named by may itself hold the person's draft: read it through outlineText, the label
+    // and legend readers' own refusal of an editable element (issue #54) — the old read was safeText, which leaves an
+    // editable root's text in, and its editable filter read the role case-sensitively, so a role="Textbox" the page
+    // filled with the draft named the control.
+    const t = clean(labelledBy(el, labelledby).map((e) => outlineText(e)).join(" "));
     if (t !== "") return { name: t, from: "labelledby" };
   }
   const aria = clean(el.getAttribute("aria-label"));

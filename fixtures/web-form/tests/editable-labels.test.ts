@@ -1,12 +1,15 @@
 // Issue #54, both halves, against the real content script in headless Chrome for Testing with the built extension
 // loaded, no helper: this test speaks for it over the stubbed native port. Every value is invented.
 //
-// 1. A walk reads no name from an editable label or legend. A page puts a typed legend over a radio group and a typed
-//    label over an input; whatever a person types into them must reach no control's name, no group's question and no
-//    section text or digest. A plain legend and a plain label still name theirs, so the walk is not vacuous.
+// 1. A walk reads no name from an editable label, legend or aria-labelledby target. A page puts a typed legend over a
+//    radio group, a typed label over an input and a typed role="Textbox" span behind an input's aria-labelledby;
+//    whatever was typed must reach no control's name, no group's question and no section text or digest — the digest
+//    check computes each typed string's SHA-256, since a refused section keeps its digest, not its words. A plain
+//    legend and a plain label still name theirs, so the walk is not vacuous.
 // 2. A combobox undo stands on the pick's page-side record (content/revs.ts ChoiceRecords): the undo runs only while
-//    the control still shows what Caret picked and no trusted event has touched it since. The person re-picking the
-//    same option (trusted clicks and keys, the text unchanged) refuses the undo; no intervening input lets it restore.
+//    the control still shows what Caret picked and no trusted event has touched it, by any of the ways a person
+//    reaches a combobox — the control, its label, its list and the container holding both. The person re-picking the
+//    same option through any of those ways (the text unchanged) refuses the undo; no intervening input lets it restore.
 // Builds extension/ into its dist/. Walks go straight to the content script; acts go helper-style through the worker,
 // which checks the grant, the frame's document and its navigation generation before the page is touched.
 import assert from "node:assert/strict";
@@ -16,6 +19,7 @@ import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, test } from "node:test";
 import { launchHeadless, type Headless, type Tab } from "../tasks/chrome.ts";
+import { sha256Hex } from "../../../extension/src/shared/sha256.ts";
 
 const EXT = process.env.CARET_EXTENSION_DIR ?? fileURLToPath(new URL("../../../extension/", import.meta.url));
 const DIST = `${EXT}dist`;
@@ -23,6 +27,7 @@ const DIST = `${EXT}dist`;
 const PICK = "Bluebell State";
 const TYPED_LEGEND = "Edgewater Flats";
 const TYPED_LABEL = "Aunt Betty";
+const TYPED_REF = "Renamed by hand";
 
 const PAGES: Record<string, string> = {
   labels: `<!doctype html><html><head><meta charset="utf-8"><title>Editable names</title></head><body><form>
@@ -40,10 +45,13 @@ const PAGES: Record<string, string> = {
        <input id="member" name="member"></p>
     <p><label for="home">Home address</label>
        <input id="home" name="home"></p>
+    <p><input id="roleref" name="roleref" aria-labelledby="typedbox">
+       <span id="typedbox" role="Textbox">Renamed by hand</span></p>
   </form></body></html>`,
   choice: `<!doctype html><html><head><meta charset="utf-8"><title>Choice anchor</title></head><body><form>
     <label for="school">School</label>
     <input id="school" name="school" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="school-list" autocomplete="off">
+    <button type="button" id="school-chevron" aria-label="Open the school list">▾</button>
     <ul id="school-list" role="listbox" aria-label="Schools" hidden>
       <li role="option" id="opt-blue" aria-selected="false">Bluebell State</li>
       <li role="option" id="opt-red" aria-selected="false">Redwood College</li>
@@ -54,6 +62,7 @@ const PAGES: Record<string, string> = {
     const options = [...list.querySelectorAll("[role=option]")];
     const show = () => { list.hidden = false; input.setAttribute("aria-expanded", "true"); };
     input.addEventListener("click", show);
+    document.getElementById("school-chevron").addEventListener("click", show);
     input.addEventListener("input", () => {
       const q = input.value.toLowerCase();
       if (q === "") return; // an empty query shows nothing until the control itself is opened
@@ -185,11 +194,17 @@ async function typeInto(tab: Tab, selector: string, text: string): Promise<void>
   await tab.type(text);
 }
 
-/** The walk holds none of `typed` anywhere the walk reports, the focused field's own caret text aside. */
+/** The walk holds none of `typed` anywhere the walk reports, the focused field's own caret text aside — by the words
+ * and by their SHA-256 (shared/sha256.ts), since a refused section leaves its digest in place of its name, and a
+ * digest never contains its input. */
 function assertWithoutTyped(report: Report, typed: string[], where: string): void {
   const { focused, ...rest } = report;
   const json = JSON.stringify({ ...rest, focused: focused === null ? null : { ...focused, text: null } });
-  for (const t of typed) assert.ok(!json.includes(t), `${where}: the walk holds ${JSON.stringify(t)}`);
+  for (const t of typed) {
+    assert.ok(!json.includes(t), `${where}: the walk holds ${JSON.stringify(t)}`);
+    const digest = sha256Hex(t);
+    assert.ok(!json.includes(digest), `${where}: the walk holds the digest of ${JSON.stringify(t)} (${digest})`);
+  }
 }
 
 async function pick(taskId: string, s: Snap, row: Row & { id: string }, mark: string): Promise<ActResult> {
@@ -259,7 +274,7 @@ describe("a walk reads no name from an editable label or legend", () => {
       await typeInto(tab, "document.querySelector(\"label[for=member]\")", TYPED_LABEL);
       const report = await walk(url);
       assert.ok(report.controls.length >= 6, `the walk kept too few controls: ${report.controls.length}`);
-      assertWithoutTyped(report, [TYPED_LEGEND, TYPED_LABEL], "the labels page");
+      assertWithoutTyped(report, [TYPED_LEGEND, TYPED_LABEL, TYPED_REF], "the labels page");
       // Not vacuous: a plain label still names its control, and a plain legend still asks its group's question.
       assert.ok(report.controls.some((c) => c.name === "Home address"), `the walk reads no plain label: ${JSON.stringify(report.controls.map((c) => c.name))}`);
       assert.ok(report.controls.some((c) => c.group?.name === "Household"), `the walk reads no plain legend: ${JSON.stringify(report.controls.map((c) => c.group ?? c.name))}`);
@@ -330,6 +345,71 @@ describe("a combobox undo stands on the pick's page-side record", () => {
       const again = await act("t-restore", topOf(s2), { kind: "pageChooseOption", id: row2.id, control: "combobox", name: row2.name, value: "", expectRev: row2.rev ?? 0, wrote: PICK, sameAs: "m2" });
       assert.equal(again.outcome, "stale", `a second undo ran: ${again.outcome} ${String(again.detail)}`);
       assert.equal(await shownValue(tab), "");
+    } finally {
+      await closeTabs(url).catch(() => {});
+    }
+  });
+
+  test("an undo after the person re-picked by way of the control's label is refused, and their choice stays", async () => {
+    const url = `${origin}/choice`;
+    const tab = await open("/choice");
+    try {
+      const tabId = await inWorker<number>(`chrome.tabs.query({ url: ${JSON.stringify(`${url.split("?")[0]}*`)} }).then(([t]) => t.id)`);
+      const s = await snapshot(tabId);
+      const row = (s.frames[0] as (typeof s.frames)[number]).controls.find((c) => c.kind === "combobox");
+      assert.ok(row !== undefined, "no combobox in the walk");
+      await grant("t-label", s, tabId);
+      const pickResult = await pick("t-label", s, row, "m3");
+      assert.equal(pickResult.outcome, "ok", `the pick did not land: ${pickResult.outcome} ${String(pickResult.detail)}`);
+      assert.equal(await shownValue(tab), PICK);
+      // The person re-picks through the control's own name: a trusted click on the label forwards to the control and
+      // opens its list, and a trusted click on the option has the page copy the choice. No trusted event's target is
+      // the control and the shown choice is unchanged — the record must still end.
+      await tab.click("document.querySelector('label[for=school]')");
+      await tab.click("document.querySelector('#opt-blue')");
+      assert.equal(await shownValue(tab), PICK);
+      await sleep(400);
+      // The undo is granted afresh, as any re-read task would be: the refusal must come from the page-side record.
+      const s2 = await snapshot(tabId);
+      await grant("t-label", s2, tabId);
+      const row2 = (s2.frames[0] as (typeof s2.frames)[number]).controls.find((c) => c.kind === "combobox");
+      assert.ok(row2 !== undefined, "the fresh walk has no combobox");
+      const undo = await act("t-label", topOf(s2), { kind: "pageChooseOption", id: row2.id, control: "combobox", name: row2.name, value: "", expectRev: row2.rev ?? 0, wrote: PICK, sameAs: "m3" });
+      assert.equal(undo.outcome, "stale", `the undo ran after the person re-picked by way of the label: ${undo.outcome} ${String(undo.detail)}`);
+      assert.equal(undo.detail, "the undo is refused: something of the person's has touched the control since Caret picked it");
+      assert.equal(await shownValue(tab), PICK, "the undo erased the person's choice");
+    } finally {
+      await closeTabs(url).catch(() => {});
+    }
+  });
+
+  test("an undo after the person re-picked by way of the list's chevron button is refused, and their choice stays", async () => {
+    const url = `${origin}/choice`;
+    const tab = await open("/choice");
+    try {
+      const tabId = await inWorker<number>(`chrome.tabs.query({ url: ${JSON.stringify(`${url.split("?")[0]}*`)} }).then(([t]) => t.id)`);
+      const s = await snapshot(tabId);
+      const row = (s.frames[0] as (typeof s.frames)[number]).controls.find((c) => c.kind === "combobox");
+      assert.ok(row !== undefined, "no combobox in the walk");
+      await grant("t-chevron", s, tabId);
+      const pickResult = await pick("t-chevron", s, row, "m4");
+      assert.equal(pickResult.outcome, "ok", `the pick did not land: ${pickResult.outcome} ${String(pickResult.detail)}`);
+      assert.equal(await shownValue(tab), PICK);
+      // The person re-picks through the widget's own open button: a trusted click on the chevron opens the list
+      // through the page's script, and a trusted click on the option has the page copy the choice. The chevron sits
+      // beside the control, not in it, and the shown choice is unchanged — the record must still end.
+      await tab.click("document.querySelector('#school-chevron')");
+      await tab.click("document.querySelector('#opt-blue')");
+      assert.equal(await shownValue(tab), PICK);
+      await sleep(400);
+      const s2 = await snapshot(tabId);
+      await grant("t-chevron", s2, tabId);
+      const row2 = (s2.frames[0] as (typeof s2.frames)[number]).controls.find((c) => c.kind === "combobox");
+      assert.ok(row2 !== undefined, "the fresh walk has no combobox");
+      const undo = await act("t-chevron", topOf(s2), { kind: "pageChooseOption", id: row2.id, control: "combobox", name: row2.name, value: "", expectRev: row2.rev ?? 0, wrote: PICK, sameAs: "m4" });
+      assert.equal(undo.outcome, "stale", `the undo ran after the person re-picked by way of the chevron: ${undo.outcome} ${String(undo.detail)}`);
+      assert.equal(undo.detail, "the undo is refused: something of the person's has touched the control since Caret picked it");
+      assert.equal(await shownValue(tab), PICK, "the undo erased the person's choice");
     } finally {
       await closeTabs(url).catch(() => {});
     }
