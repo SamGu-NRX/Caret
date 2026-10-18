@@ -72,6 +72,20 @@ export class GrantTable {
     return this.tasksIn(tabId, frameId).some((t) => this.check(t, tabId, frameId).ok);
   }
 
+  /**
+   * Moves the task's grant for this frame to a later navigation generation of the same document: a history or
+   * fragment update is the shape an opened row is allowed (press-guard.ts judgeActivation), and the grant follows it
+   * so the task's next act is not refused by the very open it made. A real navigation changed the document, and the
+   * caller refuses that before asking. Expires and the monotonic end are kept.
+   */
+  advance(taskId: string, tabId: number, frameId: number, navGen: number): void {
+    const held = this.byTask.get(taskId);
+    const at = held?.findIndex((h) => h.scope.tabId === tabId && h.scope.frameId === frameId) ?? -1;
+    const g = held !== undefined && at >= 0 ? held[at] : undefined;
+    if (held === undefined || g === undefined) return;
+    held[at] = { ...g, scope: { ...g.scope, navGen } };
+  }
+
   clear(): void {
     this.byTask.clear();
   }

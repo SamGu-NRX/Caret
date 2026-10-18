@@ -12,7 +12,7 @@ export type PageControlKind =
 export const NAV_CONTROL_KINDS = ["row", "option", "listitem"] as const;
 export type NavControlKind = (typeof NAV_CONTROL_KINDS)[number];
 
-export type PageExclusion = "password" | "hidden" | "payment" | "oneTimeCode" | "invisible" | "ariaHidden" | "selfIdentification";
+export type PageExclusion = "password" | "hidden" | "payment" | "oneTimeCode" | "invisible" | "ariaHidden" | "selfIdentification" | "formRow" | "comboboxOption";
 
 export type Rect = [number, number, number, number];
 

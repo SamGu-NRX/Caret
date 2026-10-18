@@ -515,7 +515,10 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   // An undo after a reload is refused: the page that kept the field's text before Caret's write is gone with it.
   if (frame.documentId !== verb.documentId) return { outcome: "stale", detail: "the frame holds another document than when it was walked", ...(verb.kind === "pageRestore" ? { restore: { outcome: "refused", why: "reloaded" } as const } : {}) };
   const gen = navGens.get(verb.tabId, verb.frameId);
-  if (gen !== g.scope.navGen) return { outcome: "stale", detail: `the frame navigated since the grant (navGen ${g.scope.navGen}, now ${gen})` };
+  // A history or fragment update in the walked document is the shape an opened row is allowed (judgeActivation): the
+  // grant follows it, so the task's next act is not refused by the very open it made. A real navigation changed the
+  // frame's document, and was refused just above.
+  if (gen !== g.scope.navGen) grants.advance(verb.taskId, verb.tabId, verb.frameId, gen);
   const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId })) ?? [];
   const origin = frameOrigin(all, verb.frameId);
   if (origin !== g.scope.origin) return { outcome: "notAllowed", detail: `the grant covers ${g.scope.origin}, the frame is at ${String(origin)}` };
@@ -569,9 +572,10 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
     else if (!press) return { outcome: "error", detail: msg };
     else a = { outcome: "error", detail: msg };
   }
-  if (!press) return a !== null && a.compare !== undefined && unanswered > 0 ? { ...a, compare: [...a.compare, ...Array.from({ length: unanswered }, () => "unknown" as const)] } : (a as ActAnswer);
+  if (!press && !activation) return a !== null && a.compare !== undefined && unanswered > 0 ? { ...a, compare: [...a.compare, ...Array.from({ length: unanswered }, () => "unknown" as const)] } : (a as ActAnswer);
+  // A press and an activation wait out the page's own reactions before the frame is read again (B28, slice 2).
   if (a?.outcome === "ok") await new Promise((r) => setTimeout(r, POST_PRESS_MS));
-  const judged = judgePress(a, before, marks());
+  const judged = activation ? judgeActivation(a, before, marks()) : judgePress(a, before, marks());
   // The run stops at once: the task's grants end here, before the helper hears of it, so nothing else of it acts.
   if (judged.pageChanged !== undefined) revokeTask(verb.taskId);
   return judged;

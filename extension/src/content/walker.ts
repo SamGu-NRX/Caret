@@ -13,7 +13,7 @@ import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
 import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
 import type { SecretKind } from "./secret.ts";
-import { outlineText, secretFieldOf } from "./secret-dom.ts";
+import { outlineText, safeText, secretFieldOf } from "./secret-dom.ts";
 import { watchPasswords } from "./password-watch.ts";
 import { editorPlainText } from "./field-text.ts";
 import { shadowRootOf } from "./shadow.ts";
@@ -37,8 +37,21 @@ export function navCellsOf(el: Element, kind: string): string[] | null {
   if (el.closest(NAV_HOST[kind] ?? "") === null) return null;
   let cellEls = [...el.querySelectorAll(NAV_CELL)];
   if (cellEls.length === 0 && kind === "row") cellEls = [...el.children].filter((x) => x.matches("td, th"));
-  const cells = (cellEls.length > 0 ? cellEls : [el]).slice(0, 8).map((x) => clean(x.textContent ?? "", 200)).filter((t) => t !== "");
+  // A cell's text goes through safeText (secret-dom.ts), so a field inside a cell never leaves the frame as row text:
+  // the row's cells are page state like a select's labels, but a cell can wrap an input a mistake would name.
+  const cells = (cellEls.length > 0 ? cellEls : [el]).slice(0, 8).map((x) => clean(safeText(x), 200)).filter((t) => t !== "");
   return cells.length === 0 ? null : cells;
+}
+
+/**
+ * Why a walked element is no nav target after all, or null: a row the page keeps inside a form (its activation is that
+ * form's own script — the mail fixture's row-shaped submit), and an option a combobox owns, by containment or by its
+ * own aria-checked (its activation is choosing, which pageChooseOption takes). The walk counts what it keeps out.
+ */
+export function navExcluded(kind: NavControlKind, inForm: boolean, inCombobox: boolean, ariaChecked: boolean): PageExclusion | null {
+  if (inForm) return "formRow";
+  if (kind === "option" && (inCombobox || ariaChecked)) return "comboboxOption";
+  return null;
 }
 const MAX_OPTIONS = 200;
 
@@ -485,6 +498,12 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       continue;
     }
     if (el.getAttribute("aria-disabled") === "true") continue;
+    // Form rows and combobox-owned options are no targets, counted like the other exclusions (walker.ts navExcluded).
+    const whyNot = navExcluded(kind, el.closest("form") !== null, el.closest("[role=combobox]") !== null, el.getAttribute("aria-checked") !== null);
+    if (whyNot !== null) {
+      excluded[whyNot] = (excluded[whyNot] ?? 0) + 1;
+      continue;
+    }
     // The row's own link decides href: none, a same-document fragment (a page-row click's expected shape), or another
     // URL (which navVerdict leaves to the user — that click would commit a navigation).
     const a = el instanceof HTMLAnchorElement ? el : el.closest("a[href]");

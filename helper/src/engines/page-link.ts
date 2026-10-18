@@ -311,6 +311,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
       const text = isTextKind(c.kind) ? ("hasValue" in c ? textValueOf(c, known(f.frameId, f.documentId, c.id)) : { unread: true as const }) : null;
       const value = text !== null ? ("value" in text ? text.value : undefined) : c.kind === "select" ? (selected === undefined ? undefined : selected.value === "" ? "" : selected.label) : box ? (c.checked === true ? PAGE_CHECKED : "") : c.value;
       const subrole = subroleOf(c);
+      const nav = (NAV_CONTROL_KINDS as readonly string[]).includes(c.kind);
       nodes.push({
         key: nodeKey(f.frameId, c),
         parent,
@@ -336,8 +337,16 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         // W2: a text input's own kind, which the write contract checks a value's shape against (fill/contract.ts).
         ...(TEXT_KINDS.has(c.kind) ? { inputKind: c.kind as NonNullable<Node["inputKind"]> } : {}),
         ...(c.autocomplete === undefined ? {} : { autocomplete: c.autocomplete }),
+        // Slice 2: what the walk read about the row, which goals/capabilities.ts navVerdict reads to pick the actor.
+        // Absent on an older engine's walk (optional fields), which reads as unqualified: the row stays the user's.
+        ...(nav && c.inForm !== undefined ? { inForm: c.inForm } : {}),
+        ...(nav && c.href !== undefined ? { href: c.href } : {}),
         ...sectionsOf(f.frameId, c),
       });
+      // Slice 2: a row's cells, as the row's children, so goals/identity.ts rowCellParts reads what the walk read and
+      // the inventory binds the row by them. The row's own label is the cells joined, which no single cell repeats
+      // whole, so rowCellParts counts each cell once, at the node it was read at (the inventory mints it there).
+      if (nav) for (const [i, cell] of (c.cells ?? []).entries()) nodes.push({ key: `${nodeKey(f.frameId, c)}/cell~${i}`, parent: nodeKey(f.frameId, c), role: "AXStaticText", label: cell });
       // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
       // hand-off for it can name one. Chrome's Accessibility shows only the selected one. An option whose value is
       // empty is the HTML placeholder ("Select..."), not a choice.

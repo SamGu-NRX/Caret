@@ -88,6 +88,12 @@ function navIneligible(el: Element, verb: Extract<ActVerb, { kind: "pageActivate
   const kind = (el.getAttribute("role") ?? "").trim().toLowerCase();
   if (kind !== verb.control) return answer("stale", `the element is now a ${clean(kind || "control", 40)}, not a ${verb.control}`);
   if (el.getAttribute("aria-disabled") === "true") return answer("failed", "the row is disabled");
+  // The walk's own qualification, read again now: a row the page has since moved into a form, or whose own link now
+  // points off the page, is no row the helper may open (walker.ts navExcluded, capabilities.ts navVerdict). A hash
+  // link was and stays one the open's own shape allows.
+  if (el.closest("form") !== null) return answer("failed", "the row sits inside a form");
+  const a = el instanceof HTMLAnchorElement ? el : el.closest("a[href]");
+  if (a !== null && !(a.getAttribute("href") ?? "").trim().startsWith("#")) return answer("failed", "the row's own link would leave the page");
   const cells = navCellsOf(el, verb.control);
   if (cells === null) return answer("stale", "the row's cells are gone");
   if (cells.join(" · ") !== verb.name) return answer("stale", `the row is now '${clean(cells.join(" · "), 60)}', not '${clean(verb.name, 60)}'`);

@@ -3066,7 +3066,7 @@ export const PageControl = z.union([TextPageControl, ChoicePageControl]);
 export type PageControl = z.infer<typeof PageControl>;
 
 /** Why controls were left out, by count only: what they were called or held never leaves the frame. */
-export const PageExclusion = z.enum(["password", "hidden", "payment", "oneTimeCode", "invisible", "ariaHidden", "selfIdentification"]);
+export const PageExclusion = z.enum(["password", "hidden", "payment", "oneTimeCode", "invisible", "ariaHidden", "selfIdentification", "formRow", "comboboxOption"]);
 export type PageExclusion = z.infer<typeof PageExclusion>;
 
 /** SCP1: a section name's token, HMAC-SHA256 under a salt the extension's worker makes per snapshot and never sends. */

@@ -1484,18 +1484,25 @@ export class Executor {
     const label = (node.label ?? "").trim();
     const what = label === "" ? via.target.describe : `'${label}'`;
     const prediction = `${verb} ${what}`;
+    // The last boundary before the act: a stop or pause that arrived while the row was resolved ends the run here, as
+    // act() does before any verb of its own.
+    this.checkSession(task);
+    this.checkInterrupt(task);
     this.checkUnexpected([], null);
     this.progress(task, "acting", i, `navigate; expect ${prediction}`);
     this.deps.beforeAct?.(task.id, i);
     this.authorizeAct(task, w.window.windowId);
     // The strong form: what the opened item's identity is judged by is only nodes new or changed since this read, the
     // read right before the act — a detail the page had already shown is never mistaken for one this open brought.
-    const since = textsByKey(w);
+    // Read now, after the resolve's wait, never from the state the step started from.
+    const since = textsByKey(this.window(w.window.windowId));
     const r = await link.activateItem(w.window.windowId, node.key, task.id);
     // The page left or submitted when the row was activated: it may have opened, and the worker has revoked the task's
     // grants, so nothing more runs here, whatever else came in meanwhile (the press rule, B28, for a row).
     if (r.pageChanged !== undefined) throw StepStop.stop("changed", `The page changed when Caret opened ${what}, so Caret stopped.`);
-    if (r.outcome !== "ok" && r.outcome !== "axError") {
+    // Any other refusal stops the step with its named reason: the engine answers axError for its own refusals (a
+    // button is no row, a row left its list), and itemOpened must never judge a step the page never took.
+    if (r.outcome !== "ok") {
       if (task.interrupt !== null) throw new Interrupted();
       throw StepStop.stop(r.outcome === "changed" ? "changed" : "reader", `the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     }
