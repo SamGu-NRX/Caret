@@ -704,30 +704,19 @@ describe("Q1 bug 9: the dogfood's sentence with PT", () => {
 // MARK: - the reply order, routed (PR #49)
 
 describe("the reply order, routed", () => {
-  it("hands the thread's unjudged lines to routed.heard when the user enters a field of the conversation, once", async () => {
-    const model = new ScreenModel();
-    const app: AppRef = { pid: 6163, bundleId: "com.apple.mail", name: "Mail" };
-    const windowId = "6163-1";
-    const lineKey = "com.apple.mail/standard/statictext:m1~0";
-    const sentence = "Coffee with Dana on Oct 20, 2026 from 3:00 to 4:00 PM.";
-    const values: TypedValue[] = [
-      { kind: "date", text: "Oct 20, 2026", nodeKey: lineKey },
-      { kind: "time", text: "3:00 to 4:00 PM", nodeKey: lineKey },
-    ];
-    model.apply(snap([text(lineKey, sentence)], { at: 1000, windowId, app, title: "Coffee this week?", values }));
-    const reply = "com.apple.mail/standard/textarea:reply~0";
-    const changes = model.apply(
-      snap([text(lineKey, sentence), { key: reply, parent: null, role: "AXTextArea", label: "Reply", editable: true }], {
-        at: 2000,
-        windowId,
-        app,
-        title: "Coffee this week?",
-        focused: true,
-        focusedKey: reply,
-        values,
-      }),
-    );
-    model.frontmostPid = app.pid;
+  const WINDOW = "6163-1";
+  const APP: AppRef = { pid: 6163, bundleId: "com.apple.mail", name: "Mail" };
+  const REPLY = "com.apple.mail/standard/textarea:reply~0";
+  const EVENT_KEY = "com.apple.mail/standard/statictext:m2~0";
+  const EVENT = "Coffee with Dana on Oct 20, 2026 from 3:00 to 4:00 PM.";
+  const VALUES: TypedValue[] = [
+    { kind: "date", text: "Oct 20, 2026", nodeKey: EVENT_KEY },
+    { kind: "time", text: "3:00 to 4:00 PM", nodeKey: EVENT_KEY },
+  ];
+  const replyNode = (): Node => ({ key: REPLY, parent: null, role: "AXTextArea", label: "Reply", editable: true });
+
+  /** A routed EventCards over `model`; `heardCalls` reads the routed.heard count. */
+  const routedCards = (model: ScreenModel): { cards: EventCards; heardCalls: () => number } => {
     let heard = 0;
     const cards = new EventCards({
       model,
@@ -741,16 +730,84 @@ describe("the reply order, routed", () => {
       now: () => 2000,
       routed: { heard: () => heard++ },
     });
-    await cards.onChanges(changes);
-    expect(heard).toBe(1);
-    const lines = cards.heard();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]?.key).toBe(lineKey);
-    expect(lines[0]?.sentence).toBe(sentence);
-    expect(lines[0]?.field).toMatchObject({ windowId, key: reply });
-    // Entering the field again hears nothing more: the lines are already heard.
-    await cards.onChanges([]);
-    expect(heard).toBe(1);
-    expect(cards.heard()).toHaveLength(1);
+    return { cards, heardCalls: () => heard };
+  };
+
+  it("hears the thread's lines oldest first, newest last, so the event sentence - the newest of six - survives the cap", async () => {
+    const model = new ScreenModel();
+    model.frontmostPid = APP.pid;
+    // Two earlier lines hold five sentences between them; with the event line the harvest finds six, one more than the cap.
+    const earlier = ["Kofi: checking in about the demo. Can we talk today? Let me know.", "Sure, this week works. I am around Thursday afternoon."].map((t, i) =>
+      text(`com.apple.mail/standard/statictext:m${i}~0`, t),
+    );
+    model.apply(snap(earlier, { at: 1000, windowId: WINDOW, app: APP, title: "Coffee this week?", values: VALUES }));
+    const { cards } = routedCards(model);
+    const entering = model.apply(
+      snap([...earlier, text(EVENT_KEY, EVENT), replyNode()], {
+        at: 2000,
+        windowId: WINDOW,
+        app: APP,
+        title: "Coffee this week?",
+        focused: true,
+        focusedKey: REPLY,
+        values: VALUES,
+      }),
+    );
+    await cards.onChanges(entering);
+    // heardLines runs newest last and is trimmed from the front, so the first line's three sentences go
+    // and the event sentence, newest of all, is kept: the offer is about the latest message, not the oldest.
+    expect(cards.heard().map((l) => l.sentence)).toEqual(["Sure, this week works.", "I am around Thursday afternoon.", EVENT]);
+    const kept = cards.heard().at(-1);
+    expect(kept?.key).toBe(EVENT_KEY);
+    expect(kept?.field).toMatchObject({ windowId: WINDOW, key: REPLY });
+  });
+
+  it("hears a line once when the user leaves the reply and returns as a new message lands in the same snapshot", async () => {
+    const model = new ScreenModel();
+    model.frontmostPid = APP.pid;
+    model.apply(snap([text(EVENT_KEY, EVENT)], { at: 1000, windowId: WINDOW, app: APP, title: "Coffee this week?", values: VALUES }));
+    const { cards } = routedCards(model);
+    const entering = model.apply(
+      snap([text(EVENT_KEY, EVENT), replyNode()], {
+        at: 2000,
+        windowId: WINDOW,
+        app: APP,
+        title: "Coffee this week?",
+        focused: true,
+        focusedKey: REPLY,
+        values: VALUES,
+      }),
+    );
+    await cards.onChanges(entering);
+    expect(cards.heard().map((l) => l.sentence)).toEqual([EVENT]);
+    // Focus leaves the reply, a new message lands, and the user clicks back into the reply: one snapshot
+    // carries both, so the harvest and the change path see the same sentence in one batch - heard once.
+    const away = model.apply(
+      snap([text(EVENT_KEY, EVENT), replyNode()], {
+        at: 3000,
+        windowId: WINDOW,
+        app: APP,
+        title: "Coffee this week?",
+        focused: true,
+        focusedKey: null,
+        values: VALUES,
+      }),
+    );
+    await cards.onChanges(away);
+    const second = "Sounds good - see you then.";
+    const secondKey = "com.apple.mail/standard/statictext:m3~0";
+    const back = model.apply(
+      snap([text(EVENT_KEY, EVENT), text(secondKey, second), replyNode()], {
+        at: 4000,
+        windowId: WINDOW,
+        app: APP,
+        title: "Coffee this week?",
+        focused: true,
+        focusedKey: REPLY,
+        values: VALUES,
+      }),
+    );
+    await cards.onChanges(back);
+    expect(cards.heard().map((l) => l.sentence)).toEqual([EVENT, second]);
   });
 });
