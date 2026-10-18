@@ -425,13 +425,16 @@ export class EventCards {
     const at = t === null ? null : `${t.field.windowId}\u0000${t.field.key}`;
     const entered = t !== null && at !== this.lastField;
     this.lastField = at;
-    if (entered && t !== null) { console.log("[DBG] harvest entered", JSON.stringify({ w: t.field.windowId, key: t.field.key })); work.push(...this.enteredConversation(t.w, t.field.key, isChat)); }
+    if (entered && t !== null) work.push(...this.enteredConversation(t.w, t.field.key, isChat));
     // A conversation that loads its history arrives as many new lines at once; only the latest few are
     // judged, newest first, so the newest line is not the one left waiting for a free ask.
     const routed = this.deps.routed;
     if (routed !== undefined) {
       const before = this.heardLines.length;
-      for (const l of lines.slice(-MAX_NEW_LINES)) for (const s of sentences(l.text, true)) if (!this.judged.has(`${l.w.window.windowId}\u0000${s}`)) this.heardLines.push({ w: l.w, key: l.key, sentence: s, field: l.field });
+      // The harvest above may have queued these same lines in this batch (focus entered a field while a
+      // message landed), and heardLines holds lines the router has not decided about yet: skip those too,
+      // or one sentence spends two of the few slots.
+      for (const l of lines.slice(-MAX_NEW_LINES)) for (const s of sentences(l.text, true)) if (!this.judged.has(`${l.w.window.windowId}\u0000${s}`) && !this.heardLines.some((h) => h.w.window.windowId === l.w.window.windowId && h.sentence === s)) this.heardLines.push({ w: l.w, key: l.key, sentence: s, field: l.field });
       this.heardLines.splice(0, Math.max(0, this.heardLines.length - MAX_NEW_LINES));
       if (this.heardLines.length !== before || lines.length > 0) routed.heard();
     } else for (const l of lines.slice(-MAX_NEW_LINES).reverse()) for (const s of sentences(l.text, true)) work.push(this.consider(l.w, l.key, s, l.field, "conversation"));
@@ -445,10 +448,11 @@ export class EventCards {
   /**
    * Focus entered `field` in a conversation the user had been reading (the reply order, PR #49): the
    * thread's latest unjudged lines are offered now, newest first, so the offer is on screen as the user
-   * starts the reply rather than only when a sentence finishes. Lines already judged are skipped, and
-   * the judged set is shared with the change path, so nothing is judged twice; routed, the same lines
-   * are heard instead (heardLines runs newest last, so the harvested lines go in oldest first, as
-   * change-driven ones do). Reads only text the model holds - no new walk, and no page-window text.
+   * starts the reply rather than only when a sentence finishes. Lines already judged or already heard
+   * are skipped, and the change path checks the same two sets, so nothing is judged or queued twice;
+   * routed, the same lines are heard instead: the nodes were gathered newest first, so they are pushed
+   * in reverse, each node's sentences in document order, keeping heardLines newest last as change-driven
+   * lines are. Reads only text the model holds - no new walk, and no page-window text.
    */
   private enteredConversation(w: WindowState, enteredKey: string, isChat: (w: WindowState) => boolean): Promise<void>[] {
     const field = offerField(w, enteredKey);
@@ -462,13 +466,14 @@ export class EventCards {
       const unseen = sentences(text, true).filter((s) => !this.judged.has(`${w.window.windowId}\u0000${s}`) && !this.heardLines.some((h) => h.w.window.windowId === w.window.windowId && h.sentence === s));
       if (unseen.length > 0) fresh.push({ key: n.key, fresh: unseen });
     }
-    if (fresh.length === 0) { console.log("[DBG] enteredConversation: no fresh"); return []; }
-    console.log("[DBG] enteredConversation fresh:", JSON.stringify(fresh.map((f) => ({ key: f.key, n: f.fresh.length }))));
+    if (fresh.length === 0) return [];
     this.deps.count?.("event.replayed");
     const routed = this.deps.routed;
     if (routed !== undefined) {
       const before = this.heardLines.length;
-      for (const f of fresh) for (const s of f.fresh) this.heardLines.push({ w, key: f.key, sentence: s, field });
+      // The nodes in `fresh` were gathered newest first; pushed in reverse, each node's sentences in
+      // document order, heardLines stays newest last and the trim below drops the oldest, keeping the newest.
+      for (const f of [...fresh].reverse()) for (const s of f.fresh) this.heardLines.push({ w, key: f.key, sentence: s, field });
       this.heardLines.splice(0, Math.max(0, this.heardLines.length - MAX_NEW_LINES));
       if (this.heardLines.length !== before) routed.heard();
       return [];
