@@ -82,7 +82,9 @@ const OWNER = ["user", "other", "unclear"].flatMap((choice) => [0.9, 0.3].map((c
 
 describe("someone else's value is withheld unless both asks call it the user's at the cutoff (fill.ts:2094-2170)", () => {
   it("a decoy in the note is written only when both asks say the user's at >= 0.5; the user sees the proposal either way", async () => {
-    fc.assert(
+    // Awaited: an un-awaited property outlives its test and races the next test's teardown, which is how the
+    // seed-20261008 CI run ended in unhandled rejections reported outside any test.
+    await fc.assert(
       fc.asyncProperty(arbUserAndDecoy, fc.constantFrom(...OWNER), fc.constantFrom(...OWNER), async ([, decoy], c0, c1) => {
         const note = `Email: ${decoy.email}\nName: ${decoy.name}\nMobile phone: ${decoy.phone}`;
         const { ask } = scripted({ Email: decoy.email }, (_text, a) => (a === 0 ? c0 : c1), () => ({ choice: "user", confidence: 0.95 }));
@@ -96,7 +98,7 @@ describe("someone else's value is withheld unless both asks call it the user's a
   });
 
   it("one ask saying someone else's withholds it even though the owner says the user's (the b-032 mirror)", async () => {
-    fc.assert(
+    await fc.assert(
       fc.asyncProperty(arbUserAndDecoy, fc.constantFrom(...OWNER), fc.constantFrom(...OWNER), async ([user], w0, w1) => {
         const { ask } = scripted({ Email: user.email }, () => ({ choice: "user", confidence: 0.95 }), (a) => (a === 0 ? w0 : w1));
         const p = await proposeFill(desk([email], [noteWindow(`Email: ${user.email}`)]), ask, WIN, keyOf(email), 2000, { about: [] });
@@ -110,7 +112,7 @@ describe("someone else's value is withheld unless both asks call it the user's a
   });
 
   it("the user's own value is decided by code, not the owner: a case-spelling of the address in memory is written and never asked about", async () => {
-    fc.assert(
+    await fc.assert(
       fc.asyncProperty(arbUserAndDecoy, async ([user]) => {
         const variant = user.email.toUpperCase();
         const about: AboutValue[] = [];

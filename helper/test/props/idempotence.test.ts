@@ -76,14 +76,20 @@ describe("the executor reruns the same accepted plan as a no-op (executor.ts:3)"
   });
 
   it("the second run of the same plan acts nothing, skips everything, and leaves every field's value as the first run wrote it", async () => {
-    fc.assert(
+    // Every fc.assert here is awaited: an un-awaited property outlives its test and races the next test's
+    // beforeEach/afterEach, which is how the seed-20261008 CI run ended in unhandled rejections on a closed
+    // store and stale models (an act of 0 on a field the model had not seen change).
+    await fc.assert(
       fc.asyncProperty(arbPlan, async ([p, keys]) => {
-        const first = await helper.executor.run("t1", p, {});
+        // The desk persists across this property's runs, so a later case can inherit an earlier case's value on
+        // the same field; the executor would then rightly skip. Each case's premise is the window fresh.
+        for (const key of FIELDS) app.setValue(key, "");
+        const first = await helper.executor.run(uid(), p, {});
         expect(first.outcome).toBe("done");
         expect(first.acted).toBe(keys.length);
         expect(first.skipped).toBe(0);
         const valuesAfterFirst = keys.map((key) => app.node(key)?.value);
-        const second = await helper.executor.run("t2", p, {});
+        const second = await helper.executor.run(uid(), p, {});
         expect(second.outcome).toBe("done");
         expect(second.acted).toBe(0);
         expect(second.skipped).toBe(keys.length);
@@ -94,7 +100,7 @@ describe("the executor reruns the same accepted plan as a no-op (executor.ts:3)"
   });
 
   it("the skip is the end state, not the history: change the field and the same plan acts again", async () => {
-    fc.assert(
+    await fc.assert(
       fc.asyncProperty(arbPlan, async ([p, keys]) => {
         await helper.executor.run(uid(), p, {});
         // Someone else moves the first field after the first run.
@@ -104,6 +110,10 @@ describe("the executor reruns the same accepted plan as a no-op (executor.ts:3)"
         if (planned?.end.kind !== "valueEquals") throw new Error("no value step");
         const other = `${planned.end.value} (moved)`;
         app.setValue(target, other);
+        // The model learns the move on the next run's own walk (FakeApp.perform answers a walk with a full
+        // snapshot), so holds is false, and the write goes out with expect set to what the model just read -
+        // the reader's compare-and-swap, which refuses a value it did not see. Nothing here is expected to
+        // refuse: the moved value is not Caret's write, and overwriting it is exactly what the plan is for.
         const second = await helper.executor.run(uid(), p, {});
         expect(second.acted).toBeGreaterThan(0);
         expect(app.node(target)?.value).toBe(planned.end.value);
@@ -113,14 +123,16 @@ describe("the executor reruns the same accepted plan as a no-op (executor.ts:3)"
   });
 
   it("a step whose field already holds its value is skipped on the first run: the precondition is enough", async () => {
-    fc.assert(
+    await fc.assert(
       fc.asyncProperty(arbPlan, async ([p, keys]) => {
         const target = keys[0];
         if (target === undefined) throw new Error("no steps");
         const planned = p.steps[0];
         if (planned?.end.kind !== "valueEquals") throw new Error("no value step");
+        // The desk persists across this property's runs; each case's premise is the window fresh but the target.
+        for (const key of FIELDS) app.setValue(key, "");
         app.setValue(target, planned.end.value);
-        const first = await helper.executor.run("t1", p, {});
+        const first = await helper.executor.run(uid(), p, {});
         expect(first.outcome).toBe("done");
         expect(first.skipped).toBe(1);
         expect(first.acted).toBe(keys.length - 1);

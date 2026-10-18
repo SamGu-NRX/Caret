@@ -9,9 +9,9 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../../src/model.ts";
-import { checkValues, ContractError, fieldContract, isChecked, requireChecked, setTestVerifier, type FieldContract, type Proposed } from "../../src/fill/contract.ts";
+import { checkValues, ContractError, fieldContract, isChecked, requireChecked, setTestVerifier, VerifierUnavailable, type FieldContract, type Proposed } from "../../src/fill/contract.ts";
 import type { Node } from "../../src/protocol.ts";
-import { validatePlan } from "../../src/planner/validate.ts";
+import { validatePlan, PlannerError } from "../../src/planner/validate.ts";
 import { field, snap, text } from "../builders.ts";
 import { STAND_IN } from "../setup/verifier.ts";
 import { TEST_AUTHORITY, exactJev } from "../mint.ts";
@@ -36,20 +36,23 @@ describe("no mint, no write: a value reaches a field only as the checkValues min
   const ctx = { model: m, memory: [], instruction: "fill in my job", origin: TEST_AUTHORITY };
 
   it("an arbitrary value that checkValues minted passes requireChecked only as itself, for its own field", async () => {
-    fc.assert(
+    // Every fc.assert here is awaited: an un-awaited property outlives its test and races the next test's
+    // beforeEach/afterEach, which is how the seed-20261008 CI run ended in unhandled rejections.
+    await fc.assert(
       fc.asyncProperty(arbPlainValue, async (value) => {
         const [c] = (await checkValues([prop(contractFor("f/job"), value)], opts)).ok;
         if (c === undefined) throw new Error("not minted");
         expect(isChecked(c)).toBe(true);
         expect(requireChecked(c, value, "f/job", WIN, "at") === c).toBe(true);
-        expect(requireChecked(structuredClone(c), value, "f/job", WIN, "at") === c).toBe(true);
+        // Identity, not resemblance: a structurally identical copy is refused exactly like another text.
+        expect(() => requireChecked(structuredClone(c), value, "f/job", WIN, "at")).toThrowError(ContractError);
       }),
       runs(150),
     );
   });
 
   it("a copy of the mint, another text, or another field is the contract's error, not a write (identity, not resemblance)", async () => {
-    fc.assert(
+    await fc.assert(
       fc.asyncProperty(arbPlainValue, async (value) => {
         const [c] = (await checkValues([prop(contractFor("f/job"), value)], opts)).ok;
         if (c === undefined) throw new Error("not minted");
@@ -64,29 +67,40 @@ describe("no mint, no write: a value reaches a field only as the checkValues min
   });
 
   it("the compiler types a plan slot only for the mint made of exactly its text (planner/validate.ts)", async () => {
-    fc.assert(
+    await fc.assert(
       fc.asyncProperty(arbPlainValue, async (value) => {
         const [c] = (await checkValues([prop(contractFor("f/job"), value)], opts)).ok;
         if (c === undefined) throw new Error("not minted");
-        expect(validatePlan(plan, { v1: value }, ctx, new Map([["v1", c]])).writes[0]?.checked).toBe(c);
-        expect(() => validatePlan(plan, { v1: value }, ctx, new Map())).toThrowError(ContractError);
-        expect(() => validatePlan(plan, { v1: value }, ctx, new Map([["v1", structuredClone(c)] as never]))).toThrowError(ContractError);
-        expect(() => validatePlan(plan, { v1: `Job title: ${value}` }, ctx, new Map([["v1", c]]))).toThrowError(ContractError);
+        // The mint is typed for the plan only when the instruction carries the value: an untraced value is
+        // refused even with its own mint in hand (validate.ts traceValue).
+        const traced = { ...ctx, instruction: `fill in my job: ${value}` };
+        expect(validatePlan(plan, { v1: value }, traced, new Map([["v1", c]])).writes[0]?.checked).toBe(c);
+        // No mint at all, or a copy: the contract refuses the write (requireChecked, contract.ts).
+        expect(() => validatePlan(plan, { v1: value }, traced, new Map())).toThrowError(ContractError);
+        expect(() => validatePlan(plan, { v1: value }, traced, new Map([["v1", structuredClone(c)] as never]))).toThrowError(ContractError);
+        // A slot whose text only contains the mint's text is refused, by whichever gate reaches it first: a
+        // value no window holds traces nowhere (validate.ts PlannerError), one the window does hold hits the
+        // mint's text mismatch (contract.ts ContractError). Either way there is no write.
+        try {
+          validatePlan(plan, { v1: `Job title: ${value}` }, traced, new Map([["v1", c]]));
+          expect.unreachable("a slot text that only contains the mint's text must be refused");
+        } catch (e) {
+          expect(e instanceof ContractError || e instanceof PlannerError).toBe(true);
+        }
       }),
       runs(120),
     );
   });
 
-  it("no verifier, no mint: with the verifier unavailable, checkValues mints nothing and refuses nothing into a write", async () => {
-    fc.assert(
+  it("no verifier, no mint: with the verifier unavailable, checkValues throws VerifierUnavailable and mints nothing", async () => {
+    await fc.assert(
       fc.asyncProperty(arbPlainValue, async (value) => {
         // The W2 setup installs a stand-in verifier for every file; the unavailable path is setTestVerifier(null)
-        // with askJev: null (test/setup/verifier.ts, CheckOptions.askJev: null verifies nothing).
+        // with askJev: null (test/setup/verifier.ts, CheckOptions.askJev: null verifies nothing). There is no
+        // silent fall-through: with no Jev to verify values with, checkValues throws VerifierUnavailable.
         setTestVerifier(null);
         try {
-          const r = await checkValues([prop(contractFor("f/job"), value)], { ...opts, askJev: null });
-          expect(r.ok).toEqual([]);
-          expect(r.refused.length).toBeGreaterThan(0);
+          await expect(checkValues([prop(contractFor("f/job"), value)], { ...opts, askJev: null })).rejects.toThrowError(VerifierUnavailable);
         } finally {
           setTestVerifier(STAND_IN);
         }
