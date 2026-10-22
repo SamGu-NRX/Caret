@@ -290,10 +290,7 @@ final class DragRowView: NSView, NSDraggingSource {
         NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10).fill()
     }
 
-    override var focusRingMaskBounds: NSRect {
-        get { bounds }
-        set { super.focusRingMaskBounds = newValue }
-    }
+    override var focusRingMaskBounds: NSRect { bounds }
 
     override func keyDown(with event: NSEvent) {
         // Space or Return press the row, as its VoiceOver action does; other keys stay the window's.
