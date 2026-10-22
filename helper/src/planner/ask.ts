@@ -371,6 +371,9 @@ function checkSeen(r: AskResume, snap: IntentSnapshot, keys: readonly string[]):
   for (const key of keys) {
     const f = snap.fields.find((x) => x.key === key);
     if (f === undefined || r.seen.fields[key] !== fieldSeen(snap.window, f)) changed(`the field '${f?.name ?? key}' changed`);
+    const node = snap.window.nodes.get(key);
+    // Native web text has neither a readable value nor a revision. Matching unread fingerprints cannot prove it stayed unchanged.
+    if (node?.unread === true && node.rev === undefined) throw new SaidError("unknownWindow", SAYS.unreadResume, `unreadResume: the field '${key}' has no revision to compare`);
   }
 }
 

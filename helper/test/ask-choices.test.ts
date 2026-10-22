@@ -354,16 +354,34 @@ describe("second re-check: what a continued Ask compares, and when (B29)", () =>
   });
 
   it.each([
-    ["a placeholder appeared", (ns: Node[]) => ns.map((n) => (n.key === KEY("landlord phone") ? { ...n, placeholder: "Someone else's phone" } : n)), [] as Node[]],
-    ["a filled field's value changed", (ns: Node[]) => ns.map((n) => (n.key === KEY("notes") ? { ...n, value: "Ring twice" } : n)), [] as Node[]],
-  ])("refuses when %s", async (_, edit, extra) => {
+    ["a placeholder appeared", (ns: Node[]) => ns.map((n) => (n.key === KEY("landlord phone") ? { ...n, placeholder: "Someone else's phone" } : n)), SAYS.windowChanged],
+    ["a filled field's value changed but is unread without a revision", (ns: Node[]) => ns.map((n) => (n.key === KEY("notes") ? { ...n, value: "Ring twice" } : n)), "The field holds text Caret doesn't read, so it can't tell whether it changed. Caret can't resume this Ask."],
+    ["an unread field without a revision still has the same fingerprint", (ns: Node[]) => ns, "The field holds text Caret doesn't read, so it can't tell whether it changed. Caret can't resume this Ask."],
+  ] as const)("refuses when %s", async (_, edit, expected) => {
     const instruction = "fill the landlord phone and the notes";
     const m = desk();
     const q = await sourceQ(instruction, (x) => ({ route: "ask", why: "whichSource", fields: [ref(x, "Landlord phone"), ref(x, "Notes")], sources: [] }), m);
-    formSnap(m, edit, extra);
+    formSnap(m, edit);
     const note = q.options.find((c) => c.option.kind === "window" && c.option.title === "Rental notes.txt")?.option.id as string;
     const e = await fail(answer(q, [note], { model: m, ask: jevBy((x) => (x.includes("phone") ? "(512) 555-0193" : null)).ask, instruction }));
-    expect(e.message).toBe(SAYS.windowChanged);
+    expect(e.code).toBe("unknownWindow");
+    expect(e.message).toBe(expected);
+    if (expected !== SAYS.windowChanged) expect(e.detail).toContain("unreadResume:");
+  });
+
+  it("resumes over an ordinary native field when its readable value and fingerprint still match", async () => {
+    const instruction = "fill the landlord phone and the notes";
+    const m = desk();
+    const native = page().map((n) => n.role === "AXWebArea" ? { ...n, role: "AXGroup" } : n);
+    const put = (at: number): void => { m.apply(snap(native, { at, windowId: "form", title: "Apply", app: TE(7002), focused: true })); };
+    put(1000);
+    const q = await sourceQ(instruction, (x) => ({ route: "ask", why: "whichSource", fields: [ref(x, "Landlord phone"), ref(x, "Notes")], sources: [] }), m);
+    put(1100);
+    expect(m.windows.get("form")?.nodes.get(KEY("notes"))).toMatchObject({ value: "Leave at the door" });
+    expect(m.windows.get("form")?.nodes.get(KEY("notes"))?.unread).toBeUndefined();
+    const note = q.options.find((c) => c.option.kind === "window" && c.option.title === "Rental notes.txt")?.option.id as string;
+    const result = await answer(q, [note], { model: m, ask: jevBy((x) => (x.includes("Label: 'Landlord phone'") ? "(512) 555-0193" : null), () => "other").ask, instruction });
+    expect(result.checked.writes.map((w) => w.node.key)).toEqual([KEY("landlord phone")]);
   });
 
   it("refuses when an option's value changed under an unchanged label", async () => {
