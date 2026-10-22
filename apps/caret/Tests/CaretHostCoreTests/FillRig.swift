@@ -234,4 +234,25 @@ final class FillRig {
             method: .axSelectedText, undo: grant, insertedLength: UTF16Text.length(claim.insertionText)
         ))
     }
+
+    /// S2: the insertion queue could not confirm the claim's write (`reason`), and its read of the
+    /// empty field afterwards found `held` (nil: unreadable). The grant is what
+    /// `InsertionExecutor.run` leaves: armed before the write, kept by `UnconfirmedInsert.grant`.
+    func insertedUnconfirmed(held: String?, reason: String = "revoked") {
+        guard let claim = inserting else { return XCTFail("no fill claim in flight") }
+        inserting = nil
+        arbiter.finishInsertion(claimID: claim.claimID, error: reason)
+        let intent = UnconfirmedInsert.Intent(before: "", start: 0, end: 0, replacement: claim.insertionText)
+        let edit = InsertionGuard.ApprovedEdit(
+            target: claim.offer.target, replaceStart: 0, replaceEnd: 0, replacement: claim.insertionText, resultingValue: claim.insertionText
+        )
+        let armed = UndoGrant.armed(target: claim.offer.target, priorValue: "", edit: edit, origin: claim.offer.kind.fillOrigin, writeID: 7)
+        let report = UnconfirmedInsert.read(intent, held: held)
+        var grant = UnconfirmedInsert.grant(armed: armed, verified: false, report: report)
+        grant?.createdAt = clock.now
+        machine.insertionFinished(FillInsertion(
+            claim: claim, verified: false, rejected: false, reason: reason, method: .pastePid, undo: grant,
+            insertedLength: UTF16Text.length(claim.insertionText), recovery: report
+        ))
+    }
 }
