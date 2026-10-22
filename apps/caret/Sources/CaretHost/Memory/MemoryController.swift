@@ -140,7 +140,7 @@ final class MemoryController {
                 model.writing.problem = problem
                 return
             }
-            SettingsStore.shared.update(source: .menu) { $0.instructions.aboutMe = text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            SettingsStore.shared.update(source: .menu) { _ = $0.instructions.setAboutMe(text) }
         case .editEntry(let id):
             let entry = (model.writing.entries + model.writing.addable).first { $0.id == id }
             model.writing.editing = entry.map { ($0.id, $0.text) }
