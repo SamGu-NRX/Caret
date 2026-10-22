@@ -1137,7 +1137,7 @@ export async function proposeFill(
   // An Ask that names its sources reads only those windows.
   const sourcesOnly = scope?.windows ?? null;
   const unread = sourcesOnly === null ? opts.exclude : new Set([...(opts.exclude ?? []), ...[...model.windows.keys()].filter((id) => id !== windowId && !sourcesOnly.has(id))]);
-  const { candidates, cut, cutTerms, cutKinds: collectedKinds, cutTookKinds, cutAll, namesCut, clauses, omitted } = collectCandidates(model, windowId, {
+  const { candidates, cut, cutTerms, cutKinds: collectedKinds, cutTookKinds, keptOut, cutAll, namesCut, clauses, omitted } = collectCandidates(model, windowId, {
     now,
     ledger,
     deferClauses: true,
@@ -1511,7 +1511,9 @@ export async function proposeFill(
       if (list.length > 0) derived.set(f.id, list);
     }
   }
-  if (candidates.length === 0 && cut.length === 0 && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0 && choiceOutputs(f).length === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
+  // A value kept out with its other lines cuts no window (Collected.keptOut), but it is something to withhold for, by the cut
+  // rules below, not nothing to copy.
+  if (candidates.length === 0 && cut.length === 0 && !keptOut && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0 && choiceOutputs(f).length === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
 
   // A field whose label names no kind (kinds.ts) could want a value of any kind or plain text. It is not
   // asked when a cut took a value of any kind: a "When" field was asked after a cut took the dates, and

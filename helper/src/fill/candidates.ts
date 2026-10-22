@@ -524,6 +524,12 @@ export interface Collected {
    * fieldCut). A value kept out with its other lines is no such cut: it threatens only fields of its kind and label.
    */
   cutTookKinds: boolean;
+  /**
+   * Whether any value was kept out with its other lines (keepOut). Its window is not cut, so a desk whose every value was
+   * kept out has no candidate and no cut; fill must still run the cut rules and withhold with a reason, not report that
+   * there was nothing to copy (test/act-select-choice.test.ts, a chat whose meal lines repeat each option 20 times).
+   */
+  keptOut: boolean;
   cutAll: boolean;
   /**
    * A field takes a name and a name may have been kept out: a conversation's names, or a line holding
@@ -842,7 +848,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const k of unreadKinds) kinds.add(k);
     const cutTookKinds = kinds.size > 0;
     for (const k of keptKinds(out)) kinds.add(k);
-    return { candidates: out, stats, cut: [...missed], cutTerms, cutKinds: kinds, cutTookKinds, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutKinds: kinds, cutTookKinds, keptOut: keptOutSpans.length > 0, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
   };
   /**
    * Stops early, on either cap, partway through `reading`: what of it was offered is a partial
