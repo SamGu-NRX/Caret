@@ -174,7 +174,7 @@ public final class PageWritingMachine {
         else { return note("moved") }
         let value = p.check.value
         let caret = UTF16Text.length(text.before)
-        let language = gate.language ?? "und"
+        let language = gate.language ?? "en"
         let candidates: [WritingCorrection]
         if p.check.word {
             candidates = found.filter { p.check.span.contains($0.span) && WordFix.offersLive($0) }
