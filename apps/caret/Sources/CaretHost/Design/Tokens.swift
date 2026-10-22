@@ -61,7 +61,7 @@ enum Tokens {
         if raiseContrast == nil {
             raiseContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
         }
-        contrastObservation = NotificationCenter.default.addObserver(
+        contrastObservation = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: NSWorkspace.shared,
             queue: .main
