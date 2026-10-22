@@ -382,6 +382,9 @@ public enum ContextPauseReason: String, Codable, CaseIterable, Sendable {
     case appExcluded = "app-excluded"
     case accessibilityRevoked = "accessibility-revoked"
     case workflowActive = "workflow-active"
+    /// The person acted (typed, clicked, chose). The one reason that always interrupts an accepted workflow;
+    /// generated-input, workflow-active and idle never do (docs/bridge-protocol.md, "Interrupting an accepted workflow").
+    case userInput = "user-input"
 }
 
 public struct ContextPauseResult: Decodable, Equatable, Sendable {

@@ -90,6 +90,10 @@ final class CoreBridgeClientTests: XCTestCase {
         }
     }
 
+    func testUserInputIsSentWithThePythonCoresName() {
+        XCTAssertEqual(ContextPauseReason.userInput.rawValue, "user-input")
+    }
+
     func testAcceptDecodesAnInlineEditAndDismissDecodesItsFlag() async throws {
         let (client, transport) = try startedClient()
 
