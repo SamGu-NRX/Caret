@@ -107,23 +107,36 @@ export function touchCount(el: Element): number {
 
 /**
  * The elements a recorded control stands for: its labels (a label forwards its click to the control), its aria-controls
- * and aria-owns targets (the list an option's click lands in), and the nearest element that holds the control and one
- * of those targets together (the widget's container, a chevron button included). A person re-picking a combobox's
- * choice touches these and none of them is the control itself, and the page's own script copies what they chose, so a
- * touch on any of them is a touch on the control (issue #54, the review of PR #58).
+ * and aria-owns targets (the list an option's click lands in), and the widget's container (a chevron button included):
+ * the one the combobox handler names, else the nearest element that holds the control and one of those targets
+ * together. A person re-picking a combobox's choice touches these and none of them is the control itself, and the
+ * page's own script copies what they chose, so a touch on any of them is a touch on the control (issue #54, the review
+ * of PR #58).
  */
 const standsFor = new WeakMap<Element, Set<Element>>();
 
-/** The nearest element that holds `a` and `b` both in the light DOM, or null when they share none. */
+/**
+ * The nearest element that holds `a` and `b` both in the light DOM, or null when they share none or share only the
+ * page itself: a list portaled under <body> (react-select's menuPortalTarget) has <body> in common with its control,
+ * and taking <body> in would count every click on the page against the pick (review of PR #58, F4).
+ */
 function commonAncestor(a: Element, b: Element): Element | null {
   const up = new Set<Element>();
   for (let n: Element | null = a; n !== null; n = n.parentElement) up.add(n);
-  for (let n: Element | null = b; n !== null; n = n.parentElement) if (up.has(n)) return n;
+  for (let n: Element | null = b; n !== null; n = n.parentElement) if (up.has(n)) return pageWide(n) ? null : n;
   return null;
 }
 
-/** Every element a touch on stands for a touch on the control `el` (standsFor), computed at the pick. */
-function affiliated(el: Element): Element[] {
+/** Whether `n` is its document's <body> or <html>, which hold every control on the page. */
+function pageWide(n: Element): boolean {
+  return n === n.ownerDocument.body || n === n.ownerDocument.documentElement;
+}
+
+/**
+ * Every element a touch on stands for a touch on the control `el` (standsFor), computed at the pick. `container`: the
+ * widget's own container when the handler knows it (react-select's, whose list may be portaled away from it), else null.
+ */
+function affiliated(el: Element, container: Element | null): Element[] {
   const out = new Set<Element>();
   const labels = (el as HTMLInputElement).labels;
   if (labels !== null && labels !== undefined) for (const l of labels) out.add(l);
@@ -140,6 +153,7 @@ function affiliated(el: Element): Element[] {
     const box = commonAncestor(el, t);
     if (box !== null) out.add(box);
   }
+  if (container !== null && !pageWide(container)) out.add(container);
   return [...out];
 }
 /** Nothing is counted until a choice record exists for some control, so pages Caret only reads stay untouched by the listener's walk. */
@@ -172,11 +186,12 @@ export function trackTrustedTouches(): void {
 }
 
 /** Begins the page-side record of a pick Caret is about to make, anchoring the control's trusted-event counts at this
- * moment and taking its affiliates' watch up (standsFor): a touch on them counts for this record's undo check (revs.ts). */
-export function beginChoice(taskId: string, el: Element, wrote: string): void {
+ * moment and taking its affiliates' watch up (standsFor): a touch on them counts for this record's undo check (revs.ts).
+ * `container`: the widget's own container when the handler knows it (affiliated), else null. */
+export function beginChoice(taskId: string, el: Element, wrote: string, container: Element | null): void {
   if (!touches.has(el)) touches.set(el, 0);
   anyChoiceRecorded = true;
-  for (const a of affiliated(el)) {
+  for (const a of affiliated(el, container)) {
     let set = standsFor.get(a);
     if (set === undefined) {
       set = new Set();
