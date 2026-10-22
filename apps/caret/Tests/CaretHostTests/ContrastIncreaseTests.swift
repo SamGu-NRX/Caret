@@ -146,6 +146,19 @@ final class ContrastIncreaseTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(ghostRatio(1, 0x1E / 255.0, dark: true), 4.5, "white ghost on a #1E1E1E field")
     }
 
+    @MainActor
+    func testWorkspaceNotificationRefreshesCachedFlag() {
+        let workspaceValue = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        Tokens.increaseContrast = !workspaceValue
+        Tokens.installContrastObservation()
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: NSWorkspace.shared
+        )
+        XCTAssertEqual(Tokens.increaseContrast, workspaceValue)
+        Tokens.increaseContrast = false
+    }
+
     /// Tokens without a variant resolve to exactly the color they had — including Carrot's dark
     /// value, which the audit found already over its aim.
     func testTokensWithoutVariantsResolveIdentically() throws {
