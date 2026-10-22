@@ -81,6 +81,17 @@ final class PageWritingTests: XCTestCase {
         XCTAssertEqual(r.checks.last?.word, false)
     }
 
+    func testNilLanguageDoesNotApplyEnglishStaticRulesToPageSentence() {
+        let r = Rig()
+        r.gate = PageWritingMachine.Gate(allowed: true, contentEditable: false, settings: PageInlineSettings(), language: nil)
+        r.field(Self.field("the the"))
+        r.field(Self.field("the the. "))
+        guard let check = r.checks.last else { return XCTFail("page sentence was not checked") }
+        XCTAssertFalse(check.word)
+        r.machine.checked(check.id, [])
+        XCTAssertTrue(r.lines.isEmpty, "nil language must not offer English doubled-word fix")
+    }
+
     func testNothingIsCheckedWhereInlineTextWouldNotBe() {
         for (gate, f) in [
             (PageWritingMachine.Gate(allowed: false, contentEditable: true, settings: PageInlineSettings(), language: "en"), Self.field("I like teh ")),
