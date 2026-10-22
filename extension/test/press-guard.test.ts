@@ -3,7 +3,7 @@
 // fixtures/web-form/accept.ts ("B28 2").
 import { describe, expect, it } from "vitest";
 import type { ActAnswer } from "../src/shared/messages.ts";
-import { judgePress } from "../src/worker/press-guard.ts";
+import { judgeActivation, judgePress } from "../src/worker/press-guard.ts";
 
 const still = { navGen: 3, starts: 5 };
 const choice = { flavor: "pressGroup" as const, matches: ["Yes"], expanded: null, hiddenInput: "none" as const };
@@ -40,5 +40,31 @@ describe("judgePress", () => {
   it.each(["alreadyTrue", "stale", "unsupported", "notAllowed", "noElement", "notSameElement", "excluded", "siteOff", "handoff"] as const)("leaves %s alone: the content script answers it before any press", (outcome) => {
     const a: ActAnswer = { outcome, detail: "before the press" };
     expect(judgePress(a, still, { navGen: 4, starts: 6 })).toBe(a);
+  });
+});
+
+describe("judgeActivation (slice 2)", () => {
+  const ok: ActAnswer = { outcome: "ok", detail: null };
+  const still = { navGen: 3, starts: 5 };
+
+  it("answers the open as ok when only a history update moved the frame — a fragment jump or pushState is the open's own shape", () => {
+    expect(judgeActivation(ok, still, { ...still, navGen: 4 })).toBe(ok);
+  });
+
+  it("reports a second history update as a change: an open makes at most one", () => {
+    expect(judgeActivation(ok, still, { ...still, navGen: 5 }).pageChanged).toEqual(["navigated"]);
+  });
+
+  it("reports a change when a navigation began, and when the document went away before it answered", () => {
+    expect(judgeActivation(ok, still, { ...still, starts: 6 }).pageChanged).toEqual(["navigationStarted"]);
+    expect(judgeActivation(null, still, still).pageChanged).toEqual(["documentGone"]);
+  });
+
+  it("lets the walk's own standing answers stand, and stops the run on a change like the press does", () => {
+    const stale: ActAnswer = { outcome: "stale", detail: "the row left the document" };
+    expect(judgeActivation(stale, still, { ...still, starts: 6 })).toBe(stale);
+    const judged = judgeActivation(ok, still, { ...still, starts: 6 });
+    expect(judged.outcome).toBe("failed");
+    expect(judged.detail).toContain("the row was opened");
   });
 });

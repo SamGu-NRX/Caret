@@ -161,6 +161,29 @@ export class GoalDesk implements ReaderLink {
     this.afterAct?.(verb);
     return answer("ok");
   }
+
+  /** Slice 2: opens a page row, option or listitem the walk carried, as the page engine's link does — the act grant
+   * gates it like any act, and anything else is the engine's own refusal, so itemOpened never verifies a step the page
+   * never took. What the open does to the window is the scene's (`rowsOpen`); the desk re-shows it after. */
+  readonly activated: { windowId: string; key: string; taskId: string }[] = [];
+  rowsOpen: ((windowId: string, key: string) => void) | null = null;
+  async activateItem(windowId: string, key: string, taskId: string): Promise<VerbResult> {
+    const answer = (outcome: VerbResult["outcome"], detail: string | null = null): VerbResult => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "goal-desk", at: this.at, outcome, detail });
+    const w = this.windows.get(windowId);
+    if (w === undefined) return answer("noWindow");
+    const n = w.nodes.find((x) => x.key === key);
+    if (n === undefined) return answer("noElement", key);
+    if (n.role !== "AXRow" && n.role !== "AXOption" && n.role !== "AXListItem") return answer("axError", `${n.role} is not a row, option or listitem`);
+    const act = { kind: "press" as const, pid: w.app.pid, windowId, key, role: n.role, label: (n.label ?? "").trim(), taskId };
+    const refused = this.enforceGrants ? this.grants.refusal(act) : null;
+    if (refused !== null) return answer("notAllowed", refused);
+    this.activated.push({ windowId, key, taskId });
+    this.rowsOpen?.(windowId, key);
+    const now = this.windows.get(windowId);
+    if (now !== undefined) this.show(now);
+    this.afterAct?.(act);
+    return answer("ok");
+  }
 }
 
 // MARK: - the scenes' windows
