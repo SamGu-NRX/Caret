@@ -21,6 +21,7 @@ describe("secretIn", () => {
     ["123-45-6789", "my ssn is 123-45-6789", "governmentId"],
     ["4242 4242 4242 4242", "use 4242 4242 4242 4242", "cardNumber"],
     ["hunter2", "Put my password hunter2 in Notes", "password"],
+    ["aaaaaa", "my password for the portal is aaaaaa", "password"],
     ["hunter2", "hunter2 is my password", "password"],
     ["482913", "my login code 482913 please", "oneTimeCode"],
   ])("reads %s in '%s' as %s", (v, instruction, kind) => {
