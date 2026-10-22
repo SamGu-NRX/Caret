@@ -1,0 +1,157 @@
+{
+  "_comment": "Shared equivalence cases (helper/src/values/equivalent.ts). helper/test/equivalent.test.ts and extension/test/equivalent.test.ts both run every row. numeric: the field is a number input, or a text input with numeric or decimal inputmode; text: any other text control.",
+  "numeric": [
+    {
+      "held": "1",
+      "wrote": "1.00",
+      "equivalent": true
+    },
+    {
+      "held": "1.5",
+      "wrote": "1.50",
+      "equivalent": true
+    },
+    {
+      "held": "-0",
+      "wrote": "0",
+      "equivalent": true
+    },
+    {
+      "held": "1e2",
+      "wrote": "100",
+      "equivalent": true
+    },
+    {
+      "held": ".5",
+      "wrote": "0.5",
+      "equivalent": true
+    },
+    {
+      "held": "1.",
+      "wrote": "1",
+      "equivalent": true
+    },
+    {
+      "held": "1",
+      "wrote": "1",
+      "equivalent": true
+    },
+    {
+      "held": "1",
+      "wrote": "12",
+      "equivalent": false
+    },
+    {
+      "held": "1,000",
+      "wrote": "1000",
+      "equivalent": false
+    },
+    {
+      "held": "1,00",
+      "wrote": "1",
+      "equivalent": false
+    },
+    {
+      "held": "1 ",
+      "wrote": "1",
+      "equivalent": false
+    },
+    {
+      "held": "",
+      "wrote": "0",
+      "equivalent": false
+    },
+    {
+      "held": "0x10",
+      "wrote": "16",
+      "equivalent": false
+    },
+    {
+      "held": "Infinity",
+      "wrote": "1e999",
+      "equivalent": false
+    },
+    {
+      "held": "$1",
+      "wrote": "1",
+      "equivalent": false
+    },
+    {
+      "held": "9007199254740993",
+      "wrote": "9007199254740992",
+      "equivalent": false
+    },
+    {
+      "held": "2e309",
+      "wrote": "1e309",
+      "equivalent": false
+    },
+    {
+      "held": "1e-999",
+      "wrote": "0",
+      "equivalent": false
+    },
+    {
+      "held": "0.10000000000000001",
+      "wrote": "0.1",
+      "equivalent": false
+    },
+    {
+      "held": "1e2",
+      "wrote": "1E+2",
+      "equivalent": true
+    },
+    {
+      "held": "+5",
+      "wrote": "5.0",
+      "equivalent": true
+    },
+    {
+      "held": "0.0",
+      "wrote": "-0",
+      "equivalent": true
+    },
+    {
+      "held": "",
+      "wrote": "",
+      "equivalent": true
+    },
+    {
+      "held": ".",
+      "wrote": "0",
+      "equivalent": false
+    },
+    {
+      "held": "1e1234567",
+      "wrote": "1",
+      "equivalent": false
+    }
+  ],
+  "text": [
+    {
+      "held": "1.00",
+      "wrote": "1",
+      "equivalent": false
+    },
+    {
+      "held": "Dana",
+      "wrote": "Dana",
+      "equivalent": true
+    },
+    {
+      "held": "1",
+      "wrote": "1.0",
+      "equivalent": false
+    },
+    {
+      "held": " Dana",
+      "wrote": "Dana",
+      "equivalent": false
+    },
+    {
+      "held": "",
+      "wrote": "",
+      "equivalent": true
+    }
+  ]
+}

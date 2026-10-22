@@ -4,10 +4,10 @@
 // and code copies the chosen span verbatim.
 import { Disclosure, viewHolds, type ModelText } from "../privacy/disclosure.ts";
 import { ValueKind, type FillSource, type Node, type TypedValue } from "../protocol.ts";
-import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
+import { nodeText, pageTextField, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestLabel, nearestText } from "./descriptor.ts";
 import { heldAsConversation, type ViewSpan } from "../privacy.ts";
-import { messageOrder, type MessageOrder } from "../conversation.ts";
+import { messageOrder, newestFirst } from "../conversation.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, namesInAt, overlap, textKind, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
 import { bareLine, clauseSpan, LABELLED, lineTexts, lineValues, partSpan, sentenceSpan, rawURLToken, WARNS } from "./line-values.ts";
@@ -31,19 +31,13 @@ function* linesUpTo(text: string, max: number): Generator<string> {
  * state, not text anyone typed.
  */
 /**
- * The indexes of a conversation's `n` nodes, newest first by `order`: from the end when the oldest come first, from the
- * start when the newest do, and from both ends in turn when the order is not known (conversation.ts MessageOrder).
+ * Whether an editable field's text is a copy source. A web page's text field never is (counsel 2026-10-09): its text
+ * stays in the page, and the node holds at most what Caret itself wrote there (engines/page-link.ts KnownText), which
+ * is no source either. Copying from a web field needs the user to pick that window (engines/page-source.ts); until a
+ * fill asks for that pick, it is dark, and nothing says so to the user.
  */
-function* newestFirst(n: number, order: MessageOrder): Generator<number> {
-  if (order === "newestFirst") for (let i = 0; i < n; i++) yield i;
-  else if (order === "oldestFirst") for (let i = n - 1; i >= 0; i--) yield i;
-  else for (let lo = 0, hi = n - 1; lo <= hi; lo++, hi--) {
-    yield hi;
-    if (lo < hi) yield lo;
-  }
-}
-
 function sourceField(node: Node): boolean {
+  if (pageTextField(node)) return false;
   return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox";
 }
 

@@ -5,7 +5,7 @@
 // cell (loopNext) or one action line (loopFinish, routine) whose accept is the same take.
 import { aboutValues } from "../fill/about.ts";
 import { performance } from "node:perf_hooks";
-import { nodeText, type Change, type ScreenModel } from "../model.ts";
+import { nodeText, type Change, type ScreenModel, holdsText } from "../model.ts";
 import {
   MemoryOp,
   PROTOCOL_VERSION,
@@ -1348,7 +1348,7 @@ export class PatternEngine {
     for (const c of o.cells) {
       const node = model.windows.get(c.dstWindowId)?.nodes.get(c.dstKey);
       if (node === undefined) return `the field ${c.dstKey} is gone`;
-      if (node.editable !== true || (node.value ?? "") !== "") return `the field ${c.dstKey} is no longer empty`;
+      if (node.editable !== true || holdsText(node)) return `the field ${c.dstKey} is no longer empty`;
       const sw = model.windows.get(c.srcWindowId);
       const src = sw?.nodes.get(c.srcKey);
       if (sw === undefined || src === undefined) return `the source ${c.srcKey} is gone`;

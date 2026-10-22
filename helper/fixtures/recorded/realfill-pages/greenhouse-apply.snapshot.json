@@ -36,7 +36,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "First Name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form#f",
      "rect": [
       280,
@@ -55,7 +56,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Last Name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form#f",
      "rect": [
       280,
@@ -74,7 +76,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form#f",
      "rect": [
       280,
@@ -93,7 +96,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Phone",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form#f",
      "rect": [
       280,
@@ -130,7 +134,8 @@
      "kind": "combobox",
      "role": "combobox",
      "name": "School *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form#f",
      "rect": [
       289,
@@ -200,7 +205,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Graduation Date (MM/YYYY)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form#f",
      "rect": [
       280,
@@ -219,7 +225,8 @@
      "kind": "combobox",
      "role": "combobox",
      "name": "Are you legally authorized to work in the United States? *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form#f",
      "rect": [
       289,
@@ -238,7 +245,8 @@
      "kind": "url",
      "role": "textbox",
      "name": "LinkedIn Profile",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form#f",
      "rect": [
       280,

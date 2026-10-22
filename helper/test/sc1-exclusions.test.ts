@@ -8,6 +8,7 @@ import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as ver
 // T-E4 an editable control whose own label, placeholder or group names a sensitive kind keeps no value;
 // T-E5 a window of an app, or a frame of a site, that the user switched off never enters the model or a request;
 // T-E6 a route whose provider keeps what it is sent is refused outside an evaluation, in the Jev client and the writer.
+import { onWire, type TestField } from "./page-wire.ts";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -80,7 +81,7 @@ describe("T-E1: a secure field", () => {
 
 const CHROME = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const session = (): EngineSession => new EngineSession({ engine: "eng1", browser: CHROME, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], ...extra });
+const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], ...extra });
 const page = (frames: { origin: string; controls: PageControl[]; frameId?: number; parentFrameId?: number }[], focused: PageSnapshot["focused"] = null): PageSnapshot => ({
   type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
   frames: frames.map((f, i) => ({ frameId: f.frameId ?? i, parentFrameId: f.parentFrameId ?? (i === 0 ? -1 : 0), documentId: `D${i}`, origin: f.origin, path: "/apply", navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false, controls: f.controls })),

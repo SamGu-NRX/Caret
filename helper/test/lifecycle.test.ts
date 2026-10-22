@@ -17,7 +17,7 @@ import { PROTOCOL_VERSION, type OfferAction } from "../src/protocol.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
 import { field, FIXTURE_APP, snap } from "./builders.ts";
-import { LineClient, SocketReader, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, until, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const K = (s: string): string => `dev.caret.fixture/standard/${s}`;
 const FORM = "5150-1";
@@ -46,7 +46,7 @@ describe("taking control back (B22)", () => {
     store = new Store(join(dir, "data"));
     whileQueued = null;
     slowArmed = false;
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       askJev: null,
@@ -68,7 +68,8 @@ describe("taking control back (B22)", () => {
     helper = mine;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     reader.serial = true;
     reader.enforceGrants = true;
@@ -168,8 +169,11 @@ describe("taking control back (B22)", () => {
     const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/protocol.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
     const action = { ...golden.find((l) => l.type === "action" && l.offerKey === "offer-5"), offerKey: "accept-2" } as unknown as OfferAction;
     helper.offers.record(action, () => helper.executor.run("accept-2", two(), {}, undefined, { grant: true }));
+    // A second proven host: one that is not the host is refused before the helper sees the request (request-gate.ts,
+    // test/nonhost-commands.test.ts), so only another host's resume and accept reach the helper's own refusals.
     const other = await LineClient.connect(join(dir, "screen.sock"));
-    other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "other-consumer" });
+    other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "other-consumer", host: true });
+    await authenticateHost(other);
     reader.setValue(FORM, NAME, "");
     reader.setValue(FORM, EMAIL, "old@example.com");
     await until(() => helper.model.windows.get(FORM)?.nodes.get(EMAIL)?.value === "old@example.com" && helper.model.windows.get(FORM)?.nodes.get(NAME)?.value === undefined);

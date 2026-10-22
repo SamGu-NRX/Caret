@@ -3,6 +3,7 @@
 // Ask's own offer or goal sees it; its sources are checked against it at acceptance, so text that expired before Tab
 // writes nothing; and it goes when the offer or goal ends. The worker's own rules are played by the fake engine, as in
 // tab-source.test.ts. Every name and value is invented.
+import { onWire, readings, textRev, type TestField } from "./page-wire.ts";
 import { answeringScope } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +16,7 @@ import { pageTabReader, type TabSource } from "../src/engines/tab-source.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { LEFT_TAB_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type GoalProgress, type HelperMessage, type HelperToEngine, type PageControl, type PageResult, type PageSnapshot, type PageTabText, type PageVerb, type PlanProposal } from "../src/protocol.ts";
+import { LEFT_TAB_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type GoalProgress, type HelperMessage, type HelperToEngine, type PageResult, type PageSnapshot, type PageTabText, type PageVerb, type PlanProposal } from "../src/protocol.ts";
 import { jevPickingText } from "./builders.ts";
 import { X, chrome, hello, okReader } from "./fake-page.ts";
 import { headsJev } from "./heads-jev.ts";
@@ -33,9 +34,9 @@ const MESSAGE: PageTabText = {
   cut: false,
   docsText: null,
 };
-const PICK: Record<string, string> = { "First name": "Ines", "Last name": "Vandermeer", Email: "ines.vandermeer@example.org" };
+const PICK: Record<string, string> = { "First name": "Ines", "Last name": "Vandermeer", Email: "ines.vandermeer@example.org", Phone: "555-0147" };
 
-const ctl = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, 0, 200, 20], value: "" });
+const ctl = (id: string, kind: TestField["kind"], name: string): TestField => ({ id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, 0, 200, 20], value: "" });
 
 /** The mail tab (3) the user left and the form tab (7), as the worker answers for them; acts write the form's values. */
 class TwoTabs {
@@ -43,6 +44,8 @@ class TwoTabs {
   readonly session: EngineSession;
   form = [ctl("e1", "text", "First name"), ctl("e2", "text", "Last name"), ctl("e3", "email", "Email")];
   left: number | null = null;
+  /** A control a verified write to the keyed control shows after it, as a dependent form does (runs.ts followUp). */
+  reveals: Record<string, TestField> = {};
   /** What a read of the tab left finds (H13: a Google editor whose text is off finds none). */
   tabText: PageTabText = MESSAGE;
   /** The form field with focus. */
@@ -65,7 +68,7 @@ class TwoTabs {
     const origin = mail ? "https://mail.example.test" : "http://127.0.0.1:4310";
     return {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: Date.now(), tabId, browserWindowId: 1, active: mail ? this.left !== 3 : true, inFocusedWindow: true, title,
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: `D${tabId}`, origin, path: "/", navGen: 1, title, headings: [], iframes: [], excluded: {}, truncated: false, controls: mail ? [ctl("m1", "search", "Search mail")] : structuredClone(this.form) }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: `D${tabId}`, origin, path: "/", navGen: 1, title, headings: [], iframes: [], excluded: {}, truncated: false, controls: (mail ? [ctl("m1", "search", "Search mail")] : structuredClone(this.form)).map((c) => onWire(c)) }],
       missing: [],
       focused: mail ? null : { frameId: 0, id: this.focusedId, selection: [0, 0] },
     };
@@ -83,9 +86,12 @@ class TwoTabs {
     }
     if (v.kind !== "pageWrite") return this.reply(m.id, { outcome: "handoff", detail: "yours", risk: "pageScript" });
     const x = this.form.find((c) => c.id === v.id);
-    if (x === undefined || (x.value ?? "") !== v.expect) return this.reply(m.id, { outcome: "stale", detail: "changed" });
+    if (x === undefined || textRev(x.value ?? "") !== v.expectRev) return this.reply(m.id, { outcome: "stale", detail: "changed" });
+    const before = x.value ?? "";
     x.value = v.value;
-    return this.reply(m.id, { outcome: "ok", detail: null, readings: { before: v.expect, afterInput: v.value, afterBlur: v.value, invalid: false, error: null } });
+    const shown = this.reveals[x.id];
+    if (shown !== undefined && !this.form.some((c) => c.id === shown.id)) this.form.splice(this.form.indexOf(x) + 1, 0, shown);
+    return this.reply(m.id, { outcome: "ok", detail: null, readings: readings(before, v.value, v.value, textRev(v.value)) });
   }
   get reads(): number[] {
     return this.sent.flatMap((m) => (m.type === "pageReadText" ? [m.tabId] : []));
@@ -241,6 +247,54 @@ describe("an Ask reads the tab the user just left (I6)", () => {
       const kept = JSON.stringify(helper.goals.planOf(s.goalId), (_, v: unknown) => (v instanceof Map ? [...v.entries()] : v));
       expect(kept).not.toMatch(/Gareth|Vandermeer|ines\.vandermeer|Ines/);
       expect(helper.goals.planOf(s.goalId)?.segments[0]?.steps.map((x) => x.says)).toEqual(["First name: …", "Last name: …", "Email: …", "The rest is yours"]);
+    });
+
+    // The heads maker states this whole-form Ask as a list of every empty field (FillScope.wholeForm), as the journey's is.
+    it("plans a field the goal's writes revealed from the text the goal read, with no second read of the tab", async () => {
+      tabs.tabText = { ...MESSAGE, blocks: [...MESSAGE.blocks.slice(0, 2), "Your details as we have them:\nFirst name: Ines\nLast name: Vandermeer\nEmail: ines.vandermeer@example.org\nPhone: 555-0147"] };
+      tabs.reveals = { e3: ctl("e4", "tel", "Phone") };
+      const s = (await askGoal()) as Segment;
+      await acceptGoal(s);
+      await helper.goals.idle();
+      const next = published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.reason === "afterReveal" && m.replaces === s.goalId);
+      expect(next?.steps.map((x) => x.says)).toEqual(["Phone: 555-0147", "The rest is yours"]);
+      expect(tabs.reads).toEqual([3]);
+      expect(tabSource().holds((next as Segment).goalId)).toBe(true);
+      await acceptGoal(next as Segment);
+      await helper.goals.idle();
+      expect(tabs.form.map((c) => c.value)).toEqual(["Ines", "Vandermeer", "ines.vandermeer@example.org", "555-0147"]);
+      expect(tabs.reads).toEqual([3]);
+      expect(tabSource().holding()).toBeNull();
+    });
+
+    /** The Ask's goal run, and the follow-up its writes' revealed Phone field got, holding the tab text (planRevealed). */
+    async function followUp(): Promise<{ first: Segment; next: Segment }> {
+      tabs.tabText = { ...MESSAGE, blocks: [...MESSAGE.blocks.slice(0, 2), "Your details as we have them:\nFirst name: Ines\nLast name: Vandermeer\nEmail: ines.vandermeer@example.org\nPhone: 555-0147"] };
+      tabs.reveals = { e3: ctl("e4", "tel", "Phone") };
+      const first = (await askGoal()) as Segment;
+      await acceptGoal(first);
+      await helper.goals.idle();
+      const next = published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.reason === "afterReveal" && m.replaces === first.goalId);
+      if (next === undefined) throw new Error("no follow-up was offered");
+      expect(tabSource().holds(next.goalId)).toBe(true);
+      return { first, next };
+    }
+
+    it("lets go of the tab text a follow-up holds when the follow-up is stopped before its Tab (#50)", async () => {
+      const { first, next } = await followUp();
+      await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: `${first.goalId}:s0`, action: "stop" });
+      expect(published.find((m) => m.type === "goalProgress" && m.event === "stopped" && m.goalId === next.goalId)).toMatchObject({ reason: "you" });
+      expect(tabSource().holds(next.goalId)).toBe(false);
+      expect(tabSource().holding()).toBeNull();
+    });
+
+    it("stops a follow-up and lets go of its tab text when the model expires the tab it read (#50)", async () => {
+      const { next } = await followUp();
+      helper.onExpiry.goalReplays?.(MAIL);
+      expect(published.find((m) => m.type === "goalProgress" && m.event === "stopped" && m.goalId === next.goalId)).toMatchObject({ reason: "sourceChanged" });
+      expect(tabSource().holding()).toBeNull();
+      expect(await acceptGoal(next)).toBeNull();
+      expect(tabs.form.map((c) => c.value)).toEqual(["Ines", "Vandermeer", "ines.vandermeer@example.org", ""]);
     });
 
     it("forgets the values from the tab in a preview that stopped untaken, and logs no refusal that could quote it", async () => {

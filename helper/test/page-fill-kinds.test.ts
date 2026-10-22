@@ -1,6 +1,7 @@
 // I2: a Chrome form seen through the page engine reads as the same fill controls as Chrome's Accessibility shows
 // it (B24 capture-2), and a native select seen through the page engine has its options, so its hand-off names one.
 // All text is synthetic.
+import { onWire, type TestField } from "./page-wire.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { formControls } from "../src/fill/controls.ts";
@@ -14,7 +15,7 @@ const ORIGIN = "http://127.0.0.1:4310";
 const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
 
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({
+const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({
   id,
   key: `form[order]/${kind}:${name.toLowerCase()}~0`,
   strongKey: null,

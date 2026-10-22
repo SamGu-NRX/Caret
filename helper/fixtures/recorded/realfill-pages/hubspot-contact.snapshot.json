@@ -36,7 +36,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "First Name*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,
@@ -55,7 +56,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Last Name*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       648,
@@ -74,7 +76,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,
@@ -93,7 +96,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Phone number*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       648,
@@ -112,7 +116,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Company name*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,
@@ -131,7 +136,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Website URL*",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,
@@ -211,7 +217,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "How can we help?",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,

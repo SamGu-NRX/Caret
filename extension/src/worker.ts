@@ -29,6 +29,7 @@ import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
 import { LEFT_TAB_MS, LeftTab, canonicalOrigin, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
 import { joinFrames } from "./shared/tab-text.ts";
 import { sectionTokens, type FrameSections } from "./worker/section-names.ts";
+import { CompareSpend } from "./worker/compare-budget.ts";
 
 /** SCP1: a frame's sections as the snapshot carries them: tokens, never digests or the salt. */
 function sectionsOf(s: FrameSections | undefined): { sections?: FrameSections["sections"]; sectionNames?: string[]; sectionsCut?: true } {
@@ -84,14 +85,15 @@ async function dropOffGrants(): Promise<void> {
  * a site switched off while the act ran gets the outcome alone.
  */
 async function admitted(verb: ActVerb, a: ActAnswer): Promise<ActAnswer> {
-  if (a.readings === undefined && a.choice === undefined) return a;
+  if (a.readings === undefined && a.choice === undefined && a.compare === undefined) return a;
   const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId }).catch(() => null)) ?? [];
   const here = frameOrigin(all, verb.frameId);
   const top = frameOrigin(all, 0);
   const ok = here !== null && top !== null && !offSite(here) && !offSite(top) && !deniedOrigin(here) && !deniedOrigin(top) && grants.check(verb.taskId, verb.tabId, verb.frameId).ok;
   if (ok) return a;
-  const { readings: _readings, choice: _choice, ...rest } = a;
-  return rest;
+  const { readings: _readings, choice: _choice, compare: _compare, ...rest } = a;
+  // A compare that cannot be handed on is no answer at all: the outcome says why.
+  return a.compare !== undefined ? { outcome: "siteOff", detail: "Caret is off on this site now" } : rest;
 }
 /** Frames armed to report the user's input ("tabId:frameId"), and until when. */
 const armed = new Map<string, number>();
@@ -159,6 +161,9 @@ function result(id: string, a: ActAnswer): void {
     ...(a.pageChanged === undefined ? {} : { pageChanged: a.pageChanged }),
     ...(a.text === undefined ? {} : { text: a.text }),
     ...(a.insert === undefined ? {} : { insert: a.insert }),
+    ...(a.restore === undefined ? {} : { restore: a.restore }),
+    ...(a.reboundTo === undefined ? {} : { reboundTo: a.reboundTo }),
+    ...(a.compare === undefined ? {} : { compare: a.compare }),
   });
 }
 
@@ -489,6 +494,9 @@ async function fileProblem(f: { size: number; sha256: string; data: string }): P
   return (await sha256(bytes)) === f.sha256 ? null : "the file's data does not match its digest";
 }
 
+/** pageCompare's per-origin hourly bound, kept in session storage so a worker restart does not reset it (worker/compare-budget.ts). */
+const compareSpend = new CompareSpend(chrome.storage.session, log);
+
 async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   if (verb.kind === "pagePress") {
     // Every page press is a hand-off in v1: the button runs the page's own script (content/actions.ts). The page is not touched.
@@ -503,8 +511,9 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
     if (bad !== null) return { outcome: "error", detail: bad };
   }
   const frame = await chrome.webNavigation.getFrame({ tabId: verb.tabId, frameId: verb.frameId }).catch(() => null);
-  if (frame === null || frame === undefined) return { outcome: "stale", detail: "the frame is gone" };
-  if (frame.documentId !== verb.documentId) return { outcome: "stale", detail: "the frame holds another document than when it was walked" };
+  if (frame === null || frame === undefined) return { outcome: "stale", detail: "the frame is gone", ...(verb.kind === "pageRestore" ? { restore: { outcome: "refused", why: "reloaded" } as const } : {}) };
+  // An undo after a reload is refused: the page that kept the field's text before Caret's write is gone with it.
+  if (frame.documentId !== verb.documentId) return { outcome: "stale", detail: "the frame holds another document than when it was walked", ...(verb.kind === "pageRestore" ? { restore: { outcome: "refused", why: "reloaded" } as const } : {}) };
   const gen = navGens.get(verb.tabId, verb.frameId);
   if (gen !== g.scope.navGen) return { outcome: "stale", detail: `the frame navigated since the grant (navGen ${g.scope.navGen}, now ${gen})` };
   const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId })) ?? [];
@@ -519,6 +528,22 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   const genNow = navGens.get(verb.tabId, verb.frameId);
   if (live.scope.navGen !== genNow || live.scope.origin !== origin) return { outcome: "stale", detail: `the frame moved during the check (navGen ${live.scope.navGen}, now ${genNow})` };
   const deadline = Math.min(expires, live.expires);
+  // The candidates past the origin's hourly budget are not sent to the page; they answer unknown.
+  let unanswered = 0;
+  if (verb.kind === "pageCompare") {
+    const asked = verb.candidates.length;
+    const allowed = await compareSpend.allowance(origin, asked);
+    // The budget is read from storage: a Stop, or a navigation, during that wait ends the compare before it is sent.
+    const still = grants.check(verb.taskId, verb.tabId, verb.frameId);
+    if (!still.ok) return { outcome: "notAllowed", detail: still.reason };
+    if (navGens.get(verb.tabId, verb.frameId) !== genNow) return { outcome: "stale", detail: "the frame moved while the compare budget was read" };
+    if (allowed < asked) {
+      log(`pageCompare over ${origin}'s hourly budget: ${asked - allowed} candidate(s) answer unknown`);
+      if (allowed === 0) return { outcome: "ok", detail: "over this site's hourly compare budget", compare: verb.candidates.map(() => "unknown" as const) };
+      unanswered = asked - allowed;
+      verb = { ...verb, candidates: verb.candidates.slice(0, allowed) };
+    }
+  }
   // A Yes/No press (W4) must not navigate or submit (B28): the frame is read before it and after its answer.
   const press = verb.kind === "pageChooseOption" && verb.question !== undefined;
   const marks = (): FrameMarks => ({ navGen: navGens.get(verb.tabId, verb.frameId), starts: navStarts.get(verb.tabId, verb.frameId) });
@@ -541,7 +566,7 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
     else if (!press) return { outcome: "error", detail: msg };
     else a = { outcome: "error", detail: msg };
   }
-  if (!press) return a as ActAnswer;
+  if (!press) return a !== null && a.compare !== undefined && unanswered > 0 ? { ...a, compare: [...a.compare, ...Array.from({ length: unanswered }, () => "unknown" as const)] } : (a as ActAnswer);
   if (a?.outcome === "ok") await new Promise((r) => setTimeout(r, POST_PRESS_MS));
   const judged = judgePress(a, before, marks());
   // The run stops at once: the task's grants end here, before the helper hears of it, so nothing else of it acts.

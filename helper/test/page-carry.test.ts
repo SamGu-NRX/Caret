@@ -2,9 +2,10 @@
 // contract"): for CARRY_MS the goal waits, and a new document in its tab gets a fresh preview of that page, segment
 // reason nextPage, under the same instruction and scope. Values never carry: each is chosen again from the sources as
 // they read now and goes through every gate again. A list of fields does not carry. Every name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { afterEach, describe, expect, it } from "vitest";
-import { PROTOCOL_VERSION, type PageControl } from "../src/protocol.ts";
+import { PROTOCOL_VERSION } from "../src/protocol.ts";
 import { CARRY_MS } from "../src/goals/runs.ts";
 import { c, chrome, mixedControls, NOTE, PICKS, WIN } from "./fake-page.ts";
 import { closeRigs, goalMessages, presses, rig, type Finished, type Rig, type Segment, type Stopped } from "./page-rig.ts";
@@ -12,7 +13,7 @@ import { closeRigs, goalMessages, presses, rig, type Finished, type Rig, type Se
 afterEach(closeRigs);
 
 /** The wizard's second page: two text fields the note has values for, one of them labelled as on the first page. */
-function page2(): PageControl[] {
+function page2(): TestField[] {
   return [c("q1", "text", "Email", { value: "" }), c("q2", "text", "Full name", { value: "" }), c("q3", "button", "Next")];
 }
 
@@ -216,7 +217,7 @@ describe("what does not carry (P3)", () => {
 
 describe("the P3 review's carry findings", () => {
   /** A page with nothing the sources fill: a question Caret has no value for. */
-  const nothing = (): PageControl[] => [c("z1", "text", "Favorite robot", { value: "" }), c("z2", "button", "Next")];
+  const nothing = (): TestField[] => [c("z1", "text", "Favorite robot", { value: "" }), c("z2", "button", "Next")];
 
   // I2 lead ruling (revised): one carry per hand-off. A page Caret found nothing for offers no "You press Next" of its
   // own, so the page after it is not carried (before I2 the carry waited on, and wizard-3 was filled).

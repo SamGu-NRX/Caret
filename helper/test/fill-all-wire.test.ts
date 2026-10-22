@@ -85,7 +85,8 @@ describe("fillAll on the socket", () => {
       if (hello.host === true) await authenticateHost(c);
       c.send(ask);
       const e = await c.waitFor((m) => m.type === "error" && String(m.message).includes("fillAll"));
-      expect(e.message).toBe(`fillAll needs a host hello with "${FILL_ALL_CAPABILITY}" in its capabilities`);
+      // The request gate refuses a consumer that is not the host before the capability is looked at (request-gate.ts).
+      expect(e.message).toBe(hello.host === true ? `fillAll needs a host hello with "${FILL_ALL_CAPABILITY}" in its capabilities` : "fillAll needs a host hello (host: true): it fills a whole form");
       c.close();
     }
   });

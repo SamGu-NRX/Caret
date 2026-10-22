@@ -39,6 +39,10 @@ class LaunchSecretTests(unittest.TestCase):
         secret = bytes.fromhex(VECTOR["launchSecret"])
         self.assertEqual(launch_secret.host_key(secret).hex(), VECTOR["hostKey"])
 
+    def test_host_proof_matches_the_helpers_golden_vector(self):
+        secret = bytes.fromhex(VECTOR["launchSecret"])
+        self.assertEqual(launch_secret.host_proof(VECTOR["nonce"], secret), VECTOR["proof"])
+
     def test_a_secret_that_is_not_32_bytes_is_refused(self):
         with self.assertRaisesRegex(ValueError, "32 bytes, not 5"):
             launch_secret.host_key(b"short")

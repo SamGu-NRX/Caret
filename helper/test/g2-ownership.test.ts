@@ -3,6 +3,7 @@ import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as ver
 // page-loop-eval.ts replays them (a Mail window, then the note the user just left). Jev is a script that answers each
 // question by rule and records every request. Imports nothing G2 added, so the same file runs on the code before G2,
 // where the tests marked "G2" fail (evidence/screen/g2/whose/ownership-before.txt). Every value is synthetic.
+import { onWire } from "./page-wire.ts";
 import { optionIs } from "./builders.ts";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -52,7 +53,7 @@ const memoryOf = (page: string): AboutValue[] =>
 const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
 const WIN = "page:eng1:7";
-const control = (id: string, name: string, kind: PageControl["kind"] = "text"): PageControl => ({ id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, Number(id.slice(1)) * 30, 100, 20], value: "" });
+const control = (id: string, name: string, kind: PageControl["kind"] = "text"): PageControl => onWire({ id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, Number(id.slice(1)) * 30, 100, 20], value: "" });
 const keyOf = (c: PageControl): string => `f0/${c.key}`;
 
 /** page-loop-eval.ts's mailWindow: the header lines, then the body as one static text. */

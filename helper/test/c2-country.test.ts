@@ -4,6 +4,7 @@
 // the user's About country; C2's review left it out (derive.ts placeWithCountry). The page engine still picks only an
 // option named exactly that, once the list has loaded for it; every other prefix match stays the user's ("Portland"
 // never becomes "Portland, Oregon"). Jev is a fake that answers by rule; every place is invented or public.
+import { onWire, type TestField } from "./page-wire.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
@@ -41,7 +42,7 @@ const ORIGIN = "http://127.0.0.1:4310";
 const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
 const WIN = "page:eng1:7";
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], ...extra });
+const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], ...extra });
 const select = (id: string, name: string, options: string[]): PageControl =>
   control(id, "select", name, { options: [{ value: "", label: "Select...", selected: true }, ...options.map((o, i) => ({ value: `o${i}`, label: o, selected: false }))] });
 

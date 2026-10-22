@@ -1,17 +1,19 @@
 // The page-goal rig of page-goals.test.ts (P2), shared with P3's tests: a Helper over one page tab (fake-page.ts) and
 // the note the user just left, an Ask's intent the test states (HelperOptions.ask scripted, as a writer maker gave it
 // before the heads maker was the only one), and canned Jev picks by field label. Every name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "vitest";
-import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type HelperMessage, type PageControl } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type HelperMessage } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import type { IntentMaker } from "../src/planner/intent.ts";
+import type { WriterPort } from "../src/writer/port.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
 import { byLabel, chrome, FakePage, hello, mixedControls, NOTE, okReader, PICKS, TEXTEDIT, WIN } from "./fake-page.ts";
 
@@ -48,7 +50,7 @@ export interface Rig {
   ask(instruction: string): Promise<GoalProgress>;
   accept(s: Segment, more?: Pick<GoalAccept, "confirmedFile">): ReturnType<Helper["handleGoalAccept"]>;
   /** The user's own Next: the tab shows another form as a new document, and the page engine walks it. */
-  next(make: () => PageControl[], title: string, path: string): Promise<void>;
+  next(make: () => TestField[], title: string, path: string): Promise<void>;
   close(): void;
 }
 
@@ -60,7 +62,7 @@ export function closeRigs(): void {
 }
 
 export interface RigOptions {
-  controls?: () => PageControl[];
+  controls?: () => TestField[];
   title?: string;
   note?: string;
   picks?: Record<string, string>;
@@ -73,6 +75,8 @@ export interface RigOptions {
   now?: () => number;
   /** I6: the offers an hour may show (HelperOptions.offersPerHour); the settings' own by default. */
   offersPerHour?: number;
+  /** The code-mode plan writer (HelperOptions.writer); none by default, as a page goal needs none. */
+  writer?: WriterPort;
 }
 
 /** A Helper over one page tab and the note the user just left, with canned picks by field label (fake-page.ts PICKS). */
@@ -113,6 +117,7 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     ...(o.goalFiles === true ? { goalFiles: true } : {}),
     ...(o.now === undefined ? {} : { now: o.now }),
     ...(o.offersPerHour === undefined ? {} : { offersPerHour: o.offersPerHour }),
+    ...(o.writer === undefined ? {} : { writer: o.writer }),
   });
   wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
   host.registry.add(page.session);

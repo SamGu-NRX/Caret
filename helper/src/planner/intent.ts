@@ -1,4 +1,5 @@
 import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { holdsText } from "../model.ts";
 import { instructionForModel, instructionView, redactWindow } from "../fill/redact.ts";
 // Ask as a scoped fill (B25 lead decision 1). An instruction becomes a small intent, and every part of it is a
 // choice from what code listed or an exact span of the instruction:
@@ -267,9 +268,11 @@ export function personSpans(instruction: string): string[] {
 /**
  * The snapshot an intent maker chooses from, with its text taken through one ledger: the form's title and
  * field names as descriptors, the other windows' titles and memory labels as plan text, and the instruction.
- * Throws PlannerError("privacy") when the instruction cannot go out.
+ * `only`: the fields and upload fields it holds, when not every one of the window's (a page goal's revealed fields,
+ * helper.ts planRevealed), so MAX_INTENT_FIELDS counts those alone. Throws PlannerError("privacy") when the instruction
+ * cannot go out.
  */
-export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[]): IntentSnapshot {
+export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], only?: ReadonlySet<string>): IntentSnapshot {
   const local = w;
   w = redactWindow(w);
   const ledger = new Disclosure(model);
@@ -295,6 +298,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   let fieldsCut = false;
   // I2 ruling: the one inventory the native planner reads too (targets.ts): a field with no readable name is in neither.
   for (const x of localTargets(local)) {
+    if (only !== undefined && !only.has(x.node.key)) continue;
     if (fields.length >= MAX_INTENT_FIELDS) {
       fieldsCut = true;
       break;
@@ -309,7 +313,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
       continue;
     }
     if (d.section !== null && !sections.some((s) => s.name === d.section)) sections.push({ ref: `s${sections.length + 1}`, name: d.section });
-    const filled = x.control === "text" && (x.node.value ?? "") !== "";
+    const filled = x.control === "text" && holdsText(x.node);
     const h = headingOf(x.node.key);
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
     fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, modelName: x.modelName, section: d.section, heading, control: x.control, place: placeOf(x.node.key), filled, neverTyped: x.neverTyped });
@@ -317,7 +321,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   // File controls, as upload fields for the scope question: the name and its group taken together, as a field's are.
   const uploads: IntentField[] = [];
   for (const n of w.window.kind === PAGE_WINDOW_KIND ? w.nodes.values() : []) {
-    if (n.subrole !== FILE_INPUT_SUBROLE || n.states?.includes("disabled") === true || !inWebArea(w, n)) continue;
+    if (n.subrole !== FILE_INPUT_SUBROLE || n.states?.includes("disabled") === true || !inWebArea(w, n) || (only !== undefined && !only.has(n.key))) continue;
     const d = describeField(w, n);
     const name = d.label ?? d.nearest;
     if (name === null || !ledger.take(w, "descriptor", [name, d.section])) continue;

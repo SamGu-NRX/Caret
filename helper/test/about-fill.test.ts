@@ -16,7 +16,7 @@ import { Store } from "../src/store.ts";
 import { FillProposal, PROTOCOL_VERSION, type MemoryEntry, type OfferPopup } from "../src/protocol.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { MAIL_APP, field, focus, jevPickingText, snap, text, value } from "./builders.ts";
-import { LineClient, SocketReader, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, until, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const NAME: AboutValue = { id: "about-name", label: "Name", value: "Sam Rivera", kind: "name" };
 const EMAIL: AboutValue = { id: "about-email", label: "Email", value: "sam.rivera@example.com", kind: "email" };
@@ -375,7 +375,7 @@ describe("typed name and email over the socket, as the host sends them", () => {
     dir = mkdtempSync(join(tmpdir(), "caret-about-"));
     store = new Store(join(dir, "data"));
     let n = 0;
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       // Answers like a careful Jev would for these labels: the user's own value, if offered.
@@ -390,7 +390,8 @@ describe("typed name and email over the socket, as the host sends them", () => {
     server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     reader.enforceGrants = true;
   });

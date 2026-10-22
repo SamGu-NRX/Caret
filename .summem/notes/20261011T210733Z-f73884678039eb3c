@@ -1,1 +1,0 @@
-sc1-boundary.test.ts scans fixtures/web-form scripts too: write JSON evidence with writeStoreJson/appendStoreJson (privacy/send.ts); writeStore of JSON.stringify text fails the suite.

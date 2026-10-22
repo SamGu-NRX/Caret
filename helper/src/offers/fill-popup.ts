@@ -5,6 +5,7 @@
 // in one undo (D2-04). Whatever Caret does not write is listed as the user's to set. Pure: it reads the
 // screen model, memory and the proposal and builds the message, the recheck and the plan; publishing and
 // running are the helper's.
+import { holdsText } from "../model.ts";
 import { ABOUT_SAYS, type AboutValue } from "../fill/about.ts";
 import { PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type FillMemory, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
@@ -103,7 +104,7 @@ export function writtenFields(p: FillProposal, w?: WindowState, opts: { answers?
     for (const c of formControls(w)) empty(c.node.key);
     for (const n of w.nodes.values()) {
       if (n.states?.includes("disabled") === true || !inWebArea(w, n)) continue;
-      const file = n.subrole === PAGE_SUBROLE.file && (n.value ?? "") === "";
+      const file = n.subrole === PAGE_SUBROLE.file && !holdsText(n);
       const consent = n.role === "AXCheckBox" && n.states?.includes("checked") !== true && boxNeverTicked(n.label ?? "");
       if (file || consent) empty(n.key);
     }

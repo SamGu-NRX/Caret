@@ -89,8 +89,9 @@ describe("the helper's socket, B23", () => {
     const path = await listen(SECRET);
     const script = await LineClient.connect(path);
     script.send(hello("consumer"));
+    // A request only the host is answered: the refusal shows the script was admitted, as a plain consumer.
     script.send({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "a", op: "list" });
-    await script.waitFor((m) => m.type === "activityReply");
+    await script.waitFor((m) => m.type === "error" && String(m.message).startsWith("activityRequest needs a host hello"));
     expect(helper.hostPresent).toBe(false);
     const host = await LineClient.connect(path);
     host.send(hello("consumer", { host: true }));
@@ -142,17 +143,22 @@ describe("the helper's socket, B23", () => {
       const plain = await LineClient.connect(path);
       plain.send(hello("consumer", { pid: 10 }));
       plain.send({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "a", op: "list" });
-      await plain.waitFor((m) => m.type === "activityReply");
+      await plain.waitFor((m) => m.type === "error");
+      // A host whose proof checked out, to show each publish went out.
+      const proven = await LineClient.connect(path);
+      proven.send(hello("consumer", { pid: 12, host: true, capabilities: EVERY_HOST_CAPABILITY }));
+      await authenticateHost(proven, SECRET);
       const host = await LineClient.connect(path);
       host.send(hello("consumer", { host: true, capabilities: EVERY_HOST_CAPABILITY }));
       await host.waitFor((m) => m.type === "hostChallenge");
       for (const m of [PAGE_FIELD, ROUTE, GOAL, ANSWER_OFFER]) server?.publish(m);
-      // The plain consumer is sent the page field without its text, which shows the publish went out.
-      const field = await plain.waitFor((m) => m.type === "pageField");
-      expect(field.text).toBeUndefined();
+      await until(() => ["pageField", "routeDecision", "goalProgress", "answerSaveOffer"].every((t) => types(proven).includes(t)));
       await new Promise((r) => setTimeout(r, 50));
       expect(types(host)).toEqual(["hostChallenge"]);
-      expect(helper.hostPresent).toBe(false);
+      // Nor is a consumer that never said host: true sent any of them, not even the page field without its text.
+      expect(types(plain)).toEqual(["error"]);
+      proven.close();
+      await until(() => !helper.hostPresent);
       host.close();
       plain.close();
     });

@@ -20,7 +20,7 @@ Caret for Chrome connects web pages to Caret, a Mac app that fills in forms for 
 
 What it does
 
-- When you are in a form, it reads the form's fields (their labels, current values and choices) and hands them to the Caret app on your Mac.
+- When you are in a form, it reads the form's fields (their labels and choices, and whether a text field holds anything, never its text) and hands them to the Caret app on your Mac.
 - Caret works out what belongs in each field from what you have open and what you have told it, then shows you every value and where it came from.
 - When you press Tab to accept, the extension types those values into the page. Caret never presses a page's buttons, so submitting is always your click.
 - If you click or type on the page while Caret is filling it, Caret stops at once.

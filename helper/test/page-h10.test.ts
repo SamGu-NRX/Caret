@@ -24,7 +24,7 @@ const W = "page:eng1:7";
 /** The probe's window: [120, 30, 760, 512], 369 points of viewport at the bottom (143 of browser above it). */
 const VIEW = { window: [120, 30, 760, 512] as [number, number, number, number], viewport: [760, 369] as [number, number], zoom: 1 };
 type Control = PageSnapshot["frames"][number]["controls"][number];
-const email: Control = { id: "e1", key: "form[apply]/textbox:email~0", strongKey: null, kind: "email", role: "textbox", name: "Email", value: "", form: "form#apply", rect: [16, 40, 300, 24] };
+const email: Control = { id: "e1", key: "form[apply]/textbox:email~0", strongKey: null, kind: "email", role: "textbox", name: "Email", hasValue: false, rev: 0, form: "form#apply", rect: [16, 40, 300, 24] };
 const resume: Control = { id: "e2", key: "form[apply]/button:resume~0", strongKey: null, kind: "file", role: "button", name: "Resume", form: "form#apply", rect: [16, 80, 300, 24] };
 const yes: Control = { id: "e3", key: "form[apply]/radio:yes~0", strongKey: null, kind: "radio", role: "radio", name: "Yes", checked: false, form: "form#apply", rect: [16, 120, 20, 20], group: { id: "g1", name: "Authorized to work?" } };
 const no: Control = { ...yes, id: "e4", key: "form[apply]/radio:no~0", name: "No", rect: [60, 120, 20, 20] };
