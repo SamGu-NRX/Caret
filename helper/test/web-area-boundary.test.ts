@@ -65,7 +65,7 @@ describe("native reads under an AXWebArea", () => {
 
   it("the reader-sent typed values are withheld for web-area text controls", () => {
     expect(admitValues(win.values as never, win.nodes)).toEqual([]);
-    expect(win.values).toEqual([typed("email", EMAIL, "w1/email")]);
+    expect(win.values).toEqual([]);
   });
 
   it("the ledger inventory has no page-field value to quote", () => {

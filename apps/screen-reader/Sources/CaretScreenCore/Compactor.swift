@@ -42,6 +42,8 @@ public struct RawNode: Sendable {
 
 public enum Roles {
     public static let editable: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+    /// Text-entry controls whose page-local values must never enter the native snapshot.
+    public static let textEntry: Set<String> = editable.union(["AXDateField"])
     /// Collapsed when unnamed: their children attach to the nearest kept ancestor.
     public static let containers: Set<String> = [
         "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXLayoutItem", "AXUnknown", "AXRow", "AXCell",
@@ -157,7 +159,7 @@ public struct Compactor {
         if Roles.skipped.contains(n.role) { return nil }
         let isStatic = n.role == "AXStaticText"
         let label = firstNonEmpty(n.title, n.description, n.titleElementText, isStatic ? n.value : nil)
-        let editable = Roles.editable.contains(n.role)
+        let editable = Roles.textEntry.contains(n.role)
         var value = (isStatic || n.secure) ? nil : nonEmpty(n.value)
         // An editable field's value is its content, so it stays even when it repeats the label;
         // otherwise a filled field would look empty.
@@ -214,8 +216,7 @@ public struct Compactor {
         // groups with the same name give their children distinct, self-contained scopes.
         let ord = ordinal ?? Int(key.split(separator: "~").last ?? "0") ?? 0
         let childChain = named ? chain + [ord == 0 ? seg : "\(seg)~\(ord)"] : chain
-        state.nodes.append(Node(key: key, parent: parent, role: n.role, subrole: n.subrole, label: info.label, value: info.value, unread: info.unread,
-                                placeholder: nonEmpty(n.placeholder), frame: n.frame, editable: info.editable, states: info.states))
+        state.nodes.append(Node(key: key, parent: parent, role: n.role, subrole: n.subrole, label: info.label, value: info.value, placeholder: nonEmpty(n.placeholder), frame: n.frame, editable: info.editable, states: info.states, unread: info.unread))
         if n.focused { state.focusedKey = key }
         let before = state.nodes.count
         if !n.secure {

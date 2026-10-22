@@ -64,13 +64,14 @@ public final class Walker {
             parent = AX.element(p, kAXParentAttribute)
             depth += 1
         }
-        return false
+        // An incomplete ancestry chain cannot establish native ownership; fail closed to page-local.
+        return depth >= limits.maxDepth
     }
 
     /// Page text-control values stay in the page. Focused inline writing reads its caret text through
     /// the separate focus path; it must not enter the native snapshot or typed-value inventory.
     public static func shouldReadValue(role: String, secure: Bool, underWebArea: Bool) -> Bool {
-        Roles.valueBearing.contains(role) && !secure && (!underWebArea || !Roles.editable.contains(role))
+        Roles.valueBearing.contains(role) && !secure && (!underWebArea || !Roles.textEntry.contains(role))
     }
 
     private func read(_ e: AXUIElement, depth: Int, parentRole: String?, underWebArea: Bool) -> RawNode? {
@@ -89,8 +90,11 @@ public final class Walker {
                            enabled: (a[5] as? Bool) ?? true, selected: (a[6] as? Bool) ?? false, secure: secure)
         if let f = focused, CFEqual(f, e) { node.focused = true }
 
-        if inWebArea && Roles.editable.contains(role) {
-            if let v = AX.copy(e, kAXValueAttribute) as? String, !v.isEmpty { node.unread = true }
+        if inWebArea && Roles.textEntry.contains(role) {
+            switch AX.read(e, kAXValueAttribute) {
+            case .value(let v): node.unread = !((v as? String) ?? "").isEmpty ? true : false
+            case .absent, .failed: node.unread = true
+            }
         } else if Self.shouldReadValue(role: role, secure: secure, underWebArea: inWebArea), let v = AX.copy(e, kAXValueAttribute) {
             if let s = v as? String {
                 node.value = s.count > limits.maxValueChars ? String(s.prefix(limits.maxValueChars)) : s
