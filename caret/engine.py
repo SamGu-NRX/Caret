@@ -12,6 +12,8 @@ an abstention, a cached answer or an empty offer that looks like a decision.
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import dataclass, field
+import threading
 from typing import Callable
 
 from .context import ContextFrame, TargetIdentity, now_utc
@@ -34,6 +36,8 @@ from .router import (
     Publication,
     Router,
     RouterConfig,
+    Offer,
+    AcceptanceError,
     build_action_offer,
     build_inline_offer,
 )
@@ -46,6 +50,17 @@ INLINE_INSTRUCTION = (
 
 class ProviderFailure(RuntimeError):
     """Raised by a Writer when generation could not be completed."""
+
+
+@dataclass
+class _WorkflowRun:
+    offer: Offer
+    adapter: object
+    on_complete: Callable[[dict], None]
+    interrupted_by: str | None = None
+    cancellation_done: threading.Event = field(default_factory=threading.Event)
+    done: threading.Event = field(default_factory=threading.Event)
+    cancellation_error: str | None = None
 
 
 class Engine:
@@ -67,15 +82,54 @@ class Engine:
         self.config = config or RouterConfig()
         self.router = Router(self.config, on_invalidate=on_invalidate, on_publish=on_publish)
         self.clock = clock
+        self._workflow_lock = threading.RLock()
+        self._active_workflow: _WorkflowRun | None = None
 
     # -- Ambient loop ----------------------------------------------------
 
     def submit(self, frame: ContextFrame) -> Admission:
-        return self.router.submit(frame, self.clock())
+        with self._workflow_lock:
+            run = self._active_workflow
+            if run is not None:
+                # The wire does not distinguish genuine input from generated
+                # revisions. Treat every newer revision as an interruption.
+                self._interrupt_locked("newer-context")
+                self.router.pause("workflow-active")
+                return Admission("skipped", "workflow-active", frame.revision)
+            return self.router.submit(frame, self.clock())
+
+    def pause(self, reason: str) -> None:
+        with self._workflow_lock:
+            self.router.pause(reason)
+            self._interrupt_locked(reason)
+
+    @property
+    def active_workflow(self) -> str | None:
+        with self._workflow_lock:
+            return self._active_workflow.offer.proposal_id if self._active_workflow else None
+
+    def _interrupt_locked(self, reason: str) -> None:
+        run = self._active_workflow
+        if run is None or run.interrupted_by is not None:
+            return
+        run.interrupted_by = reason
+
+        def cancel():
+            try:
+                run.adapter.cancel(run.offer.preparation)
+            except Exception as error:
+                run.cancellation_error = f"{type(error).__name__}: {error}"
+            finally:
+                run.cancellation_done.set()
+
+        threading.Thread(target=cancel, name="caret-cancel", daemon=True).start()
 
     def pump(self) -> Publication | None:
         """Run at most one due evaluation. Returns None when nothing is due."""
-        frame = self.router.take_due(self.clock())
+        with self._workflow_lock:
+            if self._active_workflow is not None:
+                return None
+            frame = self.router.take_due(self.clock())
         if frame is None:
             return None
         return self.evaluate(frame)
@@ -166,12 +220,87 @@ class Engine:
     # -- Acceptance ------------------------------------------------------
 
     def accept(self, proposal_id: str, revision: int, target: TargetIdentity) -> dict:
+        """Synchronous convenience for callers outside the bridge."""
+        done = threading.Event()
+        result = []
+
+        def completed(value):
+            result.append(value)
+            done.set()
+
+        self.accept_async(proposal_id, revision, target, completed)
+        done.wait()
+        return result[0]
+
+    def accept_async(
+        self, proposal_id: str, revision: int, target: TargetIdentity,
+        on_complete: Callable[[dict], None],
+    ) -> dict:
+        """Consume synchronously, then execute without blocking context updates."""
+        with self._workflow_lock:
+            if self._active_workflow is not None:
+                raise AcceptanceError("An accepted workflow is already running")
+            offer = self.router.accept(proposal_id, revision, target, self.clock())
+            if offer.kind == INLINE_KIND:
+                result = self._execute_offer(offer)
+                on_complete(result)
+                return result
+            adapter = self.registry.get(offer.workflow_id)
+            run = _WorkflowRun(offer, adapter, on_complete)
+            self._active_workflow = run
+            # Retire any ambient evaluation already claimed before acceptance.
+            self.router.pause("workflow-active")
+            threading.Thread(target=self._run_workflow, args=(run,), name="caret-workflow", daemon=True).start()
+            return {"kind": ACTION_KIND, "proposal_id": proposal_id, "status": "started"}
+
+    def _run_workflow(self, run: _WorkflowRun) -> None:
+        try:
+            with self._workflow_lock:
+                interrupted = run.interrupted_by is not None
+            if interrupted:
+                result = {"kind": ACTION_KIND, "proposal_id": run.offer.proposal_id,
+                          "workflow_id": run.offer.workflow_id, "status": "cancelled",
+                          "summary": "Execution did not start", "effects": [], "evidence": [], "data": {}}
+            else:
+                result = self._execute_offer(run.offer, run.adapter)
+        except Exception as error:
+            result = {"kind": ACTION_KIND, "proposal_id": run.offer.proposal_id,
+                      "workflow_id": run.offer.workflow_id, "status": "failed",
+                      "summary": f"{type(error).__name__}: {error}", "effects": [], "evidence": [], "data": {}}
+
+        # Resolve completion versus interruption under the same lock as submit.
+        # A cancel hook may still own an executor even after execute returns.
+        while True:
+            with self._workflow_lock:
+                if run.interrupted_by is None or run.cancellation_done.is_set():
+                    if run.interrupted_by is not None:
+                        result = {**result, "status": "interrupted", "interrupted_by": run.interrupted_by,
+                                  "effects_may_remain": True,
+                                  "summary": "Workflow interrupted. Reported effects may remain.",
+                                  "execution_status": result["status"]}
+                        if run.cancellation_error:
+                            result["cancellation_error"] = run.cancellation_error
+                    self._active_workflow = None
+                    run.on_complete(result)
+                    run.done.set()
+                    return
+            run.cancellation_done.wait()
+
+    def shutdown(self) -> None:
+        """Drain accepted execution and its cancel hook before closing output."""
+        with self._workflow_lock:
+            self.router.pause("workflow-active")
+            run = self._active_workflow
+            self._interrupt_locked("shutdown")
+        if run is not None:
+            run.done.wait()
+
+    def _execute_offer(self, offer: Offer, adapter=None) -> dict:
         """Execute exactly one accepted proposal.
 
         The router consumes the proposal before any workflow runs, so a repeated
         acceptance is refused rather than executed a second time.
         """
-        offer = self.router.accept(proposal_id, revision, target, self.clock())
         if offer.kind == INLINE_KIND:
             # Caret proposes; the app inserts, owns undo and owns the clipboard.
             return {
@@ -186,7 +315,7 @@ class Engine:
                 "note": "Revalidate the range against the live field before inserting.",
             }
 
-        adapter = self.registry.get(offer.workflow_id)
+        adapter = adapter or self.registry.get(offer.workflow_id)
         if offer.missing_inputs:
             result = ExecutionResult(
                 status="needs_input",
