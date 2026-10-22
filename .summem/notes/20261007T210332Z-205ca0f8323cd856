@@ -1,0 +1,1 @@
+S2: host inserts arm their UndoGrant before writing; unconfirmed writes are judged by UnconfirmedInsert (S1 states). A restore must prove value (UTF-16), selection span and input quiet first. Page partials are taken out in partial-insert.ts; no page text in answers.
