@@ -100,11 +100,13 @@ final class HostCoordinator {
         let context = snapshot.context
         // Keep only text typed in an eligible native field. The value stays in the engine's memory-only
         // ten-minute store and uses the same target policy as offers.
-        if wordsAllowed(),
-           policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
-           !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
-           !SecretField.holdsSecret(field, traits: context.traits),
-           ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) {
+        if Self.shouldRecordWriting(
+            wordsAllowed: wordsAllowed(),
+            targetAllowed: policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
+            appOff: AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
+            secureField: SecretField.holdsSecret(field, traits: context.traits),
+            excluded: !ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled())
+        ) {
             engine.recordWriting(context.beforeCursor, appBundleIdentifier: field.identity.bundleID, secure: field.secure)
         }
         status.update {
@@ -247,6 +249,14 @@ final class HostCoordinator {
 
     func clearWritingMemory() {
         engine.clearWritingMemory()
+    }
+
+    func setWritingMemoryExpiryEnabled(_ enabled: Bool) {
+        engine.setWritingMemoryExpiryEnabled(enabled)
+    }
+
+    static func shouldRecordWriting(wordsAllowed: Bool, targetAllowed: Bool, appOff: Bool, secureField: Bool, excluded: Bool) -> Bool {
+        wordsAllowed && targetAllowed && !appOff && !secureField && !excluded
     }
 
     /// Stops new generations and waits for every started one to leave the model.

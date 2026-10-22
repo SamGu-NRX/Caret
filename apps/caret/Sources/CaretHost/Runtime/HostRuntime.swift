@@ -179,6 +179,7 @@ public final class HostRuntime {
         let status = self.status
         let policy = TargetPolicy(allowedBundleIDs: configuration.allowedBundleIDs, allowedPIDs: configuration.allowedPIDs)
         engine = GhostTextEngine(compatibilityStore: compatibilityStore)
+        engine.clipboardContextEnabled = { SettingsStore.shared.settings.clipboardContext }
         engine.pasteboardSnapshot = {
             let pasteboard = NSPasteboard.general
             let types = Set((pasteboard.types ?? []).map(\.rawValue))
@@ -529,6 +530,7 @@ public final class HostRuntime {
                 pageInline.gateClosed()
             }
             if !settings.gate.allows(family: "fill") { fill.gateClosed() }
+            coordinator.setWritingMemoryExpiryEnabled(!settings.paused)
             if settings.paused {
                 coordinator.clearWritingMemory()
                 authority.revokeAll("paused")

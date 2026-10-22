@@ -64,6 +64,7 @@ final class GhostTextEngine {
     private let writingMemory = InlineWritingMemory()
     private var expiryTimer: Timer?
     var secretDetector: InlineSecretDetecting = SensitiveTextDetector()
+    var clipboardContextEnabled: () -> Bool = { false }
     /// The host supplies a policy-filtered pasteboard snapshot at request time.
     var pasteboardSnapshot: () -> (plainText: String?, types: Set<String>)? = { nil }
 
@@ -121,12 +122,28 @@ final class GhostTextEngine {
     init(compatibilityStore: AppCompatibilityStore) {
         self.compatibilityStore = compatibilityStore
         self.filter = DefaultCandidateFilter(compatibilityStore: compatibilityStore, wordRecognizer: SystemWordRecognizer())
+        startWritingMemoryExpiryTimer()
+    }
+
+    deinit { expiryTimer?.invalidate() }
+
+    var writingMemoryExpiryScheduled: Bool { expiryTimer != nil }
+
+    func setWritingMemoryExpiryEnabled(_ enabled: Bool) {
+        if enabled {
+            startWritingMemoryExpiryTimer()
+        } else {
+            expiryTimer?.invalidate()
+            expiryTimer = nil
+        }
+    }
+
+    private func startWritingMemoryExpiryTimer() {
+        guard expiryTimer == nil else { return }
         expiryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.writingMemory.purgeExpired()
         }
     }
-
-    deinit { expiryTimer?.invalidate() }
 
     func load(modelURL: URL, prependBOS: Bool? = nil, profileDirectory: URL = EngineLoader.profileDirectory) async {
         state = .loading
@@ -312,9 +329,9 @@ final class GhostTextEngine {
         for context: TextFieldContext, policy: CompletionPolicy, tokens override: Int? = nil, origin: String? = nil
     ) -> CompletionRequest {
         updateWritingContext(for: context.target.bundleIdentifier)
-        if let snapshot = pasteboardSnapshot() {
+        if clipboardContextEnabled(), let snapshot = pasteboardSnapshot() {
             inlinePromptContext.pasteboardText = InlinePasteboardPolicy().acceptedText(
-                enabled: SettingsStore.shared.settings.clipboardContext,
+                enabled: true,
                 plainText: snapshot.plainText,
                 types: snapshot.types,
                 detector: secretDetector,

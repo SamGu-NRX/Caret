@@ -21,7 +21,39 @@ final class GhostPromptTests: XCTestCase {
 
     func testExcludedAppsCannotRecordWritingMemory() {
         let policy = TargetPolicy(allowedBundleIDs: nil, allowedPIDs: nil)
-        XCTAssertFalse(policy.allows(pid: 42, bundleID: "com.1password.1password"))
+        XCTAssertFalse(HostCoordinator.shouldRecordWriting(
+            wordsAllowed: true,
+            targetAllowed: policy.allows(pid: 42, bundleID: "com.1password.1password"),
+            appOff: false,
+            secureField: false,
+            excluded: true
+        ))
+    }
+
+    func testClipboardProviderIsNotReadWhenOffAndReadOnceWhenOn() {
+        let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
+        var reads = 0
+        engine.pasteboardSnapshot = {
+            reads += 1
+            return ("safe clipboard", [])
+        }
+        let context = TextFieldContext(
+            beforeCursor: "Start ", afterCursor: "", geometry: TextFieldGeometry(isAtEndOfLine: true),
+            target: AppTarget(bundleIdentifier: "com.apple.TextEdit", appName: "TextEdit"), detectedLanguage: "en"
+        )
+        _ = engine.request(for: context)
+        XCTAssertEqual(reads, 0)
+        engine.clipboardContextEnabled = { true }
+        _ = engine.request(for: context)
+        XCTAssertEqual(reads, 1)
+    }
+
+    func testPauseStopsAndResumeRestartsWritingMemoryExpiryTimer() {
+        let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
+        engine.setWritingMemoryExpiryEnabled(false)
+        XCTAssertFalse(engine.writingMemoryExpiryScheduled)
+        engine.setWritingMemoryExpiryEnabled(true)
+        XCTAssertTrue(engine.writingMemoryExpiryScheduled)
     }
 
     func testTheMidSentencePromptHoldsTheTextAfterTheCaret() {
