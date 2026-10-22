@@ -9,6 +9,7 @@
 // moving, focus leaving, a scroll or zoom while a control has focus, and another tab or window coming to the front, so
 // the record follows the field. The helper's own focus message goes out only when the field changed: a scroll is no
 // new focus, and must not ask for a fill again.
+import { holdsText } from "../model.ts";
 import { PROTOCOL_VERSION, type Focus, type PageField, type PageFieldText, type PageFocusMoved } from "../protocol.ts";
 import type { ScreenModel } from "../model.ts";
 import type { EngineSession } from "./session.ts";
@@ -129,7 +130,7 @@ export class PageFocus {
     const token = f === null || doc === undefined ? undefined : elementToken({ frameId: f.frameId, documentId: doc, id: f.id });
     const kind = fieldKind(a.snapshot);
     const nearby = n.frame === undefined ? null : nearbyFrames(a.snapshot, view === null ? null : (r) => screenRect(view, r));
-    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: (n.value ?? "") === "", frame: n.frame ?? null, ...(look === undefined ? {} : { look }), text: pageFieldText(a.snapshot), caret, ...(token === undefined ? {} : { token }), ...(f?.hasFocus === undefined ? {} : { pageFocused: f.hasFocus }), ...(kind === null ? {} : { fieldKind: kind }), ...(nearby === null ? {} : { nearby }) });
+    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: !holdsText(n), frame: n.frame ?? null, ...(look === undefined ? {} : { look }), text: pageFieldText(a.snapshot), caret, ...(token === undefined ? {} : { token }), ...(f?.hasFocus === undefined ? {} : { pageFocused: f.hasFocus }), ...(kind === null ? {} : { fieldKind: kind }), ...(nearby === null ? {} : { nearby }) });
     const said = `${windowId} ${n.key}`;
     if (this.lastFocus.get(pid) === said) return;
     this.lastFocus.set(pid, said);
@@ -142,7 +143,7 @@ export class PageFocus {
       key: n.key,
       role: n.role,
       editable: n.editable === true,
-      empty: (n.value ?? "") === "",
+      empty: !holdsText(n),
       frontmost: this.inFront(session),
     });
   }

@@ -99,6 +99,7 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
           retained: new Map(),
           used: { newChoices: ran.stats.chooseCalls, newSteps: ran.stats.steps },
           writerModel: written.model,
+          released: null,
         };
   const local = o.drafter === undefined || ran.plan.drafts.length === 0 ? null : await localDrafts(o.drafter, o.instruction, ran.plan, inv.inventory, o.now, o.signal);
   // A draft's origin names the model that wrote its words: the local model's when it did.

@@ -12,7 +12,7 @@
     "control": "text",
     "name": "First name",
     "taskId": "fixture-task",
-    "expect": "",
+    "expectRev": 2,
     "value": "Ada"
   }
 }

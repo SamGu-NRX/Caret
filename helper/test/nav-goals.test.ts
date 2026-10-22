@@ -5,8 +5,10 @@
 // code is new, so a value Caret did not read cannot pass.
 import { afterEach, describe, expect, it } from "vitest";
 import type { AskJev } from "../src/fill/jev.ts";
+import { observationId } from "../src/goals/replay.ts";
+import { holdsLineTable } from "../src/privacy.ts";
 import { PROTOCOL_VERSION, type GoalProgress, type ReaderVerb, type TaskProgress } from "../src/protocol.ts";
-import { confirmationCode, goalScene, mailboxWindow, mailMessages, MAILBOX, MAILBOX_REPLY, mailboxRowKey, standInJev, userOpens, WEBMAIL_ID, WEBMAIL_REPLY, webmailWindow, type DeskMessage, type GoalScene } from "./goal-desk.ts";
+import { confirmationCode, goalScene, mailboxWindow, mailMessages, MAILBOX, MAILBOX_REPLY, mailboxRowKey, standInJev, userOpens, WEBMAIL_ID, WEBMAIL_REPLY, webmailWindow, type DeskMessage, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -109,6 +111,24 @@ async function nativeRun(): Promise<{ sc: GoalScene; goalId: string; code: strin
   return { sc, goalId: first.goalId, code, askJev, messages };
 }
 
+/** A line of Kayak's message that only its opened item shows: no row cell, draft or instruction repeats it. */
+const KAYAK_ONLY = "gate B3";
+
+/** Whether `text` is anywhere in `x`: its strings, arrays, maps, sets and objects, cycles followed once. */
+function quotes(x: unknown, text: string, seen = new WeakSet<object>()): boolean {
+  if (typeof x === "string") return x.includes(text);
+  if (typeof x !== "object" || x === null || seen.has(x)) return false;
+  seen.add(x);
+  const parts: unknown[] = x instanceof Map ? [...x.keys(), ...x.values()] : x instanceof Set ? [...x] : Array.isArray(x) ? x : Object.values(x);
+  return parts.some((v) => quotes(v, text, seen));
+}
+
+/** The goal's run as GoalRuns keeps it: its replay state, and the plan it keeps once it ends. */
+const kept = (sc: GoalScene, goalId: string): { replay: unknown; plan: unknown } | undefined => (sc.helper.goals as unknown as { runs: Map<string, { replay: unknown; plan: unknown }> }).runs.get(goalId);
+
+const MIN = 60_000;
+const NOTES: DeskWindow = { windowId: "7070-1", app: { pid: 7070, bundleId: "dev.caret.notes", name: "Notes Fixture" }, title: "Groceries", nodes: [{ key: "notes/textarea:body~0", parent: null, role: "AXTextArea", label: "Body", editable: true, value: "Oat milk" }] };
+
 // Each run plans, replays and checks values on a loaded machine; a whole native run takes a few seconds there.
 describe("native task: open Kayak's message, then Dana's, and draft the reply (milestone A)", { timeout: 60_000 }, () => {
   it("previews each navigation as the user's, observes twice on one writer call, and writes only the drafted reply", async () => {
@@ -148,6 +168,66 @@ describe("native task: open Kayak's message, then Dana's, and draft the reply (m
     // One Tab per segment: three previews, three acceptances, one grant per segment task.
     expect(segments(sc, first.goalId)).toHaveLength(3);
     expect(sc.desk.grants.log.filter((g) => g.type === "actGrant").map((g) => g.type === "actGrant" && g.taskId)).toEqual([`${first.goalId}:s0`, `${first.goalId}:s1`, `${first.goalId}:s2`]);
+  });
+
+  it("a finished goal keeps nothing it read in the messages it opened (Greptile on PR #47)", async () => {
+    const { sc, goalId, code } = await nativeRun();
+    expect(last(sc, "finished")).toMatchObject({ outcome: "handoff" });
+    const run = kept(sc, goalId);
+    expect(run).toBeDefined();
+    for (const text of [KAYAK_ONLY, code, "Could you send me the confirmation number"]) expect(quotes(run?.replay, text)).toBe(false);
+    // Nor does the line-table cache keep either frozen copy (privacy.ts; Greptile on #50).
+    for (const n of [1, 2]) expect(holdsLineTable(observationId(n, "6262-1"))).toBe(false);
+    // The kept plan quotes neither message's body; the reply Caret wrote, with its code, stays as written.
+    for (const text of [KAYAK_ONLY, "Could you send me the confirmation number"]) expect(quotes(run?.plan, text)).toBe(false);
+    expect(sc.helper.goals.replayCounts(goalId)).toMatchObject({ observations: 2, pending: false });
+  });
+
+  it("a goal stopped between segments keeps nothing it read in the message it opened", async () => {
+    const { code, decoy } = codes();
+    const messages = mailMessages(code, decoy);
+    const sc = scene({ scripts: [NATIVE], windows: [mailboxWindow(messages)], userWindow: "6262-1", askJev: jev() });
+    const first = await sc.request(INSTRUCTION);
+    await acceptAndDo(sc, first.goalId, () => userOpens(sc.desk, "6262-1", messages, "kayak"));
+    expect(quotes(kept(sc, first.goalId)?.replay, KAYAK_ONLY)).toBe(true);
+    expect(holdsLineTable(observationId(1, "6262-1"))).toBe(true);
+    await sc.helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: `${first.goalId}:s0`, action: "stop" }, sc.session);
+    expect(last(sc, "stopped")).toMatchObject({ reason: "you" });
+    const run = kept(sc, first.goalId);
+    for (const text of [KAYAK_ONLY, code]) expect(quotes(run?.replay, text)).toBe(false);
+    expect(holdsLineTable(observationId(1, "6262-1"))).toBe(false);
+    expect(quotes(run?.plan, KAYAK_ONLY)).toBe(false);
+    expect(sc.helper.goals.replayCounts(first.goalId)).toMatchObject({ observations: 1 });
+  });
+
+  it("ten minutes after the mail window was last read, a goal still open lets go of what it read there and stops", async () => {
+    const { code, decoy } = codes();
+    const messages = mailMessages(code, decoy);
+    const sc = scene({ scripts: [NATIVE], windows: [mailboxWindow(messages)], userWindow: "6262-1", askJev: jev(), waitForYouMs: 60_000 });
+    const first = await sc.request(INSTRUCTION);
+    await acceptAndDo(sc, first.goalId, () => userOpens(sc.desk, "6262-1", messages, "kayak"));
+    // The second segment runs and waits for the user to open Dana's message; the user goes to another app instead, so
+    // the mail window gets no snapshot from here on.
+    const before = waiting(sc).length;
+    const done = sc.accept(first.goalId);
+    await until(() => waiting(sc).length > before, "the executor to wait for the user");
+    sc.desk.show(NOTES, true);
+    void sc.helper.handleReader({ type: "focus", v: PROTOCOL_VERSION, at: (sc.desk.at += 10), app: NOTES.app, windowId: NOTES.windowId, key: null, role: "AXWindow", editable: false, empty: false, frontmost: true });
+    expect(quotes(kept(sc, first.goalId)?.replay, KAYAK_ONLY)).toBe(true);
+    const lastRead = sc.helper.model.windows.get("6262-1")?.updatedAt ?? Number.NaN;
+    sc.helper.tick(lastRead + 10 * MIN - 10_000);
+    expect(sc.helper.model.windows.has("6262-1")).toBe(true);
+    expect(quotes(kept(sc, first.goalId)?.replay, KAYAK_ONLY)).toBe(true);
+    expect(holdsLineTable(observationId(1, "6262-1"))).toBe(true);
+    sc.helper.tick(lastRead + 10 * MIN + 1_000);
+    expect(sc.helper.model.windows.has("6262-1")).toBe(false);
+    // At once, from the expiry list: the running segment's own stop comes later.
+    for (const text of [KAYAK_ONLY, code]) expect(quotes(kept(sc, first.goalId)?.replay, text)).toBe(false);
+    expect(holdsLineTable(observationId(1, "6262-1"))).toBe(false);
+    await done;
+    expect(last(sc, "stopped")).toMatchObject({ reason: "sourceChanged", says: expect.stringContaining("Caret let go of what it read for this goal after ten minutes") });
+    expect(quotes(kept(sc, first.goalId)?.plan, KAYAK_ONLY)).toBe(false);
+    expect(acts(sc)).toEqual([]);
   });
 
   it("20 runs with a new code each: every reply holds exactly its run's code, and nothing else is written", async () => {

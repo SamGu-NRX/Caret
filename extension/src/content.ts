@@ -25,8 +25,9 @@ import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean, composedParent } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
-import { deepActiveElement, kindOf, secretOf, shadowRootOf, visible, walkControls } from "./content/walker.ts";
-import { valueWithheld, watchPasswords } from "./content/password-watch.ts";
+import { deepActiveElement, kindOf, secretOf, shadowRootOf, textOf as controlText, visible, walkControls } from "./content/walker.ts";
+import { watchPasswords } from "./content/password-watch.ts";
+import { revs, trackTrustedEdits, walkReading } from "./content/page-state.ts";
 import { controlName } from "./content/question.ts";
 import { notePassword } from "./content/secret.ts";
 import { EntryTracker } from "./content/entry.ts";
@@ -111,10 +112,14 @@ function walk(reg: Registry, entries: EntryTracker | null, inputs: UserInputs<El
   const out = walkControls(
     (el) => reg.idOf(el),
     (el, c) => {
-      reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form });
-      // A field the walk marked secret keeps nothing in the tracker, even with no edit since it turned secret.
-      if (c.excluded !== undefined) entries?.forget(el);
+      reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form, ...("rev" in c && c.rev !== null ? { seen: { rev: c.rev, digest: revs.digestOf(controlText(el, c.kind)) } } : {}) });
+      // A field the walk marked secret keeps nothing in the trackers, even with no edit since it turned secret.
+      if (c.excluded !== undefined) {
+        entries?.forget(el);
+        revs.forget(el);
+      }
     },
+    walkReading,
     (el, value) => entries?.entryOf(el, value),
     (el) => inputs.at(el, now),
   );
@@ -132,10 +137,13 @@ function walk(reg: Registry, entries: EntryTracker | null, inputs: UserInputs<El
       }
       // H13: the caret's rect with its text, for the host's inline text. A site on the deny list is never walked
       // (worker.ts). SC1 2a: a marked secret field says only that it has focus, never its text, selection, caret or
-      // whether it is empty.
-      // A text input whose type history Caret could not watch gives no text, caret or selection either (password-watch.ts).
-      focused = c.excluded !== undefined || valueWithheld(active)
-        ? { id: c.id, selection: null, text: null, caret: null }
+      // whether it is empty. A withheld one (content/revs.ts: a doubtful history or replacement, text the page put in
+      // before the user's first edit, or text that changed with no trusted event) gives no text, caret or selection
+      // either, and says why.
+      const withheld = c.excluded !== undefined ? "secret" : "withheld" in c ? c.withheld : undefined;
+      // A combobox's walk reading is of its shown choice, not of the filter text its input holds: no caret text there.
+      focused = withheld !== undefined || c.kind === "combobox"
+        ? { id: c.id, selection: null, text: null, caret: null, withheld }
         : { id: c.id, selection, look: lookOf(active), text: fieldText(active), caret: caretRect(active) };
     }
   }
@@ -257,6 +265,8 @@ if (globalThis.__caretContent === undefined) {
 
   // H13 review: an inline insert never lands inside an input method's composition (content/insert.ts).
   trackComposition();
+  // The user's own edits bump each text control's rev, so the helper can tell a field changed without its text.
+  trackTrustedEdits();
   trackEdits();
 
   const focus = new FocusReporter({

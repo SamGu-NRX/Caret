@@ -11,6 +11,7 @@
 // predicts silently: it reads each step's source from the live windows now, and when the bundle
 // closes it scores the prediction against what the user did. Only the gate turns a prediction into
 // an offer, and only once enough silent predictions have matched (gate.ts).
+import { holdsText } from "../model.ts";
 import { normalizeValue } from "../normalize.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { PressVia, ValueKind } from "../protocol.ts";
@@ -157,7 +158,7 @@ export class RoutineRecognizer {
         const step = routine.steps[i]!;
         const dstTemplate = templates.get(step.dstTemplateHash);
         const dst = dstTemplate === undefined ? null : locate(this.model, windowId, dstTemplate, step.dstPos, "whole");
-        if (dst === null || dst.node.editable !== true || (dst.node.value ?? "") !== "") {
+        if (dst === null || dst.node.editable !== true || holdsText(dst.node)) {
           applies = false;
           break;
         }

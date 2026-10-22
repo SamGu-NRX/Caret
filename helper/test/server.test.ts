@@ -9,14 +9,15 @@ import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type HelperMessage } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { field, focus, MAIL_APP, snap, text, value } from "./builders.ts";
+import { authenticateRawHost, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const FORM = "5150-1";
 const EMAIL = "dev.caret.fixture/standard/textfield:email~0";
 
-function connect(path: string): Promise<{ s: Socket; lines: unknown[]; next: () => Promise<unknown> }> {
+function connect(path: string): Promise<{ s: Socket; lines: Record<string, unknown>[]; next: () => Promise<unknown> }> {
   return new Promise((resolve, reject) => {
     const s = createConnection(path);
-    const lines: unknown[] = [];
+    const lines: Record<string, unknown>[] = [];
     const waiters: ((v: unknown) => void)[] = [];
     let buf = "";
     s.setEncoding("utf8");
@@ -24,7 +25,7 @@ function connect(path: string): Promise<{ s: Socket; lines: unknown[]; next: () 
       buf += d;
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
-        const m: unknown = JSON.parse(buf.slice(0, nl));
+        const m = JSON.parse(buf.slice(0, nl)) as Record<string, unknown>;
         buf = buf.slice(nl + 1);
         const w = waiters.shift();
         if (w !== undefined) w(m);
@@ -66,7 +67,7 @@ describe("helper socket", () => {
     };
     let s: HelperServer | null = null;
     helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, publish: (m: HelperMessage) => s?.publish(m) });
-    server = new HelperServer(path, () => helper, () => {});
+    server = new HelperServer(path, () => helper, () => {}, TEST_LAUNCH_SECRET);
     s = server;
     await server.listen();
   });
@@ -83,7 +84,8 @@ describe("helper socket", () => {
     const asker = await connect(path);
     const other = await connect(path);
     const hello = { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "t" };
-    send(asker.s, hello);
+    send(asker.s, { ...hello, host: true });
+    await authenticateRawHost(asker.s, asker.lines);
     send(other.s, hello);
     send(asker.s, { type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "q1", op: "list", kind: "permission" });
     const reply = (await asker.next()) as { type: string; requestId: string; error: string | null; entries: { id: string; says: string }[] };
@@ -101,7 +103,8 @@ describe("helper socket", () => {
     const asker = await connect(path);
     const other = await connect(path);
     const hello = { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "t" };
-    send(asker.s, hello);
+    send(asker.s, { ...hello, host: true });
+    await authenticateRawHost(asker.s, asker.lines);
     send(other.s, hello);
     send(asker.s, { type: "activityRequest", v: PROTOCOL_VERSION, requestId: "a1", op: "list" });
     expect(await asker.next()).toEqual({ type: "activityReply", v: PROTOCOL_VERSION, requestId: "a1", error: null, seq: 0, tasks: [], events: [], truncated: false });
@@ -115,9 +118,10 @@ describe("helper socket", () => {
     other.s.destroy();
   });
 
-  it("turns a reader focus on an empty field into a proposal that consumers receive", async () => {
+  it("turns a reader focus on an empty field into a proposal that the host receives", async () => {
     const consumer = await connect(path);
-    send(consumer.s, { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "test" });
+    send(consumer.s, { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "test", host: true });
+    await authenticateRawHost(consumer.s, consumer.lines);
     const reader = await connect(path);
     send(reader.s, { type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "test" });
     send(reader.s, snap([text("m/statictext:a~0", "dana.whitfield@example.com")], { at: 1000, windowId: "6160-1", app: MAIL_APP, values: [value("email", "dana.whitfield@example.com", "m/statictext:a~0")] }));
@@ -216,7 +220,7 @@ describe("executor over the socket", () => {
       publish: (m: HelperMessage) => s?.publish(m),
       sendToReader: (cmd) => s?.sendToReader(cmd) ?? false,
     });
-    server = new HelperServer(path, () => helper, () => {});
+    server = new HelperServer(path, () => helper, () => {}, TEST_LAUNCH_SECRET);
     s = server;
     await server.listen();
   });
@@ -229,7 +233,7 @@ describe("executor over the socket", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("sends reader commands to the reader, matches its answers, and streams taskProgress to consumers", async () => {
+  it("sends reader commands to the reader, matches its answers, and streams taskProgress to the host", async () => {
     const W = "5150-3";
     let value = "";
     const window = () => snap([field(EMAIL, value, { label: "Email" })], { at: Date.now(), windowId: W, title: "Fixture form", reason: "request" });
@@ -255,7 +259,8 @@ describe("executor over the socket", () => {
     void serve;
 
     const consumer = await connect(path);
-    send(consumer.s, { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "test" });
+    send(consumer.s, { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "test", host: true });
+    await authenticateRawHost(consumer.s, consumer.lines);
     const plan = {
       id: "p",
       title: "p",

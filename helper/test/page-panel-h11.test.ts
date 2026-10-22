@@ -3,13 +3,14 @@
 // and the file inputs Caret leaves to the user. A native Ask whose route is plan stays on the single-window planner when
 // no writer could plan it as a goal. Jev's 402 is said as the account's credits on both the Ask and the page-planning
 // paths, never as "couldn't reach its model". Every name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { headsJev } from "./heads-jev.ts";
 import { scriptedIntent } from "./page-rig.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type GoalProgress, type PageControl, type PageSnapshot, type PlanProposal } from "../src/protocol.ts";
+import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type GoalProgress, type PageSnapshot, type PlanProposal } from "../src/protocol.ts";
 import { makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
@@ -44,7 +45,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => PageControl[]; note?: string; picks?: Record<string, string> } = {}): Promise<Rig> {
+async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => TestField[]; note?: string; picks?: Record<string, string> } = {}): Promise<Rig> {
   const dir = mkdtempSync(join(tmpdir(), "caret-h11-"));
   const store = new Store(join(dir, "data"));
   const page = new FakePage(o.controls ?? mixedControls, "Apply: Mixed controls");
@@ -136,15 +137,16 @@ function revealing(page: FakePage): void {
 }
 
 describe("a reveal's preview (H11)", () => {
-  it("shows no row for a field an Ask's writes revealed (I2 ruling B: the scope is settled once)", async () => {
+  it("carries a view of its own: the revealed field's row, the same page window", async () => {
     const r = await rig({ note: `${NOTE}\nProvince: Ontario`, picks: { ...PICKS, Province: "Ontario" } });
     revealing(r.page);
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     await r.helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: preview.goalId, segment: 0, digest: preview.digest, at: Date.now() });
     await r.helper.goals.idle();
     const next = r.published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.goalId !== preview.goalId);
-    // I2 lead ruling B: the revealed Province was never asked about, so an Ask's goal shows no row that writes it.
-    expect(next?.page?.rows?.some((x) => x.label === "Province") ?? false).toBe(false);
+    expect(next).toMatchObject({ reason: "afterReveal", replaces: preview.goalId });
+    expect(next?.page?.windowId).toBe(WIN);
+    expect(next?.page?.rows).toEqual([{ step: 0, label: "Province", value: "Ontario", picked: true }]);
   });
 });
 

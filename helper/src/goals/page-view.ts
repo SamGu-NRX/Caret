@@ -2,6 +2,7 @@
 // where its values came from, each field and value as a row, each attach step's row (H14), and the file inputs Caret
 // leaves to the user. Built from the plan and the page as the model holds it when the preview is sent; it decides
 // nothing and nothing acts on it.
+import { holdsText } from "../model.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Frame, type GoalPageView } from "../protocol.ts";
 import { ABOUT_SAYS } from "../fill/about.ts";
@@ -89,7 +90,7 @@ function attachLeft(w: WindowState, plan: GoalPlan): string[] {
   const attached = new Set(plan.segments.flatMap((g) => g.steps.filter((s) => s.kind === "attach").map((s) => s.target.key)));
   const out: string[] = [];
   for (const n of w.nodes.values()) {
-    if (n.subrole !== PAGE_SUBROLE.file || (n.value ?? "") !== "" || n.states?.includes("disabled") === true || attached.has(n.key)) continue;
+    if (n.subrole !== PAGE_SUBROLE.file || holdsText(n) || n.states?.includes("disabled") === true || attached.has(n.key)) continue;
     if (page.kind === "section" && describeField(w, n).section !== page.section) continue;
     const label = clip(fieldName(w, n), 200);
     if (label !== "" && !out.includes(label)) out.push(label);

@@ -2,6 +2,7 @@
 // A numeric date gives its month and day only when evidence settles their order; a date with a time gives each part
 // on its own; a select or radio option is offered when one word of the request or a source names it. Every ambiguous
 // case gives nothing. Jev is a fake that answers by rule; every name, date and place is invented.
+import { onWire, type TestField } from "./page-wire.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
@@ -203,7 +204,7 @@ describe("a slot offered as a date with a time (B24 ask-19)", () => {
   const ORIGIN = "http://127.0.0.1:4310";
   const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
   const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
-  const control = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[svc]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#svc", rect: [0, 0, 100, 20], value: "" });
+  const control = (id: string, kind: PageControl["kind"], name: string): PageControl => onWire({ id, key: `form[svc]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#svc", rect: [0, 0, 100, 20], value: "" });
   const page = (controls: PageControl[]): PageSnapshot => ({
     type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Schedule Service",
     frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/book", navGen: 1, title: "Schedule Service", headings: ["Schedule Service"], iframes: [], excluded: {}, truncated: false, controls }],
@@ -380,7 +381,7 @@ describe("review round 1: a year read from when a message was sent", () => {
   const ORIGIN = "http://127.0.0.1:4310";
   const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
   const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
-  const control = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[svc]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#svc", rect: [0, 0, 100, 20], value: "" });
+  const control = (id: string, kind: PageControl["kind"], name: string): PageControl => onWire({ id, key: `form[svc]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#svc", rect: [0, 0, 100, 20], value: "" });
   const WIN = "page:eng1:7";
   /** A mail as separate header and body nodes; the reader types `span` in the body as a date. */
   const scene = (header: string[], body: string[], span: string, label = "Preferred date"): ScreenModel => {
@@ -448,7 +449,7 @@ describe("lead conditions on the contract change", () => {
   const ORIGIN = "http://127.0.0.1:4310";
   const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
   const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
-  const control = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[svc]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#svc", rect: [0, 0, 100, 20], value: "" });
+  const control = (id: string, kind: PageControl["kind"], name: string): PageControl => onWire({ id, key: `form[svc]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#svc", rect: [0, 0, 100, 20], value: "" });
   const fill = async (lines: string[], span: string, date = "2026-10-17", time = "08:45") => {
     const m = new ScreenModel();
     m.apply(snap([field("mail/body", lines.join("\n"), { role: "AXTextArea" })], { at: 900, windowId: "mail", title: "Re", app: { pid: 7002, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: [value("date", span, "mail/body")] }));
@@ -481,7 +482,7 @@ describe("review round 2: every assumption is a choice", () => {
   const ORIGIN = "http://127.0.0.1:4310";
   const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
   const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
-  const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], value: "", ...extra });
+  const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], value: "", ...extra });
   const page = (controls: PageControl[]): PageSnapshot => ({
     type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Form",
     frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/f", navGen: 1, title: "Form", headings: [], iframes: [], excluded: {}, truncated: false, controls }],
@@ -593,7 +594,7 @@ describe("review round 3", () => {
   const ORIGIN = "http://127.0.0.1:4310";
   const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
   const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
-  const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], value: "", ...extra });
+  const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], value: "", ...extra });
   const opts = (labels: string[]) => ({ options: [{ value: "", label: "Select...", selected: true }, ...labels.map((l) => ({ value: l.toLowerCase(), label: l, selected: false }))] });
   const desk3 = (lines: string[], typed: string[], controls: PageControl[]): ScreenModel => {
     const m = new ScreenModel();

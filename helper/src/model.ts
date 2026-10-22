@@ -42,6 +42,27 @@ export const ROLLING_WINDOW_MS = 10 * 60 * 1000;
 const MAX_CHANGES = 50_000;
 
 /** The text a node contributes to matching: an editable field's value, or everything else's visible text. */
+/**
+ * Whether a field holds anything: a value, or text a page field holds that the page never sends (Node.unread). The one
+ * test fill, goals and offers use for "already filled", so a page field Caret cannot read is never taken for empty.
+ */
+export function holdsText(node: Node): boolean {
+  return node.unread === true || (node.value ?? "") !== "";
+}
+
+/** What a field holds as the helper can read it: its value, or null for a page field whose text the page never sends (Node.unread). */
+export function heldText(node: Node): string | null {
+  return node.unread === true ? null : (node.value ?? "");
+}
+
+/**
+ * Whether a node is a web page's text field (engines/page-link.ts): it carries the page's change counter, or holds text
+ * the page never sends. Its text never left the page, so it is no copy source and no note (counsel 2026-10-09).
+ */
+export function pageTextField(node: Node): boolean {
+  return node.rev !== undefined || node.unread === true;
+}
+
 export function nodeText(node: Node): string {
   if (node.editable) return node.value ?? "";
   if (node.label !== undefined && node.value !== undefined) return `${node.label}\n${node.value}`;
@@ -447,7 +468,8 @@ function diffNodes(before: Map<string, Node>, after: Map<string, Node>, snap: Sn
     }
     const a = nodeText(old);
     const b = nodeText(n);
-    if (a !== b) out.push({ at: snap.at, windowId, kind: "value", key: k, editable: n.editable === true, before: a, after: b });
+    // A page field's text that the page does not send changes without its node's text changing: its rev says so.
+    if (a !== b || old.rev !== n.rev || old.unread !== n.unread) out.push({ at: snap.at, windowId, kind: "value", key: k, editable: n.editable === true, before: a, after: b });
   }
   const removedScope = snap.root === null ? null : subtreeKeys(before, snap.root);
   for (const [k, n] of before) {

@@ -47,7 +47,8 @@ describe("a pick is verified by the page's own state", () => {
   });
   it("keeps the checks it had: shown text, react-select's form value, and the list closed", () => {
     expect(pickProblems({ ...ok, afterBlur: "" })).toEqual(["the control kept its old value"]);
-    expect(pickProblems({ ...ok, afterBlur: "Northfield College" })).toEqual(["the control shows 'Northfield College'"]);
+    // A combobox's text is a text control's: the receipt says it differs and never quotes it.
+    expect(pickProblems({ ...ok, afterBlur: "Northfield College" })).toEqual(["the control shows other text than the option picked"]);
     expect(pickProblems({ ...ok, flavor: "reactSelect", hiddenInput: "unchanged" })).toEqual(["react-select's form value did not change"]);
     expect(pickProblems({ ...ok, expanded: true })).toEqual(["the list is still open"]);
   });

@@ -6,7 +6,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot, type PageVerb, type VerbResult } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, isTextKind, type HelperToEngine, type PageSnapshot, type PageVerb, type VerbResult } from "../src/protocol.ts";
+import { onWire, readings, textRev, type TestField } from "./page-wire.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { PageEngineLink, toVerbOutcome } from "../src/engines/page-link.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
@@ -33,7 +34,7 @@ class FakePage {
   readonly session: EngineSession;
   onAct: ((v: Exclude<PageVerb, { kind: "pageWalk" }>, page: FakePage) => object | null) | null = null;
   inFocusedWindow = true;
-  controls: PageControl[] = [
+  controls: TestField[] = [
     { id: "e1", key: "form[apply]/textbox:first name~0", strongKey: null, kind: "text", role: "textbox", name: "First name", value: "", form: "form#apply", rect: [0, 0, 200, 20] },
     { id: "e2", key: "form[apply]/select:country~0", strongKey: null, kind: "select", role: "combobox", name: "Country", form: "form#apply", rect: [0, 30, 200, 20], options: [{ value: "", label: "Choose one", selected: true }, { value: "ca", label: "Canada", selected: false }, { value: "us", label: "United States", selected: false }] },
     { id: "e3", key: "form[apply]/combobox:department~0", strongKey: null, kind: "combobox", role: "combobox", name: "Department", value: "", form: "form#apply", rect: [0, 60, 200, 20] },
@@ -50,7 +51,7 @@ class FakePage {
   snapshot(id: string): PageSnapshot {
     return {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: Date.now(), tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: this.inFocusedWindow, title: TITLE,
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/form", navGen: 1, title: TITLE, headings: [], iframes: [], excluded: {}, truncated: false, controls: structuredClone(this.controls) }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/form", navGen: 1, title: TITLE, headings: [], iframes: [], excluded: {}, truncated: false, controls: this.controls.map((c) => onWire(structuredClone(c))) }],
       missing: [],
       focused: null,
     };
@@ -84,7 +85,7 @@ class FakePage {
       const before = this.shown(verb.id) ?? "";
       this.set(verb.id, verb.value);
       const after = this.shown(verb.id) ?? "";
-      this.session.receive({ type: "pageResult", v: 1, id, at: Date.now(), outcome: "ok", detail: null, readings: { before, afterInput: after, afterBlur: after, invalid: false, error: null } });
+      this.session.receive({ type: "pageResult", v: 1, id, at: Date.now(), outcome: "ok", detail: null, readings: readings(before, after, after, isTextKind(verb.control) ? textRev(after) : null) });
       return;
     }
     this.session.receive({ type: "pageResult", v: 1, id, at: Date.now(), outcome: "unsupported", detail: verb.kind });
@@ -125,8 +126,9 @@ describe("W3 page findings, helper side", () => {
     it("an undo's page verb says rebind: false and names the forward write's mark; the forward write carries the mark", async () => {
       expect((await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "", value: "Ada", taskId: "t1", mark: "m1" })).outcome).toBe("ok");
       await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "Ada", value: "", taskId: "t1", sameAs: "m1" });
-      const writes = page.verbs.filter((v) => v.kind === "pageWrite").map((v) => ({ rebind: v.rebind, mark: v.mark, sameAs: v.sameAs }));
-      expect(writes).toEqual([{ rebind: undefined, mark: "m1", sameAs: undefined }, { rebind: false, mark: undefined, sameAs: "m1" }]);
+      // The undo of a text write is the page's own restore (pageRestore), under the same identity rules.
+      const writes = page.verbs.filter((v) => v.kind === "pageWrite" || v.kind === "pageRestore").map((v) => ({ kind: v.kind, rebind: v.rebind, mark: v.mark, sameAs: v.sameAs }));
+      expect(writes).toEqual([{ kind: "pageWrite", rebind: undefined, mark: "m1", sameAs: undefined }, { kind: "pageRestore", rebind: false, mark: undefined, sameAs: "m1" }]);
     });
 
     it("leaves the element's identity to the page: an undo goes on when a rebind gave the field another registry id (W3 review #2)", async () => {
@@ -135,7 +137,7 @@ describe("W3 page findings, helper side", () => {
       page.controls[0] = { ...page.controls[0]!, id: "e9" };
       await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
       await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "Ada", value: "", taskId: "t1", sameAs: "m1" });
-      expect(page.verbs.filter((v) => v.kind === "pageWrite").at(-1)).toMatchObject({ id: "e9", sameAs: "m1", rebind: false });
+      expect(page.verbs.filter((v) => v.kind === "pageRestore").at(-1)).toMatchObject({ id: "e9", sameAs: "m1", rebind: false });
     });
 
     it("the page's notSameElement reaches the executor as notSameElement, so the restore is settled as refused", () => {
@@ -146,7 +148,7 @@ describe("W3 page findings, helper side", () => {
       const r = await helper.executor.run("t1", plan([step(KEY.first, "Ada")]), {}, undefined, { grant: true });
       expect(r.outcome).toBe("done");
       // The content script answers the restore as it does for a replaced element under rebind: false.
-      page.onAct = (v) => (v.kind === "pageWrite" && v.rebind === false ? { outcome: "notSameElement", detail: "the element Caret wrote was replaced" } : null);
+      page.onAct = (v) => (v.kind === "pageRestore" && v.rebind === false ? { outcome: "notSameElement", detail: "the element Caret wrote was replaced" } : null);
       const u = await helper.executor.undo("t1");
       expect(u).toMatchObject({ restored: 0, notRestored: [{ step: 0 }] });
       expect(u.notRestored[0]?.reason).toContain("no longer the element");
@@ -161,7 +163,7 @@ describe("W3 page findings, helper side", () => {
         // The user clicks in the page while the first write is on its way; it lands anyway.
         p.session.receive({ type: "pageInput", v: 1, at: Date.now(), tabId: 7, frameId: 0, kind: "mouse" });
         p.set(v.id, v.value);
-        return { outcome: "ok", detail: null, readings: { before: "", afterInput: v.value, afterBlur: v.value, invalid: false, error: null } };
+        return { outcome: "ok", detail: null, readings: readings("", v.value, v.value, textRev(v.value)) };
       };
       const r = await helper.executor.run("t1", plan([step(KEY.first, "Ada"), step(KEY.country, "Canada")]), {}, undefined, { grant: true });
       expect(r).toMatchObject({ outcome: "paused", step: 1 });
@@ -204,7 +206,8 @@ describe("W3 page findings, helper side", () => {
       const u = await helper.executor.undo("t1");
       expect(u).toMatchObject({ restored: 1, notRestored: [] });
       expect(page.shown("e3")).toBe("");
-      expect(page.verbs.filter((v) => v.kind === "pageChooseOption").at(-1)).toMatchObject({ rebind: false, expect: "Research", value: "" });
+      // The undo's clear names Caret's own pick, which the page requires the control still shows.
+      expect(page.verbs.filter((v) => v.kind === "pageChooseOption").at(-1)).toMatchObject({ rebind: false, wrote: "Research", value: "" });
     });
   });
 

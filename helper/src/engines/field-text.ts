@@ -2,6 +2,7 @@
 // from the tab's latest walk. The host cannot read a web field itself (Chrome shows Accessibility no web content, H10),
 // so inline text had no context in any web page (GD1 finding 4). Built from the snapshot alone; nothing is kept here.
 import { NEARBY_MAX, NEARBY_RANGE, type PageControlKind, type PageFieldKind, type PageFieldText, type PageSnapshot } from "../protocol.ts";
+import { forHost } from "./focus-text.ts";
 
 type Rect4 = readonly [number, number, number, number];
 
@@ -51,10 +52,11 @@ export function ownSuggestions(origin: string | null, path: string | null, kind:
 export function pageFieldText(s: PageSnapshot): PageFieldText {
   const top = s.frames.find((f) => f.parentFrameId < 0);
   // A Docs editor keeps its caret in an off-screen text-event frame the walk does not keep: the top frame reads it.
-  if (s.docs !== undefined) return { text: s.docs.field, ownSuggestions: s.docs.kind === "document" ? "google-docs" : null, docsText: s.docs.text };
+  // The one unwrap of the focused text (engines/focus-text.ts forHost): it goes to the host over its own socket, and nowhere else.
+  if (s.docs !== undefined) return { text: s.docs.field === null ? null : forHost(s.docs.field), ownSuggestions: s.docs.kind === "document" ? "google-docs" : null, docsText: s.docs.text };
   const f = s.focused;
   if (f === null) return { text: null, ownSuggestions: null, docsText: null };
-  return { text: f.text ?? null, ownSuggestions: ownSuggestions(top?.origin ?? null, top?.path ?? null, focusedKind(s)), docsText: null };
+  return { text: f.text === undefined || f.text === null ? null : forHost(f.text), ownSuggestions: ownSuggestions(top?.origin ?? null, top?.path ?? null, focusedKind(s)), docsText: null };
 }
 
 /** The walked kind of the control that has focus; null for none, or one the walk did not keep. */

@@ -79,6 +79,27 @@ export function serialize(range: Range): string {
   return out;
 }
 
+/**
+ * An editor's whole text for this frame's own comparisons (walker.ts textOf: hasValue, rev, a restore's check): its
+ * text nodes only, with embedded controls, secret fields and hidden subtrees left out, as serialize leaves them out.
+ * Never sent.
+ */
+export function editorPlainText(host: HTMLElement): string {
+  if (inSecret(host)) return "";
+  const doc = host.ownerDocument;
+  const view = doc.defaultView ?? window;
+  const walker = doc.createTreeWalker(host, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => {
+      if (n.nodeType !== Node.ELEMENT_NODE) return NodeFilter.FILTER_ACCEPT;
+      const el = n as Element;
+      return el.getAttribute("aria-hidden") === "true" || view.getComputedStyle(el).display === "none" || skippedInEditor(el) || secretOfElement(el) !== null ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let out = "";
+  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) if (n.nodeType === Node.TEXT_NODE) out += (n as Text).data;
+  return out;
+}
+
 /** The text before, inside and after the selection of a contenteditable editor `host`, or null when its selection is elsewhere. */
 export function editorText(host: HTMLElement): FieldText | null {
   if (inSecret(host)) return null;

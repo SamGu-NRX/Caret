@@ -35,6 +35,7 @@ import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
 import { newLaunchSecret } from "../../../helper/src/launch.ts";
 import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
+import { connectAsHost } from "../../../helper/scripts/host-line.ts";
 import { Store } from "../../../helper/src/store.ts";
 import { PROTOCOL_VERSION, type Activity, type HelperMessage, type Node, type TaskProgress, type TaskRecord } from "../../../helper/src/protocol.ts";
 import type { Plan, Step } from "../../../helper/src/executor/schema.ts";
@@ -172,15 +173,12 @@ async function until<T>(what: string, f: () => T | null | undefined | false | Pr
   }
 }
 
-/** A consumer of our own: runPlan, and cleanup controls. The controls under test come from the host. */
-const consumer: Socket = await new Promise((res, rej) => {
-  const s = createConnection(HELPER_SOCK);
-  s.once("connect", () => res(s));
-  s.once("error", rej);
-});
-consumer.on("data", () => {});
+/**
+ * A second host of our own: runPlan, and cleanup controls. The controls under test come from Caret. It proves the host
+ * key (connectAsHost): the helper takes runPlan and taskControl only from the host.
+ */
+const consumer: Socket = await connectAsHost(HELPER_SOCK, launchSecret, "a4-socket-acceptance");
 const send = (m: unknown): void => void consumer.write(JSON.stringify(m) + "\n");
-send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: process.pid, version: "a4-socket-acceptance" });
 const control = (taskId: string, action: "pause" | "resume" | "stop" | "takeOver" | "undo"): void => send({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action });
 
 function resetFields(): void {

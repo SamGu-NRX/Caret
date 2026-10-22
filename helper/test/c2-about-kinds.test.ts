@@ -2,6 +2,7 @@
 // date of birth, a job title, a T-shirt size, dietary needs, a salary expectation, and how the user heard about a job.
 // Each is offered only to a field that asks for exactly it; a field that only resembles one ("Salary range", "Title",
 // "Child's date of birth") never sees it. Jev is a fake that answers by rule; every name and value is invented.
+import { onWire, type TestField } from "./page-wire.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { aboutKind, aboutValues, fieldAsksFor, type AboutKind, type AboutValue } from "../src/fill/about.ts";
@@ -99,7 +100,7 @@ const ORIGIN = "http://127.0.0.1:4310";
 const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
 const WIN = "page:eng1:7";
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ id, key: `form[f]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#f", rect: [0, 0, 100, 20], ...extra });
+const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({ id, key: `form[f]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#f", rect: [0, 0, 100, 20], ...extra });
 const select = (id: string, name: string, options: string[]): PageControl =>
   control(id, "select", name, { options: [{ value: "", label: "Select...", selected: true }, ...options.map((o) => ({ value: o.toLowerCase(), label: o, selected: false }))] });
 

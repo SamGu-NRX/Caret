@@ -2,6 +2,7 @@
 // (kinds.ts unwrapValue, wrappedValue; contract.ts shapeRefusal). The four texts the verifier answered "exact" twice at
 // 0.75 to 0.92 in slice 2's labelled set (~/.caret-run/evidence/act/slice3/sweep.txt) are refused by code; the value
 // inside is what fill types. All values are synthetic.
+import { onWire } from "./page-wire.ts";
 import { describe, expect, it } from "vitest";
 import { fieldKinds, unwrapValue, wrappedValue } from "../src/fill/kinds.ts";
 import { makeFieldContract, shapeRefusal, type Proposed } from "../src/fill/contract.ts";
@@ -77,7 +78,7 @@ describe("wrapped values", () => {
 describe("fill types the value inside the marks", () => {
   const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
   const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
-  const control = (id: string, name: string): PageControl => ({ id, key: `form[apply]/text:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "text", name, form: "form#apply", rect: [0, Number(id.slice(1)) * 30, 100, 20], value: "" });
+  const control = (id: string, name: string): PageControl => onWire({ id, key: `form[apply]/text:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "text", name, form: "form#apply", rect: [0, Number(id.slice(1)) * 30, 100, 20], value: "" });
   const fields = [control("e1", "Mileage Plan number"), control("e2", "Portfolio or website")];
   const note = ["Trip notes", 'Mileage Plan: "123456789"', "Portfolio: <https://harperq.example.com>.", "Seat: aisle if possible", "Bring the passport"].join("\n");
   const desk = (): ScreenModel => {

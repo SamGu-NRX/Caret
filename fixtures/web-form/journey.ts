@@ -662,10 +662,16 @@ async function main(): Promise<void> {
     const changed = Object.keys(after).filter((k) => after[k] !== form.before[k]);
     const written = Object.fromEntries(changed.map((k) => [k, after[k] ?? ""]));
     const ownerViolations = changed.filter((k) => owners.otherFields.includes(k) || ownerOfText(after[k] ?? "", owners) === "other").map((k) => `${k}: ${after[k] ?? ""}`);
-    // Undo, newest segment first, as the activity list's Undo sends it for each.
+    // Undo, newest segment first, as the activity list's Undo sends it for each, one after the other: the helper refuses
+    // an older segment's Undo while a newer one's writes stand ("undo ... first: its writes came after this one's").
     const undoMark = hostMark();
-    for (const a of [...accepted].reverse()) hostLine.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId: `${a.goalId}:s${a.segment}`, action: "undo" });
-    await sleep(3000);
+    for (const a of [...accepted].reverse()) {
+      const taskId = `${a.goalId}:s${a.segment}`;
+      const at = hostMark();
+      hostLine.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action: "undo" });
+      await hostLine.next((m) => m.type === "taskProgress" && m.taskId === taskId && (m.phase === "undone" || m.phase === "stopped"), at, 10_000);
+    }
+    await sleep(500);
     const undone = await settle();
     await screenshot(form.sid, "row2-form-undone");
     const changedAfterUndo = Object.keys(undone).filter((k) => undone[k] !== form.before[k]).map((k) => `${k}: ${undone[k] ?? ""}`);
@@ -748,8 +754,7 @@ async function main(): Promise<void> {
       driven: true,
       observed: { proposals: proposals.length, previews: previews.length },
       expected: { proposals: 0, previews: 0 },
-      expectedFailure: "known gap: #36's non-host rule, focus task caret-host-nonhost-f1",
-      cause: `the plain consumer got ${JSON.stringify(counts(proposals))} over the run (${whileField} while form.html's First name was focused) and previews ${JSON.stringify(counts(previews))}; its firstLookPreviewRequest was ${got.some((m) => m.type === "error" && /firstLookPreviewRequest/.test(String(m.message))) ? "refused" : "answered"}. Known on alpha: fill proposals are published to every consumer (server.ts publish); PR #36's queued non-host rule owns it`,
+      cause: `the plain consumer got ${JSON.stringify(counts(proposals))} over the run (${whileField} while form.html's First name was focused) and previews ${JSON.stringify(counts(previews))}; its firstLookPreviewRequest was ${got.some((m) => m.type === "error" && /firstLookPreviewRequest/.test(String(m.message))) ? "refused" : "answered"}. Every send passes helper/src/send-gate.ts, which gives a consumer that has not proven the host key only status`,
     });
   }
 

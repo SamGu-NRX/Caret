@@ -1,0 +1,12 @@
+{
+  "type": "pageResult",
+  "v": 1,
+  "id": "fixture-compare",
+  "at": 20,
+  "outcome": "ok",
+  "detail": null,
+  "compare": [
+    "equal",
+    "unknown"
+  ]
+}

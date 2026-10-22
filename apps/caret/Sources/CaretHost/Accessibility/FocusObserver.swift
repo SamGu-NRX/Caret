@@ -27,16 +27,37 @@ final class FocusObserver {
     private let electron = ElectronAccess()
     private let ownPID = ProcessInfo.processInfo.processIdentifier
     private let coalesceInterval: TimeInterval
+    private let frontmost: () -> (pid: pid_t, bundleURL: URL?)?
+    private let createObserver: (pid_t, AXObserverCallback) -> AXObserver?
     private var observer: AXObserver?
     private var observedPID: pid_t?
+    /// The app `retarget` last subscribed to, or tried to: set even when its observer could not be
+    /// created, so a retry still finds it while it stays in front.
+    private var targetPID: pid_t?
     private var observedElement: AXUIElement?
     private var pendingSince: UInt64?
     private var running = false
     private(set) var notificationCount: UInt64 = 0
     private var lastNotifiedAt: UInt64 = 0
 
-    init(coalesceInterval: TimeInterval = 0.008) {
+    init(
+        coalesceInterval: TimeInterval = 0.008,
+        frontmost: @escaping () -> (pid: pid_t, bundleURL: URL?)? = {
+            NSWorkspace.shared.frontmostApplication.map { (pid: $0.processIdentifier, bundleURL: $0.bundleURL) }
+        },
+        createObserver: @escaping (pid_t, AXObserverCallback) -> AXObserver? = FocusObserver.systemObserver
+    ) {
         self.coalesceInterval = coalesceInterval
+        self.frontmost = frontmost
+        self.createObserver = createObserver
+    }
+
+    /// The app whose notifications are subscribed to now, for tests.
+    var observingPID: pid_t? { observer == nil ? nil : observedPID }
+
+    nonisolated static func systemObserver(_ pid: pid_t, _ callback: AXObserverCallback) -> AXObserver? {
+        var created: AXObserver?
+        return AXObserverCreate(pid, callback, &created) == .success ? created : nil
     }
 
     func start() {
@@ -92,19 +113,25 @@ final class FocusObserver {
     // MARK: - Observer
 
     private func retarget(attempt: Int = 0) {
-        guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != ownPID else {
+        guard let app = frontmost(), app.pid != ownPID else {
             // Our own menu or a vanished app: keep watching the previous target.
             return
         }
-        let pid = app.processIdentifier
+        let pid = app.pid
         if pid == observedPID, observer != nil {
             observeFocusedElement()
             return
         }
         tearDown()
+        targetPID = pid
 
-        var created: AXObserver?
-        guard AXObserverCreate(pid, Self.callback, &created) == .success, let created else { return }
+        // An app still launching can refuse the observer itself, not only its subscriptions
+        // (PR #47 review): retried the same way, or nothing is heard until the next app switch.
+        guard let created = createObserver(pid, Self.callback) else {
+            onNote?("focus.observe.createFailed")
+            if attempt < Self.retryDelays.count { retry(pid, attempt: attempt) }
+            return
+        }
         let appElement = AXUIElementCreateApplication(pid)
         var refused = [
             add(kAXFocusedUIElementChangedNotification, on: appElement, observer: created),
@@ -126,9 +153,10 @@ final class FocusObserver {
         if electron.ask(pid: pid, bundleURL: app.bundleURL) { settle(pid) }
     }
 
-    /// An app that has only just launched can refuse the subscriptions, or have no focused element
-    /// yet, when it activates; with nothing subscribed Caret would not hear its typing until the
-    /// user left the app and came back. So the subscriptions are made again while it stays in front.
+    /// An app that has only just launched can refuse the observer or its subscriptions, or have no
+    /// focused element yet, when it activates; with nothing subscribed Caret would not hear its typing
+    /// until the user left the app and came back. So the subscriptions are made again while it stays
+    /// in front.
     /// The delays are assumed, not measured: the VM's Mac Catalyst fixture (run
     /// 20261009T104144Z-36771) got no focus read at all after `open`, and this is the first try at it.
     static let retryDelays: [TimeInterval] = [0.3, 1.0, 2.5]
@@ -136,8 +164,7 @@ final class FocusObserver {
     private func retry(_ pid: pid_t, attempt: Int) {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryDelays[attempt]) { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.running, self.observedPID == pid,
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+                guard let self, self.running, self.targetPID == pid, self.frontmost()?.pid == pid else { return }
                 self.onNote?("focus.observe.retry")
                 self.tearDown()
                 self.retarget(attempt: attempt + 1)

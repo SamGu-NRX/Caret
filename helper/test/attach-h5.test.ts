@@ -24,7 +24,7 @@ const W = "page:eng1:7";
 
 type Control = PageSnapshot["frames"][number]["controls"][number];
 const file = (id: string, name: string, y: number): Control => ({ id, key: `form[apply]/button:${name.toLowerCase()}~0`, strongKey: null, kind: "file", role: "button", name, form: "form#apply", rect: [0, y, 200, 20] });
-const email: Control = { id: "e1", key: "form[apply]/textbox:email~0", strongKey: null, kind: "email", role: "textbox", name: "Email", value: "", form: "form#apply", rect: [0, 0, 200, 20] };
+const email: Control = { id: "e1", key: "form[apply]/textbox:email~0", strongKey: null, kind: "email", role: "textbox", name: "Email", hasValue: false, rev: 0, form: "form#apply", rect: [0, 0, 200, 20] };
 
 function snapshot(id: string, controls: Control[]): PageSnapshot {
   return {

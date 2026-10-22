@@ -111,7 +111,8 @@ describe("goal messages on the socket", () => {
       c.send(accept);
       for (const type of ["goalRequest", "goalAccept"]) {
         const e = await c.waitFor((m) => m.type === "error" && String(m.message).startsWith(type));
-        expect(e.message).toBe(`${type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities`);
+        // The request gate refuses a consumer that is not the host before the capability is looked at (request-gate.ts).
+        expect(e.message).toBe(hello.host === true ? `${type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities` : `${type} needs a host hello (host: true): a goal reads your windows and makes Caret act`);
       }
       expect(c.received.filter((m) => (m as { type: string }).type === "goalProgress")).toEqual([]);
       c.close();

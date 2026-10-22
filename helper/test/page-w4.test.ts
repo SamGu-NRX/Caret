@@ -3,6 +3,7 @@
 // a radio group is labelled with its question, and a Yes/No question built from toggle buttons (Ashby) reads as a
 // radio group whose answer the executor writes through the one press the page engine makes there. The content
 // script's halves run in a real browser in fixtures/web-form/accept.ts. Every name and address here is invented.
+import { onWire, type TestField } from "./page-wire.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { formControls } from "../src/fill/controls.ts";
@@ -17,7 +18,7 @@ const WIN = "page:eng1:7";
 const Q_YEARS = "Do you have a minimum of 7 years of experience building software?";
 const Q_AUTH = "Are you legally authorized to work in the country for which you are applying?";
 
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({
+const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({
   id, key: `${kind}:${name.toLowerCase()}~${id}`, strongKey: null, kind, role: kind, name, form: null, rect: [0, 0, 100, 20], ...extra,
 });
 
@@ -177,7 +178,7 @@ describe("a Yes/No press after which the page left (B28)", () => {
   it("takes pageChanged only on a failed result with no readings", () => {
     expect(PageResult.safeParse(changed).success).toBe(true);
     expect(PageResult.safeParse({ ...changed, outcome: "ok" }).success).toBe(false);
-    expect(PageResult.safeParse({ ...changed, readings: { before: "", afterInput: "Yes", afterBlur: "Yes", invalid: false, error: null } }).success).toBe(false);
+    expect(PageResult.safeParse({ ...changed, readings: { sameAsBefore: false, landed: true, equivalent: true, empty: false, typedBetween: false, rev: null } }).success).toBe(false);
     expect(PageResult.safeParse({ ...changed, pageChanged: [] }).success).toBe(false);
   });
 });

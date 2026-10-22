@@ -332,6 +332,11 @@ export function forgetWindow(windowId: string): void {
   tables.delete(windowId);
 }
 
+/** Whether a table is kept for this window id, for tests. */
+export function holdsLineTable(windowId: string): boolean {
+  return tables.has(windowId);
+}
+
 /** Lets go of every table, for a new reader session whose window ids start over. */
 export function forgetWindows(): void {
   tables.clear();

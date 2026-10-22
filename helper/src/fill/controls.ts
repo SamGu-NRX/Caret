@@ -7,6 +7,7 @@
 // (engines/page-link.ts), on stricter rules (fill.ts controlValue). Code checks every value: an option must be one the
 // control shows; a box is ticked only when the chosen source text says so; a date or time is read by the value
 // resolver.
+import { holdsText } from "../model.ts";
 import { PAGE_SUBROLE, type Node, type ValueKind } from "../protocol.ts";
 import { dateParts, monthIndex, type FillPart } from "./derive.ts";
 import { textKind } from "./kinds.ts";
@@ -122,7 +123,7 @@ export function formControls(w: WindowState): FormControl[] {
       continue;
     }
     if (n.role === "AXDateField" || n.role === "AXTimeField") {
-      if ((n.value ?? "") !== "") continue;
+      if (holdsText(n)) continue;
       out.push({ node: n, control: n.role === "AXDateField" ? "date" : "time", label: label(n), options: null, members: [], ...(n.role === "AXDateField" ? { format: dateFormat(n) } : {}) });
       continue;
     }

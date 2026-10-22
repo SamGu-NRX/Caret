@@ -20,10 +20,11 @@ const REQUIRED_MARK = /(?:\*+|\(required\)|\[required\])\s*$/iu;
 /** What a popup shows while nothing is chosen (fill/controls.ts reads the same prompts). */
 const PROMPT = /^(?:|select\b.*|choose\b.*|please (?:select|choose)\b.*|pick\b.*|-+.*-*|month|day|year|—)$/iu;
 /** Controls other than text a form can require, and whether each reads as unset. */
-const UNSET: Readonly<Record<string, (n: { value?: string; states?: readonly string[] }) => boolean>> = {
+// A web page's date or time field that holds text the page never sends (Node.unread) is set, not empty.
+const UNSET: Readonly<Record<string, (n: { value?: string; states?: readonly string[]; unread?: true }) => boolean>> = {
   AXPopUpButton: (n) => PROMPT.test((n.value ?? "").trim()),
-  AXDateField: (n) => (n.value ?? "").trim() === "",
-  AXTimeField: (n) => (n.value ?? "").trim() === "",
+  AXDateField: (n) => n.unread !== true && (n.value ?? "").trim() === "",
+  AXTimeField: (n) => n.unread !== true && (n.value ?? "").trim() === "",
   AXCheckBox: (n) => n.states?.includes("checked") !== true,
 };
 
@@ -77,7 +78,7 @@ export function owedFields(w: WindowState): OwedField[] {
     const recipient = composer && r === "to";
     const required = marked(n);
     if (!recipient && !required) continue;
-    out.push({ key: n.key, label, why: recipient ? "recipient" : "required", empty: (n.value ?? "").trim() === "" });
+    out.push({ key: n.key, label, why: recipient ? "recipient" : "required", empty: n.unread !== true && (n.value ?? "").trim() === "" });
   }
   return out;
 }

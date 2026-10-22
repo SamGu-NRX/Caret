@@ -8,8 +8,8 @@
 // History known: only the document, and only when this script ran at document_start, so every type change in it was
 // seen. A shadow root never is: its type changes before Caret's observer reached it (even within the same task that
 // added its host) were not seen. A late document is not either. A text input in a root whose history is not known, or
-// one that may replace a removed password input (Replacements), gives no value, no caret text and no readings
-// (valueWithheld).
+// one that may replace a removed password input (Replacements), gives no caret text, compare or copy, and no hasValue
+// or rev while it holds text (historyDoubt).
 import { notePassword, noteTypeChange, notedPassword, revealable, withheldForHistory } from "./secret.ts";
 import { canHost, shadowRootOf } from "./shadow.ts";
 
@@ -141,10 +141,12 @@ export function watchPasswords(root: Document | ShadowRoot, fromStart: boolean):
 }
 
 /**
- * Whether `el`'s value, caret text and act readings are withheld: a text input in a root whose type history is not
- * known, or one that may have replaced a removed password input.
+ * Why `el`'s text is in doubt as a possibly revealed password, or null: a text input in a root whose type history is not
+ * known (`unknownHistory`), or one that may have replaced a removed password input (`replacement`). Such a field's text
+ * gives no caret text, no compare and no copy, and its hasValue and rev say nothing while it holds text (content/revs.ts).
  */
-export function valueWithheld(el: Element): boolean {
+export function historyDoubt(el: Element): "unknownHistory" | "replacement" | null {
   const input = { tag: el.localName, type: el instanceof HTMLInputElement ? el.type : "" };
-  return withheldForHistory(input, known.has(el.getRootNode())) || (el instanceof HTMLInputElement && replacements.ambiguous(el));
+  if (withheldForHistory(input, known.has(el.getRootNode()))) return "unknownHistory";
+  return el instanceof HTMLInputElement && replacements.ambiguous(el) ? "replacement" : null;
 }

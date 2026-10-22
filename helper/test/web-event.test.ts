@@ -205,14 +205,21 @@ describe("the same sentence in Apple Mail", () => {
     ]);
   });
 
-  // event-card.ts onChanges judges a conversation line only when it arrives while the user is in a field; the journey's
-  // row 1 opens the thread first and then goes to the reply, so Apple Mail makes no offer in that order either.
-  it("makes no offer from a line that was on screen before the user went to the reply", async () => {
+  // The journey's row 1 order: the thread is opened first and then the user goes to the reply. Entering the reply judges
+  // the thread's latest lines already on screen (#57, event-card.ts enteredConversation), so Apple Mail offers the coffee
+  // in this order too; the web thread above still does not, since its walk carries no message text.
+  it("offers the coffee from a line that was on screen before the user went to the reply, and adds its title, date, start and end", async () => {
     clock += 1000;
     await helper.handleReader(snap(lines, { at: clock, windowId: THREAD, app: MAIL, title: maya.subject, focused: true, values }));
     clock += 1000;
     await helper.handleReader(snap([...lines, field(REPLY, "Sounds good", { role: "AXTextArea" })], { at: clock, windowId: THREAD, app: MAIL, title: maya.subject, focused: true, focusedKey: REPLY, values }));
     await helper.eventsSettled;
-    expect(offers()).toEqual([]);
+    const o = offers();
+    expect(o.map((x) => helper.events.shown().find((e) => e.offerKey === x.offerKey)?.title)).toEqual([coffee.title]);
+    expect(o[0]?.field).toMatchObject({ windowId: THREAD, key: REPLY });
+    expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: o[0]?.offerKey ?? "", actionId: "add", overrides: {}, at: clock })).toMatchObject({ outcome: "done", acted: 1 });
+    expect([...calendar.events.values()].map((e) => ({ title: e.title, date: local(e.start).date, start: local(e.start).time, end: local(e.end).time }))).toEqual([
+      { title: coffee.title, date: coffee.date, start: coffee.start, end: coffee.end },
+    ]);
   });
 });

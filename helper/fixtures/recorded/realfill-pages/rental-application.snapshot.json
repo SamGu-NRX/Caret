@@ -84,7 +84,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "First name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -104,7 +105,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Middle name",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       507.2,
@@ -124,7 +126,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Last name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       771.8,
@@ -144,7 +147,8 @@
      "kind": "date",
      "role": "textbox",
      "name": "Date of birth *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -164,7 +168,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Social Security number *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       639.5,
@@ -184,7 +189,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email address *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -204,7 +210,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Mobile phone *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       639.5,
@@ -224,7 +231,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Street address *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -244,7 +252,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Apt / Unit (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       831,
@@ -264,7 +273,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "City *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -566,7 +576,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "ZIP code *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       834.5,
@@ -586,7 +597,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Moved in (MM/YYYY) *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -606,7 +618,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Monthly rent ($) *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       639.5,
@@ -626,7 +639,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "Reason for moving (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -646,7 +660,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Landlord or property manager name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -666,7 +681,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Landlord phone *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       639.5,
@@ -686,7 +702,8 @@
      "kind": "date",
      "role": "textbox",
      "name": "Desired move-in date *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -808,7 +825,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Current employer *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -828,7 +846,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Job title",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       639.5,
@@ -848,7 +867,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Gross monthly income ($) *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       242.5,
@@ -868,7 +888,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Vehicle make and model (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       639.5,
