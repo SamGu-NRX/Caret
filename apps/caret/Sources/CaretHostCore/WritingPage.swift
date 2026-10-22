@@ -33,6 +33,8 @@ public enum WritingPage {
 
     public struct State: Equatable, Sendable {
         public var keys = GhostKeys.caret
+        /// Plain clipboard context is an explicit opt-in and starts off.
+        public var clipboardContext = false
         /// Nil draws no Model group (renders and tests that leave it out).
         public var model: ModelPanel?
         /// The How you write editor's text, and the saved text it started from.
@@ -53,7 +55,7 @@ public enum WritingPage {
         public init() {}
 
         public static func == (a: State, b: State) -> Bool {
-            a.keys == b.keys && a.aboutDraft == b.aboutDraft && a.aboutSaved == b.aboutSaved && a.entries == b.entries
+            a.keys == b.keys && a.clipboardContext == b.clipboardContext && a.aboutDraft == b.aboutDraft && a.aboutSaved == b.aboutSaved && a.entries == b.entries
                 && a.editing?.id == b.editing?.id && a.editing?.draft == b.editing?.draft && a.hereApp == b.hereApp
                 && a.herePage == b.herePage && a.appsOff == b.appsOff && a.problem == b.problem && a.entryProblem == b.entryProblem && a.model == b.model
         }

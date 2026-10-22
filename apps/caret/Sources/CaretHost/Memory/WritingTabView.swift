@@ -19,6 +19,7 @@ struct WritingTabView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             about
+            clipboardContext
             entries
             keys
             appsOff
@@ -57,6 +58,23 @@ struct WritingTabView: View {
             Hairline()
         }
         .probed("writing.about")
+    }
+
+    // MARK: - Clipboard context
+
+    private var clipboardContext: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            GroupHead(text: "Inline context")
+                .padding(.top, 14)
+                .padding(.bottom, 2)
+            SwitchRow(
+                title: "Use clipboard text",
+                detail: "When on, plain clipboard text can help local Tab suggestions. Concealed, temporary and secret text is never used.",
+                isOn: state.clipboardContext
+            ) { send(.clipboardContext($0)) }
+                .probed("switch.clipboardContext")
+            Hairline()
+        }
     }
 
     // MARK: - One app or site

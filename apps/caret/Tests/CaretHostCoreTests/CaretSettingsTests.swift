@@ -5,6 +5,21 @@ import XCTest
 final class CaretSettingsTests: XCTestCase {
     private func rule(_ gate: GatePolicy, _ family: String) -> GatePolicy.Rule? { gate.rules.first { $0.family == family } }
 
+    func testClipboardContextDefaultsOffAndRoundTrips() throws {
+        var s = CaretSettings()
+        XCTAssertFalse(s.clipboardContext)
+        s.clipboardContext = true
+        let back = try JSONDecoder().decode(CaretSettings.self, from: JSONEncoder().encode(s))
+        XCTAssertTrue(back.clipboardContext)
+    }
+
+    func testClipboardContextMigratesOffWhenAbsent() throws {
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(CaretSettings())) as? [String: Any])
+        var old = encoded
+        old.removeValue(forKey: "clipboardContext")
+        XCTAssertFalse(try JSONDecoder().decode(CaretSettings.self, from: JSONSerialization.data(withJSONObject: old)).clipboardContext)
+    }
+
     func testTheDefaultsHelpWithEverythingAtBalancedWithThePebble() {
         let s = CaretSettings()
         XCTAssertEqual(s.roles, Set(CaretRole.allCases))
