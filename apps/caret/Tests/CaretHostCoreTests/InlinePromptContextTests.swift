@@ -26,6 +26,15 @@ final class InlinePromptContextTests: XCTestCase {
         XCTAssertTrue(memory.samples(for: "mail", at: now.addingTimeInterval(InlineWritingMemory.retention + 1)).isEmpty)
     }
 
+    func testWritingMemoryExpiresWhenTheTimerPurgesWithoutAReadOrWrite() {
+        var now = Date(timeIntervalSince1970: 1000)
+        let memory = InlineWritingMemory(clock: { now })
+        memory.record("safe", appBundleIdentifier: "mail", secure: false, detector: SensitiveTextDetector())
+        now = now.addingTimeInterval(InlineWritingMemory.retention)
+        memory.purgeExpired()
+        XCTAssertTrue(memory.samples(for: "mail").isEmpty)
+    }
+
     func testPasteboardPolicyRejectsOptOutMarkersBudgetAndSecrets() {
         let policy = InlinePasteboardPolicy()
         let detector = Detector(secret: "token")

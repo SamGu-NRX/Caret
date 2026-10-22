@@ -1,4 +1,5 @@
 import AppCompatibility
+import AppKit
 import AutocompleteCore
 import CaretHostCore
 import ConstrainedGeneration
@@ -60,8 +61,11 @@ final class GhostTextEngine {
     /// Context captured by the host for the next local inline prompt. Capture and filtering stay outside
     /// the model engine so the policy can be tested without loading a model.
     var inlinePromptContext = InlinePromptContext()
-    private var writingMemory = InlineWritingMemory()
-    var secretDetector: InlineSecretDetecting = NoopInlineSecretDetector()
+    private let writingMemory = InlineWritingMemory()
+    private var expiryTimer: Timer?
+    var secretDetector: InlineSecretDetecting = SensitiveTextDetector()
+    /// The host supplies a policy-filtered pasteboard snapshot at request time.
+    var pasteboardSnapshot: () -> (plainText: String?, types: Set<String>)? = { nil }
 
     func recordWriting(_ text: String, appBundleIdentifier: String, secure: Bool) {
         writingMemory.record(text, appBundleIdentifier: appBundleIdentifier, secure: secure, detector: secretDetector)
@@ -117,7 +121,12 @@ final class GhostTextEngine {
     init(compatibilityStore: AppCompatibilityStore) {
         self.compatibilityStore = compatibilityStore
         self.filter = DefaultCandidateFilter(compatibilityStore: compatibilityStore, wordRecognizer: SystemWordRecognizer())
+        expiryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.writingMemory.purgeExpired()
+        }
     }
+
+    deinit { expiryTimer?.invalidate() }
 
     func load(modelURL: URL, prependBOS: Bool? = nil, profileDirectory: URL = EngineLoader.profileDirectory) async {
         state = .loading
@@ -295,10 +304,25 @@ final class GhostTextEngine {
         makeRequest(for: context, policy: compatibilityStore.policy(for: context), origin: origin)
     }
 
+    private static func approximateTokenCount(_ text: String) -> Int {
+        text.split { $0.isWhitespace || $0.isPunctuation }.count
+    }
+
     private func makeRequest(
         for context: TextFieldContext, policy: CompletionPolicy, tokens override: Int? = nil, origin: String? = nil
     ) -> CompletionRequest {
         updateWritingContext(for: context.target.bundleIdentifier)
+        if let snapshot = pasteboardSnapshot() {
+            inlinePromptContext.pasteboardText = InlinePasteboardPolicy().acceptedText(
+                enabled: SettingsStore.shared.settings.clipboardContext,
+                plainText: snapshot.plainText,
+                types: snapshot.types,
+                detector: secretDetector,
+                tokenCount: Self.approximateTokenCount
+            )
+        } else {
+            inlinePromptContext.pasteboardText = nil
+        }
         // Token healing: prompt from the last clean token boundary and force the typed stem back
         // out, so the model can reach the whole-word token (ADR-019).
         let heal = MidWordHealing.plan(for: context)

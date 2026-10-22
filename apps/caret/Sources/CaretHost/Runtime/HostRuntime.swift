@@ -179,6 +179,11 @@ public final class HostRuntime {
         let status = self.status
         let policy = TargetPolicy(allowedBundleIDs: configuration.allowedBundleIDs, allowedPIDs: configuration.allowedPIDs)
         engine = GhostTextEngine(compatibilityStore: compatibilityStore)
+        engine.pasteboardSnapshot = {
+            let pasteboard = NSPasteboard.general
+            let types = Set((pasteboard.types ?? []).map(\.rawValue))
+            return (pasteboard.string(forType: .string), types)
+        }
         overlay = GhostOverlay(compatibilityStore: compatibilityStore, overflow: configuration.ghostOverflow)
         let coordinator = HostCoordinator(arbiter: arbiter, status: status, engine: engine, overlay: overlay, policy: policy)
         self.coordinator = coordinator

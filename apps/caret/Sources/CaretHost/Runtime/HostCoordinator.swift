@@ -99,8 +99,10 @@ final class HostCoordinator {
         route?.observe(field)
         let context = snapshot.context
         // Keep only text typed in an eligible native field. The value stays in the engine's memory-only
-        // ten-minute store; the secret detector protocol is awaiting the Swift port from PR #68.
-        if wordsAllowed(), !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
+        // ten-minute store and uses the same target policy as offers.
+        if wordsAllowed(),
+           policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
+           !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
            !SecretField.holdsSecret(field, traits: context.traits),
            ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) {
             engine.recordWriting(context.beforeCursor, appBundleIdentifier: field.identity.bundleID, secure: field.secure)

@@ -4,9 +4,9 @@ public protocol InlineSecretDetecting {
     func containsSecret(_ text: String) -> Bool
 }
 
-public struct NoopInlineSecretDetector: InlineSecretDetecting {
+public struct SensitiveTextDetector: InlineSecretDetecting {
     public init() {}
-    public func containsSecret(_ text: String) -> Bool { false }
+    public func containsSecret(_ text: String) -> Bool { SensitiveText.kind(in: text) != nil }
 }
 
 /// Optional context supplied to the on-device inline prompt. The host owns capture and
@@ -32,7 +32,7 @@ public struct InlinePromptContext: Equatable, Sendable {
 }
 
 /// Memory-only writing samples. Entries are scoped to the focused app and expire after ten minutes.
-public struct InlineWritingMemory: Sendable {
+public final class InlineWritingMemory: @unchecked Sendable {
     public struct Entry: Sendable, Equatable {
         public let appBundleIdentifier: String
         public let text: String
@@ -46,20 +46,24 @@ public struct InlineWritingMemory: Sendable {
 
     public static let retention: TimeInterval = 10 * 60
     private var entries: [Entry] = []
-    public init() {}
+    private let clock: () -> Date
+    public init(clock: @escaping () -> Date = Date.init) { self.clock = clock }
 
-    public mutating func clear() { entries.removeAll() }
-    public mutating func record(_ text: String, appBundleIdentifier: String, at now: Date = Date(), secure: Bool, detector: InlineSecretDetecting) {
-        prune(at: now)
+    public func clear() { entries.removeAll() }
+    public func record(_ text: String, appBundleIdentifier: String, at now: Date? = nil, secure: Bool, detector: InlineSecretDetecting) {
+        let now = now ?? clock()
+        purgeExpired(at: now)
         guard !secure, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !detector.containsSecret(text) else { return }
         entries.append(Entry(appBundleIdentifier: appBundleIdentifier, text: text, recordedAt: now))
     }
-    public mutating func samples(for appBundleIdentifier: String, at now: Date = Date()) -> [String] {
-        prune(at: now)
+    public func samples(for appBundleIdentifier: String, at now: Date? = nil) -> [String] {
+        purgeExpired(at: now ?? clock())
         return entries.filter { $0.appBundleIdentifier == appBundleIdentifier }.map(\.text)
     }
-    private mutating func prune(at now: Date) {
-        entries.removeAll { now.timeIntervalSince($0.recordedAt) > Self.retention }
+    /// Called by the host's expiry timer. It does not read the memory for a prompt.
+    public func purgeExpired(at now: Date? = nil) {
+        let now = now ?? clock()
+        entries.removeAll { now.timeIntervalSince($0.recordedAt) >= Self.retention }
     }
 }
 
