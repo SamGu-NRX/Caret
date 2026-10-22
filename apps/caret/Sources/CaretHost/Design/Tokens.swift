@@ -13,9 +13,10 @@ enum Tokens {
         contrastAlpha: CGFloat? = nil, contrastDarkAlpha: CGFloat? = nil
     ) -> NSColor {
         NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            let match = appearance.bestMatch(from: [.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua])
+            let isDark = match == .darkAqua || match == .accessibilityHighContrastDarkAqua
             let raised = (contrastLight != nil || contrastDark != nil || contrastAlpha != nil || contrastDarkAlpha != nil)
-                && contrastRaised()
+                && (match == .accessibilityHighContrastAqua || match == .accessibilityHighContrastDarkAqua)
             let hex = isDark
                 ? (raised ? (contrastDark ?? dark) : dark)
                 : (raised ? (contrastLight ?? light) : light)
@@ -39,51 +40,6 @@ enum Tokens {
     }
 
     // MARK: Increase Contrast
-
-    /// Whether the user turned on Increase Contrast (System Settings > Accessibility > Display).
-    /// False until a contrast variant's first resolve installs the observation below, which reads
-    /// the workspace once and keeps the value current. Tests set it directly.
-    @MainActor static var increaseContrast: Bool {
-        get { raiseContrast ?? false }
-        set { raiseContrast = newValue }
-    }
-
-    /// Nil until synced from the workspace once.
-    @MainActor private static var raiseContrast: Bool?
-
-    @MainActor private static var contrastObservation: NSObjectProtocol?
-
-    /// One-time: reads the setting, then keeps `increaseContrast` in step with it and marks every
-    /// visible window for display, so drawn panels re-resolve their colors — a dynamic provider
-    /// otherwise re-runs only on an appearance change. Idempotent.
-    @MainActor static func installContrastObservation() {
-        guard contrastObservation == nil else { return }
-        if raiseContrast == nil {
-            raiseContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-        }
-        contrastObservation = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
-            object: NSWorkspace.shared,
-            queue: .main
-        ) { _ in
-            MainActor.assumeIsolated {
-                raiseContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-                for window in NSApp?.windows ?? [] where window.isVisible {
-                    window.contentView?.needsDisplay = true
-                }
-            }
-        }
-    }
-
-    /// Only a token with a variant asks. Off the main thread — where off-screen renders resolve —
-    /// the plain value holds, the same rule `TokenProbe` follows for `hidden`.
-    private static func contrastRaised() -> Bool {
-        guard Thread.isMainThread else { return false }
-        return MainActor.assumeIsolated {
-            installContrastObservation()
-            return increaseContrast
-        }
-    }
 
     // MARK: Ink
 
@@ -290,10 +246,10 @@ enum Tokens {
         static let draw: Double = 0.24
     }
 
-    /// Ghost text and ghost fill: the host's color at this opacity, 0.65 in both themes — black
-    /// ghost on a white field reaches 7.0:1 (0.45 was 3.4:1), white ghost on a #1E1E1E field
-    /// 7.7:1 (0.50 was 5.1:1).
-    static func ghostOpacity(dark: Bool) -> Double { 0.65 }
+    /// Ghost text and ghost fill: normal contrast keeps the original opacity; Increase Contrast raises it.
+    static func ghostOpacity(dark: Bool, highContrast: Bool = false) -> Double {
+        highContrast ? 0.65 : (dark ? 0.50 : 0.45)
+    }
 }
 
 extension Color {
