@@ -72,6 +72,12 @@ final class WritingCheckTests: XCTestCase {
         assertFix("Je suis  là.", "  ", " ", .doubledSpace, language: "fr")
     }
 
+    func testUnknownLanguageUsesOnlyLanguageNeutralRules() {
+        assertFix("日本語  テスト。", "  ", " ", .doubledSpace, language: "ja")
+        assertClean("the the", language: "ja", whole: true)
+        assertClean("the the", language: "zh-Hans", whole: true)
+    }
+
     func testSpacingThatIsMeant() {
         // Two spaces after a sentence is an old convention; four is alignment; after a colon, a label.
         let afterStop = "It ended.  Then we left."
