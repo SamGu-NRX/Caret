@@ -15,7 +15,7 @@ import { Store } from "../src/store.ts";
 import { ConsumerMessage, FirstLookReply, HelperMessage, PROTOCOL_VERSION, type FirstLook } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { jevPickingText } from "./builders.ts";
-import { LineClient, SocketReader, loadRecording, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, loadRecording, until, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const FIXTURE = fileURLToPath(new URL("../fixtures/golden/first-look.ndjson", import.meta.url));
 const lines = readFileSync(FIXTURE, "utf8").trim().split("\n");
@@ -97,13 +97,15 @@ describe("the first look over the socket", () => {
   };
 
   beforeEach(async () => {
+    // Each test owns a fresh host and server; its request IDs must not depend on shuffled test order.
+    n = 0;
     dir = mkdtempSync(join(tmpdir(), "caret-first-look-"));
     store = new Store(join(dir, "data"));
     asked = 0;
     ask = fill;
     // This test's helper talks to this test's server only. Through the `server` variable, a run still in
     // flight when its test ended published its stop into a later test's host (B13's socket flake).
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({
       store,
       askJev: (req) => (asked++, ask(req)),
@@ -116,7 +118,8 @@ describe("the first look over the socket", () => {
     server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     await until(() => helper.hasReader);
   });

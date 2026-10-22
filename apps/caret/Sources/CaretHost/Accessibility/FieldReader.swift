@@ -23,6 +23,22 @@ struct FieldState: Sendable {
 enum FieldReader {
     private static let secureSubrole = "AXSecureTextField"
 
+    private static func value(of element: AXUIElement) -> String? {
+        var raw: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &raw)
+        let string = error == .success ? ((raw as? String) ?? (raw as? NSAttributedString)?.string) : nil
+        let count = error == .noValue ? AXRead.int("AXNumberOfCharacters", on: element) : nil
+        return emptyOrValue(string, error: error, characterCount: count)
+    }
+
+    /// The value as read, or "" for an empty Mac Catalyst text view: with no text it answers AXValue
+    /// with `kAXErrorNoValue` while its AXNumberOfCharacters is 0 (the VM's CatFix UITextView, run
+    /// 20261009T103304Z-38308; with text it returns the string). Any other missing value is unreadable.
+    static func emptyOrValue(_ string: String?, error: AXError, characterCount: Int?) -> String? {
+        if let string { return string }
+        return error == .noValue && characterCount == 0 ? "" : nil
+    }
+
     /// Reads the system-wide focused element. Nil when nothing is focused or the element exposes
     /// no string value and selection, which is the guard's "cannot verify" case.
     static func readFocused() -> FieldState? {
@@ -38,7 +54,7 @@ enum FieldReader {
 
     static func read(_ element: AXUIElement) -> FieldState? {
         guard let pid = AXRead.pid(of: element),
-              let value = AXRead.string(kAXValueAttribute, on: element),
+              let value = value(of: element),
               let range = AXRead.range(kAXSelectedTextRangeAttribute, on: element),
               range.location >= 0, range.length >= 0
         else { return nil }

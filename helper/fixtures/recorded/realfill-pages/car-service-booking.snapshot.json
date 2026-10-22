@@ -218,7 +218,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Current mileage *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       300,
@@ -238,7 +239,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "VIN (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       647,
@@ -363,7 +365,8 @@
      "kind": "date",
      "role": "textbox",
      "name": "Preferred date *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       300,
@@ -383,7 +386,8 @@
      "kind": "time",
      "role": "textbox",
      "name": "Preferred time *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       647,
@@ -478,7 +482,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Full name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       300,
@@ -498,7 +503,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       300,
@@ -518,7 +524,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Mobile phone *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       647,
@@ -538,7 +545,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "Comments for your service advisor",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       300,

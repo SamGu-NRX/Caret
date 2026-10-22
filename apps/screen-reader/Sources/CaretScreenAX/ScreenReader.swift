@@ -202,8 +202,10 @@ public final class ScreenReader {
         guard inputMonitor == nil else { return }
         inputMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { e in
             let isKey = e.type == .keyDown
+            // Read only to leave out Esc and to note a Tab (FieldInputs); no key code is sent.
+            let keyCode = isKey ? e.keyCode : 0
             let loc = NSEvent.mouseLocation
-            MainActor.assumeIsolated { self.inputSeen(isKey: isKey, location: loc) }
+            MainActor.assumeIsolated { self.inputSeen(isKey: isKey, keyCode: keyCode, location: loc) }
         }
     }
 
@@ -294,12 +296,19 @@ public final class ScreenReader {
     /// The user's own key or click in a watched process. The grants for the window it landed in end here, before
     /// the helper hears of it (B22 review): with the helper's socket full, the userInput below waits behind other
     /// output, and a write queued for that window must not land meanwhile. A window the reader cannot place ends
-    /// every grant of the process.
-    private func inputSeen(isKey: Bool, location: NSPoint) {
+    /// every grant of the process. A key other than Esc is also reported at the element it went to (fieldInput,
+    /// issue #26), after the userInput, so the helper pauses the task first.
+    private func inputSeen(isKey: Bool, keyCode: UInt16, location: NSPoint) {
         if isKey {
             guard let front = NSWorkspace.shared.frontmostApplication?.processIdentifier, watchedPids.contains(front) else { return }
             endGrants(pid: front, windowId: workers[front]?.keyWindowId())
-            ctx.emitter.send(.userInput(UserInput(at: nowMs(), pid: Int(front), kind: .key, point: nil)))
+            let at = nowMs()
+            ctx.emitter.send(.userInput(UserInput(at: at, pid: Int(front), kind: .key, point: nil)))
+            // A process with no worker has no focus the reader read: the key is placed in no window.
+            let report = workers[front] == nil
+                ? FieldInputs.report(keyCode: keyCode, at: at, pid: Int(front), windowId: nil, key: nil, focusMoved: false)
+                : workers[front]?.fieldInput(keyCode: keyCode, at: at)
+            if let report { ctx.emitter.send(.fieldInput(report)) }
             return
         }
         // Accessibility coordinates have their origin at the top left of the primary screen.
@@ -481,24 +490,20 @@ public struct DenyList: Sendable {
     public let prefixes: [String]
     public var count: Int { prefixes.count }
 
-    public static let defaults = [
-        "com.apple.keychainaccess", "com.apple.Passwords", "com.bitwarden.desktop", "com.1password", "com.agilebits",
-        "com.lastpass", "com.dashlane", "com.callpod.keeper", "org.keepassxc", "me.proton.pass", "ch.protonmail.pass",
-        "in.sinew.Enpass", "com.nordsec.nordpass", "com.apple.systempreferences.passwords",
-        // Terminals, System Settings and Caret itself (CaretHostCore ExcludedApps, with each one's reason).
-        "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "org.alacritty", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
-        "com.apple.systempreferences", "dev.caret.host", "dev.caret.screen", "dev.caret.node", "dev.caret.bridge",
-    ]
+    public static let defaults = ExcludedApps.entries.map(\.bundleIdentifier)
 
-    public init(prefixes: [String]) { self.prefixes = prefixes }
+    public init(prefixes: [String]) {
+        // beta.1 files contain only password managers. File entries may add exclusions, never remove required ones.
+        var seen = Set<String>()
+        self.prefixes = (Self.defaults + prefixes).filter { seen.insert($0).inserted }
+    }
 
     public func denies(_ bundleId: String) -> Bool {
         prefixes.contains { bundleId == $0 || bundleId.hasPrefix($0 + ".") }
     }
 
-    /// Reads the file, creating it with the defaults when it does not exist. An unreadable file is an error, not an empty list.
-    /// The defaults always apply on top of the file: they mirror CaretHostCore's ExcludedApps, which the host refuses
-    /// anyway, and a file written by an older Caret lacks the entries added since (terminals, System Settings, Caret).
+    /// Adds file entries to the required set without rewriting existing files. Creates a missing file with defaults.
+    /// An unreadable file is an error, not an empty list.
     public static func load(path: String) throws -> DenyList {
         let fm = FileManager.default
         if !fm.fileExists(atPath: path) {
@@ -508,7 +513,6 @@ public struct DenyList: Sendable {
         }
         let text = try String(contentsOfFile: path, encoding: .utf8)
         let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-        let listed = lines.filter { !$0.isEmpty && !$0.hasPrefix("#") }
-        return DenyList(prefixes: listed + defaults.filter { !listed.contains($0) })
+        return DenyList(prefixes: lines.filter { !$0.isEmpty && !$0.hasPrefix("#") })
     }
 }

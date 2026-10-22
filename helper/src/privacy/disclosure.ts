@@ -5,13 +5,13 @@
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
 import { assertNoExcludedValue, cut, flat, fold, OWNER_NOTE_CHARS, sectionTexts, SnippetLedger, spansOf, type Snippet, type ViewSpan } from "../privacy.ts";
+import { checkFirstLookOpen, checkFirstLookText, firstLookActive, type Span } from "./first-look-allow-list.ts";
 import { breachWithNotes, measure, normalizedUnits, OperationLedger, splitNotes, viewInventory, type Breach, type Measurement, type OwnerNotes } from "./ledger/account.ts";
-import { nodePart, sourceLines, sourcePieces, splitLines, wholePart, type SourceAt } from "./ledger/source.ts";
+import { collapsedMap, lineEndAt, lineStartAt, nextLineStart, nodePart, partsOf, sourceLine, sourceLines, sourcePieces, splitLines, wholePart, type SourceAt } from "./ledger/source.ts";
 import { spanKey } from "./ledger/measure.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits, type DecodedUnit } from "./ledger/units.ts";
 import { LedgerEncodingError } from "./ledger/normalize.ts";
-import { checkFirstLookOpen, checkFirstLookText } from "./first-look-allow-list.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
@@ -66,12 +66,17 @@ function nodeSpans(view: WindowState, key: string): ViewSpan[] {
  * that value was read from, whole. The one rule for a candidate (fromView), a derivation's basis (basis) and plan text
  * (planSpans): a derivation from a typed value charged nothing when only candidate() applied it.
  */
-function textSpans(view: WindowState, text: string, at?: SourceAt | null): ViewSpan[] {
+function textSpans(view: WindowState, text: string, cache: WeakMap<WindowState, Map<string, ViewSpan[]>>, at?: SourceAt | null): ViewSpan[] {
   if (at !== undefined && at !== null) return [{ view, at }];
+  let known = cache.get(view);
+  const hit = known?.get(text);
+  if (hit !== undefined) return hit;
   const spans: ViewSpan[] = [{ view, text }];
   const lines = viewInventory(view).lines;
   const pieces = sourcePieces(text);
   if (!pieces.every((p) => lines.some((l) => l.includes(p)))) for (const v of view.values) if (sourceLines(v.text).some((l) => pieces.some((p) => l.includes(p)))) spans.push(...nodeSpans(view, v.nodeKey));
+  if (known === undefined) cache.set(view, (known = new Map()));
+  known.set(text, spans);
   return spans;
 }
 
@@ -307,6 +312,18 @@ export class Disclosure extends SnippetLedger {
   private readonly ways = new Map<string, MintReason[][]>();
   /** Texts jsonText wrote: verify parses each and checks the strings it holds against the shape. */
   private readonly asJson = new Set<string>();
+  // viewHolds by view and text: a 50-field fill mints the same note from the same view once per field (fill.ts noteOf),
+  // and the search took a tenth of its preview's CPU. The view is immutable and viewHolds reads nothing else.
+  private readonly holds = new WeakMap<WindowState, Map<string, boolean>>();
+
+  private viewHolds(view: WindowState, text: string): boolean {
+    let known = this.holds.get(view);
+    if (known === undefined) this.holds.set(view, (known = new Map()));
+    let hit = known.get(text);
+    if (hit === undefined) known.set(text, (hit = viewHolds(view, text)));
+    return hit;
+  }
+
   /**
    * Section 4: each minted text's declared spans, with the redacted view each was read from: the source range a producer
    * recorded where it read the text, or, from a producer that cannot know its range, the text itself (which charges
@@ -314,6 +331,21 @@ export class Disclosure extends SnippetLedger {
    * (ledger/measure.ts spanPositions).
    */
   private readonly spans = new Map<string, ViewSpan[]>();
+  /**
+   * First-look preview (v2/access): the user's own text (a saved value, an instruction) each minted text carries, through
+   * composition, so a template around it cannot send words the preview never showed. Read only by verify's first-look
+   * check; it charges nothing.
+   */
+  private readonly originsOf = new Map<string, Set<string>>();
+
+  private carryOrigins(text: string, parts: readonly string[]): void {
+    const origins = new Set(this.originsOf.get(text));
+    for (const part of parts) for (const origin of this.originsOf.get(part) ?? []) origins.add(origin);
+    if (origins.size > 0) this.originsOf.set(text, origins);
+  }
+  // Whole-note fallback lookup took 31% of sampled product CPU in the 100-field preview. Its result depends only
+  // on the immutable view and text. Keep it for this Disclosure, not admission decisions or mutable ledger charges.
+  private readonly sourceSpans = new WeakMap<WindowState, Map<string, ViewSpan[]>>();
 
   /** Adds declared spans to a minted text. */
   private declareSpans(text: string, spans: Iterable<ViewSpan>): void {
@@ -325,30 +357,66 @@ export class Disclosure extends SnippetLedger {
     }
   }
 
-  /**
-   * The saved values and user instructions each minted text carries, whole, through every composition. A first look's
-   * allow-list checks them line by line (first-look-allow-list.ts): a template cannot hide words the preview never showed.
-   */
-  private readonly origins = new Map<string, Set<string>>();
-
-  private carryOrigins(text: string, parts: readonly string[]): void {
-    const all = new Set(this.origins.get(text));
-    for (const p of parts) for (const o of this.origins.get(p) ?? []) all.add(o);
-    if (all.size > 0) this.origins.set(text, all);
-  }
-
-  /** A composed text, recorded with its ways, carrying the declared spans and origins of `parts`. */
+  /** A composed text, recorded with its ways, carrying the declared spans of `parts`. */
   private composed(text: string, ways: readonly (readonly MintReason[])[], parts: readonly string[]): ModelText {
-    this.declareSpans(text, parts.flatMap((p) => this.spans.get(p) ?? []));
     this.carryOrigins(text, parts);
+    this.declareSpans(text, parts.flatMap((p) => this.spans.get(p) ?? []));
     return this.recordWays(text, ways);
   }
 
   /** Records `text` as minted under `reasons`, as one way of minting it, and brands it. */
   private record(text: string, reasons: Iterable<MintReason>): ModelText {
     const way = [...reasons];
-    if (way.includes("memory") || way.includes("instruction")) this.origins.set(text, new Set([...(this.origins.get(text) ?? []), text]));
+    if (way.includes("memory") || way.includes("instruction")) this.originsOf.set(text, new Set([...(this.originsOf.get(text) ?? []), text]));
     return this.recordWays(text, [way]);
+  }
+
+  /** Whether spansOfText reads `text`'s Spans from the measured windows (planSpans) rather than its declared spans. */
+  private spansFromWindows(text: string): boolean {
+    if ((this.spans.get(text) ?? []).length > 0) return false;
+    const reasons = this.mints.get(text);
+    return (["candidate", "held", "plan", "drafted", "memory"] as const).some((r) => reasons?.has(r) === true);
+  }
+
+  /**
+   * First-look preview (v2/access): the stretches of whitespace-collapsed window lines a minted text reveals, as Spans,
+   * read from its declared spans. A range span gives the collapsed stretch of each line it covers; a text span every
+   * line of its view that holds it. Window text or a saved value with no declared span gets the lines of the measured
+   * windows that hold it, computed here and never declared, so nothing more is charged.
+   */
+  spansOfText(text: string): Span[] {
+    const out: Span[] = [];
+    const push = (s: Span): void => {
+      if (s.len > 0 && !out.some((x) => x.windowId === s.windowId && x.line === s.line && x.at === s.at && x.len === s.len)) out.push(s);
+    };
+    // Window text minted with no declared span (a producer that charged it through the early check alone), and saved
+    // values: the lines of the measured windows that hold it, as the seal measures it.
+    const declared: readonly ViewSpan[] = this.spansFromWindows(text) ? this.planSpans(text) : (this.spans.get(text) ?? []);
+    for (const sp of declared) {
+      const windowId = sp.view.window.windowId;
+      const parts = partsOf(sp.view);
+      if ("at" in sp) {
+        const raw = parts.find((p) => p.id === sp.at.part)?.raw;
+        if (raw === undefined) continue;
+        for (let ls = lineStartAt(raw, sp.at.start); ls >= 0; ) {
+          const le = lineEndAt(raw, ls);
+          const { text: line, from } = collapsedMap(raw.slice(ls, le));
+          const hit = from.flatMap((f, i) => (f + ls >= sp.at.start && f + ls < sp.at.end ? [i] : []));
+          if (hit.length > 0) push({ windowId, line, at: hit[0]!, len: hit[hit.length - 1]! - hit[0]! + 1 });
+          if (le >= sp.at.end) break;
+          ls = nextLineStart(raw, le);
+        }
+      } else {
+        for (const piece of splitLines(sp.text).map(sourceLine).filter((t) => t !== "")) {
+          for (const p of parts) for (const raw of splitLines(p.raw)) {
+            const line = sourceLine(raw);
+            const at = line.indexOf(piece);
+            if (at >= 0) push({ windowId, line, at, len: piece.length });
+          }
+        }
+      }
+    }
+    return out;
   }
 
   /** Records `text` as minted in each of `ways` (each a set of reasons) and brands it. */
@@ -407,10 +475,10 @@ export class Disclosure extends SnippetLedger {
    */
   private fromView(view: RedactedWindow, text: string, reason: "descriptor" | "candidate" | "held", at?: SourceAt): ModelText | null {
     if (!isRedacted(view)) throw new UnmintedText(`a ${reason} was read from a window that is not a redacted view`);
-    if (text === "" || !viewHolds(view, text)) return null;
+    if (text === "" || !this.viewHolds(view, text)) return null;
     if (at !== undefined && !rangeHolds(view, at, text)) throw new Error(`a ${reason}'s recorded source range [${at.start}, ${at.end}) of ${JSON.stringify(at.part)} does not hold its text`);
     this.know(view);
-    const spans = textSpans(view, text, at);
+    const spans = textSpans(view, text, this.sourceSpans, at);
     if (!this.admitTexts([text], { under: view.window.windowId, kind: reason === "descriptor" ? "descriptor" : "candidate", spans })) return null;
     this.declareSpans(text, spans);
     return this.record(text, [reason]);
@@ -549,7 +617,7 @@ export class Disclosure extends SnippetLedger {
    * them that holds a line of it (whatever its length) is charged whole (ledger/measure.ts spanPositions).
    */
   private planSpans(text: string): ViewSpan[] {
-    return this.measuredWindows().flatMap((w) => textSpans(w.view, text));
+    return this.measuredWindows().flatMap((w) => textSpans(w.view, text, this.sourceSpans));
   }
 
 
@@ -733,7 +801,7 @@ export class Disclosure extends SnippetLedger {
     if (!viewHolds(view, text)) return null;
     if (at !== undefined && !rangeHolds(view, at, text)) throw new Error(`a basis's recorded source range [${at.start}, ${at.end}) of ${JSON.stringify(at.part)} does not hold its text`);
     this.know(view);
-    return new Basis(BASIS_TOKEN, this, text, view, textSpans(view, text, at));
+    return new Basis(BASIS_TOKEN, this, text, view, textSpans(view, text, this.sourceSpans, at));
   }
 
   /**
@@ -828,21 +896,30 @@ export class Disclosure extends SnippetLedger {
    * the body in paths: "" for a Jev wire body, "input" for a writer's input.
    */
   verify(purpose: string, body: unknown, root = ""): void {
-    // A first look the person consented to from its preview stops at the first text outside that preview.
+    // v2/access: during a first look the user previewed, a look that went stale or closed sends nothing.
     checkFirstLookOpen();
     // The user switched an app or a site off since this request's text was read (PV2 re-review): none of it is sent,
     // whichever window it came from, since what was read before the switch is not rechecked text by text.
     if (switchedOffCount() !== this.policy) throw new UnmintedText(`${purpose}: an app or a site was switched off after this request was built; it was not sent`);
     const shape = shapeOf(purpose);
     if (shape === null) throw new OutOfShape(`${purpose} has no request shape (privacy/shapes.ts), so nothing in it may be sent; it was not sent`);
+    // Spans are built only for a first look, the one reader of them: they took 12% of a 50-field preview's CPU, and
+    // checkFirstLookText dropped them when no look was active. planSpans also classifies the measured windows into the
+    // operation's strictest class (measuredWindows), so without a look that is still done, once: within this synchronous
+    // walk a second call adds nothing to the first.
+    const look = firstLookActive();
+    let classified = false;
     const check = (path: string, glob: string, v: string): void => {
       // A whole state sent as one JSON text (Disclosure.jsonText; engines/decide/harness.ts layaState) is checked as the
       // state that text writes, parsed from the text itself. Only there: anywhere else a JSON text is a text like any
       // other, held to its own slot's reasons and length (PV2 re-review).
       if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob, { count, scalar, key, container });
-      // An owner note is declared by its view rather than by spans (ownerNote): the whole note is what it reveals.
-      const note = this.ownerNotes.get(v);
-      checkFirstLookText(this.spans.get(v) ?? (note === undefined ? [] : [{ view: note, text: v }]), this.reasonsOf(v), v, [...(this.origins.get(v) ?? [])]);
+      // v2/access: during a first look, only text the preview showed (and saved text it showed) is sent.
+      if (look) checkFirstLookText(this.spansOfText(v), this.reasonsOf(v), v, [...(this.originsOf.get(v) ?? [])]);
+      else if (!classified && this.spansFromWindows(v)) {
+        classified = true;
+        this.measuredWindows();
+      }
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
       if (v.length > slot.max) {
@@ -948,6 +1025,7 @@ export class Disclosure extends SnippetLedger {
     };
     walk(written);
     this.asJson.add(text);
+    this.carryOrigins(text, parts);
     this.declareSpans(text, parts.flatMap((p) => this.spans.get(p) ?? []));
     return this.record(text, reasons);
   }

@@ -96,7 +96,7 @@ describe("page verbs", () => {
     const both = PageResult.parse(lines[27]);
     expect(both.outcome).toBe("failed");
     expect(both.choice?.matches).toEqual(["United States", "United States Minor Outlying Islands"]);
-    expect(both.readings?.afterBlur).toBe(both.readings?.before);
+    expect(both.readings?.sameAsBefore).toBe(true);
   });
 
   it("says Not on this site with a whole list of origins, and answers siteOff (W2)", () => {
@@ -153,7 +153,8 @@ describe("handshake vector", () => {
 describe("W3 page messages", () => {
   it("an undo's verb says rebind: false, its refusal is notSameElement, and no other rebind value is accepted", () => {
     const undo = PageCommand.parse(lines[31]);
-    expect(undo.verb).toMatchObject({ kind: "pageWrite", rebind: false, sameAs: "m1" });
+    // An undo of a text write is the page's own restore (pageRestore), naming what Caret wrote and never the text before.
+    expect(undo.verb).toMatchObject({ kind: "pageRestore", rebind: false, sameAs: "m1", wrote: "Ada" });
     expect(PageResult.parse(lines[32]).outcome).toBe("notSameElement");
     const verb = (lines[31] as { verb: Record<string, unknown> }).verb;
     expect(PageCommand.safeParse({ ...lines[31], verb: { ...verb, rebind: true } }).success).toBe(false);

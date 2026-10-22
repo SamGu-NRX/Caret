@@ -219,4 +219,19 @@ final class WritingArbiterTests: XCTestCase {
         arbiter.finishInsertion(claimID: claim.claimID, error: nil)
         XCTAssertNil(arbiter.publish(writingOffer()), "the field state the fix consumed is not offered again")
     }
+
+    /// After ⌘Z takes a rewrite back the field is the state its insertion consumed; the rewrite key
+    /// asking again is the user's request, not a stale snapshot (VM run 20261009T163954Z-51402).
+    func testTheRewriteKeyMayOfferOnAConsumedState() throws {
+        let arbiter = OfferArbiter()
+        _ = arbiter.publish(writingOffer())
+        guard case .consume(let claim) = arbiter.handleKeyDown(key(KeyStroke.tabKeyCode)) else { return XCTFail() }
+        _ = try arbiter.confirmRange(claim, live: live(text)).get()
+        arbiter.finishInsertion(claimID: claim.claimID, error: nil)
+        XCTAssertNil(arbiter.publish(writingOffer()))
+        let span = UTF16Span(start: 0, end: UTF16Text.length(text))
+        let rewrite = try XCTUnwrap(WritingOffer.rewrite(span: span, rewrites: ["We were late at the cafe."], live: live(text)))
+        let offer = Offer(text: "", kind: .writing(rewrite), target: target(text), fieldValue: text, caretUTF16: UTF16Text.length(text))
+        XCTAssertNotNil(arbiter.publish(offer))
+    }
 }

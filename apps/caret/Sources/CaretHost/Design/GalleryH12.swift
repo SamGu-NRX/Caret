@@ -23,7 +23,8 @@ extension Gallery {
             ("key", flow(ready)),
             ("key-typed", flow(typed)),
             ("key-checking", flow(checking)),
-            ("key-no-credits", flow(checking + [.jevKeyChecked(.noCredits, saved: true)])),
+            // The saved key restarts the helper, so the preview is built again; drawn once it is back.
+            ("key-no-credits", flow(checking + [.jevKeyChecked(.noCredits, saved: true), .previewReady(requestId: "preview-1-2", preview)])),
             ("key-rejected", flow(checking + [.jevKeyChecked(.rejected, saved: false)])),
             ("key-unreachable", flow(checking + [.jevKeyChecked(.unreachable, saved: false)])),
             ("key-alone-stored", flow(alone: true, stored: true, ready)),

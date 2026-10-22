@@ -6,11 +6,12 @@
   "outcome": "ok",
   "detail": "fixture detail",
   "readings": {
-    "before": "",
-    "afterInput": "Ada",
-    "afterBlur": "Ada",
-    "invalid": false,
-    "error": "fixture error"
+    "sameAsBefore": false,
+    "landed": true,
+    "equivalent": true,
+    "empty": false,
+    "typedBetween": false,
+    "rev": 3
   },
   "choice": {
     "flavor": "aria",

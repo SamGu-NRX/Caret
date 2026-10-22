@@ -7,7 +7,8 @@ import Security
 /// Starts the helper and caret-screen from inside Caret.app, as helper/src/launch.ts does from a terminal (B23):
 /// one 32-byte launch secret, made here and held only in this object's memory, written to each child's standard
 /// input (`--auth-fd 0`) and closed. The reader accepts a helper only if it proves it holds that secret, and the
-/// helper's page.sock key is derived from it, which is what the bridge relay proves (`pageKey`).
+/// helper's page.sock key is derived from it, which is what the bridge relay proves (`pageKey`), as is the key this
+/// Caret proves it is the helper's host with (`hostKey`).
 ///
 /// A child that exits on its own is started again with the same secret, within `RestartBudget`; past it both stop
 /// and `stopped` says why, for the menu's "Caret stopped. Restart".
@@ -72,12 +73,17 @@ final class ServiceLauncher {
     /// The helper is being stopped to start again with a new key; its exit is not a crash.
     private var helperRestartRequested = false
 
+    /// How `stop()` signals a child. Tests swap it to stand for a child that does not go away when killed.
+    private let sendSignal: (pid_t, Int32) -> Void
+
     /// Throws only when the system has no randomness to give, which ends the launch.
-    init(programs: CaretServices.Programs, home: CaretHome, log: @escaping (String) -> Void, storedKey: @escaping () -> String? = { nil }) throws {
+    init(programs: CaretServices.Programs, home: CaretHome, log: @escaping (String) -> Void, storedKey: @escaping () -> String? = { nil },
+         sendSignal: @escaping (pid_t, Int32) -> Void = { _ = kill($0, $1) }) throws {
         self.programs = programs
         self.home = home
         self.log = log
         self.storedKey = storedKey
+        self.sendSignal = sendSignal
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
             throw LaunchError("no random bytes for the launch secret (SecRandomCopyBytes failed)")
@@ -92,6 +98,9 @@ final class ServiceLauncher {
 
     /// The page key the helper derives from the secret (`HMAC(secret, "caret-page-key")`), for the bridge relay.
     func pageKey(_ derive: (Data) -> Data) -> Data { derive(secret) }
+
+    /// The host key the helper derives from the secret (`HostAuth.hostKey`), for this Caret's own helper connection.
+    var hostKey: Data { HostAuth.hostKey(launchSecret: secret) }
 
     /// The helper's socket the host connects to.
     var helperSocket: String { home.screenSocket }
@@ -129,29 +138,45 @@ final class ServiceLauncher {
         }
     }
 
-    /// Stops both children: SIGTERM, then SIGKILL after `grace` seconds. Returns once both are reaped.
-    func stop(grace: TimeInterval = 3) async {
+    /// Stops both children: SIGTERM, then SIGKILL after `grace` seconds, then waits at most `reapDeadline` seconds for
+    /// them to be reaped and returns either way. The quit and the hand-off to the login item wait on this, so it must
+    /// never wait without a deadline: beta.2's VM run (stale leg, host.log 2600-2601) hung here for good after a reader
+    /// was killed, leaving a Caret that could not quit. A child still there afterwards keeps its exit source and is
+    /// reaped whenever it does exit.
+    func stop(grace: TimeInterval = 3, reapDeadline: TimeInterval = 2) async {
         stopping = true
         helperRestartRequested = false
         generation += 1
         accessibilityPoll?.invalidate()
         accessibilityPoll = nil
-        let pids = [helper.status, reader.status].compactMap { s -> pid_t? in if case .running(let p) = s { return p } else { return nil } }
-        for pid in pids { kill(pid, SIGTERM) }
+        var children: [(pid_t, Which)] = []
+        if case .running(let p) = helper.status { children.append((p, .helper)) }
+        if case .running(let p) = reader.status { children.append((p, .reader)) }
+        // Also reaps directly each time, so an exit whose event came before waitpid could see it is not missed.
+        func anyLeft() -> Bool {
+            for (pid, which) in children where sources[pid] != nil { reap(pid, which) }
+            return children.contains { sources[$0.0] != nil }
+        }
+        for (pid, _) in children { sendSignal(pid, SIGTERM) }
         let deadline = Date().addingTimeInterval(grace)
-        while Date() < deadline, pids.contains(where: { sources[$0] != nil }) {
+        while Date() < deadline, anyLeft() {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
-        for pid in pids where sources[pid] != nil {
+        for (pid, _) in children where sources[pid] != nil {
             log("process \(pid) did not stop within \(Int(grace)) s of SIGTERM; killing it")
-            kill(pid, SIGKILL)
+            sendSignal(pid, SIGKILL)
         }
-        while pids.contains(where: { sources[$0] != nil }) {
+        let reaped = Date().addingTimeInterval(reapDeadline)
+        while Date() < reaped, anyLeft() {
             try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        for (pid, _) in children where sources[pid] != nil {
+            log("process \(pid) was killed but had not exited \(String(format: "%g", reapDeadline)) s later; Caret stops waiting for it")
         }
         helper.status = .stopped
         reader.status = .stopped
-        recordChildren()
+        // One still there stays in the children file, so the next Caret (the login item's copy) stops it (stopStale).
+        recordChildren(also: children.map(\.0).filter { sources[$0] != nil })
     }
 
     // MARK: - Starting
@@ -493,11 +518,12 @@ final class ServiceLauncher {
 
     /// Writes this home's running children, so a Caret that starts after this one was killed can stop them (a host
     /// killed outside launchd leaves its helper and reader running; under launchd the job's process group goes too).
-    private func recordChildren() {
-        var records: [ChildRecord] = []
+    private func recordChildren(also lingering: [pid_t] = []) {
+        var pids = lingering
         for s in [helper, reader] {
-            if case .running(let pid) = s.status, let r = Self.childRecord(pid) { records.append(r) }
+            if case .running(let pid) = s.status { pids.append(pid) }
         }
+        let records = pids.compactMap(Self.childRecord)
         guard let data = try? JSONEncoder().encode(records) else { return }
         FileManager.default.createFile(atPath: home.childrenFile, contents: data, attributes: [.posixPermissions: 0o600])
     }

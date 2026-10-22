@@ -51,6 +51,20 @@ enum MemoryAction: Equatable {
     case routing(Bool)
     /// H8: the calendar accepted events go to; nil for the default.
     case calendar(String?)
+    // Brief items 4, 6 and 7, the Writing tab: How you write's text and Save; an entry opened
+    // (by id), its text, Save, Cancel and Remove; the accept keys; an app turned off or back on.
+    case aboutText(String)
+    case saveAbout
+    case editEntry(String)
+    case entryText(String)
+    case saveEntry
+    case cancelEntry
+    case removeEntry(String)
+    case keys(GhostKeys)
+    case appOff(String)
+    case appOn(String)
+    /// Brief item 8: Download Caret's model, or stop the download running.
+    case model
 }
 
 /// "What Caret knows" (DIRECTION.md 5.8): what Caret remembers, in groups, and what it may do per
@@ -68,7 +82,7 @@ enum MemoryAction: Equatable {
 /// motion, since each follows a key or a click the user is watching. Under Reduce Motion only the
 /// wash (a color change) and the fades remain.
 struct MemoryView: View {
-    enum Tab: String, CaseIterable, Codable { case memory, permissions, sites }
+    enum Tab: String, CaseIterable, Codable { case memory, permissions, sites, writing }
 
     /// DIRECTION.md's 620 wide. 600 tall rather than 560: with the permissions footer fixed under the
     /// list, 560 left the table scrolling after its fourth rule in the gallery's state.
@@ -80,6 +94,16 @@ struct MemoryView: View {
     static let offline = "Caret can't reach its memory right now. This is what it knew last, and nothing here can change until it's back."
     static let reading = "Reading Caret's memory"
     static let permissionsIntro = "What Caret may do on its own, by kind of action."
+
+    /// The line under the title, for the tab shown.
+    static func intro(_ tab: Tab) -> String {
+        switch tab {
+        case .memory: return subtitle
+        case .permissions: return permissionsIntro
+        case .sites: return SitesPage.intro
+        case .writing: return WritingPageCopy.intro
+        }
+    }
 
     var state: MemoryBook.State
     var files = MemoryFiles.State()
@@ -93,6 +117,8 @@ struct MemoryView: View {
     var routing = false
     /// Permissions: "Calendar for new events" (H8); nil draws no row.
     var calendarRow: CalendarChoiceRow?
+    /// The Writing tab (brief items 4, 6 and 7).
+    var writing = WritingPage.State()
     var animated = true
     var now = Date()
     /// A row drawn as if the pointer were on it, for renders (hover does not exist off screen).
@@ -118,7 +144,7 @@ struct MemoryView: View {
                 .padding(.horizontal, 32)
                 .padding(.top, 34)
                 .layoutPriority(1)
-            TextTabs(tabs: [(Tab.memory, "Memory"), (.permissions, "Permissions"), (.sites, "Sites")], current: tab) { send(.tab($0)) }
+            TextTabs(tabs: [(Tab.memory, "Memory"), (.permissions, "Permissions"), (.sites, "Sites"), (.writing, WritingPageCopy.tab)], current: tab) { send(.tab($0)) }
                 .padding(.horizontal, 32)
                 .padding(.top, 18)
                 .layoutPriority(1)
@@ -129,6 +155,7 @@ struct MemoryView: View {
                     case .memory: memory
                     case .permissions: permissions
                     case .sites: sitesList
+                    case .writing: WritingTabView(state: writing, animated: animated, send: send)
                     }
                 }
                 .padding(.horizontal, 32)
@@ -147,8 +174,8 @@ struct MemoryView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            // Still, looking down at the list: it is what the figure knows.
-            FigureView(character: character, state: .noticed, facing: .right, size: 20, animated: false, gaze: CGVector(dx: 0.2, dy: 0.8))
+            // Looking down at the list: it is what the figure knows. Alive at rest; references freeze it.
+            FigureView(character: character, state: .noticed, facing: .right, size: 20, gaze: CGVector(dx: 0.2, dy: 0.8))
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 6 }
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 5) {
@@ -157,7 +184,7 @@ struct MemoryView: View {
                     .tracking(-0.3)
                     .foregroundStyle(Color(token: Tokens.ink))
                     .accessibilityAddTraits(.isHeader)
-                Text(tab == .memory ? Self.subtitle : tab == .permissions ? Self.permissionsIntro : SitesPage.intro)
+                Text(Self.intro(tab))
                     .font(Tokens.Font.chrome)
                     .foregroundStyle(Color(token: Tokens.ink2))
                     .fixedSize(horizontal: false, vertical: true)

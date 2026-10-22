@@ -4,6 +4,7 @@
 // it ("Texas" for "TX") is offered as that option, in that menu's question only; Jev picks among the offers and the
 // verifier checks the pick with the reading said. An option equal to the picked value mints under optionLabel. Every
 // name and value is from the synthetic realfill corpus or invented.
+import { onWire } from "./page-wire.ts";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -264,7 +265,7 @@ describe("V4 review: what a linked option must not do", () => {
   it("sends an option that matches only by case to the verifier, never minting it as the option's own label (re-review)", async () => {
     const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
     const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
-    const control = (id: string, kind: PageControl["kind"], name: string, options?: string[]): PageControl => ({ id, key: `form[f]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#f", rect: [0, 0, 100, 20], value: "", ...(options === undefined ? {} : { options: [{ value: "", label: "Select...", selected: true }, ...options.map((o) => ({ value: o, label: o, selected: false }))] }) });
+    const control = (id: string, kind: PageControl["kind"], name: string, options?: string[]): PageControl => onWire({ id, key: `form[f]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#f", rect: [0, 0, 100, 20], value: "", ...(options === undefined ? {} : { options: [{ value: "", label: "Select...", selected: true }, ...options.map((o) => ({ value: o, label: o, selected: false }))] }) });
     const page: PageSnapshot = {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
       frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/apply", navGen: 1, title: "Apply", headings: ["Apply"], iframes: [], excluded: {}, truncated: false, controls: [control("e1", "text", "First name"), control("e2", "select", "Portfolio", ["https://example.org/Profile", "https://example.org/work"])] }],

@@ -149,7 +149,7 @@ final class RoutingTests: XCTestCase {
             XCTAssertTrue(caps.contains(MemoryDocs.capability))
             XCTAssertTrue(caps.contains(HostHello.fillAllCapability))
             XCTAssertTrue(caps.contains(HostHello.askChoicesCapability))
-            let hello = try Self.object(JSONEncoder().encode(HostHello.make(pid: 5151, routing: on)))
+            let hello = try Self.object(JSONEncoder().encode(HostHello.make(pid: 5151, routing: on, host: true)))
             XCTAssertEqual(hello["capabilities"] as? [String], caps)
         }
     }

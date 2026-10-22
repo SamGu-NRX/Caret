@@ -139,6 +139,9 @@ function build(raw: WindowState, nodeKey: string | null): NoteUnit {
     const vt = v === undefined ? "" : unitText(v).trim();
     // (b): any line or node the view does not give is a cut, whatever it held.
     if (rt !== vt) complete = false;
+    // A web page's field that holds text the page never sends (counsel 2026-10-09): a note typed there is not in the
+    // unit, so the unit is incomplete, and no value from it is admitted on ownership.
+    if (r !== undefined && r.unread === true) complete = false;
     if (vt !== "") texts.push(vt);
   }
   const text = texts.join("\n");

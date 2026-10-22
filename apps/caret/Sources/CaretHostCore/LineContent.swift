@@ -9,7 +9,7 @@ import Foundation
 public enum FigureState: String, CaseIterable, Codable, Sendable {
     /// Enters, already looking at what it noticed.
     case noticed
-    /// Turns toward the offer and breathes.
+    /// Turns toward the offer and holds the look, blinking now and then.
     case offering
     /// Looks away, then leaves; the menu bar glyph tints Carrot.
     case working

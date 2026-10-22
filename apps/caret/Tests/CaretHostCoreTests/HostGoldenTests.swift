@@ -160,6 +160,18 @@ final class PageSightTests: XCTestCase {
         XCTAssertEqual(sight.debugInfo, PageSight.DebugInfo(shown: nil, asked: [6100], missing: [6100]))
     }
 
+    /// PR #16 review: turning Caret off in the browser takes its line down at once, and only its own.
+    func testTurningCaretOffInTheBrowserTakesItsLineDown() {
+        let (sight, _, take) = rig()
+        sight.receive(state(.missing), frontmostPID: 6100, paused: false)
+        _ = take()
+        sight.turnedOff(7000)
+        XCTAssertEqual(take(), [], "another app's switch leaves it")
+        sight.turnedOff(6100)
+        XCTAssertEqual(take(), [nil])
+        XCTAssertNil(sight.shown)
+    }
+
     func testTheLineLeavesWithItsBrowserAndAfterItsLifetime() {
         let (sight, clock, take) = rig()
         sight.receive(state(.missing), frontmostPID: 6100, paused: false)
@@ -185,12 +197,16 @@ final class PageSightTests: XCTestCase {
         XCTAssertEqual(take().count, 1)
     }
 
-    /// Add to Chrome is the next step for Chrome only; paused, Caret says nothing; a helper that
-    /// goes away takes what it said with it.
-    func testOnlyChromeAndNotWhilePausedOrAfterTheHelperGoes() {
+    /// Every Chromium browser hears it; Add to Chrome is offered where the installer can add it
+    /// (Chrome, Helium); paused, Caret says nothing; a helper that goes away takes what it said with it.
+    func testEveryBrowserHearsItAddOnlyWhereItCanNotWhilePausedOrAfterTheHelperGoes() {
         let (sight, _, take) = rig()
         sight.receive(state(.missing, AppRef(pid: 6200, bundleId: "com.brave.Browser", name: "Brave")), frontmostPID: 6200, paused: false)
-        XCTAssertEqual(take(), [])
+        XCTAssertEqual(take(), [PageSight.Line(browserPID: 6200, browserName: "Brave", canAdd: false)])
+        sight.receive(state(.missing, AppRef(pid: 6300, bundleId: "net.imput.helium", name: "Helium")), frontmostPID: 6300, paused: false)
+        XCTAssertEqual(take().last??.canAdd, true)
+        sight.frontmostChanged(6100, paused: false)
+        XCTAssertEqual(take(), [nil], "Helium's line goes with Helium")
         sight.receive(state(.missing), frontmostPID: 6100, paused: true)
         XCTAssertEqual(take(), [])
         sight.helperGone()

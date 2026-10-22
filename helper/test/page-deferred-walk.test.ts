@@ -1,6 +1,7 @@
 // The deferred walk (plans/fast-browser.md, "Latency budget"): a verified text write, native select or tick/radio check
 // patches the tab's last walk for that one control instead of walking the tab again, and one trailing walk follows the
 // last such act. Every other act re-walks as before. Every name here is invented.
+import { type TestField, onWire, readings as pageReadings, textRev } from "./page-wire.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PAGE_CHECKED, PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot, type PageVerb } from "../src/protocol.ts";
 import { EngineSession } from "../src/engines/session.ts";
@@ -12,7 +13,7 @@ const browser = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome
 const WIN = "page:eng1:7";
 const Q = "Are you legally authorized to work here?";
 
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({
+const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({
   id, key: `${kind}:${name.toLowerCase()}~${id}`, strongKey: null, kind, role: kind, name, form: null, rect: [0, 0, 100, 20], ...extra,
 });
 
@@ -36,10 +37,14 @@ function snapshot(id: string): PageSnapshot {
   };
 }
 
-const readings = (before: string, after: string) => ({ before, afterInput: after, afterBlur: after, invalid: false, error: null });
+/** A write's readings as the page computes them: what it held before and after, for a write of `after`, at its rev. */
+const readings = (before: string, after: string) => pageReadings(before, after, after, textRev(after));
 
 /** A session whose engine answers walks with snapshot() and every act with `result`. */
-function rig(result: (v: Exclude<PageVerb, { kind: "pageWalk" }>) => object = () => ({ outcome: "ok", detail: null })) {
+/** An act's answer as the content script gives it: a verified text write comes with the page's own readings. */
+const verified = (v: Exclude<PageVerb, { kind: "pageWalk" }>): object => ({ outcome: "ok", detail: null, ...(v.kind === "pageWrite" ? { readings: readings("", v.value) } : {}) });
+
+function rig(result: (v: Exclude<PageVerb, { kind: "pageWalk" }>) => object = verified) {
   const sent: HelperToEngine[] = [];
   const session = new EngineSession({ engine: "eng1", browser, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => {
     sent.push(m);
@@ -87,19 +92,29 @@ describe("a verified write patches the model instead of walking the tab", () => 
     expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite"]);
     expect(r.node(KEY.name)?.value).toBe("Robin Example");
     expect(r.changes).toEqual([expect.objectContaining({ kind: "value", windowId: WIN, key: KEY.name, before: "", after: "Robin Example" })]);
-    expect(r.tab("e1")?.value).toBe("Robin Example");
+    // The stored walk holds what the page said, never the text: the field holds something, at the rev the write left.
+    expect(r.tab("e1")).toMatchObject({ hasValue: true, rev: textRev("Robin Example") });
+    expect(r.tab("e1")).not.toHaveProperty("value");
     expect(r.session.tabs.get(7)).not.toBe(before);
-    expect(before?.frames[0]?.controls[0]?.value).toBe("");
+    expect(before?.frames[0]?.controls[0]).toMatchObject({ hasValue: false });
     expect(r.timings).toEqual([expect.objectContaining({ verb: "pageWrite", outcome: "ok", rewalk: null })]);
     r.link.cancelTrailingWalks();
   });
 
-  it("text answered alreadyTrue with no readings: the field holds the value written", async () => {
-    const r = rig(() => ({ outcome: "alreadyTrue", detail: null }));
+  it("text answered alreadyTrue: the field holds the value written, as the page's readings say", async () => {
+    const r = rig((v) => ({ outcome: "alreadyTrue", detail: null, readings: pageReadings("Robin Example", "Robin Example", v.kind === "pageWrite" ? v.value : "", textRev("Robin Example")) }));
     const n = await walked(r);
     expect((await r.write(KEY.name, "AXTextField", "", "Robin Example")).outcome).toBe("ok");
     expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite"]);
     expect(r.node(KEY.name)?.value).toBe("Robin Example");
+    r.link.cancelTrailingWalks();
+  });
+
+  it("text answered alreadyTrue with no readings: the helper cannot vouch for the field, so it walks the tab", async () => {
+    const r = rig(() => ({ outcome: "alreadyTrue", detail: null }));
+    const n = await walked(r);
+    expect((await r.write(KEY.name, "AXTextField", "", "Robin Example")).outcome).toBe("ok");
+    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite", "pageWalk"]);
     r.link.cancelTrailingWalks();
   });
 
@@ -141,15 +156,37 @@ describe("a verified write patches the model instead of walking the tab", () => 
 
 describe("every other act re-walks the tab as before", () => {
   it.each([
-    ["failed", { outcome: "failed", detail: "the page kept the old value", readings: readings("", "") }],
+    ["failed", { outcome: "failed", detail: "the page kept the old value", readings: pageReadings("", "", "Robin Example", textRev("")) }],
     ["stale", { outcome: "stale", detail: "the field changed since the walk" }],
-    ["error", { outcome: "error", detail: "no answer" }],
   ])("a text write answered %s", async (_, answer) => {
     const r = rig(() => answer);
     const n = await walked(r);
     await r.write(KEY.name, "AXTextField", "", "Robin Example");
     expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite", "pageWalk"]);
     expect(r.timings[0]?.rewalk).not.toBeNull();
+  });
+
+  it("a text write with no answer returns axError so the executor can read once for reconciliation", async () => {
+    const r = rig(() => ({ outcome: "error", detail: "no answer" }));
+    const n = await walked(r);
+    expect((await r.write(KEY.name, "AXTextField", "", "Robin Example")).outcome).toBe("axError");
+    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite"]);
+    expect(r.timings[0]?.rewalk).toBeNull();
+  });
+
+  it("an undo restore with no answer re-walks the tab, since undo runs no recovery read of its own", async () => {
+    const r = rig((v) => (v.kind === "pageRestore" ? { outcome: "error", detail: "no answer" } : { outcome: "ok", detail: null, readings: readings("", v.kind === "pageWrite" ? v.value : "") }));
+    await walked(r);
+    expect((await r.link.run({ kind: "write", pid: browser.pid, windowId: WIN, key: KEY.name, role: "AXTextField", attribute: "value", expect: "", value: "Robin Example", taskId: "t1", mark: "m1" })).outcome).toBe("ok");
+    const n = r.verbs().length;
+    r.timings.length = 0;
+    expect((await r.link.run({ kind: "write", pid: browser.pid, windowId: WIN, key: KEY.name, role: "AXTextField", attribute: "value", expect: "Robin Example", value: "", taskId: "t1", sameAs: "m1" })).outcome).toBe("axError");
+    // An undo of a text write is the page's own restore (pageRestore), which the page checks itself.
+    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageRestore", "pageWalk"]);
+    expect(r.timings[0]?.rewalk).not.toBeNull();
+    // The walk shows what the page holds now (the rig's page never took either write).
+    expect(r.node(KEY.name)?.value ?? "").toBe("");
+    r.link.cancelTrailingWalks();
   });
 
   it("a combobox pick answered ok", async () => {

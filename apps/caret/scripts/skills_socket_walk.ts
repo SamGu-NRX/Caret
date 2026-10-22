@@ -39,6 +39,7 @@ import { parseArgs } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
 import { newLaunchSecret, sendSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
 // B23: caret-screen accepts only a helper that proves it holds this launch's secret, which both get
 // here: the reader on its standard input (--auth-fd 0), the in-process server as an argument.
 const launchSecret = newLaunchSecret();
@@ -667,11 +668,11 @@ try {
   await sleep(800);
   reader = spawn(join(a.bin, "caret-screen"), ["--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
   sendSecret(reader, launchSecret);
-  host = spawn(resolve(a.caret), [
+  host = spawnCaret(resolve(a.caret), [
     "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden",
     ...(DRAWN === null ? ["--surfaces", "headless"] : ["--appearance", DRAWN]),
     "--allow-pids", String(fixturePid), "--test-hooks", "--status-item", "off", "--onboarding", "off", "--settings", join(sockDir, "settings.json"),
-  ]);
+  ], launchSecret);
   host.stderr?.setEncoding("utf8");
   host.stderr?.on("data", (d: string) => (hostLog += d));
   await until("the host's socket", () => existsSync(HOST_SOCK), 15_000);

@@ -1,6 +1,7 @@
 // Which kind of custom listbox a combobox is, and the text it shows as its value. Kept apart from combobox.ts so the
 // walker can report a react-select's chip as the control's value without importing the handler.
 import { clean } from "./names.ts";
+import { safeText } from "./secret-dom.ts";
 
 export type Flavor = { kind: "reactSelect"; box: HTMLElement; container: HTMLElement } | { kind: "aria" };
 
@@ -22,9 +23,9 @@ export function flavorOf(el: Element): Flavor {
 export function shownValue(el: Element, f: Flavor = flavorOf(el)): string {
   if (f.kind === "reactSelect") {
     const single = f.container.querySelector('[class*="singleValue"]');
-    if (single !== null) return clean(single.textContent, 200);
-    return [...f.container.querySelectorAll('[class*="multiValue"] [class*="label"], [class*="MultiValueLabel"]')].map((x) => clean(x.textContent, 120)).join(", ");
+    if (single !== null) return clean(safeText(single), 200);
+    return [...f.container.querySelectorAll('[class*="multiValue"] [class*="label"], [class*="MultiValueLabel"]')].map((x) => clean(safeText(x), 120)).join(", ");
   }
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
-  return clean(el.textContent, 200);
+  return clean(safeText(el), 200);
 }

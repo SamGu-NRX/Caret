@@ -15,6 +15,17 @@ import Testing
         #expect(!k.contains { $0.hasPrefix("id=") })
     }
 
+    /// A bare digit run the detector reads as a phone is an ID on a loyalty or membership line, and only there
+    /// (helper/src/fill/kinds.ts readerValue applies the same rule).
+    @Test func readsAMembershipNumberAsAnIDNotAPhone() {
+        let k = kinds("Mileage Plan: 123456789")
+        #expect(k.contains("id=123456789"))
+        #expect(!k.contains("phone=123456789"))
+        #expect(kinds("Rewards member\nMobile: 123456789").allSatisfy { $0 != "id=123456789" }, "the number's own line says phone")
+        #expect(kinds("Member phone: 123456789").allSatisfy { $0 != "id=123456789" })
+        #expect(kinds("Loyalty desk: (206) 555-0134").contains { $0.hasPrefix("phone=") }, "a number with separators stays a phone")
+    }
+
     @Test func findsURLs() {
         #expect(kinds("Join at https://meet.example.com/abc-defg-hij").contains("url=https://meet.example.com/abc-defg-hij"))
     }

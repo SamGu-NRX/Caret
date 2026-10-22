@@ -8,6 +8,7 @@
 // The word lists are written for common form labels, not measured on real forms; a false refusal costs one
 // fact Caret does not keep, a miss costs a secret on disk, so they lean towards refusing.
 import { words } from "../fill/kinds.ts";
+import { TextMemo } from "../privacy/text-memo.ts";
 
 export type SensitiveKind = "password" | "cardNumber" | "accountNumber" | "governmentId" | "oneTimeCode" | "apiKey";
 
@@ -183,13 +184,7 @@ export function markerEnds(text: string | null | undefined): boolean {
 
 function markerAt(text: string | null | undefined, atEnd: boolean): boolean {
   if (text === null || text === undefined || text === "") return false;
-  const memo = atEnd ? ENDS_MEMO : WORD_MEMO;
-  const hit = memo.get(text);
-  if (hit !== undefined) return hit;
-  const found = scanMarker(text, atEnd);
-  if (memo.size >= MARKER_MEMO) memo.clear();
-  memo.set(text, found);
-  return found;
+  return (atEnd ? ENDS_MEMO : WORD_MEMO).get(text, () => scanMarker(text, atEnd));
 }
 
 function scanMarker(text: string, atEnd: boolean): boolean {
@@ -214,22 +209,20 @@ function scanMarker(text: string, atEnd: boolean): boolean {
 /** The marker phrases by their first word: a line is read once, each word looked up, not every phrase tried at it. */
 const BY_FIRST = new Map<string, (readonly string[])[]>();
 for (const [, phrases] of LABEL_PHRASES) for (const p of phrases) BY_FIRST.set(p[0] as string, [...(BY_FIRST.get(p[0] as string) ?? []), p]);
-/** markerWord's and markerEnds's answers by text: the redacted view reads every line of a window it builds. Bounded. */
+/**
+ * markerWord's and markerEnds's answers by text: the redacted view reads every line of a window it builds. Keyed by a
+ * keyed hash, never the text (privacy/text-memo.ts). Bounded.
+ */
 const MARKER_MEMO = 8000;
-const WORD_MEMO = new Map<string, boolean>();
-const ENDS_MEMO = new Map<string, boolean>();
+const WORD_MEMO = new TextMemo<boolean>(MARKER_MEMO);
+const ENDS_MEMO = new TextMemo<boolean>(MARKER_MEMO);
 
 /** G2 round 4: whether a text is one fill must never send: it holds a marker word or a value Caret never types. */
 export function secretText(text: string | null | undefined): boolean {
   if (text === null || text === undefined || text === "") return false;
-  const hit = SECRET_MEMO.get(text);
-  if (hit !== undefined) return hit;
-  const found = markerWord(text) || valueKind(text) !== null;
-  if (SECRET_MEMO.size >= MARKER_MEMO) SECRET_MEMO.clear();
-  SECRET_MEMO.set(text, found);
-  return found;
+  return SECRET_MEMO.get(text, () => markerWord(text) || valueKind(text) !== null);
 }
-const SECRET_MEMO = new Map<string, boolean>();
+const SECRET_MEMO = new TextMemo<boolean>(MARKER_MEMO);
 
 /**
  * G2: whether two consecutive lines carry a marker phrase split by their line break ("API" then "key: …"): the first line

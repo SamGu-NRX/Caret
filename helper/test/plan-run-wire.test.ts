@@ -11,7 +11,7 @@ import { AnyMessage, ConsumerMessage, GOAL_PLANS_CAPABILITY, HelperMessage, PROT
 import { HelperServer } from "../src/server.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { LineClient, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, TEST_LAUNCH_SECRET, until } from "./socket-reader.ts";
 
 const lines = readFileSync(new URL("../fixtures/golden/plan-run.ndjson", import.meta.url), "utf8").trim().split("\n");
 const CONSUMER = new Set(["hello", "goalRequest", "goalAccept"]);
@@ -82,7 +82,7 @@ describe("goal messages on the socket", () => {
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "caret-goal-wire-"));
     store = new Store(join(dir, "data"));
-    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {}, TEST_LAUNCH_SECRET);
     const mine: Helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => own.publish(m) });
     helper = mine;
     server = own;
@@ -106,11 +106,13 @@ describe("goal messages on the socket", () => {
     ]) {
       const c = await LineClient.connect(join(dir, "screen.sock"));
       c.send(hello);
+      if (hello.host === true) await authenticateHost(c);
       c.send(request);
       c.send(accept);
       for (const type of ["goalRequest", "goalAccept"]) {
         const e = await c.waitFor((m) => m.type === "error" && String(m.message).startsWith(type));
-        expect(e.message).toBe(`${type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities`);
+        // The request gate refuses a consumer that is not the host before the capability is looked at (request-gate.ts).
+        expect(e.message).toBe(hello.host === true ? `${type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities` : `${type} needs a host hello (host: true): a goal reads your windows and makes Caret act`);
       }
       expect(c.received.filter((m) => (m as { type: string }).type === "goalProgress")).toEqual([]);
       c.close();
@@ -120,6 +122,7 @@ describe("goal messages on the socket", () => {
   it("answers a goal-planning host's request to it alone, and sends goalProgress only to such hosts", async () => {
     const host = await LineClient.connect(join(dir, "screen.sock"));
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "caret-host", host: true, capabilities: [GOAL_PLANS_CAPABILITY] });
+    await authenticateHost(host);
     const other = await LineClient.connect(join(dir, "screen.sock"));
     other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 3, version: "watcher" });
     await until(() => helper.hostPresent);

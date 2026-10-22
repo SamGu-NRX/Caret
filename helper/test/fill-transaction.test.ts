@@ -4,11 +4,12 @@
 // by the user's input, a reload or a field that changed under it, and undone in one undo that refuses a re-rendered
 // element. A box is ticked only when a source states the fact it asks, never a consent. The content script's halves
 // run in a real browser in fixtures/web-form/accept.ts (its mixed-control form). Every name and value is invented.
+import { readings, type TestField } from "./page-wire.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FillProposal, HelperMessage, fillFieldTask, PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type HelperToEngine, type OfferPopup, type PageControl, type PageSnapshot, type PageVerb, type TaskProgress, type VerbResult } from "../src/protocol.ts";
+import { FillProposal, HelperMessage, fillFieldTask, PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type HelperToEngine, type OfferPopup, type PageSnapshot, type PageVerb, type TaskProgress, type VerbResult } from "../src/protocol.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
@@ -26,7 +27,7 @@ import { field, focus, jevPickingText, node, snap, text, value } from "./builder
 import { X, chrome, TITLE, WIN, hello, okReader, TEXTEDIT, NOTE, PICKS, byLabel, c, mixedControls, KEY, RADIO, FakePage } from "./fake-page.ts";
 
 describe("the page model of a box and a radio group (D2-04)", () => {
-  const model = (cs: PageControl[]): ScreenModel => {
+  const model = (cs: TestField[]): ScreenModel => {
     const page = new FakePage();
     page.controls = cs;
     const m = new ScreenModel();
@@ -131,7 +132,7 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     const acts = page.verbs.filter((v) => v.kind !== "pageWalk");
     expect(acts.every((v) => v.kind !== "pagePress" && v.kind !== "pageAttachFile" && "taskId" in v && v.taskId === popup.offerKey)).toBe(true);
     // Document order: the country before the fields after it.
-    expect(acts.map((v) => v.id)).toEqual(["e1", "e2", "e3", "e5", "e6", "e9", "e10", "e11", "e12"]);
+    expect(acts.map((v) => ("id" in v ? v.id : null))).toEqual(["e1", "e2", "e3", "e5", "e6", "e9", "e10", "e11", "e12"]);
     const progress = published.filter((m): m is TaskProgress => m.type === "taskProgress" && m.taskId === popup.offerKey);
     expect(progress.filter((m) => m.phase === "verified")).toHaveLength(9);
 
@@ -139,15 +140,15 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     expect(u).toEqual({ restored: 9, notRestored: [], notUndoable: 0 });
     expect(everyShown()).toEqual(EMPTY);
     const undos = page.verbs.filter((v) => v.kind !== "pageWalk").slice(acts.length);
-    expect(undos.map((v) => v.id)).toEqual(["e12", "e11", "e10", "e9", "e6", "e5", "e3", "e2", "e1"]);
+    expect(undos.map((v) => ("id" in v ? v.id : null))).toEqual(["e12", "e11", "e10", "e9", "e6", "e5", "e3", "e2", "e1"]);
     expect(undos.every((v) => "rebind" in v && v.rebind === false && typeof v.sameAs === "string")).toBe(true);
-    expect(undos.find((v) => v.id === "e5")).toMatchObject({ kind: "pageSetChecked", checked: false });
+    expect(undos.find((v) => "id" in v && v.id === "e5")).toMatchObject({ kind: "pageSetChecked", checked: false });
   });
 
   it("refuses an undo whose element the page re-rendered, and restores the rest", async () => {
     const { popup } = await offer();
     expect((await accept(popup.offerKey))?.outcome).toBe("done");
-    page.onAct = (v) => (v.id === "e3" && v.kind === "pageSelect" && v.rebind === false ? { outcome: "notSameElement", detail: "the element Caret wrote was replaced" } : null);
+    page.onAct = (v) => (v.kind === "pageSelect" && v.id === "e3" && v.rebind === false ? { outcome: "notSameElement", detail: "the element Caret wrote was replaced" } : null);
     const u = await helper.executor.undo(popup.offerKey);
     expect(u.restored).toBe(8);
     expect(u.notRestored).toHaveLength(1);
@@ -198,10 +199,11 @@ describe("one Fill all over a mixed form (D2-04)", () => {
   it("never takes the user's edit made right after a write for its own: undo leaves it (review R3)", async () => {
     const { popup } = await offer();
     page.onAct = (v, p) => {
-      if (v.id !== "e9" || v.kind !== "pageWrite" || v.sameAs !== undefined) return null;
+      if (v.kind !== "pageWrite" || v.id !== "e9" || v.sameAs !== undefined) return null;
       // Caret's write lands and reads back; the user then types another date before the engine's walk.
+      const rev = p.caretWrote("e9", v.value);
       p.find("e9").value = "2026-12-01";
-      return { outcome: "ok", detail: null, readings: { before: "", afterInput: v.value, afterBlur: v.value, invalid: false, error: null } };
+      return { outcome: "ok", detail: null, readings: readings("", v.value, v.value, rev) };
     };
     const r = await accept(popup.offerKey);
     expect(r?.outcome).toBe("stopped");
@@ -215,14 +217,15 @@ describe("one Fill all over a mixed form (D2-04)", () => {
 
   describe("a page number field that reformats what Caret wrote (B29)", () => {
     // "1" comes back as "1.00", as a page's own script formats a number on input.
-    // The content script answers such a write "failed" (actions.ts judge); "ok" stands for an engine whose read came first.
-    const reformatting = (ids: readonly string[], answer: "ok" | "failed" = "ok") => (v: Exclude<PageVerb, { kind: "pageWalk" }>, p: FakePage): object | null => {
-      if (v.kind !== "pageWrite" || !ids.includes(v.id) || v.sameAs !== undefined) return null;
-      p.find(v.id).value = "1.00";
-      const readings = { before: "", afterInput: "1.00", afterBlur: "1.00", invalid: false, error: null };
-      return answer === "ok" ? { outcome: "ok", detail: null, readings } : { outcome: "failed", detail: "the page holds another value than Caret wrote", readings };
+    // The content script judges the write itself (actions.ts writeText): ok when the field holds an equivalent of what
+    // Caret wrote under its kind (a number field's 1.00 for 1), failed otherwise; "failed" also stands for a write whose
+    // answer said no more than that it may have landed.
+    const reformatting = (ids: readonly string[], answer: "judged" | "failed" = "judged") => (v: Exclude<PageVerb, { kind: "pageWalk" }>, p: FakePage): object | null => {
+      if (v.kind !== "pageWrite" || !ids.includes(v.id)) return null;
+      const readings = p.write(v, "1.00");
+      return answer === "judged" && (readings.landed || readings.equivalent) ? { outcome: "ok", detail: null, readings } : { outcome: "failed", detail: "the page holds another value than Caret wrote", readings };
     };
-    const written = async (id: string, kind: PageControl["kind"], extra: Partial<PageControl> = {}) => {
+    const written = async (id: string, kind: TestField["kind"], extra: Partial<TestField> = {}) => {
       page.controls = [c(id, kind, "Guests", { value: "", ...extra })];
       await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
       const key = `f0/${page.controls[0]!.key}`;
@@ -232,8 +235,8 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     };
 
     it.each([
-      ["an input of type number", "number", {}, "ok"],
-      ["a text input with a numeric inputmode", "text", { numeric: true as const }, "ok"],
+      ["an input of type number", "number", {}, "judged"],
+      ["a text input with a numeric inputmode", "text", { numeric: true as const }, "judged"],
     ] as const)("undoes the write in %s: 1 and 1.00 are the same number", async (_, kind, extra, answer) => {
       page.onAct = reformatting(["n"], answer);
       const { key } = await written("n", kind, extra);
@@ -251,7 +254,8 @@ describe("one Fill all over a mixed form (D2-04)", () => {
       expect(helper.executor.ledger("n1")).toMatchObject([{ before: "", after: "1", unconfirmed: true }]);
       expect(await helper.executor.undo("n1")).toMatchObject({
         restored: 0,
-        notRestored: [{ reason: 'the field does not hold what Caret was writing, so Caret left it as it is; the field now holds "1.00"; before the write it held ""' }],
+        // The page checks the field itself (pageRestore, exact for a write whose answer was lost) and names no text of it.
+        notRestored: [{ reason: expect.stringMatching(/^Caret stopped while writing this field, and the field does not hold what it was writing \(.*\(changed\)\); the field now holds other text, which the page does not send; before the write it held ""$/u) }],
       });
       expect(page.find("n").value).toBe("1.00");
     });
@@ -260,9 +264,11 @@ describe("one Fill all over a mixed form (D2-04)", () => {
       page.onAct = reformatting(["n"]);
       const { key } = await written("n", "text");
       expect(helper.model.windows.get(WIN)?.nodes.get(key)?.subrole).toBeUndefined();
-      expect(helper.executor.ledger("n1")).toEqual([expect.objectContaining({ after: "1", mayIncludeInput: true })]);
+      // The page judges 1.00 in a text field as another value than 1: the write may have landed, and the run stops.
+      expect(helper.executor.ledger("n1")).toEqual([expect.objectContaining({ after: "1", unconfirmed: true })]);
       const u = await helper.executor.undo("n1");
-      expect(u).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringMatching(/may hold your typing/) }] });
+      // The page's own check finds the field not holding exactly what Caret wrote, and leaves it.
+      expect(u).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringMatching(/does not hold what it was writing.*\(changed\)/u) }] });
       expect(page.find("n").value).toBe("1.00");
     });
 

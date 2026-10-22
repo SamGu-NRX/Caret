@@ -28,15 +28,8 @@
           "kind": "text",
           "role": "textbox",
           "name": "First name",
-          "value": "Ada",
-          "checked": false,
-          "options": [
-            {
-              "value": "Ada",
-              "label": "Ada",
-              "selected": true
-            }
-          ],
+          "hasValue": true,
+          "rev": 2,
           "form": "fixture-form",
           "rect": [
             0,
@@ -52,7 +45,8 @@
             "id": "fixture-group",
             "name": "Name"
           },
-          "pressed": false
+          "pressed": false,
+          "withheld": "programmatic"
         },
         {
           "id": "field-2",
@@ -66,6 +60,51 @@
             0,
             30,
             20,
+            20
+          ]
+        },
+        {
+          "id": "field-3",
+          "key": "fixture-key-3",
+          "strongKey": null,
+          "kind": "select",
+          "role": "combobox",
+          "name": "Country",
+          "value": "ca",
+          "options": [
+            {
+              "value": "",
+              "label": "Choose",
+              "selected": false
+            },
+            {
+              "value": "ca",
+              "label": "Canada",
+              "selected": true
+            }
+          ],
+          "form": "fixture-form",
+          "rect": [
+            0,
+            60,
+            100,
+            20
+          ]
+        },
+        {
+          "id": "field-4",
+          "key": "fixture-key-4",
+          "strongKey": null,
+          "kind": "email",
+          "role": "textbox",
+          "name": "Email",
+          "hasValue": null,
+          "rev": null,
+          "form": "fixture-form",
+          "rect": [
+            0,
+            90,
+            100,
             20
           ]
         }
@@ -99,6 +138,7 @@
     "selection": [
       0,
       3
-    ]
+    ],
+    "withheld": "programmatic"
   }
 }

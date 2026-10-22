@@ -3,18 +3,19 @@
 // its own label; "The rest is yours" with none or several. The row is never an action: lowering gives it no executor
 // step, the run dispatches no press, and the executor refuses a hand-off that carries a means to act. Every name and
 // value is invented.
+import type { TestField } from "./page-wire.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { Executor } from "../src/executor/executor.ts";
 import { PlanError } from "../src/executor/schema.ts";
 import { formScopeOf, readsForward } from "../src/goals/page-planner.ts";
 import { ScreenModel } from "../src/model.ts";
-import type { PageControl, ReaderVerb } from "../src/protocol.ts";
+import type { ReaderVerb } from "../src/protocol.ts";
 import { c, mixedControls } from "./fake-page.ts";
 import { closeRigs, goalMessages, presses, rig, type Finished, type Segment } from "./page-rig.ts";
 
 afterEach(closeRigs);
 
-const fields = (): PageControl[] => [c("q1", "text", "Full name", { value: "" }), c("q2", "email", "Email", { value: "" })];
+const fields = (): TestField[] => [c("q1", "text", "Full name", { value: "" }), c("q2", "email", "Email", { value: "" })];
 const settle = async (r: Awaited<ReturnType<typeof rig>>): Promise<void> => {
   await r.helper.goals.idle();
   await new Promise((x) => setTimeout(x, 0));
@@ -43,7 +44,7 @@ describe("the form a control is in", () => {
 });
 
 describe("the hand-off row a page plan ends with", () => {
-  const last = async (controls: () => PageControl[]): Promise<Segment["steps"][number] | undefined> => {
+  const last = async (controls: () => TestField[]): Promise<Segment["steps"][number] | undefined> => {
     const r = await rig({ controls, title: "Apply: details" });
     const s = (await r.ask("fill out this form from my note")) as Segment;
     expect(s.event).toBe("segment");
@@ -63,7 +64,7 @@ describe("the hand-off row a page plan ends with", () => {
   });
 
   it("counts only buttons in the form it fills, enabled, and never a link or a file control", async () => {
-    const other = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ ...c(id, kind, name, extra), key: `form[search]/${kind}:${name.toLowerCase()}~0`, form: "form#search" });
+    const other = (id: string, kind: TestField["kind"], name: string, extra: Partial<TestField> = {}): TestField => ({ ...c(id, kind, name, extra), key: `form[search]/${kind}:${name.toLowerCase()}~0`, form: "form#search" });
     expect(await last(() => [...fields(), other("b1", "button", "Submit")])).toMatchObject({ says: "The rest is yours" });
     expect(await last(() => [...fields(), c("b1", "button", "Next", { disabled: true })])).toMatchObject({ says: "The rest is yours" });
     expect(await last(() => [...fields(), c("b1", "link", "Next")])).toMatchObject({ says: "The rest is yours" });
@@ -120,7 +121,7 @@ describe("the mixed form", () => {
   it("ends with its one forward button", async () => {
     const r = await rig({ controls: mixedControls });
     const s = (await r.ask("fill out this form from my note")) as Segment;
-    expect(s.steps.at(-1)).toEqual({ index: s.steps.length - 1, kind: "handoff", says: "You press Submit Application" });
+    expect(s.steps.at(-1)).toEqual({ index: s.steps.length - 1, kind: "handoff", says: "You press Submit Application", tier: "yours" });
   });
 });
 

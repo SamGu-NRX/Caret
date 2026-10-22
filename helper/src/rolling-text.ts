@@ -58,7 +58,7 @@ export class RollingText {
   }
 
   private record(w: WindowState, nodeKey: string, text: string, kind: ValueKind | null, editable: boolean, at: number): void {
-    const id = `${w.window.windowId}\u0000${nodeKey}\u0000${kind ?? ""}\u0000${text}`;
+    const id = obsId(w.window.windowId, nodeKey, kind, text);
     const existing = this.obs.get(id);
     if (existing !== undefined) {
       existing.lastSeen = Math.max(existing.lastSeen, at);
@@ -89,12 +89,25 @@ export class RollingText {
 
   prune(now: number): void {
     const cutoff = now - ROLLING_WINDOW_MS;
-    for (const [id, o] of this.obs) {
-      if (o.lastSeen >= cutoff) continue;
-      this.obs.delete(id);
-      removeFrom(this.byExact, o.text, id);
-      removeFrom(this.byNorm, normalizeValue(o.text, o.kind), id);
-    }
+    for (const [id, o] of this.obs) if (o.lastSeen < cutoff) this.drop(id, o);
+  }
+
+  /**
+   * SC1 2a: after a purge (Helper.purgeWindow) the window shows only `w`'s text, and nothing else it was seen holding is
+   * kept: the text of a site the user switched off goes now, not ten minutes later. What `w` still shows keeps its times.
+   */
+  keepOnly(w: WindowState): void {
+    const id = w.window.windowId;
+    const shown = new Set<string>();
+    for (const n of w.nodes.values()) shown.add(obsId(id, n.key, null, nodeText(n)));
+    for (const v of w.values) shown.add(obsId(id, v.nodeKey, v.kind, v.text));
+    for (const [k, o] of this.obs) if (o.windowId === id && !shown.has(k)) this.drop(k, o);
+  }
+
+  private drop(id: string, o: Observation): void {
+    this.obs.delete(id);
+    removeFrom(this.byExact, o.text, id);
+    removeFrom(this.byNorm, normalizeValue(o.text, o.kind), id);
   }
 
   /**
@@ -157,6 +170,10 @@ export class RollingText {
     }
     return normHit === null ? null : { obs: normHit, match: "normalized" };
   }
+}
+
+function obsId(windowId: string, nodeKey: string, kind: ValueKind | null, text: string): string {
+  return `${windowId}\u0000${nodeKey}\u0000${kind ?? ""}\u0000${text}`;
 }
 
 function addTo(m: Map<string, Set<string>>, k: string, id: string): void {

@@ -25,6 +25,9 @@ public enum FieldPanelPlacement {
 
     public enum Spot: String, Codable, Sendable {
         case below, above, belowNarrow, aboveNarrow, right, left
+        /// Above or below the field, its trailing edge at the field's: the room a full-width web field leaves
+        /// beside its own label (the DF1 run's First Name, `PageSlipPlacementTests`).
+        case aboveEnd, belowEnd
 
         /// The corner the panel stays pinned at when its content grows or shrinks: the corner
         /// nearest the field, so growth moves away from it.
@@ -32,7 +35,8 @@ public enum FieldPanelPlacement {
             switch self {
             case .below, .belowNarrow, .right: return .topLeft
             case .above, .aboveNarrow: return .bottomLeft
-            case .left: return .topRight
+            case .left, .belowEnd: return .topRight
+            case .aboveEnd: return .bottomRight
             }
         }
 
@@ -119,7 +123,11 @@ public enum FieldPanelPlacement {
 
     /// The candidate frames in the order they are tried. `narrow` is the panel's size at its
     /// narrowest width, when that is narrower than `size`; a line has none.
-    public static func candidates(field: CGRect, caret: CGRect, size: CGSize, narrow: CGSize?, bounds: CGRect) -> [(Spot, CGRect)] {
+    ///
+    /// `sideFirst` (a web page's field): beside the field before above or below it. A form's rows sit close, with the
+    /// next label in the gap under each field, so the room beside a field is the likelier clear spot there. Native
+    /// fields keep A3's order, below first.
+    public static func candidates(field: CGRect, caret: CGRect, size: CGSize, narrow: CGSize?, bounds: CGRect, sideFirst: Bool = false) -> [(Spot, CGRect)] {
         let hang = anchor(field: field, caret: caret)
         let usable = bounds.insetBy(dx: margin, dy: margin)
         func clampX(_ x: CGFloat, _ w: CGFloat) -> CGFloat { min(max(x, usable.minX), usable.maxX - w) }
@@ -135,26 +143,33 @@ public enum FieldPanelPlacement {
             let y = max(min(hang.minY, usable.maxY - size.height), usable.minY)
             return (spot, CGRect(x: x, y: y, width: size.width, height: size.height))
         }
-        var list = [vertical(.below, size), vertical(.above, size)]
-        if let narrow, narrow.width < size.width { list += [vertical(.belowNarrow, narrow), vertical(.aboveNarrow, narrow)] }
-        list += [beside(.right), beside(.left)]
-        return list
+        // Above or below with the trailing edges aligned: clear of the field's own label at its leading edge.
+        func atEnd(_ spot: Spot) -> (Spot, CGRect) {
+            let x = clampX(field.maxX - size.width, size.width)
+            let y = spot == .belowEnd ? hang.maxY + gap : hang.minY - gap - size.height
+            return (spot, CGRect(x: x, y: y, width: size.width, height: size.height))
+        }
+        var stacked = [vertical(.below, size), vertical(.above, size)]
+        if let narrow, narrow.width < size.width { stacked += [vertical(.belowNarrow, narrow), vertical(.aboveNarrow, narrow)] }
+        let side = [beside(.right), beside(.left)]
+        return (sideFirst ? side + stacked : stacked + side) + [atEnd(.aboveEnd), atEnd(.belowEnd)]
     }
 
     /// The first candidate on screen that covers nothing; else the one on screen covering least,
     /// earlier ones winning ties; else below, clamped onto the screen as far as it fits.
+    /// `sideFirst`: see `candidates`.
     /// `obstacles(frame)` returns the frames of what lies under `frame`, or nil when it could not
     /// find out in time, and such a candidate is never chosen. The field and anything containing
     /// it are never obstacles.
     public static func choose(
-        field: CGRect, caret: CGRect, size: CGSize, narrow: CGSize?, bounds: CGRect,
+        field: CGRect, caret: CGRect, size: CGSize, narrow: CGSize?, bounds: CGRect, sideFirst: Bool = false,
         obstacles: (CGRect) -> [CGRect]?
     ) -> Choice {
         let usable = bounds.insetBy(dx: margin, dy: margin)
         // Never over the line it hangs from. Inside a tall field the rest of the field is fair
         // game, as the offer line has always been.
         let hang = anchor(field: field, caret: caret)
-        let all = candidates(field: field, caret: caret, size: size, narrow: narrow, bounds: bounds)
+        let all = candidates(field: field, caret: caret, size: size, narrow: narrow, bounds: bounds, sideFirst: sideFirst)
         var known: [CGRect] = []
         var probed = 0
         var best: Choice?
@@ -177,7 +192,8 @@ public enum FieldPanelPlacement {
             best.probed = probed
             return best
         }
-        var (spot, frame) = all[0]
+        // Nothing measured clear on screen: below, as before the side-first order, clamped onto the screen.
+        var (spot, frame) = all.first { $0.0 == .below } ?? all[0]
         if frame.height <= usable.height { frame.origin.y = min(max(frame.minY, usable.minY), usable.maxY - frame.height) }
         return Choice(frame: frame, spot: spot, overlap: nil, probed: probed)
     }

@@ -1,7 +1,41 @@
 // P4 items 7 and 9: what the host is told about the field the user is typing in on a page (protocol.ts PageFieldText),
 // from the tab's latest walk. The host cannot read a web field itself (Chrome shows Accessibility no web content, H10),
 // so inline text had no context in any web page (GD1 finding 4). Built from the snapshot alone; nothing is kept here.
-import type { PageControlKind, PageFieldKind, PageFieldText, PageSnapshot } from "../protocol.ts";
+import { NEARBY_MAX, NEARBY_RANGE, type PageControlKind, type PageFieldKind, type PageFieldText, type PageSnapshot } from "../protocol.ts";
+import { forHost } from "./focus-text.ts";
+
+type Rect4 = readonly [number, number, number, number];
+
+/**
+ * v2/inline: the screen frames near the focused field of the top frame (protocol.ts PageField.nearby): every other
+ * control's box and every label's text, the field's own label included, within NEARBY_RANGE points above or below it,
+ * nearest first. `toScreen` turns the page's viewport pixels into screen points (page-link screenRect). Null when the
+ * field is not in the top frame or the walk gave no screen position.
+ */
+export function nearbyFrames(s: PageSnapshot, toScreen: ((r: Rect4) => [number, number, number, number]) | null): [number, number, number, number][] | null {
+  const f = s.focused;
+  const top = s.frames.find((x) => x.parentFrameId < 0);
+  if (f === null || toScreen === null || top === undefined || top.frameId !== f.frameId) return null;
+  const mine = top.controls.find((c) => c.id === f.id);
+  if (mine === undefined) return null;
+  const field = toScreen(mine.rect);
+  const near = (r: Rect4): number | null => {
+    const above = field[1] - (r[1] + r[3]);
+    const below = r[1] - (field[1] + field[3]);
+    const d = Math.max(above, below, 0);
+    return r[2] > 0 && r[3] > 0 && d <= NEARBY_RANGE ? d : null;
+  };
+  const found: { d: number; r: [number, number, number, number] }[] = [];
+  for (const c of top.controls) {
+    for (const rect of [c === mine ? null : c.rect, c.labelRect ?? null]) {
+      if (rect === null) continue;
+      const r = toScreen(rect);
+      const d = near(r);
+      if (d !== null) found.push({ d, r });
+    }
+  }
+  return found.sort((a, b) => a.d - b.d).slice(0, NEARBY_MAX).map((x) => x.r);
+}
 
 /**
  * Whether the page offers its own inline suggestions in this field (brief item 9), by origin and path: Gmail's compose
@@ -18,10 +52,11 @@ export function ownSuggestions(origin: string | null, path: string | null, kind:
 export function pageFieldText(s: PageSnapshot): PageFieldText {
   const top = s.frames.find((f) => f.parentFrameId < 0);
   // A Docs editor keeps its caret in an off-screen text-event frame the walk does not keep: the top frame reads it.
-  if (s.docs !== undefined) return { text: s.docs.field, ownSuggestions: s.docs.kind === "document" ? "google-docs" : null, docsText: s.docs.text };
+  // The one unwrap of the focused text (engines/focus-text.ts forHost): it goes to the host over its own socket, and nowhere else.
+  if (s.docs !== undefined) return { text: s.docs.field === null ? null : forHost(s.docs.field), ownSuggestions: s.docs.kind === "document" ? "google-docs" : null, docsText: s.docs.text };
   const f = s.focused;
   if (f === null) return { text: null, ownSuggestions: null, docsText: null };
-  return { text: f.text ?? null, ownSuggestions: ownSuggestions(top?.origin ?? null, top?.path ?? null, focusedKind(s)), docsText: null };
+  return { text: f.text === undefined || f.text === null ? null : forHost(f.text), ownSuggestions: ownSuggestions(top?.origin ?? null, top?.path ?? null, focusedKind(s)), docsText: null };
 }
 
 /** The walked kind of the control that has focus; null for none, or one the walk did not keep. */

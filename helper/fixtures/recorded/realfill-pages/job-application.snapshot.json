@@ -96,7 +96,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Full name ✱",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -116,7 +117,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email ✱",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -136,7 +138,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Phone ✱",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -156,7 +159,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Current company",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -176,7 +180,8 @@
      "kind": "url",
      "role": "textbox",
      "name": "LinkedIn URL",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -196,7 +201,8 @@
      "kind": "url",
      "role": "textbox",
      "name": "GitHub URL",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -216,7 +222,8 @@
      "kind": "url",
      "role": "textbox",
      "name": "Portfolio or website",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -236,7 +243,8 @@
      "kind": "date",
      "role": "textbox",
      "name": "Earliest start date",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -363,7 +371,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Referrer's name (if referred)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -383,7 +392,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Desired salary (optional)",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -403,7 +413,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Reference name",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -475,7 +486,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Reference email",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -495,7 +507,8 @@
      "kind": "tel",
      "role": "textbox",
      "name": "Reference phone",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,
@@ -515,7 +528,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "Cover letter or anything else you'd like us to know",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       516,

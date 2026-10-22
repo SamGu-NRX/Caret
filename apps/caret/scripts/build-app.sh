@@ -21,6 +21,7 @@
 #   Contents/Helpers/node                      Node, pinned below (dev.caret.node, Bundle/node.entitlements)
 #   Contents/Helpers/caret-screen              the reader (dev.caret.screen, Bundle/caret-screen.entitlements)
 #   Contents/Helpers/caret-bridge              the Native Messaging host Chrome starts (dev.caret.bridge)
+#   Contents/Resources/AppIcon.icns            the app icon (Bundle/AppIcon.icns, from scripts/make-app-icon.sh)
 #   Contents/Resources/helper/                 the helper, bundled (scripts/helper-bundle.config.mjs)
 #   Contents/Resources/Caret for Chrome/       the unpacked extension, for Add to Chrome
 #   Contents/Library/LaunchAgents/dev.caret.host.plist   the agent SMAppService registers
@@ -40,9 +41,10 @@ NODE_VERSION=26.5.0
 NODE_SHA256=ee920559aaa2391569cff4d737e3b83963430e3a14dedd91bfe0ff53171b5af9
 # The privacy gate is the first thing this script does, before any download, lock, build or file write
 # (tests/test_privacy_followup.py, tests/test_internal_build_gate.py). It needs Node 24 or newer: the pinned runtime
-# once a build has extracted it below, else the node on PATH. Naming that directory on PATH has no side effect.
-pinned_node_bin="$root/apps/caret/.build/node-dist/node-v$NODE_VERSION-darwin-arm64/bin"
-CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" PATH="$pinned_node_bin:$PATH" /bin/sh "$root/scripts/privacy_gate.sh"
+# once a build has extracted it below, else the node on PATH. Naming that directory on PATH has no side effect. It is
+# exported so that every gate run sees it: the three here and the one helper-bundle.config.mjs starts (Greptile, #13).
+export PATH="$root/apps/caret/.build/node-dist/node-v$NODE_VERSION-darwin-arm64/bin:$PATH"
+CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" /bin/sh "$root/scripts/privacy_gate.sh"
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 mode="${1:-release}"
@@ -108,6 +110,7 @@ rm -rf "$app" "$other"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Frameworks" "$contents/Helpers" "$contents/Resources" "$contents/Library/LaunchAgents"
 cp Bundle/Info.plist "$contents/Info.plist"
+cp Bundle/AppIcon.icns "$contents/Resources/AppIcon.icns"
 if [[ -n "${CARET_INTERNAL_BUILD:-}" ]]; then /usr/libexec/PlistBuddy -c "Add :CaretInternalBuild bool true" "$contents/Info.plist"; fi
 # CFBundleVersion, the build number: it only grows, so macOS and the user can tell two builds of one version apart. It
 # is CARET_BUILD_NUMBER when the caller sets it (a builder working from a git archive, which has no history), else the
@@ -127,7 +130,7 @@ elif [[ "$mode" == release ]]; then
 else
   echo "build-app.sh $mode: no build number (no CARET_BUILD_NUMBER, not a git checkout); CFBundleVersion stays 1" >&2
 fi
-CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" CARET_REQUIRE_PROCESSED_PLIST=1 CARET_BUILD_PLIST="$PWD/$contents/Info.plist" CARET_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt" PATH="$pinned_node_bin:$PATH" /bin/sh "$root/scripts/privacy_gate.sh"
+CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" CARET_REQUIRE_PROCESSED_PLIST=1 CARET_BUILD_PLIST="$PWD/$contents/Info.plist" CARET_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt" /bin/sh "$root/scripts/privacy_gate.sh"
 cp "$bin/Caret" "$contents/MacOS/Caret"
 # Only the acceptance build may carry the acceptance code (Sources/Caret/Acceptance.swift), and it must.
 if LC_ALL=C grep -q "ACCEPTANCE BUILD" "$contents/MacOS/Caret"; then has_acceptance=1; else has_acceptance=0; fi

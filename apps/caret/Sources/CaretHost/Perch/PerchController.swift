@@ -94,7 +94,6 @@ final class PerchController {
     private var expiryTimer: Timer?
     private var trackTimer: Timer?
     private var locateTimer: Timer?
-    private var blinkTimer: Timer?
     private var fadeWork: DispatchWorkItem?
     /// The rim, perch and caption are on their way out.
     private var leaving = false
@@ -137,6 +136,9 @@ final class PerchController {
         askModel.undo = { [weak self] in self?.ask.undo() }
         askModel.select = { [weak self] in self?.ask.toggle(option: $0) }
         askModel.choose = { [weak self] in self?.ask.choose(option: $0) }
+        askModel.goalDraft = { [weak self] in self?.ask.goalDraftChanged($0) }
+        askModel.editGoal = { [weak self] in self?.ask.editGoal() }
+        askModel.keepGoalEdit = { [weak self] in self?.ask.commitGoalEdit() }
         askModel.notRightAction = { [weak self] in self?.deskNotRight($0) }
         ask.onChange = { [weak self] in self?.askChanged() }
         ask.onAtForm = { [weak self] in self?.stepAside() }
@@ -145,6 +147,7 @@ final class PerchController {
     // MARK: - The ask field
 
     private func askChanged() {
+        let before = askModel.phase
         if askModel.text != ask.text { askModel.text = ask.text }
         if askModel.phase != ask.phase { askModel.phase = ask.phase }
         let rowBefore = askModel.notRight
@@ -152,10 +155,27 @@ final class PerchController {
         let newlyFailed: Bool = { if case .failed = ask.phase, drawnAsk != ask.phase { return true } else { return false } }()
         // A new phase can change the desk's height; typing alone does not, and redrawing the panel
         // on each key would cost a measure per keystroke.
-        if listOpen, drawnAsk != ask.phase || drawnHint != AskSection.showsHint(text: ask.text, phase: ask.phase) || rowBefore != askModel.notRight {
+        if listOpen, Self.layout(drawnAsk) != Self.layout(ask.phase) || drawnHint != AskSection.showsHint(text: ask.text, phase: ask.phase) || rowBefore != askModel.notRight {
             renderList()
         }
+        // The goal card's edit field closed: the keys go back to the ask field.
+        if Self.goalEditing(before) && !Self.goalEditing(ask.phase) { askModel.focusToken &+= 1 }
         if newlyFailed { selectFailedInstruction() }
+    }
+
+    /// The phase as far as the desk's size goes: typing in the goal card's edit field redraws inside SwiftUI, as typing
+    /// in the ask field does, and the panel is measured again only when the words may have wrapped to another line
+    /// (every 40 characters or a new line; an estimate of the 13.5 pt field's line at the desk's width, not measured).
+    static func layout(_ phase: AskCaret.Phase) -> AskCaret.Phase {
+        guard case .goal(var card) = phase, case .editing(let step, let text) = card.stage else { return phase }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { $0.count / 40 + 1 }.reduce(0, +)
+        card.stage = .editing(step: step, text: String(repeating: "\n", count: lines))
+        return .goal(card)
+    }
+
+    static func goalEditing(_ phase: AskCaret.Phase) -> Bool {
+        if case .goal(let card) = phase, case .editing = card.stage { return true }
+        return false
     }
 
     /// A failed ask's instruction is selected, so the field shows that typing replaces it (A18,
@@ -235,12 +255,22 @@ final class PerchController {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         // ⌘Z on a run that wrote undoes it (q1 bug 8); otherwise the field editor's own undo.
         if modifiers == .command, event.keyCode == 6, ask.undo() { return true }
+        // ⌘E on a goal card opens its drafted row for the user's own words.
+        if modifiers == .command, event.keyCode == 14, ask.editGoal() { return true }
         let plain = modifiers.isEmpty
         guard plain else { return false }
         // An input method composing text owns Return and Esc until it commits or cancels.
         if let editor = list.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
         let editing = list.panel.firstResponder is NSTextView
         let correcting = askModel.notRight?.phase == .correcting
+        // The goal card's edit field: Return keeps the words, Esc closes it, Tab does nothing there.
+        if ask.goalEditing, editing {
+            switch Int64(event.keyCode) {
+            case KeyStroke.returnKeyCode, 76: return ask.commitGoalEdit()
+            case KeyStroke.tabKeyCode: return true
+            default: break
+            }
+        }
         if case .question = ask.phase, editing {
             switch Int64(event.keyCode) {
             case KeyStroke.downKeyCode: return ask.move(1)
@@ -317,7 +347,7 @@ final class PerchController {
             startTimers()
         } else {
             leave(stopped: false)
-            // Nothing left to follow: the window-list and blink timers stop (review finding 8).
+            // Nothing left to follow: the window-list timers stop (review finding 8).
             stopTimers()
         }
         if listOpen { renderList() }
@@ -481,9 +511,10 @@ final class PerchController {
     }
 
     /// While there is a subject: the window list four times a second (the rim follows a dragged
-    /// window within a quarter second; one list read costs about a millisecond), Accessibility every
-    /// 2 s (a window that was replaced or a document that changed title), and a blink every 5 s.
-    /// Assumed intervals; nothing measured them against what a user notices.
+    /// window within a quarter second; one list read costs about a millisecond) and Accessibility
+    /// every 2 s (a window that was replaced or a document that changed title). Assumed intervals;
+    /// nothing measured them against what a user notices. The figure blinks on its own, at
+    /// irregular intervals (`FigureIdle`), so the perch keeps no blink timer.
     private func startTimers() {
         if trackTimer == nil {
             trackTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -495,14 +526,6 @@ final class PerchController {
                 MainActor.assumeIsolated { if self?.seen.isClear == false { self?.locate() } }
             }
         }
-        if blinkTimer == nil {
-            blinkTimer = Timer.scheduledTimer(withTimeInterval: Motion.Duration.blinkEvery, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, self.model.animated, self.model.presented, self.model.mood != .done, self.model.mood != .error else { return }
-                    self.model.blinkTick &+= 1
-                }
-            }
-        }
     }
 
     private func stopTimers() {
@@ -510,8 +533,6 @@ final class PerchController {
         trackTimer = nil
         locateTimer?.invalidate()
         locateTimer = nil
-        blinkTimer?.invalidate()
-        blinkTimer = nil
     }
 
     private func scheduleExpiry(now: Date) {
@@ -598,6 +619,13 @@ final class PerchController {
         // it, and a half-typed request stays for the next opening.
         switch ask.phase {
         case .running, .idle: break
+        // A goal that runs goes on as a plan's run does; a preview or an ending goes with the desk.
+        case .goal(let card):
+            switch card.stage {
+            case .running, .stopping: break
+            case .ended(let e) where e.kind == .undoing: break
+            default: ask.escape()
+            }
         case .asking, .proposed, .question, .failed, .ended, .atForm: ask.escape()
         }
         donePages = 1
@@ -610,7 +638,8 @@ final class PerchController {
     private func renderList() {
         // A new root view loses the field's keyboard focus; give it back if it had it. An open "Not
         // right" holds its own field, which takes focus as it appears; the ask field must not take it.
-        let fieldHadFocus = list.panel.isKeyWindow && list.panel.firstResponder is NSTextView && askModel.notRight?.phase != .correcting
+        // The goal card's edit field takes focus as it appears, as "Not right" does.
+        let fieldHadFocus = list.panel.isKeyWindow && list.panel.firstResponder is NSTextView && askModel.notRight?.phase != .correcting && !Self.goalEditing(ask.phase)
         defer { if fieldHadFocus { askModel.focusToken &+= 1 } }
         let page = center.page(pages: donePages)
         drawnAsk = ask.phase
@@ -657,7 +686,7 @@ final class PerchController {
     }
 
     /// Any of the perch's timers is scheduled; for tests.
-    var timersPending: Bool { [expiryTimer, trackTimer, locateTimer, blinkTimer].contains { $0 != nil } }
+    var timersPending: Bool { [expiryTimer, trackTimer, locateTimer].contains { $0 != nil } }
 
     func shutdown() {
         stopped = true

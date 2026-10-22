@@ -5,9 +5,12 @@
 // The walk calls it only for the focused control it kept, so every control the walker excludes (password, card and
 // one-time-code fields, hidden inputs, self-identification and consent groups) and every frame on a site Caret is off
 // for never reaches here. Input and textarea read their value around selectionStart and selectionEnd. A contenteditable
-// reads the document's Selection inside it, with a line break for each line break and block, as a person sees it.
+// reads the document's Selection inside it, with a line break for each line break and block, as a person sees it. A
+// field inside a secret one, an editor whose host is secret, and any secret field inside an editor give no text
+// (secret-dom.ts): the walker's own check covers only the element it kept.
 import type { FieldText } from "../shared/messages.ts";
 import { docsParagraphs, docsTextbox, type DocsKind } from "./text.ts";
+import { inSecret, secretOfElement } from "./secret-dom.ts";
 
 /** Characters before the caret the host gets: a few sentences, enough to continue the one being typed. Brief item 7. */
 export const BEFORE_MAX = 2000;
@@ -18,6 +21,17 @@ export const SELECTION_MAX = 2000;
 
 /** Inputs whose selection offsets Chrome exposes (selectionStart is null on email and number inputs). */
 const TEXT_INPUT_TYPES = new Set(["text", "search", "url", "tel"]);
+
+/** Controls an editor may embed (a widget, a form in a rich message): their values are never the editor's text. */
+const EMBEDDED_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT", "OPTION", "BUTTON"]);
+const EMBEDDED_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton", "listbox", "option"]);
+
+/** Whether an element inside an editor is left out of its text with all it holds: an embedded control, as text.ts leaves them out. */
+export function skippedInEditor(el: { tagName: string; getAttribute(name: string): string | null }): boolean {
+  if (EMBEDDED_TAGS.has(el.tagName.toUpperCase())) return true;
+  const role = el.getAttribute("role")?.trim().toLowerCase();
+  return role !== undefined && EMBEDDED_ROLES.has(role);
+}
 
 /** Block elements a person sees on a line of their own inside an editor. */
 const BLOCK_TAGS = new Set(["DIV", "P", "LI", "UL", "OL", "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE", "PRE", "TR", "TABLE", "SECTION", "ARTICLE", "HEADER", "FOOTER"]);
@@ -36,6 +50,8 @@ export function around(value: string, start: number, end: number): FieldText {
  */
 export function serialize(range: Range): string {
   const root = range.commonAncestorContainer;
+  // The walker below never filters its own root: a range wholly inside a secret field reads as nothing.
+  if (inSecret(root)) return "";
   const doc = root.ownerDocument ?? document;
   let out = "";
   // By nodeType, not instanceof: a Docs editor lives in a same-origin iframe, another realm (text.ts isHtml).
@@ -44,7 +60,7 @@ export function serialize(range: Range): string {
     acceptNode: (n) => {
       if (n.nodeType === Node.ELEMENT_NODE) {
         const el = n as Element;
-        if (el.getAttribute("aria-hidden") === "true" || view.getComputedStyle(el).display === "none") return NodeFilter.FILTER_REJECT;
+        if (el.getAttribute("aria-hidden") === "true" || view.getComputedStyle(el).display === "none" || skippedInEditor(el) || secretOfElement(el) !== null) return NodeFilter.FILTER_REJECT;
       }
       return range.intersectsNode(n) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
     },
@@ -63,8 +79,30 @@ export function serialize(range: Range): string {
   return out;
 }
 
+/**
+ * An editor's whole text for this frame's own comparisons (walker.ts textOf: hasValue, rev, a restore's check): its
+ * text nodes only, with embedded controls, secret fields and hidden subtrees left out, as serialize leaves them out.
+ * Never sent.
+ */
+export function editorPlainText(host: HTMLElement): string {
+  if (inSecret(host)) return "";
+  const doc = host.ownerDocument;
+  const view = doc.defaultView ?? window;
+  const walker = doc.createTreeWalker(host, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => {
+      if (n.nodeType !== Node.ELEMENT_NODE) return NodeFilter.FILTER_ACCEPT;
+      const el = n as Element;
+      return el.getAttribute("aria-hidden") === "true" || view.getComputedStyle(el).display === "none" || skippedInEditor(el) || secretOfElement(el) !== null ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let out = "";
+  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) if (n.nodeType === Node.TEXT_NODE) out += (n as Text).data;
+  return out;
+}
+
 /** The text before, inside and after the selection of a contenteditable editor `host`, or null when its selection is elsewhere. */
 export function editorText(host: HTMLElement): FieldText | null {
+  if (inSecret(host)) return null;
   const doc = host.ownerDocument;
   // A shadow root has its own selection in Chrome; the document's selection is the editor's otherwise.
   const root = host.getRootNode();
@@ -97,14 +135,45 @@ function editingHost(el: HTMLElement): HTMLElement {
  * text the user types (a checkbox, a select, a button) or whose caret Chrome does not expose.
  */
 export function fieldText(el: Element): FieldText | null {
+  if (inSecret(el)) return null;
   if (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type))) {
     const s = el.selectionStart;
     const e = el.selectionEnd;
     if (typeof s !== "number" || typeof e !== "number") return null;
-    return around(el.value, s, e);
+    return withQuiet(around(el.value, s, e));
   }
-  if (el instanceof HTMLElement && el.isContentEditable) return editorText(editingHost(el));
+  if (el instanceof HTMLElement && el.isContentEditable) return withQuiet(editorText(editingHost(el)));
   return null;
+}
+
+/** How long after a non-typing edit it is still reported: helper/src/protocol.ts QUIET_REPORT_MS. */
+const QUIET_REPORT_MS = 2000;
+let lastNonTypingEdit = Number.NEGATIVE_INFINITY;
+let trackingEdits = false;
+const HISTORY_OR_PASTE = new Set(["historyUndo", "historyRedo", "insertFromPaste", "insertFromPasteAsQuotation", "insertFromDrop", "deleteByDrag"]);
+
+/**
+ * v2/inline item 3: notes each paste, drop, undo and redo in this document, for `quietMs`. Rich editors (ProseMirror,
+ * Lexical) handle these themselves and cancel the browser's default, so no input event fires for them: the paste and
+ * drop events, ⌘Z and ⌘⇧Z (or Ctrl), and beforeinput are caught in the capture phase, before the editor sees them. Once
+ * per document; the content script calls it at start.
+ */
+export function trackEdits(): void {
+  if (trackingEdits) return;
+  trackingEdits = true;
+  const mark = (): void => void (lastNonTypingEdit = performance.now());
+  const opts = { capture: true, passive: true } as const;
+  addEventListener("paste", mark, opts);
+  addEventListener("drop", mark, opts);
+  addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "z" || e.key === "Z" || e.key === "y")) mark(); }, opts);
+  addEventListener("beforeinput", (e) => { if (HISTORY_OR_PASTE.has((e as InputEvent).inputType)) mark(); }, opts);
+  addEventListener("input", (e) => { if (HISTORY_OR_PASTE.has((e as InputEvent).inputType)) mark(); }, opts);
+}
+
+function withQuiet(t: FieldText | null): FieldText | null {
+  if (t === null) return null;
+  const quiet = Math.round(performance.now() - lastNonTypingEdit);
+  return quiet >= 0 && quiet < QUIET_REPORT_MS ? { ...t, quietMs: quiet } : t;
 }
 
 /**

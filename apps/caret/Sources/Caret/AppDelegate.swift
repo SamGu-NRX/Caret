@@ -26,10 +26,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// reach Caret. Hidden while none runs.
     private let tabOwnerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var signalSources: [DispatchSourceSignal] = []
-    private var isTerminating = false
+    private let shutdown = ShutdownOnce()
+    /// Quit has returned `.terminateLater`; its reply comes within `ShutdownOnce.deadline`.
+    private var quitReplyPending = false
     private var working = false
     private let perchItem = NSMenuItem(title: "Show Perch", action: nil, keyEquivalent: "")
     private let pauseItem = NSMenuItem(title: "Pause Caret", action: nil, keyEquivalent: "")
+    /// Brief item 7: Caret off or back on in the app in front, named. Hidden when no other app is in front.
+    private let appItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    /// Brief item 8: the model file in use (a line, not a choice), and the download of Caret's own copy when it helps.
+    private let modelItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let modelActionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    /// Brief item 6: which keys take ghost text, one item per preset.
+    private var keysItems: [NSMenuItem] = []
     private var roleItems: [NSMenuItem] = []
     private var levelItems: [NSMenuItem] = []
     /// Under the state while the helper runs without Jev because Caret has no key (H12); choosing it opens the key step.
@@ -61,10 +70,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runtime.onTrustChanged = { [weak self] in self?.refreshTrust() }
         runtime.onWorkingChanged = { [weak self] working in
             self?.working = working
-            if !working, self?.handOffWhenIdle == true {
-                self?.handOffWhenIdle = false
-                self?.handOffToLoginItem()
-            }
             self?.refreshGlyph()
         }
         runtime.services = services
@@ -87,36 +92,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if showsStatusItem { installStatusItem() }
     }
 
+    /// The runtime, then the services. Every path below runs it through `shutdown`, once, and waits for it at most
+    /// `ShutdownOnce.deadline`.
+    private func stopEverything() async {
+        await runtime.shutdown()
+        await services.stop()
+    }
+
+    /// Always replies: when the shutdown finishes, or at the deadline if it (or a hand-off already under way) is stuck.
+    /// Quit exits 0, which tells launchd (KeepAlive SuccessfulExit false) not to start Caret again.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !isTerminating else { return .terminateLater }
-        isTerminating = true
-        Task {
-            await runtime.shutdown()
-            await services.stop()
-            // Quit exits 0, which tells launchd (KeepAlive SuccessfulExit false) not to start Caret again.
+        guard !quitReplyPending else { return .terminateLater }
+        quitReplyPending = true
+        shutdown.finish(body: { [weak self] in await self?.stopEverything() }) { finished in
+            if !finished { Self.say("Caret did not finish stopping within \(Int(ShutdownOnce.deadline)) s; quitting anyway") }
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
     }
 
+    private static func say(_ line: String) {
+        FileHandle.standardError.write(Data("caret: \(line)\n".utf8))
+    }
+
     /// Onboarding is done (or the browser step needs the bridge): register the login item, which launchd starts, and
     /// stop this copy. Services stop first, so the agent's copy finds the sockets free. If the hand-off fails, a fresh
     /// copy opens and runs in-process as before.
-    /// The login item is due but work is running in this copy: hand off once it is done.
-    private var handOffWhenIdle = false
+    /// The login item is due but work is running in this copy: checked every second until it ends.
+    private var handOffWait: Timer?
 
     private func handOffToLoginItem() {
-        guard !isTerminating else { return }
+        guard !shutdown.started else { return }
         // Accepted work (the first look's fill, say) runs in this copy's helper. Handing off stops the helper, and the
-        // next one restores the task as stopped, so a fill could end half done (Greptile on PR #17): wait for it.
-        if working {
-            handOffWhenIdle = true
+        // next one restores the task as stopped, so a fill could end half done (Codex and Greptile on PR #17). The
+        // runtime counts each accepted offer from its accept to the helper's end for it (RunningWork), so Done pressed
+        // right after Tab waits too. Work that never ends keeps this copy running; the next launch registers the agent.
+        if runtime.isRunningWork {
+            guard handOffWait == nil else { return }
+            handOffWait = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.runtime.isRunningWork else { return }
+                    self.handOffWait?.invalidate()
+                    self.handOffWait = nil
+                    self.handOffToLoginItem()
+                }
+            }
             return
         }
-        isTerminating = true
+        // Nothing new starts from here: the tap goes before the shutdown's await.
+        runtime.stopTakingOffers()
+        guard shutdown.start({ [weak self] in await self?.stopEverything() }) else { return }
         Task {
-            await runtime.shutdown()
-            await services.stop()
+            if await !shutdown.wait() {
+                Self.say("Caret did not finish stopping within \(Int(ShutdownOnce.deadline)) s; handing off anyway")
+            }
             switch LoginAgent.handOff(onboarded: true) {
             case .handedOff(let why):
                 FileHandle.standardError.write(Data("caret: \(why); this copy exits\n".utf8))
@@ -133,21 +162,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func shutdownAndExit() { shutdownAndExitThen {} }
 
+    /// SIGTERM, SIGINT and Restart Caret. While another shutdown runs (Quit, the hand-off) this does nothing: that one
+    /// ends the process within its own deadline.
     private func shutdownAndExitThen(_ last: @escaping () -> Void) {
-        guard !isTerminating else { return }
-        isTerminating = true
+        guard shutdown.start({ [weak self] in await self?.stopEverything() }) else { return }
         Task {
-            await runtime.shutdown()
-            await services.stop()
+            if await !shutdown.wait() {
+                Self.say("Caret did not finish stopping within \(Int(ShutdownOnce.deadline)) s; exiting anyway")
+            }
             last()
             exit(0)
         }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        stateItem.title = browserInstallResult?.message ?? runtime.engineSummary
-        // Show the install result on one menu opening, then resume reporting the engine state.
+        stateItem.title = browserInstallResult?.message ?? runtime.helperRefusalLine ?? runtime.engineSummary
+        // Show the install result on one menu opening, then resume reporting the helper's refusal, if any, or the engine state.
         browserInstallResult = nil
+        modelItem.title = runtime.modelLine
+        modelItem.toolTip = runtime.modelStatus
+        if let action = runtime.modelAction {
+            modelActionItem.title = action
+            modelActionItem.toolTip = runtime.modelStatus
+            modelActionItem.isHidden = false
+        } else {
+            modelActionItem.isHidden = true
+        }
         let notice = OtherTabOwners.notice(OtherTabOwners.running(in: NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)))
         tabOwnerItem.title = notice ?? ""
         tabOwnerItem.isHidden = notice == nil
@@ -155,9 +195,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         perchItem.state = runtime.perchHidden ? .off : .on
         let settings = SettingsStore.shared.settings
         pauseItem.title = settings.paused ? "Resume Caret" : "Pause Caret"
+        // The status menu opens without taking the front, so the frontmost app is the one the user was in.
+        let front = NSWorkspace.shared.frontmostApplication
+        if let front, front.processIdentifier != ProcessInfo.processInfo.processIdentifier, let id = front.bundleIdentifier {
+            let name = front.localizedName ?? id
+            appItem.title = settings.isOff(id) ? "Turn Back On in \(name)" : "Turn Off in \(name)"
+            appItem.representedObject = id
+            appItem.isHidden = false
+        } else {
+            appItem.isHidden = true
+        }
+        for item in keysItems {
+            item.state = item.representedObject as? String == settings.ghostKeys.rawValue ? .on : .off
+        }
+        let cap = runtime.rolesCap
         for item in roleItems {
             let role = (item.representedObject as? String).flatMap(CaretRole.init(rawValue:))
             item.state = role.map(settings.roles.contains) == true ? .on : .off
+            // Held by an undecided onboarding: shown as unavailable, and choosing it opens setup.
+            let note = role.flatMap { RoleMenu.note($0, cap: cap) }
+            if #available(macOS 14.4, *) { item.subtitle = note }
+            item.toolTip = note
         }
         for item in levelItems {
             item.state = item.representedObject as? String == settings.level.rawValue ? .on : .off
@@ -201,7 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         browserInstallResult = result
         stateItem.title = result.message
         stateItem.toolTip = ([result.detail].filter { !$0.isEmpty } + result.manualSteps.enumerated().map { "\($0.offset + 1). \($0.element)" }).joined(separator: "\n")
-        runtime.browserAddFinished(ok: result.ok, message: result.message)
+        runtime.browserAddFinished(ok: result.ok, message: result.message, opened: result.opened)
     }
 
     @objc private func addJevKey(_ sender: NSMenuItem) {
@@ -236,8 +294,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SettingsStore.shared.update(source: .menu) { $0.paused.toggle() }
     }
 
+    @objc private func toggleModelDownload(_ sender: NSMenuItem) {
+        runtime.toggleModelDownload()
+    }
+
+    @objc private func toggleApp(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        SettingsStore.shared.update(source: .menu) { $0.setApp(id, off: !$0.isOff(id)) }
+    }
+
+    @objc private func chooseKeys(_ sender: NSMenuItem) {
+        guard let keys = (sender.representedObject as? String).flatMap(GhostKeys.init(rawValue:)) else { return }
+        SettingsStore.shared.update(source: .menu) { $0.ghostKeys = keys }
+    }
+
     @objc private func toggleRole(_ sender: NSMenuItem) {
         guard let role = (sender.representedObject as? String).flatMap(CaretRole.init(rawValue:)) else { return }
+        if RoleMenu.choice(role, cap: runtime.rolesCap) == .finishSetup { return runtime.openSetupToFinish() }
         SettingsStore.shared.update(source: .menu) { s in
             if s.roles.contains(role) { s.roles.remove(role) } else { s.roles.insert(role) }
         }
@@ -276,6 +349,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         stateItem.isEnabled = false
         menu.addItem(stateItem)
+        modelItem.isEnabled = false
+        menu.addItem(modelItem)
+        modelActionItem.action = #selector(toggleModelDownload(_:))
+        modelActionItem.target = self
+        menu.addItem(modelActionItem)
         accessItem.action = #selector(turnOnAccessibility(_:))
         accessItem.target = self
         menu.addItem(accessItem)
@@ -298,6 +376,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseItem.action = #selector(togglePause(_:))
         pauseItem.target = self
         menu.addItem(pauseItem)
+        appItem.action = #selector(toggleApp(_:))
+        appItem.target = self
+        menu.addItem(appItem)
         menu.addItem(.separator())
         // Asking needs no shortcut to remember: it is here and at the top of the perch's list.
         let askItem = NSMenuItem(title: "Ask Caret…", action: #selector(askCaret(_:)), keyEquivalent: "")
@@ -347,6 +428,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let levelItem = NSMenuItem(title: CaretLevel.question.capitalized, action: nil, keyEquivalent: "")
         levelItem.submenu = levelMenu
         menu.addItem(levelItem)
+        let keysMenu = NSMenu()
+        for keys in GhostKeys.allCases {
+            let item = NSMenuItem(title: GhostKeysCopy.title(keys), action: #selector(chooseKeys(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = keys.rawValue
+            item.toolTip = GhostKeysCopy.detail(keys)
+            keysMenu.addItem(item)
+            keysItems.append(item)
+        }
+        let keysItem = NSMenuItem(title: GhostKeysCopy.menuTitle, action: nil, keyEquivalent: "")
+        keysItem.submenu = keysMenu
+        menu.addItem(keysItem)
         menu.addItem(.separator())
         // Only the launchd agent is a login item to remove; a development or test run never offers it (and must not
         // unregister the developer's own Caret).

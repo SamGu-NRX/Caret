@@ -12,13 +12,13 @@ import { ConsumerMessage, FirstLookPreview, FirstLookPreviewRequest, FirstLookRe
 import { windowBudget } from "../src/privacy.ts";
 import { sealRequest } from "../src/fill/jev.ts";
 import { sendable } from "../src/privacy/send.ts";
-import { partsOf } from "../src/privacy/ledger/source.ts";
+import { registryOf } from "../src/privacy/ledger/account.ts";
 import { buildLookRequest } from "../src/tasks/pending.ts";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { field, jevPickingText, snap, text } from "./builders.ts";
-import { LineClient, SocketReader, loadRecording, until } from "./socket-reader.ts";
+import { authenticateHost, LineClient, SocketReader, TEST_LAUNCH_SECRET, loadRecording, until } from "./socket-reader.ts";
 
 const request: FirstLookPreviewRequest = { type: "firstLookPreviewRequest", v: PROTOCOL_VERSION, requestId: "preview-1", at: 1000, families: ["fill", "pending", "event"], level: "balanced" };
 const fixture = fileURLToPath(new URL("../../apps/caret/Tests/CaretHostCoreTests/Fixtures/first-look-preview.ndjson", import.meta.url));
@@ -76,9 +76,9 @@ describe("first-look preview allow-list", () => {
 
   it("keeps the window budget and conversation-half rule, including partial-line placeholders", () => {
     const model = new ScreenModel();
-    // Words that never repeat: the output ledger charges every place a repeated run of 12 or more characters stands,
-    // so a sentence said 60 times could not be sent in part at all.
-    const body = Array.from({ length: 500 }, (_, i) => ((i + 1) * 2654435761 % 2176782336).toString(36).padStart(6, "a")).join(" ");
+    // Distinct lines (merge of v2/access into v2/next): the output ledger charges every place a text appears and a
+    // partial quote of a conversation line as the whole line, so one long line repeating a sentence could send nothing.
+    const body = Array.from({ length: 60 }, (_, i) => `Sentence ${i + 1} is about ordinary travel plans.`).join("\n");
     model.apply(snap([text("body", body)], { at: 1, windowId: "mail", title: "Thursday", app: { pid: 2, bundleId: "com.apple.mail", name: "Mail" } }));
     const w = model.windows.get("mail")!;
     const p = new FirstLookPreviews().build(request, model, 1000);
@@ -111,22 +111,28 @@ describe("first-look preview allow-list", () => {
       expect(() => provider(buildLookRequest(model.windows.get("note")!, model, []).req)).toThrow(PreviewStale);
       expect(approved.list.stale).toBe(true);
       // Even a previously allowed request is refused after the first violation.
-      expect(() => provider(buildLookRequest(w, { windows: new Map([[w.window.windowId, w]]) }, []).req)).toThrow(PreviewStale);
+      expect(() => provider(buildLookRequest(w, registryOf([w]), []).req)).toThrow(PreviewStale);
     });
     expect(provider).toHaveBeenCalledTimes(1);
     // Unrelated async work is not held to this look's preview.
     expect(() => buildLookRequest(model.windows.get("note")!, model, [])).not.toThrow();
   });
 
-  it("checks each declared span in its own window, saved values anywhere, and refuses window text with no span", () => {
-    const view = redactWindow(desk().windows.get("note")!);
-    const list = new FirstLookAllowList(new Map([["note", ["Name: Dana"]]]));
-    expect(() => list.check([{ view, text: "Name: Dana" }], new Set(["candidate"]), "Name: Dana")).not.toThrow();
-    expect(() => list.check([], new Set(["memory"]), "Name: Dana")).not.toThrow();
-    expect(() => new FirstLookAllowList(new Map([["note", ["Name: Dana"]]])).check([{ view, text: "About me" }], new Set(["candidate"]), "About me")).toThrow(PreviewStale);
-    expect(() => new FirstLookAllowList(new Map([["other", ["Name: Dana"]]])).check([{ view, text: "Name: Dana" }], new Set(["candidate"]), "Name: Dana")).toThrow(PreviewStale);
-    expect(() => new FirstLookAllowList(new Map([["note", ["Name: Dana"]]])).check([], new Set(["memory"]), "An unpreviewed saved answer")).toThrow(PreviewStale);
-    expect(() => new FirstLookAllowList(new Map([["note", ["Name: Dana"]]])).check([], new Set(["candidate"]), "Name: Dana")).toThrow(PreviewStale);
+  it("tracks plan/memory spans and refuses unpreviewed saved values", () => {
+    const model = desk();
+    const w = redactWindow(model.windows.get("note")!);
+    const d = new Disclosure(model);
+    const plan = d.planText("Name: Dana");
+    const memory = d.memoryText(null, "Name: Dana");
+    expect(plan).not.toBeNull();
+    expect(memory).not.toBeNull();
+    expect(d.spansOfText(plan!)).not.toHaveLength(0);
+    expect(d.spansOfText(memory!)).not.toHaveLength(0);
+    const list = new FirstLookAllowList(d.spansOfText(d.candidate(w, "Name: Dana")!));
+    expect(() => list.check(d.spansOfText(memory!), d.reasonsOf(memory!), memory!)).not.toThrow();
+    const unpreviewed = d.memoryText(null, "An unpreviewed saved answer");
+    expect(unpreviewed).not.toBeNull();
+    expect(() => list.check(d.spansOfText(unpreviewed!), d.reasonsOf(unpreviewed!), unpreviewed!)).toThrow(PreviewStale);
   });
 
   it("checks original saved text even when a template surrounds it with Caret wording", () => {
@@ -161,17 +167,13 @@ describe("first-look preview allow-list", () => {
   });
 
   it("allows the approved excerpt when only an untransmitted part of its line changes", () => {
-    const model = new ScreenModel();
-    model.apply(snap([text("line", "Dana, new details")], { at: 1, windowId: "w", title: "T" }));
-    const view = redactWindow(model.windows.get("w")!);
-    const part = partsOf(view).find((p) => p.raw === "Dana, new details")!;
-    const list = new FirstLookAllowList(new Map([["w", ["Dana"]]]));
-    expect(() => list.check([{ view, at: { part: part.id, start: 0, end: 4 } }], new Set(["candidate"]), "Dana")).not.toThrow();
-    expect(() => list.check([{ view, at: { part: part.id, start: 0, end: 17 } }], new Set(["candidate"]), "Dana, new details")).toThrow(PreviewStale);
+    const list = new FirstLookAllowList([{ windowId: "w", line: "Dana, old details", at: 0, len: 4 }]);
+    expect(() => list.check([{ windowId: "w", line: "Dana, new details", at: 0, len: 4 }], new Set(["candidate"]), "Dana")).not.toThrow();
+    expect(() => list.check([{ windowId: "w", line: "Dana, new details", at: 0, len: 17 }], new Set(["candidate"]), "Dana, new details")).toThrow(PreviewStale);
   });
 
   it("holds a late generator after the first look's reply closes its scope", async () => {
-    const list = new FirstLookAllowList(new Map());
+    const list = new FirstLookAllowList([]);
     let continueWork!: () => void;
     const wait = new Promise<void>((resolve) => { continueWork = resolve; });
     const late = withFirstLookAllowList(list, async () => {
@@ -203,11 +205,12 @@ describe("preview and approval over the socket", () => {
     lookNumber = 0;
     const values: Record<string, string> = { Name: "Dana Whitfield", Email: "dana.whitfield@example.com", Phone: "+1 (512) 555-0142" };
     const fake = jevPickingText((_, instructions) => values[/Label: '([^']+)'/.exec(instructions)?.[1] ?? ""] ?? null);
-    server = new HelperServer(join(dir, "screen.sock"), () => helper, () => {});
+    server = new HelperServer(join(dir, "screen.sock"), () => helper, () => {}, TEST_LAUNCH_SECRET);
     helper = new Helper({ store, askJev: (req) => { calls++; return fake(req); }, shadow: false, allowBackgroundFocus: false, now: () => now, publish: (m) => server.publish(m), sendToReader: (cmd) => server.sendToReader(cmd) });
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
-    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "preview-test" });
+    host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "preview-test", host: true });
+    await authenticateHost(host);
     reader = await SocketReader.connect(join(dir, "screen.sock"));
     await until(() => helper.hasReader);
   });
@@ -236,6 +239,20 @@ describe("preview and approval over the socket", () => {
     expect(p.totalChars).toBeGreaterThan(0);
     expect(calls).toBe(before);
     expect(reader.verbs).toHaveLength(walks);
+  });
+
+  it("refuses a preview to a consumer that is not the host, with a named error and no screen text", async () => {
+    await reader.replay(loadRecording("offers-fill.ndjson").filter((m) => m.type === "snapshot"), { applied: (id, at) => helper.model.windows.get(id)?.updatedAt === at, tick: () => {} });
+    const other = await LineClient.connect(join(dir, "screen.sock"));
+    try {
+      other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "not-the-host" });
+      other.send(request);
+      expect(await other.waitFor((m) => m.type === "error")).toMatchObject({ message: "firstLookPreviewRequest needs a host hello (host: true): only the host shows the preview as consent" });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(other.received.some((m) => (m as { type?: string }).type === "firstLookPreview")).toBe(false);
+    } finally {
+      other.close();
+    }
   });
 
   it("returns firstLookReply errors for unknown and expired ids without sending", async () => {

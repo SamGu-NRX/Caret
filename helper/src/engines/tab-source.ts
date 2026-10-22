@@ -18,6 +18,7 @@
 //      here writes it to disk or a log; counts name outcomes only.
 //   7. The same ledger: fill takes these nodes through the SnippetLedger like any window's text, and they are another
 //      tab's, never the form's own.
+import { canonicalOrigin } from "../privacy/denied-origins.ts";
 import { LEFT_TAB_MS, PAGE_SUBROLE, type Node, type PageResult, type PageTabText } from "../protocol.ts";
 import type { ScreenModel } from "../model.ts";
 import { forgetWindows } from "../privacy.ts";
@@ -128,7 +129,7 @@ export class TabSource {
     const now = this.opts.now();
     // Rule 5 again: the user may have turned Caret off for one of its sites while it was read.
     const off = new Set(reader.sitesOff());
-    if (t.frames.some((f) => off.has(f.origin))) return { refused: "siteOff" };
+    if (t.frames.some((f) => off.has(canonicalOrigin(f.origin)))) return { refused: "siteOff" };
     // Rule 1 again: the user may have moved on while it was read; rule 2 by the worker's clock too.
     if (model.windowBefore(formWindowId) !== left || model.leftAt(left) !== leftAt || reader.documentOf(left) !== document) return { refused: "moved" };
     const until = Math.min(leftAt, t.leftAt) + LEFT_TAB_MS;

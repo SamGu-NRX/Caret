@@ -21,7 +21,7 @@ export interface ReaderLink {
    * Puts `text` at the caret of the page field `key` names, which must read `expect` before its caret (H13, P4 item 8).
    * Only a page engine's link has it (engines/page-link.ts insertText); the reader inserts nothing this way.
    */
-  insertText?(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string): Promise<VerbResult>;
+  insertText?(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string, replace?: number): Promise<VerbResult>;
 }
 
 /** Finds the page engine that owns a window (helper/src/engines/registry.ts EngineRegistry). */
@@ -60,10 +60,10 @@ export class RoutedReaderLink implements ReaderLink {
     return engine.attachFile(windowId, key, taskId, files);
   }
 
-  insertText(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string): Promise<VerbResult> {
+  insertText(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string, replace?: number): Promise<VerbResult> {
     const engine = windowId.startsWith("page:") ? this.directory.engineFor(windowId) : null;
     if (engine?.insertText === undefined) return Promise.resolve({ type: "verbResult", v: PROTOCOL_VERSION, id: randomUUID(), at: Date.now(), outcome: "noWindow", detail: `no page engine for ${windowId}` });
-    return engine.insertText(windowId, key, expect, text, taskId, token);
+    return engine.insertText(windowId, key, expect, text, taskId, token, replace);
   }
 
   grant(m: ActGrant | ActRevoke | CalendarGrant): void {
@@ -246,9 +246,4 @@ export class ReaderCalendar implements CalendarPort {
   async dispose(calendar: string, taskId: string): Promise<void> {
     await this.call({ kind: "calendarDispose", calendar, taskId });
   }
-}
-
-/** Opens a URL. The only implementation here is a recording fake; a real one belongs in the host. */
-export interface UrlOpener {
-  open(url: string): Promise<void>;
 }

@@ -8,7 +8,8 @@ import Foundation
 /// - `launch`: a built Caret.app with no helper socket named. Caret starts the bundled helper and caret-screen with
 ///   one launch secret (`ServiceLauncher`) and, as the launchd agent, vends the bridge service (`PageBridgeVendor`).
 /// - `attached`: a helper socket was named (`--helper-socket`, `CARET_SCREEN_SOCKET`), as every acceptance script
-///   does, or there is no bundled helper (`swift run`). Caret starts nothing and connects there, as before H4.
+///   does, or there is no bundled helper (`swift run`). Caret starts nothing and connects there, as before H4. It is the
+///   helper's host only with the host key its starter passed on `CARET_HOST_KEY_FD` (`HostAuth`).
 @MainActor
 public final class CaretServices {
     public enum Mode {
@@ -84,9 +85,15 @@ public final class CaretServices {
     /// keychain (H12). Nil when there is none to use.
     public let jevKeys: JevKeyStore?
 
+    /// The key this Caret proves to the helper it is the host with (`HostAuth`), held in memory: derived from the
+    /// launch secret when Caret starts the helper, read once from `CARET_HOST_KEY_FD` when attached, nil when attached
+    /// without one.
+    public let hostKey: Data?
+
     /// `extraBrowserRequirements` is kept only by the acceptance build (`CARET_ACCEPTANCE_HOST`, which adds Chrome for
     /// Testing by cdhash for a run); the shipped build drops it, whoever passes it (H8 decision 2).
-    public init(mode: Mode, extraBrowserRequirements: [String] = []) throws {
+    /// Throws when `CARET_HOST_KEY_FD` is set in attached mode but names no readable 32-byte key.
+    public init(mode: Mode, extraBrowserRequirements: [String] = [], environment: [String: String] = ProcessInfo.processInfo.environment) throws {
         self.mode = mode
         #if CARET_ACCEPTANCE_HOST
         self.extraBrowserRequirements = extraBrowserRequirements
@@ -101,10 +108,15 @@ public final class CaretServices {
         case .launch(let home, let programs, _):
             let keys = home.isOverride ? nil : JevKeyStore.login(userHome: NSHomeDirectory())
             jevKeys = keys
-            launcher = try ServiceLauncher(programs: programs, home: home, log: log, storedKey: { keys?.read() })
+            let services = try ServiceLauncher(programs: programs, home: home, log: log, storedKey: { keys?.read() })
+            launcher = services
+            hostKey = services.hostKey
         case .attached:
             jevKeys = nil
             launcher = nil
+            hostKey = try HostAuth.readInheritedKey(environment: environment)
+            // The descriptor is closed; nothing this process starts should be told to read it.
+            if environment[HostAuth.keyDescriptorVariable] != nil { unsetenv(HostAuth.keyDescriptorVariable) }
         }
         launcher?.onChange = { [weak self] in self?.onChange?() }
     }
@@ -158,6 +170,7 @@ public final class CaretServices {
         switch mode {
         case .attached(let socket, let why):
             log("services: attached to the helper at \(socket) (\(why)); Caret starts no helper or reader")
+            if hostKey == nil { log("no host key (\(HostAuth.keyDescriptorVariable)); the helper will not treat this Caret as the host") }
             bridge = .off("Caret did not start the helper, so it holds no launch secret")
         case .launch(let home, _, let role):
             guard let launcher else { return }
@@ -188,7 +201,7 @@ public final class CaretServices {
 
     /// The debug socket's `services` reply.
     public func report() -> String {
-        var r: [String: Any] = ["bridge": bridge.summary]
+        var r: [String: Any] = ["bridge": bridge.summary, "hostKey": hostKey != nil]
         switch mode {
         case .attached(let socket, let why):
             r["mode"] = "attached"

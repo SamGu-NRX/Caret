@@ -22,12 +22,12 @@ function snapshot(id: string, tabId = 7, navGen = 1): PageSnapshot {
     frames: [
       { frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/form", navGen, title: "Synthetic", headings: [], iframes: [], excluded: {}, truncated: false,
         controls: [
-          { id: "e1", key: "textbox:first name~0", strongKey: null, kind: "text", role: "textbox", name: "First name", value: "", form: null, rect: [0, 0, 100, 20] },
+          { id: "e1", key: "textbox:first name~0", strongKey: null, kind: "text", role: "textbox", name: "First name", hasValue: false, rev: 0, form: null, rect: [0, 0, 100, 20] },
           { id: "e2", key: "combobox:country~0", strongKey: null, kind: "select", role: "combobox", name: "Country", value: "", options: [{ value: "", label: "Choose", selected: true }, { value: "ca", label: "Canada", selected: false }], form: null, rect: [0, 30, 100, 20] },
           { id: "e3", key: "button:submit~0", strongKey: null, kind: "button", role: "button", name: "Submit", form: null, rect: [0, 60, 100, 20] },
         ] },
       { frameId: 4, parentFrameId: 0, documentId: "D4", origin: "http://127.0.0.1:4311", path: "/embed", navGen: 2, title: "", headings: [], iframes: [], excluded: {}, truncated: false,
-        controls: [{ id: "e1", key: "textbox:referral~0", strongKey: null, kind: "text", role: "textbox", name: "Referral", value: "x", form: null, rect: [0, 0, 100, 20] }] },
+        controls: [{ id: "e1", key: "textbox:referral~0", strongKey: null, kind: "text", role: "textbox", name: "Referral", hasValue: false, rev: 1, form: null, rect: [0, 0, 100, 20] }] },
     ],
     missing: [], focused: { frameId: 4, id: "e1", selection: null },
   };
@@ -176,7 +176,9 @@ describe("engine session and page link", () => {
   const walker = (session: EngineSession, snap: (id: string) => PageSnapshot = (id) => snapshot(id)) => (m: HelperToEngine): void => {
     if (m.type !== "pageCommand") return;
     if (m.verb.kind === "pageWalk") session.receive(snap(m.id));
-    session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: "ok", detail: null });
+    // A verified text write comes with the page's own readings, as the content script sends them.
+    const readings = m.verb.kind === "pageWrite" ? { readings: { sameAsBefore: false, landed: true, equivalent: true, empty: false, typedBetween: false, rev: 2 } } : {};
+    session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: "ok", detail: null, ...readings });
   };
 
   it("turns a tab into one window: an AXWebArea per frame, controls under it, a select showing its selected label", () => {
@@ -228,12 +230,13 @@ describe("engine session and page link", () => {
     expect(verbs[1]).toEqual({ kind: "pageSelect", tabId: 7, frameId: 0, documentId: "D0", id: "e2", control: "select", name: "Country", taskId: "t1", expect: "", value: "ca" });
     expect(verbs[2]).toEqual({ kind: "pageWalk", tabId: 7 });
     expect(applied.length).toBe(before + 1);
-    const text = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f4/textbox:referral~0", role: "AXTextField", attribute: "value", expect: "x", value: "ABC", taskId: "t1" });
+    const text = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f4/textbox:referral~0", role: "AXTextField", attribute: "value", expect: "", value: "ABC", taskId: "t1" });
     expect(text.outcome).toBe("ok");
     expect(verbs.length).toBe(3);
     // A verified text write is not walked after (P2's deferred walk): it is the last command.
     const last = sent.filter((m) => m.type === "pageCommand").at(-1);
-    expect(last?.type === "pageCommand" && last.verb).toMatchObject({ kind: "pageWrite", frameId: 4, documentId: "D4", id: "e1", expect: "x", value: "ABC" });
+    // The page checks the rev the walk read, never a text: the field's text never travels either way.
+    expect(last?.type === "pageCommand" && last.verb).toEqual({ kind: "pageWrite", tabId: 7, frameId: 4, documentId: "D4", id: "e1", control: "text", name: "Referral", taskId: "t1", expectRev: 1, value: "ABC" });
   });
 
   it("refuses a write without a task, a focus write, and a raise, without asking the engine", async () => {
@@ -260,8 +263,8 @@ describe("engine session and page link", () => {
     expect(r("stale")).toBe("changed");
     expect(r("notAllowed")).toBe("notAllowed");
     expect(r("handoff")).toBe("notAllowed");
-    expect(r("failed", { before: "a", afterInput: "b", afterBlur: "a", invalid: false, error: null })).toBe("changed");
-    expect(r("failed", { before: "a", afterInput: "b", afterBlur: "c", invalid: false, error: null })).toBe("axError");
+    expect(r("failed", { sameAsBefore: true, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 2 })).toBe("changed");
+    expect(r("failed", { sameAsBefore: false, landed: false, equivalent: false, empty: false, typedBetween: false, rev: 2 })).toBe("axError");
     expect(r("failed")).toBe("axError");
     expect(r("excluded")).toBe("secure");
   });

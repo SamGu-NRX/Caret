@@ -3,11 +3,12 @@
 // control's value passes only when its own "Label:" line still holds it, or the line it was read from reads as it did.
 // I1: the recheck is the write contract's (fill/contract.ts provenanceStale), which holds a value to the digests of the
 // lines it was read from, so a line that changed in any way refuses it. Every name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { PROTOCOL_VERSION, type FillProposal, type HelperMessage, type OfferPopup, type PageControl } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type FillProposal, type HelperMessage, type OfferPopup } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { pageHost } from "../src/engines/host.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
@@ -57,7 +58,7 @@ describe("the recheck of a span inside a longer source line (P2 decision)", () =
 });
 
 /** A short apply form: two text fields and a country dropdown named only by its label, as W4's Greenhouse pages show it. */
-const form = (): PageControl[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "" }), c("e3", "combobox", "Country", { value: "" })];
+const form = (): TestField[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "" }), c("e3", "combobox", "Country", { value: "" })];
 // G2 round 4: a value's recheck reads its line and the lines either side (fill/line-values.ts lineDigests), so a line
 // between the values keeps an edit to one from touching another's neighbourhood.
 const NOTE = ["Full name: Robin Vale", "", "Phone: none on file", "", "Email: robin@example.test", "", "Notes: none", "", "Location: Oakland, California, United States (in the Bay Area)"].join("\n");

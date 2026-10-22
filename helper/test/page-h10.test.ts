@@ -24,7 +24,7 @@ const W = "page:eng1:7";
 /** The probe's window: [120, 30, 760, 512], 369 points of viewport at the bottom (143 of browser above it). */
 const VIEW = { window: [120, 30, 760, 512] as [number, number, number, number], viewport: [760, 369] as [number, number], zoom: 1 };
 type Control = PageSnapshot["frames"][number]["controls"][number];
-const email: Control = { id: "e1", key: "form[apply]/textbox:email~0", strongKey: null, kind: "email", role: "textbox", name: "Email", value: "", form: "form#apply", rect: [16, 40, 300, 24] };
+const email: Control = { id: "e1", key: "form[apply]/textbox:email~0", strongKey: null, kind: "email", role: "textbox", name: "Email", hasValue: false, rev: 0, form: "form#apply", rect: [16, 40, 300, 24] };
 const resume: Control = { id: "e2", key: "form[apply]/button:resume~0", strongKey: null, kind: "file", role: "button", name: "Resume", form: "form#apply", rect: [16, 80, 300, 24] };
 const yes: Control = { id: "e3", key: "form[apply]/radio:yes~0", strongKey: null, kind: "radio", role: "radio", name: "Yes", checked: false, form: "form#apply", rect: [16, 120, 20, 20], group: { id: "g1", name: "Authorized to work?" } };
 const no: Control = { ...yes, id: "e4", key: "form[apply]/radio:no~0", name: "No", rect: [60, 120, 20, 20] };
@@ -122,7 +122,9 @@ describe("the page field the user is in, for the host", () => {
     session.receive(hello);
     return { helper, published, session, sent, focus };
   }
-  const fields = (published: HelperMessage[]): PageField[] => published.filter((m): m is PageField => m.type === "pageField");
+  const allFields = (published: HelperMessage[]): PageField[] => published.filter((m): m is PageField => m.type === "pageField");
+  // What H10 says about focus and position; the frames near the field (v2/inline PageField.nearby) have their own check.
+  const fields = (published: HelperMessage[]): PageField[] => allFields(published).map(({ nearby: _nearby, ...rest }) => rest);
 
   it("says which field has focus and where, follows a scroll without a new focus, and says none once focus leaves", async () => {
     const page = { focused: "e1" as string | null, scroll: 0 };
@@ -132,6 +134,8 @@ describe("the page field the user is in, for the host", () => {
     session.receive({ type: "pageFocus", v: 1, at: 3, tabId: 7, frameId: 0 });
     await settle();
     expect(fields(published)).toEqual([{ type: "pageField", v: 1, at: 1000, app: chrome, windowId: W, title: "Apply: Synthetic Role", key: KEY(email), role: "AXTextField", editable: true, empty: true, frame: [136, 213, 300, 24], look: { inset: 13, fontSize: 16, placeholder: true, dark: false } }]);
+    // v2/inline: the next field down is near enough to be named, as a screen frame (the slip keeps off it).
+    expect(allFields(published)[0]?.nearby).toContainEqual([136, 253, 300, 24]);
     expect(fields(published).every((m) => HelperMessage.safeParse(m).success)).toBe(true);
     expect(focus).toHaveLength(1);
     // A scroll: the same field, 30 points higher, and no second focus for the helper.

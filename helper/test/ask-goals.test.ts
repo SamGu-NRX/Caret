@@ -1,6 +1,7 @@
 // B30 part 1: an Ask whose intent route is plan, from a host that runs goal plans, is offered as a D2-06 goal: the same
 // preview (segments, digests), the same acceptances and receipts. A consumer that does not run goal plans keeps the
 // single-window planner. Every name and number is invented.
+import { headsJev } from "./heads-jev.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AskJev } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type GoalProgress } from "../src/protocol.ts";
@@ -26,10 +27,6 @@ function askAndGoalWriter(route: string): WriterPort & { kinds: string[] } {
     async write(req) {
       kinds.push(req.kind);
       const base = { model: "canned", provider: "canned", inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
-      if (req.kind === "intent") {
-        const json = { route, why: "none", scope: route === "fill" ? "all" : "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
-        return { ...base, output: { program: null, reply: JSON.stringify(json), json } };
-      }
       const program = cannedProgram((req.input as unknown as { snapshots: PlanningSnapshot[] }).snapshots, STEPS);
       return { ...base, output: { program, reply: program } };
     },
@@ -54,7 +51,7 @@ afterEach(async () => {
 });
 function scene(route = "plan"): GoalScene & { writer2: ReturnType<typeof askAndGoalWriter> } {
   const writer2 = askAndGoalWriter(route);
-  const sc = goalScene({ scripts: [STEPS], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1", writer: writer2, askJev: silentJev, ask: { maker: "writer", writer: writer2 } });
+  const sc = goalScene({ scripts: [STEPS], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1", writer: writer2, askJev: headsJev(silentJev, route === "plan" ? "plan" : "all"), ask: { maker: "heads" } });
   scenes.push(sc);
   return Object.assign(sc, { writer2 });
 }
@@ -68,7 +65,7 @@ describe("Ask's plan route for a host that runs goal plans", () => {
     expect(viaAsk.type).toBe("goalProgress");
     const preview = viaAsk as Extract<GoalProgress, { event: "segment" }>;
     expect(preview).toMatchObject({ event: "segment", requestId: "a1", segment: 0, segments: 2, reason: "start" });
-    expect(sc.writer2.kinds).toEqual(["intent", "goal"]);
+    expect(sc.writer2.kinds).toEqual(["goal"]);
     const direct = goalScene({ scripts: [STEPS], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1", askJev: standInJev() });
     scenes.push(direct);
     const viaGoal = await direct.request(INSTRUCTION);
@@ -104,14 +101,10 @@ describe("an Ask from the email the user is reading", () => {
     ];
     const writer = { ...askAndGoalWriter("plan"), write: async (req: Parameters<WriterPort["write"]>[0]) => {
       const base = { model: "canned", provider: "canned", inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
-      if (req.kind === "intent") {
-        const json = { route: "plan", why: "none", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
-        return { ...base, output: { program: null, reply: JSON.stringify(json), json } };
-      }
       const program = cannedProgram((req.input as unknown as { snapshots: PlanningSnapshot[] }).snapshots, steps);
       return { ...base, output: { program, reply: program } };
     } };
-    const sc = goalScene({ scripts: [], windows: [mailWindow(), replyWindow()], userWindow: "6161-1", writer, askJev: silentJev, ask: { maker: "writer", writer } });
+    const sc = goalScene({ scripts: [], windows: [mailWindow(), replyWindow()], userWindow: "6161-1", writer, askJev: headsJev(silentJev, "plan"), ask: { maker: "heads" } });
     scenes.push(sc);
     const r = await sc.helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "m1", at: sc.desk.at, instruction: "reply to Priya with the problem", windowId: "6161-1" }, sc.session, true, true);
     expect(r).toMatchObject({ type: "goalProgress", event: "segment", where: { kind: "window", title: "Re: Order ORD-2026-48213 arrived damaged" } });

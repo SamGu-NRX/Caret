@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { ScreenModel } from "../src/model.ts";
@@ -592,7 +592,11 @@ describe("skills in the helper", () => {
     hangAtStep = step;
     const at = sent.length;
     const c = open();
-    for (let i = 0; i < 500 && !since("taskProgress", at).some((p) => p.phase === "verified" && p.step === step - 1); i++) await new Promise((r) => setImmediate(r));
+    // Callback turns do not guarantee progress. Keep the hang until the preceding write is verified;
+    // waitFor's default one-second bound fails with this assertion instead of simulating the wrong crash.
+    await vi.waitFor(() => {
+      expect(since("taskProgress", at), `crashAt(${step}) needs verified progress for step ${step - 1} before restart`).toContainEqual(expect.objectContaining({ phase: "verified", step: step - 1 }));
+    });
     hangAtStep = null;
     return { c, skillId };
   };

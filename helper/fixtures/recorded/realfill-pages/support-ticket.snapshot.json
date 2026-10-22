@@ -42,7 +42,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Your name *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,
@@ -61,7 +62,8 @@
      "kind": "email",
      "role": "textbox",
      "name": "Email address *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,
@@ -80,7 +82,8 @@
      "kind": "url",
      "role": "textbox",
      "name": "Workspace URL",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,
@@ -222,7 +225,8 @@
      "kind": "text",
      "role": "textbox",
      "name": "Subject *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,
@@ -241,7 +245,8 @@
      "kind": "textarea",
      "role": "textbox",
      "name": "Description *",
-     "value": "",
+     "hasValue": false,
+     "rev": 0,
      "form": "form@0",
      "rect": [
       320,

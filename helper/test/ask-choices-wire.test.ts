@@ -2,6 +2,8 @@
 // a hello that declares "askChoices", a planRequest answered with a question, the answer, a second question, the
 // proposal, a person question, and an answer to a question already answered. Then the helper's side: who gets a
 // question, who may answer it, and that an answer is taken once and only as listed. All text is synthetic.
+import { scopeLabel } from "./builders.ts";
+import { headsJev } from "./heads-jev.ts";
 import { answeringScope } from "./builders.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +20,7 @@ import type { WriterRequest } from "../src/writer/port.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { MAIL_APP, optionIs, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, wireButtons } from "./fake-app.ts";
-import { LineClient } from "./socket-reader.ts";
+import { authenticateHost, LineClient, TEST_LAUNCH_SECRET } from "./socket-reader.ts";
 
 const lines = readFileSync(new URL("../fixtures/golden/ask-choices.ndjson", import.meta.url), "utf8").trim().split("\n");
 const CONSUMER = new Set(["hello", "planRequest", "askAnswer"]);
@@ -66,14 +68,6 @@ function mailWindow(): ReturnType<typeof snap> {
   return snap([text(M("statictext:ship to: austin~0"), "Ship to: Austin"), text(M("statictext:city: austin~0"), "City: Austin")], { at: 500, windowId: REF, title: "Order 48213", app: MAIL_APP });
 }
 
-/** An intent writer that leaves the fields open, and a Jev that picks Austin for a City field and calls it the user's. */
-const openFields = {
-  route: FAKE_WRITER_ROUTE,
-  write: async (_: WriterRequest) => {
-    const json = { route: "ask", why: "whichFields", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
-    return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };
-  },
-};
 const cityJev: AskJev = async (req) => {
   const answers = Object.fromEntries(
     Object.entries(req.questions).map(([id, q]) => {
@@ -101,7 +95,7 @@ describe("Ask questions in the helper (B29)", () => {
     wireButtons(app);
     app.enforceGrants = true;
     clock = 10_000;
-    helper = new Helper({ store, memory, askJev: answeringScope(cityJev), shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "writer", writer: openFields } });
+    helper = new Helper({ store, memory, askJev: headsJev(answeringScope(cityJev, (ins) => scopeLabel(ins) === "City" ? "unclear" : "not")), shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "heads" } });
     app.helper = helper;
     app.show();
     void helper.handleReader(mailWindow());
@@ -186,12 +180,13 @@ describe("askAnswer on the socket", () => {
   it("is refused by name from a consumer that did not declare the capability", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caret-ask-sock-"));
     const store = new Store(join(dir, "data"));
-    const server: HelperServer = new HelperServer(join(dir, "screen.sock"), () => helper, () => {});
+    const server: HelperServer = new HelperServer(join(dir, "screen.sock"), () => helper, () => {}, TEST_LAUNCH_SECRET);
     const helper: Helper = new Helper({ store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: false, publish: (m) => server.publish(m) });
     await server.listen();
     try {
       const c = await LineClient.connect(join(dir, "screen.sock"));
       c.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "old-host", host: true });
+      await authenticateHost(c);
       c.send(at(3));
       const e = await c.waitFor((m) => m.type === "error" && String(m.message).includes("askAnswer"));
       expect(e.message).toBe(`askAnswer needs "${ASK_CHOICES_CAPABILITY}" in the consumer's hello capabilities`);
@@ -199,6 +194,7 @@ describe("askAnswer on the socket", () => {
       // One that declared it reaches the helper: an unknown question is gone.
       const d = await LineClient.connect(join(dir, "screen.sock"));
       d.send(at(0));
+      await authenticateHost(d);
       d.send(at(3));
       const r = await d.waitFor((m) => m.type === "planProposal");
       expect(r).toMatchObject({ requestId: "ask-8", outcome: "error", error: { code: "questionGone" } });

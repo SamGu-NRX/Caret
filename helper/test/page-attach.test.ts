@@ -3,11 +3,12 @@
 // arrives with the acceptance (goalAccept.confirmedFile), is read once and bound to that step's field for that run
 // (engines/attach.ts), and lands through the page engine, verified by the page's own file list. An attach row given no
 // file runs nothing and is left to the user. Caret never looks for a file. Every name and value is invented.
+import type { TestField } from "./page-wire.ts";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GRANT_MAX_MS, type HelperMessage, type PageControl } from "../src/protocol.ts";
+import { GRANT_MAX_MS, type HelperMessage } from "../src/protocol.ts";
 import { c, chrome, mixedControls, WIN } from "./fake-page.ts";
 import { closeRigs, goalMessages, presses, rig, type Finished, type Rig, type Segment } from "./page-rig.ts";
 
@@ -24,7 +25,7 @@ function resume(name = "Robin Vale Resume.pdf", bytes = "%PDF-1.4 synthetic resu
 }
 
 /** A wizard's documents page: a name, a file input, a dropzone's hidden input named by the dropzone's text, and Submit. */
-function documents(): PageControl[] {
+function documents(): TestField[] {
   return [c("r0", "text", "Full name", { value: "" }), c("r1", "file", "Resume"), c("r2", "file", "Or drop your resume here"), c("r3", "button", "Submit application")];
 }
 
@@ -42,7 +43,7 @@ describe("an attach row in a page goal's preview (P3)", () => {
     const r = await rig({ goalFiles: true });
     const s = (await r.ask("fill out this form from my note")) as Segment;
     const attach = s.steps.filter((x) => x.kind === "attach");
-    expect(attach).toEqual([{ index: s.steps.length - 2, kind: "attach", says: "Resume: a file you choose", file: { source: "choose" } }]);
+    expect(attach).toEqual([{ index: s.steps.length - 2, kind: "attach", says: "Resume: a file you choose", tier: "attach", file: { source: "choose" } }]);
     expect(s.steps.slice(0, -2).every((x) => x.kind === "write")).toBe(true);
     // I6: the hand-off row comes last, after the attach rows.
     expect(s.steps.at(-1)).toMatchObject({ kind: "handoff", says: "You press Submit Application" });
@@ -158,7 +159,7 @@ describe("what never attaches (P3)", () => {
 
 describe("the P3 review's attach findings", () => {
   it("an attach-only preview accepted with no file runs nothing and still waits for one", async () => {
-    const files = (): PageControl[] => [c("r1", "file", "Resume"), c("r3", "button", "Submit application")];
+    const files = (): TestField[] => [c("r1", "file", "Resume"), c("r3", "button", "Submit application")];
     const r = await rig({ goalFiles: true, controls: mixedControls });
     // The carried goal plans a page of file controls alone (an Ask needs a field to ask about).
     const s = (await r.ask("fill out this form from my note")) as Segment;

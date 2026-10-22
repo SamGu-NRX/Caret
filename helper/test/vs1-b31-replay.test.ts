@@ -92,7 +92,9 @@ describe("the four wrong agreements are never written", () => {
     // Called the user's instead, it is still withheld by the owner rule and nothing else: a conversation's value is owner-
     // judged only with its whole note shown, which a conversation never gets (ownerEvidence).
     const mine = await run((text) => (text === wrong ? { choice: "user", confidence: 0.99 } : undefined));
-    const reasons = mine.traces.flatMap((x) => [...(x.vetoed ?? new Map()).values()].flatMap((m) => [...m].filter(([id]) => x.options.get(id)?.text === wrong).map(([, why]) => why)));
+    // Mobile phone's own vetoes: since page menus are asked on their own options (act-select-choice), the same text is
+    // also kept out of State, as no conversion to a state, which says nothing of the owner rule here.
+    const reasons = mine.traces.flatMap((x) => [...(x.vetoed ?? new Map())].filter(([field]) => x.fields.find((f) => f.id === field)?.name === c.field).flatMap(([, m]) => [...m].filter(([id]) => x.options.get(id)?.text === wrong).map(([, why]) => why)));
     expect(reasons.length).toBeGreaterThan(0);
     expect(new Set(reasons)).toEqual(new Set(["ownerEvidence"]));
     expect(Object.values(proposedOf(mine, mine.outcome))).not.toContain(wrong);

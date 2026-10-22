@@ -20,6 +20,9 @@ public struct OtherCaret: Equatable, Sendable {
 }
 
 public enum OtherCarets {
+    /// This app's bundle identifier: copies sharing it share one Accessibility entry.
+    public static let thisBundleID = "dev.caret.host"
+
     /// Bundle identifiers of other Caret builds that show up in System Settings as "Caret".
     public static let knownIDs = ["dev.caret.hackathon", "dev.caret.host"]
 

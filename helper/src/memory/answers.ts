@@ -147,6 +147,8 @@ export function capture(w: WindowState, key: string, ctx: CaptureContext): Captu
   if (w.window.kind !== PAGE) return no("notPage", "Caret saves answers only from forms in your browser.");
   const n = w.nodes.get(key);
   if (n === undefined) return no("changed", "That field is no longer on the page.");
+  // A web page's field keeps its text in the page (counsel 2026-10-09): there is nothing here to save from it.
+  if (n.unread === true) return no("unavailable", WEB_ANSWER_DARK);
   const text = n.value ?? "";
   if (!isProseNode(n, text)) return no("notProse", "This field isn't for a written answer, so Caret won't save it.");
   const never = neverTypedNode(w, n);
@@ -167,6 +169,9 @@ export function capture(w: WindowState, key: string, ctx: CaptureContext): Captu
   if (text.length > MAX_ANSWER_CHARS) return no("tooLong", tooLongSays(text.length));
   return { ok: true, fields: { question, answer: text, site: ctx.site, form: w.window.title.trim() === "" ? null : w.window.title.trim().slice(0, 200) } };
 }
+
+/** Why an answer typed in a web page's field is not saved: its text never leaves the page, so Caret never has it. */
+export const WEB_ANSWER_DARK = "Caret can't save this answer: what you type on a web page stays in the page.";
 
 /** The offer's sentence, and a saved answer's confirmation. */
 export const OFFER_SAYS = "Save this answer for next time?";

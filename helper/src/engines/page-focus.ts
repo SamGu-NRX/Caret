@@ -9,11 +9,12 @@
 // moving, focus leaving, a scroll or zoom while a control has focus, and another tab or window coming to the front, so
 // the record follows the field. The helper's own focus message goes out only when the field changed: a scroll is no
 // new focus, and must not ask for a fill again.
+import { holdsText } from "../model.ts";
 import { PROTOCOL_VERSION, type Focus, type PageField, type PageFieldText, type PageFocusMoved } from "../protocol.ts";
 import type { ScreenModel } from "../model.ts";
 import type { EngineSession } from "./session.ts";
 import { pageWindowId } from "./windows.ts";
-import { fieldKind, pageFieldText } from "./field-text.ts";
+import { fieldKind, nearbyFrames, pageFieldText } from "./field-text.ts";
 import { elementToken, screenRect } from "./page-link.ts";
 
 export interface PageFocusOptions {
@@ -72,7 +73,7 @@ export class PageFocus {
   }
 
   /** The host's record of the field the user is in on this tab: `key` null for none. */
-  private tell(session: EngineSession, windowId: string, title: string, at: number, n: { key: string; role: string; editable: boolean; empty: boolean; frame: PageField["frame"]; look?: PageField["look"]; text?: PageFieldText; caret?: PageField["caret"]; token?: string; pageFocused?: boolean; fieldKind?: PageField["fieldKind"] } | null): void {
+  private tell(session: EngineSession, windowId: string, title: string, at: number, n: { key: string; role: string; editable: boolean; empty: boolean; frame: PageField["frame"]; look?: PageField["look"]; text?: PageFieldText; caret?: PageField["caret"]; token?: string; pageFocused?: boolean; fieldKind?: PageField["fieldKind"]; nearby?: PageField["nearby"] } | null): void {
     this.opts.publish?.({
       type: "pageField",
       v: PROTOCOL_VERSION,
@@ -94,6 +95,7 @@ export class PageFocus {
       ...(n?.token === undefined || n.text === undefined || n.text.text === null ? {} : { token: n.token }),
       ...(n?.pageFocused === undefined || n.text === undefined || n.text.text === null ? {} : { pageFocused: n.pageFocused }),
       ...(n?.fieldKind === undefined || n.text === undefined || n.text.text === null ? {} : { fieldKind: n.fieldKind }),
+      ...(n?.nearby === undefined ? {} : { nearby: n.nearby }),
     });
   }
 
@@ -127,7 +129,8 @@ export class PageFocus {
     const doc = f === null ? undefined : a.snapshot.frames.find((x) => x.frameId === f.frameId)?.documentId;
     const token = f === null || doc === undefined ? undefined : elementToken({ frameId: f.frameId, documentId: doc, id: f.id });
     const kind = fieldKind(a.snapshot);
-    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: (n.value ?? "") === "", frame: n.frame ?? null, ...(look === undefined ? {} : { look }), text: pageFieldText(a.snapshot), caret, ...(token === undefined ? {} : { token }), ...(f?.hasFocus === undefined ? {} : { pageFocused: f.hasFocus }), ...(kind === null ? {} : { fieldKind: kind }) });
+    const nearby = n.frame === undefined ? null : nearbyFrames(a.snapshot, view === null ? null : (r) => screenRect(view, r));
+    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: !holdsText(n), frame: n.frame ?? null, ...(look === undefined ? {} : { look }), text: pageFieldText(a.snapshot), caret, ...(token === undefined ? {} : { token }), ...(f?.hasFocus === undefined ? {} : { pageFocused: f.hasFocus }), ...(kind === null ? {} : { fieldKind: kind }), ...(nearby === null ? {} : { nearby }) });
     const said = `${windowId} ${n.key}`;
     if (this.lastFocus.get(pid) === said) return;
     this.lastFocus.set(pid, said);
@@ -140,7 +143,7 @@ export class PageFocus {
       key: n.key,
       role: n.role,
       editable: n.editable === true,
-      empty: (n.value ?? "") === "",
+      empty: !holdsText(n),
       frontmost: this.inFront(session),
     });
   }

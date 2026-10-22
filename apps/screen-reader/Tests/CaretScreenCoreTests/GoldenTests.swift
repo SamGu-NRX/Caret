@@ -30,6 +30,7 @@ private func goldenLines() throws -> [Data] {
             case .readerCommand: "readerCommand"
             case .verbResult: "verbResult"
             case .userInput: "userInput"
+            case .fieldInput: "fieldInput"
             case .taskProgress: "taskProgress"
             case .fillResult: "fillResult"
             case .taskControl: "taskControl"

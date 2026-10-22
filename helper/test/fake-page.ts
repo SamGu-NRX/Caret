@@ -2,7 +2,9 @@
 // script acts as the real one does, and the mixed-control form with the note and canned picks that fill it. Every name
 // and value is invented.
 import { EngineSession } from "../src/engines/session.ts";
-import { PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot, type PageVerb, type VerbResult } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, isTextKind, type HelperToEngine, type PageSnapshot, type PageVerb, type VerbResult } from "../src/protocol.ts";
+import { onWire, type TestField } from "./page-wire.ts";
+import { equivalentValue } from "../src/values/equivalent.ts";
 
 export const X = "kcmlnoabcdefghijklmnopabcdefghij";
 export const chrome = { pid: 4100, bundleId: "com.google.chrome.for.testing", name: "Google Chrome for Testing" };
@@ -52,12 +54,12 @@ export const byLabel = (_: string, ins: string): string[] | null => {
   return picked.length === 0 ? null : picked;
 };
 
-export const c = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({
+export const c = (id: string, kind: TestField["kind"], name: string, extra: Partial<TestField> = {}): TestField => ({
   id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, 0, 200, 20], ...extra,
 });
 
 /** The mixed-control form, as the content script walks it. */
-export function mixedControls(): PageControl[] {
+export function mixedControls(): TestField[] {
   const shift = { id: "g1", name: "Shift" };
   return [
     c("e1", "text", "Full name", { value: "" }),
@@ -85,15 +87,24 @@ export const RADIO = "f0/radiogroup:g1";
  * a checked write ticks or unticks a box, checks a radio (and unchecks its group's others), and clears a radio only on an
  * undo (sameAs). A press is a hand-off. `reload()` starts a new document: values empty, a new navigation generation,
  * and every act under the old grant refused, as the worker refuses one.
+ *
+ * As the content script, it keeps each text control's text to itself (counsel 2026-10-09): a walk sends hasValue and a
+ * rev that counts every change it sees, a write is checked against the rev the walk sent and answered with booleans,
+ * and an undo restores the text it kept from before Caret's write (pageRestore). A test that sets `value` directly is a
+ * page script's change, which the next walk's rev shows.
  */
 export class FakePage {
   readonly sent: HelperToEngine[] = [];
   readonly session: EngineSession;
   onAct: ((v: Exclude<PageVerb, { kind: "pageWalk" }>, page: FakePage) => object | null) | null = null;
-  controls: PageControl[];
+  controls: TestField[];
   /** The tab's title, and what a reload puts back (P2: other forms than the mixed one). */
   title: string;
-  private make: () => PageControl[];
+  private make: () => TestField[];
+  /** Each text control's rev and the text it last saw, by id, as content/revs.ts counts them; a reload starts again. */
+  private revs = new Map<string, { rev: number; last: string }>();
+  /** The text before each of Caret's writes, by task and id, newest last: what pageRestore puts back. */
+  private records = new Map<string, { before: string; wrote: string; revAfter: number }[]>();
   /** P3: the files each file control holds, by control id, as pageAttachFile put them there. */
   readonly files = new Map<string, { name: string; size: number }>();
   /** P3: the page's path, which goTo changes (the wizard's next page). */
@@ -105,7 +116,7 @@ export class FakePage {
   /** The navigation generation the task's grant pinned; an act in a later one is refused. */
   grantedGen: number | null = null;
 
-  constructor(make: () => PageControl[] = mixedControls, title = TITLE) {
+  constructor(make: () => TestField[] = mixedControls, title = TITLE) {
     this.make = make;
     this.controls = make();
     this.title = title;
@@ -120,13 +131,62 @@ export class FakePage {
   snapshot(id: string): PageSnapshot {
     return {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: Date.now(), tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: this.title,
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: this.documentId, origin: this.origin, path: this.path, navGen: this.navGen, title: this.title, headings: [], iframes: [], excluded: {}, truncated: false, controls: structuredClone(this.controls) }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: this.documentId, origin: this.origin, path: this.path, navGen: this.navGen, title: this.title, headings: [], iframes: [], excluded: {}, truncated: false, controls: this.controls.map((x) => onWire(structuredClone(x), this.revOf(x))) }],
       missing: [],
       focused: this.focusedId === null ? null : { frameId: 0, id: this.focusedId, selection: [0, 0] },
     };
   }
 
-  find(id: string): PageControl {
+  /** A text control's rev now: bumped when its text differs from what the page last saw, as a walk's reading does. */
+  revOf(x: TestField): number {
+    const text = x.value ?? "";
+    const r = this.revs.get(x.id);
+    if (r === undefined) {
+      this.revs.set(x.id, { rev: 0, last: text });
+      return 0;
+    }
+    if (r.last !== text) {
+      r.rev++;
+      r.last = text;
+    }
+    return r.rev;
+  }
+
+  /** Whether the page compares control `x`'s text as a number: a number input, or a numeric inputmode (B29). */
+  private numeric(x: TestField): boolean {
+    return x.kind === "number" || x.numeric === true;
+  }
+
+  /**
+   * A text write that lands as the page then shows it (`shows`: a reformat, or the value itself), as a test's own act
+   * answer stands for one: the page keeps the text before it for its undo, and computes the readings itself.
+   */
+  write(v: Extract<PageVerb, { kind: "pageWrite" }>, shows: string): { sameAsBefore: boolean; landed: boolean; equivalent: boolean; empty: boolean; typedBetween: boolean; rev: number } {
+    const x = this.find(v.id);
+    const before = x.value ?? "";
+    const rev = this.wrote(x, shows);
+    const records = this.records.get(`${v.taskId}|${v.id}`) ?? [];
+    records.push({ before, wrote: v.value, revAfter: rev });
+    this.records.set(`${v.taskId}|${v.id}`, records);
+    return { sameAsBefore: shows === before, landed: shows === v.value, equivalent: equivalentValue(this.numeric(x), shows, v.value), empty: shows === "", typedBetween: false, rev };
+  }
+
+  /** Caret's own write left `text` in control `id`, as a test's own act answer stands for one: its rev after it. */
+  caretWrote(id: string, text: string): number {
+    return this.wrote(this.find(id), text);
+  }
+
+  /** Caret's own write left `text` in the control: its rev moves, and the page knows the change was Caret's. */
+  private wrote(x: TestField, text: string): number {
+    this.revOf(x);
+    x.value = text;
+    const r = this.revs.get(x.id) as { rev: number; last: string };
+    r.rev++;
+    r.last = text;
+    return r.rev;
+  }
+
+  find(id: string): TestField {
     const x = this.controls.find((y) => y.id === id);
     if (x === undefined) throw new Error(`no control ${id}`);
     return x;
@@ -145,13 +205,15 @@ export class FakePage {
     this.documentId = `D${this.navGen}`;
     this.controls = this.make();
     this.files.clear();
+    this.revs = new Map();
+    this.records = new Map();
   }
 
   /** The page's origin; a test moves it to another to stand for a redirect away (I2's carry rule). */
   origin = "http://127.0.0.1:4310";
 
   /** P3: the user's own Next: a new document with another form (`make`), title and path; what reload() puts back from then on. */
-  goTo(make: () => PageControl[], title: string, path: string): void {
+  goTo(make: () => TestField[], title: string, path: string): void {
     this.make = make;
     this.title = title;
     this.path = path;
@@ -179,18 +241,47 @@ export class FakePage {
       case "pageWrite":
       case "pageChooseOption": {
         const before = x.value ?? "";
-        // As the content script: a field already holding the value is left; one holding other text than expected is stale.
-        if (before === verb.value) return this.reply(id, { outcome: "alreadyTrue", detail: null });
-        if (before !== verb.expect) return this.reply(id, { outcome: "stale", detail: "the field holds other text than when it was walked" });
-        x.value = verb.value;
-        return this.reply(id, { outcome: "ok", detail: null, readings: { before, afterInput: verb.value, afterBlur: verb.value, invalid: false, error: null } });
+        // A Yes/No option names the answer pressed before, page text the walk carries.
+        if (verb.kind === "pageChooseOption" && verb.control === "button") {
+          if (before === verb.value) return this.reply(id, { outcome: "alreadyTrue", detail: null });
+          if (before !== verb.expect) return this.reply(id, { outcome: "stale", detail: "the question shows another answer than when it was walked" });
+          x.value = verb.value;
+          return this.reply(id, { outcome: "ok", detail: null, readings: { sameAsBefore: false, landed: true, equivalent: true, empty: false, typedBetween: false, rev: null } });
+        }
+        const rev = this.revOf(x);
+        // As the content script: a field already holding the value is left; one whose rev moved since the walk is stale.
+        if (before === verb.value) return this.reply(id, { outcome: "alreadyTrue", detail: null, readings: { sameAsBefore: true, landed: true, equivalent: true, empty: before === "", typedBetween: false, rev } });
+        if (rev !== verb.expectRev) return this.reply(id, { outcome: "stale", detail: "the field changed since it was walked" });
+        const records = this.records.get(`${verb.taskId}|${verb.id}`) ?? [];
+        const after = this.wrote(x, verb.value);
+        records.push({ before, wrote: verb.value, revAfter: after });
+        this.records.set(`${verb.taskId}|${verb.id}`, records);
+        return this.reply(id, { outcome: "ok", detail: null, readings: { sameAsBefore: false, landed: true, equivalent: true, empty: verb.value === "", typedBetween: false, rev: after } });
+      }
+      case "pageRestore": {
+        const records = this.records.get(`${verb.taskId}|${verb.id}`) ?? [];
+        const rec = records.at(-1);
+        const refused = (why: string, outcome = "stale"): void => this.reply(id, { outcome, detail: `refused: ${why}`, restore: { outcome: "refused", why } });
+        if (rec === undefined || rec.wrote !== verb.wrote) return refused("noRecord", "notSameElement");
+        const now = x.value ?? "";
+        const same = verb.exact === true ? now === rec.wrote : equivalentValue(this.numeric(x), now, rec.wrote);
+        if (this.revOf(x) !== rec.revAfter || !same) return refused("changed");
+        const rev = this.wrote(x, rec.before);
+        records.pop();
+        const prior = records.at(-1);
+        if (prior !== undefined) prior.revAfter = rev;
+        return this.reply(id, { outcome: "ok", detail: null, restore: { outcome: "restored", rev } });
+      }
+      case "pageCompare": {
+        const text = isTextKind(x.kind) && x.withheld === undefined ? (x.value ?? "") : null;
+        return this.reply(id, { outcome: "ok", detail: null, compare: verb.candidates.map((cand) => (text === null || [...cand].length < 3 ? "unknown" : cand === text ? "equal" : "different")) });
       }
       case "pageSelect": {
         const before = x.options?.find((o) => o.selected)?.value ?? "";
         if (before === verb.value) return this.reply(id, { outcome: "alreadyTrue", detail: null });
         if (before !== verb.expect) return this.reply(id, { outcome: "stale", detail: "the select shows another option than when it was walked" });
         x.options = x.options?.map((o) => ({ ...o, selected: o.value === verb.value }));
-        return this.reply(id, { outcome: "ok", detail: null, readings: { before, afterInput: verb.value, afterBlur: verb.value, invalid: false, error: null } });
+        return this.reply(id, { outcome: "ok", detail: null, readings: { sameAsBefore: false, landed: true, equivalent: true, empty: verb.value === "", typedBetween: false, rev: null } });
       }
       case "pageAttachFile": {
         // As the content script: a file input takes the file and reports its own file list; a dropzone shows the name.

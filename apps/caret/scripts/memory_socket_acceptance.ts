@@ -20,7 +20,7 @@
 //      (B17); Forget on the host removes it from the helper.
 //
 //   node apps/caret/scripts/memory_socket_acceptance.ts --out DIR [--runs 3]
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -29,11 +29,17 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
+import { newLaunchSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
 import { Store } from "../../../helper/src/store.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type MemoryRequest, type PatternOffer } from "../../../helper/src/protocol.ts";
 import { Desk, grid, roster, type GridWindow, type ListWindow } from "../../../helper/test/scene.ts";
 import { FIXTURE_APP, MAIL_APP } from "../../../helper/test/builders.ts";
 import { routedJev, routingHarness, routingOptions, type RoutingHarness } from "./routing_option.ts";
+
+// The in-process server's launch secret. Caret gets the host key derived from it (spawnCaret), so the server admits it
+// as the host (helper/src/host-auth.ts).
+const launchSecret = newLaunchSecret();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -102,7 +108,7 @@ async function openSession(): Promise<Session> {
   desk.attach(helper);
   const handle = helper.handleMemory.bind(helper);
   helper.handleMemory = (m) => (asked.push(m), handle(m));
-  server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`));
+  server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`), launchSecret);
   await server.listen();
   return { helper, server, desk, store, dir, sent, asked, routing };
 }
@@ -119,11 +125,11 @@ async function closeSession(s: Session): Promise<void> {
 
 // MARK: - the host, headless
 
-const host: ChildProcess = spawn(CARET, [
+const host: ChildProcess = spawnCaret(CARET, [
   "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden", "--surfaces", "headless",
   "--allow-pids", PIDS.join(","), "--test-hooks",
   "--status-item", "off", "--settings", join(SOCKETS, "a11-memory-settings.json"),
-]);
+], launchSecret);
 host.stderr?.setEncoding("utf8");
 host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));
 process.on("exit", () => host.kill("SIGTERM"));

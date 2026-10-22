@@ -63,8 +63,11 @@ private struct GlyphPair: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            RimScene.MenuBarStrip(lit: false, character: character, dark: scheme == .dark).frame(width: 220).clipped()
-            RimScene.MenuBarStrip(lit: true, character: character, dark: scheme == .dark).frame(width: 220).clipped()
+            // The strip is as wide as the rim scene, its glyph and clock pushed to the right end; a
+            // centered 220 pt window showed only the empty middle of the bar, so the reference was
+            // blank and guarded nothing. Trailing keeps the glyph and the clock in view.
+            RimScene.MenuBarStrip(lit: false, character: character, dark: scheme == .dark).frame(width: 220, alignment: .trailing).clipped()
+            RimScene.MenuBarStrip(lit: true, character: character, dark: scheme == .dark).frame(width: 220, alignment: .trailing).clipped()
         }
     }
 }
