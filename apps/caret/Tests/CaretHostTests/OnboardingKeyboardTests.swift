@@ -141,6 +141,7 @@ final class OnboardingKeyboardTests: XCTestCase {
             XCTAssertTrue(unnamed.isEmpty, "\(pane.name): every button and field has a name (found \(unnamed.count) unnamed)")
             for label in pane.pressable {
                 let b = try XCTUnwrap(button(elements, label), "\(pane.name): \(label) is a named button")
+                received.removeAll()
                 XCTAssertTrue(b.accessibilityPerformPress(), "\(pane.name): \(label) presses")
                 XCTAssertFalse(received.isEmpty, "\(pane.name): \(label) sends an onboarding action")
             }
@@ -149,8 +150,4 @@ final class OnboardingKeyboardTests: XCTestCase {
             XCTAssertTrue(elements.contains { ($0.accessibilityLabel() ?? "") == pane.dots }, "\(pane.name): the dots read \(pane.dots)")
         }
     }
-
-    // MARK: - The drag panel
-
-    // MARK: - The key tap
 }

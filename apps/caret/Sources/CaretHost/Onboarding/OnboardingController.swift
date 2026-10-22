@@ -777,7 +777,7 @@ final class OnboardingController {
         }
     }
 
-    static func event(for event: NSEvent, state: OnboardingFlow.State, composing: Bool = false, focusedButton: Bool = false) -> OnboardingFlow.Event? {
+    static func event(for event: NSEvent, state: OnboardingFlow.State, composing: Bool = false) -> OnboardingFlow.Event? {
         if composing { return nil }
         let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
         let keys = state.firstLookKeys
