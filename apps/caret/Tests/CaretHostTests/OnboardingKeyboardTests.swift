@@ -9,12 +9,16 @@ import XCTest
 /// drag row and the drag panel's close are operable without a pointer, and the window's key tap leaves the keys a
 /// focused control needs: Return presses the button Full Keyboard Access focused instead of turning into Continue.
 ///
+/// Like KnowsAccessibilityTests, the window sits far off every display by default, where SwiftUI builds no
+/// accessibility tree on this Mac, so the tree test skips; `CARET_AX_ONSCREEN=1` puts it on the main display, for a run
+/// under the gui lease while the Mac is idle.
 @MainActor
 final class OnboardingKeyboardTests: XCTestCase {
     // MARK: - Walking a pane
 
     private func tree(_ view: some View) -> (NSWindow, [any NSAccessibilityProtocol]) {
-        let origin = NSPoint(x: 80, y: 80)
+        let onScreen = ProcessInfo.processInfo.environment["CARET_AX_ONSCREEN"] == "1"
+        let origin = onScreen ? NSPoint(x: 80, y: 80) : NSPoint(x: -30000, y: -30000)
         let window = NSWindow(contentRect: NSRect(origin: origin, size: OnboardingView.size(for: .main)), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: view)
@@ -91,7 +95,7 @@ final class OnboardingKeyboardTests: XCTestCase {
         }
         flow.send(.next)
         let asked = try XCTUnwrap(request, "the first look was asked")
-        let synthetic = #"{"kind":"fill","family":"fill","offerKey":"\#(FirstLookReply.offerKey(requestId: asked.requestId))","window":{"pid":5151,"windowId":"5151-2","appName":"Safari","title":"Payment"},"spec":{"v":1,"id":"\#(FirstLookReply.offerKey(requestId: asked.requestId))","figure":"offering","blocks":[{"type":"header","title":{"text":"Fill 4 fields","ref":{"rule":"count","derived":[{"node":"5151-2/form"}]}}},{"type":"fields","rows":[{"destination":{"text":"Name","ref":{"node":"n"}},"value":{"text":"Dana Reyes","ref":{"node":"m","quote":"Dana Reyes"}},"state":"ready"}],"more":3},{"type":"actions","items":[{"id":"fillAll","label":"Fill all","key":"tab"}]}]}"#
+        let synthetic = #"{"kind":"fill","family":"fill","offerKey":"\#(FirstLookReply.offerKey(requestId: asked.requestId))","window":{"pid":5151,"windowId":"5151-2","appName":"Safari","title":"Payment"},"spec":{"v":1,"id":"\#(FirstLookReply.offerKey(requestId: asked.requestId))","figure":"offering","blocks":[{"type":"header","title":{"text":"Fill 4 fields","ref":{"rule":"count","derived":[{"node":"5151-2/form"}]}}},{"type":"fields","rows":[{"destination":{"text":"Name","ref":{"node":"n"}},"value":{"text":"Dana Reyes","ref":{"node":"m","quote":"Dana Reyes"}},"state":"ready"}],"more":3},{"type":"actions","items":[{"id":"fillAll","label":"Fill all","key":"tab"}]}]}}"#
         let reply = FirstLookReply(requestId: asked.requestId, at: 1, outcome: found ? .found : .nothing,
                                    found: found ? try JSONDecoder().decode(FirstLookReply.Found.self, from: Data(synthetic.utf8)) : nil)
         flow.send(.firstLookReply(reply))
@@ -136,6 +140,7 @@ final class OnboardingKeyboardTests: XCTestCase {
             let (window, elements) = tree(OnboardingView(state: pane.flow.state, character: .pebble, animated: false,
                                                          send: { event in received.append(event); pane.flow.send(event) }))
             defer { window.orderOut(nil); window.close() }
+            try XCTSkipIf(!elements.contains { $0.accessibilityRole() == .button }, "SwiftUI built no accessibility tree for \(pane.name) on this Mac")
             let unnamed = elements.filter { $0.accessibilityRole() == .button && ($0.accessibilityLabel() ?? "").isEmpty }
                 + elements.filter { $0.accessibilityRole() == .textField && ($0.accessibilityLabel() ?? "").isEmpty }
             XCTAssertTrue(unnamed.isEmpty, "\(pane.name): every button and field has a name (found \(unnamed.count) unnamed)")
