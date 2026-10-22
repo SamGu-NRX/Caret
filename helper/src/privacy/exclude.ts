@@ -272,7 +272,7 @@ export function admitNode(n: Node, from: Inherited = {}, typed = false): Node {
     if (bare && n.excluded === from.excluded) return n;
     return { ...rest, ...(outline === undefined ? {} : { outline }), excluded: from.excluded };
   }
-  if (from.webArea === true && n.editable === true && ((n.value ?? "") !== "" || n.unread === true)) {
+  if (from.webArea === true && ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXDateField"].includes(n.role) && ((n.value ?? "") !== "" || n.unread === true)) {
     const { value: _value, ...rest } = n;
     return { ...rest, unread: true };
   }
