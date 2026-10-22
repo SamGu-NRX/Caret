@@ -1,5 +1,5 @@
 {
-  "about": "S1's ruling for an unconfirmed insert, as one table for the host (UnconfirmedInsertTests) and the extension (test/partial-insert.test.ts). `before[start..<end]` is replaced by `replacement`; `held` is what a read found afterwards. Offsets are UTF-16 code units. `inserted` is given for a partial state only.",
+  "about": "S1's ruling for an unconfirmed insert, as one table for the host (UnconfirmedInsertTests) and the extension (test/partial-insert.test.ts). `before[start..<end]` is replaced by `replacement`; `held` is what a read found afterwards. Offsets are UTF-16 code units. `inserted` is given for a partial state only. A row with `atUndo` continues after the write: the user typed until the field read `atUndo`, then pressed ⌘Z, and the host must refuse with `undo` and write nothing (the extension takes a partial insert out at once, so it reads only `held`).",
   "cases": [
     { "name": "caret insert, nothing landed", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "Dear Sam,", "state": "original" },
     { "name": "caret insert, all of it", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "Dear Sam, thanks", "state": "whole" },
@@ -21,6 +21,8 @@
     { "name": "more than the intended text", "before": "", "start": 0, "end": 0, "replacement": "Dana", "held": "Danaa", "state": "unrecognized" },
     { "name": "intended text twice (a doubled paste)", "before": "x", "start": 1, "end": 1, "replacement": "ab", "held": "xabab", "state": "unrecognized" },
     { "name": "astral characters, one whole pair in", "before": "ok ", "start": 3, "end": 3, "replacement": "😀😀", "held": "ok 😀", "state": "partial", "inserted": 2 },
-    { "name": "repeated letters: prefix is unambiguous at the recorded range", "before": "aa", "start": 1, "end": 1, "replacement": "aaa", "held": "aaa", "state": "partial", "inserted": 1 }
+    { "name": "repeated letters: prefix is unambiguous at the recorded range", "before": "aa", "start": 1, "end": 1, "replacement": "aaa", "held": "aaa", "state": "partial", "inserted": 1 },
+    { "name": "fill stopped after three, then the user typed one: ⌘Z would read Caret's partial", "before": "", "start": 0, "end": 0, "replacement": "Seattle", "held": "Sea", "state": "partial", "inserted": 3, "atUndo": "Seat", "undo": "inputAfterWrite" },
+    { "name": "fill stopped after three, then the user typed the rest: ⌘Z would read Caret's whole text", "before": "", "start": 0, "end": 0, "replacement": "Seattle", "held": "Sea", "state": "partial", "inserted": 3, "atUndo": "Seattle", "undo": "inputAfterWrite" }
   ]
 }

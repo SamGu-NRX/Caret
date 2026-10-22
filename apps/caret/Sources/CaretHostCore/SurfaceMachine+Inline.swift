@@ -124,6 +124,7 @@ extension SurfaceMachine {
         case (true, _): text = partial ? "Took out the part that went in" : "Undone"
         case (false, UndoGuard.Rejection.nothingWritten.code?): text = "The field already reads as it did before."
         case (false, UndoGuard.Rejection.inputDuringUndo.code?): text = "You typed as Caret was undoing, so Caret left the field as it is."
+        case (false, UndoGuard.Rejection.inputAfterWrite.code?): text = "You typed or clicked after Caret stopped writing, so Caret left the field as it is."
         default: text = says.map(FillMachine.sentence) ?? "The field changed after Caret wrote it, so Caret left it as it is."
         }
         let line = WorkLine(LineContent(figure: ok ? .still : .error, text: text, emphasis: .plain), text: text)

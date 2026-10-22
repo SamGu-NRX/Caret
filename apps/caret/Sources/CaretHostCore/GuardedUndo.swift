@@ -19,7 +19,9 @@ public protocol UndoTarget: AnyObject {
 /// ⌘Z on an insert's grant (S2). Before any write deletes text, Caret proves the exact range and
 /// its exact contents, or reports and writes nothing:
 ///
-/// 1. `UndoGuard.approve` judges the field as read now (S1's states for an unconfirmed grant).
+/// 1. An unconfirmed grant is refused when the user's input reached the app after the write ended
+///    (`inputSinceWrite`): typed characters can continue Caret's text, so the field cannot tell them apart.
+///    Otherwise `UndoGuard.approve` judges the field as read now (S1's states for an unconfirmed grant).
 /// 2. Every write to the app (the selection, the text, a selection put back) is preceded,
 ///    immediately and after the target check, by the input mark taken at ⌘Z (`permit`): a key or
 ///    click since then is the user's, and the write could cross it.
@@ -58,7 +60,10 @@ public enum GuardedUndo {
         refusal ?? (quiet ? nil : UndoGuard.Rejection.inputDuringUndo.code)
     }
 
-    public static func run(_ grant: UndoGrant, on app: UndoTarget, settleTimeout: TimeInterval) -> Outcome {
+    /// `inputSinceWrite`: a key or click reached the app between the end of the write and ⌘Z
+    /// (`InsertionExecutor.inputSinceWrite`). Asked only of an unconfirmed grant; a confirmed one needs
+    /// the field to hold exactly what Caret wrote.
+    public static func run(_ grant: UndoGrant, on app: UndoTarget, settleTimeout: TimeInterval, inputSinceWrite: Bool) -> Outcome {
         func fail(_ code: String, _ says: String? = nil) -> Outcome { Outcome(ok: false, error: code, says: says) }
         /// An unconfirmed write's field that is left as it is: what it holds and held (S1).
         func leftAlone(_ held: String) -> String? {
@@ -68,6 +73,9 @@ public enum GuardedUndo {
 
         guard let live = app.read() else {
             return fail("fieldUnreadable", grant.unconfirmed ? "Caret could not read the field; before the write it held \(UnconfirmedInsert.quoted(grant.priorValue))" : nil)
+        }
+        if grant.unconfirmed, inputSinceWrite {
+            return fail(UndoGuard.Rejection.inputAfterWrite.code, leftAlone(live.value))
         }
         let revert: UndoGuard.Revert
         switch UndoGuard.approve(grant, live: live) {

@@ -57,6 +57,10 @@ final class UnconfirmedInsertTests: XCTestCase {
             var held: String
             var state: String
             var inserted: Int?
+            /// What the field read at ⌘Z after the user typed on from `held`.
+            var atUndo: String?
+            /// The code ⌘Z must refuse with then.
+            var undo: String?
         }
         var cases: [Case]
     }
@@ -104,6 +108,65 @@ final class UnconfirmedInsertTests: XCTestCase {
                 XCTAssertNil(grant, c.name)
                 XCTAssertEqual(atKey, .failure(.fieldChanged), c.name)
             }
+        }
+    }
+
+    /// A field as `GuardedUndo` drives it, recording every write it is sent.
+    private final class RecordingField: UndoTarget {
+        var value: String
+        var selection: UTF16Selection
+        var writes: [String] = []
+        var now = Date(timeIntervalSince1970: 0)
+
+        init(_ value: String) {
+            self.value = value
+            selection = .caret(UTF16Text.length(value))
+        }
+
+        func refusal() -> String? { nil }
+        func quiet() -> Bool { true }
+        func read() -> InsertionGuard.LiveField? {
+            InsertionGuard.LiveField(target: UnconfirmedInsertTests.identity(value), value: value, selection: selection)
+        }
+        func select(_ s: UTF16Selection) -> Bool {
+            writes.append("select \(s.start)-\(s.end)")
+            selection = s
+            return true
+        }
+        func replaceSelection(_ text: String) -> WriteFallback.AXAnswer {
+            writes.append("write \(text)")
+            value = UTF16Text.slice(value, start: 0, end: selection.start)! + text + UTF16Text.slice(value, start: selection.end, end: UTF16Text.length(value))!
+            selection = .caret(selection.start + UTF16Text.length(text))
+            return .accepted
+        }
+        func sleep(_ seconds: TimeInterval) { now.addTimeInterval(seconds) }
+    }
+
+    /// A fill of "Seattle" into an empty field stopped after "Sea", and the user typed on before ⌘Z.
+    /// The field at ⌘Z ("Seat", "Seattle") is one S1's ruling recognizes as Caret's, so only the
+    /// input recorded since the write ended can tell: ⌘Z refuses by name and writes nothing. With no
+    /// such input, the same grant over the same field takes out exactly what went in.
+    func testInputAfterAStoppedWriteRefusesUndoThoughTheFieldReadsAsCarets() {
+        let rows = Self.table.cases.filter { $0.atUndo != nil }
+        XCTAssertEqual(rows.count, 2)
+        for c in rows {
+            let intent = UnconfirmedInsert.Intent(before: c.before, start: c.start, end: c.end, replacement: c.replacement)
+            guard let grant = Self.left(intent, held: c.held), let atUndo = c.atUndo else { return XCTFail(c.name) }
+            XCTAssertTrue(grant.unconfirmed, c.name)
+            XCTAssertNotEqual(UnconfirmedInsert.classify(intent, held: atUndo), .unrecognized, "the field alone reads as Caret's: \(c.name)")
+
+            let typedOn = RecordingField(atUndo)
+            let refused = GuardedUndo.run(grant, on: typedOn, settleTimeout: 1, inputSinceWrite: true)
+            XCTAssertFalse(refused.ok, c.name)
+            XCTAssertEqual(refused.error, c.undo, c.name)
+            XCTAssertEqual(typedOn.writes, [], c.name)
+            XCTAssertEqual(typedOn.value, atUndo, "the user's characters stay: \(c.name)")
+            XCTAssertEqual(refused.says, "the field now holds \(UnconfirmedInsert.quoted(atUndo)); before the write it held \"\"; Caret left it as it is", c.name)
+
+            let quiet = RecordingField(atUndo)
+            let undone = GuardedUndo.run(grant, on: quiet, settleTimeout: 1, inputSinceWrite: false)
+            XCTAssertTrue(undone.ok, c.name)
+            XCTAssertEqual(quiet.value, c.before, c.name)
         }
     }
 

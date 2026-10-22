@@ -96,6 +96,17 @@ final class InsertionExecutor: @unchecked Sendable {
         let writeID: UInt64
         let element: AXUIElement
         let processStart: UInt64
+        /// Set once an insert's write ends; nil until then, and for a writing fix.
+        var end: WriteEnd?
+    }
+
+    /// The user's input when an insert's write ended, for ⌘Z on an unconfirmed grant (`inputSinceWrite`).
+    struct WriteEnd: Equatable {
+        /// Taken as the last write or posted key returned, before the field is read for S1's ruling.
+        let mark: HostStatus.InputMark
+        /// Keys the user typed during the write, held (`KeyHold`) and sent to the app as it ended. The tap does not
+        /// count them, so the mark alone would not show them.
+        let heldKeys: Int
     }
 
     private let written = OSAllocatedUnfairLock(initialState: [Bound]())
@@ -109,6 +120,23 @@ final class InsertionExecutor: @unchecked Sendable {
             list.append(bound)
             if list.count > Self.boundWrites { list.removeFirst(list.count - Self.boundWrites) }
         }
+    }
+
+    private func recordEnd(writeID: UInt64, _ end: WriteEnd) {
+        written.withLock { list in
+            if let i = list.lastIndex(where: { $0.writeID == writeID }) { list[i].end = end }
+        }
+    }
+
+    /// Whether the user's input reached the app between the end of an insert's write and the ⌘Z that undoes it
+    /// (`mark`, taken on the tap thread after the ⌘Z itself was counted, so a quiet user's mark is the write's plus
+    /// that one key). For an unconfirmed grant ⌘Z judges the field as it reads then (`UndoGuard.approve`), and
+    /// characters typed after a stopped write can continue Caret's text: "Sea" of "Seattle" and a typed "t" read as
+    /// Caret's partial "Seat". So any key or click since the write ended, or a held key sent as it ended, refuses ⌘Z
+    /// (`inputAfterWrite`). No record refuses too.
+    static func inputSinceWrite(_ end: WriteEnd?, atUndoKey mark: HostStatus.InputMark) -> Bool {
+        guard let end else { return true }
+        return end.heldKeys > 0 || mark != HostStatus.InputMark(keys: end.mark.keys &+ 1, clicks: end.mark.clicks)
     }
 
     init(
@@ -161,7 +189,10 @@ final class InsertionExecutor: @unchecked Sendable {
         if claim.rangeEdit != nil {
             queue.async { [self] in runRange(claim, grant, since: mark) }
         } else {
-            queue.async { [self] in run(claim, grant, since: mark) }
+            // After the hold began (HostRuntime's `claimed`): held keys sent from here on are the user's, reaching the app
+            // during or at the end of this write.
+            let sentAtKey = keyHold.keysSent()
+            queue.async { [self] in run(claim, grant, since: mark, heldKeysFrom: sentAtKey) }
         }
     }
 
@@ -186,13 +217,15 @@ final class InsertionExecutor: @unchecked Sendable {
 
     // MARK: - Insert
 
-    private func run(_ claim: Claim, _ authorization: HostAuthority.Grant, since mark: HostStatus.InputMark) {
+    private func run(_ claim: Claim, _ authorization: HostAuthority.Grant, since mark: HostStatus.InputMark, heldKeysFrom sentAtKey: UInt64) {
         let started = DispatchTime.now().uptimeNanoseconds
         let text = claim.insertionText
         let pid = claim.offer.target.pid
         let origin = claim.offer.kind.fillOrigin
         let authority = self.authority
         let live = { authority.isLive(authorization) }
+        /// The input mark as the write itself ended (`WriteEnd`); nil for a claim refused before writing.
+        var writeEnded: HostStatus.InputMark?
 
         func finish(
             ok: Bool, error: String?, verified: Bool?, method: FillResult.Method? = nil, fellBack: Bool = false,
@@ -201,6 +234,10 @@ final class InsertionExecutor: @unchecked Sendable {
             recovery: UnconfirmedInsert.Report? = nil
         ) {
             keyHold.end(pid: pid)
+            // Recorded before the grant is published, so the ⌘Z that takes it always finds it.
+            if let undo, let writeEnded {
+                recordEnd(writeID: undo.writeID, WriteEnd(mark: writeEnded, heldKeys: Int(clamping: keyHold.keysSent() &- sentAtKey)))
+            }
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: ok, error: error, text: text,
                 durationMs: Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000,
@@ -344,6 +381,7 @@ final class InsertionExecutor: @unchecked Sendable {
             dispatched = paste.posted
         }
 
+        writeEnded = inputs.inputMark()
         let verified = step == .verified
         var error: String?
         if case .failed(let code) = step { error = code }
@@ -577,7 +615,9 @@ final class InsertionExecutor: @unchecked Sendable {
             refusal: targetRefusal,
             quiet: { [status] in WriteRecheck.input(atKey: mark, now: status.inputMark()) == nil }
         )
-        let outcome = GuardedUndo.run(grant, on: app, settleTimeout: pasteSettleTimeout)
+        let outcome = GuardedUndo.run(
+            grant, on: app, settleTimeout: pasteSettleTimeout, inputSinceWrite: Self.inputSinceWrite(bound.end, atUndoKey: mark)
+        )
         if outcome.error == GuardedUndo.misplaced {
             Self.logMisplaced(length: app.lastValue.map(UTF16Text.length), expected: grant.priorValue, bundleID: grant.target.bundleID, what: "undo", status: status)
         }

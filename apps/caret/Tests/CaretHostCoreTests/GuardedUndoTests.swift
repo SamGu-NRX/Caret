@@ -68,7 +68,7 @@ final class GuardedUndoTests: XCTestCase {
 
     func testAQuietFieldIsRestoredAndOnlyCaretsSpanIsWritten() {
         let app = FakeApp("Hi Da there", caret: 5)
-        let outcome = GuardedUndo.run(partial(), on: app, settleTimeout: 1)
+        let outcome = GuardedUndo.run(partial(), on: app, settleTimeout: 1, inputSinceWrite: false)
         XCTAssertEqual(outcome, GuardedUndo.Outcome(ok: true, error: nil, partial: true))
         XCTAssertEqual(app.writes, ["select 3-5", "write "])
         XCTAssertEqual(app.value, "Hi  there")
@@ -80,7 +80,7 @@ final class GuardedUndoTests: XCTestCase {
         let app = FakeApp("Hi Da there", caret: 5)
         // Check 1 precedes the selection, check 2 the text write.
         app.onCheck[2] = { $0.quietNow = false }
-        let outcome = GuardedUndo.run(partial(), on: app, settleTimeout: 1)
+        let outcome = GuardedUndo.run(partial(), on: app, settleTimeout: 1, inputSinceWrite: false)
         XCTAssertEqual(outcome.error, "inputDuringUndo")
         XCTAssertFalse(outcome.ok)
         XCTAssertEqual(app.writes, ["select 3-5"], "no text write, and no selection put back over the user's input")
@@ -91,7 +91,7 @@ final class GuardedUndoTests: XCTestCase {
     /// value is untouched. The selection is put back only when nobody else moved it.
     func testASelectionMovedBeforeTheWriteIsRefused() {
         let moving = MovingApp("Hi Da there", caret: 5)
-        let outcome = GuardedUndo.run(partial(), on: moving, settleTimeout: 1)
+        let outcome = GuardedUndo.run(partial(), on: moving, settleTimeout: 1, inputSinceWrite: false)
         XCTAssertEqual(outcome.error, "selectionMoved")
         XCTAssertEqual(moving.writes, ["select 3-5"])
         XCTAssertEqual(moving.value, "Hi Da there")
@@ -101,7 +101,7 @@ final class GuardedUndoTests: XCTestCase {
     func testInputBeforeTheFirstWriteWritesNothing() {
         let app = FakeApp("Hi Da there", caret: 5)
         app.quietNow = false
-        XCTAssertEqual(GuardedUndo.run(partial(), on: app, settleTimeout: 1).error, "inputDuringUndo")
+        XCTAssertEqual(GuardedUndo.run(partial(), on: app, settleTimeout: 1, inputSinceWrite: false).error, "inputDuringUndo")
         XCTAssertEqual(app.writes, [])
     }
 
@@ -117,7 +117,7 @@ final class GuardedUndoTests: XCTestCase {
     /// selection is read again, within `FixPaste.selectionTimeout`, before the undo gives up on it.
     func testASelectionThatShowsLateIsWaitedFor() {
         let app = LateSelectionApp("Hi Da there", caret: 5, showsAfterReads: 3)
-        let outcome = GuardedUndo.run(partial(), on: app, settleTimeout: 1)
+        let outcome = GuardedUndo.run(partial(), on: app, settleTimeout: 1, inputSinceWrite: false)
         XCTAssertEqual(outcome, GuardedUndo.Outcome(ok: true, error: nil, partial: true))
         XCTAssertEqual(app.value, "Hi  there")
     }
@@ -127,10 +127,10 @@ final class GuardedUndoTests: XCTestCase {
     func testARestoreThatLandsElsewhereIsMisplaced() {
         let app = FakeApp("Hi Da there", caret: 5)
         app.restoreLandsAt = "Hi Da therex"
-        XCTAssertEqual(GuardedUndo.run(partial(), on: app, settleTimeout: 0.1).error, GuardedUndo.misplaced)
+        XCTAssertEqual(GuardedUndo.run(partial(), on: app, settleTimeout: 0.1, inputSinceWrite: false).error, GuardedUndo.misplaced)
         let ignored = FakeApp("Hi Da there", caret: 5)
         ignored.restoreLandsAt = "Hi Da there"
-        XCTAssertEqual(GuardedUndo.run(partial(), on: ignored, settleTimeout: 0.1).error, "writeMismatch", "untouched is not misplaced")
+        XCTAssertEqual(GuardedUndo.run(partial(), on: ignored, settleTimeout: 0.1, inputSinceWrite: false).error, "writeMismatch", "untouched is not misplaced")
     }
 
     /// A fake whose selection reads back only from the `showsAfterReads`-th read after Caret sets it.

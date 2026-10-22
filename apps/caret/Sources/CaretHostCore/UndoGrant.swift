@@ -139,6 +139,9 @@ public enum UndoGuard {
         case selectionMoved
         /// A key or click came after ⌘Z and before the restore.
         case inputDuringUndo
+        /// An unconfirmed write's field took the user's input after the write ended: what they typed can
+        /// continue Caret's text, so the field no longer shows which characters are Caret's.
+        case inputAfterWrite
 
         public var code: String {
             switch self {
@@ -149,6 +152,7 @@ public enum UndoGuard {
             case .nothingWritten: return "nothingWritten"
             case .selectionMoved: return "selectionMoved"
             case .inputDuringUndo: return "inputDuringUndo"
+            case .inputAfterWrite: return "inputAfterWrite"
             }
         }
     }

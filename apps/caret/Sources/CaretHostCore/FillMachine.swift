@@ -837,6 +837,7 @@ public final class FillMachine {
         case (true, _): caption = result.partial ? "Took out the part that went in" : "Cleared 1 field"
         case (false, UndoGuard.Rejection.nothingWritten.code?): caption = "The field already reads as it did before the fill."
         case (false, UndoGuard.Rejection.inputDuringUndo.code?): caption = "You typed as Caret was undoing, so the field was left as it is."
+        case (false, UndoGuard.Rejection.inputAfterWrite.code?): caption = "You typed or clicked after the fill stopped, so the field was left as it is."
         default: caption = result.says.map(Self.sentence) ?? "The field changed after the fill, so it was left as it is."
         }
         let kind: FillToastDraw.Kind = result.ok ? .undone : .error
