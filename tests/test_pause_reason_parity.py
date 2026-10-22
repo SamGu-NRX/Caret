@@ -27,6 +27,46 @@ class SwiftEnumParseError(AssertionError):
     pass
 
 
+def _without_comments(text: str, enum_name: str) -> str:
+    """``text`` with Swift ``//`` and ``/* */`` comments blanked out, string literals kept.
+
+    A brace or ``//`` inside a comment or a raw-value string must not end the enum body
+    early or cut a case line, or the parity check would compare only part of the enum.
+    Newlines are kept so body line numbers in errors stay right.
+    """
+    out: list[str] = []
+    index, length = 0, len(text)
+    in_string = False
+    while index < length:
+        char = text[index]
+        if in_string:
+            out.append(char)
+            if char == "\\" and index + 1 < length:
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if char == '"':
+                in_string = False
+            index += 1
+        elif char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+        elif text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = length if newline == -1 else newline
+        elif text.startswith("/*", index):
+            close = text.find("*/", index + 2)
+            if close == -1:
+                raise SwiftEnumParseError(f"unterminated block comment after `enum {enum_name}`")
+            out.append("\n" * text.count("\n", index, close))
+            index = close + 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
 def swift_string_enum_raw_values(source: str, enum_name: str) -> list[str]:
     """Raw values of a Swift ``String`` enum whose body holds only cases.
 
@@ -40,11 +80,20 @@ def swift_string_enum_raw_values(source: str, enum_name: str) -> list[str]:
     if header is None:
         raise SwiftEnumParseError(f"no `enum {enum_name}: String {{` declaration found")
 
+    body = _without_comments(source[header.end():], enum_name)
     depth, end = 1, None
-    for index in range(header.end(), len(source)):
-        if source[index] == "{":
+    in_string = False
+    for index, char in enumerate(body):
+        if in_string:
+            if char == "\\":
+                continue
+            if char == '"' and body[index - 1] != "\\":
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "{":
             depth += 1
-        elif source[index] == "}":
+        elif char == "}":
             depth -= 1
             if depth == 0:
                 end = index
@@ -53,8 +102,8 @@ def swift_string_enum_raw_values(source: str, enum_name: str) -> list[str]:
         raise SwiftEnumParseError(f"`enum {enum_name}` has no closing brace")
 
     values: list[str] = []
-    for line_number, raw_line in enumerate(source[header.end():end].splitlines(), 1):
-        line = raw_line.split("//", 1)[0].strip()
+    for line_number, raw_line in enumerate(body[:end].splitlines(), 1):
+        line = raw_line.strip()
         if not line:
             continue
         if not line.startswith("case "):
@@ -113,6 +162,22 @@ class SwiftEnumParserTests(unittest.TestCase):
         self.assertEqual(
             swift_string_enum_raw_values(source, "Reason"),
             ["idle", "locked", "generated-input", "secure-field", "workflow-active"],
+        )
+
+    def test_braces_and_slashes_in_comments_and_strings_do_not_end_the_body(self):
+        source = """
+        enum Reason: String {
+            /// The person acted. Never ends the enum } early.
+            case idle // also not the end }
+            /* a block comment { with } braces */
+            case brace = "a}b"
+            case path = "a//b"
+            case last
+        }
+        """
+        self.assertEqual(
+            swift_string_enum_raw_values(source, "Reason"),
+            ["idle", "a}b", "a//b", "last"],
         )
 
     def test_missing_enum_fails_loudly(self):
