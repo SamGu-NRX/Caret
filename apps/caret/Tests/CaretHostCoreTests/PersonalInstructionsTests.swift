@@ -1,4 +1,5 @@
 import CaretScreenCore
+import Foundation
 import XCTest
 @testable import CaretHostCore
 
@@ -32,6 +33,17 @@ final class PersonalInstructionsTests: XCTestCase {
         let total = lines.joined(separator: "\n").count
         XCTAssertLessThanOrEqual(total, PersonalInstructions.promptCharacters)
         XCTAssertTrue(lines.last?.hasSuffix("word") == true, "cut at a word end, without a trailing space")
+    }
+
+    func testSharedSensitiveFixturesMatchSwiftDetector() throws {
+        struct Case: Decodable { let text: String; let kind: String? }
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("helper/fixtures/sensitive-cases.json"))
+        for fixture in try JSONDecoder().decode([Case].self, from: data) {
+            let actual = PersonalInstructions.refusal(for: fixture.text)?.rawValue
+            XCTAssertEqual(actual, fixture.kind.map { $0 == "password" ? "passwords" : $0 == "cardNumber" ? "card numbers" : $0 == "accountNumber" ? "account numbers" : $0 == "governmentId" ? "government ID numbers" : $0 == "oneTimeCode" ? "one-time codes" : "API keys or tokens" }, fixture.text)
+        }
     }
 
     func testSecretInstructionTextIsRefusedWithoutChangingSavedText() {

@@ -150,6 +150,11 @@ describe("the memory markdown parser", () => {
 });
 
 describe("what Caret never keeps", () => {
+  it("matches the shared instruction fixtures", () => {
+    const fixtures = JSON.parse(readFileSync(join(import.meta.dirname, "../fixtures/sensitive-cases.json"), "utf8")) as { text: string; kind: string | null }[];
+    for (const fixture of fixtures) expect((valueKind(fixture.text) ?? (fixture.kind === "password" ? "password" : fixture.kind === "oneTimeCode" ? "oneTimeCode" : null)), fixture.text).toBe(fixture.kind);
+  });
+
   it("refuses passwords, card and account numbers, government IDs, one-time codes and API keys by label or shape", () => {
     expect(labelKind("Password")).toBe("password");
     expect(labelKind("Card number")).toBe("cardNumber");

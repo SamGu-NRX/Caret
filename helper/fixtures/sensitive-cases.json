@@ -1,0 +1,14 @@
+[
+  {"text":"my password for the portal is aaaaaa", "kind":"password"},
+  {"text":"4111 1111 1111 1111", "kind":"cardNumber"},
+  {"text":"123-45-6789", "kind":"governmentId"},
+  {"text":"GB82 WEST 1234 5698 7654 32", "kind":"accountNumber"},
+  {"text":"AKIAIOSFODNN7EXAMPLE", "kind":"apiKey"},
+  {"text":"AIzaSyDUMMY012345678901234567890123456789", "kind":"apiKey"},
+  {"text":"gsk_abcdefghijklmnopqrstuvwxyz", "kind":"apiKey"},
+  {"text":"eyJabcdefghij.klmnopqrst.uvwxyz", "kind":"apiKey"},
+  {"text":"-----BEGIN OPENSSH PRIVATE KEY-----", "kind":"apiKey"},
+  {"text":"I built a password reset flow", "kind":null},
+  {"text":"never suggest passwords", "kind":null},
+  {"text":"I write short, plain sentences.", "kind":null}
+]
