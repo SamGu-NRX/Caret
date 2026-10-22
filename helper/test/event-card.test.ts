@@ -657,6 +657,87 @@ describe("event cards through the helper", () => {
     expect(await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: o.offerKey, action: "undo" })).toMatchObject({ restored: 1 });
     expect(calendar.events.size).toBe(0);
   });
+
+  // MARK: - the reply order follows the thread's message order (F6 on PR #57)
+
+  const REPLAY_EVENT = "Coffee with Dana on Oct 20, 2026 from 3:00 to 4:00 PM PT.";
+
+  /**
+   * A thread of `messages`, one node each in document order, read with no field focused and then replied to. The
+   * message at `eventAt` ends with REPLAY_EVENT. Returns the reply field's key.
+   */
+  const replyAfterReading = async (app: AppRef, windowId: string, messages: string[], eventAt: number): Promise<string> => {
+    const keys = messages.map((_, i) => `${app.bundleId}/standard/statictext:msg${i}~0`);
+    const values: TypedValue[] = [
+      { kind: "date", text: "Oct 20, 2026", nodeKey: keys[eventAt] as string },
+      { kind: "time", text: "3:00 to 4:00 PM PT", nodeKey: keys[eventAt] as string },
+    ];
+    const thread = messages.map((m, i) => text(keys[i] as string, m));
+    const reply: Node = { key: `${app.bundleId}/standard/textarea:reply~0`, parent: null, role: "AXTextArea", label: "Reply", editable: true };
+    send({ type: "appSwitch", v: PROTOCOL_VERSION, at: clock, from: MAIL, to: app });
+    send(snap(thread, { at: clock, windowId, app, title: "Coffee this week?", focused: true, focusedKey: null, values }));
+    await helper.eventsSettled;
+    expect(jev.asked).toHaveLength(0);
+    clock += 1000;
+    send(snap([...thread, reply], { at: clock, windowId, app, title: "Coffee this week?", focused: true, focusedKey: reply.key, values, reason: "focus" }));
+    await helper.eventsSettled;
+    return reply.key;
+  };
+
+  const expectReplayedEvent = (windowId: string, reply: string): void => {
+    expect(jev.asked).toEqual([REPLAY_EVENT, REPLAY_EVENT]);
+    const o = offers();
+    expect(o).toHaveLength(1);
+    expect(o[0]?.endState.text).toBe("Coffee with Dana, Oct 20 5:00 to 6:00 PM");
+    expect(o[0]?.field).toMatchObject({ windowId, key: reply });
+  };
+
+  it("offers the event in the newest message of a Mail thread whose dates run newest first, though three older messages follow it", async () => {
+    jev = attendJev(() => "yes");
+    const mail = "6164-1";
+    const reply = await replyAfterReading(
+      { pid: 6164, bundleId: "com.apple.mail", name: "Mail" },
+      mail,
+      [
+        `From: Dana Whitfield\nDate: Mon, 19 Oct 2026 09:30:00 -0700\n${REPLAY_EVENT}`,
+        "From: Sam Gu\nDate: Sun, 18 Oct 2026 18:00:00 -0700\nSure, which day works for you?",
+        "From: Dana Whitfield\nDate: Sun, 18 Oct 2026 11:00:00 -0700\nAre you free this week?",
+        "From: Dana Whitfield\nDate: Sat, 17 Oct 2026 08:00:00 -0700\nHope the move went well.",
+      ],
+      0,
+    );
+    expectReplayedEvent(mail, reply);
+    // Newest first, the cap stops before the oldest message: it is never judged.
+    expect(helper.events.isJudged(mail, "Hope the move went well.")).toBe(false);
+  });
+
+  it("offers the event in the newest message of a chat drawn oldest at the top, and leaves the oldest past the cap", async () => {
+    jev = attendJev(() => "yes");
+    const chat = "6165-1";
+    const reply = await replyAfterReading(
+      { pid: 6165, bundleId: "com.apple.MobileSMS", name: "Messages" },
+      chat,
+      ["Hope the move went well.", "Are you free this week?", "Sure, which day works for you?", REPLAY_EVENT],
+      3,
+    );
+    expectReplayedEvent(chat, reply);
+    expect(helper.events.isJudged(chat, "Hope the move went well.")).toBe(false);
+  });
+
+  it("reads both ends of a thread whose order is not known, so an event at the top is judged within the same cap", async () => {
+    jev = attendJev(() => "yes");
+    const mail = "6166-1";
+    // No dates and a Mail window: messageOrder is "unknown", since Mail can show a thread either way up.
+    const reply = await replyAfterReading(
+      { pid: 6166, bundleId: "com.apple.mail", name: "Mail" },
+      mail,
+      [`From: Dana Whitfield\n${REPLAY_EVENT}`, "From: Sam Gu\nSure, which day works for you?", "From: Dana Whitfield\nAre you free this week?", "From: Dana Whitfield\nHope the move went well."],
+      0,
+    );
+    expectReplayedEvent(mail, reply);
+    // Bottom, top, then one in from the bottom: the cap of three leaves the second message unread.
+    expect(helper.events.isJudged(mail, "Sure, which day works for you?")).toBe(false);
+  });
 });
 
 describe("judging a batch of changes (CodeRabbit on PR #5)", () => {
@@ -809,5 +890,24 @@ describe("the reply order, routed", () => {
     );
     await cards.onChanges(back);
     expect(cards.heard().map((l) => l.sentence)).toEqual([EVENT, second]);
+  });
+
+  it("hears a newest-first Mail thread newest last, so the event in its top message survives the cap (F6 on PR #57)", async () => {
+    const model = new ScreenModel();
+    model.frontmostPid = APP.pid;
+    const thread = [
+      text(EVENT_KEY, `Date: Mon, 19 Oct 2026 09:30:00 -0700\n${EVENT}`),
+      text("com.apple.mail/standard/statictext:m3~0", "Date: Sun, 18 Oct 2026 18:00:00 -0700\nSure, which day works for you?"),
+      text("com.apple.mail/standard/statictext:m4~0", "Date: Sat, 17 Oct 2026 08:00:00 -0700\nHope the move went well."),
+    ];
+    model.apply(snap(thread, { at: 1000, windowId: WINDOW, app: APP, title: "Coffee this week?", values: VALUES }));
+    const { cards } = routedCards(model);
+    const entering = model.apply(
+      snap([...thread, replyNode()], { at: 2000, windowId: WINDOW, app: APP, title: "Coffee this week?", focused: true, focusedKey: REPLY, values: VALUES }),
+    );
+    await cards.onChanges(entering);
+    // Six sentences, oldest message first: the trim keeps the top message's date line and its event, newest last.
+    expect(cards.heard().map((l) => l.sentence)).toEqual(["Sure, which day works for you?", "Date: Mon, 19 Oct 2026 09:30:00 -0700", EVENT]);
+    expect(cards.heard().at(-1)?.key).toBe(EVENT_KEY);
   });
 });
