@@ -32,6 +32,7 @@ A failure replaces `result` with a coded error:
 | --- | --- | --- |
 | `hello` | none | Protocol version, the cadence and bound settings, and the workflow catalog |
 | `context.update` | `frame` | `status`: `admitted`, `coalesced` or `skipped`, with a `reason` |
+| `context.pause` | `reason` | `{"paused": true}` after withdrawing ambient context |
 | `offer.accept` | `proposal_id`, `revision`, `target` | The inline edit to apply, or the workflow's execution result |
 | `offer.dismiss` | `proposal_id` | `{"dismissed": true}` |
 | `workflows.list` | none | Every registered workflow with its execution method |
@@ -42,6 +43,39 @@ Error codes: `invalid_json`, `invalid_request`, `invalid_context`,
 `internal_error`. The last one is the catch-all: an exception no other code
 covers still gets a reply, because a request that is answered by the process
 exiting cannot be retried.
+
+### Pause without a readable field
+
+The v1 bridge accepts `context.pause` when the host cannot supply a new snapshot
+or must suspend ambient proposals. The Swift client exposes
+`CoreBridgeClient.pauseContext(reason:)`.
+
+```json
+{"id": 5, "method": "context.pause", "params": {"reason": "locked"}}
+{"id": 5, "ok": true, "result": {"paused": true}}
+```
+
+Allowed reasons are `idle`, `locked`, `sleeping`, `generated-input`,
+`focus-unavailable`, `secure-field`, `ime-composing`, `app-excluded`,
+`accessibility-revoked`, and `workflow-active`. Missing or unknown reasons return
+`invalid_request` without changing router state.
+
+The router drops pending context and emits `invalidated` for any visible offer,
+using the supplied reason. An evaluation already in flight keeps its slot until
+it finishes, but its result becomes `discarded`. Once a judge returns, the engine
+checks staleness before starting the writer, second decision, or preparation.
+An already-started provider call is not cancelled.
+
+After input becomes eligible again, the host resumes with `context.update` and
+a revision greater than every previously submitted revision. The host must stop
+sending frames during the pause and invalidate its capture dedupe state so an
+unchanged field gets a fresh revision on resumption. Pause does not suppress the
+context as a dismissal does. It does not cancel an accepted workflow: action
+execution still blocks the bridge request reader until it returns.
+
+This adds the core and client contract only. The app owner still needs to call
+it from focus, permission, idle, lock/sleep, and generated-input handling. Older
+bridges reply `unknown_method`; callers must not treat that as a successful pause.
 
 ## Events
 

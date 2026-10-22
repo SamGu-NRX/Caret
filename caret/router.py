@@ -41,6 +41,12 @@ ACCESSIBILITY_REVOKED = "accessibility-revoked"
 WORKFLOW_ACTIVE = "workflow-active"
 STALE_SOURCES = "stale-sources"
 
+# Host lifecycle notifications may arrive when there is no readable field.
+PAUSE_REASONS = frozenset({
+    "idle", "locked", "sleeping", "generated-input", "focus-unavailable",
+    SECURE_FIELD, IME_COMPOSING, APP_EXCLUDED, ACCESSIBILITY_REVOKED, WORKFLOW_ACTIVE,
+})
+
 # Skip reasons that are not suppression.
 UNCHANGED = "unchanged-context"
 SUPERSEDED_REVISION = "superseded-revision"
@@ -233,6 +239,7 @@ class Router:
         self._in_flight: ContextFrame | None = None
         self._last_started: datetime | None = None
         self._highest_revision = -1
+        self._paused_through_revision = -1
         self._current_target: TargetIdentity | None = None
         self._offer: Offer | None = None
         self._consumed: OrderedDict[str, datetime] = OrderedDict()
@@ -245,6 +252,20 @@ class Router:
         delays the next attempt without marking any context as handled."""
 
     # -- Inbound context -------------------------------------------------
+
+    def pause(self, reason: str) -> None:
+        """Withdraw context until the host submits a newer eligible frame.
+
+        Keep an in-flight evaluation's slot occupied until it returns. Clearing
+        it here would let a resumed frame start a second concurrent evaluation.
+        The revision fence rejects its result even without a replacement frame.
+        """
+        if not isinstance(reason, str) or reason not in PAUSE_REASONS:
+            raise ValueError("Unknown context pause reason")
+        with self._lock:
+            self._paused_through_revision = self._highest_revision
+            self._pending = None
+            self._invalidate_locked(reason)
 
     def submit(self, frame: ContextFrame, now: datetime) -> Admission:
         """Record the newest context. Returns whether it will be evaluated."""
@@ -323,6 +344,8 @@ class Router:
     def is_stale(self, frame: ContextFrame) -> bool:
         """True when this frame no longer describes what the user is doing."""
         with self._lock:
+            if frame.revision <= self._paused_through_revision:
+                return True
             if frame.revision < self._highest_revision:
                 return True
             return self._current_target is not None and self._current_target != frame.snapshot.target
@@ -355,6 +378,10 @@ class Router:
         with self._lock:
             self._in_flight = None
             self._failed_at = self._last_started
+            if self.is_stale(frame):
+                return self._publish_locked(
+                    Publication("discarded", "stale-snapshot", None, frame.revision)
+                )
             return self._publish_locked(Publication("failed", reason, None, frame.revision))
 
     def complete_offer(self, frame: ContextFrame, offer: Offer) -> Publication:
