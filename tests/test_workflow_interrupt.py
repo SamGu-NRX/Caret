@@ -30,9 +30,9 @@ from test_bridge import ROOT, OrderedOutput, synthetic_frame
 
 UNSAFE_REASONS = (
     "locked", "sleeping", "accessibility-revoked", "secure-field", "app-excluded",
-    "focus-unavailable", "ime-composing",
+    "ime-composing",
 )
-AMBIENT_REASONS = ("idle", "generated-input", "workflow-active")
+AMBIENT_REASONS = ("idle", "generated-input", "workflow-active", "focus-unavailable")
 WAIT = 2.0
 
 

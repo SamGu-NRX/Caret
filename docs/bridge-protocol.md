@@ -96,8 +96,8 @@ Only genuine user input or an unsafe state stops the run:
 | `accessibility-revoked` | yes | The user withdrew the permission the executor acts through. |
 | `secure-field` | yes | Executor input could land in a secret field. |
 | `app-excluded` | yes | The user excluded the app now in focus. |
-| `focus-unavailable` | yes | The executor's target can no longer be checked, so it could write a wrong value. |
 | `generated-input`, `workflow-active`, `idle` | no | The host sends these while Caret's own executor types, or while the user is away. They only withdraw ambient context. |
+| `focus-unavailable` | no | Caret's own executor moves focus, so this must not cancel its run. The executor rechecks its target before every step, so a lost target still stops it there with a named reason. |
 
 A `context.update` stops the run only when its revision is above every revision
 already seen. A replayed or older revision is answered `skipped` with

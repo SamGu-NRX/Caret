@@ -49,11 +49,15 @@ USER_INPUT = "user-input"
 # be verified, so continuing could write a wrong value.
 INTERRUPTING_PAUSE_REASONS = frozenset({
     USER_INPUT, IME_COMPOSING, "locked", "sleeping", ACCESSIBILITY_REVOKED,
-    SECURE_FIELD, APP_EXCLUDED, "focus-unavailable",
+    SECURE_FIELD, APP_EXCLUDED,
 })
 # The host sends these while Caret's own executor is typing or while the user
 # is away, so they withdraw ambient context and leave an accepted run alone.
-AMBIENT_PAUSE_REASONS = frozenset({"idle", "generated-input", WORKFLOW_ACTIVE})
+# focus-unavailable is here too: Caret's own executor moves focus (opening an app,
+# switching a window), so treating it as an interrupt would let a run cancel
+# itself. The executor rechecks its target before every step, so a lost target
+# still stops it there, with a named reason.
+AMBIENT_PAUSE_REASONS = frozenset({"idle", "generated-input", WORKFLOW_ACTIVE, "focus-unavailable"})
 
 # Host lifecycle notifications may arrive when there is no readable field.
 PAUSE_REASONS = INTERRUPTING_PAUSE_REASONS | AMBIENT_PAUSE_REASONS
