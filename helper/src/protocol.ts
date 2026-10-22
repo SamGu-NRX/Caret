@@ -1502,7 +1502,12 @@ export const SavedFilesRequest = z
   .refine((m) => (m.op === "forget") === (m.id !== undefined), { message: "forget names the file's id; list names none", path: ["id"] });
 export type SavedFilesRequest = z.infer<typeof SavedFilesRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, FirstLookPreviewRequest, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked, HostProof]);
+export const ScreenTextRequest = z.object({ type: z.literal("screenTextRequest"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1).max(64), revision: z.number().int().nonnegative(), windowId: z.string().min(1), maxCharacters: z.number().int().positive().max(2048), offApps: z.array(z.string()).optional(), offSites: z.array(z.string()).optional(), site: z.string().nullable().optional() });
+export type ScreenTextRequest = z.infer<typeof ScreenTextRequest>;
+export const ScreenTextReply = z.object({ type: z.literal("screenTextReply"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1).max(64), revision: z.number().int().nonnegative(), text: z.string().max(2048).nullable() });
+export type ScreenTextReply = z.infer<typeof ScreenTextReply>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [ScreenTextRequest, ScreenTextReply, Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, FirstLookPreviewRequest, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked, HostProof]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({

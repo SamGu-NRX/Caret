@@ -2,10 +2,11 @@ import type { Node } from "../protocol.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 
 /** Returns admitted static text near the focused node, bounded by characters. */
-export function admittedScreenText(model: ScreenModel, focusedWindowId: string | null = model.focusedWindowId, maxCharacters = 2048): string | null {
+export function admittedScreenText(model: ScreenModel, focusedWindowId: string | null = model.focusedWindowId, maxCharacters = 2048, offApps: readonly string[] = [], offSites: readonly string[] = [], site: string | null = null): string | null {
   if (focusedWindowId === null) return null;
   const window = model.windows.get(focusedWindowId);
   if (window === undefined || !window.focused || model.frontmostPid !== null && window.app.pid !== model.frontmostPid) return null;
+  if (offApps.some(prefix => window.app.bundleId.startsWith(prefix)) || site !== null && offSites.includes(site)) return null;
   const focus = window.focusedKey === null ? undefined : window.nodes.get(window.focusedKey);
   const candidates = [...window.nodes.values()]
     .filter(isAdmittedStaticText)

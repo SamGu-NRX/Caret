@@ -23,6 +23,15 @@ describe("admitted inline screen text", () => {
     expect(admittedScreenText(m)).toBe("Reply from Dana");
   });
 
+  it("does not return text for turned-off apps or sites", () => {
+    const m = new ScreenModel();
+    m.frontmostPid = 7;
+    m.focusedWindowId = "7-1";
+    m.windows.set("7-1", win(new Map([["ok", { key: "ok", parent: null, role: "AXStaticText", label: "private app text" }]])));
+    expect(admittedScreenText(m, "7-1", 2048, ["dev.test."])).toBeNull();
+    expect(admittedScreenText(m, "7-1", 2048, [], ["https://off.example"], "https://off.example")).toBeNull();
+  });
+
   it("bounds output and returns nothing for an unknown window", () => {
     const m = new ScreenModel();
     expect(admittedScreenText(m, "missing")).toBeNull();
