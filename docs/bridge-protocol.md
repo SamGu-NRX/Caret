@@ -4,7 +4,9 @@ Reference for calling Caret's judge from the Mac app. The routing rules it
 implements are in [input-pipeline.md](input-pipeline.md); this page is the wire
 format.
 
-The app spawns one long-lived process and keeps it alive:
+The app spawns one long-lived process and keeps it alive. Accepted workflow
+execution runs off the request reader, so a pause or newer context frame can
+interrupt it while its acceptance result is pending:
 
 ```sh
 python3 -m caret.bridge --fixture fixtures/meeting.json --db .local/caret.sqlite
@@ -33,7 +35,7 @@ A failure replaces `result` with a coded error:
 | `hello` | none | Protocol version, the cadence and bound settings, and the workflow catalog |
 | `context.update` | `frame` | `status`: `admitted`, `coalesced` or `skipped`, with a `reason` |
 | `context.pause` | `reason` | `{"paused": true}` after withdrawing ambient context |
-| `offer.accept` | `proposal_id`, `revision`, `target` | The inline edit to apply, or the workflow's execution result |
+| `offer.accept` | `proposal_id`, `revision`, `target` | The inline edit to apply, or the workflow's execution result. Action results arrive after the workflow settles. |
 | `offer.dismiss` | `proposal_id` | `{"dismissed": true}` |
 | `workflows.list` | none | Every registered workflow with its execution method |
 | `shutdown` | none | `{"stopped": true}`, then the process exits |
@@ -74,8 +76,15 @@ context as a dismissal does. It does not cancel an accepted workflow: action
 execution still blocks the bridge request reader until it returns.
 
 This adds the core and client contract only. The app owner still needs to call
-it from focus, permission, idle, lock/sleep, and generated-input handling. Older
-bridges reply `unknown_method`; callers must not treat that as a successful pause.
+it from focus, permission, idle, lock/sleep, and generated-input handling. If an
+accepted workflow is running, pause calls its `cancel` hook once, waits for the
+hook and the executor to return, and reports an `interrupted` action result with
+`interrupted_by` and `effects_may_remain: true`. The result also keeps
+`execution_status`, which records what the adapter returned before Caret fenced
+it. A newer `context.update` follows the same path with `interrupted_by` set to
+`newer-context`; the pending ambient frame is cleared and must be submitted
+again after the run settles. Older bridges reply `unknown_method`; callers must
+not treat that as a successful pause.
 
 ## Events
 

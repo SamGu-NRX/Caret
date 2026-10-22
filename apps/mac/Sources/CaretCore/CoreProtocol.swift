@@ -449,14 +449,25 @@ public struct WorkflowExecution: Decodable, Equatable, Sendable {
     public var status: String
     public var summary: String
     public var evidence: [String]
+    public var interruptedBy: String?
+    public var effectsMayRemain: Bool
+    public var executionStatus: String?
 
-    enum CodingKeys: String, CodingKey { case status, summary, evidence }
+    enum CodingKeys: String, CodingKey {
+        case status, summary, evidence
+        case interruptedBy = "interrupted_by"
+        case effectsMayRemain = "effects_may_remain"
+        case executionStatus = "execution_status"
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
         evidence = try c.decodeIfPresent([String].self, forKey: .evidence) ?? []
+        interruptedBy = try c.decodeIfPresent(String.self, forKey: .interruptedBy)
+        effectsMayRemain = try c.decodeIfPresent(Bool.self, forKey: .effectsMayRemain) ?? false
+        executionStatus = try c.decodeIfPresent(String.self, forKey: .executionStatus)
     }
 }
 

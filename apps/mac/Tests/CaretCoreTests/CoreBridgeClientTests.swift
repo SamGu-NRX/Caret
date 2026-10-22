@@ -191,6 +191,16 @@ final class CoreBridgeClientTests: XCTestCase {
         XCTAssertTrue(offer.sampleOnly)
     }
 
+    func testInterruptedWorkflowResultPreservesTheFenceAndEffectWarning() throws {
+        let data = Data(#"{"kind":"action","status":"interrupted","summary":"Workflow interrupted. Reported effects may remain.","evidence":[],"interrupted_by":"locked","effects_may_remain":true,"execution_status":"completed"}"#.utf8)
+        let result = try JSONDecoder().decode(AcceptResult.self, from: data)
+        guard case .action(let execution) = result else { return XCTFail("expected action result") }
+        XCTAssertEqual(execution.status, "interrupted")
+        XCTAssertEqual(execution.interruptedBy, "locked")
+        XCTAssertTrue(execution.effectsMayRemain)
+        XCTAssertEqual(execution.executionStatus, "completed")
+    }
+
     func testUnknownEventNameIsKeptRatherThanDropped() throws {
         let transport = FakeTransport()
         let client = CoreBridgeClient(transport: transport)
