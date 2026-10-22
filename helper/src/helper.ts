@@ -9,6 +9,7 @@ import { redactWindow } from "./fill/redact.ts";
 import { askScope, fieldFingerprint, scopeKey, scopeSet, withRevealed, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel, holdsText } from "./model.ts";
+import { clearFocusedText } from "./privacy/focus-tripwire.ts";
 import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
 import { askWindows, notifyExpiry, planWindows, popupWindows, type ExpiryList } from "./expiry.ts";
 import { RollingText } from "./rolling-text.ts";
@@ -3515,6 +3516,7 @@ export class Helper {
       this.routing?.candidatesChanged();
       this.routing?.observe();
     },
+    focusTripwire: clearFocusedText,
   };
 
   private checkFills(windowId: string): void {
