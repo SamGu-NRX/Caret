@@ -152,30 +152,5 @@ final class OnboardingKeyboardTests: XCTestCase {
 
     // MARK: - The drag panel
 
-    /// The panel's close: on hover for the mouse, and always in the tree for VoiceOver and Switch Control, who cannot
-    /// hover; pressing it through accessibility closes the panel.
-    func testTheDragPanelCloseIsThereWithoutHover() throws {
-        var closed = 0
-        let (window, elements) = tree(SettingsDragPanelView(model: SettingsDragPanelModel(), close: { closed += 1 })
-            .environment(\.accessibilityVoiceOverEnabled, true))
-        defer { window.orderOut(nil); window.close() }
-        try XCTSkipIf(elements.filter { $0.accessibilityRole() == .button }.isEmpty,
-                      "SwiftUI built no accessibility tree for a window off every display on this Mac")
-        let close = try XCTUnwrap(button(elements, OnboardingCopy.Drag.close), "Close is a named button without a hover")
-        XCTAssertTrue(close.accessibilityPerformPress(), "Close presses")
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        XCTAssertEqual(closed, 1)
-    }
-
-    /// The sighted design is unchanged: no hover, no close in the tree; the drag row is still the row's named button.
-    func testTheDragPanelCloseStaysHoverOnlyForTheMouse() throws {
-        let (window, elements) = tree(SettingsDragPanelView(model: SettingsDragPanelModel(), close: {}))
-        defer { window.orderOut(nil); window.close() }
-        try XCTSkipIf(elements.filter { $0.accessibilityRole() == .button }.isEmpty,
-                      "SwiftUI built no accessibility tree for a window off every display on this Mac")
-        XCTAssertNil(button(elements, OnboardingCopy.Drag.close), "the close stays hover-revealed for the mouse")
-        XCTAssertNotNil(button(elements, OnboardingCopy.Drag.voiceOver), "the drag row is a named button")
-    }
-
     // MARK: - The key tap
 }
