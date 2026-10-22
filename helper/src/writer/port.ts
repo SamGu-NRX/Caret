@@ -2,6 +2,7 @@
 // `plan`; `polish` and `memoryProposal` are refused until their schemas exist. The output is untrusted
 // text: a plan program still has to pass compileProgram and the sandbox.
 import { chat, ChatHttpError, chatSink, type ChatRoute } from "./chat.ts";
+import { FocusTextLeak } from "../privacy/focus-tripwire.ts";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
 import { verifyWriterInput, type Disclosure, type ModelValue } from "../privacy/disclosure.ts";
 import { seal, sendable } from "../privacy/send.ts";
@@ -128,7 +129,7 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
       } catch (e) {
         // Only a provider's 4xx refusal is known unbilled. A timeout, a network error, a 5xx or an unreadable answer may
         // have been processed and billed, so it counts at its reservation, and repeated failures still reach the cap.
-        if (e instanceof ChatHttpError && e.status >= 400 && e.status < 500) hold.release();
+        if (e instanceof FocusTextLeak || (e instanceof ChatHttpError && e.status >= 400 && e.status < 500)) hold.release();
         else hold.settle(estimate, 0);
         throw e;
       }

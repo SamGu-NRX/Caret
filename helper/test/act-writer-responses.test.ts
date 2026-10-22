@@ -8,6 +8,7 @@ import { Disclosure, UnmintedText, registryOf } from "../src/privacy/disclosure.
 import { chatSink } from "../src/writer/chat.ts";
 import { seal, sendable } from "../src/privacy/send.ts";
 import { makeWriterPort, WriterProviderRefused, WriterUnavailable, writerEstimateUsd } from "../src/writer/port.ts";
+import { noteFocusedText } from "../src/privacy/focus-tripwire.ts";
 import { devWriterRoute } from "../src/writer/routes.ts";
 import { WRITER_DAILY_CAP_USD, WRITER_ROUTE } from "../src/writer/config.ts";
 import { PLAN_SYSTEM, PLAN_WORDING, PlanInputSchema, planUserMessage } from "../src/writer/plan-prompt.ts";
@@ -89,6 +90,16 @@ describe("OpenAI Responses writer", () => {
     await expect(makeWriterPort(route, { evaluation: true, key, fetchFn, spend: spend() }).write({ ...request(), input: { goal: "raw" as never, snapshots: [] }, disclosure: new Disclosure(registryOf([])) })).rejects.toBeInstanceOf(UnmintedText);
     expect(key).not.toHaveBeenCalled();
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("does not charge a local focused-text refusal", async () => {
+    const ledger = spend();
+    const port = makeWriterPort(route, { evaluation: true, key: () => KEY, fetchFn: fake([]), spend: ledger });
+    const bodyText = PLAN_SYSTEM.slice(0, 20);
+    noteFocusedText([bodyText]);
+    await expect(port.write(request())).rejects.toBeInstanceOf(Error);
+    expect(ledger.spent()).toBe(0);
+    noteFocusedText([]);
   });
 
   it("redacts an echoed key from error text and never retries", async () => {
