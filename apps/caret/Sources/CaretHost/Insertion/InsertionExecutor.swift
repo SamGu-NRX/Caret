@@ -102,6 +102,8 @@ final class InsertionExecutor: @unchecked Sendable {
 
     /// The user's input when an insert's write ended, for ⌘Z on an unconfirmed grant (`inputSinceWrite`).
     struct WriteEnd: Equatable {
+        /// The claim's mark, taken with the Tab that asked for the write.
+        let atKey: HostStatus.InputMark
         /// Taken as the last write or posted key returned, before the field is read for S1's ruling.
         let mark: HostStatus.InputMark
         /// Keys the user typed during the write, held (`KeyHold`) and sent to the app as it ended. The tap does not
@@ -128,15 +130,19 @@ final class InsertionExecutor: @unchecked Sendable {
         }
     }
 
-    /// Whether the user's input reached the app between the end of an insert's write and the ⌘Z that undoes it
+    /// Whether the user's input reached the app between the Tab that asked for an insert and the ⌘Z that undoes it
     /// (`mark`, taken on the tap thread after the ⌘Z itself was counted, so a quiet user's mark is the write's plus
     /// that one key). For an unconfirmed grant ⌘Z judges the field as it reads then (`UndoGuard.approve`), and
     /// characters typed after a stopped write can continue Caret's text: "Sea" of "Seattle" and a typed "t" read as
-    /// Caret's partial "Seat". So any key or click since the write ended, or a held key sent as it ended, refuses ⌘Z
-    /// (`inputAfterWrite`). No record refuses too.
+    /// Caret's partial "Seat". So ⌘Z is refused (`inputAfterWrite`) for any key or click the tap counted between the
+    /// Tab and the end of the write (a key that stopped the write once the hold expired, was dropped by a click, or had
+    /// no target pid lands in the field too), any held key sent during or at the end of the write, and any key or click
+    /// between the end of the write and ⌘Z. Held keys and Caret's own marked events never move the marks, so a user who
+    /// typed and clicked nothing keeps their Undo. No record refuses too.
     static func inputSinceWrite(_ end: WriteEnd?, atUndoKey mark: HostStatus.InputMark) -> Bool {
         guard let end else { return true }
-        return end.heldKeys > 0 || mark != HostStatus.InputMark(keys: end.mark.keys &+ 1, clicks: end.mark.clicks)
+        return end.mark != end.atKey || end.heldKeys > 0
+            || mark != HostStatus.InputMark(keys: end.mark.keys &+ 1, clicks: end.mark.clicks)
     }
 
     init(
@@ -236,7 +242,7 @@ final class InsertionExecutor: @unchecked Sendable {
             keyHold.end(pid: pid)
             // Recorded before the grant is published, so the ⌘Z that takes it always finds it.
             if let undo, let writeEnded {
-                recordEnd(writeID: undo.writeID, WriteEnd(mark: writeEnded, heldKeys: Int(clamping: keyHold.keysSent() &- sentAtKey)))
+                recordEnd(writeID: undo.writeID, WriteEnd(atKey: mark, mark: writeEnded, heldKeys: Int(clamping: keyHold.keysSent() &- sentAtKey)))
             }
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: ok, error: error, text: text,
