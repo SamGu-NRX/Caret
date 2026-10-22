@@ -57,6 +57,9 @@ final class GhostTextEngine {
     /// path for its own field: a native field in the browser (its address bar) never gets a site's instructions
     /// (PR #16 review).
     var instructions: (TextFieldContext, _ origin: String?) -> [String] = { _, _ in [] }
+    /// Context captured by the host for the next local inline prompt. Capture and filtering stay outside
+    /// the model engine so the policy can be tested without loading a model.
+    var inlinePromptContext = InlinePromptContext()
     /// Candidates looked at, best first, when the better ones are refused at the seam or do not
     /// fit the text after the caret. KeyType's own filter still decides about the first.
     static let candidatesTried = 3
@@ -287,6 +290,9 @@ final class GhostTextEngine {
         let prompt = promptBuilder.buildPrompt(
             context: promptContext,
             customInstructions: instructions(context, origin),
+            previousUserInputs: inlinePromptContext.previousUserInputs,
+            pasteboardText: inlinePromptContext.pasteboardText,
+            screenText: inlinePromptContext.screenText,
             includeEnvironmentContext: policy.includesEnvironmentContext
         ).prompt
         let healSlack = heal?.heal.count ?? 0
