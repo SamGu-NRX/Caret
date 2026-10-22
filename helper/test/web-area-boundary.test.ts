@@ -82,19 +82,19 @@ describe("native reads under an AXWebArea, as they reach the helper today", () =
 describe("the rule: text-control values under an AXWebArea never reach the helper", () => {
   const { win } = browserWindow();
 
-  it.fails("a non-focused page field's value is absent from the model", () => {
+  it("a non-focused page field's value is absent from the model", () => {
     expect(win.nodes.get("w1/pw")?.value).toBeUndefined();
   });
 
-  it.fails("the focused field's caret text reaches the model only for inline writing, never as a node value", () => {
+  it("the focused field's caret text reaches the model only for inline writing, never as a node value", () => {
     expect(win.nodes.get("w1/email")?.value).toBeUndefined();
   });
 
-  it.fails("no typed value is admitted from a web-area text field", () => {
+  it("no typed value is admitted from a web-area text field", () => {
     expect(admitValues(win.values as never, win.nodes)).toEqual([]);
   });
 
-  it.fails("the window's request-quotable parts hold no page field value", () => {
+  it("the window's request-quotable parts hold no page field value", () => {
     const parts = partsOf(win).map((p) => p.id);
     expect(parts).not.toContain(nodePart("w1/pw", "value"));
     expect(parts).not.toContain(nodePart("w1/email", "value"));

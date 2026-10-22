@@ -152,6 +152,8 @@ const NOT_A_GROUP: ReadonlySet<string> = new Set(["AXWindow", "AXWebArea", "AXSc
 export interface Inherited {
   label?: string;
   excluded?: NodeExclusion;
+  /** A native AXWebArea ancestor means editable values stay page-local. */
+  webArea?: boolean;
 }
 
 /**
@@ -162,7 +164,8 @@ export interface Inherited {
 export function inherited(nodes: ReadonlyMap<string, Node>, n: Node): Inherited {
   const excluded = excludedAncestor(nodes, n);
   const label = groupLabel(nodes, n);
-  return { ...(excluded === null ? {} : { excluded }), ...(label === null ? {} : { label }) };
+  const webArea = webAreaAncestor(nodes, n);
+  return { ...(excluded === null ? {} : { excluded }), ...(label === null ? {} : { label }), ...(webArea ? { webArea: true } : {}) };
 }
 
 /**
@@ -206,6 +209,15 @@ function groupLabel(nodes: ReadonlyMap<string, Node>, n: Node): string | null {
   return null;
 }
 
+function webAreaAncestor(nodes: ReadonlyMap<string, Node>, n: Node): boolean {
+  const seen = new Set<string>([n.key]);
+  for (let p = n.parent === null ? undefined : nodes.get(n.parent); p !== undefined && !seen.has(p.key); p = p.parent === null ? undefined : nodes.get(p.parent)) {
+    seen.add(p.key);
+    if (p.role === "AXWebArea") return true;
+  }
+  return false;
+}
+
 /**
  * A control whose content Caret never carries, because its declared purpose says so: a secure field, a page control the
  * walker marked, any node inside an excluded one, or an editable control whose own label, placeholder, or
@@ -217,6 +229,8 @@ export function excludedNode(n: Node, from: Inherited = {}, typed = false): Node
   if (n.states?.includes("secure") === true || n.role === "AXSecureTextField") return "secure";
   // Everything inside an excluded node is its content, editable or not (PV2 re-review).
   if (from.excluded !== undefined) return from.excluded;
+  // Native readers may still send a page value; hide editable descendants of AXWebArea as a backstop.
+  if (from.webArea === true && n.editable === true) return "hidden";
   // A node that holds a value (its own value, a typed value, a placeholder), whatever its role, is excluded when its own
   // label or placeholder names a sensitive kind: that label is the value's declared purpose (the coordinator's ruling
   // after SC1 step 3's evidence: a cell labelled "Password" holding a value). A label that holds nothing is only a label.
@@ -279,6 +293,7 @@ export function admitValues(values: readonly TypedValue[], nodes: ReadonlyMap<st
     const n = nodes.get(v.nodeKey);
     if (n === undefined) return true;
     if (n.excluded !== undefined || excludedValue(v.text) !== null) return false;
+    if (n.editable === true && webAreaAncestor(nodes, n)) return false;
     // A value beside a withheld one stays only where it still stands whole; otherwise the node is as the reader sent it.
     const texts = [n.value, n.label, n.placeholder];
     if (!texts.some((t) => t?.includes(WITHHELD) === true)) return true;

@@ -51,12 +51,29 @@ public final class Walker {
         AXUIElementSetMessagingTimeout(window, AX.elementTimeout)
         guard let kids = AX.elements(window, kAXChildrenAttribute) else { return [] }
         if kids.count > limits.maxChildren { clipped = true }
-        return kids.prefix(limits.maxChildren).compactMap { read($0, depth: 1, parentRole: nil) }
+        return kids.prefix(limits.maxChildren).compactMap { read($0, depth: 1, parentRole: nil, underWebArea: false) }
     }
 
-    public func readSubtree(_ e: AXUIElement) -> RawNode? { read(e, depth: 1, parentRole: nil) }
+    public func readSubtree(_ e: AXUIElement) -> RawNode? { read(e, depth: 1, parentRole: nil, underWebArea: isUnderWebArea(e)) }
 
-    private func read(_ e: AXUIElement, depth: Int, parentRole: String?) -> RawNode? {
+    private func isUnderWebArea(_ e: AXUIElement) -> Bool {
+        var parent = AX.element(e, kAXParentAttribute)
+        var depth = 0
+        while let p = parent, depth < limits.maxDepth {
+            if AX.string(p, kAXRoleAttribute) == "AXWebArea" { return true }
+            parent = AX.element(p, kAXParentAttribute)
+            depth += 1
+        }
+        return false
+    }
+
+    /// Page text-control values stay in the page. Focused inline writing reads its caret text through
+    /// the separate focus path; it must not enter the native snapshot or typed-value inventory.
+    public static func shouldReadValue(role: String, secure: Bool, underWebArea: Bool) -> Bool {
+        Roles.valueBearing.contains(role) && !secure && !underWebArea
+    }
+
+    private func read(_ e: AXUIElement, depth: Int, parentRole: String?, underWebArea: Bool) -> RawNode? {
         if visited >= limits.maxVisited || CFAbsoluteTimeGetCurrent() - start > limits.deadline {
             truncated = true
             return nil
@@ -66,12 +83,13 @@ public final class Walker {
         guard let a = AX.batch(e, Self.batchNames), let role = a[0] as? String else { return nil }
         let subrole = a[1] as? String
         let secure = AX.isSecure(role: role, subrole: subrole)
+        let inWebArea = underWebArea || role == "AXWebArea"
         var node = RawNode(role: role, subrole: subrole, title: a[2] as? String, description: a[3] as? String,
                            placeholder: a[4] as? String, frame: AX.frame(a[7], a[8]),
                            enabled: (a[5] as? Bool) ?? true, selected: (a[6] as? Bool) ?? false, secure: secure)
         if let f = focused, CFEqual(f, e) { node.focused = true }
 
-        if Roles.valueBearing.contains(role) && !secure, let v = AX.copy(e, kAXValueAttribute) {
+        if Self.shouldReadValue(role: role, secure: secure, underWebArea: inWebArea), let v = AX.copy(e, kAXValueAttribute) {
             if let s = v as? String {
                 node.value = s.count > limits.maxValueChars ? String(s.prefix(limits.maxValueChars)) : s
             } else if let n = v as? NSNumber, role == "AXCheckBox" || role == "AXRadioButton" {
@@ -101,7 +119,7 @@ public final class Walker {
         }
         if kids.count > limits.maxChildren { clipped = true }
         for k in kids.prefix(limits.maxChildren) {
-            if let c = read(k, depth: depth + 1, parentRole: role) { node.children.append(c) }
+            if let c = read(k, depth: depth + 1, parentRole: role, underWebArea: inWebArea) { node.children.append(c) }
             if truncated { break }
         }
         return node
