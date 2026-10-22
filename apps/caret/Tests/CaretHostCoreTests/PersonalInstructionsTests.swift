@@ -34,6 +34,29 @@ final class PersonalInstructionsTests: XCTestCase {
         XCTAssertTrue(lines.last?.hasSuffix("word") == true, "cut at a word end, without a trailing space")
     }
 
+    func testSecretInstructionTextIsRefusedWithoutChangingSavedText() {
+        for (text, expected) in [
+            ("My password is violet-orchard-seven", PersonalInstructions.SaveRefusal.password),
+            ("Credit card number: 4111 1111 1111 1111", PersonalInstructions.SaveRefusal.cardNumber),
+            ("My API key is sk-live-demo_123456789012", PersonalInstructions.SaveRefusal.apiKey),
+            ("One-time code: 123456", PersonalInstructions.SaveRefusal.oneTimeCode)
+        ] {
+            var i = PersonalInstructions()
+            i.aboutMe = "Keep this ordinary prose."
+            XCTAssertEqual(i.setAboutMe(text), expected)
+            XCTAssertEqual(i.aboutMe, "Keep this ordinary prose.")
+            XCTAssertEqual(WritingPage.saveProblem(text), expected.message)
+        }
+    }
+
+    func testOrdinaryInstructionTextIsKept() {
+        var i = PersonalInstructions()
+        XCTAssertNil(i.setAboutMe("I write short, plain sentences."))
+        XCTAssertEqual(i.aboutMe, "I write short, plain sentences.")
+        XCTAssertNil(i.setApp("com.apple.mail", "Use a direct, friendly tone."))
+        XCTAssertEqual(i.apps["com.apple.mail"], "Use a direct, friendly tone.")
+    }
+
     func testEmptyTextRemovesAnAppOrSite() {
         var i = PersonalInstructions()
         i.setApp("com.apple.mail", "x")
