@@ -83,4 +83,14 @@ final class KeyHoldQueueTests: XCTestCase {
         XCTAssertEqual(q.begin(pid: 9, now: 2), ["a"])
         XCTAssertEqual(q.pid, 9)
     }
+
+    func testPointerDownDropsHeldKeysBeforeFocusCanChange() {
+        var q = KeyHoldQueue<String>()
+        _ = q.begin(pid: 7, now: 0)
+        _ = q.take("x", pid: 7, now: 1)
+        q.drop()
+        XCTAssertNil(q.pid)
+        XCTAssertTrue(q.held.isEmpty)
+        XCTAssertTrue(q.end().isEmpty)
+    }
 }

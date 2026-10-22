@@ -24,7 +24,8 @@ import { accessibleName, composedParent } from "./names.ts";
 import { flavorOf, shownValue, type Flavor } from "./flavor.ts";
 import { keyEvents, pressEvents, settle, typeInto, until } from "./dom.ts";
 import { deepActiveElement, shadowRootOf, visible } from "./walker.ts";
-import { isInput, readNow, revs } from "./page-state.ts";
+import { beginChoice, choices, isInput, readNow, revs, touchCount } from "./page-state.ts";
+import { choiceCheck } from "./revs.ts";
 
 /** How long the listbox may take to appear, and the options to settle after the filter. From the memo: 1.5 s. */
 const LIST_WAIT_MS = 1500;
@@ -194,8 +195,33 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   if (verb.value === "") {
     if (verb.sameAs === undefined || verb.wrote === undefined) return answer("unsupported", "Caret empties a dropdown only to undo its own pick");
     // The undo names Caret's own pick, never the page's text: the control must still show it.
-    if (normalizeName(before) !== normalizeName(verb.wrote)) return answer("stale", "the control shows another choice than the one Caret picked");
-    return clearChoice(el, f, before, check, alive, trusted0);
+    const wrote = verb.wrote;
+    if (normalizeName(before) !== normalizeName(wrote)) return answer("stale", "the control shows another choice than the one Caret picked");
+    // The pick's page-side record stands between the pick and this undo (issue #54): a person who re-picked Caret's own
+    // option left the text — and so every check above — exactly as the pick left them. The record's anchors say whether
+    // anything trusted has touched the control since the pick; any refusal leaves the choice in place. It is read afresh
+    // each time: clearChoice asks again after every await, since a click-only re-pick (an assistive tool's) sends no
+    // pointerdown or keydown, so it ends no grant and changes nothing the later gates read (review of PR #58, F3).
+    const refused = (): ActAnswer | null => {
+      const now = readNow(el, "combobox", false);
+      const refusal = now.text !== before ? "changed" : choiceCheck(choices.newest(verb.taskId, el), el, { shown: now.text, trusted: revs.trustedCount(el), touches: touchCount(el) }, wrote);
+      if (refusal === null) return null;
+      const why =
+        refusal === "noRecord"
+          ? "Caret holds no record of picking this option on this page"
+          : refusal === "gone"
+            ? "the control Caret picked is gone"
+            : refusal === "changed"
+              ? "the control shows another choice than the one Caret picked"
+              : "something of the person's has touched the control since Caret picked it";
+      return answer("stale", `the undo is refused: ${why}`);
+    };
+    const first = refused();
+    if (first !== null) return first;
+    const undone = await clearChoice(el, f, before, check, alive, trusted0, refused);
+    // The record is spent: a second undo has nothing to stand on (revs.ts ChoiceRecords.pop).
+    if (undone.outcome === "ok") choices.pop(verb.taskId, el);
+    return undone;
   }
   const hiddenBefore = hiddenValue(f);
   const textField = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
@@ -323,6 +349,10 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const again = lbNow === null ? { exact: [], partial: [] } : matchOptions(optionsOf(lbNow), verb.value);
   if (again.exact.length !== 1 || again.exact[0]?.el !== pick.el) return stopped(answer("failed", "the list changed before the pick"), "picking", again.exact.map((o) => o.name));
   if (lbNow !== null && loading(el, f, lbNow)) return stopped(answer("failed", "the list was loading again right before the pick"), "picking", [pick.name]);
+  // The pick is recorded before it goes in, with the control's trusted-event counts as they stand now: its undo runs
+  // only while nothing trusted has touched the control since (page-state.ts beginChoice, revs.ts choiceCheck).
+  // React-select's container is the widget's own even when its list is portaled away from it (page-state.ts affiliated).
+  beginChoice(verb.taskId, el, pick.name, f.kind === "reactSelect" ? f.container : null);
   press(pick.el);
   const want = normalizeName(pick.name);
   // The list closing on the press, before any Escape of Caret's, is what shows an ARIA text field took the pick and
@@ -364,9 +394,10 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
  * in a generic combobox that is a text input, its text emptied. Nothing else is tried: no press on an option can put
  * "nothing chosen" back, so any other control is unsupported and its undo is reported as not restored. The key goes
  * only to the control itself (W2's owned-element rule). Verified as a pick is: the control shows nothing, react-select's
- * hidden input holds nothing, and the list is closed.
+ * hidden input holds nothing, and the list is closed. `refused` reads the pick's record again; it runs after every await
+ * before the key or the text goes in, so nothing the person did during a grant check is erased.
  */
-async function clearChoice(el: Element, f: Flavor, before: string, check: () => ActAnswer | null, alive: () => Promise<boolean>, trusted0: number): Promise<ActAnswer> {
+async function clearChoice(el: Element, f: Flavor, before: string, check: () => ActAnswer | null, alive: () => Promise<boolean>, trusted0: number, refused: () => ActAnswer | null): Promise<ActAnswer> {
   const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Partial<ActAnswer> = {}): ActAnswer => ({ outcome, detail, ...extra });
   const textField = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
   if (textField === null) return answer("unsupported", "this dropdown shows no text field to empty, so its choice is yours to change");
@@ -374,10 +405,12 @@ async function clearChoice(el: Element, f: Flavor, before: string, check: () => 
   const hiddenBefore = hiddenValue(f);
   const choice = (extra: Partial<Choice> = {}): Choice => ({ flavor: f.kind, matches: [], expanded: expandedOf(el), hiddenInput: hiddenValue(f) === null ? "none" : "unchanged", ...extra });
   const gate = async (stage: string): Promise<ActAnswer | null> => ((await alive()) ? check() : answer("notAllowed", `the task's grant ended (before ${stage})`));
-  const g1 = await gate("emptying the control");
+  // Before the clear, a gate also reads the pick's record again (F3); after it, the control is meant to have changed.
+  const gateBeforeClear = async (stage: string): Promise<ActAnswer | null> => (await gate(stage)) ?? refused();
+  const g1 = await gateBeforeClear("emptying the control");
   if (g1 !== null) return g1;
   textField.focus();
-  const g2 = await gate("emptying the control, after focus");
+  const g2 = await gateBeforeClear("emptying the control, after focus");
   if (g2 !== null) return g2;
   if (f.kind === "reactSelect") keyEvents(el, "Backspace");
   else typeInto(textField, "");

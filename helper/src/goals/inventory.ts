@@ -226,7 +226,9 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
       const container = containerOf(w, n.key, ROW_CONTAINERS);
       const label = cells.join(" · ");
       const others = (anchorsBy.get(container?.key ?? "") ?? []).filter((x) => x.key !== n.key).slice(0, 50).map((x) => x.anchors);
-      const row = { cells, others, container: container === null ? null : { key: container.key, role: container.role }, selectable: false, inForm: null, href: null, kind };
+      // Slice 2: what the page walk read about the row (page-link.ts), which navVerdict reads to pick the actor; null
+      // when the walk said nothing (an older engine), which reads as the user's.
+      const row = { cells, others, container: container === null ? null : { key: container.key, role: container.role }, selectable: false, inForm: n.inForm ?? null, href: n.href ?? null, kind };
       const nav = allowedNavigateEffects({ kind, page, label, windowKind: w.window.kind, bundleId: w.app.bundleId, selectable: row.selectable, inForm: row.inForm, href: row.href });
       if (nav.length === 0) continue;
       // Each cell minted where it was read, so its charge is that node's text alone.

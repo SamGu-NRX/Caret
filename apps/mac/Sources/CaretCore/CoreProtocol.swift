@@ -372,6 +372,22 @@ public struct ContextFrame: Codable, Equatable, Sendable {
 
 // MARK: - Results
 
+/// Host observations that withdraw ambient context without reading a field.
+public enum ContextPauseReason: String, Codable, CaseIterable, Sendable {
+    case idle, locked, sleeping
+    case generatedInput = "generated-input"
+    case focusUnavailable = "focus-unavailable"
+    case secureField = "secure-field"
+    case imeComposing = "ime-composing"
+    case appExcluded = "app-excluded"
+    case accessibilityRevoked = "accessibility-revoked"
+    case workflowActive = "workflow-active"
+}
+
+public struct ContextPauseResult: Decodable, Equatable, Sendable {
+    public var paused: Bool
+}
+
 public struct HelloResult: Decodable, Equatable, Sendable {
     public var protocolVersion: Int
     public var intervalSeconds: Double

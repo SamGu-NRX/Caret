@@ -84,7 +84,8 @@ public enum WritingPage {
     /// Why Save refuses `text`, or nil: longer than `PersonalInstructions.maxCharacters`. The draft
     /// stays as typed; nothing is cut unseen (PR #16 review).
     public static func saveProblem(_ text: String) -> String? {
-        text.count > PersonalInstructions.maxCharacters ? "Keep it under \(PersonalInstructions.maxCharacters) characters." : nil
+        if let refusal = PersonalInstructions.refusal(for: text) { return refusal.message }
+        return text.count > PersonalInstructions.maxCharacters ? "Keep it under \(PersonalInstructions.maxCharacters) characters." : nil
     }
 
     public static func count(_ text: String) -> String {

@@ -47,7 +47,7 @@ from .context import ContextError, ContextFrame, TargetIdentity
 from .engine import Engine, ProviderFailure
 from .judge import JudgeError
 from .registry import WorkflowError, WorkflowRegistry
-from .router import AcceptanceError, Offer, Publication, RouterConfig
+from .router import PAUSE_REASONS, AcceptanceError, Offer, Publication, RouterConfig
 
 PROTOCOL_VERSION = 1
 POLL_SECONDS = 0.05
@@ -195,6 +195,13 @@ class Bridge:
             elif method == "context.update":
                 self._reply(request_id, self._context_update(params))
                 self._wake.set()
+            elif method == "context.pause":
+                reason = params.get("reason")
+                if not isinstance(reason, str) or reason not in PAUSE_REASONS:
+                    self._fail(request_id, "invalid_request", "context.pause needs a supported 'reason'")
+                else:
+                    self.engine.router.pause(reason)
+                    self._reply(request_id, {"paused": True})
             elif method == "offer.accept":
                 self._reply(request_id, self._accept(params))
             elif method == "offer.dismiss":

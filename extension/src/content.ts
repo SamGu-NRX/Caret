@@ -27,7 +27,7 @@ import { clean, composedParent } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, kindOf, secretOf, shadowRootOf, textOf as controlText, visible, walkControls } from "./content/walker.ts";
 import { watchPasswords } from "./content/password-watch.ts";
-import { revs, trackTrustedEdits, walkReading } from "./content/page-state.ts";
+import { revs, trackTrustedEdits, trackTrustedTouches, walkReading } from "./content/page-state.ts";
 import { controlName } from "./content/question.ts";
 import { notePassword } from "./content/secret.ts";
 import { EntryTracker } from "./content/entry.ts";
@@ -267,6 +267,9 @@ if (globalThis.__caretContent === undefined) {
   trackComposition();
   // The user's own edits bump each text control's rev, so the helper can tell a field changed without its text.
   trackTrustedEdits();
+  // The user's own pointers and keys anchor a combobox pick's undo: a re-pick of Caret's own option leaves no trace
+  // anywhere else (content/page-state.ts trackTrustedTouches).
+  trackTrustedTouches();
   trackEdits();
 
   const focus = new FocusReporter({

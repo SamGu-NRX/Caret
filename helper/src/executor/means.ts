@@ -22,6 +22,11 @@ export interface ReaderLink {
    * Only a page engine's link has it (engines/page-link.ts insertText); the reader inserts nothing this way.
    */
   insertText?(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string, replace?: number): Promise<VerbResult>;
+  /**
+   * Slice 2: opens the list row `key` names on a page, through the page's own click handler, under the task's grant.
+   * Only a page engine's link has it (engines/page-link.ts activateItem); the reader opens nothing this way.
+   */
+  activateItem?(windowId: string, key: string, taskId: string): Promise<VerbResult>;
 }
 
 /** Finds the page engine that owns a window (helper/src/engines/registry.ts EngineRegistry). */
@@ -64,6 +69,12 @@ export class RoutedReaderLink implements ReaderLink {
     const engine = windowId.startsWith("page:") ? this.directory.engineFor(windowId) : null;
     if (engine?.insertText === undefined) return Promise.resolve({ type: "verbResult", v: PROTOCOL_VERSION, id: randomUUID(), at: Date.now(), outcome: "noWindow", detail: `no page engine for ${windowId}` });
     return engine.insertText(windowId, key, expect, text, taskId, token, replace);
+  }
+
+  activateItem(windowId: string, key: string, taskId: string): Promise<VerbResult> {
+    const engine = windowId.startsWith("page:") ? this.directory.engineFor(windowId) : null;
+    if (engine?.activateItem === undefined) return Promise.resolve({ type: "verbResult", v: PROTOCOL_VERSION, id: randomUUID(), at: Date.now(), outcome: "noWindow", detail: `no page engine for ${windowId}` });
+    return engine.activateItem(windowId, key, taskId);
   }
 
   grant(m: ActGrant | ActRevoke | CalendarGrant): void {

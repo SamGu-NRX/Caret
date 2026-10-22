@@ -67,9 +67,21 @@ final class WritingCheckTests: XCTestCase {
 
     // MARK: Spaces
 
+    func testMissingLanguageUsesNonEnglishStaticRules() {
+        XCTAssertEqual(WritingCheck.effectiveLanguage(nil), "und")
+        XCTAssertTrue(fixes("the the", language: WritingCheck.effectiveLanguage(nil), whole: true).isEmpty)
+        XCTAssertEqual(fixes("I went  home.", language: WritingCheck.effectiveLanguage(nil), whole: true).map(\.2), [.doubledSpace])
+    }
+
     func testTwoSpacesBetweenWords() {
         assertFix("I went  to the store.", "  ", " ", .doubledSpace)
         assertFix("Je suis  là.", "  ", " ", .doubledSpace, language: "fr")
+    }
+
+    func testUnknownLanguageUsesOnlyLanguageNeutralRules() {
+        assertFix("日本語  テスト。", "  ", " ", .doubledSpace, language: "ja")
+        assertClean("the the", language: "ja", whole: true)
+        assertClean("the the", language: "zh-Hans", whole: true)
     }
 
     func testSpacingThatIsMeant() {

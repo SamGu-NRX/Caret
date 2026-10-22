@@ -5,7 +5,7 @@
 // as last walked, each pinned to that frame's origin and navigation generation.
 import { canonicalOrigin } from "../privacy/denied-origins.ts";
 import { excludedSection } from "./page-exclusions.ts";
-import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, isTextKind, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageFrame, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type TextPageControl, type VerbOutcome, type VerbResult } from "../protocol.ts";
+import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, NAV_CONTROL_KINDS, isTextKind, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageFrame, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type TextPageControl, type VerbOutcome, type VerbResult } from "../protocol.ts";
 import type { ReaderLink } from "../executor/means.ts";
 import type { EngineSession } from "./session.ts";
 import { ConfirmedFiles } from "./attach.ts";
@@ -21,6 +21,7 @@ const ROLE: Record<PageControlKind, string> = {
   date: "AXDateField", time: "AXTimeField", datetime: "AXDateField", month: "AXDateField", week: "AXDateField",
   textarea: "AXTextArea", select: "AXPopUpButton", checkbox: "AXCheckBox", radio: "AXRadioButton", combobox: "AXComboBox",
   button: "AXButton", link: "AXLink", file: "AXButton", contenteditable: "AXTextArea", range: "AXSlider", color: "AXColorWell",
+  row: "AXRow", option: "AXOption", listitem: "AXListItem",
 };
 
 /**
@@ -47,6 +48,9 @@ export const VALUE_KINDS: ReadonlySet<PageControlKind> = new Set([...TEXT_KINDS,
  * the file name to show: up to about 4 s in content/combobox.ts), so they get longer than COMMAND_TIMEOUT_MS. Assumed.
  */
 export const SLOW_VERB_TIMEOUT_MS = 10_000;
+
+/** The page-control kinds a pageActivateItem may name: the list rows the walk carries (walker.ts NAV_TARGET). */
+const NAV_KINDS = new Set<string>(NAV_CONTROL_KINDS);
 
 /**
  * Marks one link remembers; past this the oldest is forgotten, and an undo under it is refused rather than guessed.
@@ -307,6 +311,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
       const text = isTextKind(c.kind) ? ("hasValue" in c ? textValueOf(c, known(f.frameId, f.documentId, c.id)) : { unread: true as const }) : null;
       const value = text !== null ? ("value" in text ? text.value : undefined) : c.kind === "select" ? (selected === undefined ? undefined : selected.value === "" ? "" : selected.label) : box ? (c.checked === true ? PAGE_CHECKED : "") : c.value;
       const subrole = subroleOf(c);
+      const nav = (NAV_CONTROL_KINDS as readonly string[]).includes(c.kind);
       nodes.push({
         key: nodeKey(f.frameId, c),
         parent,
@@ -332,8 +337,16 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         // W2: a text input's own kind, which the write contract checks a value's shape against (fill/contract.ts).
         ...(TEXT_KINDS.has(c.kind) ? { inputKind: c.kind as NonNullable<Node["inputKind"]> } : {}),
         ...(c.autocomplete === undefined ? {} : { autocomplete: c.autocomplete }),
+        // Slice 2: what the walk read about the row, which goals/capabilities.ts navVerdict reads to pick the actor.
+        // Absent on an older engine's walk (optional fields), which reads as unqualified: the row stays the user's.
+        ...(nav && c.inForm !== undefined ? { inForm: c.inForm } : {}),
+        ...(nav && c.href !== undefined ? { href: c.href } : {}),
         ...sectionsOf(f.frameId, c),
       });
+      // Slice 2: a row's cells, as the row's children, so goals/identity.ts rowCellParts reads what the walk read and
+      // the inventory binds the row by them. The row's own label is the cells joined, which no single cell repeats
+      // whole, so rowCellParts counts each cell once, at the node it was read at (the inventory mints it there).
+      if (nav) for (const [i, cell] of (c.cells ?? []).entries()) nodes.push({ key: `${nodeKey(f.frameId, c)}/cell~${i}`, parent: nodeKey(f.frameId, c), role: "AXStaticText", label: cell });
       // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
       // hand-off for it can name one. Chrome's Accessibility shows only the selected one. An option whose value is
       // empty is the HTML placeholder ("Select..."), not a choice.
@@ -752,6 +765,20 @@ export class PageEngineLink implements ReaderLink {
     const rewalk = a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff" ? await this.walkCommand(w.tabId) : null;
     this.report(verb, a.result.outcome, commandMs, null, rewalk === null ? null : { commandMs: rewalk.commandMs, extensionMs: rewalk.extensionMs });
     return { verb: toVerbOutcome(a.result), page: a.result };
+  }
+
+  /**
+   * Slice 2: opens the list row `key` names in the tab's last walk, through the page's own click handler, under the
+   * task's grant like every act. Only a row, option or listitem the walk carried (walker.ts navTargets) is opened;
+   * nothing else of the page is. The one way the helper builds a pageActivateItem.
+   */
+  async activateItem(windowId: string, key: string, taskId: string): Promise<VerbResult> {
+    const w = parsePageWindow(windowId);
+    if (w === null || w.engine !== this.session.info.engine) return verbResult("noWindow", `${windowId} is not a window of engine ${this.session.info.engine}`);
+    const t = targetFor(this.session.tabs.get(w.tabId), key);
+    if (t === null) return verbResult("noElement", `no element ${key} in the tab's last walk`);
+    if (!NAV_KINDS.has(t.control.kind)) return verbResult("axError", `'${t.control.name}' is a ${t.control.kind}, which is not a list row Caret opens`);
+    return this.act({ kind: "pageActivateItem", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, rebind: false }, w.tabId);
   }
 
   /**
