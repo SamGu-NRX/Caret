@@ -9,6 +9,7 @@ import { redactWindow } from "./fill/redact.ts";
 import { askScope, fieldFingerprint, scopeKey, scopeSet, withRevealed, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel, holdsText } from "./model.ts";
+import { clearFocusedText } from "./privacy/focus-tripwire.ts";
 import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
 import { askWindows, notifyExpiry, planWindows, popupWindows, type ExpiryList } from "./expiry.ts";
 import { RollingText } from "./rolling-text.ts";
@@ -1854,7 +1855,7 @@ export class Helper {
     } else if (askConfig !== null) {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
-        const maker = askConfig.maker === "scripted" ? askConfig.make : headsIntentMaker(ask);
+        const maker = askConfig.maker === "scripted" ? askConfig.make : askConfig.maker === "heads" ? headsIntentMaker(ask) : (() => { throw new Error(`unsupported Ask maker: ${String((askConfig as { maker: unknown }).maker)}`); })();
         const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, values: canAskValues, tasks: canAskTask, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...(requestSettled === undefined ? {} : { settled: requestSettled }), ...(this.opts.pageDocument === undefined ? {} : { documentOf: this.opts.pageDocument }), ...this.opts.plannerHooks });
         // Rule 6: text that was dropped while Jev answered offers nothing made from it.
         if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired, SAYS.tabExpired);
@@ -3515,6 +3516,7 @@ export class Helper {
       this.routing?.candidatesChanged();
       this.routing?.observe();
     },
+    focusTripwire: clearFocusedText,
   };
 
   private checkFills(windowId: string): void {
