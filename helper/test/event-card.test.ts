@@ -835,9 +835,9 @@ describe("the reply order, routed", () => {
       }),
     );
     await cards.onChanges(entering);
-    // heardLines runs newest last and is trimmed from the front, so the first line's three sentences go
-    // and the event sentence, newest of all, is kept: the offer is about the latest message, not the oldest.
-    expect(cards.heard().map((l) => l.sentence)).toEqual(["Sure, this week works.", "I am around Thursday afternoon.", EVENT]);
+    // An undated Mail thread's order is unknown, so both ends are read: the bottom (the event) first, then the top
+    // message from its last sentence back, until the cap of three sentences. The event is kept either way.
+    expect(cards.heard().map((l) => l.sentence)).toEqual(["Can we talk today?", "Let me know.", EVENT]);
     const kept = cards.heard().at(-1);
     expect(kept?.key).toBe(EVENT_KEY);
     expect(kept?.field).toMatchObject({ windowId: WINDOW, key: REPLY });
@@ -909,5 +909,26 @@ describe("the reply order, routed", () => {
     // Six sentences, oldest message first: the trim keeps the top message's date line and its event, newest last.
     expect(cards.heard().map((l) => l.sentence)).toEqual(["Sure, which day works for you?", "Date: Mon, 19 Oct 2026 09:30:00 -0700", EVENT]);
     expect(cards.heard().at(-1)?.key).toBe(EVENT_KEY);
+  });
+
+  it("keeps the top message's event when an unknown-order thread is routed and its messages hold several lines (Codex on #83)", async () => {
+    const model = new ScreenModel();
+    model.frontmostPid = APP.pid;
+    // No dates: messageOrder is "unknown", so both ends are read. Each message is a From: line and a body line.
+    const thread = [
+      text(EVENT_KEY, `From: Dana Whitfield\n${EVENT}`),
+      text("com.apple.mail/standard/statictext:m3~0", "From: Sam Gu\nSure, which day works for you?"),
+      text("com.apple.mail/standard/statictext:m4~0", "From: Dana Whitfield\nAre you free this week?"),
+      text("com.apple.mail/standard/statictext:m5~0", "From: Dana Whitfield\nHope the move went well."),
+    ];
+    model.apply(snap(thread, { at: 1000, windowId: WINDOW, app: APP, title: "Coffee this week?", values: VALUES }));
+    const { cards } = routedCards(model);
+    const entering = model.apply(
+      snap([...thread, replyNode()], { at: 2000, windowId: WINDOW, app: APP, title: "Coffee this week?", focused: true, focusedKey: REPLY, values: VALUES }),
+    );
+    await cards.onChanges(entering);
+    // Bottom first (its two lines), then the top message's last line: the event is heard; the cap is three sentences.
+    expect(cards.heard().map((l) => l.sentence)).toContain(EVENT);
+    expect(cards.heard()).toHaveLength(3);
   });
 });

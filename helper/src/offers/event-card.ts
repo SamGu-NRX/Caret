@@ -476,9 +476,19 @@ export class EventCards {
     const routed = this.deps.routed;
     if (routed !== undefined) {
       const before = this.heardLines.length;
+      // The cap counts sentences, filled in the order the messages were picked (newestFirst), each message from its
+      // last sentence back, since an event line follows a message's header lines. Capping after a document-order sort
+      // instead dropped the top message of an unknown-order thread, the one newestFirst picked to read (Codex on #83).
+      const chosen: { at: number; index: number; key: string; sentence: string }[] = [];
+      for (const f of fresh) {
+        for (let index = f.fresh.length - 1; index >= 0 && chosen.length < MAX_NEW_LINES; index--) {
+          chosen.push({ at: f.at, index, key: f.key, sentence: f.fresh[index] as string });
+        }
+      }
       // heardLines runs newest last and the trim below drops from the front, keeping the newest.
-      const newestLast = [...fresh].sort((a, b) => (order === "newestFirst" ? b.at - a.at : a.at - b.at));
-      for (const f of newestLast) for (const s of f.fresh) this.heardLines.push({ w, key: f.key, sentence: s, field });
+      const byMessage = (a: { at: number }, b: { at: number }): number => (order === "newestFirst" ? b.at - a.at : a.at - b.at);
+      const newestLast = chosen.sort((a, b) => byMessage(a, b) || a.index - b.index);
+      for (const c of newestLast) this.heardLines.push({ w, key: c.key, sentence: c.sentence, field });
       this.heardLines.splice(0, Math.max(0, this.heardLines.length - MAX_NEW_LINES));
       if (this.heardLines.length !== before) routed.heard();
       return [];
