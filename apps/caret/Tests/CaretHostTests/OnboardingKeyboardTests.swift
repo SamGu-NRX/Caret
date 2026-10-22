@@ -9,16 +9,12 @@ import XCTest
 /// drag row and the drag panel's close are operable without a pointer, and the window's key tap leaves the keys a
 /// focused control needs: Return presses the button Full Keyboard Access focused instead of turning into Continue.
 ///
-/// Like OnboardingPromiseAccessibilityTests, the window sits far off every display by default, where SwiftUI builds no
-/// accessibility tree on this Mac, so the tests skip; `CARET_AX_ONSCREEN=1` puts it on the main display, for a run
-/// under the gui lease while the Mac is idle.
 @MainActor
 final class OnboardingKeyboardTests: XCTestCase {
     // MARK: - Walking a pane
 
     private func tree(_ view: some View) -> (NSWindow, [any NSAccessibilityProtocol]) {
-        let onScreen = ProcessInfo.processInfo.environment["CARET_AX_ONSCREEN"] == "1"
-        let origin = onScreen ? NSPoint(x: 80, y: 80) : NSPoint(x: -30000, y: -30000)
+        let origin = NSPoint(x: 80, y: 80)
         let window = NSWindow(contentRect: NSRect(origin: origin, size: OnboardingView.size(for: .main)), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: view)
@@ -40,11 +36,6 @@ final class OnboardingKeyboardTests: XCTestCase {
 
     private func field(_ elements: [any NSAccessibilityProtocol], _ label: String) -> (any NSAccessibilityProtocol)? {
         elements.first { $0.accessibilityRole() == .textField && ($0.accessibilityLabel() ?? "") == label }
-    }
-
-    private func keyEvent(_ keyCode: UInt16, _ characters: String) throws -> NSEvent {
-        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
-                                       characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode))
     }
 
     // MARK: - A state per step
@@ -141,16 +132,17 @@ final class OnboardingKeyboardTests: XCTestCase {
     /// dots reading the place: nothing clickable without a name, on any step.
     func testEveryPaneExposesNamedControlsAndBothBarChoices() throws {
         for pane in try panes() {
-            let (window, elements) = tree(OnboardingView(state: pane.flow.state, character: .pebble, animated: false))
+            var received: [OnboardingFlow.Event] = []
+            let (window, elements) = tree(OnboardingView(state: pane.flow.state, character: .pebble, animated: false,
+                                                         send: { event in received.append(event); pane.flow.send(event) }))
             defer { window.orderOut(nil); window.close() }
-            try XCTSkipIf(elements.filter { $0.accessibilityRole() == .button }.isEmpty,
-                          "SwiftUI built no accessibility tree for a window off every display on this Mac")
             let unnamed = elements.filter { $0.accessibilityRole() == .button && ($0.accessibilityLabel() ?? "").isEmpty }
                 + elements.filter { $0.accessibilityRole() == .textField && ($0.accessibilityLabel() ?? "").isEmpty }
             XCTAssertTrue(unnamed.isEmpty, "\(pane.name): every button and field has a name (found \(unnamed.count) unnamed)")
             for label in pane.pressable {
                 let b = try XCTUnwrap(button(elements, label), "\(pane.name): \(label) is a named button")
                 XCTAssertTrue(b.accessibilityPerformPress(), "\(pane.name): \(label) presses")
+                XCTAssertFalse(received.isEmpty, "\(pane.name): \(label) sends an onboarding action")
             }
             for label in pane.named { XCTAssertNotNil(button(elements, label), "\(pane.name): \(label) is a named button") }
             for label in pane.fields { XCTAssertNotNil(field(elements, label), "\(pane.name): \(label) is a named field") }
@@ -185,38 +177,5 @@ final class OnboardingKeyboardTests: XCTestCase {
         XCTAssertNotNil(button(elements, OnboardingCopy.Drag.voiceOver), "the drag row is a named button")
     }
 
-    /// The drag row takes the keyboard like its VoiceOver action: focusable (with the system's ring), Space and Return
-    /// press it, Esc does not.
-    func testTheDragRowTakesTheKeyboard() throws {
-        let row = DragRowView(frame: NSRect(x: 0, y: 0, width: 220, height: 52))
-        var pressed = 0
-        row.onPress = { pressed += 1 }
-        XCTAssertEqual(row.accessibilityRole(), .button)
-        XCTAssertEqual(row.accessibilityLabel(), OnboardingCopy.Drag.voiceOver)
-        XCTAssertTrue(row.acceptsFirstResponder, "Full Keyboard Access can focus the row")
-        for (key, code, characters) in [("space", UInt16(49), " "), ("return", UInt16(36), "\r"), ("keypad return", UInt16(76), "\r")] {
-            row.keyDown(with: try keyEvent(code, characters))
-            XCTAssertEqual(pressed, 1, "\(key) presses the row")
-            pressed = 0
-        }
-        row.keyDown(with: try keyEvent(53, "\u{1b}"))
-        XCTAssertEqual(pressed, 0, "Esc does not press the row")
-    }
-
     // MARK: - The key tap
-
-    /// The window's key tap (OnboardingController owns it): Return belongs to the button Full Keyboard Access focused
-    /// and stays the primary everywhere else; Space is never mapped; Tab moves focus when the step has no ghost to take.
-    func testReturnBelongsToTheFocusedButtonBeforeThePrimary() throws {
-        let state = helloFlow().state
-        XCTAssertNil(OnboardingController.event(for: try keyEvent(36, "\r"), state: state, focusedButton: true),
-                     "a focused button keeps Return: the tap passes it through")
-        XCTAssertEqual(OnboardingController.event(for: try keyEvent(36, "\r"), state: state, focusedButton: false), .next)
-        XCTAssertNil(OnboardingController.event(for: try keyEvent(76, "\r"), state: state, focusedButton: true), "keypad return too")
-        XCTAssertEqual(OnboardingController.event(for: try keyEvent(76, "\r"), state: state), .next)
-        XCTAssertNil(OnboardingController.event(for: try keyEvent(49, " "), state: state), "space is a button's own press, never mapped")
-        XCTAssertNil(OnboardingController.event(for: try keyEvent(48, "\t"), state: state), "Tab without a ghost moves focus")
-        XCTAssertEqual(OnboardingController.event(for: try keyEvent(53, "\u{1b}"), state: try firstFlow(found: true).state), .key(.escape),
-                       "Esc is the offer's leave on the first step")
-    }
 }

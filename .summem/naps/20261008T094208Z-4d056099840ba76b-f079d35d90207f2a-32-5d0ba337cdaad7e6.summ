@@ -1,0 +1,1 @@
+Helper env names in privacy-gate.ts HELPER_ONLY_ENV; await PageFocus.moved; diff guard-adversary before loosening; close page sessions before shutdown. Debug socket needs --test-hooks. Copy evidence before caret-heavy prune. Stop #21/#33: post-interrupt prefix never Caret's.

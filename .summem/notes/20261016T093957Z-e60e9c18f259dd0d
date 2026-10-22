@@ -1,0 +1,1 @@
+Heads-maker whole-form Asks reach the page planner as kind 'list' with page.scope.wholeForm true (intent-heads.ts), not kind 'all'; any page-goal rule gated on kind === 'list' (reveal follow-up, carry) must check wholeForm or it skips the journey's Ask.

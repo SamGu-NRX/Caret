@@ -247,6 +247,7 @@ struct SettingsDragPanelView: View {
 }
 
 /// The row: Caret's icon (Pebble) and name. Dragging it drags Caret.app; a click shows Caret.app in Finder.
+/// Keyboard users add Caret with System Settings' own "+" button; this panel deliberately never becomes key.
 ///
 /// SwiftUI draws the row; the drag source is a transparent AppKit view laid over it. An off-screen render (snapshots)
 /// leaves the overlay out, because ImageRenderer draws any NSView as a placeholder box, and that box replaced the
@@ -281,24 +282,6 @@ final class DragRowView: NSView, NSDraggingSource {
     }
 
     required init?(coder: NSCoder) { nil }
-
-    /// Keyboard focusable, so Full Keyboard Access reaches the row, with the system's own ring around it (the row draws
-    /// nothing itself, so the mask is its bounds).
-    override var acceptsFirstResponder: Bool { true }
-
-    override func drawFocusRingMask() {
-        NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10).fill()
-    }
-
-    override var focusRingMaskBounds: NSRect { bounds }
-
-    override func keyDown(with event: NSEvent) {
-        // Space or Return press the row, as its VoiceOver action does; other keys stay the window's.
-        switch event.keyCode {
-        case 49, 36, 76: press()
-        default: super.keyDown(with: event)
-        }
-    }
 
     private func press() {
         if let onPress { onPress() } else { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
