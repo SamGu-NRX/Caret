@@ -132,8 +132,26 @@ final class ReduceMotionTests: XCTestCase {
 /// are that token's glyphs and marks, and the second render is what is behind them. Per connected
 /// shape (a glyph, a dot, the bar) the strongest pixel is its color over its ground; the token's
 /// ratio is the weakest shape's. Text needs 4.5:1, marks 3:1 (WCAG 1.4.3, 1.4.11).
+/// These measure normal contrast; `ContrastIncreaseTests` covers Increase Contrast.
 @MainActor
 final class ContrastRenderTests: XCTestCase {
+    /// Tokens take Increase Contrast from the appearance they resolve in, so this checks the
+    /// renders' appearance resolves normal contrast in both themes before measuring anything.
+    override func setUp() async throws {
+        try await super.setUp()
+        nonisolated(unsafe) var seen: [Tokens.Variant] = []
+        let probe = NSColor(name: nil) { appearance in
+            seen.append(Tokens.Variant(appearance))
+            return .black
+        }
+        for dark in [false, true] {
+            _ = try XCTUnwrap(Gallery.png(Rectangle().fill(Color(nsColor: probe)).frame(width: 4, height: 4), dark: dark))
+        }
+        XCTAssertFalse(seen.isEmpty, "the probe color was never resolved")
+        XCTAssertFalse(seen.contains { $0.highContrast },
+                       "the renders resolved Increase Contrast; these measurements and references are at normal contrast")
+    }
+
     struct Probe {
         let name: String
         let token: NSColor
