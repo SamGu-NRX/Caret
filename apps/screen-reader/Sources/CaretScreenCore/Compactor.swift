@@ -13,6 +13,8 @@ public struct RawNode: Sendable {
     public var description: String?
     /// The string value. Nil when absent, not a string, or deliberately unread (secure fields).
     public var value: String?
+    /// True when a web text control holds text that stays page-local.
+    public var unread: Bool
     public var placeholder: String?
     /// Text of the element named by AXTitleUIElement, read only for editable fields.
     public var titleElementText: String?
@@ -29,8 +31,9 @@ public struct RawNode: Sendable {
     public init(role: String, subrole: String? = nil, title: String? = nil, description: String? = nil, value: String? = nil,
                 placeholder: String? = nil, titleElementText: String? = nil, frame: Frame? = nil, enabled: Bool = true,
                 focused: Bool = false, selected: Bool = false, checked: Bool = false, secure: Bool = false,
-                children: [RawNode] = [], handle: Int? = nil) {
+                children: [RawNode] = [], handle: Int? = nil, unread: Bool = false) {
         self.role = role; self.subrole = subrole; self.title = title; self.description = description; self.value = value
+        self.unread = unread
         self.placeholder = placeholder; self.titleElementText = titleElementText; self.frame = frame; self.enabled = enabled
         self.focused = focused; self.selected = selected; self.checked = checked; self.secure = secure
         self.children = children; self.handle = handle
@@ -137,6 +140,7 @@ public struct Compactor {
         var label: String?
         var normalizedLabel: String
         var value: String?
+        var unread: Bool
         var editable: Bool
         var states: [NodeState]
     }
@@ -173,7 +177,7 @@ public struct Compactor {
         if n.checked { states.append(.checked) }
         if n.secure { states.append(.secure) }
         return Info(label: label, normalizedLabel: keyLabel(role: n.role, normalized: ElementKey.normalizeLabel(label ?? "")),
-                    value: value, editable: editable, states: states)
+                    value: value, unread: n.unread, editable: editable, states: states)
     }
 
     private func visit(_ n: RawNode, chain: [String], parent: String?, parentRole: String?, state: inout State) {
@@ -210,7 +214,7 @@ public struct Compactor {
         // groups with the same name give their children distinct, self-contained scopes.
         let ord = ordinal ?? Int(key.split(separator: "~").last ?? "0") ?? 0
         let childChain = named ? chain + [ord == 0 ? seg : "\(seg)~\(ord)"] : chain
-        state.nodes.append(Node(key: key, parent: parent, role: n.role, subrole: n.subrole, label: info.label, value: info.value,
+        state.nodes.append(Node(key: key, parent: parent, role: n.role, subrole: n.subrole, label: info.label, value: info.value, unread: info.unread,
                                 placeholder: nonEmpty(n.placeholder), frame: n.frame, editable: info.editable, states: info.states))
         if n.focused { state.focusedKey = key }
         let before = state.nodes.count

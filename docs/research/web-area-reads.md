@@ -96,9 +96,9 @@ them.
 ## Where it lands in the helper
 
 The reader sends `Snapshot`s over its socket; `helper/src/protocol.ts` parses a `Node` with
-`label`, `value`, `placeholder` fields. **Nothing in the schema or in the reader's walk marks
-a node as coming from a web area** — the reader does not send ancestry, and the helper
-cannot tell `AXWebArea` descent from a native app's own fields. Then:
+`label`, `value`, `placeholder` fields. **The reader marks a native text control under
+`AXWebArea` with `unread: true` while omitting its value.** The helper also follows each
+`Node.parent` chain to an `AXWebArea` as a backstop. Then:
 
 1. **The model keeps it.** `ScreenModel.apply` stores each node's `value`. The pin's first
    test holds: a revealed password's value sits in `win.nodes.get(key).value`.
@@ -147,11 +147,10 @@ extension cannot), was not.
 
 **Rule.** Text-control values under an `AXWebArea` never reach the helper; the focused
 field's caret text is for inline writing only. The reader enforces it where it can see
-ancestry — the walk skips `kAXValueAttribute` below a web area for non-focused text fields,
-the focus read keeps emptiness only, and verb re-checks answer `.changed` without quoting
-values. The helper backstops by admitting no values for nodes whose ancestry says web area —
-which requires the reader to start sending the ancestry, or a web-area mark, so the helper
-can see it.
+ancestry — the walk skips `kAXValueAttribute` below a web area for text controls while
+marking non-empty controls `unread`, and focused inline reads stay local. The helper
+backstops by following `Node.parent` ancestry and admitting no values for editable
+ descendants of an `AXWebArea`.
 
 What depends on helper-visible web-field values today, and therefore breaks:
 

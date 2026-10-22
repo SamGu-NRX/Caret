@@ -272,6 +272,10 @@ export function admitNode(n: Node, from: Inherited = {}, typed = false): Node {
     if (bare && n.excluded === from.excluded) return n;
     return { ...rest, ...(outline === undefined ? {} : { outline }), excluded: from.excluded };
   }
+  if (from.webArea === true && n.editable === true && ((n.value ?? "") !== "" || n.unread === true)) {
+    const { value: _value, ...rest } = n;
+    return { ...rest, unread: true };
+  }
   const sections = admitSections(n);
   if (why !== null) {
     const { value: _value, ...rest } = n;
@@ -292,7 +296,7 @@ export function admitValues(values: readonly TypedValue[], nodes: ReadonlyMap<st
   return values.filter((v) => {
     const n = nodes.get(v.nodeKey);
     if (n === undefined) return true;
-    if (n.excluded !== undefined || excludedValue(v.text) !== null) return false;
+    if (n.excluded !== undefined || n.unread === true || excludedValue(v.text) !== null) return false;
     if (n.editable === true && webAreaAncestor(nodes, n)) return false;
     // A value beside a withheld one stays only where it still stands whole; otherwise the node is as the reader sent it.
     const texts = [n.value, n.label, n.placeholder];

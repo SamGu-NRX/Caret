@@ -47,35 +47,32 @@ function browserWindow(): { model: ScreenModel; win: WindowState } {
   return { model, win };
 }
 
-describe("native reads under an AXWebArea, as they reach the helper today", () => {
+describe("native reads under an AXWebArea", () => {
   const { win } = browserWindow();
 
-  it("the model keeps a revealed-password field's value under an AXWebArea", () => {
-    expect(win.nodes.get("w1/pw")?.excluded).toBeUndefined();
-    expect(win.nodes.get("w1/pw")?.value).toBe(PASSWORD);
+  it("the model marks filled page text controls as held without keeping their values", () => {
+    for (const key of ["w1/name", "w1/pw", "w1/email"]) {
+      expect(win.nodes.get(key)?.value).toBeUndefined();
+      expect(win.nodes.get(key)?.unread).toBe(true);
+    }
   });
 
-  it("the model keeps every other page field's value too", () => {
-    expect(win.nodes.get("w1/name")?.value).toBe(NAME);
-    expect(win.nodes.get("w1/email")?.value).toBe(EMAIL);
-  });
-
-  it("the admission rules withhold nothing from the revealed password's plain text", () => {
-    // Not secure, no page-walker mark, no label naming a secret kind, no secret-shaped value:
-    // nothing the SC1 rules can catch, which is why the value rides through.
+  it("the admission rules do not retain a revealed password's plain text", () => {
+    // The value is neither secret-shaped nor labelled sensitive; the explicit unread marker is the backstop.
     expect(excludedValue(PASSWORD)).toBeNull();
+    expect(win.nodes.get("w1/pw")?.unread).toBe(true);
   });
 
-  it("the reader-sent typed values are admitted for web-area nodes", () => {
-    expect(admitValues(win.values as never, win.nodes)).toEqual(win.values);
+  it("the reader-sent typed values are withheld for web-area text controls", () => {
+    expect(admitValues(win.values as never, win.nodes)).toEqual([]);
     expect(win.values).toEqual([typed("email", EMAIL, "w1/email")]);
   });
 
-  it("the ledger's inventory holds the page field's value as request-quotable text", () => {
+  it("the ledger inventory has no page-field value to quote", () => {
     // partsOf is what the privacy ledger counts and what request builders quote spans of.
     const parts = partsOf(win);
-    expect(parts).toContainEqual({ id: nodePart("w1/pw", "value"), raw: PASSWORD });
-    expect(parts).toContainEqual({ id: nodePart("w1/email", "value"), raw: EMAIL });
+    expect(parts).not.toContainEqual({ id: nodePart("w1/pw", "value"), raw: PASSWORD });
+    expect(parts).not.toContainEqual({ id: nodePart("w1/email", "value"), raw: EMAIL });
   });
 });
 
@@ -88,6 +85,7 @@ describe("the rule: text-control values under an AXWebArea never reach the helpe
 
   it("the focused field's caret text reaches the model only for inline writing, never as a node value", () => {
     expect(win.nodes.get("w1/email")?.value).toBeUndefined();
+    expect(win.nodes.get("w1/email")?.unread).toBe(true);
   });
 
   it("no typed value is admitted from a web-area text field", () => {
