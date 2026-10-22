@@ -10,7 +10,9 @@ import { proposeFill } from "../src/fill/fill.ts";
 import { provenanceStale, setTestVerifier } from "../src/fill/contract.ts";
 import { candidateProvenance } from "../src/fill/fill.ts";
 import type { AskJev } from "../src/fill/jev.ts";
+import { PAGE_WINDOW_KIND } from "../src/engines/windows.ts";
 import { field, snap, text } from "./builders.ts";
+import { chrome } from "./fake-page.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 
 const NOTES = { pid: 4242, bundleId: "com.apple.Notes", name: "Notes" };
@@ -133,5 +135,40 @@ describe("the recheck before a write", () => {
     const pr = candidateProvenance(m, c);
     m.apply(snap(["Booking ref: QX7-4410", ...SEATS, WARNING].map((l, i) => text(`n${i}`, l)), { at: 4000, windowId: "src-1", title: "Trip", app: NOTES }));
     expect(provenanceStale(m, pr)).not.toBeNull();
+  });
+});
+
+describe("a web page text field is no other line of a value (#52)", () => {
+  // A page text field never sends its text; its node holds at most what Caret wrote there (engines/page-link.ts
+  // KnownText). That text is no copy source (candidates.ts sourceField), so it must not reach Jev or the verifier as one
+  // of a value's other lines either, nor count in the recheck.
+  const PAGE = "page:eng1:7";
+  /** A source window holding "Booking ref: QX7-4410" and a Notes field holding `note`: a web page's, or a native app's. */
+  const source = (web: boolean, note: string, at: number) => {
+    const nodes = [text("n0", "Booking ref: QX7-4410"), ...SEATS.map((l, i) => text(`s${i}`, l)), field("note", note, { label: "Notes", ...(web ? { rev: at } : {}) })];
+    return web
+      ? snap([{ key: "web", parent: null, role: "AXWebArea", label: "Trip" }, ...nodes.map((n) => ({ ...n, parent: "web" }))], { at, windowId: PAGE, kind: PAGE_WINDOW_KIND, title: "Trip", app: chrome })
+      : snap(nodes, { at, windowId: "src-1", title: "Trip", app: NOTES });
+  };
+  const deskWith = (web: boolean, note: string): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(source(web, note, 1000));
+    m.apply(snap([field(key("Booking ref"), "", { label: "Booking ref", frame: [100, 40, 300, 24] })], { at: 2000, windowId: FORM, title: "Form", app: FORM_APP, focused: true }));
+    return m;
+  };
+  const bookingRef = (m: ScreenModel) => collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [fieldTerms(["Booking ref"])] }).candidates.find((x) => x.text === "QX7-4410");
+
+  it("carries a native field's line that holds the value, never a page field's Caret-written text", () => {
+    expect(bookingRef(deskWith(false, WARNING))?.also, "the control: a native field is a source").toEqual([WARNING]);
+    const c = bookingRef(deskWith(true, WARNING));
+    expect(c, "the page's own line is still a candidate").toBeDefined();
+    expect(c?.also).toBeUndefined();
+  });
+
+  it("does not read a page field's text in the recheck before a write", () => {
+    const m = deskWith(true, "");
+    const pr = candidateProvenance(m, bookingRef(m)!);
+    m.apply(source(true, WARNING, 4000));
+    expect(provenanceStale(m, pr)).toBeNull();
   });
 });
