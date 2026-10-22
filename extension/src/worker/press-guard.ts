@@ -38,11 +38,11 @@ export function judgePress(answer: ActAnswer | null, before: FrameMarks, after: 
 
 /**
  * Slice 2: the answer for a page-row activation, given the content script's answer (null when none came: the frame's
- * document went away) and the frame as the worker read it right before sending the verb and after the answer. A
- * history update alone — a fragment jump, or pushState to the item's own address — is the expected shape of a page
- * open, so it is not a change (the helper re-walked the frame before it answered); what is, is a navigation begun
- * (onBeforeNavigate, which a fragment or pushState update does not fire) or the document gone or replaced: the open
- * may have gone through, and the run stops with `pageChanged`.
+ * document went away) and the frame as the worker read it right before sending the verb and after the answer. One
+ * history update — a fragment jump, or a pushState, whatever the row's href — is the expected shape of a page open, so
+ * it is not a change (the helper re-walked the frame before it answered); what is, is a second update (`navigated`:
+ * more moved than the open), a navigation begun (onBeforeNavigate, which a fragment or pushState update does not
+ * fire) or the document gone or replaced: the open may have gone through, and the run stops with `pageChanged`.
  */
 const BEFORE_ACTIVATION: ReadonlySet<ActAnswer["outcome"]> = new Set(["alreadyTrue", "stale", "unsupported", "notAllowed", "noElement", "notSameElement", "excluded", "siteOff", "failed", "error"]);
 
@@ -50,6 +50,7 @@ export function judgeActivation(answer: ActAnswer | null, before: FrameMarks, af
   if (answer !== null && BEFORE_ACTIVATION.has(answer.outcome)) return answer;
   const seen: PageChange[] = [];
   if (answer === null) seen.push("documentGone");
+  if (after.navGen !== before.navGen && after.navGen !== before.navGen + 1) seen.push("navigated");
   if (after.starts !== before.starts) seen.push("navigationStarted");
   for (const c of answer?.pageChanged ?? []) if (!seen.includes(c)) seen.push(c);
   if (seen.length === 0) return answer as ActAnswer;

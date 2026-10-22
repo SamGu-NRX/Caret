@@ -73,17 +73,17 @@ export class GrantTable {
   }
 
   /**
-   * Moves the task's grant for this frame to a later navigation generation of the same document: a history or
-   * fragment update is the shape an opened row is allowed (press-guard.ts judgeActivation), and the grant follows it
-   * so the task's next act is not refused by the very open it made. A real navigation changed the document, and the
-   * caller refuses that before asking. Expires and the monotonic end are kept.
+   * Moves the task's grant for this frame from generation `from` to `to`, and only when it is still at `from`: the
+   * worker calls this for the one same-document update it saw around the task's own row open (worker.ts act,
+   * press-guard.ts judgeActivation), so the task's next act is not refused by the open it made. A grant revoked or
+   * replaced meanwhile is left as it is. Expires and the monotonic end are kept.
    */
-  advance(taskId: string, tabId: number, frameId: number, navGen: number): void {
+  advance(taskId: string, tabId: number, frameId: number, from: number, to: number): void {
     const held = this.byTask.get(taskId);
     const at = held?.findIndex((h) => h.scope.tabId === tabId && h.scope.frameId === frameId) ?? -1;
     const g = held !== undefined && at >= 0 ? held[at] : undefined;
-    if (held === undefined || g === undefined) return;
-    held[at] = { ...g, scope: { ...g.scope, navGen } };
+    if (held === undefined || g === undefined || g.scope.navGen !== from) return;
+    held[at] = { ...g, scope: { ...g.scope, navGen: to } };
   }
 
   clear(): void {

@@ -13,7 +13,7 @@ import { flavorOf, shownValue } from "./flavor.ts";
 import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
 import { sectionName, sectionOutline, type Occurrence } from "./sections.ts";
 import type { SecretKind } from "./secret.ts";
-import { outlineText, safeText, secretFieldOf } from "./secret-dom.ts";
+import { outlineText, secretFieldOf } from "./secret-dom.ts";
 import { watchPasswords } from "./password-watch.ts";
 import { editorPlainText } from "./field-text.ts";
 import { shadowRootOf } from "./shadow.ts";
@@ -37,9 +37,10 @@ export function navCellsOf(el: Element, kind: string): string[] | null {
   if (el.closest(NAV_HOST[kind] ?? "") === null) return null;
   let cellEls = [...el.querySelectorAll(NAV_CELL)];
   if (cellEls.length === 0 && kind === "row") cellEls = [...el.children].filter((x) => x.matches("td, th"));
-  // A cell's text goes through safeText (secret-dom.ts), so a field inside a cell never leaves the frame as row text:
-  // the row's cells are page state like a select's labels, but a cell can wrap an input a mistake would name.
-  const cells = (cellEls.length > 0 ? cellEls : [el]).slice(0, 8).map((x) => clean(safeText(x), 200)).filter((t) => t !== "");
+  // A cell's text, and the row's own when it has no cells, goes through outlineText (secret-dom.ts): nothing when the
+  // cell or row is itself a field or editing host (`<div role=gridcell contenteditable>` holds the user's draft), and
+  // otherwise its text without any field inside it. The cells are page state like a select's labels, never typed text.
+  const cells = (cellEls.length > 0 ? cellEls : [el]).slice(0, 8).map((x) => clean(outlineText(x), 200)).filter((t) => t !== "");
   return cells.length === 0 ? null : cells;
 }
 

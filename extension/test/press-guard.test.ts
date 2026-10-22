@@ -51,6 +51,10 @@ describe("judgeActivation (slice 2)", () => {
     expect(judgeActivation(ok, still, { ...still, navGen: 4 })).toBe(ok);
   });
 
+  it("reports a second history update as a change: an open makes at most one", () => {
+    expect(judgeActivation(ok, still, { ...still, navGen: 5 }).pageChanged).toEqual(["navigated"]);
+  });
+
   it("reports a change when a navigation began, and when the document went away before it answered", () => {
     expect(judgeActivation(ok, still, { ...still, starts: 6 }).pageChanged).toEqual(["navigationStarted"]);
     expect(judgeActivation(null, still, still).pageChanged).toEqual(["documentGone"]);

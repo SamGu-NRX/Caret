@@ -120,9 +120,10 @@ export function safeText(n: Node | null | undefined): string {
 }
 
 /**
- * A heading's or legend's text for the section outline (sections.ts): none when the element is itself a field or an
- * editing host (`<h1 contenteditable>`, a role=heading textbox, an editable legend). Its text is then the user's draft,
- * and safeText, which leaves out only fields inside the element, would send it as a heading and an unsalted digest.
+ * A heading's or legend's text for the section outline (sections.ts), and a list row's cell text (walker.ts
+ * navCellsOf): none when the element is itself a field or an editing host (`<h1 contenteditable>`, a role=heading
+ * textbox, an editable legend, an editable gridcell). Its text is then the user's draft, and safeText, which leaves out
+ * only fields inside the element, would send it as a heading, an unsalted digest or a row's name.
  */
 export function outlineText(el: Element): string {
   return anyField(el) ? "" : safeText(el);
