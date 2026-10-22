@@ -62,6 +62,7 @@ final class GhostTextEngine {
     var inlinePromptContext = InlinePromptContext()
     /// Host wiring supplies the helper's already-filtered screen model. A missing or late reply is no context.
     var screenTextProvider: ((ScreenTextRequest) async -> String?)?
+    var screenTextSettings: () -> CaretSettings = { SettingsStore.shared.settings }
     private var writingMemory = InlineWritingMemory()
     var secretDetector: InlineSecretDetecting = NoopInlineSecretDetector()
 
@@ -200,7 +201,7 @@ final class GhostTextEngine {
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
     /// `tokens` overrides `completionTokens` for this one request (the extension after the first paint).
-    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil, revision: UInt64 = 0) async throws -> Outcome {
+    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil, revision: UInt64 = 0, pid: Int32? = nil) async throws -> Outcome {
         if let replay {
             switch replay.outcome(before: context.beforeCursor, after: context.afterCursor) {
             case .text(let text)?: return .suggestion(GhostSuggestion(text: text, context: context, generationMs: 0))
@@ -224,18 +225,7 @@ final class GhostTextEngine {
             return .suppressed("numericMidWordStem")
         }
 
-        inlinePromptContext.screenText = nil
-        if let screenTextProvider {
-            let request = ScreenTextRequest(
-                id: UUID().uuidString,
-                revision: revision,
-                windowID: context.target.windowID,
-                appsOff: [],
-                sitesOff: []
-            )
-            inlinePromptContext.screenText = await screenTextProvider(request)
-            try Task.checkCancellation()
-        }
+        try await updateScreenText(pid: pid, revision: revision, origin: origin)
         let request = makeRequest(for: context, policy: policy, tokens: tokens, origin: origin)
         let started = DispatchTime.now().uptimeNanoseconds
         var candidates = try await engine.completions(for: request)
@@ -302,6 +292,25 @@ final class GhostTextEngine {
         if midLine, !wasScored { return .suppressed("fitUnscored") }
         guard let chosen = open.first(where: { notes[$0].refusal == nil }) else { return .suppressed("doesNotFit") }
         return .suggestion(GhostSuggestion(text: notes[chosen].text, context: context, generationMs: elapsed))
+    }
+
+    /// Uses the captured field's pid, not a window ID from the host or a fresh frontmost-app lookup.
+    /// A caller without a captured target gets no screen context.
+    func updateScreenText(pid: Int32?, revision: UInt64, origin: String?) async throws {
+        inlinePromptContext.screenText = nil
+        guard let pid, pid > 0, let screenTextProvider else { return }
+        let settings = screenTextSettings()
+        let request = ScreenTextRequest(
+            id: UUID().uuidString,
+            revision: revision,
+            pid: pid,
+            appsOff: settings.appsOff,
+            sitesOff: settings.sitesOff,
+            site: origin
+        )
+        let text = await screenTextProvider(request)
+        try Task.checkCancellation()
+        inlinePromptContext.screenText = text
     }
 
     /// The request `suggest` sends for `context`, under the app's policy.

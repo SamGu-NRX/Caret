@@ -7,7 +7,9 @@ const lines = readFileSync(fixture, "utf8").trim().split("\n").map((line) => JSO
 
 describe("screen text golden wire", () => {
   it("keeps the request and reply shared with the host", () => {
-    expect(ConsumerMessage.parse(lines[0])).toMatchObject({ type: "screenTextRequest", id: "screen-golden-1", revision: 42 });
+    const request = ConsumerMessage.parse(lines[0]);
+    expect(request).toEqual({ type: "screenTextRequest", v: 1, id: "screen-golden-1", revision: 42, pid: 2001, maxCharacters: 2048, appsOff: ["com.example.Secret"], sitesOff: ["https://secret.example"], site: "https://docs.example" });
+    expect(request).not.toHaveProperty("windowId");
     expect(ScreenTextReply.parse(lines[1])).toMatchObject({ type: "screenTextReply", id: "screen-golden-1", revision: 42, text: "Project brief\nShip the local suggestion" });
   });
 });

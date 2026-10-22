@@ -230,7 +230,7 @@ final class HostCoordinator {
             let gate = Task { try? await Task.sleep(nanoseconds: gateNanos) }
             let outcome: GhostTextEngine.Outcome
             do {
-                outcome = try await engine.suggest(for: snapshot.context, revision: serial)
+                outcome = try await engine.suggest(for: snapshot.context, revision: serial, pid: field.identity.pid)
             } catch {
                 gate.cancel()
                 return
@@ -343,7 +343,7 @@ final class HostCoordinator {
         let serial = extensionSerial
         extending = Task { [weak self] in
             defer { self?.extensionsInFlight.removeValue(forKey: serial) }
-            let outcome = try? await engine.suggest(for: context, tokens: GhostExtend.tokens)
+            let outcome = try? await engine.suggest(for: context, tokens: GhostExtend.tokens, revision: serial, pid: held.field.identity.pid)
             guard let self, !Task.isCancelled else { return }
             guard case .suggestion(let more)? = outcome else { return self.status.increment("ghost.extend.none") }
             let snap = self.arbiter.snapshot()

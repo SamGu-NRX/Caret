@@ -55,6 +55,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .savedFilesReply: return "savedFilesReply"
             case .hostChallenge: return "hostChallenge"
             case .hostAuthenticated: return "hostAuthenticated"
+            case .screenTextReply: return "screenTextReply"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }

@@ -261,13 +261,14 @@ final class PageInlineCoordinator {
         let context = TextFieldContext(beforeCursor: r.before, afterCursor: r.after, target: AppTarget(bundleIdentifier: r.bundleID, appName: r.appName))
         let engine = self.engine
         let origin = self.origin
+        let pid = lastField.flatMap { Int32(exactly: $0.app.pid) }
         let gateNanos = HostCoordinator.presentationGateNanos(lastGenerationMs: engine.lastGenerationMs)
         generation = Task { [weak self] in
             // As native ghost text: generation starts at once; the adaptive gate only delays the drawing (ADR-080).
             let gate = Task { try? await Task.sleep(nanoseconds: gateNanos) }
             let outcome: GhostTextEngine.Outcome
             do {
-                outcome = try await engine.suggest(for: context, origin: origin)
+                outcome = try await engine.suggest(for: context, origin: origin, revision: r.id, pid: pid)
             } catch {
                 gate.cancel()
                 // H13 review: a failed generation ends its request, so the next report of the same text asks again.

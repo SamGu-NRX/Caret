@@ -79,6 +79,7 @@ export const MESSAGE_CLASS: { readonly [K in Outgoing["type"]]: MessageClass } =
   fileSaveReply: "host",
   pageInsertReply: "host",
   savedFilesReply: "host",
+  screenTextReply: "host",
 };
 
 const RECEIVES: { readonly [R in SessionRole]: ReadonlySet<MessageClass> } = {

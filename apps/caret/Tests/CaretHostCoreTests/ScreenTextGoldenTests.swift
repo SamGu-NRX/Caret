@@ -16,7 +16,13 @@ final class ScreenTextGoldenTests: XCTestCase {
         let reply = try JSONDecoder().decode(ScreenTextReply.self, from: Data(lines[1].utf8))
         XCTAssertEqual(request.id, "screen-golden-1")
         XCTAssertEqual(request.revision, 42)
-        XCTAssertEqual(request.windowID, "2001-7")
+        XCTAssertEqual(request.pid, 2001)
+        XCTAssertEqual(request.appsOff, ["com.example.Secret"])
+        XCTAssertEqual(request.sitesOff, ["https://secret.example"])
+        XCTAssertEqual(request.site, "https://docs.example")
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? NSDictionary
+        let golden = try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? NSDictionary
+        XCTAssertEqual(encoded, golden, "Swift must send the helper's exact field names")
         XCTAssertEqual(reply, ScreenTextReply(id: request.id, revision: request.revision, text: "Project brief\nShip the local suggestion"))
     }
 }

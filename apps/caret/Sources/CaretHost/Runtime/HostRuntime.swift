@@ -410,17 +410,7 @@ public final class HostRuntime {
         }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } }, goalFiles: { filesWired }, hostKey: configuration.hostKey)
         linkedClient.client = helper
         engine.screenTextProvider = { [weak helper] request in
-            return await helper?.screenText(
-                ScreenTextRequest(
-                    id: request.id,
-                    revision: request.revision,
-                    windowID: request.windowID,
-                    maxCharacters: request.maxCharacters,
-                    appsOff: SettingsStore.shared.settings.appsOff,
-                    sitesOff: SettingsStore.shared.settings.sitesOff,
-                    site: request.site
-                )
-            )
+            await helper?.screenText(request)
         }
         let routeClient = helper
         routeLink.send = { routeClient.send($0) }

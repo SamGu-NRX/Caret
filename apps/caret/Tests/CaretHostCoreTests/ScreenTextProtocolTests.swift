@@ -14,6 +14,20 @@ final class ScreenTextProtocolTests: XCTestCase {
         }
     }
 
+    func testRequestsRejectWrongTypeVersionAndInvalidPid() throws {
+        let request = ScreenTextRequest(id: "r", revision: 1, pid: 7)
+        let data = try JSONEncoder().encode(request)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let changes: [[String: Any]] = [["type": "other"], ["v": 2], ["pid": 0], ["pid": -1], ["pid": 7.5], ["pid": NSNull()]]
+        for change in changes {
+            let invalid = object.merging(change) { _, new in new }
+            XCTAssertThrowsError(try JSONDecoder().decode(ScreenTextRequest.self, from: JSONSerialization.data(withJSONObject: invalid)))
+        }
+        var missingPid = object
+        missingPid.removeValue(forKey: "pid")
+        XCTAssertThrowsError(try JSONDecoder().decode(ScreenTextRequest.self, from: JSONSerialization.data(withJSONObject: missingPid)))
+    }
+
     func testStaleRepliesAndLateRepliesAreDropped() {
         let reply = ScreenTextReply(id: "r", revision: 4, text: "nearby")
         XCTAssertEqual(ScreenTextDecision.accept(reply, requestID: "r", revision: 4), "nearby")
