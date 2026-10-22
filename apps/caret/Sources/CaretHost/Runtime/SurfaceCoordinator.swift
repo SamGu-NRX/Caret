@@ -750,7 +750,7 @@ final class SurfaceCoordinator {
     private func drawOwnGhost(_ text: String, caret: CGRect, font: NSFont, color: NSColor?) {
         let view = Text(text)
             .font(Font(font))
-            .foregroundStyle(Color(nsColor: color ?? .labelColor).opacity(Tokens.ghostOpacity(dark: color.map(FillOverlay.isLight) ?? false)))
+            .foregroundStyle(Color(nsColor: Tokens.ghostInk(color ?? .labelColor, darkField: color.map(FillOverlay.isLight) ?? false)))
             .fixedSize()
             .frame(height: caret.height)
         ownGhost.pin(HostedPanel.Anchor(corner: .topLeft, point: NSPoint(x: caret.maxX, y: Screen.cocoa(caret).maxY)))

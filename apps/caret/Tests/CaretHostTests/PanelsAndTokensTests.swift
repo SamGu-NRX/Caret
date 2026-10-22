@@ -3,7 +3,9 @@ import XCTest
 @testable import CaretHost
 
 /// The error figure's color against the surfaces it stands on, by the WCAG relative-luminance
-/// formula: a graphic needs 3:1 (WCAG 1.4.11).
+/// formula: a graphic needs 3:1 (WCAG 1.4.11). Graphite has no Increase Contrast variant; the
+/// marks beside it are checked in both contrasts, Increase Contrast through their shades
+/// (`TokenColors`).
 final class TokenContrastTests: XCTestCase {
     private func resolved(_ color: NSColor, dark: Bool) throws -> (Double, Double, Double) {
         var out: NSColor?
@@ -44,12 +46,22 @@ final class TokenContrastTests: XCTestCase {
         for (dark, page) in [(false, gray(255)), (true, (0x1E / 255.0, 0x1E / 255.0, 0x1E / 255.0))] {
             XCTAssertGreaterThanOrEqual(contrast(try resolved(Tokens.carrot, dark: dark), page), 3, "current tick, dark \(dark)")
             XCTAssertGreaterThanOrEqual(contrast(try resolved(Tokens.ink3, dark: dark), page), 3, "idle tick, dark \(dark)")
+            XCTAssertGreaterThanOrEqual(contrast(increased(Tokens.Shades.carrot, dark: dark), page), 3, "current tick, Increase Contrast, dark \(dark)")
+            XCTAssertGreaterThanOrEqual(contrast(increased(Tokens.Shades.ink3, dark: dark), page), 3, "idle tick, Increase Contrast, dark \(dark)")
         }
     }
 
     func testTheErrorFigureStaysLighterThanSecondaryText() throws {
         // Graphite is a figure, not text: it must not read as the secondary words beside it.
         XCTAssertGreaterThan(luminance(try resolved(Tokens.graphite, dark: false)), luminance(try resolved(Tokens.secondary, dark: false)))
+        XCTAssertGreaterThan(luminance(try resolved(Tokens.graphite, dark: false)), luminance(increased(Tokens.Shades.ink2, dark: false)),
+                             "Increase Contrast")
+    }
+
+    /// A shade's Increase Contrast value, as the appearance's accessibility variant draws it.
+    private func increased(_ shade: Tokens.Shade, dark: Bool) -> (Double, Double, Double) {
+        let c = TokenColors.resolved(shade, dark: dark, highContrast: true)
+        return (c.0, c.1, c.2)
     }
 }
 
