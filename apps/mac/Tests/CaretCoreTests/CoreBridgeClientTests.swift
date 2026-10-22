@@ -192,11 +192,13 @@ final class CoreBridgeClientTests: XCTestCase {
     }
 
     func testInterruptedWorkflowResultPreservesTheFenceAndEffectWarning() throws {
-        let data = Data(#"{"kind":"action","status":"interrupted","summary":"Workflow interrupted. Reported effects may remain.","evidence":[],"interrupted_by":"locked","effects_may_remain":true,"execution_status":"completed"}"#.utf8)
+        let data = Data(#"{"kind":"action","status":"interrupted","summary":"Workflow interrupted. Reported effects may remain.","effects":["calendar event created"],"evidence":[],"interrupted_by":"locked","cancellation_error":"TimeoutError: locked","effects_may_remain":true,"execution_status":"completed"}"#.utf8)
         let result = try JSONDecoder().decode(AcceptResult.self, from: data)
         guard case .action(let execution) = result else { return XCTFail("expected action result") }
         XCTAssertEqual(execution.status, "interrupted")
         XCTAssertEqual(execution.interruptedBy, "locked")
+        XCTAssertEqual(execution.cancellationError, "TimeoutError: locked")
+        XCTAssertEqual(execution.effects, ["calendar event created"])
         XCTAssertTrue(execution.effectsMayRemain)
         XCTAssertEqual(execution.executionStatus, "completed")
     }

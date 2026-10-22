@@ -448,14 +448,17 @@ public struct InlineEdit: Decodable, Equatable, Sendable {
 public struct WorkflowExecution: Decodable, Equatable, Sendable {
     public var status: String
     public var summary: String
+    public var effects: [String]
     public var evidence: [String]
     public var interruptedBy: String?
+    public var cancellationError: String?
     public var effectsMayRemain: Bool
     public var executionStatus: String?
 
     enum CodingKeys: String, CodingKey {
-        case status, summary, evidence
+        case status, summary, effects, evidence
         case interruptedBy = "interrupted_by"
+        case cancellationError = "cancellation_error"
         case effectsMayRemain = "effects_may_remain"
         case executionStatus = "execution_status"
     }
@@ -464,8 +467,10 @@ public struct WorkflowExecution: Decodable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        effects = try c.decodeIfPresent([String].self, forKey: .effects) ?? []
         evidence = try c.decodeIfPresent([String].self, forKey: .evidence) ?? []
         interruptedBy = try c.decodeIfPresent(String.self, forKey: .interruptedBy)
+        cancellationError = try c.decodeIfPresent(String.self, forKey: .cancellationError)
         effectsMayRemain = try c.decodeIfPresent(Bool.self, forKey: .effectsMayRemain) ?? false
         executionStatus = try c.decodeIfPresent(String.self, forKey: .executionStatus)
     }
