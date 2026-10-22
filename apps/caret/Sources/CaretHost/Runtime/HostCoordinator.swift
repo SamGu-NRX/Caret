@@ -98,6 +98,13 @@ final class HostCoordinator {
         // Every read, a selection or an app Caret skips included: the router hears of each breakpoint.
         route?.observe(field)
         let context = snapshot.context
+        // Keep only text typed in an eligible native field. The value stays in the engine's memory-only
+        // ten-minute store; the secret detector protocol is awaiting the Swift port from PR #68.
+        if wordsAllowed(), !AppSwitch.shared.isOff(bundleID: field.identity.bundleID),
+           !SecretField.holdsSecret(field, traits: context.traits),
+           ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) {
+            engine.recordWriting(context.beforeCursor, appBundleIdentifier: field.identity.bundleID, secure: field.secure)
+        }
         status.update {
             $0.focus = DebugState.Focus(
                 pid: field.identity.pid, bundleID: field.identity.bundleID, role: field.role,
@@ -234,6 +241,10 @@ final class HostCoordinator {
         }
         generation = task
         inFlight[serial] = task
+    }
+
+    func clearWritingMemory() {
+        engine.clearWritingMemory()
     }
 
     /// Stops new generations and waits for every started one to leave the model.

@@ -525,6 +525,7 @@ public final class HostRuntime {
             }
             if !settings.gate.allows(family: "fill") { fill.gateClosed() }
             if settings.paused {
+                coordinator.clearWritingMemory()
                 authority.revokeAll("paused")
                 surface.gateClosed()
                 pageSight.sight.paused()

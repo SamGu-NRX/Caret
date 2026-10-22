@@ -60,6 +60,21 @@ final class GhostTextEngine {
     /// Context captured by the host for the next local inline prompt. Capture and filtering stay outside
     /// the model engine so the policy can be tested without loading a model.
     var inlinePromptContext = InlinePromptContext()
+    private var writingMemory = InlineWritingMemory()
+    var secretDetector: InlineSecretDetecting = NoopInlineSecretDetector()
+
+    func recordWriting(_ text: String, appBundleIdentifier: String, secure: Bool) {
+        writingMemory.record(text, appBundleIdentifier: appBundleIdentifier, secure: secure, detector: secretDetector)
+    }
+
+    func clearWritingMemory() {
+        writingMemory.clear()
+        inlinePromptContext.previousUserInputs = []
+    }
+
+    private func updateWritingContext(for bundleIdentifier: String) {
+        inlinePromptContext.previousUserInputs = writingMemory.samples(for: bundleIdentifier)
+    }
     /// Candidates looked at, best first, when the better ones are refused at the seam or do not
     /// fit the text after the caret. KeyType's own filter still decides about the first.
     static let candidatesTried = 3
@@ -283,6 +298,7 @@ final class GhostTextEngine {
     private func makeRequest(
         for context: TextFieldContext, policy: CompletionPolicy, tokens override: Int? = nil, origin: String? = nil
     ) -> CompletionRequest {
+        updateWritingContext(for: context.target.bundleIdentifier)
         // Token healing: prompt from the last clean token boundary and force the typed stem back
         // out, so the model can reach the whole-word token (ADR-019).
         let heal = MidWordHealing.plan(for: context)
