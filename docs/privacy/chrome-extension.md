@@ -40,7 +40,7 @@ To decide what to offer, the Caret app sends short pieces of what it read to clo
 
 > Caret's main model is Jev, run by TypeSafe. TypeSafe says Jev isn't trained on customer requests or responses, and its terms say it won't put them in a dataset used to train models without Caret's consent. Its terms set no limit on how long it keeps requests. They let TypeSafe keep using requests, even after you stop using Caret, to monitor for fraud and abuse, and to derive what it calls telemetry: logs, statistics, classifications and "learnings". TypeSafe may use that telemetry without restriction, including to improve its services and other products. We don't know whether TypeSafe staff read requests.
 
-> Inline suggestions, the next few words Caret shows as you type, are written on your Mac by a model that runs there. Nothing goes to Groq.
+> Inline suggestions, the next few words Caret shows as you type, are written on your Mac by a model that runs there. They may use the visible text around the focused field and recent writing from that app for up to ten minutes. Clipboard text is off unless you turn it on in Writing, and Caret skips concealed, temporary, generated, oversized or secret clipboard text. Nothing goes to Groq.
 
 Caret does not sell your data, does not use it for anything unrelated to what Caret does for you, and does not use it to decide creditworthiness or for lending.
 
