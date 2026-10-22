@@ -197,7 +197,7 @@ final class WritingCoordinator {
         if InputMethodState.shared.composes { return noteCheck("skippedComposing") }
         checks += 1
         let value = field.value
-        let rules = WritingCheck.check(value, sentence: sentence, language: language ?? "en")
+        let rules = WritingCheck.check(value, sentence: sentence, language: WritingCheck.effectiveLanguage(language))
         checkTask?.cancel()
         guard let language, NativeChecker.supports(language) else {
             noteCheck("noLanguage")
@@ -278,7 +278,7 @@ final class WritingCoordinator {
         guard !candidates.isEmpty else { return }
         let live = RangeEdit.Live(target: field.identity, value: field.value, selection: field.selection, secure: field.secure, composing: InputMethodState.shared.composes)
         guard let writing = WritingOffer.correction(
-            marks: candidates, checkedRevision: UTF16Text.digest(field.value), live: live, language: language ?? "en"
+            marks: candidates, checkedRevision: UTF16Text.digest(field.value), live: live, language: WritingCheck.effectiveLanguage(language)
         ) else { return status.increment("writing.noOffer") }
         guard let placement = placement(for: writing, element: element, field: field) else {
             return status.increment("writing.noPlacement")
@@ -549,7 +549,7 @@ final class WritingCoordinator {
         }
         let live = RangeEdit.Live(target: field.identity, value: field.value, selection: field.selection, secure: field.secure, composing: InputMethodState.shared.composes)
         guard let writing = WritingOffer.rewrite(
-            span: span, rewrites: RewriteFilter.offered(rewrites, original: original), live: live, language: language ?? "en"
+            span: span, rewrites: RewriteFilter.offered(rewrites, original: original), live: live, language: WritingCheck.effectiveLanguage(language)
         ) else {
             overlay.showResult(WritingCopy.error(WritingCopy.noRewrite), at: placement, role: .error)
             scheduleResultEnd(after: Self.errorSeconds)
