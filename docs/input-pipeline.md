@@ -56,10 +56,15 @@ The v1 bridge now supports pausing without a readable field through
 [`context.pause`](bridge-protocol.md#pause-without-a-readable-field). It clears
 queued context, invalidates the visible offer and discards in-flight results.
 The Swift core client exposes the same request. Host lifecycle notifications
-still need to call it. An accepted workflow is cancelled on pause or on a newer
-context revision. The bridge waits for the workflow's cancellation hook and
-execution to return, then reports `interrupted` with the trigger and
-`effects_may_remain: true`; it never resumes the old run or claims rollback.
+still need to call it. An accepted workflow is cancelled only by genuine user
+input (a `user-input` or `ime-composing` pause, or a context revision newer than
+any seen) or an unsafe state (lock, sleep, revoked permission, a secure field,
+an excluded app, unreadable focus). `generated-input`, `workflow-active` and
+`idle` leave it running. The bridge signals the workflow's cancellation token
+and hook, waits a bounded time for both, then reports `interrupted` with the
+trigger and whether effects may remain; it never resumes the old run or claims
+rollback. The full rules are in
+[bridge-protocol.md](bridge-protocol.md#interrupting-an-accepted-workflow).
 
 The fast snapshot comes from Caret's live AX focus/caret reader. Screenpipe adds relevant history, with source IDs and capture times. Do not wait for Screenpipe to rediscover the current caret or send its whole history to Jev each tick. This live field read is part of input handling, not a second history recorder.
 

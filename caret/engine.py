@@ -32,6 +32,8 @@ from .registry import ExecutionResult, WorkflowError, WorkflowRegistry
 from .router import (
     ACTION_KIND,
     INLINE_KIND,
+    INTERRUPTING_PAUSE_REASONS,
+    SUPERSEDED_REVISION,
     Admission,
     Publication,
     Router,
@@ -47,6 +49,12 @@ INLINE_INSTRUCTION = (
     "the text that replaces the selection. No explanation, no quotes, no markdown."
 )
 
+# Neither bound is measured. The in-repo cancel hooks only drop a dict entry,
+# so 5 seconds is generous for them. The drain bound covers the native
+# adapter's 15-second SIGINT grace before it kills its executor, plus margin.
+CANCEL_HOOK_TIMEOUT_SECONDS = 5.0
+SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 20.0
+
 
 class ProviderFailure(RuntimeError):
     """Raised by a Writer when generation could not be completed."""
@@ -58,9 +66,21 @@ class _WorkflowRun:
     adapter: object
     on_complete: Callable[[dict], None]
     interrupted_by: str | None = None
+    started: bool = False
+    """Set under the workflow lock once execute may run. An interrupt before
+    this point means execute is never called."""
+    settled: bool = False
+    """Set when on_complete has been called, so a late result is dropped."""
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    """Handed to execute; set under the workflow lock by an interrupt."""
     cancellation_done: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
     cancellation_error: str | None = None
+
+
+def _bare_result(offer: Offer, status: str, summary: str) -> dict:
+    return {"kind": ACTION_KIND, "proposal_id": offer.proposal_id, "workflow_id": offer.workflow_id,
+            "status": status, "summary": summary, "effects": [], "evidence": [], "data": {}}
 
 
 class Engine:
@@ -75,6 +95,8 @@ class Engine:
         clock: Callable[[], datetime] = now_utc,
         on_invalidate: Callable[[object, str], None] | None = None,
         on_publish: Callable[[Publication], None] | None = None,
+        cancel_timeout_seconds: float = CANCEL_HOOK_TIMEOUT_SECONDS,
+        drain_timeout_seconds: float = SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
     ) -> None:
         self.judge = judge
         self.writer = writer
@@ -82,6 +104,8 @@ class Engine:
         self.config = config or RouterConfig()
         self.router = Router(self.config, on_invalidate=on_invalidate, on_publish=on_publish)
         self.clock = clock
+        self.cancel_timeout_seconds = cancel_timeout_seconds
+        self.drain_timeout_seconds = drain_timeout_seconds
         self._workflow_lock = threading.RLock()
         self._active_workflow: _WorkflowRun | None = None
 
@@ -91,17 +115,23 @@ class Engine:
         with self._workflow_lock:
             run = self._active_workflow
             if run is not None:
-                # The wire does not distinguish genuine input from generated
-                # revisions. Treat every newer revision as an interruption.
+                # A replayed or out-of-order frame says nothing new about the
+                # field, so it must not stop the run. The host stops sending
+                # frames while its executor types (it pauses with
+                # generated-input), so a newer revision is the user's change.
+                if not self.router.record_revision(frame.revision):
+                    return Admission("skipped", SUPERSEDED_REVISION, frame.revision)
                 self._interrupt_locked("newer-context")
                 self.router.pause("workflow-active")
                 return Admission("skipped", "workflow-active", frame.revision)
             return self.router.submit(frame, self.clock())
 
     def pause(self, reason: str) -> None:
+        """Withdraw ambient context; stop an accepted run only for input or an unsafe state."""
         with self._workflow_lock:
             self.router.pause(reason)
-            self._interrupt_locked(reason)
+            if reason in INTERRUPTING_PAUSE_REASONS:
+                self._interrupt_locked(reason)
 
     @property
     def active_workflow(self) -> str | None:
@@ -113,12 +143,16 @@ class Engine:
         if run is None or run.interrupted_by is not None:
             return
         run.interrupted_by = reason
+        # Set before the hook runs and under the same lock as the start check,
+        # so an execute that has not reached its effect yet still sees it.
+        run.cancelled.set()
 
         def cancel():
             try:
                 run.adapter.cancel(run.offer.preparation)
             except Exception as error:
-                run.cancellation_error = f"{type(error).__name__}: {error}"
+                with self._workflow_lock:
+                    run.cancellation_error = f"{type(error).__name__}: {error}"
             finally:
                 run.cancellation_done.set()
 
@@ -254,48 +288,80 @@ class Engine:
             return {"kind": ACTION_KIND, "proposal_id": proposal_id, "status": "started"}
 
     def _run_workflow(self, run: _WorkflowRun) -> None:
+        with self._workflow_lock:
+            run.started = run.interrupted_by is None
         try:
-            with self._workflow_lock:
-                interrupted = run.interrupted_by is not None
-            if interrupted:
-                result = {"kind": ACTION_KIND, "proposal_id": run.offer.proposal_id,
-                          "workflow_id": run.offer.workflow_id, "status": "cancelled",
-                          "summary": "Execution did not start", "effects": [], "evidence": [], "data": {}}
+            if run.started:
+                result = self._execute_offer(run.offer, run.adapter, run.cancelled)
             else:
-                result = self._execute_offer(run.offer, run.adapter)
+                result = _bare_result(run.offer, "not-started", "Execution did not start")
         except Exception as error:
-            result = {"kind": ACTION_KIND, "proposal_id": run.offer.proposal_id,
-                      "workflow_id": run.offer.workflow_id, "status": "failed",
-                      "summary": f"{type(error).__name__}: {error}", "effects": [], "evidence": [], "data": {}}
+            result = _bare_result(run.offer, "failed", f"{type(error).__name__}: {error}")
 
         # Resolve completion versus interruption under the same lock as submit.
-        # A cancel hook may still own an executor even after execute returns.
-        while True:
+        with self._workflow_lock:
+            if run.interrupted_by is None:
+                self._settle_locked(run, result)
+                return
+        # The cancel hook may still be working after execute returned. Wait for
+        # it, but not forever: a hook that hangs must not hold the reply back.
+        if not run.cancellation_done.wait(self.cancel_timeout_seconds):
             with self._workflow_lock:
-                if run.interrupted_by is None or run.cancellation_done.is_set():
-                    if run.interrupted_by is not None:
-                        result = {**result, "status": "interrupted", "interrupted_by": run.interrupted_by,
-                                  "effects_may_remain": True,
-                                  "summary": "Workflow interrupted. Reported effects may remain.",
-                                  "execution_status": result["status"]}
-                        if run.cancellation_error:
-                            result["cancellation_error"] = run.cancellation_error
-                    self._active_workflow = None
-                    run.on_complete(result)
-                    run.done.set()
-                    return
-            run.cancellation_done.wait()
+                run.cancellation_error = run.cancellation_error or (
+                    f"cancel hook did not return within {self.cancel_timeout_seconds:g}s"
+                )
+        with self._workflow_lock:
+            self._settle_locked(run, self._interrupted_result(run, result))
+
+    def _interrupted_result(self, run: _WorkflowRun, execution: dict) -> dict:
+        ran = run.started
+        result = {
+            **execution,
+            "status": "interrupted",
+            "interrupted_by": run.interrupted_by,
+            # Only a run whose execute was never called is known to have no effect.
+            "effects_may_remain": ran,
+            "summary": ("Workflow interrupted. Reported effects may remain." if ran
+                        else "Workflow interrupted before execution started. Nothing ran."),
+            "execution_status": execution["status"],
+        }
+        if run.cancellation_error:
+            result["cancellation_error"] = run.cancellation_error
+        return result
+
+    def _settle_locked(self, run: _WorkflowRun, result: dict) -> None:
+        """Report a run exactly once and release the workflow slot."""
+        if run.settled:
+            return
+        run.settled = True
+        if self._active_workflow is run:
+            self._active_workflow = None
+        run.on_complete(result)
+        run.done.set()
 
     def shutdown(self) -> None:
-        """Drain accepted execution and its cancel hook before closing output."""
+        """Interrupt accepted execution and wait, bounded, for it to settle.
+
+        If execution has not returned within the drain bound, the acceptance
+        is answered now as interrupted, with ``execution_status`` set to
+        ``unfinished``, and the late result is dropped.
+        """
         with self._workflow_lock:
             self.router.pause("workflow-active")
             run = self._active_workflow
             self._interrupt_locked("shutdown")
-        if run is not None:
-            run.done.wait()
+        if run is None or run.done.wait(self.drain_timeout_seconds):
+            return
+        with self._workflow_lock:
+            if run.cancellation_error is None:
+                run.cancellation_error = (
+                    f"execution did not stop within {self.drain_timeout_seconds:g}s of shutdown"
+                )
+            self._settle_locked(run, self._interrupted_result(
+                run, _bare_result(run.offer, "unfinished", "Execution had not returned")
+            ))
 
-    def _execute_offer(self, offer: Offer, adapter=None) -> dict:
+    def _execute_offer(self, offer: Offer, adapter=None, cancelled: threading.Event | None = None) -> dict:
         """Execute exactly one accepted proposal.
 
         The router consumes the proposal before any workflow runs, so a repeated
@@ -327,7 +393,7 @@ class Engine:
             if frame is None:  # pragma: no cover - offers are always built with a frame
                 raise WorkflowError("Accepted offer carries no context frame")
             try:
-                result = adapter.execute(frame, offer.preparation)
+                result = adapter.execute(frame, offer.preparation, cancelled=cancelled)
             except WorkflowError as error:
                 result = ExecutionResult(status="failed", summary=str(error))
         return {

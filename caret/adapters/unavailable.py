@@ -38,7 +38,7 @@ class UnavailableWorkflow:
     def prepare(self, frame: ContextFrame) -> Preparation:
         raise WorkflowError(f"'{self._descriptor.id}' is unavailable: {self._reason}")
 
-    def execute(self, frame: ContextFrame, preparation: Preparation | None) -> ExecutionResult:
+    def execute(self, frame: ContextFrame, preparation: Preparation | None, cancelled=None) -> ExecutionResult:
         raise WorkflowError(f"'{self._descriptor.id}' is unavailable: {self._reason}")
 
     def cancel(self, preparation: Preparation | None) -> ExecutionResult:
