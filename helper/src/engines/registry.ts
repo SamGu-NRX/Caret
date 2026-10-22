@@ -78,6 +78,14 @@ export class EngineRegistry implements EngineDirectory {
     this.sessions.get(page.engine)?.session.tabs.delete(page.tabId);
   }
 
+  /**
+   * A reader hello reset the screen model (ScreenModel.reset): every page window went from it without expiring, so none
+   * will expire later to drop its tab's walk (forgetWindow). Every walk goes now; the next walk of a tab brings it back.
+   */
+  forgetAllWindows(): void {
+    for (const e of this.sessions.values()) e.session.tabs.clear();
+  }
+
   listen(l: SessionListener): () => void {
     this.listeners.add(l);
     return () => this.listeners.delete(l);

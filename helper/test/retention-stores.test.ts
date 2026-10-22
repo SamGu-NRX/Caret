@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
 import { Helper } from "../src/helper.ts";
+import { PROTOCOL_VERSION } from "../src/protocol.ts";
 import { Store } from "../src/store.ts";
 import { field, FIXTURE_APP, focus, MAIL_APP, snap, text, value } from "./builders.ts";
 import { c, chrome, FakePage, hello, okReader, TEXTEDIT, WIN } from "./fake-page.ts";
@@ -52,6 +53,7 @@ describe("T8 page walks", () => {
   let h: Helper;
   const tabs = () => page.session.tabs;
   const walk = async () => expect((await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
+  const readerHello = () => void h.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 1, version: "t" });
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "caret-t8-page-"));
@@ -85,5 +87,19 @@ describe("T8 page walks", () => {
     h.tick(at + 10 * MIN + 10_000);
     expect(h.model.windows.has(WIN)).toBe(false);
     expect(tabs().has(7)).toBe(false);
+  });
+
+  it("drops a tab's last walk when the native reader reconnects, since the reset window never expires later (F7)", async () => {
+    readerHello();
+    expect(h.model.windows.has(WIN)).toBe(false);
+    expect(tabs().has(7)).toBe(false);
+    // No further walk: nothing is left for a later tick to find, and the registry answers as for a tab never walked.
+    h.tick(Date.now() + 11 * MIN);
+    expect(tabs().has(7)).toBe(false);
+    expect(host.registry.contextOf(WIN)).toBeNull();
+    // The next walk brings the tab back, into the model and the registry both.
+    await walk();
+    expect(h.model.windows.has(WIN)).toBe(true);
+    expect(tabs().has(7)).toBe(true);
   });
 });

@@ -918,6 +918,8 @@ export class Helper {
   private readonly sitesOffListeners = new Set<(origins: readonly string[]) => void>();
   /** Holders outside the helper told when the model expires a window (onWindowExpired): the page engines. */
   private readonly expiryListeners = new Set<(windowId: string) => void>();
+  /** The same holders, told when a reader hello resets the model (onModelReset): those windows never expire later. */
+  private readonly resetListeners = new Set<() => void>();
   /** The last list the host sent; null until a host sends one. */
   private sitesOffList: readonly string[] | null = null;
 
@@ -933,6 +935,15 @@ export class Helper {
   onWindowExpired(l: (windowId: string) => void): () => void {
     this.expiryListeners.add(l);
     return () => this.expiryListeners.delete(l);
+  }
+
+  /**
+   * Tells `l` each time a reader hello resets the model (ScreenModel.reset). The windows a reset drops are never expired
+   * afterwards, so a holder that lets go of a window's text on expiry (onWindowExpired) must let go of all of it here too.
+   */
+  onModelReset(l: () => void): () => void {
+    this.resetListeners.add(l);
+    return () => this.resetListeners.delete(l);
   }
 
   onReaderMessage(l: (m: ReaderMessage) => void): () => void {
@@ -951,6 +962,7 @@ export class Helper {
         this.record(this.transfers.flush());
         this.shadowLogger.close();
         this.model.reset();
+        for (const l of this.resetListeners) l();
         this.tabSource?.drop();
         forgetWindows();
         this.ownerVerdicts.clear();
@@ -3492,7 +3504,8 @@ export class Helper {
     // An edit still open there was typed over ten minutes ago, so transfers.tick has judged it; this lets go of its text.
     transfers: (id) => this.record(this.transfers.flush(id)),
     lineTable: forgetWindow,
-    // The page engine's last walk of the tab (engines/registry.ts forgetWindow, wired in engines/wire.ts).
+    // The page engine's last walk of the tab (engines/registry.ts forgetWindow, wired in engines/wire.ts). A reader hello's
+    // reset drops windows without expiring them; onModelReset lets go of every walk then.
     pageWalks: (id) => {
       for (const l of this.expiryListeners) l(id);
     },
