@@ -145,6 +145,8 @@ const MARKED: ReadonlySet<string> = new Set(["password", "payment", "oneTimeCode
 
 /** Roles whose label is their text, not a name: never a group whose name a field inherits. */
 const TEXT_ROLES: ReadonlySet<string> = new Set(["AXStaticText", "AXCell", "AXHeading", "AXLink"]);
+/** Matches CaretScreenCore Roles.textEntry, including dates. Editable choice controls are not text entry. */
+const TEXT_ENTRY_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXDateField"]);
 /** Containers too wide to name the fields in them: a window, a page, a scroll view, an app. */
 const NOT_A_GROUP: ReadonlySet<string> = new Set(["AXWindow", "AXWebArea", "AXScrollArea", "AXApplication", "AXSplitGroup", "AXBrowser", "AXSheet", "AXDrawer"]);
 
@@ -152,7 +154,7 @@ const NOT_A_GROUP: ReadonlySet<string> = new Set(["AXWindow", "AXWebArea", "AXSc
 export interface Inherited {
   label?: string;
   excluded?: NodeExclusion;
-  /** A native AXWebArea ancestor means editable values stay page-local. */
+  /** A native AXWebArea ancestor means text-entry values stay page-local. */
   webArea?: boolean;
 }
 
@@ -161,10 +163,12 @@ export interface Inherited {
  * any ancestor at all (excludedAncestor), and the nearest group's name a field's kind is read from, which stops at a
  * window, page or scroll view (groupLabel).
  */
-export function inherited(nodes: ReadonlyMap<string, Node>, n: Node): Inherited {
+export function inherited(nodes: ReadonlyMap<string, Node>, n: Node, native = true): Inherited {
   const excluded = excludedAncestor(nodes, n);
   const label = groupLabel(nodes, n);
-  const webArea = webAreaAncestor(nodes, n);
+  // Page-engine text nodes hold only emptiness, unread, or Caret's own revision-checked writes (page-link.ts).
+  // The native backstop must not erase those known writes before the executor verifies or undoes them.
+  const webArea = native && webAreaAncestor(nodes, n);
   return { ...(excluded === null ? {} : { excluded }), ...(label === null ? {} : { label }), ...(webArea ? { webArea: true } : {}) };
 }
 
@@ -229,8 +233,6 @@ export function excludedNode(n: Node, from: Inherited = {}, typed = false): Node
   if (n.states?.includes("secure") === true || n.role === "AXSecureTextField") return "secure";
   // Everything inside an excluded node is its content, editable or not (PV2 re-review).
   if (from.excluded !== undefined) return from.excluded;
-  // Native readers may still send a page value; hide editable descendants of AXWebArea as a backstop.
-  if (from.webArea === true && n.editable === true) return "hidden";
   // A node that holds a value (its own value, a typed value, a placeholder), whatever its role, is excluded when its own
   // label or placeholder names a sensitive kind: that label is the value's declared purpose (the coordinator's ruling
   // after SC1 step 3's evidence: a cell labelled "Password" holding a value). A label that holds nothing is only a label.
@@ -272,9 +274,12 @@ export function admitNode(n: Node, from: Inherited = {}, typed = false): Node {
     if (bare && n.excluded === from.excluded) return n;
     return { ...rest, ...(outline === undefined ? {} : { outline }), excluded: from.excluded };
   }
-  if (from.webArea === true && ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXDateField"].includes(n.role) && ((n.value ?? "") !== "" || n.unread === true)) {
-    const { value: _value, ...rest } = n;
-    return { ...rest, unread: true };
+  if (why === null && from.webArea === true && TEXT_ENTRY_ROLES.has(n.role) && ((n.value ?? "") !== "" || n.unread === true)) {
+    // Admission runs to a fixed point in model.ts. An already stripped node must retain its identity.
+    if (n.value !== undefined || n.unread !== true) {
+      const { value: _value, ...rest } = n;
+      n = { ...rest, unread: true };
+    }
   }
   const sections = admitSections(n);
   if (why !== null) {
@@ -297,7 +302,7 @@ export function admitValues(values: readonly TypedValue[], nodes: ReadonlyMap<st
     const n = nodes.get(v.nodeKey);
     if (n === undefined) return true;
     if (n.excluded !== undefined || n.unread === true || excludedValue(v.text) !== null) return false;
-    if (n.editable === true && webAreaAncestor(nodes, n)) return false;
+    if (TEXT_ENTRY_ROLES.has(n.role) && webAreaAncestor(nodes, n)) return false;
     // A value beside a withheld one stays only where it still stands whole; otherwise the node is as the reader sent it.
     const texts = [n.value, n.label, n.placeholder];
     if (!texts.some((t) => t?.includes(WITHHELD) === true)) return true;

@@ -1,1 +1,0 @@
-sc1 tests: app exclusions in ExcludedApps.swift and helper/privacy/read-policy.ts must match (sc1-exclusions; user additions unioned); sc1-boundary scans fixtures/web-form scripts too, so JSON evidence uses writeStoreJson/appendStoreJson.

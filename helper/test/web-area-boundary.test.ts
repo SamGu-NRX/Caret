@@ -4,15 +4,13 @@
 // holding page fields. The model, the privacy admission rules, the ledger's inventory and the
 // protocol schema run for real on it. Everything here is invented.
 //
-// The passing tests pin today's behaviour. The `it.fails` tests state the proposed rule —
-// "text-control values under an AXWebArea never reach the helper; the focused field's caret
-// text is for inline writing only" (docs/research/web-area-reads.md) — which does not hold
-// today, so each fails now. The same change that implements the rule removes `.fails` from
-// these four and they become its regression tests.
-import { describe, expect, it } from "vitest";
-import { ScreenModel, type WindowState } from "../src/model.ts";
+// Native page text-entry values stay withheld, including revealed passwords and dates.
+// Choice values and the page engine's own revision-checked writes keep their existing contract.
+import { describe, expect, it, vi } from "vitest";
+import * as privacy from "../src/privacy/exclude.ts";
+import { PrivacyAdmissionError, ScreenModel, type WindowState } from "../src/model.ts";
 import { TextPageControl, type Node } from "../src/protocol.ts";
-import { admitValues, excludedValue } from "../src/privacy/exclude.ts";
+import { admitNode, admitValues, excludedValue } from "../src/privacy/exclude.ts";
 import { nodePart, partsOf } from "../src/privacy/ledger/source.ts";
 import { field, node, snap, value as typed, FIXTURE_APP } from "./builders.ts";
 
@@ -96,6 +94,64 @@ describe("the rule: text-control values under an AXWebArea never reach the helpe
     const parts = partsOf(win).map((p) => p.id);
     expect(parts).not.toContain(nodePart("w1/pw", "value"));
     expect(parts).not.toContain(nodePart("w1/email", "value"));
+  });
+});
+
+describe("web-area admission converges and preserves choices", () => {
+  it.each(["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXDateField"])("withholds %s values and admits an unread node without changing it again", (role) => {
+    const input = node("entry", role, { parent: "web", value: PASSWORD });
+    const admitted = admitNode(input, { webArea: true });
+    expect(admitted.value).toBeUndefined();
+    expect(admitted.unread).toBe(true);
+    expect(admitNode(admitted, { webArea: true })).toBe(admitted);
+    const nodes = new Map([node("web", "AXWebArea"), input].map((n) => [n.key, n]));
+    expect(admitValues([typed("email", EMAIL, "entry")], nodes)).toEqual([]);
+  });
+
+  it.each(["AXCheckBox", "AXRadioButton", "AXGroup", "AXPopUpButton", "AXStaticText"])("keeps %s values and typed values even when marked editable", (role) => {
+    const input = node("choice", role, { parent: "web", value: EMAIL, editable: true });
+    const values = [typed("email", EMAIL, "choice")];
+    const model = new ScreenModel();
+    model.apply(snap([node("web", "AXWebArea"), input], { at: 1, windowId: "choices", values }));
+    const win = [...model.windows.values()][0]!;
+    expect(win.nodes.get("choice")).toEqual(input);
+    expect(win.values).toEqual(values);
+  });
+
+  it("keeps an empty text target available instead of marking it hidden", () => {
+    const input = field("entry", "", { parent: "web" });
+    expect(admitNode(input, { webArea: true })).toBe(input);
+  });
+
+  it("refuses a non-converging admission rule by name without publishing the snapshot", () => {
+    const model = new ScreenModel();
+    const actual = privacy.admitNode;
+    const spy = vi.spyOn(privacy, "admitNode").mockImplementation((...args) => ({ ...actual(...args) }));
+    try {
+      expect(() => model.apply(snap([
+        node("web", "AXWebArea"),
+        field("entry", PASSWORD, { parent: "web" }),
+        field("secret", "", { parent: "web", states: ["secure"] }),
+      ], { at: 1, windowId: "refused" }))).toThrow(PrivacyAdmissionError);
+      expect(new PrivacyAdmissionError().why).toBe("privacyAdmissionDidNotConverge");
+      expect(model.windows.has("refused")).toBe(false);
+      expect(spy.mock.calls.length).toBeLessThanOrEqual(15);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("converges with an unread field beside an excluded field", () => {
+    const model = new ScreenModel();
+    model.apply(snap([
+      node("web", "AXWebArea"),
+      field("entry", PASSWORD, { parent: "web" }),
+      field("secret", "", { parent: "web", states: ["secure"] }),
+    ], { at: 1, windowId: "mixed" }));
+    const win = [...model.windows.values()][0]!;
+    expect(win.nodes.get("entry")).toMatchObject({ unread: true });
+    expect(win.nodes.get("entry")?.value).toBeUndefined();
+    expect(win.nodes.get("secret")).toMatchObject({ excluded: "secure" });
   });
 });
 

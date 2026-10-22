@@ -1,0 +1,1 @@
+GoalRuns.releaseObserved drops ended replay/text; onExpiry.goalReplays stops live goals when read windows expire. Expiry tests focus another app: front windows stay fresh. Heads whole-form Asks use kind=list and scope.wholeForm, not all; reveal/carry rules must check wholeForm.

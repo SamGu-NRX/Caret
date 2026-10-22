@@ -1,1 +1,0 @@
-#47: an ended goal that observed drops its replay state and observed-window plan text (GoalRuns.releaseObserved); an open one stops when a window it read expires (onExpiry.goalReplays). The front window never expires while a reader is connected: expiry tests focus another app.
