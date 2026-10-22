@@ -105,4 +105,11 @@ public struct KeyHoldQueue<Event> {
         held = []
         return out
     }
+
+    /// Drops held input when a pointer event can move focus before the insertion finishes.
+    /// Replaying it after that event could type into a different field.
+    public mutating func drop() {
+        pid = nil
+        held = []
+    }
 }

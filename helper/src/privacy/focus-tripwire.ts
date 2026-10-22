@@ -10,12 +10,25 @@
  * occur in ordinary requests by chance, and the check would then refuse requests that never saw the field.
  */
 export const MIN_TRIPWIRE_CHARS = 12;
+export const FOCUS_TEXT_TTL_MS = 10 * 60 * 1000;
 
 let current: string[] = [];
+let expiry: ReturnType<typeof setTimeout> | null = null;
+
+export function clearFocusedText(): void {
+  current = [];
+  if (expiry !== null) clearTimeout(expiry);
+  expiry = null;
+}
 
 /** The focused field's text now, as the last walk reported it (engines/focus-text.ts); [] when no field has focus. */
 export function noteFocusedText(parts: readonly string[]): void {
+  clearFocusedText();
   current = parts.filter((p) => p.length >= MIN_TRIPWIRE_CHARS);
+  if (current.length > 0) {
+    expiry = setTimeout(clearFocusedText, FOCUS_TEXT_TTL_MS);
+    expiry.unref?.();
+  }
 }
 
 /** Thrown when a request body to a cloud route holds the focused field's text. */
