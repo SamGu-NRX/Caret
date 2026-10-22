@@ -4,8 +4,9 @@
 //   node scripts/fill-eval.ts --engine decisions --gold GOLD.json --record READER_RECORDING.ndjson --rounds N --out DIR
 //
 // With --engine jev (the default) the helper sends proposals only to the host (src/send-gate.ts), so this script
-// proves the host key, which it reads once from descriptor N, a pipe and never a regular file. apps/screen-reader/experiments/run-fill-eval.sh passes it
-// as `--host-key-fd 3 3< <(host_key_bytes)` (launch-secret.sh); with src/launch.ts, its --host-key-fd writes the key.
+// proves the host key, which it reads once from descriptor N, a pipe and never a regular file.
+// apps/screen-reader/experiments/run-fill-eval.sh passes it as `--host-key-fd 3 3< <(host_key_bytes)`
+// (launch-secret.sh); with src/launch.ts, its --host-key-fd writes the key.
 //
 // Needs a running helper (with Jev) and a caret-screen started with --only-pids <fixture pid>
 // --record READER_RECORDING.ndjson, so the helper's screen model holds the fixture's synthetic

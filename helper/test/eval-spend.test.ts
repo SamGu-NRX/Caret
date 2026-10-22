@@ -78,7 +78,7 @@ it.each([0.02, 0, null, "ordinary"] as const)("counts success once and adds only
 });
 it("Ask evaluation rewrites scored samples when the same output directory is rerun", async () => {
   fake.ask.mockImplementation(async (req) => ({ model: "gpt-6-luna", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: Object.keys((q as { criteria: object }).criteria)[0], confidence: 1 }])), probabilities: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, Object.fromEntries(Object.keys((q as { criteria: object }).criteria).map((option, i) => [option, i === 0 ? 1 : 0]))])), latencyMs: 0, inputTokens: 0, costUsd: 0 }));
-  process.argv = [argv[0]!, "realfill-asks.ts", "--out", dir, "--engine", "decisions", "--maker", "jev", "--asks", "ask-01", "--max-usd", "0.1", "--gap", "0"];
+  process.argv = [argv[0]!, "realfill-asks.ts", "--out", dir, "--engine", "decisions", "--asks", "ask-01", "--max-usd", "0.1", "--gap", "0"];
   await import("../scripts/realfill-asks.ts");
   const first = readFileSync(join(dir, "scored.ndjson"), "utf8");
   expect(first.trim().split("\n").length).toBeGreaterThan(0);
@@ -93,11 +93,13 @@ it("Ask evaluation rewrites scored samples when the same output directory is rer
 it("Ask evaluation counts billed failures before the next Ask's budget check", async () => {
   const { DecisionsAttemptError } = await import("../src/engines/decide/decisions.ts");
   fake.ask.mockRejectedValue(new DecisionsAttemptError(new Error("synthetic refusal"), { latencyMs: 1, inputTokens: 10, costUsd: 0.04, refused: true }, []));
-  process.argv = [argv[0]!, "realfill-asks.ts", "--out", dir, "--engine", "decisions", "--maker", "jev", "--asks", "ask-01,ask-02", "--spend-limit", "0.03", "--max-usd", "0.1", "--gap", "0"];
+  process.argv = [argv[0]!, "realfill-asks.ts", "--out", dir, "--engine", "decisions", "--asks", "ask-01,ask-02", "--spend-limit", "0.03", "--max-usd", "0.1", "--gap", "0"];
   await import("../scripts/realfill-asks.ts");
-  // The maker sends two sibling requests before either settles; the next Ask must dispatch none.
-  expect(fake.ask).toHaveBeenCalledTimes(2);
+  // The heads maker (alpha's only maker) sends heads and both scope wordings as three sibling requests before any
+  // settles (planner/intent-heads.ts); the next Ask must dispatch none.
+  expect(fake.ask).toHaveBeenCalledTimes(3);
   const report = JSON.parse(readFileSync(join(dir, "realfill-asks.json"), "utf8"));
-  expect(report.jevSpent).toBe(0.08);
+  expect(report.jevSpent).toBe(0.12);
+  expect(report.rows.find((r: { ask: { id: string } }) => r.ask.id === "ask-02").requests).toBe(0);
   expect(report.requestErrors.filter((e: { ask: string }) => e.ask === "ask-02").every((e: { kind: string }) => e.kind === "Error")).toBe(true);
 });

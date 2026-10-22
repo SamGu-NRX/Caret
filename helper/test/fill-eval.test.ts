@@ -50,6 +50,11 @@ it("attributes fixture reports to Decisions rather than live Jev", async () => {
   expect(md).toContain(report.engine);
   expect(md).not.toContain("live Jev");
 });
+it("still requires the host key for the Jev path, which asks the helper over its socket", async () => {
+  process.argv = process.argv.map((x) => (x === "decisions" ? "jev" : x));
+  await expect(import("../scripts/fill-eval.ts")).rejects.toThrow("--host-key-fd is required with --engine jev");
+  expect(fake.propose).not.toHaveBeenCalled();
+});
 it("records a failed form and continues to write a partial report", async () => {
   fake.propose.mockRejectedValueOnce(new Error("synthetic refusal"));
   await import("../scripts/fill-eval.ts");
