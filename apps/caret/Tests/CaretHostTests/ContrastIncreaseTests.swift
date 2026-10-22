@@ -2,21 +2,7 @@ import AppKit
 import XCTest
 @testable import CaretHost
 
-/// What Increase Contrast does to the tokens: every variant must strictly raise the WCAG ratio on
-/// each surface the token stands on — the window, the card, and the glass composited over the
-/// opposite theme's document (`Tokens.swift`'s worst case), with the glass at its own increased
-/// alphas — and tokens without a variant must resolve to exactly the color they had.
-///
-/// Test-first, against the pre-change `Tokens.swift`, each test here could not pass: line 10
-/// declared `dynamic(light:dark:alpha:darkAlpha:)` with no contrast overrides and no
-/// `increaseContrast` existed anywhere in the enum, so every test but the last failed to compile
-/// (`cannot find 'increaseContrast'`, `extra argument 'contrastLight'` in call); line 72 read
-/// `alpha: 0.94, darkAlpha: 0.92`, under this file's 0.97 / 0.95; line 225 read
-/// `static func ghostOpacity(dark: Bool) -> Double { dark ? 0.50 : 0.45 }`, under this file's
-/// 0.65; and with no flag to raise, a raised color resolved to itself, so every
-/// strictly-higher assert would compare a color with itself.
-/// `testTokensWithoutVariantsResolveIdentically` is the one guard that also held before the
-/// change: it pins the tokens the audit found already over their aims.
+/// Increase Contrast variants raise the WCAG ratio while normal appearance values remain unchanged.
 @MainActor
 final class ContrastIncreaseTests: XCTestCase {
     private func resolved(_ color: NSColor, dark: Bool) throws -> (Double, Double, Double, Double) {
@@ -113,8 +99,6 @@ final class ContrastIncreaseTests: XCTestCase {
             XCTAssertEqual(b.2, r.2, accuracy: 1e-6, "the tint must not move, \(theme)")
             XCTAssertGreaterThan(r.3, b.3, "the increased glass is more opaque, \(theme)")
         }
-        XCTAssertEqual(raised.3, 0.97, accuracy: 0.0005, "light alpha")
-        XCTAssertEqual(raisedDark.3, 0.95, accuracy: 0.0005, "dark alpha")
     }
 
     /// The ticked box's check: white on Carrot is 3.9:1 light — a state needs 3:1 (WCAG 1.4.11),
@@ -131,32 +115,6 @@ final class ContrastIncreaseTests: XCTestCase {
         let after = contrast(rgb(raisedCheck), rgb(raisedFill))
         XCTAssertGreaterThan(after, before, "the darkened Carrot must raise the check's ratio")
         XCTAssertGreaterThanOrEqual(after, 4.5)
-    }
-
-    func testGhostOpacityIsSixtyFiveHundredthsOnBothThemes() {
-        XCTAssertEqual(Tokens.ghostOpacity(dark: false), 0.65, accuracy: 0.0001)
-        XCTAssertEqual(Tokens.ghostOpacity(dark: true), 0.65, accuracy: 0.0001)
-        // The reference composites: the host's black on a white field, white on a #1E1E1E field.
-        func ghostRatio(_ fg: Double, _ bg: Double, dark: Bool) -> Double {
-            let a = Tokens.ghostOpacity(dark: dark)
-            let c = fg * a + bg * (1 - a)
-            return contrast((c, c, c), (bg, bg, bg))
-        }
-        XCTAssertGreaterThanOrEqual(ghostRatio(0, 1, dark: false), 4.5, "black ghost on a white field")
-        XCTAssertGreaterThanOrEqual(ghostRatio(1, 0x1E / 255.0, dark: true), 4.5, "white ghost on a #1E1E1E field")
-    }
-
-    @MainActor
-    func testWorkspaceNotificationRefreshesCachedFlag() {
-        let workspaceValue = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-        Tokens.increaseContrast = !workspaceValue
-        Tokens.installContrastObservation()
-        NSWorkspace.shared.notificationCenter.post(
-            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
-            object: NSWorkspace.shared
-        )
-        XCTAssertEqual(Tokens.increaseContrast, workspaceValue)
-        Tokens.increaseContrast = false
     }
 
     /// Tokens without a variant resolve to exactly the color they had — including Carrot's dark

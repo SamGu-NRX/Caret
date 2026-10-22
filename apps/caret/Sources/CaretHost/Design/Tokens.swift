@@ -14,20 +14,23 @@ enum Tokens {
     ) -> NSColor {
         NSColor(name: nil) { appearance in
             let match = appearance.bestMatch(from: [.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua])
-            let isDark = match == .darkAqua || match == .accessibilityHighContrastDarkAqua
-            let raised = (contrastLight != nil || contrastDark != nil || contrastAlpha != nil || contrastDarkAlpha != nil)
-                && (match == .accessibilityHighContrastAqua || match == .accessibilityHighContrastDarkAqua)
-            let hex = isDark
-                ? (raised ? (contrastDark ?? dark) : dark)
-                : (raised ? (contrastLight ?? light) : light)
-            let a: CGFloat
-            if isDark {
-                a = raised ? (contrastDarkAlpha ?? darkAlpha ?? alpha) : (darkAlpha ?? alpha)
-            } else {
-                a = raised ? (contrastAlpha ?? alpha) : alpha
-            }
-            return srgb(hex, alpha: a)
+            let darkMode = match == .darkAqua || match == .accessibilityHighContrastDarkAqua
+            let highContrast = match == .accessibilityHighContrastAqua || match == .accessibilityHighContrastDarkAqua
+                || (Thread.isMainThread && MainActor.assumeIsolated { increaseContrast })
+            let choice = colorChoice(dark: darkMode, highContrast: highContrast, light: light, dark: dark,
+                                     alpha: alpha, darkAlpha: darkAlpha, contrastLight: contrastLight,
+                                     contrastDark: contrastDark, contrastAlpha: contrastAlpha, contrastDarkAlpha: contrastDarkAlpha)
+            return srgb(choice.hex, alpha: choice.alpha)
         }
+    }
+
+    static func colorChoice(dark: Bool, highContrast: Bool, light: UInt32, dark: UInt32, alpha: CGFloat,
+                            darkAlpha: CGFloat?, contrastLight: UInt32?, contrastDark: UInt32?,
+                            contrastAlpha: CGFloat?, contrastDarkAlpha: CGFloat?) -> (hex: UInt32, alpha: CGFloat) {
+        if dark {
+            return (highContrast ? (contrastDark ?? dark) : dark, highContrast ? (contrastDarkAlpha ?? darkAlpha ?? alpha) : (darkAlpha ?? alpha))
+        }
+        return (highContrast ? (contrastLight ?? light) : light, highContrast ? (contrastAlpha ?? alpha) : alpha)
     }
 
     static func srgb(_ hex: UInt32, alpha: CGFloat = 1) -> NSColor {
@@ -40,6 +43,9 @@ enum Tokens {
     }
 
     // MARK: Increase Contrast
+
+    /// Test override; runtime providers use the appearance's accessibility variant directly.
+    @MainActor static var increaseContrast = false
 
     // MARK: Ink
 
