@@ -365,3 +365,36 @@ final class Received: @unchecked Sendable {
         return events
     }
 }
+
+extension CoreBridgeClientTests {
+    func testStartAndHelloPerformsTheHandshakeAsOneLifecycleStep() async throws {
+        let transport = FakeTransport()
+        let client = CoreBridgeClient(transport: transport)
+
+        async let handshake = client.startAndHello()
+        guard let id = transport.awaitRequest() else { return XCTFail("no hello request was written") }
+        XCTAssertEqual(transport.lastSentMethod(), "hello")
+        transport.emit(line: "{\"id\":\(id),\"ok\":true,\"result\":{\"protocol\":1,\"interval_seconds\":2.0,\"max_offer_age_seconds\":30.0,\"max_inline_units\":120,\"workflows\":[]}}")
+
+        let hello = try await handshake
+        XCTAssertEqual(hello.protocolVersion, 1)
+        XCTAssertEqual(client.currentState, .running)
+    }
+
+    func testResumeContextUsesAFreshContextUpdateAfterPause() async throws {
+        let (client, transport) = try startedClient()
+
+        async let paused = client.pauseContext(reason: .locked)
+        guard let pauseID = transport.awaitRequest() else { return XCTFail("no pause request was written") }
+        transport.emit(line: "{\"id\":\(pauseID),\"ok\":true,\"result\":{\"paused\":true}}")
+        _ = try await paused
+
+        async let resumed = client.resumeContext(Fixtures.frame(revision: 8, nearbyText: "new context"))
+        guard let resumeID = transport.awaitRequest() else { return XCTFail("no resume request was written") }
+        XCTAssertEqual(transport.lastSentMethod(), "context.update")
+        transport.emit(line: "{\"id\":\(resumeID),\"ok\":true,\"result\":{\"status\":\"admitted\",\"reason\":\"\",\"revision\":8}}")
+
+        let result = try await resumed
+        XCTAssertEqual(result.revision, 8)
+    }
+}

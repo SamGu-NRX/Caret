@@ -4,9 +4,11 @@ Reference for calling Caret's judge from the Mac app. The routing rules it
 implements are in [input-pipeline.md](input-pipeline.md); this page is the wire
 format.
 
-The app spawns one long-lived process and keeps it alive. Accepted workflow
-execution runs off the request reader, so a pause or newer context frame can
-interrupt it while its acceptance result is pending:
+The app starts one long-lived process, completes `hello`, and keeps it alive.
+Accepted workflow execution runs off the request reader, so a pause or newer
+context frame can interrupt it while its acceptance result is pending. The
+Swift core client provides `startAndHello()` for the start handshake and
+`resumeContext(_:)` as the explicit host-side name for a fresh `context.update`:
 
 ```sh
 python3 -m caret.bridge --fixture fixtures/meeting.json --db .local/caret.sqlite
@@ -38,7 +40,7 @@ A failure replaces `result` with a coded error:
 | `offer.accept` | `proposal_id`, `revision`, `target` | The inline edit to apply, or the workflow's execution result. Action results arrive after the workflow settles. |
 | `offer.dismiss` | `proposal_id` | `{"dismissed": true}` |
 | `workflows.list` | none | Every registered workflow with its execution method |
-| `shutdown` | none | `{"stopped": true}`, then the process exits |
+| `shutdown` | none | `{"stopped": true}` after accepted execution drains, then the process exits |
 
 Error codes: `invalid_json`, `invalid_request`, `invalid_context`,
 `unknown_method`, `acceptance_rejected`, `workflow_error`, `provider_error`,

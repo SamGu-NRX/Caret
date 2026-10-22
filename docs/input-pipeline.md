@@ -55,10 +55,11 @@ The initial routing interval is 2,000 ms, as requested. This is a starting produ
 The v1 bridge now supports pausing without a readable field through
 [`context.pause`](bridge-protocol.md#pause-without-a-readable-field). It clears
 queued context, invalidates the visible offer and discards in-flight results.
-The Swift core client exposes the same request. Host lifecycle notifications
-still need to call it. An accepted workflow is cancelled on pause or on a newer
-context revision. The bridge waits for the workflow's cancellation hook and
-execution to return, then reports `interrupted` with the trigger and
+The Swift core client exposes the same request, plus `startAndHello()` for the
+host's start handshake and `resumeContext(_:)` for the required fresh revision.
+An accepted workflow is cancelled on pause or on a newer context revision. The
+bridge waits for the workflow's cancellation hook and execution to return before
+acknowledging `shutdown`, then reports `interrupted` with the trigger and
 `effects_may_remain: true`; it never resumes the old run or claims rollback.
 
 The fast snapshot comes from Caret's live AX focus/caret reader. Screenpipe adds relevant history, with source IDs and capture times. Do not wait for Screenpipe to rediscover the current caret or send its whole history to Jev each tick. This live field read is part of input handling, not a second history recorder.

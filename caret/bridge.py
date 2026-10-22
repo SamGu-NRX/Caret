@@ -76,6 +76,7 @@ class Bridge:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self.engine: Engine = engine_factory(self._on_invalidate, self._on_publish)
+        self._shutdown_complete = False
 
     # -- Output ----------------------------------------------------------
     #
@@ -161,7 +162,8 @@ class Bridge:
         finally:
             self._stop.set()
             self._wake.set()
-            self.engine.shutdown()
+            if not self._shutdown_complete:
+                self.engine.shutdown()
             worker.join(timeout=2.0)
             # The writer stops only once nothing can enqueue, so the reply to
             # `shutdown` and any event already queued still reach the app.
@@ -210,6 +212,11 @@ class Bridge:
             elif method == "workflows.list":
                 self._reply(request_id, {"workflows": self.registry.catalog()})
             elif method == "shutdown":
+                # Drain accepted execution before acknowledging stop. The host
+                # may close its transport as soon as this reply arrives, so a
+                # reply sent first could cut off the fenced workflow result.
+                self.engine.shutdown()
+                self._shutdown_complete = True
                 self._reply(request_id, {"stopped": True})
                 return True
             else:

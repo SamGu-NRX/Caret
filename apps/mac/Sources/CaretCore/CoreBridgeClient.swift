@@ -76,6 +76,19 @@ public final class CoreBridgeClient: @unchecked Sendable {
         }
     }
 
+    /// Starts the child and completes the protocol handshake before returning.
+    /// A failed hello tears down the transport so callers never retain a
+    /// half-started client.
+    public func startAndHello() async throws -> HelloResult {
+        try start()
+        do {
+            return try await hello()
+        } catch {
+            await shutdown()
+            throw error
+        }
+    }
+
     /// Asks the core to stop, then tears the transport down regardless of
     /// whether it answered. A child that is wedged must not wedge the app's
     /// quit path, so the reply is waited for only until `timeout`.
@@ -106,6 +119,13 @@ public final class CoreBridgeClient: @unchecked Sendable {
 
     public func updateContext(_ frame: ContextFrame) async throws -> ContextUpdateResult {
         try await send(method: "context.update", params: FrameParams(frame: frame), as: ContextUpdateResult.self)
+    }
+
+    /// Resumes ambient routing after a pause with a newly captured frame.
+    /// The host owns the monotonic revision and must send one greater than any
+    /// frame submitted before the pause.
+    public func resumeContext(_ frame: ContextFrame) async throws -> ContextUpdateResult {
+        try await updateContext(frame)
     }
 
     /// Retire ambient offers without capturing a field. Resume by sending a
