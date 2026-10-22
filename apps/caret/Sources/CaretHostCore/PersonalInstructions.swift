@@ -1,60 +1,18 @@
 import Foundation
 
-private extension String {
-    func matchesLuhnDigitRun() -> Bool {
-        let digits = filter(\.isNumber)
-        guard digits.count >= 13, digits.count <= 19 else { return false }
-        var sum = 0
-        var double = false
-        for scalar in digits.unicodeScalars.reversed() {
-            var value = Int(scalar.value - 48)
-            if double { value *= 2; if value > 9 { value -= 9 } }
-            sum += value
-            double.toggle()
-        }
-        return sum % 10 == 0
-    }
-}
-
 /// Brief item 4: what the user tells Caret about themselves and how they write, for the completion prompt (KeyType's
 /// "Custom writing instructions" section). One "about me" for everywhere, plus instructions for one app or one site.
 /// They stay on this Mac: only the local model reads them, and the debug socket shows their lengths, never their text
 /// (`DebugState.SettingsInfo`).
 public struct PersonalInstructions: Codable, Equatable, Sendable {
-    public enum SaveRefusal: String, Error, Equatable, Sendable {
-        case password = "passwords"
-        case cardNumber = "card numbers"
-        case accountNumber = "account numbers"
-        case governmentId = "government ID numbers"
-        case oneTimeCode = "one-time codes"
-        case apiKey = "API keys or tokens"
-
-        public var message: String { "Caret doesn't keep \(rawValue) in memory" }
-    }
-
-    /// Returns the named reason when text states or contains a secret that must not reach local memory.
-    public static func refusal(for text: String) -> SaveRefusal? {
-        let lower = text.lowercased()
-        let stated: [(SaveRefusal, String)] = [
-            (.oneTimeCode, #"(?:my|our|the)\s+(?:[\w'-]+\s+)?(?:one[\s-]*time|otp|2fa|mfa|verification|authentication|login|sms|security)\s*(?:code)?(?:\s+for\s+[\w'-]+){0,3}\s*(?:is|was|:|=)\s*\S"#),
-            (.cardNumber, #"(?:my|our|the)\s+(?:[\w'-]+\s+)?(?:card|credit card|debit card)\s*(?:number|no)?\s*(?:is|was|:|=)\s*\S"#),
-            (.password, #"(?:my|our|the)\s+(?:[\w'-]+\s+)?(?:password|passwd|passcode|passphrase|pin)(?:\s+(?:code|number))?(?:\s+for\s+[\w'-]+){0,3}\s*(?:is|was|:|=)\s*\S"#),
-            (.accountNumber, #"(?:my|our|the)\s+(?:[\w'-]+\s+)?(?:account|routing|iban|swift|bic|sort code|bank account)(?:\s+(?:number|no|code|id))?\s*(?:is|was|:|=)\s*\S"#),
-            (.governmentId, #"(?:my|our|the)\s+(?:[\w'-]+\s+)?(?:ssn|social security|sin|passport|driver license|driving licence|tax id|tin|ein|itin|national id|government id)(?:\s+(?:number|no|code|id))?\s*(?:is|was|:|=)\s*\S"#),
-            (.apiKey, #"(?:my|our|the)\s+(?:[\w'-]+\s+)?(?:api[\s-]*(?:key|token)|access (?:key|token)|secret|private key|client secret|bearer)(?:\s+for\s+[\w'-]+){0,3}\s*(?:is|was|:|=)\s*\S"#)
-        ]
-        for (kind, pattern) in stated where lower.range(of: pattern, options: .regularExpression) != nil { return kind }
-        if lower.range(of: #"\b\d(?:[ -]?\d){12,18}\b"#, options: .regularExpression) != nil,
-           lower.matchesLuhnDigitRun() { return .cardNumber }
-        if lower.range(of: #"\b\d{3}-\d{2}-\d{4}\b"#, options: .regularExpression) != nil { return .governmentId }
-        if lower.range(of: #"\b[a-z]{2}\d{2}(?: ?[a-z0-9]{4}){2,7}(?: ?[a-z0-9]{1,3})?\b"#, options: .regularExpression) != nil { return .accountNumber }
-        let shapes = [#"\b(?:sk|pk|rk)[-_](?:live|test|proj|ant)[-_][A-Za-z0-9_-]{12,}"#, #"\bsk-[A-Za-z0-9_-]{20,}"#, #"\bgh[pousr]_[A-Za-z0-9]{30,}"#, #"\bgithub_pat_[A-Za-z0-9_]{20,}"#, #"\b(?:xox[abprs])-[A-Za-z0-9-]{10,}"#, #"\bAKIA[0-9A-Z]{16}\b"#, #"\bAIza[0-9A-Za-z_-]{35}\b"#, #"\bgsk_[A-Za-z0-9]{20,}"#, #"-----BEGIN [A-Z ]*PRIVATE KEY-----"#, #"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"#]
-        if shapes.contains(where: { lower.range(of: $0, options: .regularExpression) != nil }) { return .apiKey }
-        return nil
+    /// Why `text` must not be saved, or nil: it holds or states a secret (`SensitiveText.kind(in:)`, the helper's
+    /// rule for what memory never keeps). Text that only mentions a kind, as "never suggest passwords" does, is kept.
+    public static func refusal(for text: String) -> SensitiveKind? {
+        SensitiveText.kind(in: text)
     }
 
     @discardableResult
-    public mutating func setAboutMe(_ text: String) -> SaveRefusal? {
+    public mutating func setAboutMe(_ text: String) -> SensitiveKind? {
         if let refusal = Self.refusal(for: text) { return refusal }
         aboutMe = Self.kept(text) ?? ""
         return nil
@@ -76,7 +34,7 @@ public struct PersonalInstructions: Codable, Equatable, Sendable {
     /// Sets one app's instructions; empty or blank text removes them. An identifier that is not a bundle identifier
     /// changes nothing.
     @discardableResult
-    public mutating func setApp(_ bundleID: String, _ text: String) -> SaveRefusal? {
+    public mutating func setApp(_ bundleID: String, _ text: String) -> SensitiveKind? {
         guard CaretSettings.isBundleID(bundleID) else { return nil }
         if let refusal = Self.refusal(for: text) { return refusal }
         apps[bundleID] = Self.kept(text)
@@ -85,7 +43,7 @@ public struct PersonalInstructions: Codable, Equatable, Sendable {
 
     /// Sets one site's instructions; empty or blank text removes them. Anything not in origin form changes nothing.
     @discardableResult
-    public mutating func setSite(_ origin: String, _ text: String) -> SaveRefusal? {
+    public mutating func setSite(_ origin: String, _ text: String) -> SensitiveKind? {
         guard SiteOrigin.isOrigin(origin) else { return nil }
         if let refusal = Self.refusal(for: text) { return refusal }
         sites[origin] = Self.kept(text)
