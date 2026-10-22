@@ -121,21 +121,30 @@ export function mentionedKind(text: string): { kind: SensitiveKind; ssn: boolean
  * answer with it, on capture, on Caret's write and on the user's own edit of answers.md (parse.ts): prose that only
  * mentions a kind ("I built a password reset flow") is not one. Written for answers, not measured.
  */
-export function statedSecret(text: string): SensitiveKind | null {
+export interface StatedSecretMatch { kind: SensitiveKind; value: string }
+
+/** The stated secret and its text span, for callers that must bind refusal to the value itself. */
+export function statedSecretMatch(text: string): StatedSecretMatch | null {
   const t = text.toLowerCase();
   for (const [kind, phrases] of LABEL_PHRASES) {
     for (const p of phrases) {
       const common = COMMON_IN_SENTENCES.has(p.join(" "));
       const phrase = p.map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[\\s-]+");
-      // "Passport number", "password for the demo": a trailing kind word, and a short phrase saying what it is for.
       const tail = "s?(?:\\s+(?:number|no|num|nr|code|id))?(?:\\s+(?:for|of|to|on|at)(?:\\s+[\\w'-]+){1,3})?";
-      const value = common ? "\\S*\\d" : "\\S";
-      const owned = new RegExp(`\\b(?:my|our${common ? "" : "|the"})\\s+(?:[\\w'-]+\\s+)?${phrase}${tail}\\s*(?:is|was|:|=)\\s*${value}`, "u");
-      const bare = new RegExp(`(?:^|[\\n.;!?(]\\s*|\\s)${phrase}${tail}\\s*[:=]\\s*${value}`, "u");
-      if (owned.test(t) || (!common && bare.test(t))) return kind;
+      const value = "(?<secret>[^\\n.;!?]+?)";
+      const suffix = "(?=$|[\\n.;!?])";
+      const owned = new RegExp(`\\b(?:my|our${common ? "" : "|the"})\\s+(?:[\\w'-]+\\s+)?${phrase}${tail}\\s*(?:is|was|:|=)\\s*${value}${suffix}`, "u");
+      const bare = new RegExp(`(?:^|[\\n.;!?(]\\s*|\\s)${phrase}${tail}\\s*[:=]\\s*${value}${suffix}`, "u");
+      const match = owned.exec(t) ?? (!common ? bare.exec(t) : null);
+      const secret = match?.groups?.secret?.trim();
+      if (secret !== undefined && secret !== "") return { kind, value: secret };
     }
   }
   return null;
+}
+
+export function statedSecret(text: string): SensitiveKind | null {
+  return statedSecretMatch(text)?.kind ?? null;
 }
 
 /** The refusal's wording: "Caret doesn't keep card numbers in memory". */
