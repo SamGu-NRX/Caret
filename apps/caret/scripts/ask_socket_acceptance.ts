@@ -17,7 +17,7 @@
 // executor, offer registry and socket server; Jev is a fake that answers from each case's expected
 // plan (as helper/scripts/planner-eval.ts does). The ask field is driven only through the host's
 // debug socket (`ask type`, `ask submit`, `ask key tab|esc`), which calls what the field's keys call.
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -26,6 +26,7 @@ import { parseArgs } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
 import { newLaunchSecret, sendSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
 // B23: caret-screen accepts only a helper that proves it holds this launch's secret, which both get
 // here: the reader on its standard input (--auth-fd 0), the in-process server as an argument.
 const launchSecret = newLaunchSecret();
@@ -154,7 +155,7 @@ server = new HelperServer(HELPER_SOCK, () => helper, (l) => errors.push(l), laun
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
-const procs: ChildProcessWithoutNullStreams[] = [];
+const procs: ChildProcess[] = [];
 process.on("exit", () => {
   for (const p of procs) p.kill("SIGTERM");
   rmSync(tmp, { recursive: true, force: true });
@@ -199,7 +200,8 @@ reader.stderr.on("data", (d: string) => (readerLog += d));
 const executorWindow = () => [...helper.model.windows.values()].find((w) => w.window.title.startsWith(TITLE));
 await until("the executor window in the screen model", () => executorWindow() !== undefined);
 
-const host = spawn(a.caret as string, [], {
+// The host key derived from the launch secret, so the server admits this Caret as the host.
+const host = spawnCaret(a.caret as string, [], launchSecret, {
   env: {
     ...process.env,
     CARET_SCREEN_SOCKET: HELPER_SOCK, CARET_HOST_SOCKET: HOST_SOCK, CARET_SETTINGS_PATH: join(tmp, "settings.json"),
@@ -209,8 +211,8 @@ const host = spawn(a.caret as string, [], {
 });
 procs.push(host);
 let hostLog = "";
-host.stderr.setEncoding("utf8");
-host.stderr.on("data", (d: string) => (hostLog += d));
+host.stderr?.setEncoding("utf8");
+host.stderr?.on("data", (d: string) => (hostLog += d));
 const hostCmd = (cmd: string): Promise<Record<string, unknown>> =>
   new Promise((res, rej) => {
     const c = createConnection(HOST_SOCK);

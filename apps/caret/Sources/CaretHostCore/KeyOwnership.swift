@@ -31,11 +31,53 @@ public enum Surface: Equatable, Sendable {
     case writingList(rows: Int)
 }
 
+/// Which keys take ghost text, a setting with two presets (brief item 6). Only ghost text and its
+/// alternatives read it; fills, action lines, pop-ups and writing fixes keep their keys in both.
+public enum GhostKeys: String, Codable, CaseIterable, Sendable {
+    /// Tab takes the whole suggestion and ⌥→ the next word (brief A18, bug 17).
+    case caret
+    /// Cotypist's, which Sam's hands know: Tab takes the next word, the key above Tab the whole
+    /// suggestion, and ⌥Tab types a real Tab. ⌥→ stays the app's word motion.
+    case cotypist
+}
+
+/// What the menu and settings call each preset. The titles name the keys, since that is what a person chooses between.
+public enum GhostKeysCopy {
+    public static let menuTitle = "Accept Keys"
+
+    public static func title(_ keys: GhostKeys) -> String {
+        switch keys {
+        case .caret: return "Tab Takes All, ⌥→ Takes a Word"
+        case .cotypist: return "Tab Takes a Word, ` Takes All"
+        }
+    }
+
+    /// The settings pop-up's shorter names.
+    public static func choice(_ keys: GhostKeys) -> String {
+        switch keys {
+        case .caret: return "Tab takes all"
+        case .cotypist: return "Tab takes a word"
+        }
+    }
+
+    public static func detail(_ keys: GhostKeys) -> String {
+        switch keys {
+        case .caret: return "Tab takes the whole suggestion, ⌥→ the next word, and Esc closes it."
+        case .cotypist: return "As in Cotypist: Tab takes the next word, ` the whole suggestion, ⌥Tab types a Tab, and Esc closes it."
+        }
+    }
+}
+
 /// A key-down reduced to the classes the ownership table talks about.
 public enum KeyClass: Equatable, Sendable, CustomStringConvertible {
     case tab, shiftTab, up, down, left, right, escape, returnKey, delete, space
     /// ⌥→ with no other modifier: takes the next word of the ghost text (brief A18, bug 17).
     case optionRight
+    /// ⌥Tab with no other modifier: under Cotypist's keys, a real Tab while ghost text shows.
+    case optionTab
+    /// The key above Tab with no modifier (` on ANSI, § on ISO): under Cotypist's keys, the whole
+    /// suggestion. Elsewhere it types, as `typing` does.
+    case aboveTab
     case commandDigit(Int)
     case commandZ
     /// Text-producing keys: letters, digits, punctuation.
@@ -56,6 +98,8 @@ public enum KeyClass: Equatable, Sendable, CustomStringConvertible {
         case .delete: return "delete"
         case .space: return "space"
         case .optionRight: return "opt-right"
+        case .optionTab: return "opt-tab"
+        case .aboveTab: return "above-tab"
         case .commandDigit(let n): return "cmd-\(n)"
         case .commandZ: return "cmd-z"
         case .typing: return "typing"
@@ -63,11 +107,17 @@ public enum KeyClass: Equatable, Sendable, CustomStringConvertible {
         }
     }
 
-    public init(_ key: KeyStroke) {
+    /// `aboveTab` is the key code of the key above Tab on this Mac's keyboard (`KeyStroke.graveKeyCode`
+    /// on ANSI, `KeyStroke.isoSectionKeyCode` on ISO).
+    public init(_ key: KeyStroke, aboveTab: Int64 = KeyStroke.graveKeyCode) {
         let plain = !key.command && !key.control && !key.option
         switch key.keyCode {
         case KeyStroke.tabKeyCode where plain:
             self = key.shift ? .shiftTab : .tab
+        case KeyStroke.tabKeyCode where key.option && !key.command && !key.control && !key.shift:
+            self = .optionTab
+        case aboveTab where plain && !key.shift:
+            self = .aboveTab
         case KeyStroke.escapeKeyCode where plain && !key.shift: self = .escape
         case KeyStroke.downKeyCode where plain && !key.shift: self = .down
         case KeyStroke.upKeyCode where plain && !key.shift: self = .up
@@ -99,20 +149,27 @@ public enum KeyOwnership {
     /// short phrases as in Cursor (brief A18, bug 17). ⌥→ moves the caret a word in every Mac text
     /// view, which is the same motion the word takes. Shift+Tab used to take a word and is the
     /// host's again: in a form it moves focus back, and a second word key was one too many.
-    public static func owns(_ surface: Surface, _ key: KeyClass) -> Bool {
+    ///
+    /// Under Cotypist's keys (`GhostKeys.cotypist`) ghost text owns Tab (the next word), the key
+    /// above Tab (the whole suggestion) and ⌥Tab (a real Tab), and leaves ⌥→ to the app.
+    public static func owns(_ surface: Surface, _ key: KeyClass, keys: GhostKeys = .caret) -> Bool {
         switch surface {
         case .nothing:
             return false
         case .ghost(let candidates):
-            switch key {
-            case .tab, .optionRight, .escape: return true
-            case .down: return candidates >= 2
+            switch (key, keys) {
+            case (.tab, _), (.escape, _): return true
+            case (.optionRight, .caret): return true
+            case (.aboveTab, .cotypist), (.optionTab, .cotypist): return true
+            case (.down, _): return candidates >= 2
             default: return false
             }
         case .alternatives(let count):
-            switch key {
-            case .tab, .optionRight, .up, .down, .escape: return true
-            case .commandDigit(let n): return n <= count
+            switch (key, keys) {
+            case (.tab, _), (.up, _), (.down, _), (.escape, _): return true
+            case (.optionRight, .caret): return true
+            case (.aboveTab, .cotypist), (.optionTab, .cotypist): return true
+            case (.commandDigit(let n), _): return n <= count
             default: return false
             }
         case .actionLine(let numbered, let hasVariants):

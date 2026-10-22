@@ -21,6 +21,8 @@ public final class TypedValueDetector: @unchecked Sendable {
     private let patterns: [(ValueKind, NSRegularExpression)]
     private let timeIn: NSRegularExpression
     private let dateWords: NSRegularExpression
+    private let membershipWords: NSRegularExpression
+    private let phoneWords: NSRegularExpression
     private let lock = NSLock()
     private var cache: [String: [DetectedValue]] = [:]
     /// Texts longer than this are scanned only up to it. Long texts are documents, scanned on their first screenful.
@@ -42,6 +44,9 @@ public final class TypedValueDetector: @unchecked Sendable {
         timeIn = re("(?:[01]?\\d|2[0-3]):[0-5]\\d(?:\\s?[AaPp]\\.?[Mm]\\.?)?|(?:1[0-2]|0?[1-9])\\s?[AaPp]\\.?[Mm]\\.?")
         dateWords = NSRegularExpression.caseInsensitive(
             "\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|mon|tue|wed|thu|fri|sat|sun|today|tomorrow|yesterday|tonight|next|last)[a-z]*\\b|\\d{1,4}[/.-]\\d{1,2}")
+        // The helper's rule (helper/src/fill/kinds.ts readerValue); keep the two word lists the same.
+        membershipWords = NSRegularExpression.caseInsensitive("\\b(?:mileage|miles|frequent[ -]?fl[iy]er|loyalty|rewards?|member(?:ship)?|skymiles|aadvantage)\\b")
+        phoneWords = NSRegularExpression.caseInsensitive("\\b(?:phone|telephone|tel|mobile|cell|fax)\\b")
     }
 
     /// Values in `text`, in order of appearance, with overlaps resolved by kind priority, then length.
@@ -113,13 +118,26 @@ public final class TypedValueDetector: @unchecked Sendable {
         taken.sort { $0.0.location < $1.0.location }
         var seen = Set<DetectedValue>()
         var out: [DetectedValue] = []
-        for (r, kind) in taken {
+        for (r, found) in taken {
             let t = ns.substring(with: r).trimmingCharacters(in: .whitespacesAndNewlines)
             if t.count < 3 { continue }
+            let kind: ValueKind = found == .phone && membershipNumber(t, at: r, in: ns) ? .id : found
             let v = DetectedValue(kind: kind, text: t)
             if seen.insert(v).inserted { out.append(v) }
         }
         return out
+    }
+
+    /// A bare run of digits the data detector read as a phone, on a line whose words before it name a loyalty or
+    /// membership number and no phone: "Mileage Plan: 123456789" is an ID. Read as a phone, it went with the mail's
+    /// phones when a request's budget cut them, and the Mileage Plan field lost its only value (B25 held-13).
+    private func membershipNumber(_ t: String, at r: NSRange, in ns: NSString) -> Bool {
+        guard (6...15).contains(t.count), t.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
+        let lineStart = ns.rangeOfCharacter(from: .newlines, options: .backwards, range: NSRange(location: 0, length: r.location))
+        let from = lineStart.location == NSNotFound ? 0 : lineStart.location + lineStart.length
+        let before = ns.substring(with: NSRange(location: from, length: r.location - from))
+        let br = NSRange(location: 0, length: (before as NSString).length)
+        return membershipWords.firstMatch(in: before, range: br) != nil && phoneWords.firstMatch(in: before, range: br) == nil
     }
 
     /// Typed values for compacted nodes: an editable node's value, or another node's label and value.

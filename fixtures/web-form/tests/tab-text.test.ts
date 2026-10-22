@@ -275,8 +275,57 @@ describe("the text around the caret of the field being typed in (item 7)", () =>
 });
 
 describe("the insert at the caret (item 8)", () => {
-  const insert = (sel: string, expect: string, text: string): string =>
-    `__p4.insertAtCaret(document.querySelector(${JSON.stringify(sel)}), { expect: ${JSON.stringify(expect)}, text: ${JSON.stringify(text)} }, async () => null)`;
+  const insert = (sel: string, expect: string, text: string, replace?: number): string =>
+    `__p4.insertAtCaret(document.querySelector(${JSON.stringify(sel)}), ${JSON.stringify({ expect, text, replace })}, async () => null)`;
+
+  for (const id of ["t", "ta"]) {
+    test(`replaces before the caret in ${id === "t" ? "an input" : "a textarea"}, preserves the suffix, and Undo restores it`, async () => {
+      const tab = await open("/fields");
+      try {
+        for (const after of ["", "and cake."]) {
+          await tab.evaluate(`(() => { const e = document.getElementById("${id}"); e.value = ${JSON.stringify("I like teh ")} + ${JSON.stringify(after)}; e.focus(); e.setSelectionRange(11, 11); })()`);
+          assert.equal((await tab.evaluate<{ outcome: string }>(insert(`#${id}`, "I like teh ", "the ", 4))).outcome, "ok");
+          assert.deepEqual(await tab.evaluate(`(() => { const e = document.getElementById("${id}"); return [e.value, e.selectionStart, e.selectionEnd]; })()`), [`I like the ${after}`, 11, 11]);
+          await tab.evaluate(`document.execCommand("undo")`);
+          assert.equal(await tab.evaluate(`document.getElementById("${id}").value`), `I like teh ${after}`);
+        }
+      } finally { await tab.close(); }
+    });
+
+    test(`refuses replacement longer than the text before the caret in ${id}`, async () => {
+      const tab = await open("/fields");
+      try {
+        await tab.evaluate(`(() => { const e = document.getElementById("${id}"); e.value = "teh suffix"; e.focus(); e.setSelectionRange(4, 4); })()`);
+        assert.equal((await tab.evaluate<{ outcome: string }>(insert(`#${id}`, "teh ", "the ", 5))).outcome, "stale");
+        assert.deepEqual(await tab.evaluate(`(() => { const e = document.getElementById("${id}"); return [e.value, e.selectionStart, e.selectionEnd]; })()`), ["teh suffix", 4, 4]);
+      } finally { await tab.close(); }
+    });
+  }
+
+  test("replaces across editor text nodes with no-break spaces, preserving the suffix and Undo", async () => {
+    const tab = await open("/fields");
+    try {
+      await tab.evaluate(`(() => {
+        const ce = document.getElementById("ce"); ce.innerHTML = 'I like <b>te</b>h&nbsp;<span>and cake.</span>'; ce.focus();
+        const r = document.createRange(); r.setStart(ce.childNodes[2], 2); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      })()`);
+      assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ce", "I like teh ", "the ", 4))).outcome, "ok");
+      assert.deepEqual(await tab.evaluate(`(() => { const f = __p4.fieldText(document.getElementById("ce")); return [f.before.replace(/\\u00a0/g, " "), f.after, getSelection().isCollapsed]; })()`), ["I like the ", "and cake.", true]);
+      await tab.evaluate(`document.execCommand("undo")`);
+      assert.equal(await tab.evaluate(`document.getElementById("ce").innerText.replace(/\\u00a0/g, " ")`), "I like teh and cake.");
+    } finally { await tab.close(); }
+  });
+
+  test("restores the editor caret when a UTF-16 replacement would split a character", async () => {
+    const tab = await open("/fields");
+    try {
+      await tab.evaluate(`(() => { const ce = document.getElementById("ce"); ce.textContent = "I like 😀suffix"; ce.focus(); const s = getSelection(); s.setBaseAndExtent(ce.firstChild, 9, ce.firstChild, 9); })()`);
+      const r = await tab.evaluate<{ outcome: string; detail: string }>(insert("#ce", "I like 😀", "!", 1));
+      assert.equal(r.outcome, "stale");
+      assert.match(r.detail, /text to replace could not be selected/);
+      assert.deepEqual(await tab.evaluate(`(() => { const s = getSelection(); return [document.getElementById("ce").textContent, s.isCollapsed, s.anchorOffset]; })()`), ["I like 😀suffix", true, 9]);
+    } finally { await tab.close(); }
+  });
 
   test("goes in at the caret of the focused textarea, is read back, and the page's own Undo takes it out", async () => {
     const tab = await open("/fields");
@@ -401,6 +450,17 @@ describe("the insert at the caret (item 8)", () => {
     assert.deepEqual([cancelled.outcome, cancelled.insert], ["failed", "unchanged"]);
     assert.equal(await tab2.evaluate(`document.getElementById("ta").value`), "Dear team,");
     await tab2.close();
+    // Review: a replace the page puts back leaves no selection behind for the user's next key to type over. The page's
+    // handler restores the value without touching the selection, so the caret lands after the text Caret selected.
+    const tab3 = await open("/fields");
+    await tab3.evaluate(`(() => {
+      const ta = document.getElementById("ta"); ta.value = "I like teh "; ta.focus(); ta.setSelectionRange(11, 11);
+      ta.addEventListener("input", () => { ta.value = "I like teh "; ta.setSelectionRange(7, 11); });
+    })()`);
+    const refused = await tab3.evaluate<{ outcome: string; insert?: string }>(insert("#ta", "I like teh ", "the ", 4));
+    assert.deepEqual([refused.outcome, refused.insert], ["failed", "unchanged"]);
+    assert.deepEqual(await tab3.evaluate(`[document.getElementById("ta").selectionStart, document.getElementById("ta").selectionEnd]`), [11, 11]);
+    await tab3.close();
   });
 
   test("touches nothing when the text before the caret changed, text is selected, or the field lost focus", async () => {

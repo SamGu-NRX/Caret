@@ -66,6 +66,10 @@ public enum HelperInbound: Equatable, Sendable {
     case fileSaveReply(FileSaveReply)
     /// H14: the files the user kept, for the memory window (`SavedFilesBook`).
     case savedFilesReply(SavedFilesReply)
+    /// The helper's challenge to a hello with `host: true`; `HostHandshake` answers it (`HostAuth`).
+    case hostChallenge(HostChallenge)
+    /// The helper accepted this host's proof: from here on the connection is the host's.
+    case hostAuthenticated
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -105,6 +109,8 @@ public enum HelperInbound: Equatable, Sendable {
         case .fileSaveOffer: return FileSaveOffer.type
         case .fileSaveReply: return FileSaveReply.type
         case .savedFilesReply: return SavedFilesReply.type
+        case .hostChallenge: return HostChallenge.type
+        case .hostAuthenticated: return "hostAuthenticated"
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -197,6 +203,14 @@ public enum HelperInbound: Equatable, Sendable {
             return .fileSaveReply(try JSONDecoder().decode(FileSaveReply.self, from: line))
         case SavedFilesReply.type:
             return .savedFilesReply(try JSONDecoder().decode(SavedFilesReply.self, from: line))
+        case HostChallenge.type:
+            return .hostChallenge(try JSONDecoder().decode(HostChallenge.self, from: line))
+        case "hostAuthenticated":
+            return .hostAuthenticated
+        case HostProof.type:
+            // The host's own proof, echoed back; validated so a malformed line is still counted.
+            _ = try JSONDecoder().decode(HostProof.self, from: line)
+            return .notForConsumer(type: envelope.type)
         case FileSave.type:
             _ = try JSONDecoder().decode(FileSave.self, from: line)
             return .notForConsumer(type: envelope.type)
@@ -291,7 +305,9 @@ public struct LineFramer: Sendable {
 
 /// The host's hello to the helper. `host: true` (B23): only the host app's session counts as "host
 /// connected", which a skill needs before it runs on its own, and the helper binds the work the host
-/// accepts to this session. `capabilities` names what this host understands:
+/// accepts to this session. The helper believes it only after the host's proof (`HostAuth`), so a Caret
+/// without a host key says nothing of a host and is served as any other consumer.
+/// `capabilities` names what this host understands:
 /// - `memoryDocuments` (M1): noticed facts as noticed, with provenance, "Not right" and the documents.
 /// - `fillAll` (D2-04): ⌘1 on a field's fill sends `fillAll` for the whole form.
 /// - `askChoices` (B29): an Ask may come back as a question with choices, answered with `askAnswer`.
@@ -310,6 +326,8 @@ public struct LineFramer: Sendable {
 /// - `askScope` (I2, H1): the host decodes `outOfScope` as a withheld fill field and as a plan refusal, which it says
 ///   in the helper's words, or `AskCopy`'s for a helper that sends none. A host without it is sent `wrongKind` and
 ///   `unknownWindow` in its place.
+/// - `askTask` (slice 1): the desk lists a task question's readings, one picked with Tab, and shows a goal that is not a
+///   page's on its own card. A host without it gets such an Ask read as a fill, as before.
 /// - `routing` (D2-02, H6): only while the user's setting "Caret decides when to help" is on. The
 ///   helper then sends route decisions, and its offers wait for them.
 /// A helper from before any of these ignores the names it does not know (its hello schema is not strict).
@@ -328,14 +346,27 @@ public enum HostHello {
         // H13: pageText, so a page field arrives with the text around its caret for inline text.
         // H1: valueChecks and askScope, since CaretScreenCore's FillWithheld and PlanProposal.ErrorCode decode the
         // reasons they add; without them the helper would send this host the older, less exact reasons.
+        // Slice 1: askTask, since the desk lists a task question's readings (`AskQuestionCard`) and shows a goal that is
+        // not a page's on its own card (`GoalCard`).
         [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability, PageInline.capability,
-         valueChecksCapability, askScopeCapability]
+         valueChecksCapability, askScopeCapability, AskQuestion.taskCapability]
             + (goalFiles ? [GoalFiles.capability] : [])
             + (routing ? [Routing.capability] : [])
     }
 
-    public static func make(pid: Int, routing: Bool, goalFiles: Bool = false) -> Message {
-        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true), capabilities: capabilities(routing: routing, goalFiles: goalFiles))
+    /// The capabilities helper/src/server.ts admitConsumer grants only to a connection whose host proof checked out.
+    /// `localModel` is among them though this host never claims it (`LocalText`).
+    public static let hostOnlyCapabilities: Set<String> = [
+        Routing.capability, fillAllCapability, GoalPlans.capability, GoalFiles.capability, LocalText.capability, PageInline.capability, SavedAnswers.capability,
+    ]
+
+    /// `host`: this Caret holds a host key and will answer the helper's challenge. Without one the hello leaves `host`
+    /// out and claims none of `hostOnlyCapabilities`: the helper would not honor them, and a hello should not say this
+    /// Caret takes what it will not be sent.
+    public static func make(pid: Int, routing: Bool, goalFiles: Bool = false, host: Bool) -> Message {
+        let all = capabilities(routing: routing, goalFiles: goalFiles)
+        return Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: host),
+                       capabilities: host ? all : all.filter { !hostOnlyCapabilities.contains($0) })
     }
 
     /// CaretScreenCore's `Hello` with the capabilities beside it; that mirror has no such key.

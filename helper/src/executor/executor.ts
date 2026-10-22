@@ -1,8 +1,8 @@
 // The executor (deep plan section 7). For each step of a plan:
 //   1. Re-read the step's window and stop if anything it saw at the start has changed under it.
 //   2. If the end state already holds, skip the step. A finished plan therefore reruns as a no-op.
-//   3. Pick the means: a value or focus write, a press, a raise, the calendar, or a URL. A press whose label
-//      reads as send, submit, delete or pay is never made; the run stops and hands it to the user.
+//   3. Pick the means: a value or focus write, a press, a raise or the calendar. A press is made only when the frozen
+//      capability table makes it Caret's (goals/capabilities.ts); any other press, and any URL, is handed to the user.
 //   4. Predict the change, act through a reader verb that rechecks the exact target, re-read the
 //      window, and compare what changed against the prediction. A mismatch stops the run at that step.
 // Real input in a window the task acts in, or a pause or take-over from a consumer, pauses it at the
@@ -13,30 +13,35 @@
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt, randomUUID } from "node:crypto";
-import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
-import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
+import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type FieldInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { heldText as readOf, nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
+import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink } from "./means.ts";
+
+/** What undo says of a calendar event the user changed after Caret added it (the reader's CalendarAdapter.changedByYou). */
+export const EVENT_CHANGED = "You've changed this event, so Caret left it";
 import { ConfirmedFiles } from "../engines/attach.ts";
 import { classifyPress, type RiskClass } from "./risk.ts";
+import { pressVerdict } from "../goals/capabilities.ts";
+import { itemOpened, rowSelected } from "../goals/identity.ts";
 import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import { dependsOn } from "./dependents.ts";
+import { equivalentValue } from "../values/equivalent.ts";
 
 export interface ExecutorDeps {
   model: ScreenModel;
   reader: ReaderLink;
   calendar: CalendarPort | null;
-  urls: UrlOpener | null;
   askJev: AskJev | null;
   publish: (m: TaskProgress) => void;
   /** Every phase with what the activity feed needs beyond taskProgress: who caused it, what remains, whether undo applies. */
   onTask?: (e: TaskEvent) => void;
   /** Registers a listener for changes the model records; returns the function that removes it. */
   onChanges: (listener: (changes: readonly Change[]) => void) => () => void;
-  /** Pause between re-reads while waiting for a press or URL to show its effect. */
+  /** Pause between re-reads while waiting for a press to show its effect. */
   sleep?: (ms: number) => Promise<void>;
   rand?: (n: number) => number;
   /**
@@ -68,6 +73,8 @@ export interface ExecutorDeps {
   journal?: JournalPort;
   /** Where a failure that does not change a task's result is said: the watch a finished run cannot drop. */
   warn?: (line: string) => void;
+  /** Overrides WAIT_FOR_YOU_MS, for tests that let the wait for the user's own navigation run out. */
+  waitForYouMs?: number;
 }
 
 /** What the executor saves of a task; the helper adds the skill it counts for (journal.ts JournalRecord.skillId). */
@@ -203,11 +210,20 @@ const FALLBACKS = [
   { name: "insert", does: "focus, select all and replace" },
 ] as const;
 
-/** How many re-reads a press or URL gets to show its effect, and the pause between them. Assumed, not measured. */
+/** How many re-reads a press or raise gets to show its effect, and the pause between them. Assumed, not measured. */
 const EFFECT_POLLS = 4;
+/**
+ * How long a navigate step the user makes (actor "you") waits for its end state before it is left as is. Assumed, not
+ * measured (CU-COUNSEL-R2): the act grant's own limit (GRANT_MAX_MS), as long as a preview waits for its Tab.
+ */
+export const WAIT_FOR_YOU_MS = 120_000;
+/** How often a wait for the user's navigation checks again without a change to wake it. Assumed: a second reads as prompt. */
+const SELECTION_RECHECK_MS = 1_000;
 /** Extra tries for a failed walk. One cut-short walk in 20 shipping runs stopped a run on a loaded Mac. */
 const WALK_RETRIES = 2;
 const EFFECT_POLL_MS = 150;
+/** Matches the links' ordinary 5 s deadline; a stopped run must not wait forever for an in-flight call. */
+const STOP_RECONCILE_MS = 5000;
 
 interface Task {
   id: string;
@@ -238,6 +254,13 @@ interface Task {
   sourced: { text: string; windowId: string; window: WindowState | undefined }[];
   /** Started from an accepted offer, so it may hold an act grant. */
   granted: boolean;
+  /**
+   * Slice 2: the window a navigate step is waiting for the user to change (actor "you"), or null. Input there is the
+   * transition the step asked for, not a take-over, so it pauses nothing; a stop still ends the wait.
+   */
+  waitingIn: string | null;
+  /** Wakes a wait for the user's navigation when an interrupt arrives; null when nothing waits. */
+  wake: (() => void) | null;
   /** Started by a skill with no Tab (RunOptions.unprompted). */
   /** W2: the caller's recheck of each copied value before its dispatch (RunOptions.guard). */
   guard: ((step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null) | null;
@@ -269,14 +292,48 @@ interface Task {
   startedAt: number;
   /** The journal holds a row for it (ExecutorDeps.journal). */
   journaled: boolean;
+  /** Keep the reconciliation warning when a goal converts an input pause to Stop. */
+  recoveryDetail?: string;
+  /** The pending act the task's journal row holds now (journalSave), kept by a save that only adds evidence. */
+  pending?: PendingAct | null;
+  /** When reconciliation must end: STOP_RECONCILE_MS after the first pause or stop of this run reached it. */
+  reconcileBy?: number;
+}
+
+/**
+ * The user's input that may have reached one value write's field since Caret sent the write (issue #26). A write whose
+ * answer was lost is judged by a read made once the window is the user's again, and a field holding exactly Caret's
+ * value reads the same whether Caret's write landed or the user typed that value. Input on the field from the moment
+ * the write was sent decides it: Caret then leaves the field as it is, and Undo leaves it too.
+ *
+ * It starts at the send, not at the interrupt, because the pause a keystroke causes reaches the executor after the
+ * keystroke did. A watch whose write answered ends with the write; one whose write left an unconfirmed entry stays with
+ * that entry, since the reader's input can arrive after the recovery read (B29), and is dropped once the entry leaves
+ * the ledger.
+ */
+interface InputWatch {
+  task: Task;
+  pid: number;
+  windowId: string;
+  key: string;
+  /** When the write was sent, on the same wall clock the reader's and the page's input times use. */
+  since: number;
+  /** What the user did, in words, once input was seen; null before. */
+  seen: string | null;
+  /** The ledger entry the lost answer left, once there is one. */
+  entry: Extract<LedgerEntry, { kind: "write" }> | null;
 }
 
 /**
  * Lets go of the source windows a task kept, once it can no longer ask a target question: tasks stay in
  * the executor's map for undo, which needs only the write ledger, and a kept window holds all its nodes.
+ * The guard goes too: its checked provenances hold the redacted view of every source window they were read from
+ * (fill/contract.ts READS), past the model's expiry and a site's switch-off. Undo never calls it, and no step runs
+ * after this; a guard that refuses, not none, so a step that somehow did would not write unchecked.
  */
-function releaseSources(task: Task): void {
+export function releaseSources(task: Pick<Task, "sourced" | "guard">): void {
   task.sourced = task.sourced.map((v) => ({ ...v, window: undefined }));
+  if (task.guard !== null) task.guard = () => "the run has ended";
 }
 
 class StepStop extends Error {
@@ -333,6 +390,13 @@ class Restored extends Error {
 
 export class Executor {
   private readonly tasks = new Map<string, Task>();
+  private readonly interruptDeadlines = new Map<string, () => void>();
+  /** Changes a write's act or read-back delivered once a pause or stop was pending: the user may have typed them. */
+  private readonly heardAfterInterrupt = new WeakSet<Change>();
+  /** The value writes on their way, and those a lost answer left in a ledger, whose field's input is watched (InputWatch). */
+  private readonly inputWatches = new Set<InputWatch>();
+  /** Tasks whose ledger may hold a write with a send time (sentAt) not yet marked mayIncludeInput: onWindowRead reads them. */
+  private readonly timed = new Set<Task>();
   /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
   readonly targetChoices: { taskId: string; step: number; chose: string | null; jev: JevTrace }[] = [];
   /** Bumped on every reader connection: a running task stops at its next act when it changes. */
@@ -433,6 +497,8 @@ export class Executor {
       readerId: this.readerId,
       startedAt: Date.now(),
       journaled: false,
+      waitingIn: null,
+      wake: null,
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
@@ -446,6 +512,7 @@ export class Executor {
     if (no !== null) throw new PlanError(no);
     const task = this.need(taskId);
     task.interrupt = null;
+    delete task.reconcileBy;
     task.finished = null;
     task.expected.clear();
     return this.loop(task);
@@ -490,11 +557,23 @@ export class Executor {
    * step boundary (S1 audit #3): a write already queued in the reader behind a slow call is refused there.
    */
   onUserInput(m: UserInput): void {
+    // A click in the app of a watched write counts as input on its field (InputWatch): a click can put text in with
+    // no key (a suggestion list, a context menu's Paste), and it moves focus before the reader reads the move, so the
+    // keys that follow may still name the field that had focus before. The whole app, not the field's window: a
+    // suggestion list can sit outside that window, and a window's frame can be unreadable (PR #33 review). Keys count
+    // only through fieldInput, which leaves out the Esc that stops a run.
+    if (m.kind === "mouse") {
+      for (const watch of this.inputWatches) {
+        if (watch.pid !== m.pid || m.at < watch.since) continue;
+        const frame = this.deps.model.windows.get(watch.windowId)?.window.frame ?? null;
+        this.inputSeen(watch, frame !== null && m.point !== null && contains(frame, m.point) ? "you clicked in its window" : "you clicked in its app");
+      }
+    }
     for (const task of this.tasks.values()) {
       if (!this.acting(task)) continue;
       for (const windowId of task.windows.values()) {
         const w = this.deps.model.windows.get(windowId);
-        if (w === undefined || w.app.pid !== m.pid) continue;
+        if (w === undefined || w.app.pid !== m.pid || task.waitingIn === windowId) continue;
         const inside = m.kind === "mouse" ? m.point !== null && w.window.frame !== null && contains(w.window.frame, m.point) : w.focused;
         if (inside) this.inputIn(task, `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'`);
       }
@@ -508,10 +587,82 @@ export class Executor {
    */
   onPageInput(windowId: string, kind: "key" | "mouse"): void {
     for (const task of this.tasks.values()) {
-      if (!this.acting(task) || ![...task.windows.values()].includes(windowId)) continue;
+      if (!this.acting(task) || ![...task.windows.values()].includes(windowId) || task.waitingIn === windowId) continue;
       const title = this.deps.model.windows.get(windowId)?.window.title ?? "the page";
       this.inputIn(task, `${kind === "key" ? "typing" : "a click"} in '${title}'`);
     }
+  }
+
+  /**
+   * A key the user pressed that may have changed text (protocol.ts FieldInput): input on every watched write's field it
+   * may have reached. A key the reader could not place in a window or at an element counts for every field it could
+   * have reached. Watches are kept per write, not per running task, so a stopped run's write still hears it.
+   */
+  onFieldInput(m: FieldInput): void {
+    for (const watch of this.inputWatches) {
+      if (watch.pid !== m.pid || m.at < watch.since) continue;
+      if ((m.windowId !== null && m.windowId !== watch.windowId) || (m.key !== null && m.key !== watch.key)) continue;
+      this.inputSeen(watch, m.key === null ? "you typed in its window" : "you typed in it");
+    }
+  }
+
+  /**
+   * Keeps a watch with the ledger entry its write left, until the entry leaves the ledger, for the reader's input that
+   * arrives after the read (B29). The entry's send time is kept on it (onWindowRead).
+   */
+  private keepWatch(watch: InputWatch, entry: Extract<LedgerEntry, { kind: "write" }>): void {
+    watch.entry = entry;
+    if (entry.windowId.startsWith("page:")) {
+      entry.sentAt ??= watch.since;
+      this.timed.add(watch.task);
+    }
+    this.inputWatches.add(watch);
+  }
+
+  /**
+   * A reader or page walk of this window reached the model. A page keeps its record of the user's input for only 30 s
+   * (PageControl.inputAt), so every walk is checked: a written field that shows the user's input since its write was
+   * sent (LedgerEntry sentAt) marks the entry for good, and Undo leaves it however late it comes. Every walk, not only
+   * one that changes the text, since the user may type the value the field already shows; recovered entries included
+   * (PR #33 review).
+   */
+  onWindowRead(windowId: string): void {
+    const w = this.deps.model.windows.get(windowId);
+    if (w === undefined) return;
+    for (const task of this.timed) {
+      let open = false;
+      for (const e of task.ledger) {
+        if (e.kind !== "write" || e.sentAt === undefined || e.mayIncludeInput === true) continue;
+        open = true;
+        if (e.windowId !== windowId) continue;
+        const at = w.nodes.get(e.key)?.inputAt;
+        if (at === undefined || at < e.sentAt) continue;
+        e.mayIncludeInput = true;
+        this.saveEvidence(task);
+      }
+      if (!open) this.timed.delete(task);
+    }
+  }
+
+  /** Input on a watched write's field: noted for its recovery read, and an entry already in the ledger is kept from Undo. */
+  private inputSeen(watch: InputWatch, why: string): void {
+    const e = watch.entry;
+    if (e !== null && !watch.task.ledger.includes(e)) {
+      this.inputWatches.delete(watch);
+      return;
+    }
+    watch.seen ??= why;
+    if (e === null || e.mayIncludeInput === true) return;
+    e.mayIncludeInput = true;
+    this.saveEvidence(watch.task);
+  }
+
+  /**
+   * Saves input evidence to a task's journal row at once (PR #33 review), keeping the act the row says is on its way. An
+   * undo saves its own row at its end, which carries the flag. An ended run has no row: its undo lives in memory.
+   */
+  private saveEvidence(task: Task): void {
+    if (task.journaled && !task.undoing) this.journalSave(task, task.pending ?? null);
   }
 
   private acting(task: Task): boolean {
@@ -525,6 +676,7 @@ export class Executor {
     else {
       task.interrupt = { kind: "pause", by: "input", why };
       this.revokeGrant(task);
+      task.wake?.();
     }
   }
 
@@ -549,8 +701,11 @@ export class Executor {
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to pause`);
     if (task.interrupt?.kind === "stop" || (by === "input" && task.interrupt?.by === "input")) return;
+    // The host's word that the user is typing or clicking is what a navigate step the user makes waits for.
+    if (by === "input" && task.waitingIn !== null) return;
     task.interrupt = { kind: "pause", by, why: takeOver ? "you took over" : by === "input" ? "your input" : "you paused it" };
     this.revokeGrant(task);
+    task.wake?.();
   }
 
   /** Ends a running task at its next step boundary, or a paused one now. What it wrote stays; undo restores it. */
@@ -562,13 +717,14 @@ export class Executor {
       releaseSources(task);
       // A paused run kept its row; stopped, it ends like any run (B23 second review: the row stayed for every start).
       this.journalDrop(task);
-      this.stopped(task, this.stepAt(task), `stopped by you ${this.boundary(task)}`, "you", "you");
+      this.stopped(task, this.stepAt(task), `stopped by you ${this.boundary(task)}${task.recoveryDetail === undefined ? "" : `; ${task.recoveryDetail}`}`, "you", "you");
       this.reportUses(task, "stopped");
       return;
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to stop`);
     task.interrupt = { kind: "stop", by: "control", why: "you stopped it" };
     this.revokeGrant(task);
+    task.wake?.();
   }
 
   /**
@@ -592,6 +748,7 @@ export class Executor {
     if (task.finished !== null || task.interrupt?.kind === "stop") return;
     task.interrupt = { kind: "stop", by: "control", why: r.why, revoked: r };
     this.revokeGrant(task);
+    task.wake?.();
   }
 
   /**
@@ -630,6 +787,9 @@ export class Executor {
       }
       const windowId = task.windows.get(JSON.stringify(end.window));
       if (windowId !== undefined) {
+        // The model no longer holds the window a remaining step acts in (closed, or expired: ScreenModel.expire), so no
+        // act there can be checked; the run's grant goes now rather than at that step.
+        if (!this.deps.model.windows.has(windowId)) return { why: "Caret no longer reads the window it acts in", by: "screen" };
         const r = ask(this.actionIn(windowId));
         if (r !== null) return r;
       }
@@ -725,6 +885,7 @@ export class Executor {
     }
     // The run is over; a stop or pause still pending from it (a write that ended in axError) is not this undo's.
     task.interrupt = null;
+    delete task.reconcileBy;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
     const remaining: LedgerEntry[] = [];
     // Entries whose undo ended for good: restored, never landed, or refused for a reason that will not pass (the field
@@ -772,6 +933,7 @@ export class Executor {
       task.ledger = remaining.reverse();
     } finally {
       task.undoing = false;
+      for (const watch of this.inputWatches) if (watch.task === task && (watch.entry === null || !task.ledger.includes(watch.entry))) this.inputWatches.delete(watch);
       this.revokeGrant(task);
       // A run a crash interrupted keeps its row while some of it may still be restored: what this undo was stopped
       // before, or could not restore for a passing reason (B23 review). What it found changed or replaced stays in
@@ -833,7 +995,10 @@ export class Executor {
       const it = task.interrupt;
       if (e instanceof Interrupted && it !== null) {
         task.interrupt = null;
+        delete task.reconcileBy;
         const at = this.stepAt(task);
+        if (e.message !== "") task.recoveryDetail = e.message;
+        else delete task.recoveryDetail;
         const recovery = e.message === "" ? "" : `; ${e.message}`;
         if (it.kind === "stop") {
           task.finished = "stopped";
@@ -894,6 +1059,11 @@ export class Executor {
     if (end.kind === "calendarEvent") return this.calendarStep(task, i, end);
 
     const w = await this.refresh(task, end.window);
+    // A pick this run made but could not verify (readUnconfirmed) shows the option's name whether or not the option was
+    // pressed, so the control cannot show the step already holds (PR #21 review). Checking it is the user's.
+    if (end.kind === "valueEquals" && task.ledger.some((e) => e.kind === "write" && e.step === i && e.unconfirmed === true && pageCombobox(e.role, e.windowId))) {
+      throw StepStop.handoff(`Caret cannot tell whether '${end.value}' was picked for '${step.says}', so checking it is yours`);
+    }
     if (await this.holds(task, i, w, end)) {
       task.skipped++;
       this.progress(task, "skipped", i, "already true");
@@ -925,10 +1095,12 @@ export class Executor {
       if (end.kind === "valueEquals" && node.editable === true) return this.writeStep(task, i, w, node, "value", end.value, step);
       if (end.kind === "focused" && step.via === undefined) return this.writeStep(task, i, w, node, "focused", "", step);
     }
+    if (end.kind === "rowSelected" || end.kind === "itemOpened") return this.navigateStep(task, i, w, end, step);
     if (step.via === undefined) throw StepStop.stop("unreachable", `no means to reach '${step.says}': the target is not a field and the step names no press or URL`);
     if (end.kind === "fieldsRevealed" && step.via.kind !== "press") throw StepStop.stop("unreachable", `'${step.says}' reveals fields only through a press`);
     if (step.via.kind === "press") return this.pressStep(task, i, w, step.via.target, step);
-    return this.urlStep(task, i, w, step.via.url, step);
+    if (step.via.kind === "navigate") throw StepStop.stop("unreachable", `'${step.says}' navigates, but its end state is not one a navigation reaches`);
+    return this.urlStep(step.via.url);
   }
 
   // MARK: - means
@@ -938,6 +1110,9 @@ export class Executor {
       task.handedOff = { action: "sensitive", what: "a password field", windowId: w.window.windowId };
       throw StepStop.handoff(`'${step.says}' targets a password field; that is left to you`);
     }
+    // A page field that holds text the page does not send (Node.unread) is never written over: Caret cannot say what
+    // it would replace, nor undo it to that.
+    if (attribute === "value" && node.unread === true) throw StepStop.stop("changed", `the field for '${step.says}' changed since Caret planned it and holds text Caret does not read, so Caret did not write over it`);
     const before = node.value ?? "";
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;
     this.checkInterrupt(task);
@@ -946,6 +1121,8 @@ export class Executor {
     const mark = attribute === "value" ? randomUUID() : undefined;
     const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value, taskId: task.id, ...(mark === undefined ? {} : { mark }) };
     await this.deps.beforeAct?.(task.id, i);
+    // Every value write this step sends, with the input seen on its field (InputWatch).
+    const watches: InputWatch[] = [];
     const sent = async (v: ReaderVerb): Promise<Change[]> => {
       // A value from memory must still be what its entry holds at each dispatch, the insert fallback's
       // included, after everything awaited before it: the user may forget or pause the entry mid-run.
@@ -961,6 +1138,12 @@ export class Executor {
       const stale = attribute === "value" ? (task.guard?.(i, value, { windowId: nowW.window.windowId, node: nowNode ?? node, window: nowW }) ?? null) : null;
       if (stale !== null) throw StepStop.stop("changed", `${stale}, so Caret did not write it`);
       let answered = false;
+      // Registered right before the send, which act makes before its first await.
+      const watch: InputWatch | null = attribute === "value" ? { task, pid: w.app.pid, windowId: w.window.windowId, key: node.key, since: Date.now(), seen: null, entry: null } : null;
+      if (watch !== null) {
+        this.inputWatches.add(watch);
+        watches.push(watch);
+      }
       try {
         const changes = await this.act(task, v, w.window.windowId);
         answered = true;
@@ -968,7 +1151,11 @@ export class Executor {
         // judging it or trying another means; a stop revokes writes, not this read-only recovery check.
         const readBack = changes.some((c) => c.key === node.key && (c.kind === "value" || c.kind === "added"));
         if (attribute === "value" && (!readBack || !this.window(w.window.windowId).nodes.has(node.key))) {
-          return [...changes, ...(await this.walk(this.window(w.window.windowId)))];
+          // Bounded by Stop's deadline like the act itself; a timeout here goes on to reconciliation (Greptile review).
+          const read = await this.untilInterruptDeadline(task, this.walk(this.window(w.window.windowId), task), "no read-back after interruption");
+          // Which of the walk's changes came before a pause or stop arrived during it is unknown, so none counts as before.
+          if (task.interrupt !== null) for (const c of read) this.heardAfterInterrupt.add(c);
+          return [...changes, ...read];
         }
         return changes;
       } catch (e) {
@@ -991,12 +1178,40 @@ export class Executor {
         // second failure keeps undo. S1 recognizes only original, intended, or a proper intended prefix.
         if (attribute === "value" && (answered || e instanceof UnconfirmedAct)) {
           const entry: Extract<LedgerEntry, { kind: "write" }> = { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true };
+          if (watch !== null) {
+            this.keepWatch(watch, entry);
+            if (watch.seen !== null) entry.mayIncludeInput = true;
+          }
           this.addLedger(task, entry);
-          const detail = await this.readUnconfirmed(task, entry);
-          if (task.interrupt !== null) throw new Interrupted(detail ?? "");
-          throw StepStop.stop("reader", `${e instanceof Error ? e.message : String(e)}${detail === null ? "" : `; ${detail}`}`);
+          // What Undo will do, so the report promises no more. A Yes/No question is answered by a press, which undo
+          // cannot take back (PageEngineLink.pressAnswer); a page radio group's undo only clears Caret's own pick, so it
+          // cannot choose an earlier answer again (PageEngineLink.checkRadio).
+          const pressed = node.subrole === PAGE_SUBROLE.pressGroup;
+          const noUndo = pressed ? "Caret cannot take back a press, so change the answer yourself if it is wrong" : node.subrole === "AXFieldset" && before !== "" ? `Undo cannot put back the earlier choice ${JSON.stringify(before)}, so change it yourself if needed` : null;
+          const recovery = await this.readUnconfirmed(task, entry, noUndo, pressed, watch);
+          if (task.interrupt !== null) {
+            if (recovery.state === "landed") {
+              delete entry.unconfirmed;
+              this.expectedFor(task, entry.windowId).set(entry.key, value);
+              await this.verified(task, i, step);
+              task.next = i + 1;
+              this.journalSave(task, null);
+              const when = task.interrupt.kind === "stop" ? "stop" : "pause";
+              const what = node.label?.trim() || step.says;
+              throw new Interrupted(`${pressed ? "Answered" : "Written"} before ${when}: ${what}. ${noUndo ?? "Undo puts it back"}.`);
+            }
+            if (recovery.state === "untouched") {
+              task.ledger.splice(task.ledger.indexOf(entry), 1);
+              this.journalSave(task, null);
+            }
+            throw new Interrupted(recovery.detail ?? "");
+          }
+          throw StepStop.stop("reader", `${e instanceof Error ? e.message : String(e)}${recovery.detail === null ? "" : `; ${recovery.detail}`}`);
         }
         throw e;
+      } finally {
+        // A watch stays only with an entry a lost answer left (InputWatch).
+        if (watch !== null && (watch.entry === null || !task.ledger.includes(watch.entry))) this.inputWatches.delete(watch);
       }
     };
     let seen: Change[];
@@ -1054,17 +1269,47 @@ export class Executor {
       // An earlier exact read-back remains evidence that the full write landed, even if the user
       // shortened it before the answer arrived. That later prefix is not an interrupted Caret write.
       const recorded = seen.some((c) => (c.kind === "value" || (c.kind === "added" && seen.some((r) => r.kind === "removed" && r.key === node.key))) && c.key === node.key && c.after === value);
+      // Issue #26, PR #33 review: the user's input on the field since the first send makes whatever it holds possibly
+      // theirs, a read-back of exactly Caret's value included, so Undo leaves it.
+      const since = watches[0]?.since;
+      const typed = watches.some((x) => x.seen !== null) || (since !== undefined && now?.inputAt !== undefined && now.inputAt >= since);
+      const kept = (entry: Extract<LedgerEntry, { kind: "write" }>): void => {
+        if (typed) entry.mayIncludeInput = true;
+        // Set before the entry is saved, so the row that replaces the pending one keeps it (PR #33 review).
+        // Only a page field reports the user's input in a walk (PageControl.inputAt), so only a page write is timed: a
+        // native one would keep its task in every walk's scan for nothing (PR #33 review).
+        if (since !== undefined && w.window.windowId.startsWith("page:")) {
+          entry.sentAt = since;
+          this.timed.add(task);
+        }
+        this.addLedger(task, entry);
+        if (since === undefined) return;
+        // Under a pause or stop the reader's input can still arrive after this read (B29): the watch stays with the entry.
+        const last = watches.at(-1);
+        if (task.interrupt !== null && last !== undefined) {
+          last.since = since;
+          this.keepWatch(last, entry);
+        }
+      };
       if (now === undefined) {
-        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true });
+        kept({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true });
+      } else if (readOf(now) === null) {
+        // A page field that now holds text the page does not send: changed by someone besides Caret's write, which the
+        // page answered for (engines/page-link.ts), so it may hold another's text and Undo leaves it.
+        kept({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, mayIncludeInput: true });
       } else if ((now.value ?? "") !== before) {
         const held = now.value ?? "";
         const ours = sameValue(node, held, value);
+        // S1 takes a proper prefix for part of Caret's write only from a reading heard before a pause or stop handed the
+        // window back; after that the user may have typed it (PR #21 review), so it may include input.
+        const reading = seen.findLast((c) => c.key === node.key && (c.kind === "value" || c.kind === "added"));
+        const heard = reading !== undefined && reading.after === held && !this.heardAfterInterrupt.has(reading);
         // Successful numeric read-back keeps its existing equivalence rule, not S1's faulted-prefix rule.
-        const partial = !recorded && !ours && partialReplacement(before, value, held);
-        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, ...(partial ? { unconfirmed: true, partialWrite: true } : ours ? {} : { mayIncludeInput: true }) });
+        const partial = !typed && !recorded && !ours && heard && partialReplacement(before, value, held);
+        kept({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, ...(partial ? { unconfirmed: true, partialWrite: held } : ours ? {} : { mayIncludeInput: true }) });
       }
-      if (now === undefined || (now.value ?? "") !== value || !recorded) {
-        const detail = `mismatch: expected ${prediction}; ${now === undefined ? `the field is gone; before the write it held ${JSON.stringify(before)}` : fieldContents(before, now.value ?? "")}`;
+      if (now === undefined || readOf(now) !== value || !recorded) {
+        const detail = `mismatch: expected ${prediction}; ${now === undefined ? `the field is gone; before the write it held ${JSON.stringify(before)}` : fieldContents(before, readOf(now))}`;
         if (task.interrupt !== null) throw new Interrupted(detail);
         throw StepStop.stop("mismatch", detail);
       }
@@ -1139,8 +1384,10 @@ export class Executor {
     const seen = [...e.seen, ...(await this.walk(this.window(w.window.windowId)))];
     this.checkInterrupt(task);
     const now = this.window(w.window.windowId).nodes.get(node.key);
-    if (now === undefined || (now.value ?? "") !== before) {
-      throw StepStop.stop("reader", `${e.message}; Caret read '${clip(label)}' back as '${clip(now?.value ?? "(gone)")}', not '${clip(before)}' as before, so it stopped`);
+    const held = now === undefined ? undefined : readOf(now);
+    if (held !== before) {
+      const read = held === undefined ? "as '(gone)'" : held === null ? "holding other text, which the page does not send" : `as '${clip(held)}'`;
+      throw StepStop.stop("reader", `${e.message}; Caret read '${clip(label)}' back ${read}, not '${clip(before)}' as before, so it stopped`);
     }
     // The control itself may have shown the filter and gone back; any other field that changed means more is at work.
     this.checkUnexpected(seen, node.key);
@@ -1164,21 +1411,22 @@ export class Executor {
     return [...(this.tasks.get(taskId)?.left ?? [])];
   }
 
+  /**
+   * G1 (CU-COUNSEL-R2 Q3): a press is made only on a "press" verdict from the frozen capability table (goals/capabilities.ts
+   * pressVerdict, with risk.ts narrowing inside it), and only for a step that checks that capability's own verifier. Every
+   * other press is the user's, said in the verdict's words. Before G1 this consulted risk.ts alone, so any plan could have
+   * Caret press a SAFE_PRESSES label (Archive, Save draft, Back) that no capability describes or verifies.
+   */
   private async pressStep(task: Task, i: number, w: WindowState, target: Target, step: Step): Promise<void> {
     const node = await this.resolve(task, i, w, target, step.says);
     const label = (node.label ?? "").trim();
-    const risk = classifyPress({ label, windowKind: w.window.kind, bundleId: w.app.bundleId });
-    if (risk === "system") {
-      task.handedOff = { action: RISK_ACTION.system, what: label === "" ? "a control" : `'${label}'`, windowId: w.window.windowId };
-      throw StepStop.handoff(`${label === "" ? "This control" : `'${label}'`} is in a system prompt; Caret leaves that press to you`);
+    const verdict = pressVerdict({ label, role: node.role, windowKind: w.window.kind, bundleId: w.app.bundleId, page: w.window.kind === PAGE_WINDOW_KIND }, null);
+    if (verdict.kind === "handoff") {
+      if (verdict.why !== "unverifiable") task.handedOff = { action: RISK_ACTION[verdict.why], what: label === "" ? "a control" : `'${label}'`, windowId: w.window.windowId };
+      throw StepStop.handoff(sentence(verdict.says));
     }
-    if (label === "") throw StepStop.handoff(`the control for '${step.says}' has no label, so its effect cannot be classified; press it yourself`);
-    // Only a press the table positively allows is made (B22 review): one it cannot classify is the user's too.
-    if (risk === "unclassified") throw StepStop.handoff(`Caret cannot tell what pressing '${label}' does, so it leaves that press to you`);
-    if (risk !== "safe") {
-      task.handedOff = { action: RISK_ACTION[risk], what: `'${label}'`, windowId: w.window.windowId };
-      throw StepStop.handoff(`'${label}' reads as ${risk}; Caret leaves that press to you`);
-    }
+    // The capability names the end state that verifies it; a step checking anything else would press on its say-so alone.
+    if (step.end.kind !== verdict.capability.verifier) throw StepStop.handoff(`Caret presses '${label}' only to check that it shows new fields, and this step checks something else; you press it`);
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
     await this.deps.beforeAct?.(task.id, i);
@@ -1206,13 +1454,79 @@ export class Executor {
     await this.verified(task, i, step);
   }
 
-  private async urlStep(task: Task, i: number, w: WindowState, url: string, step: Step): Promise<void> {
-    if (this.deps.urls === null) throw StepStop.stop("notConfigured", "no URL opener is configured");
+  /**
+   * G2 (CU-COUNSEL-R2 Q3): Caret opens no URL itself. The opener this replaced dispatched outside act(): no grant, no
+   * authorization and no pending-act journal row. Plan.schema keeps openUrl so saved journal rows still parse.
+   */
+  private urlStep(url: string): never {
+    throw StepStop.handoff(`open ${url} yourself`);
+  }
+
+  /**
+   * Slice 2: a row selected or an item opened, which did not hold when the step started (runStep checked). The row must
+   * still be the exact one the plan named. With actor "you" the user makes the transition: the executor waits for the end
+   * state (the weak form of itemOpened), acts on nothing and journals nothing. Caret's own selection and click are slice 2
+   * steps 3 and 4 (CU-COUNSEL-R2); until they land, a step asking Caret to make them is handed to the user.
+   */
+  private async navigateStep(task: Task, i: number, w: WindowState, end: Extract<EndState, { kind: "rowSelected" | "itemOpened" }>, step: Step): Promise<void> {
+    const via = step.via;
+    if (via?.kind !== "navigate") throw StepStop.stop("unreachable", `'${step.says}' names no navigation`);
+    await this.resolve(task, i, w, via.target, step.says);
+    const verb = via.capability === "openItem" ? "open" : "select";
+    if (via.actor === "caret") throw StepStop.handoff(`Caret does not ${verb} list rows itself yet; ${verb} it yourself`);
+    return this.waitForYou(task, i, w.window.windowId, end, step);
+  }
+
+  /**
+   * Waits up to WAIT_FOR_YOU_MS for the user to reach `end` in window `windowId`, checking again on every change the model
+   * records there (never a tight poll). A stop, pause or revoke ends the wait as it ends any step; the user's own input in
+   * that window does not, since it is what the step waits for. Past the limit the step is left as is, a hand-off. Once
+   * the end state holds, what the task expects of the window's fields is read afresh: the detail may have replaced them.
+   */
+  private async waitForYou(task: Task, i: number, windowId: string, end: Extract<EndState, { kind: "rowSelected" | "itemOpened" }>, step: Step): Promise<void> {
     this.checkInterrupt(task);
-    this.progress(task, "acting", i, `open ${url}; expect: ${step.says}`);
-    await this.deps.urls.open(url);
-    await this.awaitEffect(task, i, step, w.window.windowId, []);
+    this.progress(task, "acting", i, `waiting for you: ${step.says}`);
+    const limit = Date.now() + (this.deps.waitForYouMs ?? WAIT_FOR_YOU_MS);
+    task.waitingIn = windowId;
+    try {
+      for (;;) {
+        this.checkSession(task);
+        this.checkInterrupt(task);
+        const now = this.window(windowId);
+        if ([...now.nodes.values()].some((n) => n.role === "AXSheet")) throw StepStop.stop("sheet", `a sheet covers '${now.window.title}'`, "screen");
+        if (await this.holds(task, i, now, end)) break;
+        const left = limit - Date.now();
+        if (left <= 0) throw StepStop.handoff(`Caret waited ${waited(this.deps.waitForYouMs ?? WAIT_FOR_YOU_MS)} for this and left it as is: ${step.says}`);
+        await this.nextChange(task, windowId, left);
+      }
+    } finally {
+      task.waitingIn = null;
+    }
+    this.expectedFor(task, windowId).clear();
+    for (const [key, text] of editableValues(this.window(windowId))) this.expectedFor(task, windowId).set(key, text);
     await this.verified(task, i, step);
+  }
+
+  /**
+   * Resolves on the next change the model records in `windowId` (or a window closing), an interrupt, or after `ms`, and
+   * at least every SELECTION_RECHECK_MS: a snapshot that only changes a row's selection records no change (model.ts
+   * compares text and membership), so rowSelected would otherwise be checked again only when the wait ran out.
+   */
+  private nextChange(task: Task, windowId: string, ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let timer: NodeJS.Timeout | undefined;
+      const done = (): void => {
+        off();
+        clearTimeout(timer);
+        task.wake = null;
+        resolve();
+      };
+      const off = this.deps.onChanges((cs) => {
+        if (cs.some((c) => c.windowId === windowId)) done();
+      });
+      timer = setTimeout(done, Math.min(ms, SELECTION_RECHECK_MS));
+      task.wake = done;
+    });
   }
 
   private async calendarStep(task: Task, i: number, end: Extract<EndState, { kind: "calendarEvent" }>): Promise<void> {
@@ -1272,25 +1586,33 @@ export class Executor {
     if (verb.kind === "write" || verb.kind === "press" || verb.kind === "raise") this.authorizeAct(task, windowId);
     // Saved before the reader gets it: a crash while it is on its way leaves a row that says what may have landed.
     if (verb.kind === "write" && verb.mark !== undefined) {
-      this.journalSave(task, { kind: "write", step: task.next, pid: verb.pid, windowId: verb.windowId, key: verb.key, role: verb.role, before: verb.expect, value: verb.value, mark: verb.mark });
+      this.journalSave(task, { kind: "write", step: task.next, pid: verb.pid, windowId: verb.windowId, key: verb.key, role: verb.role, before: verb.expect, value: verb.value, mark: verb.mark, ...(verb.attribute === "focused" ? {} : { sentAt: Date.now() }) });
     } else if (verb.kind === "press") this.journalSave(task, { kind: "press", step: task.next, label: verb.label, windowId: verb.windowId });
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
-      for (const c of cs) if (c.windowId === windowId) seen.push(c);
+      for (const c of cs) {
+        if (c.windowId !== windowId) continue;
+        seen.push(c);
+        if (task.interrupt !== null) this.heardAfterInterrupt.add(c);
+      }
     });
     try {
       let r: VerbResult;
       try {
-        r = await this.deps.reader.run(verb);
+        r = await this.waitForAct(task, verb);
       } catch (e) {
         throw new UnconfirmedAct(e instanceof Error ? e.message : String(e));
       }
       // The page left or submitted after a press: nothing more runs, whatever else came in meanwhile (B28).
       if (r.pageChanged !== undefined) throw new PageChanged(`${r.pageChanged.join(", ")}${r.detail === null ? "" : ` (${r.detail})`}`);
-      // A pause, stop or take-over came in while the verb was on its way (a stop or take-over also revoked
-      // the grant, so the reader refused). The reader acted on none of these outcomes, so the run ends as the
-      // user asked, not as a reader failure. An axError may follow an act that landed, so it keeps its path.
-      if (r.outcome !== "ok" && r.outcome !== "axError" && task.interrupt !== null) throw new Interrupted();
+      // An interruption wins over a refusal as the reason the run ends. Only notAllowed can follow a value that went in
+      // (the grant ended after the setter ran), so only it goes to reconciliation. changed, noElement, notSameElement and
+      // the rest mean Caret wrote nothing: a tick the user made meanwhile reads as changed (PageEngineLink.notUnderIt),
+      // and reconciling it would let Undo clear their own tick (PR #21 review).
+      if (r.outcome !== "ok" && r.outcome !== "axError" && task.interrupt !== null) {
+        if (verb.kind === "write" && verb.attribute !== "focused" && r.outcome === "notAllowed") throw new UnconfirmedAct(`the reader answered ${r.outcome} after interruption`);
+        throw new Interrupted();
+      }
       if (r.outcome === "focusMoved") throw new FocusMoved(r.detail ?? "focus moved");
       if (r.outcome === "changed" && r.restored === true) throw new Restored(`the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`, r.detail, [...seen]);
       // Use the outcome, not text inside the detail: a refused field may itself contain "axError".
@@ -1302,6 +1624,34 @@ export class Executor {
       off();
     }
     return seen;
+  }
+
+  /** Revocation ends new acts, not the answer to one already dispatched. Bound the remaining wait from that moment. */
+  private waitForAct(task: Task, verb: ReaderVerb): Promise<VerbResult> {
+    return this.untilInterruptDeadline(task, this.deps.reader.run(verb), "no answer to the in-flight act after interruption");
+  }
+
+  /**
+   * `work`, or a rejection with `timedOut` at the task's reconcileBy, which revokeGrant sets when the first pause or
+   * stop reaches it. The in-flight act and its recovery read share that one deadline, however long either began before.
+   */
+  private async untilInterruptDeadline<T>(task: Task, work: Promise<T>, timedOut: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let start = (): void => {};
+    const deadline = new Promise<never>((_, reject) => {
+      start = () => {
+        if (timer !== undefined || task.reconcileBy === undefined) return;
+        timer = setTimeout(() => reject(new Error(timedOut)), Math.max(0, task.reconcileBy - Date.now()));
+      };
+    });
+    this.interruptDeadlines.set(task.id, start);
+    start();
+    try {
+      return await Promise.race([work, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      this.interruptDeadlines.delete(task.id);
+    }
   }
 
   // MARK: - the recovery journal (B23, S1 audit #11)
@@ -1316,6 +1666,7 @@ export class Executor {
   private journalSave(task: Task, pending: PendingAct | null, ledger: LedgerEntry[] = task.ledger): void {
     const j = this.deps.journal;
     if (j === undefined) return;
+    task.pending = pending;
     const bound = [...task.windows.values()].map((id) => this.deps.model.windows.get(id)).find((w) => w !== undefined);
     j.save({
       taskId: task.id,
@@ -1352,7 +1703,7 @@ export class Executor {
     // any write that may include the user's input. A write whose answer was lost always kept the value it was writing.
     const ledger: LedgerEntry[] = r.ledger.map((e) => (r.afterIntended === true || e.kind !== "write" || e.unconfirmed === true ? e : { ...e, mayIncludeInput: true }));
     const p = r.pending;
-    if (p?.kind === "write") ledger.push({ kind: "write", step: p.step, pid: p.pid, windowId: p.windowId, key: p.key, role: p.role, before: p.before, after: p.value, mark: p.mark, unconfirmed: true });
+    if (p?.kind === "write") ledger.push({ kind: "write", step: p.step, pid: p.pid, windowId: p.windowId, key: p.key, role: p.role, before: p.before, after: p.value, mark: p.mark, unconfirmed: true, ...(p.sentAt === undefined ? {} : { sentAt: p.sentAt }) });
     else if (p?.kind === "press") ledger.push({ kind: "press", step: p.step, label: p.label, windowId: p.windowId });
     else if (p?.kind === "calendar") ledger.push({ kind: "calendar", step: p.step, eventId: null, calendar: p.calendar, title: p.title, start: p.start, end: p.end });
     const windows = new Map<string, string>();
@@ -1389,7 +1740,11 @@ export class Executor {
       readerId: r.readerId,
       startedAt: r.startedAt,
       journaled: true,
+      waitingIn: null,
+      wake: null,
     });
+    // A page outlives the helper, so its record of the user's input still counts against a recovered write (onWindowRead).
+    if (ledger.some((e) => e.kind === "write" && e.sentAt !== undefined)) this.timed.add(this.need(r.taskId));
   }
 
   // MARK: - act grants
@@ -1416,6 +1771,10 @@ export class Executor {
 
   /** Ends both of the task's grants with one revoke. */
   private revokeGrant(task: Task): void {
+    if (task.interrupt !== null) {
+      task.reconcileBy ??= Date.now() + STOP_RECONCILE_MS;
+      this.interruptDeadlines.get(task.id)?.();
+    }
     if (task.grant === null && !task.calendarGranted) return;
     task.grant = null;
     task.calendarGranted = false;
@@ -1436,7 +1795,7 @@ export class Executor {
   /** The reader answered a value write with ok, yet the field still holds what it held before and the model recorded no change to it. */
   private dropped(windowId: string, key: string, before: string, seen: readonly Change[]): boolean {
     const now = this.deps.model.windows.get(windowId)?.nodes.get(key);
-    return now !== undefined && (now.value ?? "") === before && !seen.some((c) => c.kind === "value" && c.key === key);
+    return now !== undefined && readOf(now) === before && !seen.some((c) => c.kind === "value" && c.key === key);
   }
 
   /** A field the step did not target changed while it acted: something other than the plan is at work. */
@@ -1482,7 +1841,11 @@ export class Executor {
     return fresh;
   }
 
-  private async walk(w: WindowState): Promise<Change[]> {
+  /**
+   * Reads the window. With `task`, no retry starts once a pause or stop is pending, nor once the run has ended: a read
+   * Stop's deadline cut off can answer after the run cleared its interrupt (Greptile review).
+   */
+  private async walk(w: WindowState, task?: Task): Promise<Change[]> {
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === w.window.windowId) seen.push(c);
@@ -1491,7 +1854,7 @@ export class Executor {
       // A walk only reads, so one that fails (a busy app cuts a walk short past its deadline) is tried
       // again before the step stops. Writes and presses are never retried.
       let r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
-      for (let n = 0; n < WALK_RETRIES && r.outcome === "axError"; n++) {
+      for (let n = 0; n < WALK_RETRIES && r.outcome === "axError" && (task === undefined || (task.interrupt === null && task.finished === null)); n++) {
         r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
       }
       if (r.outcome !== "ok") throw StepStop.stop("reader", `cannot re-read '${w.window.title}': ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
@@ -1574,6 +1937,12 @@ export class Executor {
       case "fileAttached":
         // A file input's contents are not in the walk: the attach runs, and the page's own file list verifies it.
         return false;
+      case "rowSelected":
+        // The exact row and container, by key and role; a look-alike row is never the one the plan named.
+        return end.target.key !== undefined && end.target.role !== undefined && end.container.key !== undefined && rowSelected(w, end.container.key, end.target.key, end.target.role);
+      case "itemOpened":
+        // The weak form: before a step acts, and while the user makes the transition (goals/identity.ts).
+        return itemOpened(w, end.identity);
       case "windowFocused":
         // The window must be the app's focused one and the app the one the user is in: a request walk
         // marks a background app's own focused window as focused, which alone would skip the raise.
@@ -1590,7 +1959,7 @@ export class Executor {
         if ("missing" in local) return false;
         const node = "node" in local ? local.node : await this.resolve(task, i, w, end.target, task.plan.steps[i]?.says ?? "");
         if (end.kind === "focused") return w.focusedKey === node.key;
-        const text = node.editable === true ? (node.value ?? "") : nodeText(node);
+        const text = node.editable === true ? readOf(node) : nodeText(node);
         return text === end.value;
       }
     }
@@ -1598,25 +1967,83 @@ export class Executor {
 
   // MARK: - undo
 
-  /** Read a faulted whole-field write before acknowledging stop, without issuing or renewing a grant. */
-  private async readUnconfirmed(task: Task, e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null> {
+  /**
+   * Read a faulted whole-field write before acknowledging stop, without issuing or renewing a grant.
+   *
+   * Only a read that ended before any pause or stop reached the task may show part of Caret's own write. From then on
+   * the window is the user's, and a proper prefix of the intended value reads the same whether the app took part of
+   * the write or the user typed it: the journal holds only the original and the intended value (PR #21 review). Such
+   * a read is unknown and Undo leaves it.
+   *
+   * The same holds for a whole value once the user's input may have reached the field since the write was sent
+   * (InputWatch): whatever the read shows, other than the field as it was, is left to the user, and Undo leaves it.
+   */
+  private async readUnconfirmed(task: Task, e: Extract<LedgerEntry, { kind: "write" }>, noUndo: string | null, pressed: boolean, watch: InputWatch | null): Promise<{ state: "landed" | "untouched" | "unknown"; detail: string | null }> {
     try {
       this.checkSession(task);
-      await this.walk(this.window(e.windowId));
+      const w = this.window(e.windowId);
+      // No retry starts once a pause or stop is pending, and no new grant: Stop gets one read, and none once its deadline
+      // has passed. A read started then would be abandoned at once and could queue ahead of an Undo in the reader,
+      // which serializes work per app (PR #21 review). The entry stays unconfirmed: Undo restores it only while the
+      // field holds exactly what Caret was writing.
+      if (task.reconcileBy !== undefined && Date.now() >= task.reconcileBy) throw new Error("Stop's wait ended before Caret could read the field");
+      await this.untilInterruptDeadline(task, this.walk(w, task), "the recovery read timed out");
       this.checkSession(task);
     } catch (error) {
-      return `Caret could not read the field after writing it; before the write it held ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}`;
+      // Undo is refused under a reader launched since (undoRefusal), so this outcome promises none.
+      if (task.session !== this.session) return { state: "unknown", detail: `The field may have been written. The reader restarted before Caret could read it back; before the write it held ${JSON.stringify(e.before)}` };
+      const why = error instanceof Error ? error.message : String(error);
+      const may = pressed ? "The answer may have been pressed" : "The field may have been written";
+      // Undo refuses a window the model no longer has (undoWrite), so a closed window or tab gets no promise.
+      if (this.deps.model.windows.get(e.windowId) === undefined) return { state: "unknown", detail: `${may}, but its window is gone, so Undo cannot reach it; before, it held ${JSON.stringify(e.before)}: ${why}` };
+      // The entry already carries mayIncludeInput (inputSeen), so Undo leaves the field.
+      if (watch?.seen != null) return { state: "unknown", detail: `${may}, but ${watch.seen} after Caret sent it, so Undo leaves it; before, it held ${JSON.stringify(e.before)}: ${why}` };
+      if (noUndo !== null) return { state: "unknown", detail: `${may}; ${noUndo}. Caret could not read it afterwards; before, it held ${JSON.stringify(e.before)}: ${why}` };
+      return { state: "unknown", detail: `The field may have been written. Undo can put it back. Caret could not read the field after writing it; before the write it held ${JSON.stringify(e.before)}: ${why}` };
     }
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
-    if (field === undefined) return `the field is gone; before the write it held ${JSON.stringify(e.before)}`;
-    const held = field.value ?? "";
-    if (held === e.before || held === e.after) return null;
-    if (partialReplacement(e.before, e.after, held)) {
-      e.partialWrite = true;
-      this.journalSave(task, null);
-      return null;
+    if (field === undefined) return { state: "unknown", detail: `The field may have been written; the field is gone; before the write it held ${JSON.stringify(e.before)}` };
+    const read = readOf(field);
+    if (read === e.before) return { state: "untouched", detail: null };
+    if (read === null) {
+      // A page field whose text changed since the walk before the write, which the page does not send: Caret cannot
+      // tell its own write from anyone else's. The page itself checks, at Undo, that the field holds exactly what Caret
+      // wrote and nothing changed since (engines/page-link.ts pageRestore).
+      const input = watch === null ? null : (watch.seen ?? (field.inputAt !== undefined && field.inputAt >= watch.since ? "you typed in it" : null));
+      if (input !== null) {
+        e.mayIncludeInput = true;
+        this.journalSave(task, null);
+        return { state: "unknown", detail: `${fieldContents(e.before, null)}; ${input} after Caret sent its write, so Caret cannot tell its write from your input and left it as it is` };
+      }
+      // A combobox's walk carries no sign of a pick either way (see below): only the lost answer could say.
+      if (pageCombobox(field.role, e.windowId)) return { state: "unknown", detail: `Caret cannot tell whether the option was picked; ${fieldContents(e.before, null)}` };
+      // Named, since the run's result is all that says which field it was (the activity row, journey row 3).
+      const label = (field.label ?? "").trim();
+      return { state: "unknown", detail: `${label === "" ? "The field" : `'${clip(label)}'`} may have been written: ${fieldContents(e.before, null)}. Undo puts it back only while the page finds it holding exactly what Caret wrote` };
     }
-    return `${fieldContents(e.before, held)}; Caret left it as it is`;
+    const held = read;
+    // Before any reading of the value as Caret's, a whole one or a prefix (issue #26).
+    const input = watch === null ? null : (watch.seen ?? (field.inputAt !== undefined && field.inputAt >= watch.since ? "you typed in it" : null));
+    if (input !== null) {
+      e.mayIncludeInput = true;
+      this.journalSave(task, null);
+      return { state: "unknown", detail: `${fieldContents(e.before, held)}; ${input} after Caret sent its write, so Caret cannot tell its write from your input and left it as it is` };
+    }
+    if (sameValue(field, held, e.after)) {
+      // A combobox shows the filter text Caret types before it presses the option, and a walk carries no sign of the
+      // pick: only the content script's own answer does (content/combobox.ts), and that answer is what was lost.
+      if (pageCombobox(field.role, e.windowId)) return { state: "unknown", detail: `Caret cannot tell whether the option was picked; ${fieldContents(e.before, held)}` };
+      // No input on the field was seen since the send. Reader input that arrives after this read still keeps the entry
+      // from Undo (inputSeen), though this report has promised it.
+      return { state: "landed", detail: null };
+    }
+    if (partialReplacement(e.before, e.after, held)) {
+      if (task.interrupt !== null) return { state: "unknown", detail: `${fieldContents(e.before, held)}; that may be part of Caret's write or your typing, so Caret left it as it is` };
+      e.partialWrite = held;
+      this.journalSave(task, null);
+      return { state: "unknown", detail: "The field was partly written. Undo puts it back." };
+    }
+    return { state: "unknown", detail: `${fieldContents(e.before, held)}; Caret left it as it is` };
   }
 
   private async undoWrite(task: Task, e: Extract<LedgerEntry, { kind: "write" }>, settled: Set<LedgerEntry>): Promise<string | null | typeof UNTOUCHED> {
@@ -1638,24 +2065,33 @@ export class Executor {
     // that is gone says nothing either way (a Yes/No press whose page then left, B28 review), so it is not counted.
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (e.unconfirmed === true && field === undefined) return final(`the field is gone; before the write it held ${JSON.stringify(e.before)}`);
-    if (e.unconfirmed === true && field !== undefined && (field.value ?? "") === e.before) return UNTOUCHED;
-    // Judge the read just made, not the earlier partialWrite flag: the user may have edited since then.
+    if (e.unconfirmed === true && field !== undefined && readOf(field) === e.before) return UNTOUCHED;
     // The reader rechecks this exact held value and the recorded element right before restoring it.
-    const contents = field === undefined ? "the field is gone" : fieldContents(e.before, field.value ?? "");
+    const contents = field === undefined ? "the field is gone" : fieldContents(e.before, readOf(field));
     if (e.mayIncludeInput === true) return final(`the field changed while Caret wrote it and may hold your typing, so Caret left it as it is; ${contents}`);
-    const partial = e.unconfirmed === true && field !== undefined && partialReplacement(e.before, e.after, field.value ?? "");
-    if (partial) {
-      e.partialWrite = true;
-      this.journalSave(task, null);
-    }
-    // Prefix recovery applies only to unconfirmed writes, never to a verified value the user later shortened.
-    if (field !== undefined && !partial && !(e.unconfirmed === true ? (field.value ?? "") === e.after : sameValue(field, field.value ?? "", e.after))) {
-      return final(e.unconfirmed === true
-        ? `the field does not hold what Caret was writing, so Caret left it as it is; ${contents}`
-        : "the field changed after Caret wrote it, so Caret left it as it is");
+    // A page field's own record of the user's input since the write was sent, which a recovery read that failed could
+    // not see (PR #33 review). The page keeps that record for 30 s after Caret's grant ends.
+    if (field?.inputAt !== undefined && e.sentAt !== undefined && field.inputAt >= e.sentAt) return final(`you typed in the field after Caret sent its write, so it may hold your typing and Caret left it as it is; ${contents}`);
+    const shown = field === undefined ? "" : readOf(field);
+    // A prefix is put back only while the field holds exactly the one Caret read before the window was the user's
+    // again (readUnconfirmed). A prefix first read here may be the user's typing (PR #21 review). A legacy `true`
+    // records no reading, so it restores nothing.
+    const partial = e.unconfirmed === true && field !== undefined && typeof e.partialWrite === "string" && shown === e.partialWrite;
+    // A page field whose text the page does not send (a write whose answer was lost, say): the identity check is the
+    // page's own, in the same step as the restore (pageRestore: the element Caret wrote, its rev unchanged since Caret's
+    // write, no input of the user's, and text equivalent to what Caret wrote). A partial write is never delegated.
+    // Only a write whose answer was lost: for a verified one the helper knew Caret's value at the rev the write left, so a
+    // field it cannot read now changed since, which the check below refuses as before.
+    const delegated = e.unconfirmed === true && field !== undefined && shown === null && e.windowId.startsWith("page:") && e.partialWrite === undefined;
+    // An unconfirmed write is recognized only exactly (S1); numeric equivalence applies to a verified one.
+    if (field !== undefined && !partial && !delegated && !(shown !== null && (e.unconfirmed === true ? shown === e.after : sameValue(field, shown, e.after)))) {
+      if (e.unconfirmed !== true) return final("the field changed after Caret wrote it, so Caret left it as it is");
+      return final(shown !== null && partialReplacement(e.before, e.after, shown)
+        ? `the field holds part of what Caret was writing, which may be your typing, so Caret left it as it is; ${contents}`
+        : `the field does not hold what Caret was writing, so Caret left it as it is; ${contents}`);
     }
     // A field the walk lost (B15's WebKit window) is left to the reader's own check against what Caret wrote.
-    const held = field === undefined ? e.after : (field.value ?? "");
+    const held = field === undefined || delegated || shown === null ? e.after : shown;
     const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: held, value: e.before, taskId: task.id, sameAs: e.mark };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
@@ -1695,7 +2131,7 @@ export class Executor {
           return final(`${undoRefused(e, r)}; cannot read the field now; before the write it held ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}`);
         }
         const current = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
-        return final(`${undoRefused(e, r)}; ${current === undefined ? `the field is gone; before the write it held ${JSON.stringify(e.before)}` : fieldContents(e.before, current.value ?? "")}`);
+        return final(`${undoRefused(e, r)}; ${current === undefined ? `the field is gone; before the write it held ${JSON.stringify(e.before)}` : fieldContents(e.before, readOf(current))}`);
       }
       // The reader not answering, or refusing for want of a grant, may pass; a field changed or replaced will not.
       const passing = r.outcome === "axError" || r.outcome === "notAllowed" || r.outcome === "noWindow";
@@ -1703,7 +2139,8 @@ export class Executor {
     }
     const now = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (now === undefined) return final("after the restore the field is gone");
-    if ((now.value ?? "") !== e.before) return final(`after the restore the field holds '${clip(now.value ?? "")}'`);
+    const restored = readOf(now);
+    if (restored !== e.before) return final(restored === null ? "after the restore the field holds other text, which the page does not send" : `after the restore the field holds '${clip(restored)}'`);
     return null;
   }
 
@@ -1733,9 +2170,16 @@ export class Executor {
     const ev = await cal.get(eventId);
     if (ev === null) return "the event is already gone";
     if (ev.title !== e.title || ev.calendar !== e.calendar || Date.parse(ev.start) !== Date.parse(e.start) || Date.parse(ev.end) !== Date.parse(e.end)) {
-      return "the event changed after Caret added it";
+      return EVENT_CHANGED;
     }
-    await cal.remove(eventId, task.id);
+    // The reader compares everything else the user can change (notes, place, link, alarms, people) in a fresh read
+    // inside the removal itself, so an edit made since this check still leaves the event (Greptile review on #13).
+    try {
+      await cal.remove(eventId, task.id);
+    } catch (err) {
+      if (err instanceof CalendarRefused && err.outcome === "changed") return EVENT_CHANGED;
+      throw err;
+    }
     // A read that fails throws (S1 audit #16): only a read that succeeds and finds nothing counts as removed.
     return (await cal.get(eventId)) === null ? null : "the event is still there after removal";
   }
@@ -1860,39 +2304,20 @@ function contains(f: [number, number, number, number], p: [number, number]): boo
 const UNTOUCHED = Symbol("untouched");
 
 /**
- * Whether field `n`, read as `held`, holds the value Caret wrote (B29: anything else may be the user's typing). Exactly,
- * except in a page's number field (PAGE_SUBROLE.number), where both are compared as plain decimal numbers, since a page
- * may show "1" as "1.00". Never in a text field, and never across grouping separators, signs of locale or units.
- * The comparison is exact on the digits (canonicalDecimal), not through Number(): review 1 found 9007199254740992 equal
- * to 9007199254740993, 1e309 to 2e309 and 1e-999 to 0 that way, so undo restored over the user's number.
+ * Whether field `n`, read as `held`, holds the value Caret wrote (B29: anything else may be the user's typing): the
+ * shared rule (values/equivalent.ts), numeric only in a page's number field (PAGE_SUBROLE.number). A page field's own
+ * comparison runs in the page with the same module; this one judges what the helper itself read.
  */
 export function sameValue(n: Node, held: string, wrote: string): boolean {
-  if (held === wrote) return true;
-  if (n.subrole !== PAGE_SUBROLE.number) return false;
-  const a = canonicalDecimal(held);
-  return a !== null && a === canonicalDecimal(wrote);
+  return equivalentValue(n.subrole === PAGE_SUBROLE.number, held, wrote);
 }
 
-/** A decimal number as an input of type number holds one: optional sign, digits with at most one point, optional exponent. */
-const PLAIN_NUMBER = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d{1,6}))?$/;
-
 /**
- * One spelling per number: "-123e-2" for -1.23, "0" for any zero. Digits keep every place, so two spellings match only
- * when they are the same number exactly. Null for anything PLAIN_NUMBER does not take, or one with no digit.
+ * A page's custom combobox, whose walk shows the filter text Caret typed and a picked option alike (content/combobox.ts).
+ * A native AXComboBox write sets the value itself, so its read-back is its end state.
  */
-export function canonicalDecimal(s: string): string | null {
-  const m = PLAIN_NUMBER.exec(s);
-  if (m === null) return null;
-  const whole = m[2] ?? "";
-  const frac = m[3] ?? "";
-  if (whole === "" && frac === "") return null;
-  let digits = (whole + frac).replace(/^0+/, "");
-  if (digits === "") return "0";
-  let exp = Number(m[4] ?? "0") - frac.length;
-  const trailing = /0+$/.exec(digits)?.[0].length ?? 0;
-  digits = digits.slice(0, digits.length - trailing);
-  exp += trailing;
-  return `${m[1] === "-" ? "-" : ""}${digits}e${exp}`;
+function pageCombobox(role: string, windowId: string): boolean {
+  return role === "AXComboBox" && windowId.startsWith("page:");
 }
 
 /** S1's whole-field replacement rule. An unchanged original takes precedence, even if it is a prefix. */
@@ -1900,10 +2325,15 @@ function partialReplacement(before: string, intended: string, held: string): boo
   return held !== before && held.length > 0 && held.length < intended.length && intended.startsWith(held);
 }
 
-/** JSON quoting preserves the full values and makes empty text, newlines and quotes distinguishable. */
-function fieldContents(before: string, held: string): string {
-  return `the field now holds ${JSON.stringify(held)}; before the write it held ${JSON.stringify(before)}`;
+/**
+ * JSON quoting preserves the full values and makes empty text, newlines and quotes distinguishable. `held` is null for
+ * a page field whose text the page does not send (Node.unread), which is never quoted: Caret does not have it. `before`
+ * is always Caret's own knowledge (a page field is written only while empty or holding Caret's own value).
+ */
+function fieldContents(before: string, held: string | null): string {
+  return held === null ? `the field now holds other text, which the page does not send; before the write it held ${JSON.stringify(before)}` : `the field now holds ${JSON.stringify(held)}; before the write it held ${JSON.stringify(before)}`;
 }
+
 
 /** Why the reader refused a restore, in words for the activity row. */
 function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult): string {
@@ -1926,6 +2356,18 @@ function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult):
 function names(xs: readonly string[]): string {
   if (xs.length <= 2) return xs.join(" and ");
   return xs.every((x) => x.startsWith("'")) ? `${xs.length} controls` : `${xs.length} fields`;
+}
+
+/** A wait's length in words: "2 minutes", "30 seconds", "less than a second". */
+function waited(ms: number): string {
+  if (ms >= 60_000) return `${Math.round(ms / 60_000)} minute${Math.round(ms / 60_000) === 1 ? "" : "s"}`;
+  if (ms >= 1_000) return `${Math.round(ms / 1_000)} seconds`;
+  return "less than a second";
+}
+
+/** A hand-off's words as a sentence starts. */
+function sentence(s: string): string {
+  return `${s.charAt(0).toUpperCase()}${s.slice(1)}`;
 }
 
 function clip(s: string, max = 60): string {

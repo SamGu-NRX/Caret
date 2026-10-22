@@ -68,6 +68,27 @@ public enum GhostFit {
         return rule == .capsule ? .capsule : .decline(.singleLineOverflow)
     }
 
+    /// The longest run of whole words from the start of `text` that `fits` accepts, without trailing
+    /// spaces, or nil when not even the first word fits. A suggestion that runs to the end of the
+    /// sentence is often wider than the room left in a single-line field; drawing the words that fit
+    /// inline keeps the ghost on the caret's line, and Tab takes exactly what is drawn. The first word
+    /// may be the rest of the word being typed. `fits` is checked at word ends only, so it must grow
+    /// monotonically with the text (a width test does).
+    public static func wordsThatFit(_ text: String, fits: (String) -> Bool) -> String? {
+        var best: String?
+        var index = text.startIndex
+        while index < text.endIndex {
+            // Skip the spaces before a word, then the word.
+            index = text[index...].firstIndex { !$0.isWhitespace } ?? text.endIndex
+            guard index < text.endIndex else { break }
+            index = text[index...].firstIndex(where: \.isWhitespace) ?? text.endIndex
+            let candidate = String(text[..<index])
+            guard fits(candidate) else { break }
+            best = candidate
+        }
+        return best
+    }
+
     /// One attempt to draw a completion, for the debug state: geometry only, never the text.
     public struct Record: Codable, Equatable, Sendable {
         public var outcome: Outcome

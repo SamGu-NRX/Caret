@@ -79,9 +79,13 @@ describe("review fixes", () => {
     expect(store.shadowEpisodes()[0]).toMatchObject({ existed: "normalized", kind: "phone" });
   });
 
-  it("text that stays on screen does not age out of the text window", () => {
+  it("text in the window the user is in does not age out of the text window while a reader is connected", () => {
     const h = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
-    void h.handleReader(snap([text("m/a~0", "still visible text")], { at: 0, windowId: SRC, app: MAIL_APP }));
+    // The reader sends nothing for a walk that finds the window unchanged; the window the user is in still counts as on
+    // screen. Any other window ages out ten minutes after its last snapshot (model-retention.test.ts).
+    void h.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 1, version: "t" });
+    void h.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 1, from: null, to: MAIL_APP });
+    void h.handleReader(snap([text("m/a~0", "still visible text")], { at: 1, windowId: SRC, app: MAIL_APP, focused: true }));
     for (let t = 0; t <= 20 * 60 * 1000; t += 10_000) h.tick(t);
     expect(h.text.find("still visible text", null, { excludeWindowId: FORM, seenBy: 20 * 60 * 1000 })).not.toBeNull();
   });

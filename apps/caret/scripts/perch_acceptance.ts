@@ -29,6 +29,8 @@ import { parseArgs, promisify } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
 import { newLaunchSecret, sendSecret } from "../../../helper/src/launch.ts";
+import { spawnCaret } from "../../../helper/scripts/spawn-caret.ts";
+import { connectAsHost } from "../../../helper/scripts/host-line.ts";
 // B23: caret-screen accepts only a helper that proves it holds this launch's secret, which both get
 // here: the reader on its standard input (--auth-fd 0), the in-process server as an argument.
 const launchSecret = newLaunchSecret();
@@ -291,15 +293,12 @@ const step = (i: number): Step => {
 };
 const PLAN: Plan = { id: "six-fields", title: "Fill the six fields", slots: {}, steps: FIELDS.map((_, i) => step(i)) };
 
-/** A consumer of our own, for runPlan and cleanup controls (the host sends the controls under test). */
-const consumer: Socket = await new Promise((res, rej) => {
-  const s = createConnection(HELPER_SOCK);
-  s.once("connect", () => res(s));
-  s.once("error", rej);
-});
-consumer.on("data", () => {});
+/**
+ * A second host of our own, for runPlan and cleanup controls (Caret sends the controls under test). It proves the host
+ * key (connectAsHost): the helper takes runPlan and taskControl only from the host.
+ */
+const consumer: Socket = await connectAsHost(HELPER_SOCK, launchSecret, "a4-perch-acceptance");
 const send = (m: unknown): void => void consumer.write(JSON.stringify(m) + "\n");
-send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: process.pid, version: "a4-perch-acceptance" });
 const control = (taskId: string, action: "pause" | "resume" | "stop" | "takeOver" | "undo"): void => send({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action });
 
 async function fields(): Promise<string[]> {
@@ -333,7 +332,7 @@ try {
   reader.stderr?.setEncoding("utf8");
   reader.stderr?.on("data", (d: string) => log.push(`reader: ${d.trim().slice(0, 300)}`));
   // --test-hooks: `key` and `control` on the debug socket need it (CodeRabbit on PR #9).
-  host = spawn(CARET, ["--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--test-hooks", "--no-ghost", "--allow-pids", String(fixturePid), "--perch", a.perch === "shown" ? "shown" : "hidden"]);
+  host = spawnCaret(CARET, ["--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--test-hooks", "--no-ghost", "--allow-pids", String(fixturePid), "--perch", a.perch === "shown" ? "shown" : "hidden"], launchSecret);
   started.push(host);
   host.stderr?.setEncoding("utf8");
   host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));

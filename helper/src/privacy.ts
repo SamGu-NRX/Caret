@@ -41,11 +41,15 @@ export const PRIVACY_PROMISE = `What Caret sends
 
 To decide what to offer, Caret sends a cloud model what you type to it and short pieces of what's on your screen: a field's label, the values that might go in it, and the lines around them. To decide whose details a value is, Caret may send the whole note it came from, if the note is 2,000 characters or shorter. No request takes more than half of any one conversation. Before anything leaves your Mac, Caret removes password fields, card numbers, one-time codes and keys, and lines it recognizes as secrets, though it can miss a secret written in ordinary words. It sends nothing from an app or website you've switched off.
 
+What Caret keeps
+
+Caret keeps what it reads from your screen for ten minutes after it last reads it, then forgets it.
+
 Who receives it
 
 Caret's main model is Jev, run by TypeSafe. TypeSafe says Jev isn't trained on customer requests or responses, and its terms say it won't put them in a dataset used to train models without Caret's consent. Its terms set no limit on how long it keeps requests. They let TypeSafe keep using requests, even after you stop using Caret, to monitor for fraud and abuse, and to derive what it calls telemetry: logs, statistics, classifications and "learnings". TypeSafe may use that telemetry without restriction, including to improve its services and other products. We don't know whether TypeSafe staff read requests.
 
-Inline suggestions come from a model hosted by Groq. Groq says it doesn't keep request data by default, except reliability and abuse logs, which it keeps for up to 30 days. It also says it doesn't use your text to train models unless Caret allows it. Groq has a setting that turns those logs off, and we haven't confirmed it's on for Caret's account. We don't know whether Groq staff read requests.`;
+Inline suggestions, the next few words Caret shows as you type, are written on your Mac by a model that runs there. Nothing goes to Groq.`;
 /** The approved sentence that discloses whole owner notes when OWNER_NOTE_CHARS is above zero. */
 export const OWNER_NOTE_DISCLOSURE: string | null = "To decide whose details a value is, Caret may send the whole note it came from, if the note is 2,000 characters or shorter.";
 
@@ -328,6 +332,11 @@ export function forgetWindow(windowId: string): void {
   tables.delete(windowId);
 }
 
+/** Whether a table is kept for this window id, for tests. */
+export function holdsLineTable(windowId: string): boolean {
+  return tables.has(windowId);
+}
+
 /** Lets go of every table, for a new reader session whose window ids start over. */
 export function forgetWindows(): void {
   tables.clear();
@@ -348,10 +357,19 @@ const EMPTY_REGISTRY: ScreenRegistry = { windows: new Map() };
 /** Declared spans grouped by the view they were read from (privacy/ledger/account.ts DeclaredSpans), each once. */
 export function spansOf(spans: Iterable<ViewSpan>): DeclaredSpans {
   const out = new Map<WindowState, DeclaredSpan[]>();
+  // Each view's span keys, so a span is checked once: comparing each against every kept one built a key per pair, 8% of
+  // a 50-field preview's CPU, since a fallback span's key holds its whole text.
+  const keys = new Map<WindowState, Set<string>>();
   for (const { view, ...span } of spans) {
-    const l = out.get(view);
-    if (l === undefined) out.set(view, [span]);
-    else if (!l.some((x) => spanKey(x) === spanKey(span))) l.push(span);
+    const key = spanKey(span);
+    const seen = keys.get(view);
+    if (seen === undefined) {
+      keys.set(view, new Set([key]));
+      out.set(view, [span]);
+    } else if (!seen.has(key)) {
+      seen.add(key);
+      out.get(view)!.push(span);
+    }
   }
   return out;
 }

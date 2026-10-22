@@ -1,0 +1,19 @@
+{
+  "type": "pageCommand",
+  "v": 1,
+  "id": "fixture-pageRestore",
+  "expires": 1000,
+  "verb": {
+    "kind": "pageRestore",
+    "tabId": 3,
+    "frameId": 0,
+    "documentId": "fixture-document",
+    "id": "field-1",
+    "control": "text",
+    "name": "First name",
+    "taskId": "fixture-task",
+    "rebind": false,
+    "sameAs": "fixture-mark",
+    "wrote": "Ada"
+  }
+}

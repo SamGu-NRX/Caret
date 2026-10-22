@@ -1,1 +1,0 @@
-HI2: Info.plist comment with a double hyphen refuses every build; h1x harness build.sh hardcodes its worktree, cp -cR breaks symlinked node_modules. VS1: Disclosure caps at 8 ways (rebuilt requests need 'plan'); value options state exact outputs (builders.ts optionIs).

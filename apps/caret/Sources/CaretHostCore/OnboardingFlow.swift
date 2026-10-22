@@ -133,12 +133,16 @@ public enum ModelReadiness: Equatable, Sendable {
     case loading(Double?)
     /// No model on this Mac, or it failed to load: the field is off and says so.
     case unavailable
+    /// Not loaded because the user turned Complete words off (`ModelNeed`): the field is off and says why. Turning
+    /// it back on in the menu loads the model, and the field follows.
+    case off
 
     public var name: String {
         switch self {
         case .ready: return "ready"
         case .loading: return "loading"
         case .unavailable: return "unavailable"
+        case .off: return "off"
         }
     }
 }
@@ -344,8 +348,12 @@ public final class OnboardingFlow {
         public var connected = false
         /// Why the last Add installed nothing (`browserAddFailed`); Add stays the primary so the person can retry.
         public var failure: String?
+        /// The browser Add actually opened, when it fell back from `target` (`browserOpened`).
+        public var openedIn: String?
 
         public var target: String? { trusted.first }
+        /// The browser whose extension the step waits for: the one Add opened, else the one it means to add.
+        public var waitingFor: String? { openedIn ?? target }
     }
 
     public struct State: Equatable, Sendable {
@@ -443,9 +451,12 @@ public final class OnboardingFlow {
         /// The host read the installed Chromium browsers: those the bridge trusts and those it does not.
         case browsers(trusted: [String], untrusted: [String])
         /// The extension's engine said hello through the bridge (the helper's `pageEngine` connected).
-        case browserConnected
+        /// A Caret page engine said hello from this browser (its display name; nil when the helper named none).
+        case browserConnected(String?)
         /// Add to <browser> installed nothing (the installer's message), so the step offers Add again.
         case browserAddFailed(String)
+        /// Add opened this browser's Extensions page (its display name), which may not be `target`.
+        case browserOpened(String)
         /// The host found Caret's grant stale (`AccessibilityAccess.isStale`), or no longer.
         case staleGrant(Bool)
         /// "Reset Caret's entry" on the switch step.
@@ -572,8 +583,19 @@ public final class OnboardingFlow {
             state.hello.asking = nil
             state.hello.ghost = text.flatMap { $0.isEmpty ? nil : $0 }
         case .model(let readiness):
+            let was = state.hello.model
             state.hello.model = readiness
-            if readiness != .ready { state.hello.ghost = nil }
+            if readiness != .ready {
+                // A request still out, or one about to go, is dropped with the model: its answer would show beside
+                // the line saying the field is quiet (Greptile on #30).
+                state.hello.ghost = nil
+                state.hello.asking = nil
+                idleTimer?.cancel()
+                idleTimer = nil
+            }
+            // Text left in the field while the model was off or loading (Complete words turned back on) is asked
+            // about as if just typed, so the field doesn't stay quiet until the next edit (Codex on #30).
+            else if was != .ready, state.step == .hello { typed(state.hello.text) }
         case .apps(let apps): state.hello.apps = apps
         case .key(let key): self.key(key)
         case .permissions(let p): permissionsChanged(p)
@@ -644,8 +666,13 @@ public final class OnboardingFlow {
             guard state.step == .browser, !state.browser.connected else { break }
             state.browser.opened = false
             state.browser.failure = why
-        case .browserConnected:
-            guard !state.browser.connected else { break }
+        case .browserOpened(let name):
+            guard state.step == .browser, !state.browser.connected else { break }
+            state.browser.openedIn = name
+        case .browserConnected(let name):
+            // Only the browser the step waits for: Helium connecting says nothing about Chrome's extension, unless Add
+            // fell back to Helium (Greptile on PR #17).
+            guard !state.browser.connected, name == nil || name == state.browser.waitingFor else { break }
             state.browser.connected = true
             guard state.step == .browser, landingTimer == nil else { break }
             // As the switch lands: "Caret is in Chrome." for a moment, then on by itself.
@@ -666,10 +693,12 @@ public final class OnboardingFlow {
             state.access.otherCarets = others
         case .accessChangedStillUntrusted:
             guard state.step == .access, !state.permissions.accessibility else { break }
-            state.access.wrongCaret = OtherCarets.wrongOneTurnedOn(changeNoticed: true, trusted: state.permissions.accessibility,
-                                                                   others: state.access.otherCarets)
-            // No other Caret installed: the entry turned on is this bundle id's, from an earlier copy signed differently
-            // (the rig VM's golden image had one; very likely Sam's beta.1 too). Offer to reset it.
+            // macOS lists one entry per bundle id. Another app named Caret with its own id (the hackathon build) is a
+            // separate entry: name it. A copy with this id (an older Caret 2 anywhere, or none left) shares this entry,
+            // so turning "it" on cannot help: offer to reset the entry. The DF1 stale-row run showed the first rule
+            // alone telling the user to turn on an entry that was already on.
+            let otherIDs = state.access.otherCarets.filter { $0.bundleID != OtherCarets.thisBundleID }
+            state.access.wrongCaret = OtherCarets.wrongOneTurnedOn(changeNoticed: true, trusted: state.permissions.accessibility, others: otherIDs)
             if !state.access.wrongCaret { state.access.stale = true }
         case .resetGrant:
             guard state.step == .access, state.access.stale else { break }
@@ -902,12 +931,13 @@ public final class OnboardingFlow {
         state.on.jevKey.stored = true
         state.on.jevKey.text = SecretText("")
         // A key with no credits is kept, and the step stays so its line can be read (the coordinator's rule,
-        // 2026-10-05). A key that works: the key alone (the menu's "Jev is off") is done; otherwise the person pressed
-        // Send, so the look goes with no second press.
-        guard outcome == .works else { return }
-        if state.alone { return finish() }
-        // Saving the key restarts the helper, which forgets every preview it minted: build it again, and the person
-        // sends what the new one shows.
+        // 2026-10-05). The key alone (the menu's "Jev is off") is done once a key works.
+        if state.alone {
+            if outcome == .works { finish() }
+            return
+        }
+        // Saving any key restarts the helper, which forgets every preview it minted, a no-credits key's too: build it
+        // again, and the person sends what the new one shows (Codex on PR #17).
         if state.on.decision == .pending {
             previewTimer?.cancel()
             previewTimer = nil
@@ -1010,6 +1040,7 @@ public final class OnboardingFlow {
         info.browserConnected = state.browser.connected
         info.otherCarets = state.access.otherCarets.isEmpty ? nil : state.access.otherCarets.map(\.path)
         info.wrongCaret = state.access.wrongCaret ? true : nil
+        info.staleEntry = state.access.stale ? true : nil
         if state.on.needsKey {
             info.jevKey = state.on.jevKey.phase.name
             info.jevKeyLength = state.on.jevKey.text.utf16Count

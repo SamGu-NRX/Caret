@@ -1,1 +1,0 @@
-Ask card reads facts blocks by first-row label (proposal.ts); stand-ins use builders.scopeLabel. OWNER_NOTE_CHARS=0 behind TODO(INT1). PrivacyPromiseText.bundled reads PrivacyPromise.txt. No -- in Info.plist comments. VM build.sh needs the commit on v2/host.

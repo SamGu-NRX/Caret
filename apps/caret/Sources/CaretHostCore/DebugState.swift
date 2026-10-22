@@ -48,7 +48,8 @@ public struct DebugState: Codable, Equatable, Sendable {
     }
 
     public struct Engine: Codable, Equatable, Sendable {
-        /// `loading`, `ready` or `unavailable`.
+        /// `loading`, `ready`, `unavailable`, or `off` (Complete words is off, so the model is not loaded); `disabled`,
+        /// `replay` or `replayUnreadable` in test runs.
         public var state: String
         public var detail: String?
         public var modelFile: String?
@@ -139,6 +140,7 @@ public struct DebugState: Codable, Equatable, Sendable {
                 case .fix: return "fix"
                 case .original: return "original"
                 case .fixAll: return "fixAll"
+                case .rewrite: return "rewrite"
                 }
             }
             current = offer.current
@@ -206,6 +208,13 @@ public struct DebugState: Codable, Equatable, Sendable {
     /// The consumer connection to the helper's socket.
     public struct HelperLink: Codable, Equatable, Sendable {
         public var connected = false
+        /// Whether the helper accepted this Caret's host proof on the current connection (`HostAuth`); nil for a Caret
+        /// with no host key, which the helper serves as any other consumer.
+        public var hostAuthenticated: Bool?
+        /// The menu's status line while the helper refuses this Caret as its host (`HostRetry.statusLine`), and the wait
+        /// before the next attempt in seconds. Both nil once the helper accepts it.
+        public var hostRefused: String?
+        public var hostRetrySeconds: Double?
         public var connects: UInt64 = 0
         public var proposals: UInt64 = 0
         /// `activity` and `activityReply` messages received.
@@ -533,6 +542,19 @@ public struct DebugState: Codable, Equatable, Sendable {
             self.settings = settings
             self.gate = gate
         }
+
+        enum CodingKeys: String, CodingKey { case path, error, settings, gate }
+
+        /// The user's personal instructions go out as their lengths: the socket never carries their text (brief item 4).
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(path, forKey: .path)
+            try c.encodeIfPresent(error, forKey: .error)
+            var shown = settings
+            shown.instructions = settings.instructions.redacted
+            try c.encode(shown, forKey: .settings)
+            try c.encode(gate, forKey: .gate)
+        }
     }
 
     /// The debug socket's `onboarding` reply (`OnboardingFlow.debugInfo`). Nothing typed or pasted appears here,
@@ -541,7 +563,7 @@ public struct DebugState: Codable, Equatable, Sendable {
         public struct HelloInfo: Codable, Equatable, Sendable {
             public var textLength: Int
             public var ghostLength: Int?
-            /// `ready`, `loading` or `unavailable`.
+            /// `ready`, `loading`, `unavailable` or `off` (`ModelReadiness.name`).
             public var model: String
             public var apps: [String]
             public var taken: Bool
@@ -583,6 +605,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// Other copies of Caret found, by path, and whether the switch step says the wrong one was turned on.
         public var otherCarets: [String]?
         public var wrongCaret: Bool?
+        /// The entry macOS shows for Caret is on but not this build's; the step offers Reset.
+        public var staleEntry: Bool?
         /// `idle`, `asking`, `found`, `nothing` or `failed`.
         public var firstLook: String?
         public var firstLookRequest: String?

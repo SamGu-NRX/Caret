@@ -1,0 +1,100 @@
+# Staged, not active: copy to .github/workflows/ to enable. Runs Caret's headless acceptance journey
+# (fixtures/web-form/journey.ts) on demand and uploads its evidence.
+#
+# The bridge and its test host must be signed by the Apple Development team in BridgeTrust.teamId
+# (bridge/Sources/CaretBridgeXPC/Trust.swift); each refuses the other under any other signature, so the job needs that
+# team's certificate. It reads it from two repository secrets that do not exist yet:
+#   CARET_SIGNING_P12           base64 of the .p12 export of the team's Apple Development identity
+#   CARET_SIGNING_P12_PASSWORD  its export password
+# Without them the job stops at the signing step with an error, before anything is built.
+name: Caret journey
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: caret-journey-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  journey:
+    name: journey
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Refuse model credentials and external environment files
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          for name in TYPESAFE_API_KEY GROQ_API_KEY OPENAI_API_KEY GEMINI_API_KEY AI_GATEWAY_API_KEY CARET_ENV_FILE; do
+            if printenv "$name" > /dev/null; then
+              echo "::error::$name must not be set: the journey's Jev and writer are canned"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: |
+            helper/pnpm-lock.yaml
+            extension/pnpm-lock.yaml
+            fixtures/web-form/pnpm-lock.yaml
+      - name: Install pnpm dependencies
+        run: |
+          pnpm -C helper install --frozen-lockfile
+          pnpm -C extension install --frozen-lockfile
+          pnpm -C fixtures/web-form install --frozen-lockfile
+      - name: Import the signing identity into a temporary keychain
+        shell: bash
+        env:
+          P12: ${{ secrets.CARET_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.CARET_SIGNING_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::CARET_SIGNING_P12 and CARET_SIGNING_P12_PASSWORD are not set; the bridge cannot be signed by BridgeTrust.teamId"
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/journey.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"
+          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/identity.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk 'NR==1 {print $2}')"
+          if [ -z "$identity" ]; then
+            echo "::error::no codesigning identity in the imported .p12"
+            exit 1
+          fi
+          echo "CARET_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build the bridge and its test host
+        run: |
+          swift build -c release --package-path bridge --product caret-bridge
+          swift build -c release --package-path bridge --product caret-bridge-testhost
+      - name: Install Chrome for Testing as accept.ts does
+        # rig.ts chrome() installs the pinned CFT_BUILD into fixtures/web-form/.browsers; the journey calls it again and
+        # finds it there.
+        working-directory: fixtures/web-form
+        run: node --input-type=module -e 'import { chrome } from "./rig.ts"; console.log(await chrome());'
+      - name: Run the journey
+        env:
+          CARET_JOURNEY_OUT: ${{ runner.temp }}/journey-evidence
+        run: pnpm -C fixtures/web-form journey
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: caret-journey-evidence
+          path: ${{ runner.temp }}/journey-evidence
+          if-no-files-found: warn

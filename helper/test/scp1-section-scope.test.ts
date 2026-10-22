@@ -3,6 +3,7 @@
 // places the field elsewhere, or can't place it. Sections are occurrences, not text: the named heading text must be one
 // occurrence the window shows, and a field is in it when that occurrence contains it. A correct value for a field is no
 // authority to write it. A synthetic service form ("Equipment details", "Service contact"); every name is invented.
+import { onWire } from "./page-wire.ts";
 import { readFileSync } from "node:fs";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -14,7 +15,7 @@ import { SELF_IDENTIFICATION } from "../src/engines/page-exclusions.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
 import { headsIntentMaker, headsRequest, readHeads, scopeId, scopeRequest, SECTION_QUESTION, sectionVerdict, settleFields } from "../src/planner/intent-heads.ts";
-import type { IntentMaker } from "../src/planner/intent-makers.ts";
+import type { IntentMaker } from "../src/planner/intent.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskGoal } from "../src/planner/ask.ts";
 import { askScope, scopeSet, sectionMembership, sectionPlacement, sectionRefusal, windowOutline, withScope } from "../src/fill/ask-scope.ts";
 import { sectionName } from "../src/engines/page-exclusions.ts";
@@ -59,7 +60,7 @@ interface Walked {
  * occurrences and each control's chain (`walked`). `extra` adds controls after the four fields.
  */
 function pageSnapshot(headings: readonly string[], walked?: Walked, extra: PageControl[] = []): ReturnType<typeof toWindowSnapshot> {
-  const control = (id: string, name: string, y: number): PageControl => ({ id, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, y, 200, 24] });
+  const control = (id: string, name: string, y: number): PageControl => onWire({ id, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, y, 200, 24] });
   const controls = [control("e1", "Serial number", 80), control("e2", "Model", 120), control("e3", "Contact name", 200), control("e4", "Contact phone", 240), ...extra].map((c) => {
     const chain = walked?.chains[c.name];
     return chain === undefined || chain.length === 0 ? c : { ...c, sections: [...chain] };
@@ -400,8 +401,8 @@ describe("sections are occurrences (review of fc233af and 3e8a129)", () => {
     const d = desk({ reader: nodes });
     const s = snapFor(d);
     const listed: IntentMaker = {
-      name: "writer",
-      make: async (x) => ({ intent: { route: "fill", why: "none", scope: "list", section: "none", fields: x.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "writer", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }),
+      name: "heads",
+      make: async (x) => ({ intent: { route: "fill", why: "none", scope: "list", section: "none", fields: x.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "heads", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }),
     };
     const j = jev({ asks: ["Reference number", "Serial number"], unclear: ["Model"], section: "Equipment details" });
     const asked = await plan(d, j, INSTRUCTION, false, listed).catch((e: unknown) => e);
@@ -593,7 +594,7 @@ function tokens(): ((text: string) => string) & { salt: string } {
     expect(e.message).toBe(SAYS.sectionNotFound);
     expect(e.intent).toMatchObject({ route: "refuse", why: "sectionNotFound" });
     // The writer's path, which settles the fields itself.
-    const listed: IntentMaker = { name: "writer", make: async (x) => ({ intent: { route: "fill", why: "none", scope: "list", section: "none", fields: x.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "writer", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }) };
+    const listed: IntentMaker = { name: "heads", make: async (x) => ({ intent: { route: "fill", why: "none", scope: "list", section: "none", fields: x.fields.map((f) => f.ref), sources: ["any"], whose: "user", literals: [] }, use: { maker: "heads", model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }) };
     const w = await refusal(plan(d, jev({ section: "unlisted" }), INSTRUCTION, false, listed));
     expect(w.message).toBe(SAYS.sectionNotFound);
     // One wording only, or below the cutoff: nothing is taken out.
@@ -937,7 +938,7 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
       frames: frames.map((f) => ({
         frameId: f.frameId, parentFrameId: f.parentFrameId, documentId: `doc-${f.frameId}`, origin: "https://service.example", path: `/f${f.frameId}`, navGen: 0, title: "Service request", headings: f.headings,
         sections: f.walked.occurrences, ...(f.sectionNames === undefined ? {} : { sectionNames: f.sectionNames }), ...(f.sectionsCut === undefined ? {} : { sectionsCut: true }),
-        controls: f.controls.map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, 80 + i * 40, 200, 24], ...((f.walked.chains[name] ?? []).length === 0 ? {} : { sections: [...(f.walked.chains[name] ?? [])] }) })),
+        controls: f.controls.map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, hasValue: false, rev: 0, form: "form@0", rect: [20, 80 + i * 40, 200, 24], ...((f.walked.chains[name] ?? []).length === 0 ? {} : { sections: [...(f.walked.chains[name] ?? [])] }) })),
         iframes: [], excluded: {}, truncated: false,
       })),
       missing: [], focused: null,
@@ -1097,7 +1098,7 @@ describe("check of 5fdb385: one source of section text, and name tokens across t
     const f = top(t);
     return {
       type: "pageSnapshot" as const, v: 1 as const, id: "walk-3", at: 2000, tabId: 43, browserWindowId: 40, active: true, inFocusedWindow: true, title: "Service request",
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: "doc-0", origin: "https://service.example", path: "/f0", navGen: 0, title: "Service request", headings: f.headings, sections: f.walked.occurrences, controls: [{ id: "e1", key: "form@0/textbox:serial number~0", strongKey: null, kind: "text" as const, role: "textbox", name: "Serial number", value: "", form: "form@0", rect: [20, 80, 200, 24] as [number, number, number, number], sections: ["o1"] }], iframes: [], excluded: {}, truncated: false }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: "doc-0", origin: "https://service.example", path: "/f0", navGen: 0, title: "Service request", headings: f.headings, sections: f.walked.occurrences, controls: [{ id: "e1", key: "form@0/textbox:serial number~0", strongKey: null, kind: "text" as const, role: "textbox", name: "Serial number", hasValue: false, rev: 0, form: "form@0", rect: [20, 80, 200, 24] as [number, number, number, number], sections: ["o1"] }], iframes: [], excluded: {}, truncated: false }],
       missing: [], focused: null,
     };
   }
@@ -1120,7 +1121,7 @@ describe("final check of 781ff11: an incomplete name inventory proves nothing un
       type: "pageSnapshot", v: 1, id: "walk-4", at: 2000, tabId: 44, browserWindowId: 40, active: true, inFocusedWindow: true, title: "Service request",
       frames: [{ frameId: 0, parentFrameId: -1, documentId: "doc-0", origin: "https://service.example", path: "/f0", navGen: 0, title: "Service request", headings: [],
         sections: f.occurrences, ...(f.sectionNames.length === 0 ? {} : { sectionNames: f.sectionNames }), ...(f.cut ? { sectionsCut: true } : {}),
-        controls: ["Serial number", "Model"].map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, value: "", form: "form@0", rect: [20, 80 + i * 40, 200, 24], sections: ["o1"] })),
+        controls: ["Serial number", "Model"].map((name, i) => ({ id: `e${i + 1}`, key: `form@0/textbox:${name.toLowerCase()}~0`, strongKey: null, kind: "text", role: "textbox", name, hasValue: false, rev: 0, form: "form@0", rect: [20, 80 + i * 40, 200, 24], sections: ["o1"] })),
         iframes: [], excluded: {}, truncated: false }],
       missing: [], focused: null,
     });

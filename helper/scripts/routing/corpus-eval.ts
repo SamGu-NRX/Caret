@@ -49,13 +49,14 @@ const { values: a } = parseArgs({
      * The Ask intent maker: "config" is production's (writer/config.ts ASK_MAKER, Jev since L1), "jev" is B25's Jev maker.
      * A writer maker needs --writer naming its route.
      */
-    "ask-maker": { type: "string", default: "config" },
+    "ask-maker": { type: "string", default: "heads" },
     /** L1: the code-mode and intent writer's route, "groq:<model>" or "gateway:<model>"; none by default, as in the helper. */
     writer: { type: "string" },
     /** The helper runs on the wall clock, so a decision's latency includes its router calls (route entry). */
     "real-clock": { type: "boolean", default: false },
   },
 });
+if (a["ask-maker"] !== "heads") throw new Error("--ask-maker is heads");
 if (a.out === undefined) throw new Error("--out is required");
 const OUT = a.out;
 mkdirSync(OUT, { recursive: true });
@@ -255,8 +256,8 @@ for (const m of moments) {
     now: a["real-clock"] ? Date.now : () => clock.at,
     routing: { ...(a["real-clock"] ? {} : { setTimer: clock.setTimer }), hostWrites: () => hostWrites, onDecision: (d) => decisions.push(d) },
     readerLink: { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: clock.at, outcome: "ok", detail: null }) },
-    ask: ASK_MAKER === "jev" || a["ask-maker"] === "jev" ? { maker: "jev" } : { maker: "writer", writer: makeWriterPort(devWriterRoute(a.writer ?? "(no --writer)")) },
-    writer: a["ask-maker"] === "jev" || a.writer === undefined ? null : makeWriterPort(devWriterRoute(a.writer)),
+    ask: { maker: "heads" },
+    writer: a.writer === undefined ? null : makeWriterPort(devWriterRoute(a.writer)),
     warn: () => undefined,
   });
   const settle = async (): Promise<void> => {
@@ -417,7 +418,7 @@ const curve = FLOORS.map((f) => {
   return `| ${f} | ${right}/${rows.length} | ${stat.join(" | ")} | ${wrongAct} |`;
 });
 const md = [
-  `# Routing corpus, host writes ${hostWrites ? "on" : "off"}, Ask maker ${a["ask-maker"] === "jev" ? "jev (no Groq)" : ASK_MAKER}`,
+  `# Routing corpus, host writes ${hostWrites ? "on" : "off"}, Ask maker ${ASK_MAKER}`,
   "",
   `${rows.length} moments of ${corpus.moments.length}; exact (outcome, and route for act) ${exact}/${rows.length}. Jev spend $${spend.usd.toFixed(4)}: Router 1 ${spend.calls.router1} calls, Router 2 ${spend.calls.router2}, producers ${spend.calls.producer}.`,
   `Acted when it should not have: ${actWrong.length}${actWrong.length === 0 ? "" : ` (${actWrong.map((r) => `${r.id} expected ${r.expected.outcome}`).join(", ")})`}. Route right where both said act: ${routeRight}/${bothAct.length}.`,
@@ -445,7 +446,7 @@ const md = [
   ...rows.map((r) => `| ${r.id} | ${r.category} | ${r.expected.outcome}${r.expected.route === null ? "" : `/${r.expected.route}`} | ${r.got.outcome}${r.got.route === null ? "" : `/${r.got.route}`} | ${r.beside.join(", ")} | ${r.by} | ${r.local ?? r.refused ?? ""} | ${r.answered ?? ""} | ${r.confidence?.toFixed(2) ?? ""} | ${r.routerCalls} | ${r.offered.join(", ")} | ${r.note ?? ""} |`),
   "",
 ];
-const stem = `corpus-${hostWrites ? "on" : "off"}${a["ask-maker"] === "jev" ? "-askjev" : ""}${a["real-clock"] ? "-clock" : ""}`;
+const stem = `corpus-${hostWrites ? "on" : "off"}${a["real-clock"] ? "-clock" : ""}`;
 writeStore(join(OUT, `${stem}.md`), md.join("\n"));
 writeStoreJson(join(OUT, `${stem}.json`), { hostWrites, spend, per, rows }, 2);
 process.stdout.write(`${md.slice(0, 4).join("\n")}\n`);

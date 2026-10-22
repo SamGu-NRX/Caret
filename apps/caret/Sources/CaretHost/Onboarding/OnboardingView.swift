@@ -267,8 +267,8 @@ struct HelloPane: View {
         let hello = state.hello
         VStack(alignment: .leading, spacing: 0) {
             Spacer(minLength: 0)
-            // Drawn still: its arrival and nod below are the whole performance (no breath or blink loop).
-            FigureView(character: character, state: .noticed, size: Tokens.FigureSize.onboarding, animated: false,
+            // Its arrival and nod below are the performance; after them it rests alive (irregular blinks, FigureIdle).
+            FigureView(character: character, state: .noticed, size: Tokens.FigureSize.onboarding, animated: animated,
                        gaze: CGVector(dx: 0, dy: 0.8))
                 .scaleEffect(x: nod ? 1.06 : 1, y: nod ? 0.92 : 1, anchor: .bottom)
                 .offset(y: nod ? 1 : 0)
@@ -315,6 +315,7 @@ struct HelloPane: View {
     private var coachKey: String {
         let h = state.hello
         if h.model == .unavailable { return OnboardingCopy.Hello.unavailable }
+        if h.model == .off { return OnboardingCopy.Hello.wordsOff }
         if case .loading = h.model { return OnboardingCopy.Hello.loading }
         if h.ghost != nil { return OnboardingCopy.Hello.coachShown }
         return h.taken ? OnboardingCopy.Hello.coachTaken : ""
@@ -576,7 +577,7 @@ struct BrowserPane: View {
         VStack(alignment: .leading, spacing: 0) {
             ScreenTitle(title: OnboardingCopy.Browser.title,
                         detail: b.target == nil ? OnboardingCopy.Browser.none : OnboardingCopy.Browser.line(HelloApps.list(b.trusted.map { HelloApp(bundleId: $0, name: $0) })))
-            if let target = b.target {
+            if let target = b.waitingFor {
                 HStack(spacing: 12) {
                     GrantMark(granted: b.connected, animated: animated)
                     SwappingLine(key: b.connected ? OnboardingCopy.Browser.connected(target) : (b.opened ? OnboardingCopy.Browser.waiting : target), animated: animated) {
@@ -632,9 +633,7 @@ struct OnPane: View {
             ScreenTitle(title: OnboardingCopy.On.title)
             VStack(spacing: 0) {
                 CapabilityRow(title: "Next words", detail: OnboardingCopy.On.nextWords(HelloApps.list(state.hello.apps)), state: "On", on: true)
-                // v2/access has no page writing path, so fixes run in Mac apps only. v2/next reads
-                // PageWritingMachine.webFields here; take its line when merging.
-                CapabilityRow(title: "Fixes", detail: OnboardingCopy.On.fixesDetail, state: OnboardingCopy.On.fixesState(webPages: false), on: true)
+                CapabilityRow(title: "Fixes", detail: OnboardingCopy.On.fixesDetail, state: OnboardingCopy.On.fixesState(webPages: PageWritingMachine.webFields), on: true)
                 CapabilityRow(title: "The next step", detail: OnboardingCopy.On.stepDetail, state: stepState, on: state.on.decision == .sent, last: true)
             }
             .padding(.top, 12)

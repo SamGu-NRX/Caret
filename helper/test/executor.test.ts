@@ -248,12 +248,48 @@ describe("executor", () => {
       { says: "the order is archived", end: { kind: "exists", window: W, target: { label: "Status: Archived", describe: "archived status" } }, via: { kind: "press", target: { label: "Archive", role: "AXButton", describe: "Archive button" } } },
       { says: "page 2 is showing", end: { kind: "windowTitle", window: W, title: `${TITLE} (page 2)` }, via: { kind: "press", target: { label: "Next page", describe: "Next page button" } } },
     ]);
-    expect((await helper.executor.run("first", p, {})).outcome).toBe("done");
-    const before = acts().length;
-    expect(before).toBe(3);
+    // G1: no capability makes Archive Caret's press, so the first run writes and hands Archive to the user.
+    expect(await helper.executor.run("first", p, {})).toMatchObject({ outcome: "handoff", step: 1, detail: "Caret cannot check what pressing 'Archive' changes; you press it" });
+    expect(acts().map((v) => v.kind)).toEqual(["write"]);
+    // The user archives and pages on: the plan, run again, finds every end state already true.
+    for (const key of [K("button:archive~0"), K("button:next page~0")]) app.buttons.get(key)?.(app);
+    app.show();
     const again = await helper.executor.run("second", p, {});
     expect(again).toMatchObject({ outcome: "done", acted: 0, skipped: 3 });
-    expect(acts()).toHaveLength(before);
+    expect(acts().map((v) => v.kind)).toEqual(["write"]);
+  });
+
+  // G1 (CU-COUNSEL-R2 Q3): SAFE_PRESSES once let any plan press Archive, Save draft or Back; only the capability table may.
+  it.each([
+    ["Archive", "the order is archived", { kind: "exists" as const, window: W, target: { label: "Status: Archived", describe: "archived status" } }],
+    ["Next page", "page 2 is showing", { kind: "windowTitle" as const, window: W, title: `${TITLE} (page 2)` }],
+  ])("hands '%s' to the user: a label risk.ts calls safe is not a capability", async (label, says, end) => {
+    const r = await helper.executor.run("t1", plan([{ says, end, via: { kind: "press", target: { label, role: "AXButton", describe: `${label} button` } } }]), {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0, detail: `Caret cannot check what pressing '${label}' changes; you press it` });
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
+  it("presses Next only for the step its capability verifies, and hands it off for any other end state", async () => {
+    app.nodes.push({ key: K("button:next~0"), parent: null, role: "AXButton", label: "Next" });
+    app.buttons.set(K("button:next~0"), (a) => a.nodes.push({ key: K("textfield:description~0"), parent: null, role: "AXTextField", label: "Description", editable: true }));
+    app.show();
+    const next = { key: K("button:next~0"), role: "AXButton", label: "Next", describe: "Next button", exact: true as const };
+    const other = await helper.executor.run("t1", plan([{ says: "the description shows", end: { kind: "exists", window: W, target: { label: "Description", describe: "the description field" } }, via: { kind: "press", target: next } }]), {});
+    expect(other).toMatchObject({ outcome: "handoff", step: 0, detail: "Caret presses 'Next' only to check that it shows new fields, and this step checks something else; you press it" });
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
+    const reveal = await helper.executor.run("t2", plan([{ says: "the next fields show", end: { kind: "fieldsRevealed", window: W, target: next }, via: { kind: "press", target: next } }], "p2"), {});
+    expect(reveal).toMatchObject({ outcome: "done", acted: 1 });
+    expect(app.verbs.filter((v) => v.kind === "press").map((v) => (v.kind === "press" ? v.label : ""))).toEqual(["Next"]);
+  });
+
+  it("hands a page's press to the user, whatever its label: the page engine never runs a page's own script", async () => {
+    app.windowKind = "page";
+    app.nodes.push({ key: K("button:next~0"), parent: null, role: "AXButton", label: "Next" });
+    app.show();
+    const next = { key: K("button:next~0"), role: "AXButton", label: "Next", describe: "Next button", exact: true as const };
+    const r = await helper.executor.run("t1", plan([{ says: "the next fields show", end: { kind: "fieldsRevealed", window: W, target: next }, via: { kind: "press", target: next } }]), {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0, detail: "'Next' runs the page's own script; you press it" });
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
   });
 
   it("refuses a press whose label reads as send and hands it to the user, after doing the steps before it", async () => {
@@ -293,7 +329,7 @@ describe("executor", () => {
     const p = plan([{ says: "the next page shows", end: { kind: "exists", window: W, target: { label: "Page 2", describe: "page 2" } }, via: { kind: "press", target: { label: "Next page", describe: "Next page button" } } }]);
     const r = await helper.executor.run("t1", p, {});
     expect(r).toMatchObject({ outcome: "handoff", step: 0 });
-    expect(r.detail).toBe("'Next page' is in a system prompt; Caret leaves that press to you");
+    expect(r.detail).toBe("'Next page' reads as system; you press it");
     expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
   });
 
@@ -304,7 +340,7 @@ describe("executor", () => {
     const p = plan([{ says: "the form is sent", end: { kind: "exists", window: W, target: { label: "Sent!", describe: "sent notice" } }, via: { kind: "press", target: { label: "Transmit", describe: "Transmit button" } } }]);
     const r = await helper.executor.run("t1", p, {});
     expect(r).toMatchObject({ outcome: "handoff", step: 0 });
-    expect(r.detail).toBe("Caret cannot tell what pressing 'Transmit' does, so it leaves that press to you");
+    expect(r.detail).toBe("Caret cannot check what pressing 'Transmit' changes; you press it");
     expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
   });
 
@@ -397,6 +433,45 @@ describe("executor", () => {
     expect(await helper.executor.resume("t1")).toMatchObject({ outcome: "done", acted: 2 });
   });
 
+  it("revokes a paused run when the window a copied value came from expires (retention)", async () => {
+    const SRC = "6160-9";
+    const at = Date.now();
+    void helper.handleReader(snap([field("src/line~0", "d@example.com")], { at, windowId: SRC, app: MAIL_APP }));
+    // As contract.ts guardFor does: a copied value's source must still be in the model.
+    const guard = (): string | null => (helper.model.windows.has(SRC) ? null : "the window it was read from closed");
+    app.afterVerb = (_, v) => {
+      if (v.kind === "write" && v.key === K("textfield:name~0")) {
+        void helper.handleReader({ type: "userInput", v: PROTOCOL_VERSION, at: 5, pid: FIXTURE_APP.pid, kind: "mouse", point: [50, 50] });
+      }
+    };
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {}, undefined, { guard });
+    expect(r).toMatchObject({ outcome: "paused", step: 1 });
+    app.afterVerb = null;
+    helper.tick(at + 10 * 60 * 1000 + 10_000);
+    expect(helper.model.windows.has(SRC)).toBe(false);
+    expect(progress("t1").at(-1)).toMatchObject({ phase: "stopped", step: 1 });
+    expect(progress("t1").at(-1)?.detail).toMatch(/the window it was read from closed/);
+    expect(acts().filter((v) => v.kind === "write" && v.key === K("textfield:email~0"))).toEqual([]);
+  });
+
+  it("revokes a paused run when the window it acts in expires, though no value it writes is copied (retention)", async () => {
+    app.afterVerb = (_, v) => {
+      if (v.kind === "write" && v.key === K("textfield:name~0")) {
+        void helper.handleReader({ type: "userInput", v: PROTOCOL_VERSION, at: 5, pid: FIXTURE_APP.pid, kind: "mouse", point: [50, 50] });
+      }
+    };
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
+    expect(r).toMatchObject({ outcome: "paused", step: 1 });
+    app.afterVerb = null;
+    // The user goes to another app, so the form is no longer the window they are in, and nothing reads it again.
+    void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: Date.now(), from: FIXTURE_APP, to: MAIL_APP });
+    helper.tick((helper.model.windows.get(WIN)?.updatedAt ?? 0) + 10 * 60 * 1000 + 10_000);
+    expect(helper.model.windows.has(WIN)).toBe(false);
+    expect(progress("t1").at(-1)).toMatchObject({ phase: "stopped", step: 1 });
+    expect(progress("t1").at(-1)?.detail).toMatch(/no longer reads the window it acts in/);
+    expect(acts().filter((v) => v.kind === "write" && v.key === K("textfield:email~0"))).toEqual([]);
+  });
+
   it("ignores input in other processes and clicks outside the window", async () => {
     app.afterVerb = (_, v) => {
       if (v.kind !== "write") return;
@@ -416,7 +491,7 @@ describe("executor", () => {
     expect(stopReason(r.taskId)).toBe("reader");
   });
 
-  it("keeps a step's end target and its press target apart", async () => {
+  it("keeps a step's end target and its press target apart, and names the press target in the hand-off", async () => {
     const p = plan([
       {
         says: "page 2 is showing",
@@ -424,8 +499,9 @@ describe("executor", () => {
         via: { kind: "press", target: { label: "Next page", role: "AXButton", describe: "Next page button" } },
       },
     ]);
-    expect(await helper.executor.run("t1", p, {})).toMatchObject({ outcome: "done", acted: 1 });
-    expect(app.verbs.filter((v) => v.kind === "press").map((v) => (v.kind === "press" ? v.key : ""))).toEqual([K("button:next page~0")]);
+    // The end target resolved to the page line, which does not hold; the press resolved to its own button, which G1 hands off.
+    expect(await helper.executor.run("t1", p, {})).toMatchObject({ outcome: "handoff", step: 0, detail: "Caret cannot check what pressing 'Next page' changes; you press it" });
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
   });
 
   it("asks the reader to watch the task's process while it runs, and stops watching after", async () => {
@@ -761,11 +837,28 @@ describe("executor", () => {
       expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
     });
 
-    it("notConfigured: a step opens a URL and the helper has no URL opener", async () => {
+    it("notConfigured: a step adds an event and the helper has no calendar", async () => {
+      const bareStore = new Store(join(dir, "bare"));
+      const bare = new Helper({ store: bareStore, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app });
+      try {
+        const ev: Step = { says: "x", end: { kind: "calendarEvent", calendar: "Caret Test", title: "Coffee", start: "2026-10-08T15:00:00-05:00", end: "2026-10-08T15:30:00-05:00" } };
+        const r = await bare.executor.run("t1", plan([ev]), {});
+        expect(r).toMatchObject({ outcome: "stopped", step: 0, detail: "no calendar is configured" });
+        expect(stopReason("t1")).toBe("notConfigured");
+      } finally {
+        bare.shutdown();
+        bare.memory.close();
+        bareStore.close();
+      }
+    });
+
+    // G2 (CU-COUNSEL-R2 Q3): the URL opener dispatched outside act(), so no URL is Caret's to open.
+    it("hands a step that opens a URL to the user, and dispatches nothing", async () => {
       const step: Step = { says: "the page is open", end: { kind: "exists", window: W, target: { label: "Status: Done", describe: "a done line" } }, via: { kind: "openUrl", url: "https://example.com/" } };
       const r = await helper.executor.run("t1", plan([step]), {});
-      expect(r).toMatchObject({ outcome: "stopped", step: 0, detail: "no URL opener is configured" });
-      expect(stopReason("t1")).toBe("notConfigured");
+      expect(r).toMatchObject({ outcome: "handoff", step: 0, detail: "open https://example.com/ yourself" });
+      expect(progress("t1").at(-1)?.phase).toBe("handoff");
+      expect(acts()).toEqual([]);
     });
 
     it("error: anything else that ends the run, such as the calendar store failing", async () => {

@@ -164,7 +164,7 @@ describe("a value the writer picked still goes to Jev", () => {
 
 describe("nothing a program sends counts as derived", () => {
   it("the worker's plan schema refuses a step or a draft that carries a mark of its own", () => {
-    const plan = (steps: unknown[], drafts: unknown[] = []) => ({ type: "done", outcome: { ok: true, plan: { basedOn: "s1", window: "w1", steps, choices: [], drafts, programDigest: "0".repeat(64) }, stats: { wallMs: 0, guestCpuMs: 0, readWindowCalls: 0, chooseCalls: 0, steps: 0 } } });
+    const plan = (steps: unknown[], drafts: unknown[] = []) => ({ type: "done", outcome: { ok: true, plan: { basedOn: "s1", window: "w1", steps, choices: [], drafts, programDigest: "0".repeat(64) }, stats: { wallMs: 0, guestCpuMs: 0, readWindowCalls: 0, chooseCalls: 0, steps: 0 }, pending: null } });
     expect(DoneMessage.safeParse(plan([{ ref: "a", kind: "fill", target: "t1", value: "v1" }])).success).toBe(true);
     expect(DoneMessage.safeParse(plan([{ ref: "a", kind: "fill", target: "t1", value: "v1", gate: "derived" }])).success).toBe(false);
     expect(DoneMessage.safeParse(plan([{ ref: "a", kind: "fill", target: "t1", value: "v1", derived: true }])).success).toBe(false);

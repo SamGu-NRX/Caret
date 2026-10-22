@@ -16,6 +16,7 @@ final class OnboardingOnCopyTests: XCTestCase {
     func testFixesRowFollowsWhereFixesRun() {
         XCTAssertEqual(OnboardingCopy.On.fixesState(webPages: true), "On in Mac apps\nand web pages")
         XCTAssertEqual(OnboardingCopy.On.fixesState(webPages: false), "On in Mac apps")
-        XCTAssertFalse(OnboardingCopy.On.fixesState(webPages: false).contains("soon"))
+        XCTAssertTrue(PageWritingMachine.webFields, "this build fixes spelling in web page fields")
+        XCTAssertFalse(OnboardingCopy.On.fixesState(webPages: PageWritingMachine.webFields).contains("soon"))
     }
 }

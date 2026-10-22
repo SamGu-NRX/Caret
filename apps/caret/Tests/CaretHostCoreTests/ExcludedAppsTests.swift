@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 import CaretHostCore
+import CaretScreenCore
 
 final class ExcludedAppsTests: XCTestCase {
     func testEveryEntryHasAReasonAndIsExcluded() {
@@ -11,14 +12,8 @@ final class ExcludedAppsTests: XCTestCase {
         }
     }
 
-    func testReaderDefaultIdentifiersArePreserved() {
-        let readerDefaults = [
-            "com.apple.keychainaccess", "com.apple.Passwords", "com.bitwarden.desktop", "com.1password", "com.agilebits",
-            "com.lastpass", "com.dashlane", "com.callpod.keeper", "org.keepassxc", "me.proton.pass", "ch.protonmail.pass",
-            "in.sinew.Enpass", "com.nordsec.nordpass", "com.apple.systempreferences.passwords",
-        ]
-        let identifiers = Set(ExcludedApps.entries.map(\.bundleIdentifier))
-        for id in readerDefaults { XCTAssertTrue(identifiers.contains(id), id) }
+    func testHostUsesSharedRequiredExclusions() {
+        XCTAssertEqual(CaretHostCore.ExcludedApps.entries, CaretScreenCore.ExcludedApps.entries)
     }
 
     func testPrefixesMatchOnlyDotSeparatedDescendants() throws {
@@ -38,23 +33,6 @@ final class ExcludedAppsTests: XCTestCase {
         XCTAssertFalse(ExcludedApps.excludes(bundleID: "dev.caretx.host"))
         XCTAssertFalse(ExcludedApps.excludes(bundleID: "dev.caret.fixture"), "the test fixture app stays a target for runs that name its pid")
         XCTAssertFalse(ExcludedApps.excludes(bundleID: "com.apple.systempreferencesx"))
-    }
-
-    /// The reader never walks what the host refuses: every excluded identifier is in its default deny list
-    /// (apps/screen-reader ScreenReader.swift `DenyList.defaults`, which helper/test/sc1-exclusions.test.ts pins to the
-    /// helper's copy).
-    func testTheReadersDefaultDenyListHoldsEveryExcludedApp() throws {
-        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .appendingPathComponent("../../../screen-reader/Sources/CaretScreenAX/ScreenReader.swift").standardized
-        let text = try String(contentsOf: source, encoding: .utf8)
-        let start = try XCTUnwrap(text.range(of: "public static let defaults = ["))
-        let end = try XCTUnwrap(text.range(of: "]", range: start.upperBound..<text.endIndex))
-        let block = String(text[start.upperBound..<end.lowerBound])
-        let ids = Set(try NSRegularExpression(pattern: #""([^"]+)""#).matches(in: block, range: NSRange(block.startIndex..., in: block))
-            .compactMap { Range($0.range(at: 1), in: block).map { String(block[$0]) } })
-        for entry in ExcludedApps.entries {
-            XCTAssertTrue(ids.contains(entry.bundleIdentifier), "the reader would walk \(entry.bundleIdentifier)")
-        }
     }
 
     func testNormalAppsAreNotExcluded() {

@@ -71,9 +71,9 @@ describe("a goal that drafts a reply", () => {
     expect(g.event).toBe("segment");
     const steps = (g as Extract<GoalProgress, { event: "segment" }>).steps;
     expect(steps).toEqual([
-      { index: 0, kind: "write", says: `To: ${EMAIL}` },
-      { index: 1, kind: "write", says: "Message: Hi Priya, I'm in for Thursday, October 8 at 3:00 PM.", drafted: "Hi Priya, I'm in for Thursday, October 8 at 3:00 PM." },
-      { index: 2, kind: "handoff", says: "'Send' reads as outbound; you press it" },
+      { index: 0, kind: "write", says: `To: ${EMAIL}`, tier: "write" },
+      { index: 1, kind: "write", says: "Message: Hi Priya, I'm in for Thursday, October 8 at 3:00 PM.", drafted: "Hi Priya, I'm in for Thursday, October 8 at 3:00 PM.", tier: "write" },
+      { index: 2, kind: "handoff", says: "'Send' reads as outbound; you press it", tier: "yours" },
     ]);
     expect(GoalProgress.safeParse(g).success).toBe(true);
     expect(sc.desk.writes).toEqual([]);
@@ -267,7 +267,7 @@ describe("G2: a draft that only restates the instruction", () => {
   ])("is accepted without asking Jev: %s", async (_, instruction, text) => {
     const j = doubting();
     const g = await scene(reply(text), { askJev: j }).request(instruction);
-    expect(g.event === "segment" && g.steps.at(-1)).toEqual({ index: 1, kind: "write", says: `Message: ${text}`, drafted: text });
+    expect(g.event === "segment" && g.steps.at(-1)).toEqual({ index: 1, kind: "write", says: `Message: ${text}`, drafted: text, tier: "write" });
     expect(j.claimCalls).toBe(0);
   });
 

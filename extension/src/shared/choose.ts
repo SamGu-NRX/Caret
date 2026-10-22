@@ -71,16 +71,11 @@ export interface PickState {
   closedOnPick: boolean;
 }
 
-/** Whitespace collapsed and trimmed, then cut to `max` characters, as content/names.ts clean() does. */
-function clip(t: string, max: number): string {
-  const c = t.replace(/\s+/g, " ").trim();
-  return c.length <= max ? c : `${c.slice(0, max - 1)}…`;
-}
-
 /** Why a pick is not verified, each as a clause for the receipt; empty when it is. */
 export function pickProblems(s: PickState): string[] {
   const out: string[] = [];
-  if (normalizeName(s.afterBlur) !== normalizeName(s.value)) out.push(s.afterBlur === s.before ? "the control kept its old value" : `the control shows '${clip(s.afterBlur, 60)}'`);
+  // The control's text is a text control's, which never leaves the frame: the clause says that it differs, not what it is.
+  if (normalizeName(s.afterBlur) !== normalizeName(s.value)) out.push(s.afterBlur === s.before ? "the control kept its old value" : "the control shows other text than the option picked");
   if (s.hiddenInput === "unchanged") out.push("react-select's form value did not change");
   if (s.expanded === true) out.push("the list is still open");
   // An ARIA combobox's text field shows the typed filter whether or not the page took the option: only the list

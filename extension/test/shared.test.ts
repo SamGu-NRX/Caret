@@ -141,7 +141,7 @@ describe("frames", () => {
 });
 
 describe("bridge messages", () => {
-  const write = { kind: "pageWrite", tabId: 7, frameId: 0, documentId: "D", id: "e1", control: "text", name: "First name", taskId: "t1", expect: "", value: "Ada" };
+  const write = { kind: "pageWrite", tabId: 7, frameId: 0, documentId: "D", id: "e1", control: "text", name: "First name", taskId: "t1", expectRev: 0, value: "Ada" };
   it("accepts the shapes it routes", () => {
     expect(parseFromHelper({ type: "pageCommand", v: 1, id: "c", expires: 5, verb: write })).toMatchObject({ type: "pageCommand", verb: { kind: "pageWrite" } });
     expect(parseFromHelper({ type: "pageCommand", v: 1, id: "c", expires: 5, verb: { kind: "pageWalk", tabId: null } })).not.toBeNull();
@@ -154,6 +154,28 @@ describe("bridge messages", () => {
     expect(parseFromHelper({ type: "pageCommand", v: 1, id: "c", expires: 5, verb: { kind: "pageWalk", tabId: 1.5 } })).toBeNull();
     expect(parseFromHelper({ type: "engineHello", v: 1 })).toBeNull();
     expect(parseFromHelper({ type: "scopedActGrant", v: 1, taskId: "t", scope: { kind: "page", engine: "e" }, at: 1, expires: 2 })).toBeNull();
+  });
+  it("routes a text write by the walk's rev only, never by the field's text, and the page-side verbs in their own shapes", () => {
+    const cmd = (verb: object) => parseFromHelper({ type: "pageCommand", v: 1, id: "c", expires: 5, verb });
+    expect(cmd({ ...write, expect: "" })).toBeNull();
+    const { expectRev: _r, ...noRev } = write;
+    expect(cmd({ ...noRev, expect: "" })).toBeNull();
+    const combo = { ...write, kind: "pageChooseOption", control: "combobox", name: "Country", value: "Canada" };
+    expect(cmd(combo)).not.toBeNull();
+    expect(cmd({ ...combo, expect: "" })).toBeNull();
+    const { expectRev: _c, ...comboNoRev } = combo;
+    expect(cmd({ ...comboNoRev, expect: "" })).toBeNull();
+    expect(cmd({ ...comboNoRev, control: "button", expect: "No", question: "Over 18?" })).not.toBeNull();
+    const { expectRev: _w, value: _v, ...target } = write;
+    expect(cmd({ ...target, kind: "pageRestore", wrote: "Ada", rebind: false, sameAs: "m" })).not.toBeNull();
+    expect(cmd({ ...target, kind: "pageRestore" })).toBeNull();
+    expect(cmd({ ...target, kind: "pageCompare", candidates: ["Ada Lovelace"] })).not.toBeNull();
+    expect(cmd({ ...target, kind: "pageCompare", candidates: Array.from({ length: 9 }, (_, i) => `candidate ${i}`) })).toBeNull();
+    expect(cmd({ ...target, kind: "pageCompare", candidates: [] })).toBeNull();
+    // No verb gives a field's text out of the page until the user can pick a source window (audit HIGH 2): the copy
+    // verb is dropped at the wire, whatever fields it carries.
+    expect(cmd({ kind: "pageSourceGrant", tabId: 7, frameId: 0, documentId: "D", taskId: "t1", ids: ["e1", "e2"] })).toBeNull();
+    expect(cmd({ ...target, kind: "pageSourceGrant", ids: ["e1"] })).toBeNull();
   });
   it("joins chunks in order, and starts over on a gap", () => {
     const c = new Chunks();

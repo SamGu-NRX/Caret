@@ -240,7 +240,7 @@ describe("rulings 1 and 2: a resume settles nothing and refuses a changed docume
     const log: JevRequest[] = [];
     const ask = jev("some", ["Name", "Email"], log);
     // The writer cannot tell which fields: the Ask asks which, offering only the fields the scope question settled.
-    const writer = { name: "writer" as const, async make() { return { intent: { route: "ask" as const, why: "whichFields" as const, scope: "none" as const, section: "none", fields: [], sources: ["any"], whose: "user", literals: [] }, use: { maker: "writer" as const, model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }; } };
+    const writer = { name: "heads" as const, async make() { return { intent: { route: "ask" as const, why: "whichFields" as const, scope: "none" as const, section: "none", fields: [], sources: ["any"], whose: "user", literals: [] }, use: { maker: "heads" as const, model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }; } };
     const first = await planAsk("do this one", desk(), { values: () => MEMORY }, ABOUT, { askJev: ask, maker: writer as never, writer: null, offerKey: "wq", windowId: WIN, now: 2000 }).catch((e: unknown) => e);
     expect(first).toBeInstanceOf(AskAsks);
     const q = (first as AskAsks).question;
@@ -276,7 +276,7 @@ describe("ruling 3: an Ask's goal never mints a goal's authority", () => {
 });
 
 describe("last round: questions carry and offer only the settled scope", () => {
-  const writerSays = (intent: Record<string, unknown>) => ({ name: "writer" as const, async make() { return { intent: { route: "ask", why: "whichFields", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [], ...intent } as never, use: { maker: "writer" as const, model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }; } });
+  const writerSays = (intent: Record<string, unknown>) => ({ name: "heads" as const, async make() { return { intent: { route: "ask", why: "whichFields", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [], ...intent } as never, use: { maker: "heads" as const, model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }; } });
 
   it("ruling 3: a writer's refusal still asks the scope question first, so no question is ever saved unsettled", async () => {
     const log: JevRequest[] = [];

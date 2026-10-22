@@ -3,11 +3,14 @@
 // and the file inputs Caret leaves to the user. A native Ask whose route is plan stays on the single-window planner when
 // no writer could plan it as a goal. Jev's 402 is said as the account's credits on both the Ask and the page-planning
 // paths, never as "couldn't reach its model". Every name and value is invented.
+import type { TestField } from "./page-wire.ts";
+import { headsJev } from "./heads-jev.ts";
+import { scriptedIntent } from "./page-rig.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type GoalProgress, type PageControl, type PageSnapshot, type PlanProposal } from "../src/protocol.ts";
+import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type GoalProgress, type PageSnapshot, type PlanProposal } from "../src/protocol.ts";
 import { makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
@@ -21,19 +24,6 @@ import { byLabel, c, chrome, FakePage, hello, mixedControls, NOTE, okReader, PIC
 import { caseWindow, detailsWindow, goalScene, mailWindow, type GoalScene } from "./goal-desk.ts";
 
 type Segment = Extract<GoalProgress, { event: "segment" }>;
-
-/** An intent writer whose every intent has `route`, scope all. */
-function intentWriter(route: "fill" | "plan"): WriterPort {
-  return {
-    route: FAKE_WRITER_ROUTE,
-    async write(req) {
-      const base = { model: "canned", provider: "canned", inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
-      if (req.kind !== "intent") throw new Error(`asked to write a ${req.kind}`);
-      const json = { route, why: "none", scope: route === "fill" ? "all" : "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
-      return { ...base, output: { program: null, reply: JSON.stringify(json), json } };
-    },
-  };
-}
 
 /** The browser window's outer frame and the top frame's viewport the extension reports (H10 PageSnapshot.view). */
 const VIEW: NonNullable<PageSnapshot["view"]> = { window: [100, 50, 800, 600], viewport: [800, 500], zoom: 1 };
@@ -55,7 +45,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => PageControl[]; note?: string; picks?: Record<string, string> } = {}): Promise<Rig> {
+async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => TestField[]; note?: string; picks?: Record<string, string> } = {}): Promise<Rig> {
   const dir = mkdtempSync(join(tmpdir(), "caret-h11-"));
   const store = new Store(join(dir, "data"));
   const page = new FakePage(o.controls ?? mixedControls, "Apply: Mixed controls");
@@ -77,7 +67,7 @@ async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => PageContr
     });
   let helper: Helper;
   const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
-  helper = new Helper({ store, askJev: jev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => void published.push(m), warn: () => {}, ask: { maker: "writer", writer: intentWriter("fill") }, pageDocument: (id) => host.registry.documentOf(id) });
+  helper = new Helper({ store, askJev: jev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => void published.push(m), warn: () => {}, ask: { maker: "scripted", make: scriptedIntent({ scope: "all" }) }, pageDocument: (id) => host.registry.documentOf(id) });
   wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
   host.registry.add(page.session);
   page.session.receive(hello);
@@ -147,21 +137,22 @@ function revealing(page: FakePage): void {
 }
 
 describe("a reveal's preview (H11)", () => {
-  it("shows no row for a field an Ask's writes revealed (I2 ruling B: the scope is settled once)", async () => {
+  it("carries a view of its own: the revealed field's row, the same page window", async () => {
     const r = await rig({ note: `${NOTE}\nProvince: Ontario`, picks: { ...PICKS, Province: "Ontario" } });
     revealing(r.page);
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     await r.helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: preview.goalId, segment: 0, digest: preview.digest, at: Date.now() });
     await r.helper.goals.idle();
     const next = r.published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.goalId !== preview.goalId);
-    // I2 lead ruling B: the revealed Province was never asked about, so an Ask's goal shows no row that writes it.
-    expect(next?.page?.rows?.some((x) => x.label === "Province") ?? false).toBe(false);
+    expect(next).toMatchObject({ reason: "afterReveal", replaces: preview.goalId });
+    expect(next?.page?.windowId).toBe(WIN);
+    expect(next?.page?.rows).toEqual([{ step: 0, label: "Province", value: "Ontario", picked: true }]);
   });
 });
 
 describe("a native Ask whose route is plan, with no writer (H11)", () => {
   it("stays on the single-window planner for a host that runs goal plans, instead of refusing for want of a writer", async () => {
-    const sc = goalScene({ scripts: [], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1", writer: null, askJev: async () => ({ answers: {}, model: "m", latencyMs: 0, inputTokens: 0, costUsd: 0 }), ask: { maker: "writer", writer: intentWriter("plan") } });
+    const sc = goalScene({ scripts: [], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1", writer: null, askJev: headsJev(async () => ({ answers: {}, model: "m", latencyMs: 0, inputTokens: 0, costUsd: 0 }), "plan"), ask: { maker: "heads" } });
     scenes.push(sc);
     const r = await sc.helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "n1", at: sc.desk.at, instruction: "press Submit in the case", windowId: "7171-1" }, sc.session, true, true);
     expect(r.type).toBe("planProposal");
@@ -176,7 +167,7 @@ describe("Jev's 402 (H11)", () => {
 
   it("an Ask says the account is out of credits, not that the model could not be reached", async () => {
     unpaid();
-    const sc = goalScene({ scripts: [], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1", writer: null, askJev: makeJevClient(() => "k"), ask: { maker: "jev" } });
+    const sc = goalScene({ scripts: [], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1", writer: null, askJev: makeJevClient(() => "k"), ask: { maker: "heads" } });
     scenes.push(sc);
     const r = (await sc.helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "p1", at: sc.desk.at, instruction: "fill in the order number", windowId: "7171-1" }, sc.session, true, true)) as PlanProposal;
     expect(r.type).toBe("planProposal");

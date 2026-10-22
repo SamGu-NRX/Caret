@@ -29,7 +29,7 @@ import { nameRoutine, type RoutineFacts } from "../src/patterns/naming.ts";
 import { planAsk } from "../src/planner/ask.ts";
 import { planWithCode, verifyWrites } from "../src/planner/codeplan.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
-import { jevIntentMaker, writerIntentMaker, type IntentMaker } from "../src/planner/intent-makers.ts";
+import { type IntentMaker } from "../src/planner/intent.ts";
 import { intentSnapshot, type AskIntent } from "../src/planner/intent.ts";
 import { planTask } from "../src/planner/planner.ts";
 import { router1Request, router2Request } from "../src/routing/judge.ts";
@@ -47,6 +47,7 @@ import { macClock } from "../src/offers/event-time.ts";
 import { MAIL_APP, field, node, snap, text, value } from "./builders.ts";
 import { executorWindow, TITLE as EXEC_TITLE, WIN as EXEC_WIN } from "./fake-app.ts";
 import { notesWindow } from "./desks.ts";
+import { everyCaseSelected } from "./case-selection.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "caret-sc1-tp1-"));
@@ -113,7 +114,7 @@ const MEMORY = [{ id: "about-1", label: "Name", text: "Elena Vance", whose: "use
 const memory = { values: () => MEMORY };
 const about = [{ id: "about-1", label: "Name", value: "Elena Vance", kind: "name" as const }];
 const intentOf = (x: Partial<AskIntent>): AskIntent => ({ route: "fill", why: "none", scope: "list", section: "none", fields: [], sources: ["any"], whose: "user", literals: [], ...x });
-const maker = (x: Partial<AskIntent>): IntentMaker => ({ name: "writer", async make() { return { intent: intentOf(x), use: { maker: "writer", model: "test", calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0, latencyMs: 1 } }; } });
+const maker = (x: Partial<AskIntent>): IntentMaker => ({ name: "heads", async make() { return { intent: intentOf(x), use: { maker: "heads", model: "test", calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0, latencyMs: 1 } }; } });
 
 /** A code plan that fills each listed label with the value whose display starts with the text (test/codeplan.test.ts). */
 const fillByText = (pairs: [string, string][]): string => `async function main(caret: CaretPlanAPI): Promise<PlanRef> {
@@ -130,13 +131,13 @@ const fillByText = (pairs: [string, string][]): string => `async function main(c
   return caret.plan({ basedOn: form.snapshot, steps });
 }`;
 
-/** Every purpose a builder in src/ sends (request-builders.txt, 25 sites), and the writer's three kinds. */
+/** Every purpose a builder in src/ sends (request-builders.txt, 25 sites), and the writer's two implemented kinds. */
 const PURPOSES = [
   "codemode.choice", "executor.target", "fill.verify", "fill.whose", "fill.values", "draft.check", "savedFile.match", "event.card", "pattern.naming",
-  "ask.confirm", "codeplan.asksAbout", "plan.verify", "ask.heads", "ask.scope", "intent.route", "intent.fields", "planner.window", "planner.fields",
+  "ask.confirm", "codeplan.asksAbout", "plan.verify", "ask.heads", "ask.scope", "planner.window", "planner.fields",
   "route.judge", "route.task", "route.pick", "pending.change", "pending.look",
 ] as const;
-const WRITER_KINDS = ["plan", "goal", "intent"] as const;
+const WRITER_KINDS = ["plan", "goal"] as const;
 
 describe("T-P1: every wire string a builder sends is minted", () => {
   it("fill: whose and value questions on a corpus form, then the verifier", async () => {
@@ -151,15 +152,13 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     await swallow(checkValues([p], { askJev: ask, ledger: new Disclosure(note), now: 1, authority: { mint: () => { throw new Error("no mint in T-P1"); } } as never }));
   });
 
-  it("Ask: heads, scope, confirm, the Jev intent maker, the writer intent maker, and a code plan", async () => {
+  it("Ask: heads, scope, confirmation, and a code plan", async () => {
     const d = deskOf("clinic-intake");
     await swallow(planAsk("use Ines for the emergency contact", d.model, { values: () => d.memory }, [], { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "tp1-heads", windowId: d.form.window.windowId, now: 2000 }));
     // ask.confirm: a writer's whole-form scope the instruction does not ask for is confirmed by Jev.
     await swallow(planAsk("Fill only Email; do not change Full name", rentalDesk(), memory, about, { askJev: ask, maker: maker({ scope: "all" }), writer: null, offerKey: "tp1-confirm", windowId: "form", now: 2000 }));
     const m = rentalDesk();
     const s = intentSnapshot("my email please, and Gary as the landlord", m, m.windows.get("form") as WindowState, MEMORY);
-    await swallow(jevIntentMaker(ask, { rand: (n) => n - 1 }).make(s));
-    await swallow(writerIntentMaker(writer(() => ({ program: null, reply: "{}", json: { route: "fill", why: "none", scope: "all", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] } })), () => "tp1-intent").make(s));
     // A code plan: the writer's program, the asks-about question for an unnamed field, and the value check.
     await swallow(planWithCode("do the landlord part from my notes", rentalDesk(), memory, { writer: writer(() => { const p = fillByText([["Landlord name", "Gary Pruitt"], ["Email", "elena.vance@example.com"]]); return { program: p, reply: p }; }), askJev: ask, offerKey: "tp1-plan", windowId: "form", now: 2000 }));
     const v = rentalDesk();
@@ -181,7 +180,7 @@ describe("T-P1: every wire string a builder sends is minted", () => {
       const answers = Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: id === "route" ? "fill" : id === "scope" ? "list" : id === "source" ? "any" : id === "whose" ? "user" : "none", confidence: 0.95 }]));
       return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
     };
-    await swallow(jevIntentMaker(listing, { rand: (n) => n - 1 }).make(s));
+    await swallow(headsIntentMaker(listing).make(s));
   });
 
   it("planner: which window, then the fields", async () => {
@@ -271,14 +270,16 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     await swallow(planGoal(rentalDesk(), { goalId: "tp1-goal", instruction: "do the landlord part from my notes", writer: writer(() => ({ program: null, reply: "" })), askJev: ask, windows: ["form"], memory: [], calendar: null, clock: macClock(new Date(2000)), now: 2000, readerSession: 0 }));
   });
 
-  it("covers every builder's purpose, sent through the real client, and every writer kind", () => {
+  // Both aggregate checks need every producer's requests, not the subset that ran before them in a shuffle.
+  afterAll(({}, suite) => {
+    if (!everyCaseSelected(suite)) return;
     const purposes = new Set(sent.map((r) => r.purpose));
     expect(PURPOSES.filter((p) => !purposes.has(p))).toEqual([]);
     expect(new Set(written.map((w) => w.kind))).toEqual(new Set(WRITER_KINDS));
     expect(fetched.length).toBeGreaterThan(0);
   });
 
-  it("refuses each recorded request with one raw string inserted, before anything is fetched", async () => {
+  afterAll(async () => {
     const before = fetched.length;
     for (const req of sent) {
       const raw = "a raw screen line no Disclosure minted";

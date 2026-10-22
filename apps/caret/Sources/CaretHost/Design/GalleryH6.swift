@@ -23,6 +23,8 @@ extension Gallery {
             options = #"[{"kind":"you","id":"o1"},{"kind":"person","id":"o2","name":"Gary Pruitt"}]"#
         case .value:
             return askValueQuestion()
+        case .task:
+            return askTaskQuestion()
         }
         let line = #"{"type":"askQuestion","v":1,"requestId":"ask-7","at":1790000301200,"questionId":"ask-1-ask-7","part":"\#(part.rawValue)","text":"\#(text)","pick":"\#(part == .fields ? "many" : "one")","options":\#(options),"window":{"pid":4100,"windowId":"page:eng7:12","appName":"Google Chrome","title":"Rental application"},"expires":1790000901200}"#
         return try! JSONDecoder().decode(AskQuestion.self, from: Data(line.utf8))

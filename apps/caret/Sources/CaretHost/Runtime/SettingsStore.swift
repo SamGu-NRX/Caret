@@ -25,6 +25,11 @@ public final class SettingsStore {
     public private(set) var loadError: String?
     /// The file existed and could not be decoded, and has not been kept aside yet.
     private var unreadable: Bool
+    /// While set, every change keeps the roles inside it: onboarding holds the cloud roles until the person sends the
+    /// first look or keeps everything on the Mac, and a role turned on from the menu meanwhile must not reach the helper.
+    public var rolesCap: Set<CaretRole>?
+    /// The last write failed (a full disk, a folder that turned read-only): what is in memory is not on disk.
+    public private(set) var lastWriteFailed = false
     private var observers: [UUID: (CaretSettings) -> Void] = [:]
 
     init(path: String = SettingsStore.path) {
@@ -52,12 +57,19 @@ public final class SettingsStore {
     public func update(source: MemoryEntry.Source, _ change: (inout CaretSettings) -> Void) {
         var next = settings
         change(&next)
+        if let rolesCap { next.roles.formIntersection(rolesCap) }
         next.recordPreferences(source: source, at: Int64((Date().timeIntervalSince1970 * 1000).rounded()))
         guard next != settings else { return }
         settings = next
         loadError = nil
-        if unreadable { keepUnreadable() }
-        save()
+        // The unreadable file is never overwritten: until it is kept aside, the change stays in memory only, and the
+        // next change tries the move again (Codex on PR #17).
+        if unreadable, !keepUnreadable() {
+            lastWriteFailed = true
+            loadError = "\(path): unreadable, and it could not be kept aside yet; this change is not saved"
+        } else {
+            save()
+        }
         for observer in observers.values { observer(next) }
     }
 
@@ -70,14 +82,17 @@ public final class SettingsStore {
 
     /// Moves the file this host could not read to `<path>.unreadable-<ms>` before the first write replaces it: a newer
     /// Caret's settings, say, after a downgrade. Nothing is deleted; the move failing only logs, and the write goes on.
-    private func keepUnreadable() {
-        unreadable = false
+    /// True once the file is kept aside (or is gone): only then may `save` write over its path.
+    private func keepUnreadable() -> Bool {
         let kept = path + ".unreadable-\(Int64((Date().timeIntervalSince1970 * 1000).rounded()))"
         do {
-            try FileManager.default.moveItem(atPath: path, toPath: kept)
+            if FileManager.default.fileExists(atPath: path) { try FileManager.default.moveItem(atPath: path, toPath: kept) }
+            unreadable = false
             FileHandle.standardError.write(Data("caret: kept the unreadable settings file at \(kept)\n".utf8))
+            return true
         } catch {
             FileHandle.standardError.write(Data("caret: could not keep the unreadable settings file: \(error.localizedDescription)\n".utf8))
+            return false
         }
     }
 
@@ -88,7 +103,9 @@ public final class SettingsStore {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(settings).write(to: url, options: .atomic)
+            lastWriteFailed = false
         } catch {
+            lastWriteFailed = true
             loadError = "\(path): could not write: \(error)"
             FileHandle.standardError.write(Data("caret: \(loadError!)\n".utf8))
         }
@@ -102,7 +119,8 @@ public final class SettingsStore {
     /// `settings set <name> <value>` on the debug socket, the menu bar's choices by name:
     ///   role fill|repeat|watch|calendar|words on|off, level quiet|balanced|eager,
     ///   paused on|off, routing on|off (H6: "Caret decides when to help"),
-    ///   calendar <EventKit calendar id>|default (H8: where accepted events go).
+    ///   calendar <EventKit calendar id>|default (H8: where accepted events go), keys caret|cotypist
+    ///   (which keys take ghost text), app <bundle id> on|off (Caret in one app).
     public func set(_ words: [String]) -> String? {
         func onOff(_ word: String) -> Bool? { word == "on" ? true : (word == "off" ? false : nil) }
         switch (words.first, words.count) {
@@ -127,8 +145,14 @@ public final class SettingsStore {
         case ("pageInlineContentEditable", 2):
             guard let on = onOff(words[1]) else { return "usage: settings set pageInlineContentEditable on|off" }
             update(source: .socket) { $0.pageInlineContentEditable = on }
+        case ("app", 3):
+            guard let on = onOff(words[2]), CaretSettings.isBundleID(words[1]) else { return "usage: settings set app <bundle id> on|off" }
+            update(source: .socket) { $0.setApp(words[1], off: !on) }
+        case ("keys", 2):
+            guard let keys = GhostKeys(rawValue: words[1]) else { return "usage: settings set keys caret|cotypist" }
+            update(source: .socket) { $0.ghostKeys = keys }
         default:
-            return "usage: settings set role|level|paused|routing|calendar|pageInlineText|pageInlineContentEditable ..."
+            return "usage: settings set role|level|paused|routing|calendar|pageInlineText|pageInlineContentEditable|keys|app ..."
         }
         return nil
     }

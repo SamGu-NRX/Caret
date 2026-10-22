@@ -52,6 +52,40 @@ if CommandLine.arguments.dropFirst().first == "--probe-typing", CommandLine.argu
     RunLoop.main.run()
 }
 
+// Dev mode: `Caret --probe-length <cases.txt> <out.ndjson> [--caps 4,8,16] [--extend 28] [--normalized 4]` times suggestions by
+// length while typing each line key by key.
+if CommandLine.arguments.dropFirst().first == "--probe-length", CommandLine.arguments.count >= 4 {
+    let args = CommandLine.arguments
+    let cases = URL(fileURLWithPath: args[2])
+    let out = URL(fileURLWithPath: args[3])
+    func value(_ flag: String) -> String? { args.firstIndex(of: flag).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
+    let caps = (value("--caps") ?? "4,8,12,16,24,32").split(separator: ",").compactMap { Int($0) }
+    let extend = value("--extend").flatMap(Int.init) ?? 28
+    let normalized = (value("--normalized") ?? "").split(separator: ",").compactMap { Int($0) }
+    let modelURL = configuration.modelURL
+    MainActor.assumeIsolated {
+        Task {
+            print(await DevProbe.length(modelURL: modelURL, cases: cases, out: out, caps: caps, extend: extend, normalized: normalized), terminator: "")
+            exit(0)
+        }
+    }
+    RunLoop.main.run()
+}
+
+// Dev mode: `Caret --probe-rewrite <sentences.txt> <out.ndjson>` times the rewrite generator's modes.
+if CommandLine.arguments.dropFirst().first == "--probe-rewrite", CommandLine.arguments.count >= 4 {
+    let sentences = URL(fileURLWithPath: CommandLine.arguments[2])
+    let out = URL(fileURLWithPath: CommandLine.arguments[3])
+    let modelURL = configuration.modelURL
+    MainActor.assumeIsolated {
+        Task {
+            print(await DevProbe.rewrite(modelURL: modelURL, sentences: sentences, out: out), terminator: "")
+            exit(0)
+        }
+    }
+    RunLoop.main.run()
+}
+
 // Dev mode: `Caret --probe-replay <cases.json> <out.json>` records the engine's outcome for each
 // case as a `--ghost-replay` file, and prints every candidate's refusal and fit scores.
 if CommandLine.arguments.dropFirst().first == "--probe-replay", CommandLine.arguments.count >= 4 {
@@ -281,7 +315,12 @@ case .run(let mode):
     }
 }
 configuration.helperSocketPath = MainActor.assumeIsolated { services.helperSocket }
+// In memory only: the runtime's helper client proves with it that this Caret is the host (HostAuth).
+configuration.hostKey = MainActor.assumeIsolated { services.hostKey }
 
+// The engine's token profiles follow the home: a test run's --home keeps them out of the user's Library.
+configuration.profileDirectory = URL(fileURLWithPath: home.profilesDirectory(userHome: NSHomeDirectory()), isDirectory: true)
+configuration.modelDownloadDirectory = URL(fileURLWithPath: home.modelsDirectory(userHome: NSHomeDirectory()), isDirectory: true)
 let launchConfiguration = configuration
 let launchStatusItem = showsStatusItem
 let launchManifestDirectory = manifestDirectory

@@ -1,5 +1,6 @@
 // G2: who a value belongs to, decided from evidence; and the Greenhouse task page's Location stops. Every name, number
 // and address is synthetic (F1's task fixtures, fixtures/web-form/tasks/expect).
+import { onWire, type TestField } from "./page-wire.ts";
 import { Disclosure } from "../src/privacy/disclosure.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,7 +27,7 @@ const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId
 const WIN = "page:eng1:7";
 const NOTE_KEY = "com.apple.TextEdit/standard/textarea:~0";
 
-const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({
+const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<TestField> = {}): PageControl => onWire({
   id,
   key: `form[apply]/${kind}:${name.toLowerCase()}~0`,
   strongKey: null,
