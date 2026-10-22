@@ -67,7 +67,7 @@ public enum CaretLevel: String, Codable, CaseIterable, Sendable {
         switch self {
         case .quiet: return "Rarely, and only with something on screen to point to."
         case .balanced: return "A few times an hour. Routines wait until Caret has seen them."
-        case .eager: return "Whenever it can help, with other ways to say a sentence too."
+        case .eager: return "More often, and routines after Caret has seen them twice."
         }
     }
 }
