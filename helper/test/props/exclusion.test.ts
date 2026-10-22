@@ -28,7 +28,8 @@ const contractFor = (label: string): FieldContract =>
 
 describe("no mint, no write by shape: what the value itself gives away is refused before the verifier is asked (sensitive.ts valueKind; contract.ts:508-510)", () => {
   it("an arbitrary secret is refused on an arbitrary ordinary field, with or without a verifier's say-so", async () => {
-    fc.assert(
+    // Awaited: un-awaited, a failing case surfaced as an unhandled rejection after this test had passed.
+    await fc.assert(
       fc.asyncProperty(arbSecret, arbPlainLabel, async (secret, label) => {
         // The property's domain is the values the shape detector calls secrets; shrink stays inside it.
         fc.pre(valueKind(secret) !== null);
