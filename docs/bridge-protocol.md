@@ -4,7 +4,11 @@ Reference for calling Caret's judge from the Mac app. The routing rules it
 implements are in [input-pipeline.md](input-pipeline.md); this page is the wire
 format.
 
-The app spawns one long-lived process and keeps it alive:
+The app spawns one long-lived process and keeps it alive. Accepted workflow
+execution runs off the request reader, so user input, an unsafe-state pause or a
+newer context frame can
+[interrupt it](#interrupting-an-accepted-workflow) while its acceptance result
+is pending:
 
 ```sh
 python3 -m caret.bridge --fixture fixtures/meeting.json --db .local/caret.sqlite
@@ -32,8 +36,8 @@ A failure replaces `result` with a coded error:
 | --- | --- | --- |
 | `hello` | none | Protocol version, the cadence and bound settings, and the workflow catalog |
 | `context.update` | `frame` | `status`: `admitted`, `coalesced` or `skipped`, with a `reason` |
-| `context.pause` | `reason` | `{"paused": true}` after withdrawing ambient context |
-| `offer.accept` | `proposal_id`, `revision`, `target` | The inline edit to apply, or the workflow's execution result |
+| `context.pause` | `reason` | `{"paused": true}` after withdrawing ambient context, and after starting to stop an accepted workflow if the reason stops one |
+| `offer.accept` | `proposal_id`, `revision`, `target` | The inline edit to apply, or the workflow's execution result. Action results arrive after the workflow settles. |
 | `offer.dismiss` | `proposal_id` | `{"dismissed": true}` |
 | `workflows.list` | none | Every registered workflow with its execution method |
 | `shutdown` | none | `{"stopped": true}`, then the process exits |
@@ -55,10 +59,12 @@ or must suspend ambient proposals. The Swift client exposes
 {"id": 5, "ok": true, "result": {"paused": true}}
 ```
 
-Allowed reasons are `idle`, `locked`, `sleeping`, `generated-input`,
-`focus-unavailable`, `secure-field`, `ime-composing`, `app-excluded`,
-`accessibility-revoked`, and `workflow-active`. Missing or unknown reasons return
-`invalid_request` without changing router state.
+Allowed reasons are `user-input`, `idle`, `locked`, `sleeping`,
+`generated-input`, `focus-unavailable`, `secure-field`, `ime-composing`,
+`app-excluded`, `accessibility-revoked`, and `workflow-active`. Missing or
+unknown reasons return `invalid_request` without changing router state.
+`user-input` is the host's report that the user typed, clicked or scrolled; it
+exists so an accepted workflow can be stopped by genuine input (see below).
 
 The router drops pending context and emits `invalidated` for any visible offer,
 using the supplied reason. An evaluation already in flight keeps its slot until
@@ -70,12 +76,64 @@ After input becomes eligible again, the host resumes with `context.update` and
 a revision greater than every previously submitted revision. The host must stop
 sending frames during the pause and invalidate its capture dedupe state so an
 unchanged field gets a fresh revision on resumption. Pause does not suppress the
-context as a dismissal does. It does not cancel an accepted workflow: action
-execution still blocks the bridge request reader until it returns.
+context as a dismissal does.
 
 This adds the core and client contract only. The app owner still needs to call
-it from focus, permission, idle, lock/sleep, and generated-input handling. Older
-bridges reply `unknown_method`; callers must not treat that as a successful pause.
+it from focus, permission, idle, lock/sleep, user-input and generated-input
+handling. Older bridges reply `unknown_method`; callers must not treat that as
+a successful pause.
+
+### Interrupting an accepted workflow
+
+Action execution runs off the request reader, so `context.pause` and
+`context.update` are answered while an `offer.accept` reply is still pending.
+Only genuine user input or an unsafe state stops the run:
+
+| Reason | Stops an accepted run | Why |
+| --- | --- | --- |
+| `user-input`, `ime-composing` | yes | The user is acting in the field the executor drives. |
+| `locked`, `sleeping` | yes | Nobody can supervise the run, and input after wake may land elsewhere. |
+| `accessibility-revoked` | yes | The user withdrew the permission the executor acts through. |
+| `secure-field` | yes | Executor input could land in a secret field. |
+| `app-excluded` | yes | The user excluded the app now in focus. |
+| `generated-input`, `workflow-active`, `idle` | no | The host sends these while Caret's own executor types, or while the user is away. They only withdraw ambient context. |
+| `focus-unavailable` | no | Caret's own executor moves focus, so this must not cancel its run. The executor rechecks its target before every step, so a lost target still stops it there with a named reason. |
+
+A `context.update` stops the run only when its revision is above every revision
+already seen. A replayed or older revision is answered `skipped` with
+`superseded-revision` and the run continues. A newer one is answered `skipped`
+with `workflow-active`, stops the run with `interrupted_by: "newer-context"`,
+and stays consumed: after the run settles, resume with a still newer revision.
+
+Stopping a run sets the cancellation token the engine passed to the adapter's
+`execute`, then calls its `cancel` hook once. Caret waits for `execute` to
+return and for the hook (at most 5 seconds), then replies to the pending
+`offer.accept` with:
+
+```json
+{"kind": "action", "status": "interrupted", "interrupted_by": "user-input",
+ "effects_may_remain": true, "execution_status": "cancelled",
+ "summary": "Workflow interrupted. Reported effects may remain.", ...}
+```
+
+- `execution_status` is what the adapter returned before Caret fenced it, or
+  `not-started` when the interrupt landed before `execute` was called, or
+  `unfinished` when shutdown stopped waiting for it.
+- `effects_may_remain` is `false` only for `not-started`. Caret never claims an
+  already-started effect was undone.
+- `cancellation_error` is present when the hook raised, when it did not return
+  within 5 seconds, or when `execute` had not returned 20 seconds after
+  `shutdown`. Neither bound is measured; the second covers the native
+  executor's 15-second shutdown grace.
+
+Caret never resumes an interrupted run. The adapters in this repository honour
+the token as follows: `native-open-calendar` and `jev-scheduler-sample` stop
+their child process (SIGINT, then a kill after the grace period); the built-in
+sample planner stops only before its local SQLite write, which then finishes;
+the live meeting draft has no effect to stop. An `--adapter` whose `execute`
+does not accept the `cancelled` keyword is refused at startup. On `shutdown` a running
+workflow is interrupted with `interrupted_by: "shutdown"`, and its acceptance
+is answered before the process exits.
 
 ## Events
 

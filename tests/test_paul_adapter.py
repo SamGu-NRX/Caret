@@ -10,6 +10,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -91,6 +93,24 @@ class ProcessFailureTests(unittest.TestCase):
         result = self.run_with(json.dumps({"ok": True, "result": {"status": "scheduled"}}), sleep=10)
         self.assertEqual(result.status, "failed")
         self.assertIn("did not finish", result.summary)
+
+    def test_cancellation_stops_a_running_pipeline(self):
+        cancelled = threading.Event()
+        timer = threading.Timer(0.3, cancelled.set)
+        with tempfile.TemporaryDirectory() as directory:
+            adapter = PaulSchedulerWorkflow(
+                REFERENCE,
+                node_executable=stub_node(Path(directory), json.dumps({"ok": True}), sleep=10),
+                timeout=30,
+            )
+            began = time.monotonic()
+            timer.start()
+            try:
+                result = adapter.execute(None, None, cancelled=cancelled)
+            finally:
+                timer.cancel()
+        self.assertLess(time.monotonic() - began, 8)
+        self.assertEqual(result.status, "cancelled")
 
     def test_a_reported_webhook_post_is_treated_as_a_broken_guard(self):
         with self.assertRaisesRegex(WorkflowError, "webhook"):

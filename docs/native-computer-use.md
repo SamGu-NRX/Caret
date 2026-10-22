@@ -18,6 +18,11 @@ process. Acceptance runs the fixed Calendar activation goal through the upstream
 Go decision loop and its persistent Swift Accessibility worker. It permits at
 most eight decision steps and requests cancellation after 120 seconds, with 15 seconds to shut down. These are explicit
 bounds for this first navigation action, not measured performance settings.
+An interrupt (user input, lock, a secure field and the other stopping reasons in
+[bridge-protocol.md](bridge-protocol.md#interrupting-an-accepted-workflow))
+sends the same SIGINT within about 50 milliseconds, with the same 15-second
+grace before a kill. If the interrupt lands before the executor starts, it is
+never started.
 
 Calendar must already be running. The pinned upstream activates applications;
 it cannot launch them. The accepted action is navigation only and does not create

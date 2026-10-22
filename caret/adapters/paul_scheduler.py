@@ -30,6 +30,8 @@ import json
 import os
 import re
 import subprocess
+import tempfile
+import threading
 from pathlib import Path
 
 from ..context import ContextFrame
@@ -40,6 +42,7 @@ from ..registry import (
     WorkflowDescriptor,
     WorkflowError,
 )
+from .child_process import CANCELLED, TIMED_OUT, wait_or_stop
 
 WRAPPER = Path(__file__).resolve().parent.parent.parent / "scripts" / "paul_scheduler_bridge.mjs"
 
@@ -142,7 +145,10 @@ class PaulSchedulerWorkflow:
 
     # -- Execution -------------------------------------------------------
 
-    def execute(self, frame: ContextFrame, preparation: Preparation | None) -> ExecutionResult:
+    def execute(
+        self, frame: ContextFrame, preparation: Preparation | None, cancelled: threading.Event | None = None
+    ) -> ExecutionResult:
+        cancelled = cancelled if cancelled is not None else threading.Event()
         environment = {key: value for key, value in os.environ.items()}
         # Both removals are load-bearing: the first makes his webhook branch
         # unreachable, the second keeps his Jev client off the network.
@@ -150,29 +156,40 @@ class PaulSchedulerWorkflow:
         environment.pop("TYPESAFE_API_KEY", None)
         environment["JEV_MOCK"] = "1"
 
-        try:
-            completed = subprocess.run(
-                [self.node_executable, str(WRAPPER), str(self.root)],
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                env=environment,
-                check=False,
+        if cancelled.is_set():
+            return ExecutionResult(status="cancelled", summary="jev-scheduler was interrupted before it started")
+        # Files rather than pipes: a stopped child's own children can keep a
+        # pipe open, and reading it would then wait for them.
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            try:
+                process = subprocess.Popen(
+                    [self.node_executable, str(WRAPPER), str(self.root)],
+                    stdout=out, stderr=err, env=environment,
+                )
+            except OSError as error:
+                return ExecutionResult(status="failed", summary=f"Could not start Node: {error}")
+            # Node exits on SIGINT by default; 2 seconds is a guess, not a measurement.
+            outcome = wait_or_stop(process, cancelled=cancelled, timeout=self.timeout, grace=2)
+            out.seek(0)
+            err.seek(0)
+            stdout = out.read().decode("utf-8", errors="replace").strip()
+            stderr = err.read().decode("utf-8", errors="replace")
+
+        if outcome == CANCELLED:
+            return ExecutionResult(
+                status="cancelled",
+                summary="jev-scheduler was interrupted and stopped before it finished",
             )
-        except subprocess.TimeoutExpired:
+        if outcome == TIMED_OUT:
             return ExecutionResult(
                 status="failed",
                 summary=f"jev-scheduler did not finish within {self.timeout:.0f}s and was stopped",
             )
-        except OSError as error:
-            return ExecutionResult(status="failed", summary=f"Could not start Node: {error}")
-
-        stdout = completed.stdout.strip()
         if not stdout:
             return ExecutionResult(
                 status="failed",
-                summary=f"jev-scheduler exited {completed.returncode} with no output",
-                evidence=(_tail(completed.stderr),),
+                summary=f"jev-scheduler exited {process.returncode} with no output",
+                evidence=(_tail(stderr),),
             )
         try:
             payload = json.loads(stdout.splitlines()[-1])
@@ -191,7 +208,8 @@ class PaulSchedulerWorkflow:
         return _summarize(payload["result"], preparation, self.root)
 
     def cancel(self, preparation: Preparation | None) -> ExecutionResult:
-        return ExecutionResult(status="cancelled", summary="jev-scheduler was never started")
+        # Preparation holds no state; a running process is stopped by execute.
+        return ExecutionResult(status="cancelled", summary="jev-scheduler proposal discarded")
 
 
 def _summarize(result: dict, preparation: Preparation | None, root: Path) -> ExecutionResult:

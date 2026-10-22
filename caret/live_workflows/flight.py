@@ -64,7 +64,7 @@ class SkyvernFlightWorkflow:
     def prepare(self, frame: ContextFrame) -> Preparation:
         raise WorkflowError(UNAVAILABLE_REASON)
 
-    def execute(self, frame: ContextFrame, preparation: Preparation) -> ExecutionResult:
+    def execute(self, frame: ContextFrame, preparation: Preparation, cancelled=None) -> ExecutionResult:
         raise WorkflowError(UNAVAILABLE_REASON)
 
     def cancel(self, preparation: Preparation) -> ExecutionResult:

@@ -50,7 +50,7 @@ class CountingWorkflow:
             payload={"ok": True},
         )
 
-    def execute(self, frame, preparation):
+    def execute(self, frame, preparation, cancelled=None):
         self.executed += 1
         return ExecutionResult(status="completed", summary="did the thing", data={"n": self.executed})
 

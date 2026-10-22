@@ -56,7 +56,15 @@ The v1 bridge now supports pausing without a readable field through
 [`context.pause`](bridge-protocol.md#pause-without-a-readable-field). It clears
 queued context, invalidates the visible offer and discards in-flight results.
 The Swift core client exposes the same request. Host lifecycle notifications
-still need to call it, and accepted workflow interruption remains separate work.
+still need to call it. An accepted workflow is cancelled only by genuine user
+input (a `user-input` or `ime-composing` pause, or a context revision newer than
+any seen) or an unsafe state (lock, sleep, revoked permission, a secure field,
+an excluded app, unreadable focus). `generated-input`, `workflow-active` and
+`idle` leave it running. The bridge signals the workflow's cancellation token
+and hook, waits a bounded time for both, then reports `interrupted` with the
+trigger and whether effects may remain; it never resumes the old run or claims
+rollback. The full rules are in
+[bridge-protocol.md](bridge-protocol.md#interrupting-an-accepted-workflow).
 
 The fast snapshot comes from Caret's live AX focus/caret reader. Screenpipe adds relevant history, with source IDs and capture times. Do not wait for Screenpipe to rediscover the current caret or send its whole history to Jev each tick. This live field read is part of input handling, not a second history recorder.
 
@@ -96,7 +104,7 @@ Screenpipe owns history retrieval and retention. The app owns live target identi
 
 Sam's workflow registry supplies each workflow's stable ID, description, required inputs and supported operations. Paul has proposed `jev-scheduler/` in PR #1; this is a teammate, distinct from the author of `paulsmith/computer-use-jev`. Its `runPipeline()` takes no arguments, resolves its input files from the process working directory, and posts to `SCHEDULE_WEBHOOK_URL` when that variable is set. So it cannot be ambient preparation and cannot be handed live context. It is registered as an opt-in sample workflow instead: `caret.adapters.paul_scheduler` describes the run during preparation and starts his code only after an acceptance, in a separate Node process with the webhook variable removed and his Jev client in its own mock mode. His directory is not copied here and his planner is not reimplemented. The judge selects only registered, available choices. Each workflow exposes preparation from a context frame, execution of an accepted proposal, and cancellation. Preparation returns the visible effect, inputs still needed and evidence; missing inputs produce a request for those inputs rather than execution.
 
-Execution returns its status, recorded effects and source-backed results to the shared context. A workflow can ask the same judge to select its next allowed step when that step needs judgment. Fixed steps remain ordinary code. Skyvern or the native executor runs a selected step and returns an observation; neither starts a competing ambient loop. The workflow owns execution until completion, cancellation or user interruption.
+Execution returns its status, recorded effects and source-backed results to the shared context. A workflow can ask the same judge to select its next allowed step when that step needs judgment. Fixed steps remain ordinary code. Skyvern or the native executor runs a selected step and returns an observation; neither starts a competing ambient loop. The workflow owns execution until completion, cancellation or user interruption. The conservative interruption rule is cancellation plus fencing: adapters must stop what they can, and Caret does not claim that an already-started external effect was undone. The host must submit a fresh context after the interrupted run settles; Caret does not resume the old workflow automatically.
 
 The first implementation slice is done: a changed context frame reaches a real Jev decision, a typed offer returns over the bridge, and an accepted action runs a registered workflow that returns a structured result. Abstention, stale-response rejection, one acceptance causing one execution and an actual returned result are covered by tests. Inline insertion and each executor still need their own supported-app proof when connected.
 

@@ -13,6 +13,8 @@ it did not produce.
 
 from __future__ import annotations
 
+import inspect
+import threading
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -117,11 +119,40 @@ class WorkflowAdapter(Protocol):
     def prepare(self, frame: ContextFrame) -> Preparation:  # pragma: no cover - protocol
         ...
 
-    def execute(self, frame: ContextFrame, preparation: Preparation) -> ExecutionResult:  # pragma: no cover
+    def execute(
+        self, frame: ContextFrame, preparation: Preparation, cancelled: threading.Event | None = None
+    ) -> ExecutionResult:  # pragma: no cover
+        """Run an accepted proposal.
+
+        The engine always passes ``cancelled``. It is set, under the engine's
+        workflow lock, when the run is interrupted, before ``cancel`` is
+        called, and it may be set before execute has started its effect.
+        Check it immediately before starting any effect, and while waiting on
+        an executor stop that executor and return ``cancelled``. ``None``
+        means nobody can cancel this call.
+        """
         ...
 
     def cancel(self, preparation: Preparation) -> ExecutionResult:  # pragma: no cover - protocol
+        """Discard prepared state. Called from another thread, possibly while
+        execute runs; stopping a running execution goes through ``cancelled``."""
         ...
+
+
+def _require_cancellation_token(adapter: WorkflowAdapter) -> None:
+    """Refuse an adapter the engine could not hand its cancellation token to."""
+    workflow_id = adapter.descriptor.id
+    try:
+        parameter = inspect.signature(adapter.execute).parameters.get("cancelled")
+    except (TypeError, ValueError) as error:
+        raise WorkflowError(f"Workflow '{workflow_id}': cannot read execute()'s signature: {error}") from None
+    if parameter is None or parameter.kind not in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY,
+    ):
+        raise WorkflowError(
+            f"Workflow '{workflow_id}': execute() must accept a 'cancelled' keyword argument "
+            "so an interrupt can stop it; see caret.registry.WorkflowAdapter"
+        )
 
 
 class WorkflowRegistry:
@@ -134,10 +165,12 @@ class WorkflowRegistry:
         workflow_id = adapter.descriptor.id
         if workflow_id in self._adapters:
             raise WorkflowError(f"Workflow '{workflow_id}' is already registered")
+        _require_cancellation_token(adapter)
         self._adapters[workflow_id] = adapter
 
     def replace(self, adapter: WorkflowAdapter) -> WorkflowAdapter | None:
         """Register, replacing any adapter with the same ID. Returns what was replaced."""
+        _require_cancellation_token(adapter)
         workflow_id = adapter.descriptor.id
         previous = self._adapters.get(workflow_id)
         self._adapters[workflow_id] = adapter

@@ -41,11 +41,26 @@ ACCESSIBILITY_REVOKED = "accessibility-revoked"
 WORKFLOW_ACTIVE = "workflow-active"
 STALE_SOURCES = "stale-sources"
 
-# Host lifecycle notifications may arrive when there is no readable field.
-PAUSE_REASONS = frozenset({
-    "idle", "locked", "sleeping", "generated-input", "focus-unavailable",
-    SECURE_FIELD, IME_COMPOSING, APP_EXCLUDED, ACCESSIBILITY_REVOKED, WORKFLOW_ACTIVE,
+USER_INPUT = "user-input"
+
+# Pause reasons that stop an accepted workflow: genuine user input, or a state
+# in which driving the UI is unsafe or cannot be checked. IME composition is
+# the user typing. Focus-unavailable means the executor's target can no longer
+# be verified, so continuing could write a wrong value.
+INTERRUPTING_PAUSE_REASONS = frozenset({
+    USER_INPUT, IME_COMPOSING, "locked", "sleeping", ACCESSIBILITY_REVOKED,
+    SECURE_FIELD, APP_EXCLUDED,
 })
+# The host sends these while Caret's own executor is typing or while the user
+# is away, so they withdraw ambient context and leave an accepted run alone.
+# focus-unavailable is here too: Caret's own executor moves focus (opening an app,
+# switching a window), so treating it as an interrupt would let a run cancel
+# itself. The executor rechecks its target before every step, so a lost target
+# still stops it there, with a named reason.
+AMBIENT_PAUSE_REASONS = frozenset({"idle", "generated-input", WORKFLOW_ACTIVE, "focus-unavailable"})
+
+# Host lifecycle notifications may arrive when there is no readable field.
+PAUSE_REASONS = INTERRUPTING_PAUSE_REASONS | AMBIENT_PAUSE_REASONS
 
 # Skip reasons that are not suppression.
 UNCHANGED = "unchanged-context"
@@ -266,6 +281,19 @@ class Router:
             self._paused_through_revision = self._highest_revision
             self._pending = None
             self._invalidate_locked(reason)
+
+    def record_revision(self, revision: int) -> bool:
+        """Consume ``revision`` without evaluating it. False if it is not newer.
+
+        Used while an accepted workflow runs: a newer frame interrupts the run
+        but is not evaluated, and its revision stays consumed so the host
+        resumes with a newer one, as after a pause.
+        """
+        with self._lock:
+            if revision <= self._highest_revision:
+                return False
+            self._highest_revision = revision
+            return True
 
     def submit(self, frame: ContextFrame, now: datetime) -> Admission:
         """Record the newest context. Returns whether it will be evaluated."""
