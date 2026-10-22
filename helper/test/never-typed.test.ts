@@ -36,6 +36,15 @@ describe("secretIn", () => {
   });
 
   it.each([
+    ["aaaaaa", "my password for the portal is aaaaaa, put it in Notes"],
+    ["hunter22", "my password is hunter 22 and fill Jordan in Name"],
+    ["hunter22", "my password is hunter 22"],
+  ])("binds through a trailing clause for %s", (value, instruction) => {
+    expect(secretIn(value, instruction)).toBe("password");
+    expect(secretIn("Jordan", instruction)).toBeNull();
+  });
+
+  it.each([
     ["Dana Whitfield", "put Dana Whitfield in Name"],
     ["(512) 555-0147", "my phone is (512) 555-0147"],
     ["8:15", "make the delivery 8:15"],

@@ -30,7 +30,7 @@ export function secretIn(value: string, instruction: string): SensitiveKind | nu
   // such as "my password for the portal is …" instead of this planner's bounded window.
   const stated = statedSecretMatch(instruction);
   const normalizeSecret = (text: string): string => text.toLowerCase().replace(/\s+/gu, "");
-  if (stated !== null && normalizeSecret(v) === normalizeSecret(stated.value)) return stated.kind;
+  if (stated !== null && stated.candidates.some((candidate) => normalizeSecret(v) === normalizeSecret(candidate))) return stated.kind;
   for (let at = instruction.indexOf(v); at >= 0; at = instruction.indexOf(v, at + 1)) {
     const before = instruction.slice(Math.max(0, at - 40), at).split(/\s+/u).filter((w) => w !== "").slice(-4).join(" ");
     const after = instruction.slice(at + v.length, at + v.length + 40).split(/\s+/u).filter((w) => w !== "").slice(0, 4);
