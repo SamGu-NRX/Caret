@@ -230,7 +230,7 @@ final class HostCoordinator {
             let gate = Task { try? await Task.sleep(nanoseconds: gateNanos) }
             let outcome: GhostTextEngine.Outcome
             do {
-                outcome = try await engine.suggest(for: snapshot.context)
+                outcome = try await engine.suggest(for: snapshot.context, revision: serial)
             } catch {
                 gate.cancel()
                 return

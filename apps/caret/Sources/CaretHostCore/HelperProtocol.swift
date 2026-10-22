@@ -54,6 +54,8 @@ public enum HelperInbound: Equatable, Sendable {
     /// L1: words from the host's local model. This host names no `localModel`, so it answers each
     /// one `unavailable` (`LocalText`).
     case localTextRequest(LocalTextRequest)
+    /// The bounded screen-model read requested for one inline suggestion.
+    case screenTextReply(ScreenTextReply)
     /// S1: the user left a prose field they typed; Caret may keep their words.
     case answerSaveOffer(AnswerSaveOffer)
     /// S1: what became of this host's `answerSave`.
@@ -103,6 +105,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .pageField: return PageField.type
         case .goalProgress: return GoalProgress.type
         case .localTextRequest: return LocalTextRequest.type
+        case .screenTextReply: return "screenTextReply"
         case .answerSaveOffer: return AnswerSaveOffer.type
         case .answerSaveReply: return AnswerSaveReply.type
         case .pageInsertReply: return PageInsertReply.type
@@ -191,6 +194,8 @@ public enum HelperInbound: Equatable, Sendable {
             return .goalProgress(try JSONDecoder().decode(GoalProgress.self, from: line))
         case LocalTextRequest.type:
             return .localTextRequest(try JSONDecoder().decode(LocalTextRequest.self, from: line))
+        case "screenTextReply":
+            return .screenTextReply(try JSONDecoder().decode(ScreenTextReply.self, from: line))
         case AnswerSaveOffer.type:
             return .answerSaveOffer(try JSONDecoder().decode(AnswerSaveOffer.self, from: line))
         case AnswerSaveReply.type:

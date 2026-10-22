@@ -27,4 +27,9 @@ public enum ScreenTextDecision {
         guard reply.id == requestID, reply.revision == revision else { return nil }
         return reply.text
     }
+
+    public static func accept(_ reply: ScreenTextReply, requestID: String, revision: UInt64, elapsedNanoseconds: UInt64, deadlineNanoseconds: UInt64 = 40_000_000) -> String? {
+        guard elapsedNanoseconds <= deadlineNanoseconds else { return nil }
+        return accept(reply, requestID: requestID, revision: revision)
+    }
 }

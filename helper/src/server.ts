@@ -27,6 +27,7 @@ import { planError } from "./planner/proposal.ts";
 import { hostKey, hostProofMatches, newHostNonce } from "./host-auth.ts";
 import { classOf, withheldBecause, type Outgoing, type SessionRole } from "./send-gate.ts";
 import { refusedBecause } from "./request-gate.ts";
+import type { ScreenTextReply } from "./inline/screen-request.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
 const MAX_LINE_CHARS = 32 * 1024 * 1024;
@@ -361,6 +362,8 @@ export class HelperServer {
             continue;
           }
           if (m.data.type === "hello") this.reject(s, "a connection says hello once; this one already has");
+          // Screen text is a bounded read from the helper's already-filtered model, answered only to the asking host.
+          else if (m.data.type === "screenTextRequest") this.send(s, this.helper().screenText(m.data) satisfies ScreenTextReply);
           else if (m.data.type === "fillRequest") void this.helper().handleConsumer(m.data);
           else if (m.data.type === "runPlan" || m.data.type === "taskControl") void this.helper().handleTask(m.data, from);
           else if (m.data.type === "offerControl") void this.helper().handleOffer(m.data, from);

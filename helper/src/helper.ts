@@ -75,6 +75,7 @@ import {
   type TaskState,
 } from "./protocol.ts";
 import type { Change, WindowState } from "./model.ts";
+import { answerScreenText, type ScreenTextRequest, type ScreenTextReply } from "./inline/screen-request.ts";
 import { Executor, type Authorization, type ExecutorDeps, type Revocation, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
 import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink } from "./executor/means.ts";
 import { RecoveryJournal, type JournalRecord } from "./executor/journal.ts";
@@ -385,6 +386,11 @@ interface FillFlight {
 export class Helper {
   readonly model = new ScreenModel();
   readonly text = new RollingText();
+
+  /** Answers a host's bounded screen-text read from the already filtered model. */
+  screenText(request: ScreenTextRequest): ScreenTextReply {
+    return answerScreenText(this.model, request);
+  }
   readonly transfers: TransferDetector;
   readonly shadowLogger: ShadowLogger;
   readonly recentTransfers: Transfer[] = [];

@@ -50,6 +50,7 @@ final class HelperClient: @unchecked Sendable {
         var droppedHere = false
     }
     private let connection = OSAllocatedUnfairLock(initialState: Link())
+    private let screenWaiters = OSAllocatedUnfairLock(initialState: [String: (ScreenTextReply) -> Void]())
     private let running = OSAllocatedUnfairLock(initialState: false)
     private let minBackoff: TimeInterval = 0.25
     private let maxBackoff: TimeInterval = 2
@@ -218,6 +219,37 @@ final class HelperClient: @unchecked Sendable {
     @discardableResult
     func send(_ request: HelperMemory.Request) -> Bool {
         sendLine(try? request.line())
+    }
+
+    /// Requests the helper's already-filtered screen text. The 40 ms deadline is below the presentation
+    /// gate started alongside generation, so a slow helper cannot delay or contaminate a visible offer.
+    func screenText(_ request: ScreenTextRequest, deadline: Duration = .milliseconds(40)) async -> String? {
+        await withCheckedContinuation { continuation in
+            let installed = screenWaiters.withLock { waiters -> Bool in
+                guard connection.withLock({ $0.fd >= 0 && $0.ready }) else { return false }
+                waiters[request.id] = { reply in
+                    continuation.resume(returning: ScreenTextDecision.accept(reply, requestID: request.id, revision: request.revision))
+                }
+                return true
+            }
+            guard installed, send(request) else {
+                screenWaiters.withLock { $0.removeValue(forKey: request.id) }
+                continuation.resume(returning: nil)
+                return
+            }
+            Task { [self] in
+                try? await Task.sleep(for: deadline)
+                if let waiter = screenWaiters.withLock({ $0.removeValue(forKey: request.id) }) {
+                    // Replacing the callback with a one-shot timeout avoids waiting on a late helper reply.
+                    waiter(ScreenTextReply(id: request.id, revision: request.revision, text: nil))
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    func send(_ request: ScreenTextRequest) -> Bool {
+        sendLine(try? NDJSON.line(request))
     }
 
     /// H6: what the host sees in the field the user is in. Dropped when the helper is not connected,
@@ -544,6 +576,7 @@ final class HelperClient: @unchecked Sendable {
             case .pageField: s.pageFields &+= 1
             case .goalProgress: s.goalProgress &+= 1
             case .localTextRequest: s.localTextRequests &+= 1
+            case .screenTextReply: break
             case .answerSaveOffer, .answerSaveReply: s.answerSaves &+= 1
             case .pageInsertReply: s.pageInserts &+= 1
             case .fileSaveOffer, .fileSaveReply, .savedFilesReply: s.files &+= 1
@@ -554,6 +587,11 @@ final class HelperClient: @unchecked Sendable {
         switch handshake.receive(message) {
         case .deliver:
             if case .taskProgress(let progress) = message { work.withLock { $0.progress(progress) } }
+            if case .screenTextReply(let reply) = message,
+               let waiter = screenWaiters.withLock({ $0.removeValue(forKey: reply.id) }) {
+                waiter(reply)
+                return
+            }
             onMessage(message)
         case .send(let proof):
             // Written past `ready`, which is still false: the proof is the one line allowed before it.

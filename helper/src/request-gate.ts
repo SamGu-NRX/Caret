@@ -46,6 +46,8 @@ export const REQUEST_RULE: { readonly [K in ConsumerMessage["type"]]: RequestRul
   localTextReply: host("only the host runs the local model"),
 
   // Answered only with host messages (send-gate.ts), so refused before the work, which can call Jev.
+  screenTextRequest: host("screen text is derived from the reader's model"),
+  screenTextReply: host("screen text replies are reserved for the helper's response path"),
   fillRequest: host("a fillProposal quotes values and labels from the screen"),
   planRequest: ASK,
   askAnswer: ASK,

@@ -60,6 +60,8 @@ final class GhostTextEngine {
     /// Context captured by the host for the next local inline prompt. Capture and filtering stay outside
     /// the model engine so the policy can be tested without loading a model.
     var inlinePromptContext = InlinePromptContext()
+    /// Host wiring supplies the helper's already-filtered screen model. A missing or late reply is no context.
+    var screenTextProvider: ((ScreenTextRequest) async -> String?)?
     private var writingMemory = InlineWritingMemory()
     var secretDetector: InlineSecretDetecting = NoopInlineSecretDetector()
 
@@ -198,7 +200,7 @@ final class GhostTextEngine {
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
     /// `tokens` overrides `completionTokens` for this one request (the extension after the first paint).
-    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil) async throws -> Outcome {
+    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil, revision: UInt64 = 0) async throws -> Outcome {
         if let replay {
             switch replay.outcome(before: context.beforeCursor, after: context.afterCursor) {
             case .text(let text)?: return .suggestion(GhostSuggestion(text: text, context: context, generationMs: 0))
@@ -222,6 +224,18 @@ final class GhostTextEngine {
             return .suppressed("numericMidWordStem")
         }
 
+        inlinePromptContext.screenText = nil
+        if let screenTextProvider {
+            let request = ScreenTextRequest(
+                id: UUID().uuidString,
+                revision: revision,
+                windowID: context.target.windowID,
+                appsOff: [],
+                sitesOff: []
+            )
+            inlinePromptContext.screenText = await screenTextProvider(request)
+            try Task.checkCancellation()
+        }
         let request = makeRequest(for: context, policy: policy, tokens: tokens, origin: origin)
         let started = DispatchTime.now().uptimeNanoseconds
         var candidates = try await engine.completions(for: request)
