@@ -52,6 +52,12 @@ The initial routing interval is 2,000 ms, as requested. This is a starting produ
 - Dismiss a preview as soon as its field, text, selection or caret changes. Preserve native Tab behavior while a fresh preview is unavailable.
 - Suppress a dismissed proposal for the same context. Repeated abstention on unchanged input does not justify another model call.
 
+The v1 bridge now supports pausing without a readable field through
+[`context.pause`](bridge-protocol.md#pause-without-a-readable-field). It clears
+queued context, invalidates the visible offer and discards in-flight results.
+The Swift core client exposes the same request. Host lifecycle notifications
+still need to call it, and accepted workflow interruption remains separate work.
+
 The fast snapshot comes from Caret's live AX focus/caret reader. Screenpipe adds relevant history, with source IDs and capture times. Do not wait for Screenpipe to rediscover the current caret or send its whole history to Jev each tick. This live field read is part of input handling, not a second history recorder.
 
 The context frame includes the current application/window, focused text and selection, permitted clipboard text, relevant history, and the latest computer-use observation or result. Attach capture times and source references. Mark missing sources explicitly; an unavailable clipboard or history provider must not become fabricated context. Collect clipboard changes once at the app boundary rather than having every workflow poll it. The clipboard remains unchanged by observation.

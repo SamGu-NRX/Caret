@@ -28,6 +28,7 @@ import { Store } from "../../../helper/src/store.ts";
 import { BrowserPresence } from "../../../helper/src/engines/presence.ts";
 import type { HelperMessage, Node, ReaderMessage } from "../../../helper/src/protocol.ts";
 import type { WriterPort } from "../../../helper/src/writer/port.ts";
+import type { IntentMaker } from "../../../helper/src/planner/intent.ts";
 import { field, jevPickingText, node, snap, text, value } from "../../../helper/test/builders.ts";
 import { SocketReader } from "../../../helper/test/socket-reader.ts";
 
@@ -84,6 +85,16 @@ const pick = (_: string, ins: string): string | null =>
   ins.includes("'Customer name'") ? "Jordan Reyes" : ins.includes("'Phone'") ? "(512) 555-0147" : ins.includes("'Pizza Size'") ? "Large, mushroom and onion" : null;
 
 /** The intent writer, by rule: "pay for it" is refused as payment (B26 lead decision 3). */
+const scriptedIntent: IntentMaker = {
+  name: "scripted",
+  async make() {
+    return {
+      intent: { route: "refuse", why: "payment", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] },
+      use: { maker: "heads", model: "fake-intent-writer", calls: 0, inputTokens: 0, outputTokens: 0, latencyMs: 0, costUsd: 0 },
+    };
+  },
+};
+
 const writer: WriterPort = {
   route: { provider: "groq", baseUrl: "http://127.0.0.1:9", keyName: "H5_NO_KEY", model: "fake-intent-writer" } as WriterPort["route"],
   async write() {
@@ -110,7 +121,8 @@ const helper = new Helper({
   allowBackgroundFocus: false,
   publish,
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
-  ask: { maker: "writer", writer },
+  writer,
+  ask: { maker: "scripted", make: scriptedIntent },
   warn: (l) => log.push(`helper: ${l}`),
 });
 // The presence signal as engines/wire.ts joins it, with no page engine ever connected.

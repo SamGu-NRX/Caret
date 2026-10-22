@@ -104,6 +104,8 @@ public enum WritingCheck {
 
     // MARK: - Helpers
 
+    public static func effectiveLanguage(_ language: String?) -> String { language ?? "und" }
+
     static func isEnglish(_ language: String) -> Bool {
         let l = language.lowercased()
         return l == "en" || l.hasPrefix("en-") || l.hasPrefix("en_")

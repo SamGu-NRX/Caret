@@ -72,6 +72,20 @@ export class GrantTable {
     return this.tasksIn(tabId, frameId).some((t) => this.check(t, tabId, frameId).ok);
   }
 
+  /**
+   * Moves the task's grant for this frame from generation `from` to `to`, and only when it is still at `from`: the
+   * worker calls this for the one same-document update it saw around the task's own row open (worker.ts act,
+   * press-guard.ts judgeActivation), so the task's next act is not refused by the open it made. A grant revoked or
+   * replaced meanwhile is left as it is. Expires and the monotonic end are kept.
+   */
+  advance(taskId: string, tabId: number, frameId: number, from: number, to: number): void {
+    const held = this.byTask.get(taskId);
+    const at = held?.findIndex((h) => h.scope.tabId === tabId && h.scope.frameId === frameId) ?? -1;
+    const g = held !== undefined && at >= 0 ? held[at] : undefined;
+    if (held === undefined || g === undefined || g.scope.navGen !== from) return;
+    held[at] = { ...g, scope: { ...g.scope, navGen: to } };
+  }
+
   clear(): void {
     this.byTask.clear();
   }

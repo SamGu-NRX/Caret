@@ -3,7 +3,7 @@
 // or shadow root). Text is whitespace-collapsed and clipped; nothing here reads body prose beyond a label. Every text is
 // read without the secret fields inside it (secret-dom.ts safeText), so a label wrapped around a one-time-code box
 // doesn't carry its code.
-import { readable, safeText } from "./secret-dom.ts";
+import { outlineText, plainTextAt, safeText } from "./secret-dom.ts";
 import { composedParent } from "./shadow.ts";
 
 const MAX_NAME = 200;
@@ -38,8 +38,10 @@ function byIds(el: Element, ids: string): Element[] {
 /** A label's text without the text of the control inside it (a select's options, a field's own value). */
 function labelText(label: Element, control: Element): string {
   // A label inside a field (a password editor) is that field's text: refused before it is cloned, since a clone has no
-  // ancestors left to tell.
-  if (!readable(label)) return "";
+  // ancestors left to tell. A label the page made editable takes no part in a name either (issue #54): what it holds
+  // is the person's draft, and plainTextAt is the same "no field, no editing host" test the section outline reads by
+  // (secret-dom.ts outlineText), so a name and a heading refuse it alike.
+  if (!plainTextAt(label)) return "";
   if (!label.contains(control)) return safeText(label);
   const clone = label.cloneNode(true) as Element;
   // `control` may be an element around the control (W4: an upload widget inside its label): its text goes too. Found
@@ -66,7 +68,11 @@ export type NameSource = "labelledby" | "label" | "labels" | "value" | "title" |
 export function named(el: Element): { name: string; from: NameSource } {
   const labelledby = el.getAttribute("aria-labelledby");
   if (labelledby !== null) {
-    const t = clean(labelledBy(el, labelledby).map((e) => safeText(e)).join(" "));
+    // The element a control is named by may itself hold the person's draft: read it through outlineText, the label
+    // and legend readers' own refusal of an editable element (issue #54) — the old read was safeText, which leaves an
+    // editable root's text in, and its editable filter read the role case-sensitively, so a role="Textbox" the page
+    // filled with the draft named the control.
+    const t = clean(labelledBy(el, labelledby).map((e) => outlineText(e)).join(" "));
     if (t !== "") return { name: t, from: "labelledby" };
   }
   const aria = clean(el.getAttribute("aria-label"));
@@ -113,7 +119,9 @@ export function groupNames(el: Element): string[] {
   for (let p = composedParent(el); p !== null; p = composedParent(p)) {
     if (p instanceof HTMLFieldSetElement) {
       const legend = p.querySelector(":scope > legend");
-      if (legend !== null) out.push(clean(safeText(legend)));
+      // The legend the page made editable is the person's draft, not the page's name (issue #54): outlineText is the
+      // section outline's own reader for a legend, so a walk's group name and its section text refuse it alike.
+      if (legend !== null) out.push(clean(outlineText(legend)));
     }
     const role = p.getAttribute("role");
     if (role === "group" || role === "radiogroup") {

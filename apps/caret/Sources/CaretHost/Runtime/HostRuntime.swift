@@ -630,6 +630,7 @@ public final class HostRuntime {
             },
             realKey: { pid in pauser.key(pid: pid) },
             mouseDown: { point in
+                keyHold.dropOnPointerDown()
                 status.noteMouseDown()
                 pauser.click(at: point)
             },

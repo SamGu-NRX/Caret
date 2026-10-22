@@ -84,6 +84,22 @@ export function pressToggle(el: Element, beforeClick: () => boolean): boolean {
   return true;
 }
 
+/**
+ * Slice 2: the full click sequence a list row's own handler expects — pointerdown, mousedown, pointerup, mouseup,
+ * click — with nothing cancelled: unlike a press-toggle, the row's default action is the point (a fragment link's jump
+ * is the same-document history update the open expects), and the page's own listeners run. Returns to the caller, which
+ * settles before it judges what the open changed.
+ */
+export function openClick(el: Element): void {
+  const at = centre(el);
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, ...at };
+  el.dispatchEvent(new PointerEvent("pointerdown", { ...base, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+  el.dispatchEvent(new MouseEvent("mousedown", { ...base, buttons: 1 }));
+  el.dispatchEvent(new PointerEvent("pointerup", { ...base, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+  el.dispatchEvent(new MouseEvent("mouseup", { ...base, buttons: 0 }));
+  el.dispatchEvent(new MouseEvent("click", { ...base, buttons: 0 }));
+}
+
 const KEY_CODES = { Escape: 27, Enter: 13, Backspace: 8 } as const;
 
 /** keydown then keyup of one named key. */

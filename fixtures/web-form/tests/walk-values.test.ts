@@ -343,6 +343,9 @@ const ROUND4: Record<string, string> = {
   // Greptile on PR #52: a field whose label the page renames when it is set back to "Robin" while armed, so an undo of
   // the second write stops after its setter ran.
   "restore-stop": shell(`<label for="nick" id="nick-label">Nick</label><input id="nick" name="nick">`, `window.armed = false; document.getElementById("nick").addEventListener("input", (e) => { if (window.armed && e.target.value === "Robin") document.getElementById("nick-label").textContent = "Nickname"; }); window.reveal = () => {};`),
+  // PR #56 F1: list rows whose cell, or the row itself when it has no cells, is an editing host. Outside a form, so the
+  // rows are nav targets the walk reads; one plain cell shows the walk did read them.
+  "editable-cells": `<!doctype html><meta charset="utf-8"><title>Rows</title><div role="grid" aria-label="Tickets"><div role="row"><div role="gridcell">Ticket 4417</div><div role="gridcell" contenteditable="true" id="note" style="min-width: 4em; min-height: 1em"></div></div><div role="row"><div role="gridcell" contenteditable>private draft</div></div></div><div role="list"><div role="listitem" contenteditable>listed draft</div></div><input id="n" aria-label="Name"><script>window.reveal = () => {};</script>`,
   // #6: a "show password" in a shadow root turns the field into a text input the user then types into.
   "text-in-shadow": shell(`<login-box id="host"></login-box>`, `const r = document.getElementById("host").attachShadow({ mode: "open" }); r.innerHTML = '<label>Password <input type="password" id="pw"></label>'; window.reveal = () => { r.getElementById("pw").type = "text"; };`),
 };
@@ -375,6 +378,21 @@ describe("an editable heading's text is the user's draft, not the page's outline
       for (const o of r.sections ?? []) assert.ok(o.text === undefined && o.digest === undefined, `a section carries ${JSON.stringify(o)}`);
       assert.equal(r.sectionOverflow, undefined);
     }
+    await tab.close();
+  });
+});
+
+describe("an editable cell's text is the user's draft, not the row's (PR #56 F1)", () => {
+  test("an editable gridcell, an editable-only row and an editable listitem reach no row name or cell", async () => {
+    const url = `${roundsOrigin}/editable-cells`;
+    const tab = await open(url);
+    await typeInto(tab, `document.getElementById("note")`, "Locker 7130 note");
+    await tab.click(`document.getElementById("n")`);
+    const reports = await walk(url);
+    assertNoValues(reports, ["private draft", "listed draft", "Locker 7130"], "editable-cells");
+    const rows = reports.flatMap((r) => r.controls as (Report["controls"][number] & { cells?: string[] })[]).filter((c) => c.kind === "row" || c.kind === "listitem");
+    // The plain cell is still read; the rows with nothing but an editing host are no nav targets.
+    assert.deepEqual(rows.map((c) => ({ kind: c.kind, name: c.name, cells: c.cells })), [{ kind: "row", name: "Ticket 4417", cells: ["Ticket 4417"] }]);
     await tab.close();
   });
 });

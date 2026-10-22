@@ -4,7 +4,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { EngineMessage, PageControl, PageVerb, PROTOCOL_VERSION, TextPageControl, type HelperToEngine, type PageSnapshot } from "../src/protocol.ts";
 import { PAGE_SOURCE_REFUSAL, readPickedSource } from "../src/engines/page-source.ts";
 import { EngineSession } from "../src/engines/session.ts";
@@ -14,6 +14,21 @@ import { X, chrome } from "./fake-page.ts";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const text = { id: "e1", key: "form[a]/textbox:email~0", strongKey: null, kind: "email" as const, role: "textbox", name: "Email", form: "form#a", rect: [0, 0, 100, 20] as [number, number, number, number] };
+
+describe("focused text retention", () => {
+  it("expires after ten minutes", () => {
+    vi.useFakeTimers();
+    try {
+      noteFocusedText(["a focused value long enough"]);
+      expect(() => refuseFocusedText("a focused value long enough", "test")).toThrow(FocusTextLeak);
+      vi.advanceTimersByTime(10 * 60 * 1000);
+      expect(() => refuseFocusedText("a focused value long enough", "test")).not.toThrow();
+    } finally {
+      vi.useRealTimers();
+      noteFocusedText([]);
+    }
+  });
+});
 
 describe("a text control at the type level", () => {
   it("has hasValue and rev, and no value", () => {

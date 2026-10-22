@@ -24,7 +24,7 @@ import { GrantTable } from "./shared/grants.ts";
 import { classifyPress } from "./shared/risk.ts";
 import { FrameDocs, NavGens, frameOrigin } from "./worker/frames.ts";
 import { composeFrames, isCaptchaUrl, type CaptchaFrame } from "./worker/compose.ts";
-import { judgePress, type FrameMarks } from "./worker/press-guard.ts";
+import { judgeActivation, judgePress, type FrameMarks } from "./worker/press-guard.ts";
 import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
 import { LEFT_TAB_MS, LeftTab, canonicalOrigin, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
 import { joinFrames } from "./shared/tab-text.ts";
@@ -515,6 +515,8 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   // An undo after a reload is refused: the page that kept the field's text before Caret's write is gone with it.
   if (frame.documentId !== verb.documentId) return { outcome: "stale", detail: "the frame holds another document than when it was walked", ...(verb.kind === "pageRestore" ? { restore: { outcome: "refused", why: "reloaded" } as const } : {}) };
   const gen = navGens.get(verb.tabId, verb.frameId);
+  // Any history or fragment update since the grant is refused, for every verb: an unrelated pushState may have reused
+  // the walked ids for other fields. The one update a grant follows is its own row open's, advanced below.
   if (gen !== g.scope.navGen) return { outcome: "stale", detail: `the frame navigated since the grant (navGen ${g.scope.navGen}, now ${gen})` };
   const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId })) ?? [];
   const origin = frameOrigin(all, verb.frameId);
@@ -546,6 +548,9 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   }
   // A Yes/No press (W4) must not navigate or submit (B28): the frame is read before it and after its answer.
   const press = verb.kind === "pageChooseOption" && verb.question !== undefined;
+  // Slice 2: a page-row activation is judged like a press, but a history update alone is the open's expected shape
+  // (press-guard.ts judgeActivation), so only a navigation begun or a document gone counts as a change.
+  const activation = verb.kind === "pageActivateItem";
   const marks = (): FrameMarks => ({ navGen: navGens.get(verb.tabId, verb.frameId), starts: navStarts.get(verb.tabId, verb.frameId) });
   const before = marks();
   let a: ActAnswer | null;
@@ -558,19 +563,24 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
     } else a = got;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // A press was delivered and its document went before it answered (the channel closed under it, or the page went
-    // into the back-forward cache): it may have landed, so it is judged below as a change, never as stale.
-    if (press && /message (?:channel|port) closed|back\/forward cache/i.test(msg)) a = null;
+    // A press or activation was delivered and its document went before it answered (the channel closed under it, or
+    // the page went into the back-forward cache): it may have landed, so it is judged below as a change, never as stale.
+    if ((press || activation) && /message (?:channel|port) closed|back\/forward cache/i.test(msg)) a = null;
     // The pinned document is gone between the check and the delivery: a navigation won the race.
     else if (/Could not establish connection|Receiving end does not exist|No frame|document/i.test(msg)) return { outcome: "stale", detail: `the document is gone: ${msg}` };
     else if (!press) return { outcome: "error", detail: msg };
     else a = { outcome: "error", detail: msg };
   }
-  if (!press) return a !== null && a.compare !== undefined && unanswered > 0 ? { ...a, compare: [...a.compare, ...Array.from({ length: unanswered }, () => "unknown" as const)] } : (a as ActAnswer);
+  if (!press && !activation) return a !== null && a.compare !== undefined && unanswered > 0 ? { ...a, compare: [...a.compare, ...Array.from({ length: unanswered }, () => "unknown" as const)] } : (a as ActAnswer);
+  // A press and an activation wait out the page's own reactions before the frame is read again (B28, slice 2).
   if (a?.outcome === "ok") await new Promise((r) => setTimeout(r, POST_PRESS_MS));
-  const judged = judgePress(a, before, marks());
+  const after = marks();
+  const judged = activation ? judgeActivation(a, before, after) : judgePress(a, before, after);
   // The run stops at once: the task's grants end here, before the helper hears of it, so nothing else of it acts.
   if (judged.pageChanged !== undefined) revokeTask(verb.taskId);
+  // An open the page took, with the single same-document update judgeActivation allows seen around it: the task's
+  // grant moves to that generation, so its next act is not refused by the open it made. Nothing else moves a grant.
+  else if (activation && judged.outcome === "ok" && after.navGen === before.navGen + 1) grants.advance(verb.taskId, verb.tabId, verb.frameId, before.navGen, after.navGen);
   return judged;
 }
 

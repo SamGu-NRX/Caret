@@ -100,11 +100,17 @@ class Engine:
             )
 
     def _evaluate(self, frame: ContextFrame) -> Publication:
+        if self.router.is_stale(frame):
+            return self.router.complete_abstain(frame)
         try:
             verdict = self.judge.choose(route_question(), frame)
         except JudgeError as error:
             return self.router.complete_failure(frame, f"judge/route: {error}")
 
+        # A host pause can arrive while the judge runs, without a newer frame.
+        # Finish through the router so it emits discarded and releases the slot.
+        if self.router.is_stale(frame):
+            return self.router.complete_abstain(frame)
         if verdict.choice_id == ABSTAIN:
             return self.router.complete_abstain(frame, verdict.reason or "judge-abstained")
         if verdict.choice_id == INLINE:
@@ -136,6 +142,8 @@ class Engine:
             verdict = self.judge.choose(workflow_question(choices), frame)
         except JudgeError as error:
             return self.router.complete_failure(frame, f"judge/workflow: {error}")
+        if self.router.is_stale(frame):
+            return self.router.complete_abstain(frame)
         if verdict.choice_id == NONE:
             return self.router.complete_abstain(frame, "no-workflow-fits")
 
