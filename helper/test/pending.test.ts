@@ -161,6 +161,16 @@ describe("pending-state watch", () => {
     expect(helper.pending.watchOf(JOB)).toBeNull();
   });
 
+  it("keeps a watch, and the lines it compares, only while its task runs: stopped, nothing of it is left (T8)", async () => {
+    leaveJob("Running tests… 12 of 48");
+    const id = helper.pending.watchOf(JOB);
+    expect(id).not.toBeNull();
+    helper.pending.control(id as string, "stop");
+    expect(helper.pending.watchOf(JOB)).toBeNull();
+    expect(helper.pending.has(id as string)).toBe(false);
+    expect(last()).toMatchObject({ state: "failed", cause: "you" });
+  });
+
   it("reports needsYou for an approval prompt, running again once it goes on, and failed if the window closes", async () => {
     leaveJob("Uploading 3 files to the shared drive…", [node(K("busyindicator:~0"), "AXBusyIndicator")]);
     show(JOB, jobNodes("Approve? Three files already exist. Replace them?", [node(K("button:approve~0"), "AXButton", { label: "Approve" })]));

@@ -40,6 +40,10 @@ export function wirePageEngines(opts: { host: PageHost; helper: Helper; publish:
   const untap = helper.onReaderMessage((m) => presence.onReader(m));
   // The host's "Not on this site" list, from its settings, to every engine (registry.ts sends it after each hello too).
   const unsites = helper.onSitesOff((origins) => host.registry.setSitesOff(origins));
+  // A tab's last walk goes when the model lets go of its window (ScreenModel.expire).
+  const unexpire = helper.onWindowExpired((windowId) => host.registry.forgetWindow(windowId));
+  // F7: a reader hello resets the model, and the windows it drops never expire, so every tab's walk goes with them.
+  const unreset = helper.onModelReset(() => host.registry.forgetAllWindows());
   return {
     focus,
     presence,
@@ -47,6 +51,8 @@ export function wirePageEngines(opts: { host: PageHost; helper: Helper; publish:
       unlisten();
       untap();
       unsites();
+      unexpire();
+      unreset();
     },
   };
 }
