@@ -377,6 +377,10 @@ class Router:
         """
         with self._lock:
             self._in_flight = None
+            # Set even when a pause fenced this evaluation off and its result is
+            # discarded below. The first frame after resuming then waits until
+            # failure_backoff_seconds (default 10 s) after this evaluation
+            # started, reported as provider-backoff.
             self._failed_at = self._last_started
             if self.is_stale(frame):
                 return self._publish_locked(
