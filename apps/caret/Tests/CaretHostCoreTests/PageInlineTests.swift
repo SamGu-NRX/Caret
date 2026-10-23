@@ -95,8 +95,8 @@ final class PageInlineTests: XCTestCase {
         XCTAssertNil(try Self.field(8).text)
     }
 
-    func testNothingIsAskedOfTheEngineMidLineWithASelectionOrWithoutACaret() throws {
-        let changes: [(inout PageField) -> Void] = [{ $0.text?.after = " role." }, { $0.text?.selection = "apply" }, { $0.caret = nil }, { $0.text = nil }]
+    func testNothingIsAskedOfTheEngineWithASelectionOrWithoutReadableTextOrACaret() throws {
+        let changes: [(inout PageField) -> Void] = [{ $0.text?.selection = "apply" }, { $0.caret = nil }, { $0.text = nil }]
         for change in changes {
             let r = Rig()
             var f = try Self.field(1)
@@ -110,6 +110,15 @@ final class PageInlineTests: XCTestCase {
         f.text?.after = "\nThanks,"
         r.field(f)
         XCTAssertEqual(r.requests.count, 1)
+    }
+
+    func testMidLineContextReachesTheLocalEngine() throws {
+        let r = Rig()
+        var f = try Self.field(1)
+        f.text?.after = " role."
+        r.field(f)
+        XCTAssertEqual(r.requests.count, 1)
+        XCTAssertEqual(r.requests.first?.after, " role.")
     }
 
     // MARK: - The offer, at the caret
