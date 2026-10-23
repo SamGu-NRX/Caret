@@ -118,7 +118,8 @@ export function mentionedKind(text: string): { kind: SensitiveKind; ssn: boolean
  * The kind of secret a text states: "My password is violet-orchard-seven", "my password for the demo is …", "Password:
  * …", "my PIN is 7319". A label phrase, owned ("my", "our", "the") and followed by "is", "was", ":" or "=", or bare and
  * followed by ":" or "=", then a value. A phrase ordinary sentences use for other things ("pin", "secret", "token") counts
- * only owned by "my" or "our" and with a digit in its value: "the secret is consistency" is no secret. S1 checks a saved
+ * when owned by "my" or "our", or used as a ":" or "=" label, and with a digit in its first three value words.
+ * "The secret is consistency" is no secret. S1 checks a saved
  * answer with it, on capture, on Caret's write and on the user's own edit of answers.md (parse.ts): prose that only
  * mentions a kind ("I built a password reset flow") is not one. Written for answers, not measured.
  */
@@ -138,7 +139,8 @@ export function statedSecretMatch(text: string): StatedSecretMatch | null {
       const suffix = "(?=$|[\\n.;!?])";
       const owned = new RegExp(`\\b(?:my|our${common ? "" : "|the"})\\s+(?:[\\w'-]+\\s+)?${phrase}${tail}\\s*(?:is|was|:|=)\\s*${value}${suffix}`, "u");
       const bare = new RegExp(`(?:^|[\\n.;!?(]\\s*|\\s)${phrase}${tail}\\s*[:=]\\s*${value}${suffix}`, "u");
-      const match = owned.exec(t) ?? (!common ? bare.exec(t) : null);
+      // Explicit labels such as "One-time code: 123456" and "PIN: 7319" need no owner, even for common phrases.
+      const match = owned.exec(t) ?? bare.exec(t);
       const secret = match?.groups?.secret?.trim();
       if (secret === undefined || secret === "") continue;
       const wordsAfter = secret
