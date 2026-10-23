@@ -46,6 +46,16 @@ final class KeyHold: @unchecked Sendable {
         }
     }
 
+    /// A click may move focus before the insertion executor finishes. Drop held keys rather than
+    /// replaying them into whatever field received the click.
+    func dropOnPointerDown() {
+        state.withLockUnchecked { queue in
+            guard queue.pid != nil else { return }
+            queue.drop()
+            Logger(subsystem: "dev.caret.host", category: "input-hold").notice("dropped held keys after pointer down; focus target may have changed")
+        }
+    }
+
     private static func send(_ events: [CGEvent], to pid: Int32) {
         for down in events {
             down.setIntegerValueField(.eventSourceUserData, value: SynthesizedEventMarker.userData)

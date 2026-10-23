@@ -75,6 +75,21 @@ final class CoreBridgeClientTests: XCTestCase {
         }
     }
 
+    func testContextPauseNeedsNoFrameAndDecodesItsReply() async throws {
+        for reason in ContextPauseReason.allCases {
+            let (client, transport) = try startedClient()
+            async let reply = client.pauseContext(reason: reason)
+            guard let id = transport.awaitRequest() else { return XCTFail("no pause request was written") }
+            transport.emit(line: #"{"id":\#(id),"ok":true,"result":{"paused":true}}"#)
+
+            let result = try await reply
+            XCTAssertEqual(result.paused, true)
+            let sent = transport.sentObject(at: 0)
+            XCTAssertEqual(sent?["method"] as? String, "context.pause")
+            XCTAssertEqual(sent?["params"] as? [String: String], ["reason": reason.rawValue])
+        }
+    }
+
     func testAcceptDecodesAnInlineEditAndDismissDecodesItsFlag() async throws {
         let (client, transport) = try startedClient()
 

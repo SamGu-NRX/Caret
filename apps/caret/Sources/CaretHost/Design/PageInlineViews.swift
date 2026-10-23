@@ -3,7 +3,7 @@ import SwiftUI
 
 /// H13: inline text in a page field, as `PageInlineCoordinator` draws it and the gallery renders it. The page's font is
 /// unknown to the host, so it is the system font at the field's size (`PageField.Look.fontSize`), in the page's own
-/// ink at ghost opacity (`Tokens.ghostOpacity`): black on a light field, white on a dark one (`Look.dark`), whatever
+/// ink at ghost opacity (`Tokens.ghostInk`): black on a light field, white on a dark one (`Look.dark`), whatever
 /// Caret's theme.
 struct PageGhostText: View {
     let text: String
@@ -15,7 +15,7 @@ struct PageGhostText: View {
     var body: some View {
         Text(text)
             .font(.system(size: size))
-            .foregroundStyle(Color(nsColor: darkField ? .white : .black).opacity(hidden ? 0 : Tokens.ghostOpacity(dark: darkField)))
+            .foregroundStyle(Color(nsColor: Tokens.ghostInk(darkField ? .white : .black, darkField: darkField)).opacity(hidden ? 0 : 1))
             .fixedSize()
             .accessibilityHidden(true)
     }

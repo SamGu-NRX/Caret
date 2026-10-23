@@ -163,6 +163,7 @@ describe("capture: only the user's own typing, on a page form's prose field", ()
     expect(one({ value: `${PROJECT} My password is violet-orchard-seven.`, entry: "typed" })).toEqual({ ok: false, why: "secret", says: "Caret doesn't keep passwords in memory, and this answer has one." });
     expect(one({ value: `${PROJECT} I built the password reset flow.`, entry: "typed" })).toMatchObject({ ok: true });
     // Fix-check finding 4: the same secret said other ways.
+    expect(one({ value: `${PROJECT} My secret is consistency.`, entry: "typed" })).toMatchObject({ ok: true });
     for (const s of ["Password: violet-orchard-seven.", "My password for the demo is violet-orchard-seven.", "My PIN is 7319."]) {
       expect(one({ value: `${PROJECT} ${s}`, entry: "typed" }), s).toMatchObject({ ok: false, why: "secret" });
     }
