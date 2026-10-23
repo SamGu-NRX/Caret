@@ -61,6 +61,7 @@ enum MemoryAction: Equatable {
     case cancelEntry
     case removeEntry(String)
     case keys(GhostKeys)
+    case suggestionLength(SuggestionLength)
     case appOff(String)
     case appOn(String)
     /// Whether plain clipboard text may be offered as local inline context.

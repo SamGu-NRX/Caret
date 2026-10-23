@@ -228,7 +228,7 @@ final class PageInlineCoordinator {
                                          browserAllowed: (drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil)) && !AppSwitch.shared.isOff(pid: pid),
                                          composing: InputMethodState.shared.composes)
         let settings = SettingsStore.shared.settings
-        return PageInlineMachine.Gate(allowed: allowed, contentEditable: settings.pageInlineContentEditable, settings: settings.pageInline)
+        return PageInlineMachine.Gate(allowed: allowed, contentEditable: settings.pageInlineContentEditable, settings: settings.pageInline, suggestionLength: settings.suggestionLength)
     }
 
     // MARK: - Commands
@@ -236,6 +236,7 @@ final class PageInlineCoordinator {
     private func perform(_ command: PageInlineMachine.Command) {
         switch command {
         case .generate(let r): generate(r)
+        case .extend(let r): generate(r, extending: true)
         case .cancel:
             generation?.cancel()
             generation = nil
@@ -254,24 +255,28 @@ final class PageInlineCoordinator {
         }
     }
 
-    private func generate(_ r: PageInlineMachine.Request) {
+    private func generate(_ r: PageInlineMachine.Request, extending: Bool = false) {
         generation?.cancel()
         let stamp = status.lastKeyDown()
         requestedAt = [r.id: stamp]
         let context = TextFieldContext(beforeCursor: r.before, afterCursor: r.after, target: AppTarget(bundleIdentifier: r.bundleID, appName: r.appName))
         let engine = self.engine
         let origin = self.origin
+        let deliver: (PageInlineMachine, String?, String?) -> Void = { machine, text, why in
+            if extending { machine.extended(r.id, text: text) }
+            else { machine.generated(r.id, text: text, why: why) }
+        }
         let gateNanos = HostCoordinator.presentationGateNanos(lastGenerationMs: engine.lastGenerationMs)
         generation = Task { [weak self] in
             // As native ghost text: generation starts at once; the adaptive gate only delays the drawing (ADR-080).
             let gate = Task { try? await Task.sleep(nanoseconds: gateNanos) }
             let outcome: GhostTextEngine.Outcome
             do {
-                outcome = try await engine.suggest(for: context, origin: origin)
+                outcome = try await engine.suggest(for: context, tokens: r.tokens, origin: origin)
             } catch {
                 gate.cancel()
                 // H13 review: a failed generation ends its request, so the next report of the same text asks again.
-                if !(error is CancellationError), let self { self.machine.generated(r.id, text: nil, why: "engineError") }
+                if !(error is CancellationError), let self { deliver(self.machine, nil, "engineError") }
                 return
             }
             await gate.value
@@ -279,15 +284,15 @@ final class PageInlineCoordinator {
             if let ms = engine.lastGenerationMs { self.generationTimes.record(ms) }
             // A key after the request: the field is moving, and its own report generates again.
             guard self.status.lastKeyDown().sequence == self.requestedAt[r.id]?.sequence else {
-                return self.machine.generated(r.id, text: nil, why: "keyAfter")
+                return deliver(self.machine, nil, "keyAfter")
             }
             // Secure input may have come on while the engine worked: checked again just before drawing.
             if case .suggestion = outcome, !ExcludedApps.allowsOffers(secureInputEnabled: IsSecureEventInputEnabled()) {
-                return self.machine.generated(r.id, text: nil, why: "secureInput")
+                return deliver(self.machine, nil, "secureInput")
             }
             switch outcome {
             case .suggestion(let s):
-                self.machine.generated(r.id, text: s.text)
+                deliver(self.machine, s.text, nil)
                 // Keystroke to a fresh suggestion drawn, as native ghost text is measured; a ghost typed through is
                 // redrawn without the engine and is not counted.
                 if self.machine.lastOutcome == "shown" {
@@ -296,7 +301,7 @@ final class PageInlineCoordinator {
                     // suggestions only, never a redraw while typing through, and only while VoiceOver runs.
                     if NSWorkspace.shared.isVoiceOverEnabled { AccessibilityNotification.Announcement(PageInlineCopy.spoken(s.text)).post() }
                 }
-            case .suppressed(let why): self.machine.generated(r.id, text: nil, why: why)
+            case .suppressed(let why): deliver(self.machine, nil, why)
             }
             self.publish()
         }

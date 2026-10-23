@@ -126,6 +126,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// Which keys take ghost text (brief item 6). Caret's own until Sam picks a default; Cotypist's is
     /// the other preset.
     public var ghostKeys = GhostKeys.caret
+    public var suggestionLength = SuggestionLength.medium
     /// Brief item 7: apps where Caret shows nothing, by bundle identifier, sorted, each once. Ghost text, writing fixes,
     /// fills and Caret's lines stay out of them; the reader still reads their windows, as it does every app's.
     public private(set) var appsOff: [String] = []
@@ -158,7 +159,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = set.sorted()
     }
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable, ghostKeys, appsOff, instructions, clipboardContext }
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable, ghostKeys, appsOff, instructions, clipboardContext, suggestionLength }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -206,6 +207,8 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         clipboardContext = try c.decodeIfPresent(Bool.self, forKey: .clipboardContext) ?? false
         // Absent: the default. A scheme this host does not know is refused with the file.
         ghostKeys = try c.decodeIfPresent(GhostKeys.self, forKey: .ghostKeys) ?? .caret
+        // Older files retain the existing native and page completion lengths.
+        suggestionLength = try c.decodeIfPresent(SuggestionLength.self, forKey: .suggestionLength) ?? .medium
         // Absent from a file written before item 7: no app was turned off.
         let apps = try c.decodeIfPresent([String].self, forKey: .appsOff) ?? []
         if let bad = apps.first(where: { !Self.isBundleID($0) }) {
@@ -239,6 +242,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         if !pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
         if clipboardContext { try c.encode(clipboardContext, forKey: .clipboardContext) }
         if ghostKeys != .caret { try c.encode(ghostKeys, forKey: .ghostKeys) }
+        try c.encode(suggestionLength, forKey: .suggestionLength)
         if !appsOff.isEmpty { try c.encode(appsOff, forKey: .appsOff) }
         if instructions != PersonalInstructions() { try c.encode(instructions, forKey: .instructions) }
     }

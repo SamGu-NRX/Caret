@@ -41,9 +41,10 @@ final class GhostTextEngine {
 
     static let maxCompletionTokens = 4
     static let maxDisplayWidth = 60
-    /// The caps this engine requests with. `Caret --probe-length` varies them to time longer
-    /// suggestions; a normal run keeps the defaults above.
-    var completionTokens = GhostTextEngine.maxCompletionTokens
+    /// `Caret --probe-length` overrides the user's first-request cap to compare fixed lengths.
+    var completionTokens: Int?
+    /// Read for each request so the next suggestion follows a settings change without reloading the model.
+    var suggestionLength: () -> SuggestionLength = { .medium }
     /// Probe only (`Caret --probe-length`, mode `norm-4`): order the beam's candidates by mean log probability per
     /// token instead of KeyType's cumulative score, which favors short candidates. A re-rank of what the beam returned,
     /// not a different beam: KeyType's search and early stop (pinned upstream) still decide which candidates exist.
@@ -354,9 +355,10 @@ final class GhostTextEngine {
         ).prompt
         let healSlack = heal?.heal.count ?? 0
         let healTokens = healSlack > 0 ? 1 : 0
+        let firstTokens = completionTokens ?? suggestionLength().budget(for: .native).firstTokens
         let tokens = Self.shouldUseCapsule(for: context)
-            ? min(override ?? completionTokens, 3) + healTokens
-            : (override ?? completionTokens) + healTokens
+            ? min(override ?? firstTokens, 3) + healTokens
+            : (override ?? firstTokens) + healTokens
         return CompletionRequest(
             context: context,
             prompt: prompt,

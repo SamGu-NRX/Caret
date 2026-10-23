@@ -1,11 +1,27 @@
 import AppCompatibility
 import AutocompleteCore
+import CaretHostCore
 import XCTest
 @testable import CaretHost
 
 /// Bug 6 (A18): the model sees the text after the caret, so a completion can be made to fit it.
 @MainActor
 final class GhostPromptTests: XCTestCase {
+    func testNextEngineRequestReadsTheChosenLengthWithoutLoadingTheModel() {
+        let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
+        defer { engine.setWritingMemoryExpiryEnabled(false) }
+        var settings = CaretSettings()
+        engine.suggestionLength = { settings.suggestionLength }
+        let context = TextFieldContext(
+            beforeCursor: "Start ", afterCursor: "", geometry: TextFieldGeometry(isAtEndOfLine: true),
+            target: AppTarget(bundleIdentifier: "com.apple.TextEdit", appName: "TextEdit"), detectedLanguage: "en"
+        )
+        for (length, tokens) in [(SuggestionLength.short, 2), (.medium, 4), (.long, 8), (.short, 2)] {
+            settings.suggestionLength = length
+            XCTAssertEqual(engine.request(for: context).maxCompletionTokens, tokens)
+        }
+    }
+
     func testProductionWritingMemoryRejectsSecrets() {
         let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
         engine.recordWriting("password=bad", appBundleIdentifier: "com.apple.TextEdit", secure: false)

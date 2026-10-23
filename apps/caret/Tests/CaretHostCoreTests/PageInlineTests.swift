@@ -75,6 +75,64 @@ final class PageInlineTests: XCTestCase {
         func suggest(_ text: String?) { machine.generated(requests.last!.id, text: text) }
     }
 
+    private func extensions(_ r: Rig) -> [PageInlineMachine.Request] {
+        r.commands.compactMap { if case .extend(let request) = $0 { return request }; return nil }
+    }
+
+    func testOnlyLongExtendsAtTheEndOfAField() throws {
+        for (length, first) in [(SuggestionLength.short, 2), (.medium, 4), (.long, 8)] {
+            for after in ["", "\nAnother line", "   "] {
+                let r = Rig()
+                r.gate.suggestionLength = length
+                var field = try Self.field(1)
+                field.text?.after = after
+                r.field(field)
+                XCTAssertEqual(r.requests.last?.tokens, first)
+                r.suggest("role")
+                let next = extensions(r)
+                XCTAssertEqual(next.count, length == .long && after.isEmpty ? 1 : 0)
+                if let next = next.first {
+                    XCTAssertEqual(next.tokens, 56)
+                    XCTAssertEqual(next.before, field.text!.before + "role")
+                    r.machine.extended(next.id, text: " on the team")
+                    XCTAssertEqual(r.arbiter.snapshot().current?.text, "role on the team")
+                }
+            }
+        }
+    }
+
+    func testLongDoesNotExtendSentenceEndsOrClippedOffers() throws {
+        for text in ["role.", String(repeating: "role ", count: 100)] {
+            let r = Rig()
+            r.gate.suggestionLength = .long
+            r.field(try Self.field(1))
+            r.suggest(text)
+            XCTAssertTrue(extensions(r).isEmpty)
+        }
+    }
+
+    func testPageExtensionCannotChangeAnAcceptedTypedOrMovedOffer() throws {
+        for change in ["accept", "type", "field", "token", "setting", "gate"] {
+            let r = Rig()
+            r.gate.suggestionLength = .long
+            var field = try Self.field(1)
+            r.field(field)
+            r.suggest("role")
+            let next = try XCTUnwrap(extensions(r).first)
+            switch change {
+            case "accept": _ = r.press(.tab(to: Self.chrome))
+            case "type": _ = r.press(.typing("r", to: Self.chrome))
+            case "field": field.text?.before += "x"; r.field(field)
+            case "token": field.token = "another"; r.field(field)
+            case "setting": r.gate.suggestionLength = .short; r.field(field)
+            default: r.machine.gateClosed()
+            }
+            let paints = r.ghosts.count
+            r.machine.extended(next.id, text: " on the team")
+            XCTAssertEqual(r.ghosts.count, paints, change)
+        }
+    }
+
     // MARK: - Page text reaches the engine
 
     func testThePagesTextReachesTheEngine() throws {
