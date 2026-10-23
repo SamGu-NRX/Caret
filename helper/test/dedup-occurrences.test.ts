@@ -76,14 +76,14 @@ describe("a value's other lines in its window", () => {
     expect(p.fields.find((f) => f.key === key("Booking ref"))?.value).toBe("QX7-4410");
   });
 
-  it("withholds a value whose other lines the ledger cannot admit with it: a chat's limit holds its line, not its warning too", async () => {
-    // T = 5 + 21 + 61 + 2 + 2 = 91, limit 45: the value's own line fits, with the warning it does not.
+  it("keeps a value when its own line fits and only its warning needs the separate also budget", async () => {
+    // The value's own line fits the window ledger; its warning is charged to the separate also budget.
     const m = desk(["Booking ref: QX7-4410", "Do not use QX7-4410, that booking was cancelled last week", "ok", "ok"], MESSAGES);
     const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [fieldTerms(["Booking ref"])] });
-    expect(c.candidates.map((x) => x.text)).not.toContain("QX7-4410");
+    expect(c.candidates.map((x) => x.text)).toContain("QX7-4410");
     const p = await proposeFill(m, recording().jev, FORM, key("Booking ref"), 3000, { whose: false });
     const f = p.fields.find((x) => x.key === key("Booking ref"))!;
-    expect([f.value, f.withheld]).toEqual([null, "sourceCut"]);
+    expect([f.value, f.withheld]).toEqual(["QX7-4410", null]);
   });
 });
 
