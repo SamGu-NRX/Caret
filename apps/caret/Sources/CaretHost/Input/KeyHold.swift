@@ -13,6 +13,11 @@ import os
 /// followed by its key-up (the tap sees only key-downs, so the original key-up went on already).
 final class KeyHold: @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(uncheckedState: KeyHoldQueue<CGEvent>())
+    /// Every held key sent on so far. The tap never counts a held key as input (`HostStatus.inputMark`), so an
+    /// insert compares this before and after its write to learn whether the user's keys reached the app then.
+    private let sent = OSAllocatedUnfairLock(initialState: UInt64(0))
+
+    func keysSent() -> UInt64 { sent.withLock { $0 } }
 
     /// Tap thread, inside the Tab's callback.
     func begin(pid: Int32) {
@@ -20,7 +25,7 @@ final class KeyHold: @unchecked Sendable {
         // Sent under the lock: a key the tap takes after this cannot overtake them.
         state.withLockUnchecked { queue in
             let earlier = queue.pid
-            Self.send(queue.begin(pid: pid, now: now), to: earlier ?? pid)
+            send(queue.begin(pid: pid, now: now), to: earlier ?? pid)
         }
     }
 
@@ -32,7 +37,7 @@ final class KeyHold: @unchecked Sendable {
             switch queue.take(event.copy() ?? event, pid: pid, now: now) {
             case .hold: return true
             case .pass(let first):
-                if let heldFor { Self.send(first, to: heldFor) }
+                if let heldFor { send(first, to: heldFor) }
                 return false
             }
         }
@@ -42,7 +47,7 @@ final class KeyHold: @unchecked Sendable {
     func end(pid: Int32) {
         state.withLockUnchecked { queue in
             guard queue.pid == pid else { return }
-            Self.send(queue.end(), to: pid)
+            send(queue.end(), to: pid)
         }
     }
 
@@ -56,7 +61,8 @@ final class KeyHold: @unchecked Sendable {
         }
     }
 
-    private static func send(_ events: [CGEvent], to pid: Int32) {
+    private func send(_ events: [CGEvent], to pid: Int32) {
+        sent.withLock { $0 &+= UInt64(events.count) }
         for down in events {
             down.setIntegerValueField(.eventSourceUserData, value: SynthesizedEventMarker.userData)
             down.postToPid(pid)

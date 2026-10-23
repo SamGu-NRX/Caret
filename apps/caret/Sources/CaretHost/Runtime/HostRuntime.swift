@@ -244,6 +244,7 @@ public final class HostRuntime {
                     MainActor.assumeIsolated {
                         fill.undoFinished(result)
                         writing.undoFinished(result)
+                        surface.inlineUndoFinished(result)
                     }
                 }
             }
@@ -611,13 +612,18 @@ public final class HostRuntime {
                         }
                     }
                 } else {
-                    // The same for Caret's own Undo: keys after the ⌘Z wait until its "" is written.
+                    // The same for Caret's own Undo: keys after the ⌘Z wait until its restore is written.
                     if !writesNothing { keyHold.begin(pid: grant.target.pid) }
-                    executor.submitUndo(grant)
+                    // Authorization and input mark at the key; the undo launches only once every owner
+                    // has heard it started, so even an immediate answer finds its owner (S2 review).
+                    let ticket = executor.prepareUndo(grant)
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
                             fill.undoStarted(grant)
                             writing.undoStarted(grant)
+                            // An inline insert's grant belongs to the line at the caret (S2).
+                            surface.undoStarted(grant)
+                            executor.launchUndo(ticket)
                         }
                     }
                 }
