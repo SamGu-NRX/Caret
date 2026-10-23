@@ -90,8 +90,8 @@ public enum SensitiveText {
     ]
 
     /// `COMMON_IN_SENTENCES`: phrases ordinary sentences use for other things ("pin it", "a token of thanks", "the
-    /// secret is consistency"). One counts only owned by "my" or "our" and with a digit in the first three words of its
-    /// value.
+    /// secret is consistency"). One counts when owned by "my" or "our", or used as a ":" or "=" label, and with a digit
+    /// in the first three words of its value.
     static let commonInSentences: Set<String> = ["pin", "sin", "tin", "swift", "routing", "token", "secret", "bic", "aba", "csc", "bearer", "acct", "one time"]
 
     /// A stated secret: its kind, the text after "is" or ":" up to the end of the sentence (lowercased), and the value's
@@ -134,12 +134,13 @@ public enum SensitiveText {
     /// The kind of secret a text states, and its value: "My password is violet-orchard-seven", "my password for the
     /// portal is aaaaaa, put it in Notes", "Password: …", "my PIN is 7319". A label phrase owned ("my", "our", "the") and
     /// followed by "is", "was", ":" or "=", or bare and followed by ":" or "=", then a value. A common phrase needs "my"
-    /// or "our" and a digit in the value's first three words, so "my secret is consistency" states nothing.
+    /// or "our" unless used as a ":" or "=" label. It also needs a digit in the value's first three words.
     public static func statedSecretMatch(_ text: String) -> StatedSecret? {
         let t = text.lowercased()
         let range = NSRange(location: 0, length: (t as NSString).length)
         for p in phrases {
-            guard let match = p.owned.firstMatch(in: t, range: range) ?? (p.common ? nil : p.bare.firstMatch(in: t, range: range)) else { continue }
+            // Explicit labels such as "One-time code: 123456" and "PIN: 7319" need no owner, even for common phrases.
+            guard let match = p.owned.firstMatch(in: t, range: range) ?? p.bare.firstMatch(in: t, range: range) else { continue }
             let span = match.range(withName: "secret")
             guard span.location != NSNotFound else { continue }
             let secret = (t as NSString).substring(with: span).trimmingCharacters(in: .whitespacesAndNewlines)
