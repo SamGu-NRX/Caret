@@ -91,8 +91,7 @@ describe("no prose naming a secret is taken as a value: the instruction contribu
     await fc.assert(
       fc.asyncProperty(arbSecretSentence, arbPlainLabel, async ([sentence, token], label) => {
         // What matters is the write, not the memory-capture verdict: whatever the prose gate flags is
-        // never minted for any field. Where the window misses (filler between the label phrase and the
-        // value), the it.fails below records the escape end to end.
+        // never minted for any field. The test below checks filler between the label phrase and the value.
         if (secretIn(token, sentence) !== null) {
           const r = await checkValues([prop(contractFor(label), token)], { ...opts, instruction: sentence });
           expect(r.ok).toEqual([]);
@@ -102,13 +101,10 @@ describe("no prose naming a secret is taken as a value: the instruction contribu
     );
   });
 
-  it.fails("a stated password escapes when filler words push the label phrase out of the four-word window", async () => {
-    // REAL BUG (found by this property's CI seed): 'my password for the portal is aaaaaa' - statedSecret
-    // catches it, but the write path does not. secretIn (planner/trace.ts:24) reads only the four words
-    // before and after the value ('for the portal is'), so the label phrase is out of reach,
-    // neverTypedRefusal (fill/contract.ts) does not refuse, and the mint lands; validatePlan accepts the
-    // traced value and the executor types the password. A miss costs a typed secret - the widest-cost side
-    // of the window trade-off - so the window (or the shape of the sentence it reads) has to widen.
+  it("a stated password with filler words between the label and the value is refused (B1, fixed by #69)", async () => {
+    // Found by this property's CI seed: secretIn (planner/trace.ts) read only four words around the value,
+    // so 'for the portal is' hid the label phrase and the password was typed. secretIn now asks
+    // statedSecretMatch for the stated value, so the filler no longer matters.
     const sentence = "my password for the portal is aaaaaa";
     const r = await checkValues([prop(contractFor("Notes"), "aaaaaa")], { ...opts, instruction: sentence });
     expect(r.ok).toEqual([]);
