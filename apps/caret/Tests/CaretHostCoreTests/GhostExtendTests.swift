@@ -29,6 +29,18 @@ final class GhostExtendTests: XCTestCase {
         XCTAssertEqual(GhostExtend.refusal(askedFor: 7, current: 7, typedSinceOffer: "", keyedSince: false, sameField: true, more: " "), "empty")
     }
 
+    func testLengthBudgetsPreserveMediumAndBoundShortAndLongOnBothPaths() {
+        for path in [SuggestionLength.Path.native, .page] {
+            XCTAssertEqual(SuggestionLength.short.budget(for: path).firstTokens, 2)
+            XCTAssertNil(SuggestionLength.short.budget(for: path).extendTokens)
+            XCTAssertEqual(SuggestionLength.medium.budget(for: path).firstTokens, 4)
+            XCTAssertEqual(SuggestionLength.long.budget(for: path).firstTokens, 8)
+            XCTAssertEqual(SuggestionLength.long.budget(for: path).extendTokens, 56)
+        }
+        XCTAssertEqual(SuggestionLength.medium.budget(for: .native).extendTokens, 28)
+        XCTAssertNil(SuggestionLength.medium.budget(for: .page).extendTokens)
+    }
+
     func testTheCapIsTheMeasuredOne() {
         XCTAssertEqual(GhostExtend.tokens, 28)
     }

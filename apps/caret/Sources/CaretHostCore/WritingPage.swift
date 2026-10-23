@@ -33,6 +33,7 @@ public enum WritingPage {
 
     public struct State: Equatable, Sendable {
         public var keys = GhostKeys.caret
+        public var suggestionLength = SuggestionLength.medium
         /// Plain clipboard context is an explicit opt-in and starts off.
         public var clipboardContext = false
         /// Nil draws no Model group (renders and tests that leave it out).
@@ -55,7 +56,7 @@ public enum WritingPage {
         public init() {}
 
         public static func == (a: State, b: State) -> Bool {
-            a.keys == b.keys && a.clipboardContext == b.clipboardContext && a.aboutDraft == b.aboutDraft && a.aboutSaved == b.aboutSaved && a.entries == b.entries
+            a.keys == b.keys && a.suggestionLength == b.suggestionLength && a.clipboardContext == b.clipboardContext && a.aboutDraft == b.aboutDraft && a.aboutSaved == b.aboutSaved && a.entries == b.entries
                 && a.editing?.id == b.editing?.id && a.editing?.draft == b.editing?.draft && a.hereApp == b.hereApp
                 && a.herePage == b.herePage && a.appsOff == b.appsOff && a.problem == b.problem && a.entryProblem == b.entryProblem && a.model == b.model
         }
@@ -121,6 +122,8 @@ public enum WritingPageCopy {
     public static let remove = "Remove"
     public static let cancel = "Cancel"
     public static let keysHead = "Accept keys"
+    public static let lengthHead = "Suggestion length"
+    public static let lengthDetail = "How much text Caret suggests at a time."
     public static let offHead = "Caret is off in"
     public static let offEmpty = "Caret works in every app."
     public static let hereApp = "The app you were in"

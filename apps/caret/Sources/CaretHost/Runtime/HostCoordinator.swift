@@ -340,11 +340,12 @@ final class HostCoordinator {
         extend(held)
     }
 
-    /// Brief item 1 (`GhostExtend`): the 4-token suggestion just drawn is extended once from its end, toward the
-    /// sentence end, and appended in place with no motion, only while the offer is untouched. Tab takes what is
-    /// drawn at the moment it is pressed: a claim removes the offer, and the extension then finds it gone.
+    /// The chosen length may extend a suggestion once from its end, in place without motion, while it is untouched.
+    /// Tab takes what is drawn when pressed. A claim removes the offer, so a late extension finds it gone.
     private func extend(_ held: Held) {
-        guard !isShuttingDown, let offer = arbiter.snapshot().current, offer.source == .engine, case .ghost = offer.kind,
+        let length = engine.suggestionLength()
+        guard let tokens = length.budget(for: .native).extendTokens,
+              !isShuttingDown, let offer = arbiter.snapshot().current, offer.source == .engine, case .ghost = offer.kind,
               offer.text == held.suggestion.text,  // the words that fit a narrow field were all it had room for
               GhostExtend.shouldExtend(offer.text, afterCursor: held.snapshot.context.afterCursor)
         else { return }
@@ -355,8 +356,8 @@ final class HostCoordinator {
         let serial = extensionSerial
         extending = Task { [weak self] in
             defer { self?.extensionsInFlight.removeValue(forKey: serial) }
-            let outcome = try? await engine.suggest(for: context, tokens: GhostExtend.tokens)
-            guard let self, !Task.isCancelled else { return }
+            let outcome = try? await engine.suggest(for: context, tokens: tokens)
+            guard let self, !Task.isCancelled, engine.suggestionLength() == length else { return }
             guard case .suggestion(let more)? = outcome else { return self.status.increment("ghost.extend.none") }
             let snap = self.arbiter.snapshot()
             let fresh = FieldReader.readFocused()

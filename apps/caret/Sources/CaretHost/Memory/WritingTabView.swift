@@ -4,7 +4,7 @@ import SwiftUI
 /// What Caret knows' Writing tab (brief items 4, 6 and 7), in the window's own parts: groups under small heads, rows on
 /// hairlines, no cards, choices in pop-ups, buttons in the window's two kinds.
 ///
-/// How you write first, since it shapes every suggestion; then instructions for one app or site; then the accept keys;
+/// How you write first, since it shapes every suggestion; then instructions for one app or site; then suggestion length and the accept keys;
 /// then the apps Caret is off in, shaped as the Sites tab's list. Saving is explicit (Save, ⌘S) because the settings
 /// file is written and every observer told on each change. Motion: an entry or an app added or removed fades over
 /// 120 ms, as a site's row does; editors open and close with no motion, since each follows a click the user is
@@ -21,6 +21,7 @@ struct WritingTabView: View {
             about
             clipboardContext
             entries
+            suggestionLength
             keys
             appsOff
             if let model = state.model { modelGroup(model) }
@@ -158,6 +159,33 @@ struct WritingTabView: View {
             .padding(.vertical, 10)
             .accessibilityElement(children: .contain)
         }
+    }
+
+    // MARK: - Suggestion length
+
+    private var suggestionLength: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            GroupHead(text: WritingPageCopy.lengthHead)
+                .padding(.top, 20)
+                .padding(.bottom, 2)
+            HStack(alignment: .top, spacing: 18) {
+                Text(WritingPageCopy.lengthDetail)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                PopUpChoice(
+                    label: WritingPageCopy.lengthHead,
+                    items: SuggestionLength.allCases.map { .init(value: $0, title: $0.title, enabled: true) },
+                    current: state.suggestionLength, width: RuleRowView.columnWidth, choose: { if $0 != state.suggestionLength { send(.suggestionLength($0)) } }
+                )
+                .frame(width: RuleRowView.columnWidth, alignment: .leading)
+            }
+            .padding(.vertical, 12)
+            .accessibilityElement(children: .contain)
+            Hairline()
+        }
+        .probed("writing.suggestionLength")
     }
 
     // MARK: - Accept keys

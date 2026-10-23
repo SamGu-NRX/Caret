@@ -179,6 +179,7 @@ public final class HostRuntime {
         let status = self.status
         let policy = TargetPolicy(allowedBundleIDs: configuration.allowedBundleIDs, allowedPIDs: configuration.allowedPIDs)
         engine = GhostTextEngine(compatibilityStore: compatibilityStore)
+        engine.suggestionLength = { SettingsStore.shared.settings.suggestionLength }
         engine.clipboardContextEnabled = { SettingsStore.shared.settings.clipboardContext }
         engine.pasteboardSnapshot = {
             let pasteboard = NSPasteboard.general

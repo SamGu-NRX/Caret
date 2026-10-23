@@ -254,6 +254,7 @@ public final class PageInlineMachine {
         case generate(Request)
         /// Drop any generation under way.
         case cancel
+        case extend(Request)
         /// The ghost text at `caret` (global, top-left points), in the field's size and ink (`look`).
         case drawGhost(String, caret: CGRect, look: PageField.Look?)
         case hideGhost
@@ -274,6 +275,7 @@ public final class PageInlineMachine {
         public var after: String
         public var bundleID: String
         public var appName: String
+        public var tokens: Int
     }
 
     /// Whether inline text may show at all now (`PageInline.allowed`), whether contenteditables get it too
@@ -283,10 +285,12 @@ public final class PageInlineMachine {
         public var allowed: Bool
         public var contentEditable: Bool
         public var settings: PageInlineSettings
-        public init(allowed: Bool, contentEditable: Bool, settings: PageInlineSettings) {
+        public var suggestionLength: SuggestionLength
+        public init(allowed: Bool, contentEditable: Bool, settings: PageInlineSettings, suggestionLength: SuggestionLength = .medium) {
             self.allowed = allowed
             self.contentEditable = contentEditable
             self.settings = settings
+            self.suggestionLength = suggestionLength
         }
     }
 
@@ -315,6 +319,7 @@ public final class PageInlineMachine {
     private var gate = Gate(allowed: false, contentEditable: false, settings: PageInlineSettings())
     private var requests: UInt64 = 0
     private var pending: Request?
+    private var extensionRequest: (request: Request, shown: Shown)?
     private struct Shown {
         var offerID: UInt64
         var text: String
@@ -389,7 +394,9 @@ public final class PageInlineMachine {
     public func field(_ f: PageField?, gate g: Gate) {
         let previous = current
         current = f
+        let lengthChanged = gate.suggestionLength != g.suggestionLength
         gate = g
+        if lengthChanged { clear("lengthChanged") }
         // A new focus: every unanswered line may show again (once in it).
         if previous.map(Self.focusKey) != f.map(Self.focusKey) { shownIn.removeAll() }
         // A field the user types in: editable (fill may write it) or one the page reports text around the caret for. A
@@ -455,7 +462,7 @@ public final class PageInlineMachine {
         }
         if let p = pending, p.before == text.before, p.after == text.after { return }
         requests &+= 1
-        let r = Request(id: requests, before: text.before, after: text.after, bundleID: f.app.bundleId, appName: f.app.name)
+        let r = Request(id: requests, before: text.before, after: text.after, bundleID: f.app.bundleId, appName: f.app.name, tokens: g.suggestionLength.budget(for: .page).firstTokens)
         pending = r
         output(.generate(r))
     }
@@ -467,6 +474,29 @@ public final class PageInlineMachine {
         guard let text, !text.isEmpty else { return note(why.map { "suppressed.\($0)" } ?? "nothing") }
         guard let fieldText = current?.text, fieldText.before == r.before, fieldText.after == r.after else { return note("stale") }
         offer(text, before: r.before, after: r.after)
+        guard let s = shown, s.text == text,
+              let tokens = gate.suggestionLength.budget(for: .page).extendTokens,
+              r.after.isEmpty, GhostExtend.shouldExtend(text, afterCursor: r.after) else { return }
+        requests &+= 1
+        let next = Request(id: requests, before: r.before + text, after: r.after,
+                           bundleID: r.bundleID, appName: r.appName, tokens: tokens)
+        extensionRequest = (next, s)
+        output(.extend(next))
+    }
+
+    /// A second request may replace only its untouched, visible offer in the same field.
+    public func extended(_ id: UInt64, text: String?) {
+        guard let pending = extensionRequest, pending.request.id == id else { return }
+        extensionRequest = nil
+        let s = pending.shown
+        let snap = arbiter.snapshot()
+        guard gate.suggestionLength == .long, gate.allowed, let text,
+              let f = current, f.token == s.token, PageInline.target(f) == s.target,
+              f.text?.before == s.before, f.text?.after == s.after, f.text?.selection.isEmpty == true,
+              GhostExtend.refusal(askedFor: s.offerID, current: snap.current?.id,
+                                  typedSinceOffer: snap.typedSinceOffer, keyedSince: false,
+                                  sameField: true, more: text) == nil else { return }
+        offer(s.text + text, before: s.before, after: s.after)
     }
 
     /// Offers `text` at the caret of the current field, whose text reads `before` and `after`: published unshown,
@@ -698,8 +728,9 @@ public final class PageInlineMachine {
     // MARK: - Helpers
 
     private func clear(_ why: String) {
-        if pending != nil {
+        if pending != nil || extensionRequest != nil {
             pending = nil
+            extensionRequest = nil
             output(.cancel)
         }
         if let s = shown {

@@ -3,6 +3,24 @@ import XCTest
 @testable import CaretHostCore
 
 final class CaretSettingsTests: XCTestCase {
+    func testSuggestionLengthChoiceSurvivesSettingsRoundTrip() throws {
+        var file = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(CaretSettings())) as? [String: Any])
+        for choice in ["short", "medium", "long"] {
+            file["suggestionLength"] = choice
+            let settings = try JSONDecoder().decode(CaretSettings.self, from: JSONSerialization.data(withJSONObject: file))
+            let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any])
+            XCTAssertEqual(saved["suggestionLength"] as? String, choice)
+        }
+    }
+
+    func testMissingSuggestionLengthMigratesToMediumAndUnknownChoiceFails() throws {
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(CaretSettings())) as? [String: Any])
+        old.removeValue(forKey: "suggestionLength")
+        XCTAssertEqual(try JSONDecoder().decode(CaretSettings.self, from: JSONSerialization.data(withJSONObject: old)).suggestionLength, .medium)
+        old["suggestionLength"] = "huge"
+        XCTAssertThrowsError(try JSONDecoder().decode(CaretSettings.self, from: JSONSerialization.data(withJSONObject: old)))
+    }
+
     private func rule(_ gate: GatePolicy, _ family: String) -> GatePolicy.Rule? { gate.rules.first { $0.family == family } }
 
     func testClipboardContextDefaultsOffAndRoundTrips() throws {
