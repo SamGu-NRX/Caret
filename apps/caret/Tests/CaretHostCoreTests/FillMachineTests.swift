@@ -257,15 +257,15 @@ final class FillMachineTests: XCTestCase {
         XCTAssertEqual(rig.sent.map(\.outcome), [.failed, .undone])
     }
 
-    /// The write was never confirmed, but a read found the whole value: ⌘Z is offered, with
-    /// ordinary undo.
+    /// The write was never confirmed, but a read found the whole value: ⌘Z is offered with the
+    /// input-since-write guard still enabled.
     func testAnUnconfirmedFillThatLandedWholeOffersUndo() {
         let rig = shown()
         rig.press(Fx.tab())
         rig.insertedUnconfirmed(held: FillFx.email, reason: "writeMismatch")
         XCTAssertEqual(rig.takeLog(), ["working", "toast error Caret couldn't confirm the fill, but the field holds it. ⌘Z", "toast slot"])
         guard case .undo(let grant) = rig.arbiter.handleKeyDown(Fx.cmdZ(), now: rig.clock.now) else { return XCTFail("⌘Z did not take the grant") }
-        XCTAssertFalse(grant.unconfirmed)
+        XCTAssertTrue(grant.unconfirmed)
         XCTAssertFalse(grant.partialWrite)
     }
 

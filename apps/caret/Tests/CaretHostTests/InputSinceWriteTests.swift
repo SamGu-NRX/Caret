@@ -1,5 +1,6 @@
 import XCTest
 @testable import CaretHost
+import CaretHostCore
 
 /// ⌘Z on an unconfirmed insert asks whether the user's input reached the app from the Tab that asked for the write
 /// on. The mark at ⌘Z is taken after the tap counted the ⌘Z, so a quiet user's mark is the write's plus exactly that key.
@@ -37,6 +38,19 @@ final class InputSinceWriteTests: XCTestCase {
     func testAClickThatDroppedTheHoldDuringTheWriteCounts() {
         XCTAssertTrue(since(HostStatus.InputMark(keys: 41, clicks: 2), atKey: HostStatus.InputMark(keys: 38, clicks: 1)))
         XCTAssertTrue(since(HostStatus.InputMark(keys: 41, clicks: 2), atKey: HostStatus.InputMark(keys: 40, clicks: 1)), "the click alone")
+    }
+
+    func testUserCompletesTextBeforeTheRecoveryReadStillNeedsTheInputGuard() {
+        let target = TargetIdentity(pid: 5150, bundleID: "dev.caret.fixture", windowID: "w41", elementID: "body", elementRevision: UTF16Text.digest(""))
+        let edit = InsertionGuard.ApprovedEdit(target: target, replaceStart: 0, replaceEnd: 0, replacement: "Seattle", resultingValue: "Seattle")
+        let armed = UndoGrant.armed(target: target, priorValue: "", edit: edit, origin: nil, writeID: 1)
+        let intent = UnconfirmedInsert.Intent(before: "", start: 0, end: 0, replacement: "Seattle")
+        let report = UnconfirmedInsert.read(intent, held: "Seattle")
+        XCTAssertEqual(report.state, .whole)
+        let grant = UnconfirmedInsert.grant(armed: armed, verified: false, report: report)
+        XCTAssertEqual(grant?.unconfirmed, true, "a recovery read cannot confirm who typed ttle")
+        XCTAssertTrue(since(HostStatus.InputMark(keys: 41, clicks: 2), atKey: HostStatus.InputMark(keys: 36, clicks: 1)), "the click dropped the hold after Sea; four user keys completed Seattle before the write-end mark")
+        XCTAssertEqual(UnconfirmedInsert.grant(armed: armed, verified: true, report: nil)?.unconfirmed, false)
     }
 
     func testNoRecordOfTheWriteEndRefuses() {

@@ -22,6 +22,7 @@
     { "name": "intended text twice (a doubled paste)", "before": "x", "start": 1, "end": 1, "replacement": "ab", "held": "xabab", "state": "unrecognized" },
     { "name": "astral characters, one whole pair in", "before": "ok ", "start": 3, "end": 3, "replacement": "😀😀", "held": "ok 😀", "state": "partial", "inserted": 2 },
     { "name": "repeated letters: prefix is unambiguous at the recorded range", "before": "aa", "start": 1, "end": 1, "replacement": "aaa", "held": "aaa", "state": "partial", "inserted": 1 },
+    { "name": "click dropped the hold after Sea, user completed Seattle before recovery read", "before": "", "start": 0, "end": 0, "replacement": "Seattle", "held": "Seattle", "state": "whole", "atUndo": "Seattle", "undo": "inputAfterWrite" },
     { "name": "fill stopped after three, then the user typed one: ⌘Z would read Caret's partial", "before": "", "start": 0, "end": 0, "replacement": "Seattle", "held": "Sea", "state": "partial", "inserted": 3, "atUndo": "Seat", "undo": "inputAfterWrite" },
     { "name": "fill stopped after three, then the user typed the rest: ⌘Z would read Caret's whole text", "before": "", "start": 0, "end": 0, "replacement": "Seattle", "held": "Sea", "state": "partial", "inserted": 3, "atUndo": "Seattle", "undo": "inputAfterWrite" }
   ]

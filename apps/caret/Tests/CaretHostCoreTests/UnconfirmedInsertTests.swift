@@ -148,7 +148,7 @@ final class UnconfirmedInsertTests: XCTestCase {
     /// such input, the same grant over the same field takes out exactly what went in.
     func testInputAfterAStoppedWriteRefusesUndoThoughTheFieldReadsAsCarets() {
         let rows = Self.table.cases.filter { $0.atUndo != nil }
-        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.count, 3)
         for c in rows {
             let intent = UnconfirmedInsert.Intent(before: c.before, start: c.start, end: c.end, replacement: c.replacement)
             guard let grant = Self.left(intent, held: c.held), let atUndo = c.atUndo else { return XCTFail(c.name) }
@@ -188,7 +188,7 @@ final class UnconfirmedInsertTests: XCTestCase {
                 XCTAssertNil(grant, "k = 0: nothing landed")
             case n:
                 XCTAssertEqual(report.state, .whole)
-                XCTAssertEqual(grant?.unconfirmed, false, "the whole text read back: ordinary undo")
+                XCTAssertEqual(grant?.unconfirmed, true, "a failed write remains input-guarded even when recovery reads the whole text")
             default:
                 XCTAssertEqual(report.state, .partial(inserted: k))
                 XCTAssertEqual(grant?.partialWrite, true)
@@ -314,17 +314,17 @@ final class UnconfirmedInsertTests: XCTestCase {
 
     // MARK: - Which grant a write leaves
 
-    func testAVerifiedOrWholeWriteKeepsOrdinaryUndoThatAShorteningUserDefeats() {
+    func testOnlyWriteTimeConfirmationKeepsOrdinaryUndoThatAShorteningUserDefeats() {
         let intent = UnconfirmedInsert.Intent(before: "", start: 0, end: 0, replacement: "Dana")
-        for grant in [
-            UnconfirmedInsert.grant(armed: Self.armed(intent), verified: true, report: nil),
-            Self.left(intent, held: "Dana"),
-        ] {
-            XCTAssertEqual(grant?.unconfirmed, false)
-            XCTAssertEqual(grant?.partialWrite, false)
-            // S1 review: an exact read-back the user then shortened is the user's edit, not a partial write.
-            XCTAssertEqual(grant.map { UndoGuard.approve($0, live: Self.live("Da")) }, .failure(.fieldChanged))
-        }
+        let verified = UnconfirmedInsert.grant(armed: Self.armed(intent), verified: true, report: nil)
+        XCTAssertEqual(verified?.unconfirmed, false)
+        XCTAssertEqual(verified?.partialWrite, false)
+        // S1 review: an exact read-back the user then shortened is the user's edit, not a partial write.
+        XCTAssertEqual(verified.map { UndoGuard.approve($0, live: Self.live("Da")) }, .failure(.fieldChanged))
+
+        let recoveredWhole = Self.left(intent, held: "Dana")
+        XCTAssertEqual(recoveredWhole?.unconfirmed, true)
+        XCTAssertEqual(recoveredWhole?.partialWrite, false)
     }
 
     /// The armed grant carries the field as approved: the written element's revision, the prior

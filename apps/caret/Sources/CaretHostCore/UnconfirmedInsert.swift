@@ -101,10 +101,10 @@ public enum UnconfirmedInsert {
 
     /// The grant a write leaves, from the one armed before it and what became of the write.
     ///
-    /// A verified write, or one whose later read held the whole text, keeps ordinary undo: ⌘Z then
-    /// needs the field to hold exactly that, so a field the user shortened afterwards is never taken
-    /// for a partial write (S1 review). A partial read leaves an unconfirmed grant, which ⌘Z judges
-    /// against the field as it reads then: posted keys may still have landed after this read.
+    /// Only a write confirmed at write time keeps ordinary undo. A failed write remains unconfirmed
+    /// even when its recovery read holds the whole intended text, because the user's input may have
+    /// completed Caret's prefix after the write ended. A partial read also leaves an unconfirmed grant,
+    /// which ⌘Z judges against the field as it reads then.
     /// Nothing to undo, or a field Caret does not recognize, leaves no grant.
     public static func grant(armed: UndoGrant, verified: Bool, report: Report?) -> UndoGrant? {
         var grant = armed
@@ -113,6 +113,7 @@ public enum UnconfirmedInsert {
         if verified { return grant }
         switch report?.state {
         case .whole?:
+            grant.unconfirmed = true
             return grant
         case .partial?:
             grant.unconfirmed = true
