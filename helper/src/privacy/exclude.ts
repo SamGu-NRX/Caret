@@ -145,6 +145,8 @@ const MARKED: ReadonlySet<string> = new Set(["password", "payment", "oneTimeCode
 
 /** Roles whose label is their text, not a name: never a group whose name a field inherits. */
 const TEXT_ROLES: ReadonlySet<string> = new Set(["AXStaticText", "AXCell", "AXHeading", "AXLink"]);
+/** Matches CaretScreenCore Roles.textEntry, including dates. Editable choice controls are not text entry. */
+const TEXT_ENTRY_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXDateField"]);
 /** Containers too wide to name the fields in them: a window, a page, a scroll view, an app. */
 const NOT_A_GROUP: ReadonlySet<string> = new Set(["AXWindow", "AXWebArea", "AXScrollArea", "AXApplication", "AXSplitGroup", "AXBrowser", "AXSheet", "AXDrawer"]);
 
@@ -152,6 +154,8 @@ const NOT_A_GROUP: ReadonlySet<string> = new Set(["AXWindow", "AXWebArea", "AXSc
 export interface Inherited {
   label?: string;
   excluded?: NodeExclusion;
+  /** A native AXWebArea ancestor means text-entry values stay page-local. */
+  webArea?: boolean;
 }
 
 /**
@@ -159,10 +163,13 @@ export interface Inherited {
  * any ancestor at all (excludedAncestor), and the nearest group's name a field's kind is read from, which stops at a
  * window, page or scroll view (groupLabel).
  */
-export function inherited(nodes: ReadonlyMap<string, Node>, n: Node): Inherited {
+export function inherited(nodes: ReadonlyMap<string, Node>, n: Node, native = true): Inherited {
   const excluded = excludedAncestor(nodes, n);
   const label = groupLabel(nodes, n);
-  return { ...(excluded === null ? {} : { excluded }), ...(label === null ? {} : { label }) };
+  // Page-engine text nodes hold only emptiness, unread, or Caret's own revision-checked writes (page-link.ts).
+  // The native backstop must not erase those known writes before the executor verifies or undoes them.
+  const webArea = native && webAreaAncestor(nodes, n);
+  return { ...(excluded === null ? {} : { excluded }), ...(label === null ? {} : { label }), ...(webArea ? { webArea: true } : {}) };
 }
 
 /**
@@ -204,6 +211,15 @@ function groupLabel(nodes: ReadonlyMap<string, Node>, n: Node): string | null {
     if (!TEXT_ROLES.has(p.role) && p.editable !== true && p.label !== undefined && p.label.trim() !== "") return p.label;
   }
   return null;
+}
+
+function webAreaAncestor(nodes: ReadonlyMap<string, Node>, n: Node): boolean {
+  const seen = new Set<string>([n.key]);
+  for (let p = n.parent === null ? undefined : nodes.get(n.parent); p !== undefined && !seen.has(p.key); p = p.parent === null ? undefined : nodes.get(p.parent)) {
+    seen.add(p.key);
+    if (p.role === "AXWebArea") return true;
+  }
+  return false;
 }
 
 /**
@@ -258,6 +274,13 @@ export function admitNode(n: Node, from: Inherited = {}, typed = false): Node {
     if (bare && n.excluded === from.excluded) return n;
     return { ...rest, ...(outline === undefined ? {} : { outline }), excluded: from.excluded };
   }
+  if (why === null && from.webArea === true && TEXT_ENTRY_ROLES.has(n.role) && ((n.value ?? "") !== "" || n.unread === true)) {
+    // Admission runs to a fixed point in model.ts. An already stripped node must retain its identity.
+    if (n.value !== undefined || n.unread !== true) {
+      const { value: _value, ...rest } = n;
+      n = { ...rest, unread: true };
+    }
+  }
   const sections = admitSections(n);
   if (why !== null) {
     const { value: _value, ...rest } = n;
@@ -278,7 +301,8 @@ export function admitValues(values: readonly TypedValue[], nodes: ReadonlyMap<st
   return values.filter((v) => {
     const n = nodes.get(v.nodeKey);
     if (n === undefined) return true;
-    if (n.excluded !== undefined || excludedValue(v.text) !== null) return false;
+    if (n.excluded !== undefined || n.unread === true || excludedValue(v.text) !== null) return false;
+    if (TEXT_ENTRY_ROLES.has(n.role) && webAreaAncestor(nodes, n)) return false;
     // A value beside a withheld one stays only where it still stands whole; otherwise the node is as the reader sent it.
     const texts = [n.value, n.label, n.placeholder];
     if (!texts.some((t) => t?.includes(WITHHELD) === true)) return true;

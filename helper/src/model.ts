@@ -75,6 +75,15 @@ const MAX_EXPIRED = 500;
 /** Bound on the focus history; a form looks back one entry, so this is generous. */
 const MAX_FOCUS_HISTORY = 100;
 
+/** Refuses the snapshot before publication if privacy admission cannot reach a stable result. */
+export class PrivacyAdmissionError extends Error {
+  readonly why = "privacyAdmissionDidNotConverge";
+  constructor() {
+    super("privacyAdmissionDidNotConverge: the snapshot was refused because privacy admission did not stabilize");
+    this.name = "PrivacyAdmissionError";
+  }
+}
+
 export class ScreenModel {
   readonly windows = new Map<string, WindowState>();
   /** For a view made by withNodes, the model it was made from, whose windows go on changing (privacy ScreenRegistry.live). */
@@ -157,7 +166,7 @@ export class ScreenModel {
     // as a value the window states.
     const dropped = underMenuOptions(nodes);
     for (const k of dropped) nodes.delete(k);
-    admitNodes(nodes, snap.nodes, new Set(values.map((v) => v.nodeKey)));
+    admitNodes(nodes, snap.nodes, new Set(values.map((v) => v.nodeKey)), snap.window.kind !== PAGE_WINDOW_KIND);
     if (prior !== undefined) out.push(...diffNodes(prior.nodes, nodes, snap, id));
 
     // A partial snapshot only knows focus inside its subtree; outside it, the earlier focus stands
@@ -350,7 +359,7 @@ export class ScreenModel {
       const nodes = new Map(w.nodes);
       for (const n of add.nodes) nodes.set(n.key, n);
       // The tab's text is read in as the model's own windows are (SC1 2a).
-      admitNodes(nodes, add.nodes, new Set(w.values.map((v) => v.nodeKey)));
+      admitNodes(nodes, add.nodes, new Set(w.values.map((v) => v.nodeKey)), w.window.kind !== PAGE_WINDOW_KIND);
       v.windows.set(id, { ...w, window: add.title === null ? w.window : admitTitle({ ...w.window, title: add.title }), nodes, values: admitValues(w.values, nodes) });
     }
     v.focusedWindowId = this.focusedWindowId;
@@ -403,12 +412,12 @@ function mergeCutWalk(prior: Map<string, Node>, sent: readonly Node[]): Map<stri
  * cut walk or a partial one may mark a node whose descendants the model kept from before (PV2 review and re-review),
  * which inherit its exclusion all the same.
  */
-function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[], typed: ReadonlySet<string> = new Set()): void {
+function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[], typed: ReadonlySet<string>, native: boolean): void {
   let excluded = false;
   for (const f of fresh) {
     const n = nodes.get(f.key);
     if (n === undefined) continue;
-    const a = admitNode(n, inherited(nodes, n), typed.has(n.key));
+    const a = admitNode(n, inherited(nodes, n, native), typed.has(n.key));
     if (a !== n) nodes.set(f.key, a);
     if (a.excluded !== undefined) excluded = true;
   }
@@ -417,10 +426,14 @@ function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[], typed: Rea
   // A node that confers one without being excluded itself (a container renamed "Password" in a cut walk, holding no value)
   // counts too: its kept descendants are admitted again under it (INT1 review 2).
   if (!excluded) for (const n of nodes.values()) if (confers(n) !== null) (excluded = true);
+  // Each pass can propagate an exclusion at least one node farther; one final pass proves stability.
+  // Refuse a broken admission rule rather than block the event loop, as unread web fields did in #70.
+  let passes = 0;
   for (let changed = excluded; changed; ) {
+    if (++passes > nodes.size + 1) throw new PrivacyAdmissionError();
     changed = false;
     for (const [k, n] of nodes) {
-      const a = admitNode(n, inherited(nodes, n), typed.has(n.key));
+      const a = admitNode(n, inherited(nodes, n, native), typed.has(n.key));
       if (a !== n) (nodes.set(k, a), (changed = true));
     }
   }
