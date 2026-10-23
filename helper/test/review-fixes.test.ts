@@ -57,7 +57,7 @@ describe("review fixes", () => {
     void h.handleReader(snap([field(K("textfield:email~0"), "", { label: "Email" })], { at: 2, windowId: FORM, focused: true }));
     const p = await h.handleReader(focus(FORM, K("textfield:email~0"), 2));
     expect(p).toBeNull();
-    expect(published).toHaveLength(0);
+    expect(published.filter((m) => m.type !== "screenTextRevision")).toHaveLength(0);
   });
 
   it("a whole entry of four or five characters that is a typed value still counts as a transfer", () => {

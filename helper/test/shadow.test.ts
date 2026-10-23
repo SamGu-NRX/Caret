@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
-import { PROTOCOL_VERSION } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type HelperMessage } from "../src/protocol.ts";
 import { Store } from "../src/store.ts";
 import { field, focus, FIXTURE_APP, MAIL_APP, snap, text, value } from "./builders.ts";
 
@@ -16,7 +16,7 @@ describe("shadow logger", () => {
   let dir: string;
   let store: Store;
   let helper: Helper;
-  const published: unknown[] = [];
+  const published: HelperMessage[] = [];
 
   const source = (at: number, extra = false) =>
     snap(
@@ -111,14 +111,14 @@ describe("shadow logger", () => {
     expect(store.shadowEpisodes()).toEqual([]);
   });
 
-  it("counts short entries without judging them, and never calls Jev or publishes", () => {
+  it("counts short entries without judging them, and never calls Jev or publishes offers", () => {
     void helper.handleReader(form(2000, "", ""));
     void helper.handleReader(focus(FORM, NOTES, 3000));
     void helper.handleReader(form(4000, "", "ok"));
     helper.shutdown();
     expect(store.shadowEpisodes()).toHaveLength(0);
     expect(store.counts()["shadow.entry_short"]).toBe(1);
-    expect(published).toHaveLength(0);
+    expect(published.filter((m) => m.type !== "screenTextRevision")).toHaveLength(0);
   });
 
   it("writes no plain text to disk", () => {
