@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from uuid import uuid4
 
 from ..context import ContextFrame
 from ..registry import Availability, ExecutionResult, Preparation, WorkflowDescriptor, WorkflowError
+from .child_process import CANCELLED, TIMED_OUT, wait_or_stop
 
 
 class NativeComputerUseWorkflow:
@@ -66,7 +67,10 @@ class NativeComputerUseWorkflow:
         self.pending = {key: value for key, value in self.pending.items() if self.clock() - value[0] <= 30}
         return preparation
 
-    def execute(self, frame: ContextFrame, preparation: Preparation | None) -> ExecutionResult:
+    def execute(
+        self, frame: ContextFrame, preparation: Preparation | None, cancelled: threading.Event | None = None
+    ) -> ExecutionResult:
+        cancelled = cancelled if cancelled is not None else threading.Event()
         token = preparation.payload.get("token") if preparation else None
         pending = self.pending.pop(token, None) if isinstance(token, str) else None
         if pending is None:
@@ -77,6 +81,8 @@ class NativeComputerUseWorkflow:
         available = self.availability(frame)
         if not available.available:
             return ExecutionResult(status="failed", summary=available.reason)
+        if cancelled.is_set():
+            return ExecutionResult(status="cancelled", summary="Native execution was interrupted before the executor started.")
         command = [self.binary, "-json", "-max-steps", "8", "-goal", self.goal]
         # Trace files are temporary. In particular, full AX snapshots are never
         # retained as workflow evidence or written into the repository.
@@ -85,26 +91,18 @@ class NativeComputerUseWorkflow:
                 process = subprocess.Popen(command, stdout=stdout, stderr=stderr, env=self.environ)
             except OSError as error:
                 return ExecutionResult(status="failed", summary=f"Cannot start computer-use-jev: {error}")
-            timed_out = False
-            try:
-                process.wait(timeout=self.timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                # The Go entry point handles SIGINT by cancelling its context
-                # and closing its persistent Swift worker.
-                process.send_signal(signal.SIGINT)
-                try:
-                    process.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+            # The Go entry point handles SIGINT by cancelling its context and
+            # closing its persistent Swift worker; it gets 15 seconds for that.
+            outcome = wait_or_stop(process, cancelled=cancelled, timeout=self.timeout, grace=15)
             stdout.seek(0)
             trace = stdout.read(2_000_001)
             stderr.seek(0, 2)
             stderr.seek(max(0, stderr.tell() - 2000))
             diagnostic = stderr.read().decode("utf-8", errors="replace")
         diagnostic = diagnostic.replace(self.environ["TYPESAFE_API_KEY"], "[redacted]")
-        if timed_out:
+        if outcome == CANCELLED:
+            return ExecutionResult(status="cancelled", summary="Native execution was interrupted and the executor stopped. Some actions may already have occurred.")
+        if outcome == TIMED_OUT:
             return ExecutionResult(status="failed", summary="Native execution timed out. Some actions may already have occurred.")
         if len(trace) > 2_000_000:
             return ExecutionResult(status="failed", summary="Native trace exceeded the readback limit. Some actions may already have occurred.")
@@ -132,4 +130,5 @@ class NativeComputerUseWorkflow:
         token = preparation.payload.get("token") if preparation else None
         if isinstance(token, str):
             self.pending.pop(token, None)
-        return ExecutionResult(status="cancelled", summary="Native proposal discarded before execution.")
+        # A running executor is stopped by execute, through its cancellation token.
+        return ExecutionResult(status="cancelled", summary="Native proposal discarded.")

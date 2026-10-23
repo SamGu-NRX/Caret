@@ -75,6 +75,25 @@ final class CoreBridgeClientTests: XCTestCase {
         }
     }
 
+    func testContextPauseNeedsNoFrameAndDecodesItsReply() async throws {
+        for reason in ContextPauseReason.allCases {
+            let (client, transport) = try startedClient()
+            async let reply = client.pauseContext(reason: reason)
+            guard let id = transport.awaitRequest() else { return XCTFail("no pause request was written") }
+            transport.emit(line: #"{"id":\#(id),"ok":true,"result":{"paused":true}}"#)
+
+            let result = try await reply
+            XCTAssertEqual(result.paused, true)
+            let sent = transport.sentObject(at: 0)
+            XCTAssertEqual(sent?["method"] as? String, "context.pause")
+            XCTAssertEqual(sent?["params"] as? [String: String], ["reason": reason.rawValue])
+        }
+    }
+
+    func testUserInputIsSentWithThePythonCoresName() {
+        XCTAssertEqual(ContextPauseReason.userInput.rawValue, "user-input")
+    }
+
     func testAcceptDecodesAnInlineEditAndDismissDecodesItsFlag() async throws {
         let (client, transport) = try startedClient()
 
@@ -174,6 +193,18 @@ final class CoreBridgeClientTests: XCTestCase {
         XCTAssertEqual(offer.title, "Schedule the sync")
         XCTAssertEqual(offer.evidence, ["from the thread"])
         XCTAssertTrue(offer.sampleOnly)
+    }
+
+    func testInterruptedWorkflowResultPreservesTheFenceAndEffectWarning() throws {
+        let data = Data(#"{"kind":"action","status":"interrupted","summary":"Workflow interrupted. Reported effects may remain.","effects":["calendar event created"],"evidence":[],"interrupted_by":"locked","cancellation_error":"TimeoutError: locked","effects_may_remain":true,"execution_status":"completed"}"#.utf8)
+        let result = try JSONDecoder().decode(AcceptResult.self, from: data)
+        guard case .action(let execution) = result else { return XCTFail("expected action result") }
+        XCTAssertEqual(execution.status, "interrupted")
+        XCTAssertEqual(execution.interruptedBy, "locked")
+        XCTAssertEqual(execution.cancellationError, "TimeoutError: locked")
+        XCTAssertEqual(execution.effects, ["calendar event created"])
+        XCTAssertTrue(execution.effectsMayRemain)
+        XCTAssertEqual(execution.executionStatus, "completed")
     }
 
     func testUnknownEventNameIsKeptRatherThanDropped() throws {

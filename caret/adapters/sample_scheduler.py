@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 from ..context import ContextFrame
@@ -98,10 +99,16 @@ class SampleSchedulerWorkflow:
             payload={"preview": preview},
         )
 
-    def execute(self, frame: ContextFrame, preparation: Preparation | None) -> ExecutionResult:
+    def execute(
+        self, frame: ContextFrame, preparation: Preparation | None, cancelled: threading.Event | None = None
+    ) -> ExecutionResult:
         if preparation is None or "preview" not in preparation.payload:
             raise WorkflowError("Execution needs the preview produced by prepare()")
         preview = preparation.payload["preview"]
+        # The write below is one short local transaction, so the token is only
+        # checked before it. Once it has begun it finishes.
+        if cancelled is not None and cancelled.is_set():
+            return ExecutionResult(status="cancelled", summary="Interrupted before any local write")
         # Opening the database is as failure-prone as writing to it: the path may
         # be unwritable or hold a file that is not a database. Both paths raise
         # WorkflowError so the bridge answers the acceptance with a coded error

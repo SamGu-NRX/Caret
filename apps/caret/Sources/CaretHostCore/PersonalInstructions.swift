@@ -5,6 +5,18 @@ import Foundation
 /// They stay on this Mac: only the local model reads them, and the debug socket shows their lengths, never their text
 /// (`DebugState.SettingsInfo`).
 public struct PersonalInstructions: Codable, Equatable, Sendable {
+    /// Why `text` must not be saved, or nil: it holds or states a secret (`SensitiveText.kind(in:)`, the helper's
+    /// rule for what memory never keeps). Text that only mentions a kind, as "never suggest passwords" does, is kept.
+    public static func refusal(for text: String) -> SensitiveKind? {
+        SensitiveText.kind(in: text)
+    }
+
+    @discardableResult
+    public mutating func setAboutMe(_ text: String) -> SensitiveKind? {
+        if let refusal = Self.refusal(for: text) { return refusal }
+        aboutMe = Self.kept(text) ?? ""
+        return nil
+    }
     /// KeyType's section holds 384 tokens, and Caret's prompt builder counts 4 characters a token
     /// (`ApproximatePromptTokenCounter`), so about 1,536 characters reach the model. `lines` keeps within it.
     public static let promptCharacters = 384 * 4
@@ -21,15 +33,21 @@ public struct PersonalInstructions: Codable, Equatable, Sendable {
 
     /// Sets one app's instructions; empty or blank text removes them. An identifier that is not a bundle identifier
     /// changes nothing.
-    public mutating func setApp(_ bundleID: String, _ text: String) {
-        guard CaretSettings.isBundleID(bundleID) else { return }
+    @discardableResult
+    public mutating func setApp(_ bundleID: String, _ text: String) -> SensitiveKind? {
+        guard CaretSettings.isBundleID(bundleID) else { return nil }
+        if let refusal = Self.refusal(for: text) { return refusal }
         apps[bundleID] = Self.kept(text)
+        return nil
     }
 
     /// Sets one site's instructions; empty or blank text removes them. Anything not in origin form changes nothing.
-    public mutating func setSite(_ origin: String, _ text: String) {
-        guard SiteOrigin.isOrigin(origin) else { return }
+    @discardableResult
+    public mutating func setSite(_ origin: String, _ text: String) -> SensitiveKind? {
+        guard SiteOrigin.isOrigin(origin) else { return nil }
+        if let refusal = Self.refusal(for: text) { return refusal }
         sites[origin] = Self.kept(text)
+        return nil
     }
 
     /// The prompt's lines for a field in `bundleID`, on `origin` when it is a web page: the site's, the app's, then

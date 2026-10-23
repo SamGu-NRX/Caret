@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MAX_FILE_BYTES, MemoryConflictError, MemoryDocumentError, MemoryDocumentStore, revisionOf, sensitiveLine } from "../src/memory/documents.ts";
 import { applyRecord, formatDiagnostic, isDocId, newDocument, parseDocument, recordDigest, removeRecord, type MemoryRecord } from "../src/memory/parse.ts";
-import { labelKind, sensitiveKind, valueKind } from "../src/memory/sensitive.ts";
+import { labelKind, sensitiveKind, statedSecret, valueKind, type SensitiveKind } from "../src/memory/sensitive.ts";
 
 const NOTICED = { app: "Mail", window: "Re: dinner on Friday", at: Date.UTC(2026, 9, 3, 15, 20) };
 const RECORDS: MemoryRecord[] = [
@@ -150,6 +150,14 @@ describe("the memory markdown parser", () => {
 });
 
 describe("what Caret never keeps", () => {
+  // The host's port (apps/caret/Sources/CaretHostCore/SensitiveText.swift) reads the same file and must answer alike:
+  // a value's shape first, then a stated secret, the order a saved answer is checked in (parse.ts).
+  it("answers every shared sensitive case as the host's port must", () => {
+    const fixtures = JSON.parse(readFileSync(join(import.meta.dirname, "../fixtures/sensitive-cases.json"), "utf8")) as { text: string; kind: SensitiveKind | null }[];
+    expect(fixtures.length).toBeGreaterThan(0);
+    for (const { text, kind } of fixtures) expect(valueKind(text) ?? statedSecret(text), text).toBe(kind);
+  });
+
   it("refuses passwords, card and account numbers, government IDs, one-time codes and API keys by label or shape", () => {
     expect(labelKind("Password")).toBe("password");
     expect(labelKind("Card number")).toBe("cardNumber");

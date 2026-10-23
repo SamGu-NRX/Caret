@@ -1,0 +1,23 @@
+[
+  {"text":"my password for the portal is aaaaaa", "kind":"password"},
+  {"text":"my password for the portal is aaaaaa, put it in Notes", "kind":"password"},
+  {"text":"my password is hunter 22", "kind":"password"},
+  {"text":"my password is hunter22, put Jordan in Name", "kind":"password"},
+  {"text":"my password is hunter 22 and fill Jordan in Name", "kind":"password"},
+  {"text":"Password: violet-orchard-seven.", "kind":"password"},
+  {"text":"My password for the demo is violet-orchard-seven.", "kind":"password"},
+  {"text":"My PIN is 7319.", "kind":"password"},
+  {"text":"My secret is consistency.", "kind":null},
+  {"text":"I built the password reset flow.", "kind":null},
+  {"text":"4111 1111 1111 1111", "kind":"cardNumber"},
+  {"text":"123-45-6789", "kind":"governmentId"},
+  {"text":"GB82 WEST 1234 5698 7654 32", "kind":"accountNumber"},
+  {"text":"AKIAIOSFODNN7EXAMPLE", "kind":"apiKey"},
+  {"text":"AIzaSyDUMMY0123456789012345678901234567", "kind":"apiKey"},
+  {"text":"gsk_abcdefghijklmnopqrstuvwxyz", "kind":"apiKey"},
+  {"text":"eyJabcdefghij.klmnopqrst.uvwxyz", "kind":"apiKey"},
+  {"text":"-----BEGIN OPENSSH PRIVATE KEY-----", "kind":"apiKey"},
+  {"text":"I built a password reset flow", "kind":null},
+  {"text":"never suggest passwords", "kind":null},
+  {"text":"I write short, plain sentences.", "kind":null}
+]

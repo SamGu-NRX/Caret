@@ -115,6 +115,12 @@ export const Node = z.object({
   sectionsCut: z.literal(true).optional(),
   /** SCP1, page controls and their groups only: the keys of the outline occurrences the control sits in, outermost first. */
   sections: z.array(z.string()).optional(),
+  /**
+   * Slice 2, page nav targets only (engines/page-link.ts): the row's cells and what its own link points at, which
+   * goals/inventory.ts copies into the target binding goals/capabilities.ts navVerdict reads.
+   */
+  inForm: z.boolean().optional(),
+  href: z.enum(["none", "hash", "other"]).optional(),
 });
 export type Node = z.infer<typeof Node>;
 
@@ -2900,8 +2906,19 @@ export type ScopedActGrant = z.infer<typeof ScopedActGrant>;
 export const PageControlKind = z.enum([
   "text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea",
   "select", "checkbox", "radio", "combobox", "button", "link", "file", "contenteditable", "range", "color",
+  /**
+   * Slice 2: a list row the plan's navigate opens: a role=row in grid, treegrid or table, an option in listbox, a
+   * listitem in list (walker.ts navTargets). Their activation is the page's own handler; the walk carries the row's
+   * cells (cells), whether it sits in a form (inForm) and what a link on it points at (href), which
+   * goals/capabilities.ts navVerdict reads to pick the actor.
+   */
+  "row", "option", "listitem",
 ]);
 export type PageControlKind = z.infer<typeof PageControlKind>;
+
+/** The kinds of control a page's navigate opens (extension content/walker.ts navTargets). */
+export const NAV_CONTROL_KINDS = ["row", "option", "listitem"] as const;
+export type NavControlKind = (typeof NAV_CONTROL_KINDS)[number];
 
 /**
  * Subroles the page engine's window snapshot (engines/page-link.ts toWindowSnapshot) gives nodes whose reader role
@@ -3007,6 +3024,15 @@ const PageControlBase = {
    * content/sections.ts). Absent when it is in none.
    */
   sections: z.array(z.string().min(1).max(40)).max(8).optional(),
+  /**
+   * Slice 2, nav targets only (walker.ts navTargets): the row's cells in order, each to 200 characters as the frame
+   * read them; the row's name repeats them joined " · ". A cell's text is page state like a select's option labels.
+   */
+  cells: z.array(z.string().max(200)).max(8).optional(),
+  /** Slice 2, nav targets only: whether the row sits inside a form (navVerdict makes such a row the user's). */
+  inForm: z.boolean().optional(),
+  /** Slice 2, nav targets only: what the row's own link points at — none, a same-document fragment, or another URL. */
+  href: z.enum(["none", "hash", "other"]).optional(),
 };
 
 /**
@@ -3045,7 +3071,7 @@ export const PageControl = z.union([TextPageControl, ChoicePageControl]);
 export type PageControl = z.infer<typeof PageControl>;
 
 /** Why controls were left out, by count only: what they were called or held never leaves the frame. */
-export const PageExclusion = z.enum(["password", "hidden", "payment", "oneTimeCode", "invisible", "ariaHidden", "selfIdentification"]);
+export const PageExclusion = z.enum(["password", "hidden", "payment", "oneTimeCode", "invisible", "ariaHidden", "selfIdentification", "formRow", "comboboxOption"]);
 export type PageExclusion = z.infer<typeof PageExclusion>;
 
 /** SCP1: a section name's token, HMAC-SHA256 under a salt the extension's worker makes per snapshot and never sends. */
@@ -3254,6 +3280,12 @@ export const PageVerb = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pageRestore"), ...PageTarget, wrote: z.string(), exact: z.literal(true).optional() }),
   z.object({ kind: z.literal("pageCompare"), ...PageTarget, candidates: z.array(z.string()).min(1).max(MAX_COMPARE_CANDIDATES) }),
   z.object({ kind: z.literal("pageSetChecked"), ...PageTarget, checked: z.boolean() }),
+  /**
+   * Slice 2: opens a list row (a row, option or listitem the page's own click handler turns into the opened item).
+   * `rebind` is always false — set by page-link.ts, refused otherwise (extension wire.ts): the walk's registry id
+   * must hit the very element it read, and the content script re-reads the row's cells so a changed row is stale.
+   */
+  z.object({ kind: z.literal("pageActivateItem"), ...PageTarget, rebind: z.literal(false) }),
   z.object({
     kind: z.literal("pageAttachFile"),
     ...PageTarget,

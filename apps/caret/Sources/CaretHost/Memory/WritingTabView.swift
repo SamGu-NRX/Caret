@@ -64,7 +64,7 @@ struct WritingTabView: View {
 
     private var clipboardContext: some View {
         VStack(alignment: .leading, spacing: 0) {
-            GroupHead(text: "Inline context")
+            GroupHead(text: "Tab suggestions")
                 .padding(.top, 14)
                 .padding(.bottom, 2)
             SwitchRow(

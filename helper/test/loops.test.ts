@@ -6,6 +6,7 @@ import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { describeTransfer, templateOf } from "../src/patterns/shape.ts";
 import { LoopRecognizer, type LoopEvent } from "../src/patterns/loops.ts";
+import type { Transfer } from "../src/transfers.ts";
 import { Desk, PEOPLE, cellKey, emailOf, grid, listKey, roster, type ListWindow } from "./scene.ts";
 import { FIXTURE_APP } from "./builders.ts";
 
@@ -25,15 +26,15 @@ describe("loop recognizer over the helper's transfers", () => {
   let desk: Desk;
   let loops: LoopRecognizer;
   let events: LoopEvent[];
-  let seen: number;
+  /** Transfers as the helper judged them, source text included: it keeps none once judged (Helper.record). */
+  let judged: Transfer[];
 
   /** Feeds every transfer the helper has detected since the last call to the recognizer. */
   const feed = (): void => {
-    for (const t of helper.recentTransfers.slice(seen)) {
+    for (const t of judged.splice(0)) {
       const p = describeTransfer(helper.model, t, helper.text.findAll(t.value, t.kind, { excludeWindowId: t.dst.windowId, seenBy: t.at }));
       if (p !== null) events.push(...loops.onTransfer(p));
     }
-    seen = helper.recentTransfers.length;
   };
   /** The user fills one cell; the recognizer hears about it as soon as the edit settles, as it would live. */
   const fill = (...a: Parameters<Desk["fill"]>): void => {
@@ -49,7 +50,13 @@ describe("loop recognizer over the helper's transfers", () => {
     desk.attach(helper);
     loops = new LoopRecognizer(helper.model);
     events = [];
-    seen = 0;
+    judged = [];
+    // The pattern engine hears each judged transfer while its source text is still there; so does this recognizer.
+    const onTransfers = helper.patterns.onTransfers.bind(helper.patterns);
+    helper.patterns.onTransfers = (ts) => {
+      judged.push(...ts.map((t) => ({ ...t, src: { ...t.src } })));
+      onTransfers(ts);
+    };
   });
   afterEach(() => {
     helper.shutdown();

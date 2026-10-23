@@ -47,7 +47,7 @@ from .context import ContextError, ContextFrame, TargetIdentity
 from .engine import Engine, ProviderFailure
 from .judge import JudgeError
 from .registry import WorkflowError, WorkflowRegistry
-from .router import AcceptanceError, Offer, Publication, RouterConfig
+from .router import PAUSE_REASONS, AcceptanceError, Offer, Publication, RouterConfig
 
 PROTOCOL_VERSION = 1
 POLL_SECONDS = 0.05
@@ -161,6 +161,7 @@ class Bridge:
         finally:
             self._stop.set()
             self._wake.set()
+            self.engine.shutdown()
             worker.join(timeout=2.0)
             # The writer stops only once nothing can enqueue, so the reply to
             # `shutdown` and any event already queued still reach the app.
@@ -195,8 +196,15 @@ class Bridge:
             elif method == "context.update":
                 self._reply(request_id, self._context_update(params))
                 self._wake.set()
+            elif method == "context.pause":
+                reason = params.get("reason")
+                if not isinstance(reason, str) or reason not in PAUSE_REASONS:
+                    self._fail(request_id, "invalid_request", "context.pause needs a supported 'reason'")
+                else:
+                    self.engine.pause(reason)
+                    self._reply(request_id, {"paused": True})
             elif method == "offer.accept":
-                self._reply(request_id, self._accept(params))
+                self._accept(params, lambda result: self._reply(request_id, result))
             elif method == "offer.dismiss":
                 self._reply(request_id, {"dismissed": self.engine.dismiss(str(params.get("proposal_id", "")))})
             elif method == "workflows.list":
@@ -234,7 +242,7 @@ class Bridge:
         frame = ContextFrame.from_dict(params.get("frame"), "params.frame")
         return self.engine.submit(frame).to_dict()
 
-    def _accept(self, params: dict) -> dict:
+    def _accept(self, params: dict, on_complete) -> None:
         proposal_id = params.get("proposal_id")
         revision = params.get("revision")
         if not isinstance(proposal_id, str) or not proposal_id:
@@ -242,7 +250,7 @@ class Bridge:
         if not isinstance(revision, int) or isinstance(revision, bool):
             raise AcceptanceError("Acceptance needs the integer 'revision' the proposal was built for")
         target = TargetIdentity.from_dict(params.get("target"), "params.target")
-        return self.engine.accept(proposal_id, revision, target)
+        self.engine.accept_async(proposal_id, revision, target, on_complete)
 
 
 # -- Wiring --------------------------------------------------------------

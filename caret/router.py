@@ -41,6 +41,27 @@ ACCESSIBILITY_REVOKED = "accessibility-revoked"
 WORKFLOW_ACTIVE = "workflow-active"
 STALE_SOURCES = "stale-sources"
 
+USER_INPUT = "user-input"
+
+# Pause reasons that stop an accepted workflow: genuine user input, or a state
+# in which driving the UI is unsafe or cannot be checked. IME composition is
+# the user typing. Focus-unavailable means the executor's target can no longer
+# be verified, so continuing could write a wrong value.
+INTERRUPTING_PAUSE_REASONS = frozenset({
+    USER_INPUT, IME_COMPOSING, "locked", "sleeping", ACCESSIBILITY_REVOKED,
+    SECURE_FIELD, APP_EXCLUDED,
+})
+# The host sends these while Caret's own executor is typing or while the user
+# is away, so they withdraw ambient context and leave an accepted run alone.
+# focus-unavailable is here too: Caret's own executor moves focus (opening an app,
+# switching a window), so treating it as an interrupt would let a run cancel
+# itself. The executor rechecks its target before every step, so a lost target
+# still stops it there, with a named reason.
+AMBIENT_PAUSE_REASONS = frozenset({"idle", "generated-input", WORKFLOW_ACTIVE, "focus-unavailable"})
+
+# Host lifecycle notifications may arrive when there is no readable field.
+PAUSE_REASONS = INTERRUPTING_PAUSE_REASONS | AMBIENT_PAUSE_REASONS
+
 # Skip reasons that are not suppression.
 UNCHANGED = "unchanged-context"
 SUPERSEDED_REVISION = "superseded-revision"
@@ -233,6 +254,7 @@ class Router:
         self._in_flight: ContextFrame | None = None
         self._last_started: datetime | None = None
         self._highest_revision = -1
+        self._paused_through_revision = -1
         self._current_target: TargetIdentity | None = None
         self._offer: Offer | None = None
         self._consumed: OrderedDict[str, datetime] = OrderedDict()
@@ -245,6 +267,33 @@ class Router:
         delays the next attempt without marking any context as handled."""
 
     # -- Inbound context -------------------------------------------------
+
+    def pause(self, reason: str) -> None:
+        """Withdraw context until the host submits a newer eligible frame.
+
+        Keep an in-flight evaluation's slot occupied until it returns. Clearing
+        it here would let a resumed frame start a second concurrent evaluation.
+        The revision fence rejects its result even without a replacement frame.
+        """
+        if not isinstance(reason, str) or reason not in PAUSE_REASONS:
+            raise ValueError("Unknown context pause reason")
+        with self._lock:
+            self._paused_through_revision = self._highest_revision
+            self._pending = None
+            self._invalidate_locked(reason)
+
+    def record_revision(self, revision: int) -> bool:
+        """Consume ``revision`` without evaluating it. False if it is not newer.
+
+        Used while an accepted workflow runs: a newer frame interrupts the run
+        but is not evaluated, and its revision stays consumed so the host
+        resumes with a newer one, as after a pause.
+        """
+        with self._lock:
+            if revision <= self._highest_revision:
+                return False
+            self._highest_revision = revision
+            return True
 
     def submit(self, frame: ContextFrame, now: datetime) -> Admission:
         """Record the newest context. Returns whether it will be evaluated."""
@@ -323,6 +372,8 @@ class Router:
     def is_stale(self, frame: ContextFrame) -> bool:
         """True when this frame no longer describes what the user is doing."""
         with self._lock:
+            if frame.revision <= self._paused_through_revision:
+                return True
             if frame.revision < self._highest_revision:
                 return True
             return self._current_target is not None and self._current_target != frame.snapshot.target
@@ -354,7 +405,15 @@ class Router:
         """
         with self._lock:
             self._in_flight = None
+            # Set even when a pause fenced this evaluation off and its result is
+            # discarded below. The first frame after resuming then waits until
+            # failure_backoff_seconds (default 10 s) after this evaluation
+            # started, reported as provider-backoff.
             self._failed_at = self._last_started
+            if self.is_stale(frame):
+                return self._publish_locked(
+                    Publication("discarded", "stale-snapshot", None, frame.revision)
+                )
             return self._publish_locked(Publication("failed", reason, None, frame.revision))
 
     def complete_offer(self, frame: ContextFrame, offer: Offer) -> Publication:

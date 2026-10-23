@@ -211,6 +211,13 @@ final class CaretSettingsTests: XCTestCase {
         XCTAssertTrue(flow.state.roles.contains(.watch), "onboarding no longer asks; the first look runs with every role on")
     }
 
+    func testLevelCopyMatchesItsRuleTable() {
+        XCTAssertFalse(CaretLevel.allCases.map(\.detail).joined(separator: " ").localizedCaseInsensitiveContains("rewrite"))
+        XCTAssertFalse(CaretLevel.eager.detail.localizedCaseInsensitiveContains("other ways to say"))
+        XCTAssertTrue(CaretLevel.eager.detail.contains("twice"))
+        XCTAssertTrue(CaretLevel.balanced.detail.contains("Routines wait"))
+    }
+
     func testRoleCopyHasNoDashesOrShouting() {
         let copy = CaretRole.allCases.flatMap { [$0.title, $0.detail] } + CaretLevel.allCases.flatMap { [$0.title, $0.detail] }
         for line in copy {

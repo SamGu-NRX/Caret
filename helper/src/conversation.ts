@@ -188,6 +188,19 @@ export function messageOrder(w: WindowState): MessageOrder {
   return "unknown";
 }
 
+/**
+ * The indexes of a conversation's `n` nodes, newest first by `order`: from the end when the oldest come first, from the
+ * start when the newest do, and from both ends in turn when the order is not known.
+ */
+export function* newestFirst(n: number, order: MessageOrder): Generator<number> {
+  if (order === "newestFirst") for (let i = 0; i < n; i++) yield i;
+  else if (order === "oldestFirst") for (let i = n - 1; i >= 0; i--) yield i;
+  else for (let lo = 0, hi = n - 1; lo <= hi; lo++, hi--) {
+    yield hi;
+    if (lo < hi) yield lo;
+  }
+}
+
 const FROM = /^from:/i;
 const HEADER = /^(?:to|cc|subject|date|sent):/i;
 

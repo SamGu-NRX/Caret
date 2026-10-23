@@ -7,11 +7,70 @@ import SwiftUI
 /// The figure is the only colored thing Caret draws, rendered as light; everything around it is
 /// uncolored glass. Where a value differs from DIRECTION.md, the reason is at the value.
 enum Tokens {
-    static func dynamic(light: UInt32, dark: UInt32, alpha: CGFloat = 1, darkAlpha: CGFloat? = nil) -> NSColor {
-        NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            return srgb(isDark ? dark : light, alpha: isDark ? (darkAlpha ?? alpha) : alpha)
+    /// Which of a token's values an appearance draws. Theme and Increase Contrast both come from the
+    /// appearance the color resolves in: the system hands a dynamic color its accessibility variant
+    /// when Increase Contrast is on, so there is no separate flag to keep in step with it.
+    struct Variant: Equatable {
+        let dark: Bool
+        let highContrast: Bool
+
+        init(dark: Bool, highContrast: Bool) {
+            self.dark = dark
+            self.highContrast = highContrast
         }
+
+        init(_ appearance: NSAppearance) {
+            let match = appearance.bestMatch(from: [.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua])
+            dark = match == .darkAqua || match == .accessibilityHighContrastDarkAqua
+            highContrast = match == .accessibilityHighContrastAqua || match == .accessibilityHighContrastDarkAqua
+        }
+    }
+
+    /// A token's values. The contrast values are optional: a token without one keeps its normal
+    /// value under Increase Contrast.
+    struct Shade: Equatable {
+        let light: UInt32
+        let dark: UInt32
+        var alpha: CGFloat = 1
+        var darkAlpha: CGFloat?
+        var contrastLight: UInt32?
+        var contrastDark: UInt32?
+        var contrastAlpha: CGFloat?
+        var contrastDarkAlpha: CGFloat?
+
+        func resolve(_ variant: Variant) -> (hex: UInt32, alpha: CGFloat) {
+            let normalAlpha = variant.dark ? (darkAlpha ?? alpha) : alpha
+            let normalHex = variant.dark ? dark : light
+            guard variant.highContrast else { return (normalHex, normalAlpha) }
+            return variant.dark
+                ? (contrastDark ?? normalHex, contrastDarkAlpha ?? normalAlpha)
+                : (contrastLight ?? normalHex, contrastAlpha ?? normalAlpha)
+        }
+
+        /// The dynamic color, resolved in whatever appearance draws it.
+        var color: NSColor {
+            NSColor(name: nil) { appearance in
+                let value = resolve(Variant(appearance))
+                return Tokens.srgb(value.hex, alpha: value.alpha)
+            }
+        }
+    }
+
+    /// The tokens with an Increase Contrast variant, as values. AppKit builds an Increase Contrast
+    /// appearance only for the system (`NSAppearance(named:)` returns nil for those names), so tests
+    /// check these variants through `Shade.resolve`, and the colors below are built from them.
+    enum Shades {
+        static let ink2 = Shade(light: 0x625F5B, dark: 0xABA7A0, contrastLight: 0x54514E, contrastDark: 0xBFBCB6)
+        static let ink3 = Shade(light: 0x857F79, dark: 0x85817A, contrastLight: 0x746E69, contrastDark: 0x999690)
+        static let carrot = Shade(light: 0xD35E19, dark: 0xF49A5B, contrastLight: 0xB65116)
+        static let carrotText = Shade(light: 0xA9490F, dark: 0xF8A86D, contrastLight: 0x99420E)
+        static let glass = Shade(light: 0xFAF9F7, dark: 0x262422, alpha: 0.94, darkAlpha: 0.92,
+                                 contrastAlpha: 0.97, contrastDarkAlpha: 0.95)
+    }
+
+    /// A token with no Increase Contrast variant.
+    static func dynamic(light: UInt32, dark: UInt32, alpha: CGFloat = 1, darkAlpha: CGFloat? = nil) -> NSColor {
+        Shade(light: light, dark: dark, alpha: alpha, darkAlpha: darkAlpha).color
     }
 
     static func srgb(_ hex: UInt32, alpha: CGFloat = 1) -> NSColor {
@@ -32,23 +91,27 @@ enum Tokens {
     /// Panel text. 14.6:1 light, 10.6:1 dark, worst case.
     static let ink = dynamic(light: 0x1C1B19, dark: 0xF2EFEA)
     /// Secondary text, hints, glyphs. DIRECTION.md has `#6B6864` / `#A39F98`, which fall to 4.2:1
-    /// and 3.8:1 over the opposite theme's document; these reach 5.4:1 and 5.1:1.
-    static let ink2 = dynamic(light: 0x625F5B, dark: 0xABA7A0)
+    /// and 3.8:1 over the opposite theme's document; these reach 5.4:1 and 5.1:1. Increase
+    /// Contrast: `#54514E` / `#BFBCB6`, 7.1:1 and 7.0:1 over the same worst case.
+    static let ink2 = Shades.ink2.color
     /// Marks only, never text: idle ticks, idle dots, placeholders' rules. DIRECTION.md has
     /// `#A39F98` / `#6F6B65`, 2.0:1 and 1.9:1 worst case, under the 3:1 a mark that carries a
-    /// count needs (WCAG 1.4.11); these are 3.4:1 and 3.1:1.
-    static let ink3 = dynamic(light: 0x857F79, dark: 0x85817A)
+    /// count needs (WCAG 1.4.11); these are 3.4:1 and 3.1:1. Increase Contrast: `#746E69` /
+    /// `#999690`, 4.5:1 over the same worst case — it carries counts.
+    static let ink3 = Shades.ink3.color
 
     // MARK: The light
 
     /// The underline, the ticks, the lit step, the step bar, the chosen row's edge. DIRECTION.md's
     /// light `#D9641E` measured 2.96:1 as the step bar over light glass on a dark editor (rendered
     /// pixels, `ContrastRenderTests`), under the 3:1 a mark that carries progress needs; `#D35E19`
-    /// is 3.3:1 there with almost no change of hue.
-    static let carrot = dynamic(light: 0xD35E19, dark: 0xF49A5B)
+    /// is 3.3:1 there with almost no change of hue. Increase Contrast: `#B65116`, 4.5:1 there;
+    /// the dark value already clears it (6.1:1).
+    static let carrot = Shades.carrot.color
     /// The first word of a result ("Added", "Filled"), "On its own:". DIRECTION.md's light
-    /// `#B24F12` is 4.4:1 over light glass on a dark document; `#A9490F` is 4.9:1.
-    static let carrotText = dynamic(light: 0xA9490F, dark: 0xF8A86D)
+    /// `#B24F12` is 4.4:1 over light glass on a dark document; `#A9490F` is 4.9:1. Increase
+    /// Contrast: `#99420E`, 6.0:1 there; the dark value already clears 6:1 (6.9:1).
+    static let carrotText = Shades.carrotText.color
     /// The 400 ms flash on a filled field. Never a row background: T1 measured Ink 2 on it at
     /// 4.47:1 light and 4.20:1 dark.
     static let carrotWash = dynamic(light: 0xD9641E, dark: 0xF49A5B, alpha: 0.09, darkAlpha: 0.12)
@@ -69,7 +132,8 @@ enum Tokens {
     /// section 7) and drawn alone in off-screen renders. DIRECTION.md's 0.88 / 0.86 let a document
     /// of the opposite theme pull Ink 2 under 4.5:1; 0.94 / 0.92 keep every text token above it.
     /// Because the tint covers the material, the rendered-pixel contrast holds over any backdrop.
-    static let glass = dynamic(light: 0xFAF9F7, dark: 0x262422, alpha: 0.94, darkAlpha: 0.92)
+    /// Increase Contrast: 0.97 / 0.95, lifting Ink 2 on the worst case to 5.7:1 and 5.6:1.
+    static let glass = Shades.glass.color
     /// 1 pt ring on every panel.
     static let glassEdge = dynamic(light: 0x000000, dark: 0xFFFFFF, alpha: 0.10, darkAlpha: 0.12)
     /// 1 pt inset line along the top edge.
@@ -100,7 +164,8 @@ enum Tokens {
     /// The ink button (DIRECTION.md 5.9: Carrot stays the figure's), and the text on it.
     static let inkFill = dynamic(light: 0x1C1B19, dark: 0xF2EFEA)
     static let onInk = dynamic(light: 0xFCFBF9, dark: 0x1C1B19)
-    /// The check inside a ticked box, on the Carrot fill.
+    /// The check inside a ticked box, on the Carrot fill: 3.9:1 light, 7.7:1 dark — a state needs
+    /// 3:1 (WCAG 1.4.11), and Increase Contrast's darkened Carrot carries the light check to 5.0:1.
     static let onCarrot = dynamic(light: 0xFFFFFF, dark: 0x1D1D1F)
 
     // MARK: Type
@@ -221,8 +286,23 @@ enum Tokens {
         static let draw: Double = 0.24
     }
 
-    /// Ghost text and ghost fill: the host's color at this opacity.
-    static func ghostOpacity(dark: Bool) -> Double { dark ? 0.50 : 0.45 }
+    /// Ghost text and ghost fill: the host's own ink at this opacity. Normal contrast keeps 0.50 on a
+    /// dark field and 0.45 on a light one; Increase Contrast draws 0.65 on either.
+    static func ghostOpacity(darkField: Bool, highContrast: Bool) -> CGFloat {
+        highContrast ? 0.65 : (darkField ? 0.50 : 0.45)
+    }
+
+    /// `ink` at ghost opacity, resolved like every token: Increase Contrast comes from the appearance
+    /// the color is drawn in, so no caller can leave it out. The field's theme comes from the caller,
+    /// because a host app can run light under a dark system. The opacity replaces `ink`'s own alpha.
+    static func ghostInk(_ ink: NSColor, darkField: Bool) -> NSColor {
+        NSColor(name: nil) { appearance in
+            var resolved = ink
+            appearance.performAsCurrentDrawingAppearance { resolved = ink.usingColorSpace(.sRGB) ?? ink }
+            let opacity = ghostOpacity(darkField: darkField, highContrast: Variant(appearance).highContrast)
+            return resolved.withAlphaComponent(opacity)
+        }
+    }
 }
 
 extension Color {

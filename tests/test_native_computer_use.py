@@ -1,6 +1,8 @@
 """Hermetic process-boundary tests. No desktop or live Jev calls."""
 import json
 import tempfile
+import threading
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -79,6 +81,35 @@ class NativeComputerUseTests(unittest.TestCase):
         result = self.adapter.execute(self.frame, self.adapter.prepare(self.frame))
         self.assertEqual(result.status, "failed")
         self.assertIn("timed out", result.summary)
+
+    def test_a_token_set_before_execution_starts_no_executor(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        result = self.adapter.execute(self.frame, self.adapter.prepare(self.frame), cancelled=cancelled)
+        self.assertEqual(result.status, "cancelled")
+        self.assertFalse(self.marker.exists())
+
+    def test_cancellation_stops_a_running_executor(self):
+        self.binary.write_text(f"#!/bin/sh\ntouch '{self.marker}'\nexec /bin/sleep 20\n")
+        self.binary.chmod(0o755)
+        cancelled = threading.Event()
+        results = []
+        running = threading.Thread(
+            target=lambda: results.append(
+                self.adapter.execute(self.frame, self.adapter.prepare(self.frame), cancelled=cancelled)
+            )
+        )
+        began = time.monotonic()
+        running.start()
+        while not self.marker.exists() and time.monotonic() - began < 5:
+            time.sleep(0.01)
+        self.assertTrue(self.marker.exists(), "the executor never started")
+        cancelled.set()
+        running.join(timeout=5)
+        self.assertFalse(running.is_alive(), "execute kept waiting for a cancelled executor")
+        self.assertLess(time.monotonic() - began, 5)
+        self.assertEqual(results[0].status, "cancelled")
+        self.assertIn("may already have occurred", results[0].summary)
 
     def test_missing_key_is_unavailable(self):
         self.adapter.environ.pop("TYPESAFE_API_KEY")

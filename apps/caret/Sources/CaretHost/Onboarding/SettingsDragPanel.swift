@@ -211,6 +211,8 @@ struct SettingsDragPanelView: View {
     @ObservedObject var model: SettingsDragPanelModel
     var close: () -> Void
     @State private var hovering = false
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControl
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -220,7 +222,9 @@ struct SettingsDragPanelView: View {
                     .foregroundStyle(Color(token: Tokens.ink))
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                if hovering, !model.landed {
+                // The mouse reveals the close by hover; VoiceOver and Switch Control cannot hover, so the button
+                // stays in their trees always (the panel's window never takes the keyboard: System Settings keeps it).
+                if hovering || voiceOver || switchControl, !model.landed {
                     Button(action: close) {
                         Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color(token: Tokens.ink2))
                             .frame(width: 20, height: 20)
@@ -243,6 +247,7 @@ struct SettingsDragPanelView: View {
 }
 
 /// The row: Caret's icon (Pebble) and name. Dragging it drags Caret.app; a click shows Caret.app in Finder.
+/// Keyboard users add Caret with System Settings' own "+" button; this panel deliberately never becomes key.
 ///
 /// SwiftUI draws the row; the drag source is a transparent AppKit view laid over it. An off-screen render (snapshots)
 /// leaves the overlay out, because ImageRenderer draws any NSView as a placeholder box, and that box replaced the
@@ -266,6 +271,8 @@ struct DragSource: NSViewRepresentable {
 final class DragRowView: NSView, NSDraggingSource {
     private var downAt: NSPoint?
     private var dragging = false
+    /// What a press does; the default reveals this bundle in Finder. Tests stand a counter in.
+    var onPress: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -275,6 +282,10 @@ final class DragRowView: NSView, NSDraggingSource {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    private func press() {
+        if let onPress { onPress() } else { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
+    }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
@@ -300,11 +311,11 @@ final class DragRowView: NSView, NSDraggingSource {
     override func mouseUp(with event: NSEvent) {
         defer { downAt = nil }
         guard !dragging else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+        press()
     }
 
     override func accessibilityPerformPress() -> Bool {
-        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+        press()
         return true
     }
 

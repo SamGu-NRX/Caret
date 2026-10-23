@@ -21,6 +21,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { proposeFill } from "../src/fill/fill.ts";
+import { DecisionsAttemptError } from "../src/engines/decide/decisions.ts";
+import { harnessEngine } from "../src/engines/decide/harness.ts";
+import { engineName } from "../src/engines/decide/port.ts";
 import { loadJevKey, makeJevClient, sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
 import { heldAsConversation, windowBudget } from "../src/privacy.ts";
 import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
@@ -42,6 +45,8 @@ const { values: a } = parseArgs({
     forms: { type: "string" },
     "spend-limit": { type: "string", default: "0.30" },
     seed: { type: "string", default: "24" },
+    engine: { type: "string", default: "jev" },
+    "log-requests": { type: "string" },
     /** Writes every Jev question and answer to this NDJSON file (synthetic corpus text only), for reading the checks. */
     "log-jev": { type: "string" },
     page: { type: "string" },
@@ -57,13 +62,29 @@ const SPEND_LIMIT = Number(a["spend-limit"]);
 
 let spent = 0;
 let calls = 0;
-const live = makeJevClient(loadJevKey);
+const fixtureIds = new Set<string>();
+const decide = a.engine === "jev" ? null : harnessEngine({
+  name: engineName(a.engine), canned: null,
+  fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true },
+  logRequests: a["log-requests"] ?? join(OUT, "requests.ndjson"),
+  decisionsMaxUsd: SPEND_LIMIT,
+});
+const live = decide?.ask ?? makeJevClient(loadJevKey);
+const engine = decide?.says ?? "live Jev";
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   // Sealed before it is sent: sent and logged from this frozen copy (PV2).
   const sent = sealRequest(req);
-  const r = await live(sent.asked);
-  spent += r.costUsd;
+  let r: Awaited<ReturnType<AskJev>>;
+  try { r = await live(sent.asked); }
+  catch (e) {
+    if (decide?.decisionsSpend === undefined && e instanceof DecisionsAttemptError) spent += e.attempt.costUsd ?? 0;
+    throw e;
+  } finally {
+    // The ledger includes unknown usage at its full reservation, including sibling attempts.
+    if (decide?.decisionsSpend !== undefined) spent = decide.decisionsSpend.run().usd;
+  }
+  if (decide?.decisionsSpend === undefined) spent += r.costUsd;
   calls++;
   if (a["log-jev"] !== undefined) appendStoreJson(a["log-jev"], { form: current, questions: storedRecord(sent, (f) => Object.fromEntries(Object.entries(f.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers });
   return r;
@@ -132,6 +153,7 @@ for (const [fi, form] of corpus.forms.entries()) {
   const page = pageWindow(form);
   if (a.page !== undefined && page === null) continue;
   const { model, form: w, source: sw, trigger, about } = buildDesk(corpus, snaps, form, page ?? undefined);
+  for (const window of model.windows.values()) fixtureIds.add(window.window.windowId);
   current = form.id;
   let proposal: FillProposal | null = null;
   let error: string | null = null;
@@ -170,7 +192,7 @@ const handed = (xs: readonly Scored[]) => xs.filter((s) => s.proposed !== null &
 const md: string[] = [
   "# Real-form scoreboard (B24)",
   "",
-  `Windows: ${a.windows}. Jev calls ${calls}, $${spent.toFixed(4)}. Seed ${a.seed}.`,
+  `Windows: ${a.windows}. ${engine}, calls ${calls}, $${spent.toFixed(4)}. Seed ${a.seed}.`,
   "",
   "| form | source | fillable | right | written | handed off | wrong | missed | correct blanks | not found | source budget | source cut | kinds cut |",
   "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
@@ -214,5 +236,5 @@ const md: string[] = [
   ]),
 ];
 writeStore(join(OUT, "realfill-eval.md"), md.join("\n") + "\n");
-writeStoreJson(join(OUT, "realfill-eval.json"), { calls, spent, results: results.map((r) => ({ form: r.form.id, error: r.error, scored: r.scored, proposal: r.proposal })) }, 1);
+writeStoreJson(join(OUT, "realfill-eval.json"), { engine, calls, spent, results: results.map((r) => ({ form: r.form.id, error: r.error, scored: r.scored, proposal: r.proposal })) }, 1);
 process.stderr.write(`wrote ${join(OUT, "realfill-eval.md")}; all: right ${count(all, "right")}/${fillable(all)}, wrong ${count(all, "wrong")}; $${spent.toFixed(4)}\n`);

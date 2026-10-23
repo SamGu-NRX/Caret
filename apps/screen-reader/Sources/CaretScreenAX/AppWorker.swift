@@ -874,7 +874,7 @@ public final class AppWorker: @unchecked Sendable {
                     guard let str = v as? String else { return (.changed, "the value is not text") }
                     current = str
                 }
-                guard current == expect else { return (.changed, "value is '\(current.prefix(80))'") }
+                guard current == expect else { return (.changed, underWebArea(el) ? pageValueOutcome(current: current, when: "") : "value is '\(current.prefix(80))'") }
                 if nowMs() > expires { return (.axError, "the command expired before it could act") }
                 if let no = refused(windowId) { return no }
                 // Each step of insert and focusValue may block up to the element timeout, so the deadline and the
@@ -956,13 +956,14 @@ public final class AppWorker: @unchecked Sendable {
     /// before the replacement the field must still hold `expect` and the selection must be all of it. The
     /// executor's walk afterwards checks what the field holds. Nil when every step went through.
     private func insert(_ value: String, into el: AXUIElement, window w: AXRef, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
+        let pageField = underWebArea(el)
         func holdsExpect(_ when: String) -> (VerbOutcome, String?)? {
             switch AX.read(el, kAXValueAttribute) {
             case .failed(let e): return (.axError, "insert: cannot read the value \(when) (\(e.rawValue))")
             case .absent: return expect.isEmpty ? nil : (.changed, "\(when) the field is empty")
             case .value(let v):
                 guard let now = v as? String else { return (.changed, "\(when) the value is not text") }
-                return now == expect ? nil : (.changed, "\(when) the value is '\(now.prefix(80))'")
+                return now == expect ? nil : (.changed, pageField ? pageValueOutcome(current: now, when: when) : "\(when) the value is '\(now.prefix(80))'")
             }
         }
         pressIndex.focusMayMove()
@@ -1000,7 +1001,7 @@ public final class AppWorker: @unchecked Sendable {
     }
 
     /// Whether an AXWebArea is among the element's ancestors. Only reaching the window with no web area on the way
-    /// says no; a read that fails or a chain past 40 parents says yes.
+    /// says no; a read that fails or a chain past 40 parents says yes, failing closed for privacy.
     private func underWebArea(_ el: AXUIElement) -> Bool {
         var e: AXUIElement? = AX.element(el, kAXParentAttribute)
         for _ in 0..<40 {
@@ -1027,6 +1028,7 @@ public final class AppWorker: @unchecked Sendable {
     /// Focus can run the page's own handlers, so the field must still hold `expect` before the write. The
     /// executor's walk afterwards checks what the field holds. Nil when both steps went through.
     private func focusThenValue(_ value: String, into el: AXUIElement, window win: AXRef, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
+        let pageField = underWebArea(el)
         pressIndex.focusMayMove()
         let f = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         guard f == .success else { return (.axError, "focusValue: focus failed with \(f.rawValue)") }
@@ -1035,7 +1037,7 @@ public final class AppWorker: @unchecked Sendable {
         case .absent: if !expect.isEmpty { return (.changed, "after focus the field is empty") }
         case .value(let v):
             guard let now = v as? String else { return (.changed, "after focus the value is not text") }
-            if now != expect { return (.changed, "after focus the value is '\(now.prefix(80))'") }
+            if now != expect { return (.changed, pageField ? pageValueOutcome(current: now, when: "after focus") : "after focus the value is '\(now.prefix(80))'") }
         }
         // A page's focus handler can move focus to another field while this one keeps its value; the write would then
         // land there (S1 audit #14). Checked after the handlers ran and right before the write.
@@ -1044,6 +1046,10 @@ public final class AppWorker: @unchecked Sendable {
         let w = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
         guard w == .success else { return (.axError, "focusValue: AXUIElementSetAttributeValue \(w.rawValue)") }
         return nil
+    }
+
+    private func pageValueOutcome(current: String, when: String) -> String {
+        current.isEmpty ? "\(when.isEmpty ? "the page field" : when + " the page field") is empty" : "\(when.isEmpty ? "the page field" : when + " the page field") differs"
     }
 
     /// Whether focus is still where the reader put it: on the field, in the window the helper named (FocusCheck). Nil

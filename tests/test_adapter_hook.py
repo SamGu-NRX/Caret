@@ -26,7 +26,7 @@ class MeetingStub:
     def prepare(self, frame):
         return Preparation(title="t", effect="draft only, nothing sent")
 
-    def execute(self, frame, preparation):
+    def execute(self, frame, preparation, cancelled=None):
         return ExecutionResult(status="completed", summary="stub")
 
     def cancel(self, preparation):
