@@ -11,9 +11,9 @@ import { redactWindow } from "../fill/redact.ts";
 // make an offer. Taking it runs a one-step plan whose end state is the event in the calendar, through
 // the executor's calendar port.
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
-import { PROTOCOL_VERSION, type HelperMessage, type OfferAction, type OfferField, type OfferWithdrawn } from "../protocol.ts";
+import { PROTOCOL_VERSION, type HelperMessage, type Node, type OfferAction, type OfferField, type OfferWithdrawn } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
-import { isConversation } from "../conversation.ts";
+import { isConversation, messageOrder, newestFirst } from "../conversation.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import type { PopupBlock, PopupSpecT } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
@@ -450,30 +450,45 @@ export class EventCards {
    * thread's latest unjudged lines are offered now, newest first, so the offer is on screen as the user
    * starts the reply rather than only when a sentence finishes. Lines already judged or already heard
    * are skipped, and the change path checks the same two sets, so nothing is judged or queued twice;
-   * routed, the same lines are heard instead: the nodes were gathered newest first, so they are pushed
-   * in reverse, each node's sentences in document order, keeping heardLines newest last as change-driven
-   * lines are. Reads only text the model holds - no new walk, and no page-window text.
+   * routed, the same lines are heard instead, newest last as change-driven lines are, each node's
+   * sentences in document order. Reads only text the model holds - no new walk, and no page-window text.
+   *
+   * "Newest" follows the thread's own order (conversation.ts messageOrder), not the tree's: walking up from
+   * the bottom of a Mail thread drawn newest first took its oldest messages and never the newest one (F6 on
+   * PR #57). When the order is not known, both ends are read in turn within the same cap, so neither end is
+   * assumed newest and no more is judged than for a known order; routed, they are heard in document order,
+   * the bottom last, as the change path hears lines.
    */
   private enteredConversation(w: WindowState, enteredKey: string, isChat: (w: WindowState) => boolean): Promise<void>[] {
     const field = offerField(w, enteredKey);
     if (w.window.kind === PAGE_WINDOW_KIND || !isChat(w)) return [];
-    const fresh: { key: string; fresh: string[] }[] = [];
-    for (const n of [...w.nodes.values()].reverse()) {
+    const messages = [...w.nodes.values()].filter((n) => n.editable !== true && !n.states?.includes("secure") && nodeText(n) !== "");
+    const order = messageOrder(w);
+    const fresh: { at: number; key: string; fresh: string[] }[] = [];
+    for (const i of newestFirst(messages.length, order)) {
       if (fresh.length >= MAX_NEW_LINES) break;
-      if (n.editable === true || n.states?.includes("secure")) continue;
-      const text = nodeText(n);
-      if (text === null) continue;
-      const unseen = sentences(text, true).filter((s) => !this.judged.has(`${w.window.windowId}\u0000${s}`) && !this.heardLines.some((h) => h.w.window.windowId === w.window.windowId && h.sentence === s));
-      if (unseen.length > 0) fresh.push({ key: n.key, fresh: unseen });
+      const n = messages[i] as Node;
+      const unseen = sentences(nodeText(n), true).filter((s) => !this.judged.has(`${w.window.windowId}\u0000${s}`) && !this.heardLines.some((h) => h.w.window.windowId === w.window.windowId && h.sentence === s));
+      if (unseen.length > 0) fresh.push({ at: i, key: n.key, fresh: unseen });
     }
     if (fresh.length === 0) return [];
     this.deps.count?.("event.replayed");
     const routed = this.deps.routed;
     if (routed !== undefined) {
       const before = this.heardLines.length;
-      // The nodes in `fresh` were gathered newest first; pushed in reverse, each node's sentences in
-      // document order, heardLines stays newest last and the trim below drops the oldest, keeping the newest.
-      for (const f of [...fresh].reverse()) for (const s of f.fresh) this.heardLines.push({ w, key: f.key, sentence: s, field });
+      // The cap counts sentences, filled in the order the messages were picked (newestFirst), each message from its
+      // last sentence back, since an event line follows a message's header lines. Capping after a document-order sort
+      // instead dropped the top message of an unknown-order thread, the one newestFirst picked to read (Codex on #83).
+      const chosen: { at: number; index: number; key: string; sentence: string }[] = [];
+      for (const f of fresh) {
+        for (let index = f.fresh.length - 1; index >= 0 && chosen.length < MAX_NEW_LINES; index--) {
+          chosen.push({ at: f.at, index, key: f.key, sentence: f.fresh[index] as string });
+        }
+      }
+      // heardLines runs newest last and the trim below drops from the front, keeping the newest.
+      const byMessage = (a: { at: number }, b: { at: number }): number => (order === "newestFirst" ? b.at - a.at : a.at - b.at);
+      const newestLast = chosen.sort((a, b) => byMessage(a, b) || a.index - b.index);
+      for (const c of newestLast) this.heardLines.push({ w, key: c.key, sentence: c.sentence, field });
       this.heardLines.splice(0, Math.max(0, this.heardLines.length - MAX_NEW_LINES));
       if (this.heardLines.length !== before) routed.heard();
       return [];
