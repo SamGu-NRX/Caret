@@ -1137,7 +1137,7 @@ export async function proposeFill(
   // An Ask that names its sources reads only those windows.
   const sourcesOnly = scope?.windows ?? null;
   const unread = sourcesOnly === null ? opts.exclude : new Set([...(opts.exclude ?? []), ...[...model.windows.keys()].filter((id) => id !== windowId && !sourcesOnly.has(id))]);
-  const { candidates, cut, cutTerms, cutKinds: collectedKinds, cutAll, namesCut, clauses, omitted } = collectCandidates(model, windowId, {
+  const { candidates, cut, cutTerms, cutKinds: collectedKinds, cutTookKinds, keptOut, cutAll, namesCut, clauses, omitted } = collectCandidates(model, windowId, {
     now,
     ledger,
     deferClauses: true,
@@ -1511,7 +1511,9 @@ export async function proposeFill(
       if (list.length > 0) derived.set(f.id, list);
     }
   }
-  if (candidates.length === 0 && cut.length === 0 && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0 && choiceOutputs(f).length === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
+  // A value kept out with its other lines cuts no window (Collected.keptOut), but it is something to withhold for, by the cut
+  // rules below, not nothing to copy.
+  if (candidates.length === 0 && cut.length === 0 && !keptOut && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0 && choiceOutputs(f).length === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
 
   // A field whose label names no kind (kinds.ts) could want a value of any kind or plain text. It is not
   // asked when a cut took a value of any kind: a "When" field was asked after a cut took the dates, and
@@ -1530,8 +1532,9 @@ export async function proposeFill(
   const takesName = (f: { terms: ReadonlySet<string> }): boolean => opts.nameGroup !== false && f.terms.has(NAME_TERM);
   // One withholding rule for every field, whatever its kind: what a window holds is unknown (allCut, in isCut); a word of
   // what a cut left out is one of the field's label terms (cutTerms holds words only; kinds are Collected.cutKinds); a cut took a value of a kind the
-  // field takes; a name may have been kept out of a field that takes one; or the field names no kind and a cut took a
-  // value of some kind, which may be the one it wants. A recognized field consulted only its kinds, so a note's closing
+  // field takes; a name may have been kept out of a field that takes one; or the field names no kind and a cut window or
+  // unread text took a value of some kind, which may be the one it wants (Collected.cutTookKinds: a value kept out with
+  // its other lines threatens only fields of its kind and label). A recognized field consulted only its kinds, so a note's closing
   // "Do not use any of the dates above" left Meeting date filled with the first of them.
   const pageSelect = (f: Field): f is Field & { form: FormControl & { options: string[] } } => pageOwned && f.control === "select" && f.form?.options != null;
   // A page select's kinds are what its own option labels could be (a month is a date, a state an address), and an address
@@ -1548,7 +1551,7 @@ export async function proposeFill(
     opts.cutRule !== false &&
     // A page select keeps every other cut rule (its label's terms, a name kept out); only the rule that withholds a field
     // naming no kind for any cut at all is replaced by its menu's own kinds: a date cut can hide a month, not a meal.
-    (isCut(pageSelect(f) ? (selectKinds.get(f.id) as Set<ValueKind>) : f.kinds) || [...f.terms].some((t) => t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (!pageSelect(f) && f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f)));
+    (isCut(pageSelect(f) ? (selectKinds.get(f.id) as Set<ValueKind>) : f.kinds) || [...f.terms].some((t) => t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (!pageSelect(f) && f.kinds.size === 0 && opts.unknownKindRule !== false && cutTookKinds && !takesName(f)));
   // A select whose options the app does not show cannot be matched to a value, so it is named and left (controls.ts).
   // A web dropdown's options are hidden too, but the page engine's handler picks the one option named exactly the
   // value and verifies it, so it is asked (B27).
@@ -3531,7 +3534,8 @@ export function candidateProvenance(model: ScreenModel, c: Candidate, text?: str
   const label = pr.label === null ? undefined : at(src.context, pr.label);
   const line = at(src.line, pr.line);
   const title = pr.title !== "" && pr.title === view.window.title ? wholePart(TITLE, view.window.title) : undefined;
-  return withReads(pr, { view, ...(src.text === undefined ? {} : { span: src.text }), ...(label === undefined ? {} : { label }), ...(line === undefined ? {} : { line }), ...(title === undefined ? {} : { title }) });
+  const also = pr.also?.map((l, i) => (src.also?.[i]?.text === l ? src.also[i]?.at : undefined));
+  return withReads(pr, { view, ...(src.text === undefined ? {} : { span: src.text }), ...(label === undefined ? {} : { label }), ...(line === undefined ? {} : { line }), ...(title === undefined ? {} : { title }), ...(also === undefined ? {} : { also }) });
 }
 
 /**

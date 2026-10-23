@@ -72,6 +72,14 @@ export interface CandidateSource {
   readonly context?: Fact;
   readonly section?: Fact;
   readonly blockHead?: Fact;
+  /** Candidate.also's lines with their ranges where recorded, in the same order. */
+  readonly also?: readonly Occurrence[];
+}
+
+/** A line holding a candidate's value (Candidate.also), with its range when one was recorded. */
+export interface Occurrence {
+  readonly text: string;
+  readonly at?: SourceAt;
 }
 
 /** A text the generator read, with its source range. */
@@ -111,6 +119,7 @@ export function candidateSpans(c: Candidate): ViewSpan[] {
   add(c.blockHead, src.blockHead);
   if (c.section !== c.context) add(c.section, src.section);
   if (c.source.windowTitle !== "") add(c.source.windowTitle, c.source.windowTitle === view.window.title ? wholePart(TITLE, view.window.title) : undefined);
+  (c.also ?? []).forEach((l, i) => add(l, src.also?.[i]?.text === l ? src.also[i]?.at : undefined));
   return out;
 }
 
@@ -229,6 +238,43 @@ function nodeLines(node: Node): { raw: string; start: number }[] {
   return linesWithStarts(nodeText(node));
 }
 
+/**
+ * Every line of `w`'s line nodes and source fields that holds `text` whole, in document order (Candidate.also reads
+ * these): each node's text is searched for the value, and only the lines it stands in are read.
+ */
+function windowLinesHolding(w: WindowState, text: string): { node: Node; start: number; raw: string; bare: string }[] {
+  const found: { node: Node; start: number; raw: string; bare: string }[] = [];
+  if (text === "") return found;
+  for (const n of w.nodes.values()) {
+    if (!LINE_ROLES.has(n.role) && !sourceField(n)) continue;
+    const t = nodeText(n);
+    for (let at = t.indexOf(text); at >= 0; ) {
+      const start = lineStartAt(t, at);
+      const end = lineEndAt(t, at);
+      const raw = t.slice(start, end);
+      const bare = bareLine(raw);
+      if (holdsWhole(bare, text)) found.push({ node: n, start, raw, bare });
+      at = t.indexOf(text, Math.max(end, at + 1));
+    }
+  }
+  return found;
+}
+
+/**
+ * The recheck of a value's other lines before a write (contract.ts provenanceStale): why `w` now disagrees with the
+ * lines `also` recorded beside `span` read in node `nodeKey`, or null. Every recorded line must still stand, and no line
+ * outside that node may hold the value that did not: an edited warning, or a new one, refuses the write. Lines of its
+ * own node are its own lines' digests' to check.
+ */
+export function alsoStale(w: WindowState, nodeKey: string, span: string, also: readonly string[]): string | null {
+  const now = windowLinesHolding(w, span);
+  const own = new Set(now.filter((l) => l.node.key === nodeKey).map((l) => l.bare));
+  const recorded = new Set(also);
+  if (also.some((l) => !now.some((x) => x.bare === l))) return "a line that also held it changed";
+  if (now.some((x) => x.node.key !== nodeKey && x.bare !== span && !recorded.has(x.bare) && !own.has(x.bare))) return "another line now holds it";
+  return null;
+}
+
 /** Whether `text` occurs in `raw` exactly once, overlapping occurrences counted. */
 function standsOnce(raw: string, text: string): boolean {
   const at = raw.indexOf(text);
@@ -277,6 +323,13 @@ export interface Candidate {
   identity?: CandidateIdentity;
   /** G2: where the span sits, as code reads its window (whose.ts placementsOf); shown to Jev in whose-value questions. */
   placements?: readonly Placement[];
+  /**
+   * Every other line of its window that holds its exact value, in document order, each once: what deduplication merged
+   * into this candidate. Jev and the verifier read them with it ("Booking ref: QX7-4410", and later "Do not use this
+   * booking ref: QX7-4410"). A line spelled as the candidate's own, or that is the value alone, says nothing more and is
+   * not carried. Absent when there are none.
+   */
+  also?: readonly string[];
   /** The nearest named container around the span, such as a group box or a section heading. */
   section: string | null;
   /**
@@ -356,6 +409,12 @@ const LEFT_OUT_MAX = 2000;
  * a synthetic realistic desk, so the cap is above that one desk and nothing more.
  */
 const UNREAD_MAX = 2000;
+/**
+ * Characters of a candidate's other lines (Candidate.also) its description may carry. Past it the candidate is withheld,
+ * as one whose lines the ledger refuses is: its description must fit a question's criterion (privacy/shapes.ts, 1,200 for
+ * fill.values) beside its own facts. Chosen, not measured: half that criterion.
+ */
+const ALSO_MAX = 600;
 /**
  * Visits a conversation's listing may spend (rankWindow), newest message first; its older messages past the share are
  * read for what they hold instead (unreadRest). Half of MAX_GENERATOR_VISITS, chosen so a long conversation leaves the
@@ -443,9 +502,21 @@ export interface Collected {
   cutTerms: ReadonlySet<string>;
   /**
    * The one set of cut kinds, which the field and pick checks read (fill.ts isCut): the kinds of a cut window's typed
-   * values that were not offered, and of every value in text the generator left unread, offered elsewhere or not.
+   * values that were not offered, of every value in text the generator left unread, offered elsewhere or not, and of
+   * every value kept out with its other lines (Candidate.also).
    */
   cutKinds: ReadonlySet<ValueKind>;
+  /**
+   * Whether a cut window or unread text took a value of some kind, which a field that names no kind may want (fill.ts
+   * fieldCut). A value kept out with its other lines is no such cut: it threatens only fields of its kind and label.
+   */
+  cutTookKinds: boolean;
+  /**
+   * Whether any value was kept out with its other lines (keepOut). Its window is not cut, so a desk whose every value was
+   * kept out has no candidate and no cut; fill must still run the cut rules and withhold with a reason, not report that
+   * there was nothing to copy (test/act-select-choice.test.ts, a chat whose meal lines repeat each option 20 times).
+   */
+  keptOut: boolean;
   cutAll: boolean;
   /**
    * A field takes a name and a name may have been kept out: a conversation's names, or a line holding
@@ -552,6 +623,12 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const clause = required !== undefined || fact === null || fact.required ? null : fact.clause;
     const sec = timed("section", () => sectionRead(w, node));
     const head = timed("blockHead", () => blockHeadRead(w, node, text));
+    const occ = timed("context", () => occurrencesOf(w, node, text, where));
+    if (occ.reduce((n, f) => n + f.text.length, 0) > ALSO_MAX) {
+      // Its other lines do not fit its description: withheld, as a candidate whose lines the ledger refuses is (keepOut).
+      keepOut(w, node, text, kind, read?.text ?? null);
+      return null;
+    }
     const c: Candidate = {
     id: `c${out.length + 1}`,
     text,
@@ -560,6 +637,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     labelled,
     line: required ?? null,
     ...(partOf === undefined ? {} : { partOf }),
+    ...(occ.length === 0 ? {} : { also: occ.map((f) => f.text) }),
     section: sec?.text ?? null,
     blockHead: head?.text ?? null,
     recency: recency(w),
@@ -585,8 +663,71 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       context: factOf(read),
       section: factOf(sec),
       blockHead: factOf(head),
+      ...(occ.length === 0 ? {} : { also: occ }),
     });
     return c;
+  };
+  /**
+   * The other lines of `w` that hold `text` whole, each once and not spelled as its own line (Candidate.also), with their
+   * ranges; the search stops once they pass ALSO_MAX characters, since the candidate is then withheld. Each node's text
+   * is searched for the value, and only the lines it stands in are read, so a node of a million lines costs one search,
+   * not a million lines. Its own line: the one it was read at (`where`), else the first line of its node that holds it.
+   */
+  const occurrencesOf = (w: WindowState, node: Node, text: string, where: { lineStart: number } | undefined): Occurrence[] => {
+    const out: Occurrence[] = [];
+    let chars = 0;
+    const said = new Set<string>();
+    const found = windowLinesHolding(w, text);
+    const ownLine = (where === undefined ? undefined : found.find((l) => l.node === node && l.start === where.lineStart)) ?? found.find((l) => l.node === node);
+    if (ownLine !== undefined) said.add(ownLine.bare);
+    for (const l of found) {
+      // A line that is the value alone says nothing the value does not.
+      if (l === ownLine || said.has(l.bare) || l.bare === text) continue;
+      said.add(l.bare);
+      chars += l.bare.length;
+      // A line with no range is charged every line of the window that holds it (candidateSpans).
+      const at = lineRange(l.node, l.start, l.raw, l.bare, 0);
+      out.push(at === null ? { text: l.bare } : { text: l.bare, at });
+      if (chars > ALSO_MAX) break;
+    }
+    return out;
+  };
+  /**
+   * A value withheld for its other lines (Candidate.also: they did not fit its window's limit, or ALSO_MAX), or a span
+   * kept out with it: an omission of its own association (omit), as a deduplicated value's is, with its kinds in
+   * Collected.cutKinds, its label's words in cutTerms and, when it is name-like, its name among the names kept out, so a
+   * field of its kind or label still withholds. Its text may not stand in from another line (unwarned). Its window is not
+   * cut: a missing alternative threatens only the fields of its kind and label, and cutting the window withheld every
+   * name and every field that names no kind beside it (a bystander chat's "Thursday", evidence/screen/dedup).
+   */
+  const keepOut = (w: WindowState, node: Node, text: string, kind: ValueKind | null, label: string | null): void => {
+    omit(w, node, text, label);
+    if (label !== null) for (const t of words(label)) cutTerms.add(t);
+    keptOutSpans.push({ w, node, text, kind });
+    if (wantsNames && isNameLike(text, label)) cutNames.push(text);
+    unwarned.add(text);
+  };
+  /** The spans keepOut kept out, whose kinds go in Collected.cutKinds when the generator finishes (keptKinds). */
+  const keptOutSpans: { w: WindowState; node: Node; text: string; kind: ValueKind | null }[] = [];
+  /**
+   * The kinds kept out with their other lines: each kept-out span's own kind, and the kind of each typed value it holds
+   * that no offered candidate holds ("Elena Varga <elena.varga@example.org>" kept out keeps out no email when the address
+   * was offered on its own; counting it withheld every email field beside a mail's quoted contacts).
+   */
+  const keptKinds = (offered: readonly Candidate[]): Set<ValueKind> => {
+    const out = new Set<ValueKind>();
+    const taken = offered.map((c) => c.text).join("\u0000");
+    for (const { w, node, text, kind } of keptOutSpans) {
+      if (kind !== null) for (const k of valueKinds({ kind, text })) out.add(k);
+      for (const v of windowValues(w)) if (v.nodeKey === node.key && (text.includes(v.text) || v.text.includes(text)) && !taken.includes(v.text)) for (const k of valueKinds(v)) out.add(k);
+    }
+    return out;
+  };
+  /** Whether `c` would fit its window's limit without its other lines, so they are what did not fit. */
+  const fitsWithoutAlso = (w: WindowState, cs: readonly Candidate[]): boolean => {
+    if (o.ledger === undefined || !cs.some((c) => c.also !== undefined)) return false;
+    const bare = cs.map((c) => withSources({ ...c, also: undefined }, c));
+    return o.ledger.cost(w, bare.flatMap(candidateTexts), bare.flatMap(candidateSpans)) !== null;
   };
   /** Spans that go only with their clause (Candidate.line set at build). */
   const quoted = new WeakSet<Candidate>();
@@ -622,6 +763,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       // fit is dropped, and the window is neither cut nor closed for it. Counting it as a cut withheld Greenhouse's names
       // (W1's regression: 12/12 to 6/6 canned, evidence/screen/w1 CHECKLIST).
       if (partOf !== undefined) return;
+      if (fitsWithoutAlso(w, [c])) return void keepOut(w, node, text, kind, c.context);
       missed.add(w.window.windowId);
       if (c.context !== null) omitted.add(associationOf(c));
       // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
@@ -687,10 +829,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     stats.windows = touched.size;
     stats.ms = performance.now() - t0;
-    // The one set of cut kinds: a cut window's typed values not offered (cutKinds), and every kind the unread text holds.
+    // The one set of cut kinds: a cut window's typed values not offered (cutKinds), every kind the unread text holds, and
+    // the kinds of values kept out with their other lines (keepOut).
     const kinds = cutKinds(model, [...missed], out);
     for (const k of unreadKinds) kinds.add(k);
-    return { candidates: out, stats, cut: [...missed], cutTerms, cutKinds: kinds, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
+    const cutTookKinds = kinds.size > 0;
+    for (const k of keptKinds(out)) kinds.add(k);
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutKinds: kinds, cutTookKinds, keptOut: keptOutSpans.length > 0, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending, omitted };
   };
   /**
    * Stops early, on either cap, partway through `reading`: what of it was offered is a partial
@@ -1041,13 +1186,27 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     /** Kinds left out whole, since none of them fits what is left; a line holding a value of one stays out too. */
     const leftOut = new Set(groups.keys());
     for (const g of groups.values()) for (const c of g) if (quoted.has(c)) unwarned.add(c.text);
-    if (leftOut.size > 0) missed.add(w.window.windowId);
+    // A kind that would fit but for its values' other lines is kept out value by value (keepOut), not as a cut window;
+    // so is each span left out with it below.
+    const keptOut = new Set<string>();
+    for (const [k, g] of groups) {
+      if (!fitsWithoutAlso(w, g)) continue;
+      keptOut.add(k);
+      for (const c of g) {
+        const n = w.nodes.get(c.source.nodeKey);
+        if (n !== undefined) keepOut(w, n, c.text, c.kind, c.context);
+      }
+    }
+    if ([...leftOut].some((k) => !keptOut.has(k))) missed.add(w.window.windowId);
     // Then the rest, nearest the fields first, with their facts, until one does not fit.
     for (const i of order.filter((x) => !takesKind(x))) {
       if (full() || outOfWork()) return false;
       if (closed.has(w.window.windowId)) break;
       const sp = spans[i] as (typeof spans)[number];
-      if ([...sp.terms].some((t) => leftOut.has(t))) continue;
+      if ([...sp.terms].some((t) => leftOut.has(t))) {
+        if ([...sp.terms].every((t) => !leftOut.has(t) || keptOut.has(t))) keepOut(w, sp.node, sp.text, sp.kind, sp.context()?.text ?? null);
+        continue;
+      }
       add(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset, sp.found);
     }
     return true;
@@ -1548,7 +1707,7 @@ export function candidateKinds(model: ScreenModel, c: Candidate): Set<ValueKind>
 
 /** The screen text describeCandidate puts in a request for this candidate: the span, its facts, and its window's title. */
 export function candidateTexts(c: Candidate): (string | null)[] {
-  return [c.text, c.context, c.line ?? null, c.blockHead, c.section, c.source.windowTitle];
+  return [c.text, c.context, c.line ?? null, c.blockHead, c.section, c.source.windowTitle, ...(c.also ?? [])];
 }
 
 /**
@@ -1762,7 +1921,7 @@ const RECENCY_TEXT = {
 } as const satisfies Record<Recency, string>;
 
 /** The fixed words of a candidate's line (mintCandidate), reserved with a fill request's wording (fill.ts fillWording). */
-export const CANDIDATE_WORDING: readonly string[] = ["the user's own \n, which the user told Caret", "labelled '\n'", "in the line '\n'", "in a block that starts '\n'", "under '\n'", "\"\n\" (\n)", "in \n window '\n', \n", ...Object.values(RECENCY_TEXT)];
+export const CANDIDATE_WORDING: readonly string[] = ["the user's own \n, which the user told Caret", "labelled '\n'", "in the line '\n'", "in a block that starts '\n'", "under '\n'", "also in the line '\n'", "\"\n\" (\n)", "in \n window '\n', \n", ...Object.values(RECENCY_TEXT)];
 
 /**
  * SC1 2b: describeCandidate's line, minted by `d`: the span, its label, line, block head and section as its source
@@ -1796,6 +1955,7 @@ export function mintCandidate(d: Disclosure, model: ScreenModel, c: Candidate, o
     [o.blockHead === false ? null : c.blockHead, "candidate", (m) => d.t`in a block that starts '${m}'`, rangeOf(c.blockHead, src.blockHead)],
     [c.section !== null && c.section !== c.context ? c.section : null, "descriptor", (m) => d.t`under '${m}'`, rangeOf(c.section, src.section)],
   ];
+  for (const [i, l] of (c.also ?? []).entries()) parts.push([l, "candidate", (m) => d.t`also in the line '${m}'`, src.also?.[i]?.text === l ? src.also[i]?.at : undefined]);
   for (const [t, as, say, at] of parts) {
     if (t === null || t === undefined) continue;
     const m = at === undefined ? view(t, as) : as === "descriptor" ? d.descriptor(v, t, at) : d.candidate(v, t, at);
@@ -1817,6 +1977,7 @@ export function describeCandidate(c: Candidate): string {
   if (c.line !== undefined && c.line !== null) facts.push(`in the line '${c.line}'`);
   if (c.blockHead !== null) facts.push(`in a block that starts '${c.blockHead}'`);
   if (c.section !== null && c.section !== c.context) facts.push(`under '${c.section}'`);
+  for (const l of c.also ?? []) facts.push(`also in the line '${l}'`);
   facts.push(`in ${c.source.appName} window '${c.source.windowTitle}', ${RECENCY_TEXT[c.recency]}`);
   return `"${c.text}" (${facts.join("; ")})`;
 }
