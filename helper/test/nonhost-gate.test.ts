@@ -103,6 +103,19 @@ describe("what a consumer that is not the proven host is sent", () => {
     expect(jevCalls).toBe(before);
   });
 
+  it("refuses a non-host screenTextRequest without returning screen text", async () => {
+    const host = await connect(hello({ host: true }));
+    await fillableField();
+    await host.waitFor((m) => m.type === "fillProposal");
+    const plain = await connect(hello());
+    plain.send({ type: "screenTextRequest", v: PROTOCOL_VERSION, id: "nonhost-screen", revision: 0, pid: 5150, windowNumber: 101, maxCharacters: 2048 });
+    expect(await plain.waitFor((m) => m.type === "error")).toMatchObject({ message: "screenTextRequest needs a host hello (host: true): screen text is derived from the reader's model" });
+    await settle();
+    expect(types(plain)).toEqual(["error"]);
+    expect(JSON.stringify(plain.received)).not.toContain("dana.whitfield@example.com");
+    expect(logged).toContain("refused screenTextRequest from consumer-2 (other): screenTextRequest needs a host hello (host: true): screen text is derived from the reader's model");
+  });
+
   it("gives an unauthenticated consumer no first-look preview and no first look", async () => {
     await fillableField();
     const plain = await connect(hello());
