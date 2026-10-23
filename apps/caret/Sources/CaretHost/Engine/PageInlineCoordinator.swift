@@ -267,6 +267,7 @@ final class PageInlineCoordinator {
             let gate = Task { try? await Task.sleep(nanoseconds: gateNanos) }
             let outcome: GhostTextEngine.Outcome
             do {
+                // Page reports carry no AX window number, so they cannot borrow native screen context.
                 outcome = try await engine.suggest(for: context, origin: origin)
             } catch {
                 gate.cancel()

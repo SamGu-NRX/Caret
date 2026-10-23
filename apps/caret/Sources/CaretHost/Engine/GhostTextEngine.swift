@@ -61,6 +61,13 @@ final class GhostTextEngine {
     /// Context captured by the host for the next local inline prompt. Capture and filtering stay outside
     /// the model engine so the policy can be tested without loading a model.
     var inlinePromptContext = InlinePromptContext()
+    /// Prefetch sends without waiting; replies are consumed separately on the main actor.
+    var screenTextSender: ((ScreenTextRequest) -> Bool)?
+    private var screenCache = ScreenTextCache()
+    private var screenRevision: UInt64?
+    private var screenTarget: ScreenTextTarget?
+    private var screenOrigin: String?
+    var screenTextSettings: () -> CaretSettings = { SettingsStore.shared.settings }
     private let writingMemory = InlineWritingMemory()
     private var expiryTimer: Timer?
     var secretDetector: InlineSecretDetecting = SensitiveTextDetector()
@@ -224,7 +231,7 @@ final class GhostTextEngine {
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
     /// `tokens` overrides `completionTokens` for this one request (the extension after the first paint).
-    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil) async throws -> Outcome {
+    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil, screenTarget: ScreenTextTarget? = nil) async throws -> Outcome {
         if let replay {
             switch replay.outcome(before: context.beforeCursor, after: context.afterCursor) {
             case .text(let text)?: return .suggestion(GhostSuggestion(text: text, context: context, generationMs: 0))
@@ -248,6 +255,7 @@ final class GhostTextEngine {
             return .suppressed("numericMidWordStem")
         }
 
+        inlinePromptContext.screenText = cachedScreenText(for: screenTarget, origin: origin)
         let request = makeRequest(for: context, policy: policy, tokens: tokens, origin: origin)
         let started = DispatchTime.now().uptimeNanoseconds
         var candidates = try await engine.completions(for: request)
@@ -314,6 +322,48 @@ final class GhostTextEngine {
         if midLine, !wasScored { return .suppressed("fitUnscored") }
         guard let chosen = open.first(where: { notes[$0].refusal == nil }) else { return .suppressed("doesNotFit") }
         return .suggestion(GhostSuggestion(text: notes[chosen].text, context: context, generationMs: elapsed))
+    }
+
+    /// Called by focus observation, before generation and even when the field's text did not change.
+    func prefetchScreenText(for target: ScreenTextTarget?, origin: String? = nil) {
+        screenTarget = target
+        screenOrigin = origin
+        refreshScreenText()
+    }
+
+    func screenTextRevisionChanged(_ revision: UInt64) {
+        // A reconnect resets screenRevision first; old notifications in one connection cannot roll it back.
+        guard screenRevision == nil || revision >= screenRevision! else { return }
+        screenRevision = revision
+        refreshScreenText()
+    }
+
+    func refreshScreenText() {
+        guard let key = screenKey(for: screenTarget, origin: screenOrigin) else {
+            screenCache.clear()
+            return
+        }
+        guard let request = screenCache.prefetch(key, id: UUID().uuidString) else { return }
+        if screenTextSender?(request) != true { screenCache.clear() }
+    }
+
+    func receiveScreenText(_ reply: ScreenTextReply) { screenCache.receive(reply) }
+
+    func screenTextDisconnected() {
+        screenRevision = nil
+        screenCache.clear()
+        inlinePromptContext.screenText = nil
+    }
+
+    func cachedScreenText(for target: ScreenTextTarget?, origin: String? = nil) -> String? {
+        guard let key = screenKey(for: target, origin: origin) else { return nil }
+        return screenCache.text(for: key)
+    }
+
+    private func screenKey(for target: ScreenTextTarget?, origin: String?) -> ScreenTextCache.Key? {
+        guard let target, target.pid > 0, target.windowNumber > 0, let revision = screenRevision else { return nil }
+        let settings = screenTextSettings()
+        return .init(target: target, revision: revision, appsOff: settings.appsOff, sitesOff: settings.sitesOff, site: origin)
     }
 
     /// The request `suggest` sends for `context`, under the app's policy.

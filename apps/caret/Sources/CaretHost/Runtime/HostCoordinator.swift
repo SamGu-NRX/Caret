@@ -136,6 +136,7 @@ final class HostCoordinator {
             return reset()
         }
 
+        engine.prefetchScreenText(for: AXRead.screenTextTarget(of: element, pid: field.identity.pid))
         let key = Self.contextKey(context, field: field.identity)
         if key == lastContextKey {
             // Same field and text, possibly scrolled: re-pin what is shown to the new caret.
@@ -228,13 +229,14 @@ final class HostCoordinator {
         let gateNanos = Self.presentationGateNanos(lastGenerationMs: engine.lastGenerationMs)
         let engine = self.engine
         guard !isShuttingDown else { return }
+        let screenTarget = AXRead.screenTextTarget(of: element, pid: field.identity.pid)
         let task = Task { [weak self] in
             defer { self?.inFlight.removeValue(forKey: serial) }
             // Generation starts at once; the adaptive gate only delays presentation (ADR-080).
             let gate = Task { try? await Task.sleep(nanoseconds: gateNanos) }
             let outcome: GhostTextEngine.Outcome
             do {
-                outcome = try await engine.suggest(for: snapshot.context)
+                outcome = try await engine.suggest(for: snapshot.context, screenTarget: screenTarget)
             } catch {
                 gate.cancel()
                 return
@@ -353,9 +355,10 @@ final class HostCoordinator {
         extending?.cancel()
         extensionSerial &+= 1
         let serial = extensionSerial
+        let screenTarget = AXRead.screenTextTarget(of: held.element, pid: held.field.identity.pid)
         extending = Task { [weak self] in
             defer { self?.extensionsInFlight.removeValue(forKey: serial) }
-            let outcome = try? await engine.suggest(for: context, tokens: GhostExtend.tokens)
+            let outcome = try? await engine.suggest(for: context, tokens: GhostExtend.tokens, screenTarget: screenTarget)
             guard let self, !Task.isCancelled else { return }
             guard case .suggestion(let more)? = outcome else { return self.status.increment("ghost.extend.none") }
             let snap = self.arbiter.snapshot()
@@ -530,6 +533,7 @@ final class HostCoordinator {
     func gateClosed() { reset() }
 
     private func reset() {
+        engine.prefetchScreenText(for: nil)
         cancelGeneration()
         clearOffer()
         lastContextKey = nil

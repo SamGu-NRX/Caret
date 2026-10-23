@@ -54,6 +54,9 @@ public enum HelperInbound: Equatable, Sendable {
     /// L1: words from the host's local model. This host names no `localModel`, so it answers each
     /// one `unavailable` (`LocalText`).
     case localTextRequest(LocalTextRequest)
+    /// The bounded screen-model read requested for one inline suggestion.
+    case screenTextReply(ScreenTextReply)
+    case screenTextRevision(ScreenTextRevision)
     /// S1: the user left a prose field they typed; Caret may keep their words.
     case answerSaveOffer(AnswerSaveOffer)
     /// S1: what became of this host's `answerSave`.
@@ -103,6 +106,8 @@ public enum HelperInbound: Equatable, Sendable {
         case .pageField: return PageField.type
         case .goalProgress: return GoalProgress.type
         case .localTextRequest: return LocalTextRequest.type
+        case .screenTextReply: return "screenTextReply"
+        case .screenTextRevision: return "screenTextRevision"
         case .answerSaveOffer: return AnswerSaveOffer.type
         case .answerSaveReply: return AnswerSaveReply.type
         case .pageInsertReply: return PageInsertReply.type
@@ -191,6 +196,10 @@ public enum HelperInbound: Equatable, Sendable {
             return .goalProgress(try JSONDecoder().decode(GoalProgress.self, from: line))
         case LocalTextRequest.type:
             return .localTextRequest(try JSONDecoder().decode(LocalTextRequest.self, from: line))
+        case "screenTextRevision":
+            return .screenTextRevision(try JSONDecoder().decode(ScreenTextRevision.self, from: line))
+        case "screenTextReply":
+            return .screenTextReply(try JSONDecoder().decode(ScreenTextReply.self, from: line))
         case AnswerSaveOffer.type:
             return .answerSaveOffer(try JSONDecoder().decode(AnswerSaveOffer.self, from: line))
         case AnswerSaveReply.type:
@@ -349,7 +358,7 @@ public enum HostHello {
         // Slice 1: askTask, since the desk lists a task question's readings (`AskQuestionCard`) and shows a goal that is
         // not a page's on its own card (`GoalCard`).
         [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability, PageInline.capability,
-         valueChecksCapability, askScopeCapability, AskQuestion.taskCapability]
+         valueChecksCapability, askScopeCapability, AskQuestion.taskCapability, ScreenTextRevision.capability]
             + (goalFiles ? [GoalFiles.capability] : [])
             + (routing ? [Routing.capability] : [])
     }
@@ -357,7 +366,7 @@ public enum HostHello {
     /// The capabilities helper/src/server.ts admitConsumer grants only to a connection whose host proof checked out.
     /// `localModel` is among them though this host never claims it (`LocalText`).
     public static let hostOnlyCapabilities: Set<String> = [
-        Routing.capability, fillAllCapability, GoalPlans.capability, GoalFiles.capability, LocalText.capability, PageInline.capability, SavedAnswers.capability,
+        Routing.capability, fillAllCapability, GoalPlans.capability, GoalFiles.capability, LocalText.capability, PageInline.capability, SavedAnswers.capability, ScreenTextRevision.capability,
     ]
 
     /// `host`: this Caret holds a host key and will answer the helper's challenge. Without one the hello leaves `host`

@@ -116,7 +116,7 @@ final class HostAuthTests: XCTestCase {
 
     /// helper/src/server.ts admitConsumer grants these only when the hello's host: true was proved.
     func testTheHostOnlyCapabilitiesAreTheOnesTheHelperGrantsOnlyToTheHost() {
-        XCTAssertEqual(HostHello.hostOnlyCapabilities, ["routing", "fillAll", "goalPlans", "goalFiles", "localModel", "pageText", "savedAnswers"])
+        XCTAssertEqual(HostHello.hostOnlyCapabilities, ["routing", "fillAll", "goalPlans", "goalFiles", "localModel", "pageText", "savedAnswers", "screenText"])
     }
 
     func testAHelloWithoutAKeyClaimsNoHostOnlyCapability() throws {

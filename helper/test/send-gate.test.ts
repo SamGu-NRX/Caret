@@ -36,6 +36,13 @@ describe("send gate classes", () => {
     expect(allowed("host")).toEqual([...SENT, "refusal"].filter((t) => classOf(t) !== "reader").sort());
   });
 
+  it("sends screen text replies only to the authenticated host", () => {
+    expect(classOf("screenTextReply")).toBe("host");
+    expect(withheldBecause("host", "screenTextReply")).toBeNull();
+    expect(withheldBecause("other", "screenTextReply")).not.toBeNull();
+    expect(withheldBecause("reader", "screenTextReply")).not.toBeNull();
+  });
+
   it("names why a message is withheld", () => {
     expect(withheldBecause("other", "fillProposal")).toBe("fillProposal is derived from the screen or the user's data, and only a host whose proof checked out is sent that");
     expect(withheldBecause("host", "readerCommand")).toBe("readerCommand is the reader's, and this connection is not the reader");

@@ -1,3 +1,4 @@
+import { SCREEN_TEXT_CAPABILITY } from "./protocol.ts";
 // Unix socket server. Every client's first line is a hello naming its role. The reader then
 // streams ReaderMessages and receives the executor's readerCommands; consumers send fill requests,
 // plans, task controls and the host's offerAccept and offerStop, and receive every HelperMessage.
@@ -27,6 +28,7 @@ import { planError } from "./planner/proposal.ts";
 import { hostKey, hostProofMatches, newHostNonce } from "./host-auth.ts";
 import { classOf, withheldBecause, type Outgoing, type SessionRole } from "./send-gate.ts";
 import { refusedBecause } from "./request-gate.ts";
+import type { ScreenTextReply } from "./inline/screen-request.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
 const MAX_LINE_CHARS = 32 * 1024 * 1024;
@@ -45,6 +47,7 @@ export class HelperServer {
   private readonly routing = new Set<Socket>();
   /** Consumers whose hello said host: true and whose proof checked out. Only they are sent host messages (send-gate.ts), and only they speak for the user where a record becomes consent (routing/consent.ts). */
   private readonly hosts = new Set<Socket>();
+  private readonly screenTextHosts = new Set<Socket>();
   /** Connections whose hello said role reader, the current one and any it replaced: they are sent the reader's messages. */
   private readonly readers = new Set<Socket>();
   /** How the log names a connection: its consumer session, or "reader". */
@@ -147,6 +150,10 @@ export class HelperServer {
   publish(m: HelperMessage): void {
     // An unclassed type throws here, whoever is connected.
     classOf(m.type);
+    if (m.type === "screenTextRevision") {
+      for (const host of this.screenTextHosts) this.send(host, m);
+      return;
+    }
     // W2: a fill proposal that withholds a field as "notExact" or "unverified" (fill/contract.ts) goes as it is only to
     // consumers that read those reasons; every other consumer is sent "wrongKind" in their place, as S1 maps an answer's
     // reasons, and a saved answer only to a host that shows it whole (below).
@@ -361,6 +368,8 @@ export class HelperServer {
             continue;
           }
           if (m.data.type === "hello") this.reject(s, "a connection says hello once; this one already has");
+          // Screen text is a bounded read from the helper's already-filtered model, answered only to the asking host.
+          else if (m.data.type === "screenTextRequest") this.send(s, this.helper().screenText(m.data) satisfies ScreenTextReply);
           else if (m.data.type === "fillRequest") void this.helper().handleConsumer(m.data);
           else if (m.data.type === "runPlan" || m.data.type === "taskControl") void this.helper().handleTask(m.data, from);
           else if (m.data.type === "offerControl") void this.helper().handleOffer(m.data, from);
@@ -558,6 +567,7 @@ export class HelperServer {
       this.memoryDocuments.delete(s);
       this.routing.delete(s);
       this.hosts.delete(s);
+      this.screenTextHosts.delete(s);
       this.readers.delete(s);
       this.labels.delete(s);
       this.fillAll.delete(s);
@@ -601,6 +611,10 @@ export class HelperServer {
     const routing = hello.host === true && hello.capabilities?.includes(ROUTING_CAPABILITY) === true;
     if (routing) this.routing.add(s);
     if (hello.host === true) this.hosts.add(s);
+    if (hello.host === true && hello.capabilities?.includes(SCREEN_TEXT_CAPABILITY)) {
+      this.screenTextHosts.add(s);
+      this.send(s, this.helper().screenTextRevision);
+    }
     if (hello.host === true && hello.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
     if (hello.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
     if (hello.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true && hello.capabilities.includes(ASK_VALUES_CAPABILITY)) this.askValues.add(s);

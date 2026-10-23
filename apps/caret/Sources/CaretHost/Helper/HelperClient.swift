@@ -220,6 +220,11 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? request.line())
     }
 
+    @discardableResult
+    func send(_ request: ScreenTextRequest) -> Bool {
+        sendLine(try? NDJSON.line(request))
+    }
+
     /// H6: what the host sees in the field the user is in. Dropped when the helper is not connected,
     /// or when this connection's hello did not name `routing` (the helper would refuse it by name).
     @discardableResult
@@ -544,6 +549,7 @@ final class HelperClient: @unchecked Sendable {
             case .pageField: s.pageFields &+= 1
             case .goalProgress: s.goalProgress &+= 1
             case .localTextRequest: s.localTextRequests &+= 1
+            case .screenTextReply, .screenTextRevision: break
             case .answerSaveOffer, .answerSaveReply: s.answerSaves &+= 1
             case .pageInsertReply: s.pageInserts &+= 1
             case .fileSaveOffer, .fileSaveReply, .savedFilesReply: s.files &+= 1

@@ -9,7 +9,7 @@ Caret for Chrome is the browser extension for Caret, a Mac app that fills in for
 The extension reads only when the Caret app on your Mac asks. It reads:
 
 - the fields of the form you are in: each field's label and kind, a list's, checkbox's or radio button's choices and which is chosen, the page's title and headings, and the page's address. For a field you type text into, it reads only whether the field holds anything and a count of how often it changed, never the text;
-- the text just before and after the cursor in the field you are typing in, for inline suggestions written on your Mac. It leaves this out when the page put the field's text there itself, or when the field may have been a password field;
+- the text just before and after the cursor in the field you are typing in, and nearby text on the screen, for inline suggestions written on your Mac. It leaves field text out when the page put it there itself, or when the field may have been a password field;
 - when a fill needs a source, the visible text of the tab you just left, once, within two minutes of leaving it, and at most 16 KB of it;
 - that focus moved into a field or you typed in it, and that you clicked or pressed a key while Caret was filling the page. What you typed, which key and what you clicked are not recorded.
 
@@ -40,7 +40,7 @@ To decide what to offer, the Caret app sends short pieces of what it read to clo
 
 > Caret's main model is Jev, run by TypeSafe. TypeSafe says Jev isn't trained on customer requests or responses, and its terms say it won't put them in a dataset used to train models without Caret's consent. Its terms set no limit on how long it keeps requests. They let TypeSafe keep using requests, even after you stop using Caret, to monitor for fraud and abuse, and to derive what it calls telemetry: logs, statistics, classifications and "learnings". TypeSafe may use that telemetry without restriction, including to improve its services and other products. We don't know whether TypeSafe staff read requests.
 
-> Inline suggestions, the next few words Caret shows as you type, are written on your Mac by a model that runs there. They may use the text in the field you're typing in and your recent writing in that app, kept in memory for up to ten minutes. Clipboard text is off unless you turn it on in Writing. When on, Caret reads the plain text on the general pasteboard when it makes a local Tab suggestion, subject to a 256-token limit and the secret filter. It skips concealed, temporary, generated, oversized or secret clipboard text. Nothing goes to Groq.
+> Inline suggestions, the next few words Caret shows as you type, are written on your Mac by a model that runs there. They may use the text in the field you're typing in, nearby text on the screen, and your recent writing in that app, kept in memory for up to ten minutes. It leaves out secure fields, excluded apps such as password managers, terminals and System Settings, apps and sites you turned off, and text you typed into web pages. Clipboard text is off unless you turn it on in Writing. When on, Caret reads the plain text on the general pasteboard when it makes a local Tab suggestion, subject to a 256-token limit and the secret filter. It skips concealed, temporary, generated, oversized or secret clipboard text. Nothing goes to Groq.
 
 Caret does not sell your data, does not use it for anything unrelated to what Caret does for you, and does not use it to decide creditworthiness or for lending.
 
