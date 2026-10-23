@@ -112,6 +112,8 @@ public struct Node: Codable, Equatable, Hashable, Sendable {
     public var subrole: String?
     public var label: String?
     public var value: String?
+    /// True when a web text control holds page-local text whose value is intentionally absent.
+    public var unread: Bool
     public var placeholder: String?
     public var frame: Frame?
     public var editable: Bool
@@ -123,13 +125,13 @@ public struct Node: Codable, Equatable, Hashable, Sendable {
 
     public init(key: String, parent: String?, role: String, subrole: String? = nil, label: String? = nil,
                 value: String? = nil, placeholder: String? = nil, frame: Frame? = nil,
-                editable: Bool = false, states: [NodeState] = [], inputKind: NodeInputKind? = nil, autocomplete: AutocompleteToken? = nil) {
+                editable: Bool = false, states: [NodeState] = [], inputKind: NodeInputKind? = nil, autocomplete: AutocompleteToken? = nil, unread: Bool = false) {
         self.key = key; self.parent = parent; self.role = role; self.subrole = subrole
-        self.label = label; self.value = value; self.placeholder = placeholder; self.frame = frame
+        self.label = label; self.value = value; self.unread = unread; self.placeholder = placeholder; self.frame = frame
         self.editable = editable; self.states = states; self.inputKind = inputKind; self.autocomplete = autocomplete
     }
 
-    enum CodingKeys: String, CodingKey { case key, parent, role, subrole, label, value, placeholder, frame, editable, states, inputKind, autocomplete }
+    enum CodingKeys: String, CodingKey { case key, parent, role, subrole, label, value, unread, placeholder, frame, editable, states, inputKind, autocomplete }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         key = try c.decode(String.self, forKey: .key)
@@ -138,6 +140,7 @@ public struct Node: Codable, Equatable, Hashable, Sendable {
         subrole = try c.decodeOptional(String.self, forKey: .subrole)
         label = try c.decodeOptional(String.self, forKey: .label)
         value = try c.decodeOptional(String.self, forKey: .value)
+        unread = try c.decodeOptional(Bool.self, forKey: .unread) ?? false
         placeholder = try c.decodeOptional(String.self, forKey: .placeholder)
         frame = try c.decodeOptional(Frame.self, forKey: .frame)
         let e = try c.decodeOptional(Bool.self, forKey: .editable)
@@ -155,6 +158,7 @@ public struct Node: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(subrole, forKey: .subrole)
         try c.encodeIfPresent(label, forKey: .label)
         try c.encodeIfPresent(value, forKey: .value)
+        if unread { try c.encode(true, forKey: .unread) }
         try c.encodeIfPresent(placeholder, forKey: .placeholder)
         try c.encodeIfPresent(frame, forKey: .frame)
         if editable { try c.encode(true, forKey: .editable) }
