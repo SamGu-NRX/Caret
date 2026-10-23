@@ -63,6 +63,8 @@ enum MemoryAction: Equatable {
     case keys(GhostKeys)
     case appOff(String)
     case appOn(String)
+    /// Whether plain clipboard text may be offered as local inline context.
+    case clipboardContext(Bool)
     /// Brief item 8: Download Caret's model, or stop the download running.
     case model
 }

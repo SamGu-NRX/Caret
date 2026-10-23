@@ -120,6 +120,9 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// It was off before (lead decision after the H13 review, 2026-10-06) because ProseMirror grouped a paste with the
     /// insert. Written only when the user turns it off.
     public var pageInlineContentEditable = true
+    /// Whether plain clipboard text may be included in local inline prompts. Off by default; omitted
+    /// from older settings files and from new default files for an explicit opt-in.
+    public var clipboardContext = false
     /// Which keys take ghost text (brief item 6). Caret's own until Sam picks a default; Cotypist's is
     /// the other preset.
     public var ghostKeys = GhostKeys.caret
@@ -155,7 +158,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = set.sorted()
     }
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable, ghostKeys, appsOff, instructions }
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable, ghostKeys, appsOff, instructions, clipboardContext }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -199,6 +202,8 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         // Absent: the defaults, as for a new user.
         pageInlineText = try c.decodeIfPresent(Bool.self, forKey: .pageInlineText) ?? true
         pageInlineContentEditable = try c.decodeIfPresent(Bool.self, forKey: .pageInlineContentEditable) ?? true
+        // Absent from older settings: clipboard context stays opt-in and off.
+        clipboardContext = try c.decodeIfPresent(Bool.self, forKey: .clipboardContext) ?? false
         // Absent: the default. A scheme this host does not know is refused with the file.
         ghostKeys = try c.decodeIfPresent(GhostKeys.self, forKey: .ghostKeys) ?? .caret
         // Absent from a file written before item 7: no app was turned off.
@@ -232,6 +237,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         // Written only when the user changed them, so a later default reaches a user who never did.
         if !pageInlineText { try c.encode(pageInlineText, forKey: .pageInlineText) }
         if !pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
+        if clipboardContext { try c.encode(clipboardContext, forKey: .clipboardContext) }
         if ghostKeys != .caret { try c.encode(ghostKeys, forKey: .ghostKeys) }
         if !appsOff.isEmpty { try c.encode(appsOff, forKey: .appsOff) }
         if instructions != PersonalInstructions() { try c.encode(instructions, forKey: .instructions) }
