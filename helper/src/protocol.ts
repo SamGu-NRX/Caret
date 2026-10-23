@@ -1508,8 +1508,12 @@ export const SavedFilesRequest = z
   .refine((m) => (m.op === "forget") === (m.id !== undefined), { message: "forget names the file's id; list names none", path: ["id"] });
 export type SavedFilesRequest = z.infer<typeof SavedFilesRequest>;
 
-export const ScreenTextRequest = z.object({ type: z.literal("screenTextRequest"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1).max(64), revision: z.number().int().nonnegative(), pid: z.number().int().positive(), maxCharacters: z.number().int().positive().max(2048), appsOff: z.array(z.string()).optional(), sitesOff: z.array(z.string()).optional(), site: z.string().nullable().optional() });
+export const ScreenTextRequest = z.object({ type: z.literal("screenTextRequest"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1).max(64), revision: z.number().int().nonnegative(), pid: z.number().int().positive(), windowNumber: z.number().int().positive().max(4294967295), maxCharacters: z.number().int().positive().max(2048), appsOff: z.array(z.string()).optional(), sitesOff: z.array(z.string()).optional(), site: z.string().nullable().optional() });
 export type ScreenTextRequest = z.infer<typeof ScreenTextRequest>;
+/** Only hosts that declare screenText receive reader revision invalidations. */
+export const SCREEN_TEXT_CAPABILITY = "screenText";
+export const ScreenTextRevision = z.object({ type: z.literal("screenTextRevision"), v: z.literal(PROTOCOL_VERSION), revision: z.number().int().nonnegative() });
+export type ScreenTextRevision = z.infer<typeof ScreenTextRevision>;
 export const ScreenTextReply = z.object({ type: z.literal("screenTextReply"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1).max(64), revision: z.number().int().nonnegative(), text: z.string().max(2048).nullable() });
 export type ScreenTextReply = z.infer<typeof ScreenTextReply>;
 
@@ -2851,7 +2855,7 @@ export type SavedFilesReply = z.infer<typeof SavedFilesReply>;
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, FirstLookPreview, PlanProposal, SkillOffer,
   PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply, PageInsertReply, SavedFilesReply,
-  HostChallenge, HostAuthenticated, ScreenTextReply,
+  HostChallenge, HostAuthenticated, ScreenTextReply, ScreenTextRevision,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);

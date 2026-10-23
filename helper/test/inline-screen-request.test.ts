@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ScreenTextReply, ScreenTextRequest } from "../src/protocol.ts";
-import { answerScreenText } from "../src/inline/screen-request.ts";
+import { answerScreenText as answer } from "../src/inline/screen-request.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 
-const request = { type: "screenTextRequest", v: 1, id: "r1", revision: 7, pid: 7, maxCharacters: 2048 } as const;
+const answerScreenText = (model: ScreenModel, request: ScreenTextRequest) => answer(model, request, 7);
+
+const request = { type: "screenTextRequest", v: 1, id: "r1", revision: 7, pid: 7, windowNumber: 101, maxCharacters: 2048 } as const;
 
 function focusedModel(): ScreenModel {
   const model = new ScreenModel();
@@ -11,7 +13,7 @@ function focusedModel(): ScreenModel {
   model.focusedWindowId = "reader-window";
   const window: WindowState = {
     app: { pid: 7, bundleId: "dev.test.app", name: "Test" },
-    window: { windowId: "reader-window", kind: "standard", title: "Test", frame: null },
+    window: { windowId: "reader-window", kind: "standard", title: "Test", frame: null, number: 101 },
     focused: true, focusedKey: null, values: [], updatedAt: 1, lastFocusedAt: 1,
     nodes: new Map([["text", { key: "text", parent: null, role: "AXStaticText", label: "Reply above" }]]),
   };
@@ -39,6 +41,21 @@ describe("screen text wire messages", () => {
 
   it("uses the reader's focused window when its pid matches", () => {
     expect(answerScreenText(focusedModel(), request)).toEqual({ type: "screenTextReply", v: 1, id: "r1", revision: 7, text: "Reply above" });
+  });
+
+  it("withholds another window of the same app, even with the same title and frame", () => {
+    const model = focusedModel();
+    const other = { ...model.windows.get("reader-window")!, window: { windowId: "other-window", kind: "standard", title: "Test", frame: null, number: 102 } };
+    model.windows.set("other-window", other);
+    model.focusedWindowId = "other-window";
+    expect(answerScreenText(model, request).text).toBeNull();
+    expect(answerScreenText(model, { ...request, windowNumber: 102 }).text).toBe("Reply above");
+  });
+
+  it("withholds text when the reader cannot identify its window", () => {
+    const model = focusedModel();
+    delete model.windows.get("reader-window")!.window.number;
+    expect(answerScreenText(model, request).text).toBeNull();
   });
 
   it("returns no text when the host pid differs from the focused window", () => {

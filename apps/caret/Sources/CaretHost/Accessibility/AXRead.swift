@@ -165,6 +165,12 @@ enum AXRead {
         return identity.number == nil && identity.title == nil ? nil : identity
     }
 
+    /// The same AX-derived window server number the reader includes in its snapshots.
+    static func screenTextTarget(of element: AXUIElement, pid: Int32) -> ScreenTextTarget? {
+        guard pid > 0, let number = windowIdentity(of: element)?.number, number > 0 else { return nil }
+        return ScreenTextTarget(pid: pid, windowNumber: number)
+    }
+
     private typealias GetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
 
     /// Accessibility exposes the window number only through the private `_AXUIElementGetWindow`,

@@ -303,7 +303,10 @@ public final class HostRuntime {
         // debug socket injects (`inject helperLine`), so an injected offer is taken, accepted and
         // reported exactly as a real one.
         let linkedClient = ClientBox()
+        let screenTextEngine = engine
         let route: @MainActor (HelperInbound, UInt64) -> Void = { message, at in
+            if case .screenTextRevision(let update) = message { return screenTextEngine.screenTextRevisionChanged(update.revision) }
+            if case .screenTextReply(let reply) = message { return screenTextEngine.receiveScreenText(reply) }
             activity.receive(message)
             // Where a skill's run with no Tab acts, and which skill it is, come from its record.
             switch message {
@@ -408,6 +411,7 @@ public final class HostRuntime {
                     pageTask.machine.linkChanged(up: up)
                     onboarding.helperLinkChanged(up)
                     if !up {
+                        screenTextEngine.screenTextDisconnected()
                         surface.helperGone()
                         pageSight.sight.helperGone()
                     }
@@ -415,9 +419,7 @@ public final class HostRuntime {
             }
         }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } }, goalFiles: { filesWired }, hostKey: configuration.hostKey)
         linkedClient.client = helper
-        engine.screenTextProvider = { [weak helper] request in
-            await helper?.screenText(request)
-        }
+        engine.screenTextSender = { [weak helper] request in helper?.send(request) ?? false }
         let routeClient = helper
         routeLink.send = { routeClient.send($0) }
         fill.client = helper
@@ -515,6 +517,7 @@ public final class HostRuntime {
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in
             gateClient.update(HostSettings(settings, at: Self.nowMs()))
+            screenTextEngine.refreshScreenText()
             arbiter.setGhostKeys(settings.ghostKeys)
             AppSwitch.shared.update(settings)
             // An app just turned off: what Caret shows there goes now, not at the next keystroke.

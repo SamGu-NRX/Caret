@@ -61,8 +61,12 @@ final class GhostTextEngine {
     /// Context captured by the host for the next local inline prompt. Capture and filtering stay outside
     /// the model engine so the policy can be tested without loading a model.
     var inlinePromptContext = InlinePromptContext()
-    /// Host wiring supplies the helper's already-filtered screen model. A missing or late reply is no context.
-    var screenTextProvider: ((ScreenTextRequest) async -> String?)?
+    /// Prefetch sends without waiting; replies are consumed separately on the main actor.
+    var screenTextSender: ((ScreenTextRequest) -> Bool)?
+    private var screenCache = ScreenTextCache()
+    private var screenRevision: UInt64?
+    private var screenTarget: ScreenTextTarget?
+    private var screenOrigin: String?
     var screenTextSettings: () -> CaretSettings = { SettingsStore.shared.settings }
     private let writingMemory = InlineWritingMemory()
     private var expiryTimer: Timer?
@@ -227,7 +231,7 @@ final class GhostTextEngine {
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
     /// `tokens` overrides `completionTokens` for this one request (the extension after the first paint).
-    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil, revision: UInt64 = 0, pid: Int32? = nil) async throws -> Outcome {
+    func suggest(for context: TextFieldContext, tokens: Int? = nil, origin: String? = nil, screenTarget: ScreenTextTarget? = nil) async throws -> Outcome {
         if let replay {
             switch replay.outcome(before: context.beforeCursor, after: context.afterCursor) {
             case .text(let text)?: return .suggestion(GhostSuggestion(text: text, context: context, generationMs: 0))
@@ -251,7 +255,7 @@ final class GhostTextEngine {
             return .suppressed("numericMidWordStem")
         }
 
-        try await updateScreenText(pid: pid, revision: revision, origin: origin)
+        inlinePromptContext.screenText = cachedScreenText(for: screenTarget, origin: origin)
         let request = makeRequest(for: context, policy: policy, tokens: tokens, origin: origin)
         let started = DispatchTime.now().uptimeNanoseconds
         var candidates = try await engine.completions(for: request)
@@ -320,23 +324,46 @@ final class GhostTextEngine {
         return .suggestion(GhostSuggestion(text: notes[chosen].text, context: context, generationMs: elapsed))
     }
 
-    /// Uses the captured field's pid, not a window ID from the host or a fresh frontmost-app lookup.
-    /// A caller without a captured target gets no screen context.
-    func updateScreenText(pid: Int32?, revision: UInt64, origin: String?) async throws {
+    /// Called by focus observation, before generation and even when the field's text did not change.
+    func prefetchScreenText(for target: ScreenTextTarget?, origin: String? = nil) {
+        screenTarget = target
+        screenOrigin = origin
+        refreshScreenText()
+    }
+
+    func screenTextRevisionChanged(_ revision: UInt64) {
+        // A reconnect resets screenRevision first; old notifications in one connection cannot roll it back.
+        guard screenRevision == nil || revision >= screenRevision! else { return }
+        screenRevision = revision
+        refreshScreenText()
+    }
+
+    func refreshScreenText() {
+        guard let key = screenKey(for: screenTarget, origin: screenOrigin) else {
+            screenCache.clear()
+            return
+        }
+        guard let request = screenCache.prefetch(key, id: UUID().uuidString) else { return }
+        if screenTextSender?(request) != true { screenCache.clear() }
+    }
+
+    func receiveScreenText(_ reply: ScreenTextReply) { screenCache.receive(reply) }
+
+    func screenTextDisconnected() {
+        screenRevision = nil
+        screenCache.clear()
         inlinePromptContext.screenText = nil
-        guard let pid, pid > 0, let screenTextProvider else { return }
+    }
+
+    func cachedScreenText(for target: ScreenTextTarget?, origin: String? = nil) -> String? {
+        guard let key = screenKey(for: target, origin: origin) else { return nil }
+        return screenCache.text(for: key)
+    }
+
+    private func screenKey(for target: ScreenTextTarget?, origin: String?) -> ScreenTextCache.Key? {
+        guard let target, target.pid > 0, target.windowNumber > 0, let revision = screenRevision else { return nil }
         let settings = screenTextSettings()
-        let request = ScreenTextRequest(
-            id: UUID().uuidString,
-            revision: revision,
-            pid: pid,
-            appsOff: settings.appsOff,
-            sitesOff: settings.sitesOff,
-            site: origin
-        )
-        let text = await screenTextProvider(request)
-        try Task.checkCancellation()
-        inlinePromptContext.screenText = text
+        return .init(target: target, revision: revision, appsOff: settings.appsOff, sitesOff: settings.sitesOff, site: origin)
     }
 
     /// The request `suggest` sends for `context`, under the app's policy.

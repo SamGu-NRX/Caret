@@ -1,2 +1,2 @@
-{"type":"screenTextRequest","v":1,"id":"screen-golden-1","revision":42,"pid":2001,"maxCharacters":2048,"appsOff":["com.example.Secret"],"sitesOff":["https://secret.example"],"site":"https://docs.example"}
+{"type":"screenTextRequest","v":1,"id":"screen-golden-1","revision":42,"pid":2001,"windowNumber":101,"maxCharacters":2048,"appsOff":["com.example.Secret"],"sitesOff":["https://secret.example"],"site":"https://docs.example"}
 {"type":"screenTextReply","v":1,"id":"screen-golden-1","revision":42,"text":"Project brief\nShip the local suggestion"}

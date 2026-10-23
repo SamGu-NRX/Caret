@@ -17,6 +17,7 @@ final class ScreenTextGoldenTests: XCTestCase {
         XCTAssertEqual(request.id, "screen-golden-1")
         XCTAssertEqual(request.revision, 42)
         XCTAssertEqual(request.pid, 2001)
+        XCTAssertEqual(request.windowNumber, 101)
         XCTAssertEqual(request.appsOff, ["com.example.Secret"])
         XCTAssertEqual(request.sitesOff, ["https://secret.example"])
         XCTAssertEqual(request.site, "https://docs.example")

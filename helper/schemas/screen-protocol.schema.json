@@ -1029,6 +1029,11 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "windowNumber": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 4294967295
+            },
             "maxCharacters": {
               "type": "integer",
               "exclusiveMinimum": 0,
@@ -1059,6 +1064,7 @@
             "id",
             "revision",
             "pid",
+            "windowNumber",
             "maxCharacters"
           ],
           "additionalProperties": false
@@ -10742,6 +10748,30 @@
             "id",
             "revision",
             "text"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "screenTextRevision"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "revision"
           ],
           "additionalProperties": false
         }

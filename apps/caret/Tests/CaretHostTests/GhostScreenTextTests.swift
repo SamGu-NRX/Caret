@@ -5,69 +5,95 @@ import XCTest
 
 @MainActor
 final class GhostScreenTextTests: XCTestCase {
-    func testRequestCarriesCapturedPidPrivacySettingsAndPageOrigin() async throws {
+    private let target = ScreenTextTarget(pid: 2001, windowNumber: 101)
+
+    func testPrefetchCarriesAXWindowReaderRevisionAndPrivacySettings() throws {
         let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
         var settings = CaretSettings()
         settings.setApp("com.example.Secret", off: true)
         settings.setSite("https://secret.example", off: true)
         engine.screenTextSettings = { settings }
-        var sent: ScreenTextRequest?
-        engine.screenTextProvider = { request in
-            sent = request
-            return nil
-        }
+        var sent: [ScreenTextRequest] = []
+        engine.screenTextSender = { sent.append($0); return true }
 
-        try await engine.updateScreenText(pid: 2001, revision: 42, origin: "https://docs.example")
-
-        let request = try XCTUnwrap(sent)
-        XCTAssertEqual(request.pid, 2001)
+        engine.prefetchScreenText(for: target, origin: "https://docs.example")
+        XCTAssertTrue(sent.isEmpty, "no request before the helper supplies its revision")
+        engine.screenTextRevisionChanged(42)
+        let request = try XCTUnwrap(sent.first)
+        XCTAssertEqual(request.pid, target.pid)
+        XCTAssertEqual(request.windowNumber, target.windowNumber)
         XCTAssertEqual(request.revision, 42)
         XCTAssertEqual(request.appsOff, settings.appsOff)
         XCTAssertEqual(request.sitesOff, settings.sitesOff)
         XCTAssertEqual(request.site, "https://docs.example")
-        XCTAssertEqual(request.maxCharacters, 2048)
-        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
-        XCTAssertEqual(wire["appsOff"] as? [String], ["com.example.Secret"])
-        XCTAssertEqual(wire["sitesOff"] as? [String], ["https://secret.example"])
-        XCTAssertEqual(wire["pid"] as? Int, 2001)
-        XCTAssertNil(wire["windowId"], "the reader, not the host, assigns window IDs")
-        XCTAssertNil(engine.inlinePromptContext.screenText)
+        XCTAssertNil(engine.cachedScreenText(for: target, origin: "https://docs.example"), "a pending reply does not delay a cache read")
+        engine.receiveScreenText(.init(id: request.id, revision: 42, text: "Nearby text"))
+        XCTAssertEqual(engine.cachedScreenText(for: target, origin: "https://docs.example"), "Nearby text")
+        engine.prefetchScreenText(for: target, origin: "https://docs.example")
+        engine.screenTextRevisionChanged(42)
+        XCTAssertEqual(sent.count, 1, "keystrokes and unchanged revisions do not request again")
     }
 
-    func testEachRequestReadsCurrentSettingsAndDoesNotReuseThePreviousPageOrigin() async throws {
+    func testWindowAndReaderRevisionChangesDropCachedAndLateReplies() throws {
+        let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
+        var sent: [ScreenTextRequest] = []
+        engine.screenTextSender = { sent.append($0); return true }
+        engine.screenTextRevisionChanged(1)
+        engine.prefetchScreenText(for: target)
+        engine.receiveScreenText(.init(id: try XCTUnwrap(sent.last).id, revision: 1, text: "Window A"))
+        XCTAssertEqual(engine.cachedScreenText(for: target), "Window A")
+        let other = ScreenTextTarget(pid: target.pid, windowNumber: 102)
+        XCTAssertNil(engine.cachedScreenText(for: other))
+        engine.prefetchScreenText(for: other)
+        let old = try XCTUnwrap(sent.last)
+        engine.screenTextRevisionChanged(2)
+        engine.receiveScreenText(.init(id: old.id, revision: 1, text: "Late B"))
+        XCTAssertNil(engine.cachedScreenText(for: other))
+        engine.receiveScreenText(.init(id: try XCTUnwrap(sent.last).id, revision: 2, text: "Current B"))
+        XCTAssertEqual(engine.cachedScreenText(for: other), "Current B")
+        XCTAssertNil(engine.cachedScreenText(for: target))
+        engine.screenTextRevisionChanged(1)
+        XCTAssertEqual(sent.count, 3, "an older notification does not roll back the cache")
+    }
+
+    func testSettingsAndPageOriginNeverReuseEarlierContext() throws {
         let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
         var settings = CaretSettings()
         engine.screenTextSettings = { settings }
         var sent: [ScreenTextRequest] = []
-        engine.screenTextProvider = { request in
-            sent.append(request)
-            return sent.count == 1 ? "Nearby static text" : nil
-        }
-        try await engine.updateScreenText(pid: 7, revision: 1, origin: "https://docs.example")
-        XCTAssertEqual(engine.inlinePromptContext.screenText, "Nearby static text")
-
+        engine.screenTextSender = { sent.append($0); return true }
+        engine.screenTextRevisionChanged(1)
+        engine.prefetchScreenText(for: target, origin: "https://docs.example")
+        engine.receiveScreenText(.init(id: try XCTUnwrap(sent.last).id, revision: 1, text: "Nearby"))
         settings.setApp("com.example.Secret", off: true)
         settings.setSite("https://secret.example", off: true)
-        try await engine.updateScreenText(pid: 8, revision: 2, origin: nil)
-        XCTAssertEqual(sent.count, 2)
+        XCTAssertNil(engine.cachedScreenText(for: target, origin: "https://docs.example"))
+        engine.refreshScreenText()
         XCTAssertEqual(sent.last?.appsOff, settings.appsOff)
         XCTAssertEqual(sent.last?.sitesOff, settings.sitesOff)
-        XCTAssertNil(sent.last?.site, "a native field must not inherit a page's origin")
-        XCTAssertNotEqual(sent.first?.id, sent.last?.id)
-        XCTAssertNil(engine.inlinePromptContext.screenText, "an unavailable reply clears old screen text")
+        engine.prefetchScreenText(for: target)
+        XCTAssertNil(sent.last?.site)
+        XCTAssertEqual(sent.count, 3)
+        XCTAssertNil(engine.cachedScreenText(for: target))
     }
 
-    func testWithoutCapturedPidTheHostRequestsNoTextAndClearsPreviousContext() async throws {
+    func testDisconnectAndMissingWindowClearContextWithoutSending() throws {
         let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
-        engine.screenTextProvider = { _ in
-            XCTFail("no request is allowed without a captured positive pid")
-            return "wrong app text"
+        var sent: [ScreenTextRequest] = []
+        engine.screenTextSender = { sent.append($0); return true }
+        engine.screenTextRevisionChanged(1)
+        engine.prefetchScreenText(for: target)
+        let request = try XCTUnwrap(sent.last)
+        engine.receiveScreenText(.init(id: request.id, revision: 1, text: "Nearby"))
+        engine.screenTextDisconnected()
+        engine.receiveScreenText(.init(id: request.id, revision: 1, text: "Late"))
+        XCTAssertNil(engine.cachedScreenText(for: target))
+        engine.screenTextRevisionChanged(0)
+        XCTAssertEqual(sent.count, 2, "a new connection can start at a lower revision")
+        for missing in [nil, ScreenTextTarget(pid: 0, windowNumber: 101), ScreenTextTarget(pid: 7, windowNumber: 0)] {
+            engine.prefetchScreenText(for: missing)
+            XCTAssertNil(engine.cachedScreenText(for: target))
         }
-        let missingPids: [Int32?] = [nil, 0, -1]
-        for pid in missingPids {
-            engine.inlinePromptContext.screenText = "old text"
-            try await engine.updateScreenText(pid: pid, revision: 1, origin: nil)
-            XCTAssertNil(engine.inlinePromptContext.screenText)
-        }
+        XCTAssertEqual(sent.count, 2)
     }
 }

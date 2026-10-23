@@ -388,9 +388,19 @@ export class Helper {
   readonly model = new ScreenModel();
   readonly text = new RollingText();
 
+  private screenRevision = 0;
+  get screenTextRevision(): { type: "screenTextRevision"; v: 1; revision: number } {
+    return { type: "screenTextRevision", v: 1, revision: this.screenRevision };
+  }
+  private invalidateScreenText(): void {
+    this.screenRevision++;
+    this.publish(this.screenTextRevision);
+  }
+
   /** Answers a host's bounded screen-text read from the already filtered model. */
   screenText(request: ScreenTextRequest): ScreenTextReply {
-    return answerScreenText(this.model, request);
+    return this.readerConnected ? answerScreenText(this.model, request, this.screenRevision)
+      : { type: "screenTextReply", v: 1, id: request.id, revision: request.revision, text: null };
   }
   readonly transfers: TransferDetector;
   readonly shadowLogger: ShadowLogger;
@@ -959,6 +969,15 @@ export class Helper {
 
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
   handleReader(m: ReaderMessage): Promise<FillProposal | null> | null {
+    try {
+      return this.applyReader(m);
+    } finally {
+      // Publish after synchronous model updates, before a host can request the new revision.
+      if (["hello", "snapshot", "focus", "appSwitch", "windowClosed"].includes(m.type)) this.invalidateScreenText();
+    }
+  }
+
+  private applyReader(m: ReaderMessage): Promise<FillProposal | null> | null {
     const store = this.opts.store;
     for (const l of this.readerListeners) l(m);
     switch (m.type) {
@@ -1237,6 +1256,7 @@ export class Helper {
   /** The reader's connection closed. A first look then answers that no reader is connected. */
   readerClosed(): void {
     this.readerConnected = false;
+    this.invalidateScreenText();
   }
 
   /**
@@ -3479,6 +3499,7 @@ export class Helper {
   purgeWindow(s: Snapshot): void {
     const id = s.window.windowId;
     this.model.purge(s);
+    this.invalidateScreenText();
     // The removed text goes from every copy the helper keeps of the window, now: the change log (in purge), the rolling
     // text and the privacy line table, which is read again from the purged state when next asked.
     const w = this.model.windows.get(id);
@@ -3494,6 +3515,7 @@ export class Helper {
    * window may still be open, so pending watches and routines don't hear of it; everything in onExpiry does.
    */
   private windowExpired(windowId: string, now: number): void {
+    this.invalidateScreenText();
     this.opts.store.count("model.window_expired", 1, now);
     notifyExpiry(this.onExpiry, windowId);
   }
