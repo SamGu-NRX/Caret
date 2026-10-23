@@ -121,7 +121,7 @@ afterEach(() => {
 describe("partial insert recovery through insertAtCaret", () => {
   it.each(["textarea", "contenteditable"] as const)("restores the selection after a partial insert on a %s", async (kind) => {
     const field = kind === "textarea" ? document.createElement("textarea") : document.createElement("div");
-    if (kind === "textarea") field.value = "Dear Sam, see you";
+    if (field instanceof HTMLTextAreaElement) field.value = "Dear Sam, see you";
     else field.textContent = "Dear Sam, see you";
     document.body.append(field);
     setUp(field);
@@ -143,7 +143,7 @@ describe("partial insert recovery through insertAtCaret", () => {
 
   it.each(["textarea", "contenteditable"] as const)("refuses to overwrite a selection moved by the user on a %s", async (kind) => {
     const field = kind === "textarea" ? document.createElement("textarea") : document.createElement("div");
-    if (kind === "textarea") field.value = "Dear Sam, see you";
+    if (field instanceof HTMLTextAreaElement) field.value = "Dear Sam, see you";
     else field.textContent = "Dear Sam, see you";
     document.body.append(field);
     setUp(field);

@@ -9,7 +9,7 @@
     "build:store": "node build.mjs --store",
     "verify:store": "node verify-store.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && vitest run"
+    "test": "cd ../helper && pnpm install --frozen-lockfile && cd ../extension && tsc -p tsconfig.json && vitest run"
   },
   "devDependencies": {
     "@types/chrome": "0.3.4",
