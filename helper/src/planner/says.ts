@@ -99,6 +99,7 @@ export const SAYS = {
   misread: "Caret couldn't work out what you meant. Say it another way.",
   windowClosed: "That window isn't open anymore.",
   windowChanged: "The form changed while Caret worked on it. Ask again.",
+  unreadResume: "The field holds text Caret doesn't read, so it can't tell whether it changed. Caret can't resume this Ask.",
   noPlan: "Caret couldn't make a plan for that.",
   onlyFills: "Caret only fills in fields. Pressing buttons and opening things is yours to do.",
   fillNothing: "Caret found nothing on screen to fill this form with.",

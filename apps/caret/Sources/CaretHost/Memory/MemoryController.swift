@@ -116,6 +116,7 @@ final class MemoryController {
         w.aboutSaved = saved
         w.entries = WritingPage.entries(settings.instructions, name: Self.appName)
         w.keys = settings.ghostKeys
+        w.clipboardContext = settings.clipboardContext
         w.appsOff = settings.appsOff.map { WritingPage.App(bundleID: $0, name: Self.appName($0)) }
         model.writing = w
     }
@@ -140,7 +141,7 @@ final class MemoryController {
                 model.writing.problem = problem
                 return
             }
-            SettingsStore.shared.update(source: .menu) { $0.instructions.aboutMe = text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            SettingsStore.shared.update(source: .menu) { _ = $0.instructions.setAboutMe(text) }
         case .editEntry(let id):
             let entry = (model.writing.entries + model.writing.addable).first { $0.id == id }
             model.writing.editing = entry.map { ($0.id, $0.text) }
@@ -177,6 +178,7 @@ final class MemoryController {
                 }
             }
         case .keys(let keys): SettingsStore.shared.update(source: .menu) { $0.ghostKeys = keys }
+        case .clipboardContext(let on): SettingsStore.shared.update(source: .menu) { $0.clipboardContext = on }
         case .appOff(let id): SettingsStore.shared.update(source: .menu) { $0.setApp(id, off: true) }
         case .appOn(let id): SettingsStore.shared.update(source: .menu) { $0.setApp(id, off: false) }
         default: break
@@ -360,7 +362,7 @@ final class MemoryController {
         case .calendar(let id): SettingsStore.shared.update(source: .menu) { $0.eventCalendar = id }
         case .pageInlineText, .pageInlineContentEditable: break
         case .model: onModel()
-        case .aboutText, .saveAbout, .editEntry, .entryText, .saveEntry, .cancelEntry, .removeEntry, .keys, .appOff, .appOn:
+        case .aboutText, .saveAbout, .editEntry, .entryText, .saveEntry, .cancelEntry, .removeEntry, .keys, .appOff, .appOn, .clipboardContext:
             performWriting(action)
         case .fileForget(let id):
             book.keep()

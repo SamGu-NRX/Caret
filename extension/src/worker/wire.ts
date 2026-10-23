@@ -8,6 +8,8 @@ const nonEmpty = (x: unknown): x is string => typeof x === "string" && x.length 
 /** An http(s) origin, as pageSitesOff names one: scheme, host and port, nothing after. */
 const SITE = /^https?:\/\/[^/\s]+$/;
 const KINDS = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea", "select", "checkbox", "radio", "combobox", "button", "link", "file", "contenteditable", "range", "color"]);
+/** The list-target kinds a pageActivateItem may name (walker.ts NAV_TARGET); everything else the page takes is in KINDS. */
+const NAV_KINDS = new Set(["row", "option", "listitem"]);
 
 /** pageCompare's cap per verb (protocol.ts PageVerb); the content script bounds compares further. */
 const MAX_CANDIDATES = 8;
@@ -16,6 +18,12 @@ export function parseVerb(x: unknown): PageVerb | null {
   if (typeof x !== "object" || x === null) return null;
   const v = x as Record<string, unknown>;
   if (v.kind === "pageWalk") return v.tabId === null || int(v.tabId) ? { kind: "pageWalk", tabId: v.tabId as number | null } : null;
+  if (v.kind === "pageActivateItem") {
+    // A row is never one of KINDS (walker.ts navTargets), so this verb checks itself before the shared KINDS gate.
+    return !int(v.tabId) || !int(v.frameId) || !nonEmpty(v.documentId) || !nonEmpty(v.id) || !str(v.control) || !NAV_KINDS.has(v.control) || !nonEmpty(v.name) || !nonEmpty(v.taskId) || v.rebind !== false
+      ? null
+      : (v as unknown as ActVerb);
+  }
   if (!int(v.tabId) || !int(v.frameId) || !nonEmpty(v.documentId) || !nonEmpty(v.id) || !str(v.control) || !KINDS.has(v.control) || !str(v.name) || !nonEmpty(v.taskId)) return null;
   switch (v.kind) {
     case "pageWrite":

@@ -23,7 +23,7 @@ export const EVENT_CHANGED = "You've changed this event, so Caret left it";
 import { ConfirmedFiles } from "../engines/attach.ts";
 import { classifyPress, type RiskClass } from "./risk.ts";
 import { pressVerdict } from "../goals/capabilities.ts";
-import { itemOpened, rowSelected } from "../goals/identity.ts";
+import { itemOpened, rowSelected, textsByKey } from "../goals/identity.ts";
 import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
@@ -430,10 +430,12 @@ export class Executor {
     for (const t of this.tasks.values()) {
       if (t.journaled && t.finished !== null && t.finished !== "paused" && t.readerId !== null && t.readerId !== this.readerId) this.journalDrop(t);
     }
-    // The reader dropped every grant with the old connection.
+    // The reader dropped every grant with the old connection. No task from before can take another step (checkSession),
+    // a paused one included, so none needs its source windows or guard any longer: they go now, not when it is stopped.
     for (const t of this.tasks.values()) {
       t.grant = null;
       t.calendarGranted = false;
+      releaseSources(t);
     }
   }
 
@@ -1471,10 +1473,52 @@ export class Executor {
   private async navigateStep(task: Task, i: number, w: WindowState, end: Extract<EndState, { kind: "rowSelected" | "itemOpened" }>, step: Step): Promise<void> {
     const via = step.via;
     if (via?.kind !== "navigate") throw StepStop.stop("unreachable", `'${step.says}' names no navigation`);
-    await this.resolve(task, i, w, via.target, step.says);
+    const node = await this.resolve(task, i, w, via.target, step.says);
     const verb = via.capability === "openItem" ? "open" : "select";
-    if (via.actor === "caret") throw StepStop.handoff(`Caret does not ${verb} list rows itself yet; ${verb} it yourself`);
-    return this.waitForYou(task, i, w.window.windowId, end, step);
+    if (via.actor !== "caret") return this.waitForYou(task, i, w.window.windowId, end, step);
+    // Slice 2: on a page, Caret opens the row itself through the page engine, under the task's grant (navVerdict only
+    // makes an openItem of a qualifying page row the caret's). A native row stays the reader's to select, so it is
+    // still yours here. The activation is not undoable and writes nothing, so it adds nothing to the ledger.
+    const link = this.deps.reader;
+    if (!w.window.windowId.startsWith("page:") || link.activateItem === undefined) {
+      throw StepStop.handoff(`Caret opens list rows itself only on a page Caret for Chrome reads; ${verb} it yourself`);
+    }
+    const label = (node.label ?? "").trim();
+    const what = label === "" ? via.target.describe : `'${label}'`;
+    const prediction = `${verb} ${what}`;
+    // The last boundary before the act: a stop or pause that arrived while the row was resolved ends the run here, as
+    // act() does before any verb of its own.
+    this.checkSession(task);
+    this.checkInterrupt(task);
+    this.checkUnexpected([], null);
+    this.progress(task, "acting", i, `navigate; expect ${prediction}`);
+    this.deps.beforeAct?.(task.id, i);
+    this.authorizeAct(task, w.window.windowId);
+    // The strong form: what the opened item's identity is judged by is only nodes new or changed since this read, the
+    // read right before the act — a detail the page had already shown is never mistaken for one this open brought.
+    // Read now, after the resolve's wait, never from the state the step started from.
+    const since = textsByKey(this.window(w.window.windowId));
+    const r = await link.activateItem(w.window.windowId, node.key, task.id);
+    // The page left or submitted when the row was activated: it may have opened, and the worker has revoked the task's
+    // grants, so nothing more runs here, whatever else came in meanwhile (the press rule, B28, for a row).
+    if (r.pageChanged !== undefined) throw StepStop.stop("changed", `The page changed when Caret opened ${what}, so Caret stopped.`);
+    // Any other refusal stops the step with its named reason: the engine answers axError for its own refusals (a
+    // button is no row, a row left its list), and itemOpened must never judge a step the page never took.
+    if (r.outcome !== "ok") {
+      if (task.interrupt !== null) throw new Interrupted();
+      throw StepStop.stop(r.outcome === "changed" ? "changed" : "reader", `the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
+    }
+    // The engine re-walked the tab before answering, so the model is what the page shows now.
+    const now = this.window(w.window.windowId);
+    if (!itemOpened(now, end.identity, since)) {
+      const detail = `mismatch: expected ${prediction}; what the page shows now is not the item the plan meant`;
+      if (task.interrupt !== null) throw new Interrupted(detail);
+      throw StepStop.stop("mismatch", detail);
+    }
+    // The opened detail may have replaced the fields the task expects of this window.
+    this.expectedFor(task, w.window.windowId).clear();
+    for (const [key, text] of editableValues(now)) this.expectedFor(task, w.window.windowId).set(key, text);
+    await this.verified(task, i, step);
   }
 
   /**

@@ -108,6 +108,12 @@ public final class CoreBridgeClient: @unchecked Sendable {
         try await send(method: "context.update", params: FrameParams(frame: frame), as: ContextUpdateResult.self)
     }
 
+    /// Retire ambient offers without capturing a field. Resume by sending a
+    /// newer context frame after the host observes that input is eligible again.
+    public func pauseContext(reason: ContextPauseReason) async throws -> ContextPauseResult {
+        try await send(method: "context.pause", params: PauseParams(reason: reason), as: ContextPauseResult.self)
+    }
+
     public func accept(proposalID: String, revision: Int, target: TargetIdentity) async throws -> AcceptResult {
         try await send(
             method: "offer.accept",
@@ -130,6 +136,7 @@ public final class CoreBridgeClient: @unchecked Sendable {
 
     private struct EmptyParams: Encodable {}
     private struct FrameParams: Encodable { let frame: ContextFrame }
+    private struct PauseParams: Encodable { let reason: ContextPauseReason }
     private struct StoppedResult: Decodable { let stopped: Bool }
     private struct WorkflowList: Decodable { let workflows: [WorkflowSummary] }
     private struct DismissParams: Encodable {

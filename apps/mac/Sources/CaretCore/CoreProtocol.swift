@@ -372,6 +372,25 @@ public struct ContextFrame: Codable, Equatable, Sendable {
 
 // MARK: - Results
 
+/// Host observations that withdraw ambient context without reading a field.
+public enum ContextPauseReason: String, Codable, CaseIterable, Sendable {
+    case idle, locked, sleeping
+    case generatedInput = "generated-input"
+    case focusUnavailable = "focus-unavailable"
+    case secureField = "secure-field"
+    case imeComposing = "ime-composing"
+    case appExcluded = "app-excluded"
+    case accessibilityRevoked = "accessibility-revoked"
+    case workflowActive = "workflow-active"
+    /// The person acted (typed, clicked, chose). The one reason that always interrupts an accepted workflow;
+    /// generated-input, workflow-active and idle never do (docs/bridge-protocol.md, "Interrupting an accepted workflow").
+    case userInput = "user-input"
+}
+
+public struct ContextPauseResult: Decodable, Equatable, Sendable {
+    public var paused: Bool
+}
+
 public struct HelloResult: Decodable, Equatable, Sendable {
     public var protocolVersion: Int
     public var intervalSeconds: Double
@@ -432,15 +451,31 @@ public struct InlineEdit: Decodable, Equatable, Sendable {
 public struct WorkflowExecution: Decodable, Equatable, Sendable {
     public var status: String
     public var summary: String
+    public var effects: [String]
     public var evidence: [String]
+    public var interruptedBy: String?
+    public var cancellationError: String?
+    public var effectsMayRemain: Bool
+    public var executionStatus: String?
 
-    enum CodingKeys: String, CodingKey { case status, summary, evidence }
+    enum CodingKeys: String, CodingKey {
+        case status, summary, effects, evidence
+        case interruptedBy = "interrupted_by"
+        case cancellationError = "cancellation_error"
+        case effectsMayRemain = "effects_may_remain"
+        case executionStatus = "execution_status"
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        effects = try c.decodeIfPresent([String].self, forKey: .effects) ?? []
         evidence = try c.decodeIfPresent([String].self, forKey: .evidence) ?? []
+        interruptedBy = try c.decodeIfPresent(String.self, forKey: .interruptedBy)
+        cancellationError = try c.decodeIfPresent(String.self, forKey: .cancellationError)
+        effectsMayRemain = try c.decodeIfPresent(Bool.self, forKey: .effectsMayRemain) ?? false
+        executionStatus = try c.decodeIfPresent(String.self, forKey: .executionStatus)
     }
 }
 

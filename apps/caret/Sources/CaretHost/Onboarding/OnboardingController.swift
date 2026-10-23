@@ -749,8 +749,8 @@ final class OnboardingController {
     }
 
     /// Return is the primary everywhere, including in the Hello field (an input method's composition excepted). Esc is
-    /// Not now on the first step and nothing elsewhere. Tab is the Hello field's while a ghost shows and the offer's while
-    /// it is takeable; otherwise it moves focus.
+    /// Not now on the first step and nothing elsewhere. Tab is the Hello field's while a ghost shows and the offer's while it is takeable;
+    /// otherwise it moves focus.
     private func installKeys() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             MainActor.assumeIsolated {

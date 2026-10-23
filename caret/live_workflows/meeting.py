@@ -284,7 +284,8 @@ class MeetingDraftWorkflow:
             payload=json.loads(json.dumps(proposal)),
         )
 
-    def execute(self, frame: ContextFrame, preparation: Preparation) -> ExecutionResult:
+    def execute(self, frame: ContextFrame, preparation: Preparation, cancelled=None) -> ExecutionResult:
+        # Returns a stored draft and has no effect, so the token needs no check.
         if preparation.missing_inputs:
             return ExecutionResult(
                 status="needs_input",

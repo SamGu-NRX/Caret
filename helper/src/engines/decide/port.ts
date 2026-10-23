@@ -5,7 +5,7 @@
 // none; add it when a caller does.
 import type { AskJev } from "../../fill/jev.ts";
 
-export const ENGINE_NAMES = ["jev", "canned", "llama", "gemini"] as const;
+export const ENGINE_NAMES = ["jev", "canned", "llama", "gemini", "decisions"] as const;
 export type EngineName = (typeof ENGINE_NAMES)[number] | `gateway:${string}`;
 
 /**
@@ -14,8 +14,9 @@ export type EngineName = (typeof ENGINE_NAMES)[number] | `gateway:${string}`;
  * - `typesafe`: TypeSafe's service, which does not train on customer requests (docs.typesafe.ai/models, "Data handling").
  * - `google-free-tier`: Google AI Studio's free tier, whose terms let Google use requests to improve its products, so
  *   fixture text only, never the user's screens (brief J1).
+ * - `openai-decisions`: the approved Luna comparison, fixture text only and refused in every app build.
  */
-export type EngineReach = "mac" | "typesafe" | "gateway" | "google-free-tier";
+export type EngineReach = "mac" | "typesafe" | "gateway" | "google-free-tier" | "openai-decisions";
 
 export interface DecideEngine {
   readonly name: EngineName;
@@ -23,6 +24,8 @@ export interface DecideEngine {
   readonly model: string;
   readonly reach: EngineReach;
   readonly ask: AskJev;
+  /** Release eval-only resources when a harness finishes, including the Decisions run lock. */
+  readonly close?: () => void;
 }
 
 export function engineName(raw: string): EngineName {

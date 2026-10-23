@@ -4,13 +4,14 @@
 // as not run instead of scoring what the Ask said after the failure (b31-03's verifier 503 had read as "no value").
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { JevHttpError } from "../src/fill/jev.ts";
+import { DecisionsAttemptError } from "../src/engines/decide/decisions.ts";
 
 /** One event: dispatch, then exactly one of answer or error, each carrying the request, its number and its Ask. */
 export type DispatchLine = { request: number; ask: string; req: JevRequest } & ({ event: "dispatch" } | { event: "answer"; result: JevResult } | { event: "error"; error: string });
 
 /** The HTTP status behind a failed request, through the causes a wrapper keeps; null for no HTTP answer. */
 export function httpStatus(e: unknown): number | null {
-  for (let at = e, depth = 0; at instanceof Error && depth < 5; at = at.cause, depth++) if (at instanceof JevHttpError) return at.status;
+  for (let at = e, depth = 0; at instanceof Error && depth < 5; at = at.cause, depth++) if (at instanceof JevHttpError || at instanceof DecisionsAttemptError) return at.status;
   return null;
 }
 

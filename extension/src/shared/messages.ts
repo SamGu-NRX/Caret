@@ -4,9 +4,15 @@
 
 export type PageControlKind =
   | "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea"
-  | "select" | "checkbox" | "radio" | "combobox" | "button" | "link" | "file" | "contenteditable" | "range" | "color";
+  | "select" | "checkbox" | "radio" | "combobox" | "button" | "link" | "file" | "contenteditable" | "range" | "color"
+  /** Slice 2: a list row a navigate opens (walker.ts navTargets): role=row in grid, treegrid or table, an option in listbox, a listitem in list. */
+  | "row" | "option" | "listitem";
 
-export type PageExclusion = "password" | "hidden" | "payment" | "oneTimeCode" | "invisible" | "ariaHidden" | "selfIdentification";
+/** The kinds of control a page's navigate opens (walker.ts navTargets); protocol.ts NAV_CONTROL_KINDS mirrors them. */
+export const NAV_CONTROL_KINDS = ["row", "option", "listitem"] as const;
+export type NavControlKind = (typeof NAV_CONTROL_KINDS)[number];
+
+export type PageExclusion = "password" | "hidden" | "payment" | "oneTimeCode" | "invisible" | "ariaHidden" | "selfIdentification" | "formRow" | "comboboxOption";
 
 export type Rect = [number, number, number, number];
 
@@ -76,6 +82,15 @@ interface ControlBase {
    * frame's `sections` list. Absent when it is in none.
    */
   sections?: string[];
+  /**
+   * Slice 2, nav targets only (walker.ts navTargets): the row's cells in order, each to 200 characters as the frame
+   * read them; the row's name repeats them joined " · ". A cell's text is page state like a select's option labels.
+   */
+  cells?: string[];
+  /** Slice 2, nav targets only: whether the row sits inside a form (navVerdict makes such a row the user's). */
+  inForm?: boolean;
+  /** Slice 2, nav targets only: what the row's own link points at — none, a same-document fragment, or another URL. */
+  href?: "none" | "hash" | "other";
 }
 
 /**
@@ -226,7 +241,9 @@ export type ActVerb =
    */
   | ({ kind: "pageRestore"; wrote: string; exact?: true } & TargetFields)
   /** Whole-value comparison of the field with each candidate, at most 8 per control and 64 per task in this document. */
-  | ({ kind: "pageCompare"; candidates: string[] } & TargetFields);
+  | ({ kind: "pageCompare"; candidates: string[] } & TargetFields)
+  /** Slice 2: opens the walked list row through its own click handler; rebind: false, the walked element or nothing. */
+  | ({ kind: "pageActivateItem" } & TargetFields);
 // No verb gives a field's text out of the page. The counsel's pageSourceGrant, a copy from a window the user picked,
 // waits for that pick flow to exist (helper/src/engines/page-source.ts refuses until then): a grant to act alone is no
 // pick, so the page must not answer it with text.

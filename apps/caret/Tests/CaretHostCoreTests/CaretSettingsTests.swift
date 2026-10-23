@@ -5,6 +5,21 @@ import XCTest
 final class CaretSettingsTests: XCTestCase {
     private func rule(_ gate: GatePolicy, _ family: String) -> GatePolicy.Rule? { gate.rules.first { $0.family == family } }
 
+    func testClipboardContextDefaultsOffAndRoundTrips() throws {
+        var s = CaretSettings()
+        XCTAssertFalse(s.clipboardContext)
+        s.clipboardContext = true
+        let back = try JSONDecoder().decode(CaretSettings.self, from: JSONEncoder().encode(s))
+        XCTAssertTrue(back.clipboardContext)
+    }
+
+    func testClipboardContextMigratesOffWhenAbsent() throws {
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(CaretSettings())) as? [String: Any])
+        var old = encoded
+        old.removeValue(forKey: "clipboardContext")
+        XCTAssertFalse(try JSONDecoder().decode(CaretSettings.self, from: JSONSerialization.data(withJSONObject: old)).clipboardContext)
+    }
+
     func testTheDefaultsHelpWithEverythingAtBalancedWithThePebble() {
         let s = CaretSettings()
         XCTAssertEqual(s.roles, Set(CaretRole.allCases))
@@ -194,6 +209,13 @@ final class CaretSettingsTests: XCTestCase {
         XCTAssertTrue(CaretSettings().gate.allows(family: "pending"))
         let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: true, inputMonitoring: true), clock: ManualClock())
         XCTAssertTrue(flow.state.roles.contains(.watch), "onboarding no longer asks; the first look runs with every role on")
+    }
+
+    func testLevelCopyMatchesItsRuleTable() {
+        XCTAssertFalse(CaretLevel.allCases.map(\.detail).joined(separator: " ").localizedCaseInsensitiveContains("rewrite"))
+        XCTAssertFalse(CaretLevel.eager.detail.localizedCaseInsensitiveContains("other ways to say"))
+        XCTAssertTrue(CaretLevel.eager.detail.contains("twice"))
+        XCTAssertTrue(CaretLevel.balanced.detail.contains("Routines wait"))
     }
 
     func testRoleCopyHasNoDashesOrShouting() {

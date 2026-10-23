@@ -4,7 +4,7 @@
 import { nodeText, type ScreenModel } from "../model.ts";
 import { flat } from "../privacy.ts";
 import { splitName } from "../fill/derive.ts";
-import { labelKind, valueKind, type SensitiveKind } from "../memory/sensitive.ts";
+import { labelKind, statedSecretMatch, valueKind, type SensitiveKind } from "../memory/sensitive.ts";
 
 /** A memory entry's value as the planner may use it: an About value or a person's name. */
 export interface MemoryValue {
@@ -26,6 +26,11 @@ export function secretIn(value: string, instruction: string): SensitiveKind | nu
   if (shape !== null) return shape;
   const v = value.trim();
   if (v === "") return null;
+  // Keep one definition of a stated secret. The memory classifier handles intervening purpose words
+  // such as "my password for the portal is …" instead of this planner's bounded window.
+  const stated = statedSecretMatch(instruction);
+  const normalizeSecret = (text: string): string => text.toLowerCase().replace(/\s+/gu, "");
+  if (stated !== null && stated.candidates.some((candidate) => normalizeSecret(v) === normalizeSecret(candidate))) return stated.kind;
   for (let at = instruction.indexOf(v); at >= 0; at = instruction.indexOf(v, at + 1)) {
     const before = instruction.slice(Math.max(0, at - 40), at).split(/\s+/u).filter((w) => w !== "").slice(-4).join(" ");
     const after = instruction.slice(at + v.length, at + v.length + 40).split(/\s+/u).filter((w) => w !== "").slice(0, 4);

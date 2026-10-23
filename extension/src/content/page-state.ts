@@ -2,8 +2,9 @@
 // and the acts (actions.ts, combobox.ts): change counters and origins, the page-held `before` of Caret's writes, and
 // the compare budget. Nothing here is ever sent; the walk and the receipts send only what these say about a field.
 import type { PageControlKind, Withheld } from "../shared/messages.ts";
-import { CompareBudget, Revs, WriteRecords, presence, withheldFor, type Origin } from "./revs.ts";
+import { CompareBudget, ChoiceRecords, Revs, WriteRecords, presence, withheldFor, type Origin } from "./revs.ts";
 import { isTyping } from "./entry.ts";
+import { composedParent } from "./shadow.ts";
 import { historyDoubt } from "./password-watch.ts";
 import { controlName } from "./question.ts";
 import { deepActiveElement, kindOf, secretOf, shadowRootOf, textOf, type TextReading } from "./walker.ts";
@@ -94,4 +95,109 @@ export function trackTrustedEdits(): void {
     revs.trusted(el, says, isInput(el));
   };
   for (const type of ["beforeinput", "input", "change", "paste", "compositionend"]) addEventListener(type, on, opts);
+}
+
+/** The trusted pointers, keys and clicks that touched each control without editing it, counted for a choice record's undo check (revs.ts). */
+const touches = new WeakMap<Element, number>();
+
+/** How many trusted pointers, keys and clicks have touched the control since this page began keeping choice records (revs.ts choiceCheck). */
+export function touchCount(el: Element): number {
+  return touches.get(el) ?? 0;
+}
+
+/**
+ * The elements a recorded control stands for: its labels (a label forwards its click to the control), its aria-controls
+ * and aria-owns targets (the list an option's click lands in), and the widget's container (a chevron button included):
+ * the one the combobox handler names, else the nearest element that holds the control and one of those targets
+ * together. A person re-picking a combobox's choice touches these and none of them is the control itself, and the
+ * page's own script copies what they chose, so a touch on any of them is a touch on the control (issue #54, the review
+ * of PR #58).
+ */
+const standsFor = new WeakMap<Element, Set<Element>>();
+
+/**
+ * The nearest element that holds `a` and `b` both in the light DOM, or null when they share none or share only the
+ * page itself: a list portaled under <body> (react-select's menuPortalTarget) has <body> in common with its control,
+ * and taking <body> in would count every click on the page against the pick (review of PR #58, F4).
+ */
+function commonAncestor(a: Element, b: Element): Element | null {
+  const up = new Set<Element>();
+  for (let n: Element | null = a; n !== null; n = n.parentElement) up.add(n);
+  for (let n: Element | null = b; n !== null; n = n.parentElement) if (up.has(n)) return pageWide(n) ? null : n;
+  return null;
+}
+
+/** Whether `n` is its document's <body> or <html>, which hold every control on the page. */
+function pageWide(n: Element): boolean {
+  return n === n.ownerDocument.body || n === n.ownerDocument.documentElement;
+}
+
+/**
+ * Every element a touch on stands for a touch on the control `el` (standsFor), computed at the pick. `container`: the
+ * widget's own container when the handler knows it (react-select's, whose list may be portaled away from it), else null.
+ */
+function affiliated(el: Element, container: Element | null): Element[] {
+  const out = new Set<Element>();
+  const labels = (el as HTMLInputElement).labels;
+  if (labels !== null && labels !== undefined) for (const l of labels) out.add(l);
+  else {
+    if (el.id !== "") for (const l of (el.getRootNode() as Document | ShadowRoot).querySelectorAll(`label[for="${CSS.escape(el.id)}"]`)) out.add(l);
+    const wrap = el.closest("label");
+    if (wrap !== null) out.add(wrap);
+  }
+  const root = el.getRootNode() as Document | ShadowRoot;
+  for (const id of `${el.getAttribute("aria-controls") ?? ""} ${el.getAttribute("aria-owns") ?? ""}`.split(/\s+/).filter(Boolean)) {
+    const t = root.getElementById(id) ?? document.getElementById(id);
+    if (t === null) continue;
+    out.add(t);
+    const box = commonAncestor(el, t);
+    if (box !== null) out.add(box);
+  }
+  if (container !== null && !pageWide(container)) out.add(container);
+  return [...out];
+}
+/** Nothing is counted until a choice record exists for some control, so pages Caret only reads stay untouched by the listener's walk. */
+let anyChoiceRecorded = false;
+
+/** The page's record of Caret's combobox picks, by task and the element picked (revs.ts ChoiceRecords). */
+export const choices = new ChoiceRecords<Element>();
+
+/**
+ * Listens, from document_start, for the trusted events that touch a control without editing it: a pointer going down, a
+ * key going down, a click. A person re-picking Caret's own option leaves the text — and so the rev and the edit
+ * counters — exactly as Caret's pick left them, so the pick's record counts these touches too: the click that opens the
+ * control's list is itself a trusted pointer, and a touch on the control's label, its list or its container stands for
+ * a touch on the control (standsFor), since the page's own script copies what the person chose (issue #54). Caret's own
+ * acts dispatch untrusted events only, which never count.
+ */
+export function trackTrustedTouches(): void {
+  const on = (e: Event): void => {
+    if (!anyChoiceRecorded || !e.isTrusted) return;
+    const t = e.composedPath()[0];
+    if (!(t instanceof Element)) return;
+    // A touch counts for every recorded choice it could undo: on the event's target or anything above it, and on a
+    // recorded control the element stands for (standsFor) — the label, the list, the container holding both.
+    for (let n: Element | null = t; n !== null; n = composedParent(n)) {
+      if (touches.has(n)) touches.set(n, (touches.get(n) ?? 0) + 1);
+      for (const c of standsFor.get(n) ?? []) if (touches.has(c)) touches.set(c, (touches.get(c) ?? 0) + 1);
+    }
+  };
+  for (const type of ["pointerdown", "mousedown", "keydown", "touchstart", "click"]) addEventListener(type, on, { capture: true, passive: true });
+}
+
+/** Begins the page-side record of a pick Caret is about to make, anchoring the control's trusted-event counts at this
+ * moment and taking its affiliates' watch up (standsFor): a touch on them counts for this record's undo check (revs.ts).
+ * `container`: the widget's own container when the handler knows it (affiliated), else null. */
+export function beginChoice(taskId: string, el: Element, wrote: string, container: Element | null): void {
+  if (!touches.has(el)) touches.set(el, 0);
+  anyChoiceRecorded = true;
+  for (const a of affiliated(el, container)) {
+    let set = standsFor.get(a);
+    if (set === undefined) {
+      set = new Set();
+      standsFor.set(a, set);
+    }
+    set.add(el);
+  }
+  choices.begin(taskId, el, wrote, revs.trustedCount(el), touches.get(el) ?? 0);
 }

@@ -130,7 +130,7 @@ final class FillOverlay {
         // The field's theme, not Caret's: an app can run light while the system runs dark. Read
         // it from the field's own text color when the probe found one.
         let isDark = style.textColor.map(Self.isLight) ?? (ghost.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
-        let ink = (style.textColor ?? .labelColor).withAlphaComponent(Tokens.ghostOpacity(dark: isDark))
+        let ink = Tokens.ghostInk(style.textColor ?? .labelColor, darkField: isDark)
         var mask = NSColor.textBackgroundColor
         NSAppearance(named: isDark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
             mask = NSColor.textBackgroundColor.usingColorSpace(.sRGB) ?? mask
