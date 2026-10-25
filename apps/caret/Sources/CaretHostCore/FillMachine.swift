@@ -132,13 +132,19 @@ public struct FillInsertion: Equatable, Sendable {
     public var rejected: Bool
     public var reason: String?
     public var method: FillResult.Method?
-    /// For a verified fill: what ⌘Z may revert while the toast is up.
+    /// What ⌘Z may revert while the toast is up: a verified fill's, or an unconfirmed one's whose
+    /// field held the whole value or only part of it (`UnconfirmedInsert.grant`).
     public var undo: UndoGrant?
     public var insertedLength: Int
     /// The field a paste landed in instead, by its label (`wroteElsewhere`).
     public var strayField: String?
+    /// For a write Caret could not confirm: what a read of the field found afterwards (S2).
+    public var recovery: UnconfirmedInsert.Report?
 
-    public init(claim: Claim, verified: Bool, rejected: Bool, reason: String?, method: FillResult.Method?, undo: UndoGrant?, insertedLength: Int, strayField: String? = nil) {
+    public init(
+        claim: Claim, verified: Bool, rejected: Bool, reason: String?, method: FillResult.Method?, undo: UndoGrant?, insertedLength: Int,
+        strayField: String? = nil, recovery: UnconfirmedInsert.Report? = nil
+    ) {
         self.claim = claim
         self.verified = verified
         self.rejected = rejected
@@ -147,6 +153,7 @@ public struct FillInsertion: Equatable, Sendable {
         self.undo = undo
         self.insertedLength = insertedLength
         self.strayField = strayField
+        self.recovery = recovery
     }
 }
 
@@ -155,11 +162,17 @@ public struct FillUndo: Equatable, Sendable {
     public var grant: UndoGrant
     public var ok: Bool
     public var error: String?
+    /// ⌘Z took out only the part of the fill that had gone in (S1's partial write).
+    public var partial: Bool
+    /// For an unconfirmed fill's field that ⌘Z left alone: what it holds and held, in S1's words.
+    public var says: String?
 
-    public init(grant: UndoGrant, ok: Bool, error: String?) {
+    public init(grant: UndoGrant, ok: Bool, error: String?, partial: Bool = false, says: String? = nil) {
         self.grant = grant
         self.ok = ok
         self.error = error
+        self.partial = partial
+        self.says = says
     }
 }
 
@@ -632,6 +645,9 @@ public final class FillMachine {
             emit(.undoTask(taskID))
             count("fill.helperFill.undo")
         }
+        // Only the toast whose grant this is: a start delivered after a newer fill's toast took the
+        // slot leaves that toast its own ⌘Z (S2 focused check).
+        guard toast?.grantID == grant.id else { return emit(.publish) }
         toast?.grantID = nil
         status.toast?.grantID = nil
         emit(.publish)
@@ -778,8 +794,18 @@ public final class FillMachine {
             )
             // On screen either way, so a pop-up's toast gives way to it.
             emit(.toastSlotTaken)
+        } else if let grant = result.undo, let recovery = result.recovery {
+            // S2: Caret could not confirm the write, and the field holds the whole value or only part
+            // of it. The toast says so and owns ⌘Z, which takes Caret's characters out.
+            let id = arbiter.showToast(grant)
+            let caption = Self.unconfirmedCaption(recovery)
+            showToast(
+                FillToastDraw(kind: .error, lead: nil, text: caption, keycap: Hint(key: "⌘Z", label: "Undo"), field: lastFieldFrame, pid: pid, source: origin.sourceCaption),
+                lifetime: grant.lifetimeSeconds, grantID: id, info: DebugState.Toast(kind: "error", caption: caption, grantID: id)
+            )
+            emit(.toastSlotTaken)
         } else {
-            let caption = Self.errorCaption(result.reason, field: result.strayField)
+            let caption = result.recovery?.says.map(Self.sentence) ?? Self.errorCaption(result.reason, field: result.strayField)
             showToast(
                 FillToastDraw(kind: .error, lead: nil, text: caption, keycap: nil, field: lastFieldFrame, pid: pid, source: origin.sourceCaption),
                 lifetime: Self.errorLifetime, grantID: nil, info: DebugState.Toast(kind: "error", caption: caption, grantID: nil)
@@ -806,7 +832,13 @@ public final class FillMachine {
             outcome: result.ok ? .undone : .undoFailed, reason: result.error, method: .axValue,
             valueLength: result.ok ? 0 : UTF16Text.length(result.grant.writtenValue)
         ))
-        let caption = result.ok ? "Cleared 1 field" : "The field changed after the fill, so it was left as it is."
+        let caption: String
+        switch (result.ok, result.error) {
+        case (true, _): caption = result.partial ? "Took out the part that went in" : "Cleared 1 field"
+        case (false, UndoGuard.Rejection.nothingWritten.code?): caption = "The field already reads as it did before the fill."
+        case (false, UndoGuard.Rejection.inputDuringUndo.code?): caption = "You typed as Caret was undoing, so the field was left as it is."
+        default: caption = result.says.map(Self.sentence) ?? "The field changed after the fill, so it was left as it is."
+        }
         let kind: FillToastDraw.Kind = result.ok ? .undone : .error
         showToast(
             FillToastDraw(kind: kind, lead: nil, text: caption, keycap: nil, field: lastFieldFrame, pid: pid, source: origin.sourceCaption),
@@ -868,6 +900,18 @@ public final class FillMachine {
         emit(.send(result))
     }
 
+    /// A fill Caret could not confirm, whose field it recognizes (S2). Only `whole` and `partial`
+    /// leave a grant.
+    public static func unconfirmedCaption(_ recovery: UnconfirmedInsert.Report) -> String {
+        if case .partial = recovery.state { return "Only part of the value went in." }
+        return "Caret couldn't confirm the fill, but the field holds it."
+    }
+
+    /// A clause of S1's wording as a toast's sentence.
+    public static func sentence(_ clause: String) -> String {
+        clause.prefix(1).uppercased() + clause.dropFirst() + "."
+    }
+
     /// What went wrong and what next, without blame or probabilities (`IDENTITY.md` captions).
     public static func errorCaption(_ reason: String?, field: String? = nil) -> String {
         switch reason ?? "" {
@@ -884,6 +928,9 @@ public final class FillMachine {
             return "That suggestion was too old, so nothing was filled."
         case "writeIgnored", "writeMismatch":
             return "The field didn't take the value. Type it in to fill it."
+        // The app did not answer the write, so it may or may not have taken it (S2 review).
+        case WriteFallback.writeUncertain:
+            return "The app didn't answer, so Caret didn't fill it again. Check the field."
         // This app only takes a paste, and what is on the clipboard could not be put back exactly
         // (`WriteFallback.clipboardUnrestorable`).
         case WriteFallback.clipboardUnrestorable:
