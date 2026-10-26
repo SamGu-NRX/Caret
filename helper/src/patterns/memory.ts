@@ -137,8 +137,85 @@ export interface RoutineRecord {
   skillPaused: boolean;
 }
 
+/** A keyed hash as Store.hash makes it (store.ts): HMAC-SHA256 under the local salt, the first 16 hex digits. */
+const Hmac = z.string().regex(/^[0-9a-f]{16}$/u);
+const Sha256 = z.string().regex(/^[0-9a-f]{64}$/u);
+/** A binding's id: "t:" for a target shape, "r:" for a read site, then 16 hex digits of the shape's SHA-256 (goals/skill.ts). */
+const ShapeId = z.string().regex(/^[tr]:[0-9a-f]{16}$/u);
+const SiteId = z.string().regex(/^c[1-9]\d*$/u);
+
+/**
+ * A goal program kept as a skill (goals/skill.ts mints it, goals/skill-run.ts reruns it). It holds the program, the
+ * shapes of what it touched as keyed hashes, a rule for each choose() site and the reviewed write set. It never holds a
+ * value the run read or any snapshot text: what a rerun writes is read fresh then, and every rule is checked against
+ * the live screen.
+ */
+export const GoalSkillBody = z
+  .object({
+    program: z.object({ source: z.string().min(1).max(16 * 1024), digest: Sha256, apiVersion: Sha256 }).strict(),
+    bindings: z
+      .object({
+        /**
+         * A target a step acted on. `labelFrom` names the choose site whose chosen option carried the target's label (a
+         * row picked by choose()); such a target is known by that site, not by its own key and label, which differ when
+         * the data does.
+         */
+        targets: z.array(
+          z
+            .object({
+              id: ShapeId,
+              gen: z.number().int().nonnegative(),
+              index: z.number().int().nonnegative(),
+              app: z.string(),
+              windowKind: z.string(),
+              role: z.string(),
+              list: z.object({ keyHmac: Hmac, role: z.string() }).strict().nullable(),
+              keyHmac: Hmac.nullable(),
+              labelHmac: Hmac.nullable(),
+              labelFrom: SiteId.nullable(),
+            })
+            .strict(),
+        ),
+        /** A value's place: the window read (`gen` 0, or observation n; `index` within it), the node's key hash, and which value of that node. */
+        reads: z.array(z.object({ id: ShapeId, gen: z.number().int().nonnegative(), index: z.number().int().nonnegative(), keyHmac: Hmac, ordinal: z.number().int().nonnegative() }).strict()),
+      })
+      .strict(),
+    sites: z.array(
+      z
+        .object({
+          siteId: SiteId,
+          segment: z.number().int().nonnegative(),
+          /** The question's text, hashed: a title it quotes can be run data. */
+          promptHmac: Hmac,
+          rule: z.discriminatedUnion("kind", [
+            z.object({ kind: z.literal("constant"), labelHmac: Hmac }).strict(),
+            z.object({ kind: z.literal("match"), sourceSite: ShapeId, relation: z.enum(["equals", "cell"]) }).strict(),
+          ]),
+          /** For diagnostics only; a rerun never reads it. */
+          seen: z.object({ options: z.number().int().positive(), optionHmacs: z.array(Hmac), chosenIndex: z.number().int().nonnegative() }).strict(),
+        })
+        .strict(),
+    ),
+    expectedTrace: z.array(
+      z.discriminatedUnion("kind", [
+        z.object({ segment: z.number().int().nonnegative(), kind: z.literal("read"), site: z.string().regex(/^gen[1-9]\d*$/u) }).strict(),
+        z.object({ segment: z.number().int().nonnegative(), kind: z.literal("choose"), site: SiteId }).strict(),
+        z.object({ segment: z.number().int().nonnegative(), kind: z.literal("write"), step: z.enum(["fill", "press", "navigate"]), site: ShapeId, effect: z.string().nullable(), valueFrom: ShapeId.nullable() }).strict(),
+      ]),
+    ),
+    review: z.object({ checksVersion: z.number().int().positive(), passedAt: z.number().int().nonnegative() }).strict(),
+  })
+  .strict();
+export type GoalSkillBody = z.infer<typeof GoalSkillBody>;
+
+/** What a skill runs: a kept routine (its routineId and the routine row say how), or a goal program. Absent on every row written before program skills. */
+export const SkillBody = z.discriminatedUnion("kind", [z.object({ kind: z.literal("routine") }).strict(), GoalSkillBody.extend({ kind: z.literal("program") }).strict()]);
+export type SkillBody = z.infer<typeof SkillBody>;
+
 /** A skill's stored fields: what the host sees (SkillFields), plus the promote offer's state and the action types its runs wrote under. */
 const SkillJson = SkillFields.extend({
+  /** What the skill runs; absent means a routine. Stays here: the host is never sent it. */
+  body: SkillBody.optional(),
   /** The "on its own" offer: never made or expired unanswered (null), out now, or declined, which is never asked again. */
   promote: z.enum(["offered", "declined"]).nullable(),
   /**
@@ -1227,8 +1304,8 @@ export class MemoryStore {
         return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}`, uses: this.uses(f.action) };
       }
       case "skill": {
-        // `wrote` goes to the host too, for its permissions page (A16); the promote state and putBack stay here.
-        const { promote: _p, putBack: _b, fileDigest: _d, id: _i, paused: skillPaused, ...f } = this.toSkill(r);
+        // `wrote` goes to the host too, for its permissions page (A16); the promote state, putBack and body stay here.
+        const { promote: _p, putBack: _b, fileDigest: _d, body: _body, id: _i, paused: skillPaused, ...f } = this.toSkill(r);
         const status: MemoryStatus = skillPaused ? "paused" : f.onItsOwn ? "active" : "learning";
         const how = skillPaused
           ? "paused"
