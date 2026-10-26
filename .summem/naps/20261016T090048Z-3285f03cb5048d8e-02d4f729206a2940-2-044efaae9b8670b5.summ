@@ -1,0 +1,1 @@
+#47: an ended observed goal drops replay state; an open one stops when a window it read expires (the front window never expires with a reader on). Whole-form Asks reach the page planner as kind 'list' with wholeForm true; rules on kind 'list' must check wholeForm.

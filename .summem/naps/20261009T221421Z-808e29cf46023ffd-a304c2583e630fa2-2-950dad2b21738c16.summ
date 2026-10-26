@@ -1,1 +1,0 @@
-SC1: app exclusions in ExcludedApps.swift and privacy/read-policy.ts (sc1-exclusions.test.ts checks parity; user additions union in). sc1-boundary.test.ts scans fixtures/web-form scripts: write JSON evidence via writeStoreJson/appendStoreJson, never writeStore(JSON.stringify).

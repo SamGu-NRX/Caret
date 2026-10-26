@@ -1,1 +1,0 @@
-Oct 16: a consumer without a valid hostProof gets only status (send-gate.ts; tests prove the host via test/socket-reader.ts); page text controls send hasValue/rev, never value: tests build fields with test/page-wire.ts onWire, FakePage.write stands for Caret's write.

@@ -1,0 +1,1 @@
+Observed goals replay recorded observations (replay.ts), never the writer. Host auth: hostProof=HMAC(secret,'caret-host-key'); no proof, status only. SC1 exclusions: ExcludedApps.swift = read-policy.ts; evidence via writeStoreJson. Page fields send hasValue/rev, never value.
